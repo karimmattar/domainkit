@@ -566,6 +566,19 @@ def _closed(driver: Any) -> bool:  # noqa: ANN401 - asyncpg's or psycopg's.
     return bool(is_closed()) if callable(is_closed) else bool(driver.closed)
 
 
+def _in_transaction(driver: Any) -> bool:  # noqa: ANN401 - asyncpg's or psycopg's.
+    """Whether the server holds the connection in a transaction, without a round trip.
+
+    Both drivers read it from the server's last answer: asyncpg's
+    ``is_in_transaction()``, psycopg's ``info.transaction_status`` (idle or
+    not); an aborted transaction counts.
+    """
+    is_in_transaction = getattr(driver, "is_in_transaction", None)
+    if callable(is_in_transaction):
+        return bool(is_in_transaction())
+    return bool(driver.info.transaction_status.name != "IDLE")
+
+
 def _require_read_only(
     dbapi_connection: Any,  # noqa: ANN401 - SQLAlchemy's adapter.
     record: ConnectionPoolEntry,
@@ -635,18 +648,25 @@ def _reset_session(
     Unless all it ran was plain ``SELECT`` statements, seen here: anything
     else may have changed the session (``SET``, ``set_config``,
     ``SET ROLE``, ``LISTEN``, advisory locks), which the next caller would
-    inherit. ``RESET_SESSION`` takes one round trip; if it fails, the pool
-    closes the connection. A connection being closed anyway is left alone.
+    inherit. A transaction the caller began in SQL text (``BEGIN``), which
+    nothing ends on a connection that runs each statement on its own, is
+    rolled back first, in the same round trip: the next caller would run
+    inside it, under ``REPEATABLE READ`` on its old snapshot.
+    ``RESET_SESSION`` takes one round trip; if it fails, the pool closes the
+    connection. A connection being closed anyway is left alone.
     """
     if state.terminate_only or not state.asyncio_safe:
         return
     driver = dbapi_connection.driver_connection
     sent = _sent(driver)
     if record.info.get(_DIRTY) or sent is None or record.info.get(_SENT) != sent:
+        reset = RESET_SESSION
+        if _in_transaction(driver):
+            reset = f"ROLLBACK; {reset}"
         if sent is None:  # psycopg: never prepared, so sent as a simple query.
-            await_only(driver.execute(RESET_SESSION, prepare=False))
+            await_only(driver.execute(reset, prepare=False))
         else:
-            await_only(driver.execute(RESET_SESSION))
+            await_only(driver.execute(reset))
         record.info[_DIRTY] = False
 
 

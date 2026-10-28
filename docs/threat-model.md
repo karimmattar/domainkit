@@ -70,7 +70,7 @@ project" is the team that builds and runs the service.
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
-| **Spoofing** a user | Opaque tokens, JWTs, cookie sessions with CSRF, client certificates ([auth.md](auth/authentication.md#authenticating-requests)); password and code throttles that count only failures ([auth.md](auth/logging-in.md#logging-in-and-out)); second factors ([auth.md](auth/logging-in.md#two-factor-logins)). | Throttles are shared and fail closed where deployed: counted in each process, they are refused (`auth.E105`), and while Redis cannot count, password and code checks are refused, so an outage locks users out rather than letting guesses through. JWTs name their key: a key is replaced on a schedule through `AUTH.JWT.PREVIOUS_KEYS`, whose tokens are refused one token lifetime after it retires; a key that leaked is replaced without it, which refuses its tokens at once ([auth.md](auth/authentication.md#replacing-a-key)). A stored per-account lockout is planned for 0.10. |
+| **Spoofing** a user | Opaque tokens, JWTs, cookie sessions with CSRF, client certificates ([auth.md](auth/authentication.md#authenticating-requests)); password and code throttles that count only failures ([auth.md](auth/logging-in.md#logging-in-and-out)); second factors ([auth.md](auth/logging-in.md#two-factor-logins)). | Throttles are shared and fail closed where deployed: counted in each process, they are refused (`auth.E105`), and while Redis cannot count, password and code checks are refused, so an outage locks users out rather than letting guesses through. JWTs name their key: a key is replaced on a schedule through `AUTH.JWT.PREVIOUS_KEYS`, whose tokens are refused one token lifetime after it retires; a key that leaked is replaced without it, which refuses its tokens at once ([auth.md](auth/authentication.md#replacing-a-key)). There is no stored per-account lockout, on purpose: a client that logged in before is counted apart from guessers by its device proof ([ADR 0087](adr/0087-count-proven-devices-apart-and-bound-scopes-by-route.md)). |
 | **Spoofing** an address or scheme | Proxy headers believed from `TRUSTED_PROXIES` only, walked from the right ([ADR 0072](adr/0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md)); `ALLOWED_HOSTS` checked first. | The project must list its proxies, and make the server read no proxy header itself ([reference.md](reference.md#http)). |
 | **Tampering** with requests | Bodies validated by pydantic; `If-Match` on changes ([resources.md](resources.md)); signed values ([reference.md](reference.md#signing)). | Route schemas are the project's: a write schema should name the fields a client may set. |
 | **Repudiation** | Request ids, from trusted proxies only ([ADR 0099](adr/0099-take-request-ids-from-trusted-proxies-only.md)), the access log, and audit rows with the actor and address ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); refused logins audited. | The proxy must set `X-Request-ID` over a client's or in a line after it, or `ACCEPT_REQUEST_ID = "never"` ([operations.md](operations.md#request-ids)). The project keeps logs and the trail as long as its regulator asks. |
@@ -121,7 +121,7 @@ project" is the team that builds and runs the service.
 | --- | --- | --- |
 | **Spoofing** | Outgoing webhooks are signed; inbound ones are verified against a timestamp ([contrib.md](contrib/webhooks.md#webhooks-signed-events-for-other-services)). | Sharing secrets with receivers. |
 | **Information disclosure** / **Elevation** (server-side request forgery) | Webhooks and guarded HTTP calls go only to checked public addresses, after DNS ([ADR 0036](adr/0036-webhooks-through-the-outbox.md), [runtime.md](runtime.md#outgoing-http-calls)). | Calls made with another client are not guarded. |
-| **Denial of service** | Answers bounded in size as they arrive; deadlines, retries, and a circuit breaker per host; DNS lookups shared fairly between owners. | One owner's share of lookups is per subscription until 0.10 gives subscriptions an owner. |
+| **Denial of service** | Answers bounded in size as they arrive; deadlines, retries, and a circuit breaker per host; DNS lookups shared fairly between owners. | All of one owner's subscriptions share one quarter of the guard's lookup threads: whoever owns subscriptions to hosts whose DNS never answers holds that quarter for a round of lookups. |
 
 ### 8. Operators
 
@@ -147,18 +147,17 @@ safe side: docs off, HSTS on, a rate limit, and the deployment checks.
 
 ## Residual risks
 
-What domainkit does not yet do, as of 0.9.2. Each is either planned or
+What domainkit does not yet do, as of 0.11. Each is either planned or
 left to the project on purpose.
 
-- **Login throttles keep a known username out.** `LOGIN_RATE` wrong
-  passwords a minute for a username hold its user back with 429, from any
-  address; a stored per-account lockout is planned for 0.10.
-- **Lookup threads per webhook subscription, not per tenant.** Whoever may
-  create several subscriptions can hold the guard's lookup threads for one
-  round of slow DNS answers, until 0.10 gives subscriptions an owner.
+- **Login throttles hold a known username back on a new device.**
+  `LOGIN_RATE` wrong passwords a minute for a username hold its user back
+  with 429, from any address, but for a client with a device proof from an
+  earlier login, which is counted apart (0.10). There is no stored lockout,
+  on purpose ([ADR 0087](adr/0087-count-proven-devices-apart-and-bound-scopes-by-route.md)).
 - **Cache computations are unbounded by default** (`COMPUTE_TIMEOUT =
-  None`, as in 0.9.0); `check` warns where deployed, and 0.10 plans a
-  bounded default.
+  None`, as in 0.9.0); `check` warns where deployed (`caches.W001`), and
+  the `init` template sets it.
 - **Tamper evidence can be turned off.** Since 0.10 staging and production
   refuse to start without a ledger, a namespace, sealing, or the
   `protect()` triggers; `AUDIT.REQUIRE_BASELINE = False` turns that back
@@ -171,8 +170,12 @@ left to the project on purpose.
   route); writers that contend need `get_for_update`,
   `get_many_for_update`, or `lock(name)`
   ([databases.md](databases.md#transactions)).
-- **Handlers run at least once.** A crash between a handler's commit and
-  its message's mark runs it again; there is no inbox.
+- **Handlers run at least once, unless they keep an inbox.** A crash
+  between a handler's commit and its message's mark runs it again. Since
+  0.11 a handler marked `@inbox` records the message in its own commit and
+  is skipped when it comes again, so what it writes to the database is
+  written once; what it does elsewhere (mail sent, a call made) may still
+  happen twice.
 - **A committed idempotency key runs again once its tombstone expires.**
   Since 0.11 it is kept, without its response, for
   `IDEMPOTENCY.TOMBSTONE_SECONDS` (7 days) past its TTL (1 day); keep the

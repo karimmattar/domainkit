@@ -47,7 +47,7 @@ fix: ## Let ruff fix and format what it can.
 	$(RUN) ruff format .
 
 test: ## The suite, on SQLite and fakes, in random order, with coverage.
-	$(RUN) pytest --cov
+	COVERAGE_FILE=.coverage.test $(RUN) pytest --cov
 
 services: ## Start the servers of compose.yaml, as CI's integration job has them.
 	docker compose up -d --wait
@@ -62,8 +62,10 @@ integration: services ## The suite against the servers; a skip fails, as in CI.
 	$(INTEGRATION_ENV) $(RUN) pytest --cov -rs | tee pytest.log
 	@! grep -q "SKIPPED" pytest.log
 
+# Into .coverage, from files of other names: coverage combine skips its
+# own output file, so a run that wrote .coverage would be dropped.
 cov: ## Combine the runs with and without servers; CI requires 100%.
-	$(RUN) coverage combine --keep .coverage .coverage.integration
+	$(RUN) coverage combine --keep .coverage.test .coverage.integration
 	$(RUN) coverage report --fail-under=100
 
 bench: ## The benchmark ladder against its budgets (docs/performance.md).

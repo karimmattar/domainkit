@@ -1047,6 +1047,19 @@ def test_compose_runs_the_servers_ci_runs() -> None:
     assert all(port.startswith("127.0.0.1:") for port in ports), ports
 
 
+def test_make_cov_combines_both_runs() -> None:
+    """``make cov`` reads the file ``make test`` writes, and the integration run's.
+
+    ``coverage combine`` writes ``.coverage`` and skips it as an input, so a
+    run that wrote ``.coverage`` itself would be dropped from the figure.
+    """
+    (written,) = re.findall(r"COVERAGE_FILE=(\S+)", " ".join(make_target("test")))
+    inputs = make_target("cov")[0].split("--keep", 1)[1].split()
+
+    assert inputs == [written, ".coverage.integration"]
+    assert ".coverage" not in inputs
+
+
 def test_the_contributor_commands_are_cis() -> None:
     """``make lint`` is the lint job; ``make integration`` sets its variables."""
     lint = [step["run"] for step in jobs()["lint"]["steps"] if "run" in step]
