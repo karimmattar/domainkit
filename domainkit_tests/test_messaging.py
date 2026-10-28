@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import uuid
 from collections.abc import (
     AsyncIterator,
@@ -1564,14 +1565,17 @@ async def test_the_messaging_app_closes_the_publishers_at_shutdown(
     ``close_resources``, so commands close their publishers too.
     """
     from domainkit import lifecycle
+    from domainkit.contrib.messaging import apps as messaging_apps
 
     closed: list[bool] = []
 
     async def record() -> None:
         closed.append(True)
 
+    # The app's closer, which closes the dispatcher's publishers once it is
+    # loaded, so a process that publishes nothing never loads it (PERF-15).
     assert lifecycle._registered[lifecycle.Phase.DRAIN]["publishers"] is (
-        close_publishers
+        messaging_apps.close_publishers
     )
     monkeypatch.setitem(
         lifecycle._registered[lifecycle.Phase.DRAIN], "publishers", record
@@ -1579,6 +1583,26 @@ async def test_the_messaging_app_closes_the_publishers_at_shutdown(
     await lifecycle.close_resources()
 
     assert closed == [True]
+
+
+async def test_the_publishers_closer_closes_the_dispatchers_once_it_is_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dispatcher's publishers close; without the dispatcher, nothing does."""
+    from domainkit.contrib.messaging import apps as messaging_apps
+    from domainkit.contrib.messaging import dispatch
+
+    closed: list[float | None] = []
+
+    async def record(within: float | None = None) -> None:
+        closed.append(within)
+
+    monkeypatch.setattr(dispatch, "close_publishers", record)
+    await messaging_apps.close_publishers()
+    monkeypatch.delitem(sys.modules, dispatch.__name__)
+    await messaging_apps.close_publishers()
+
+    assert closed == [None]
 
 
 async def test_after_commit_failures_are_reported(

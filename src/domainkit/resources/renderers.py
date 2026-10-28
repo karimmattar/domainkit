@@ -13,7 +13,6 @@ numbers. NDJSON escapes the separators other than its newline that split
 lines (U+0085, U+2028, U+2029), so each document is one line.
 """
 
-import csv
 import io
 import json
 import re
@@ -156,6 +155,8 @@ def guarded(text: str) -> str:
 
 def csv_rows(rows: Iterable[Sequence[object]]) -> str:
     """``rows`` as CSV text (RFC 4180 line endings), each value a safe cell."""
+    import csv  # Only for an export: not on startup's path (PERF-15).
+
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerows([cell(value) for value in row] for row in rows)

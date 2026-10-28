@@ -450,8 +450,10 @@ def test_the_old_tables_are_views_of_the_one_table() -> None:
         "caches": cache_handler.close_all,
         "HTTP clients": lifecycle.close_http_clients,
         "databases": connections.close_all,
-        "ledgers": ledgers.close_all,
-        "brokers": brokers.close_all,
+        # Looked up in sys.modules, not imported: a process that uses no
+        # ledger or broker never loads one (PERF-15).
+        "ledgers": lifecycle.close_ledgers,
+        "brokers": lifecycle.close_brokers,
     }
     flushes = ["held-back log lines", "error reports", "logs"]
     assert list(lifecycle._flushes()) == flushes

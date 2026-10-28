@@ -187,19 +187,25 @@ def table(trees: Sequence[Tree], rungs: Sequence[Rung]) -> list[list[str]]:
     header = ["rung", "what"]
     for tree in trees:
         suffix = f" ({tree.label})" if len(trees) > 1 else ""
-        header += [f"calls{suffix}", f"SQL{suffix}", f"CPU µs{suffix}"]
+        header += [
+            f"calls{suffix}",
+            f"SQL{suffix}",
+            f"modules{suffix}",
+            f"CPU µs{suffix}",
+        ]
     rows = [header]
     for rung in rungs:
         row = [rung.name, rung.title]
         for tree in trees:
             found = tree.results.get(rung.name)
             if found is None:
-                row += ["failed" if rung.name in tree.failures else "-", "", ""]
+                row += ["failed" if rung.name in tree.failures else "-", "", "", ""]
                 continue
             cpu = found["cpu_us"]
             row += [
                 f"{found['calls']:,.1f}",
                 _round_trips(found),
+                f"{found['modules']:,}" if "modules" in found else "-",
                 f"{cpu['best']:,.1f} ({_spread(cpu)})",
             ]
         rows.append(row)
@@ -236,8 +242,9 @@ def markdown(rows: list[list[str]], notes: Sequence[str]) -> str:
         "",
         (
             "Calls and SQL (statements / transactions / checkouts / pings) are per "
-            "request and gated against `benchmarks/budgets.toml`. CPU is the best "
-            "timed run, with the worst run's distance from it: reported, not gated."
+            "request, modules per process once it has served the warm-up, all "
+            "gated against `benchmarks/budgets.toml`. CPU is the best timed run, "
+            "with the worst run's distance from it: reported, not gated."
         ),
     ]
     if notes:

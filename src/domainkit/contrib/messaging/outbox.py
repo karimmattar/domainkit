@@ -272,11 +272,12 @@ async def notify_committed(
     """Follow up on ``rows``, just committed to ``database``'s outbox.
 
     They go to the background publisher (with a broker, unless not
-    ``publish``), then to the ``watchers``.
+    ``publish``), then to the ``watchers``. Without a broker, the
+    dispatcher, and the worker it imports, are never loaded (PERF-15).
     """
-    from .dispatch import publish_committed  # Imports this module.
+    if publish and config.BROKER is not None:
+        from .dispatch import publish_committed  # Imports this module.
 
-    if publish:
         publish_committed(config, database, [row["id"] for row in rows])
     for watcher in watchers[:]:  # A watcher may remove itself.
         await watcher(database, rows)

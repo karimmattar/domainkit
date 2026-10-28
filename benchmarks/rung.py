@@ -6,8 +6,11 @@ another's imports, caches, or settings. Run one by hand to look closer::
     python -m benchmarks.rung template --profile-out template.pstats
 
 Requests go straight into the ASGI application, one at a time, with a scope
-built here: no server, no sockets. After a warm-up, one pass counts calls
-and round trips (exact), then several time the process's CPU (best of N).
+built here: no server, no sockets. After a warm-up, the process's modules
+are counted (what starting and serving the rung imported), one pass counts
+calls and round trips (exact), then several time the process's CPU (best of
+N). The counters are imported only then, so their SQLAlchemy is not counted
+in a rung that does not use it.
 """
 
 import argparse
@@ -29,7 +32,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Final
 
-from benchmarks.counting import CallCounter, SqlCounter
+from benchmarks import STARTUP_MODULES
 from benchmarks.ladder import IDEMPOTENCY_MIDDLEWARE, POSTGRES_VARIABLE, RUNGS, Rung
 
 type Scope = MutableMapping[str, Any]
@@ -287,6 +290,9 @@ async def passes(driver: Driver, options: argparse.Namespace) -> dict[str, Any]:
     await driver.run(options.warmup)
     driver.statuses.clear()  # The throttled rung's first request passes.
     driver.unexpected.clear()
+    # What building and serving the rung imported, the harness's own included.
+    modules = len(sys.modules.keys() - STARTUP_MODULES)
+    from benchmarks.counting import CallCounter, SqlCounter
 
     # What the window costs by itself, to take off: whole calls per request.
     flush_logs()
@@ -315,6 +321,7 @@ async def passes(driver: Driver, options: argparse.Namespace) -> dict[str, Any]:
         "transactions": round(sql.counts.transactions / counted, 3),
         "checkouts": round(sql.counts.checkouts / counted, 3),
         "pings": round(sql.counts.pings / counted, 3),
+        "modules": modules,
         "verbs": {
             verb: round(n / counted, 3) for verb, n in sorted(sql.counts.verbs.items())
         },

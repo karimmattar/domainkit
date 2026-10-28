@@ -20,8 +20,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
-MEASURES: Final = ("calls", "statements", "transactions", "checkouts", "pings")
-"""What is gated: exact counts per request, never time."""
+MEASURES: Final = (
+    "calls",
+    "statements",
+    "transactions",
+    "checkouts",
+    "pings",
+    "modules",
+)
+"""What is gated: exact counts per request, and modules per process; never time."""
 RELATIVE: Final = frozenset({"calls"})
 """Measures whose tolerance is a fraction of the budget; the others' is absolute."""
 DEFAULT_TOLERANCE: Final = {
@@ -30,8 +37,9 @@ DEFAULT_TOLERANCE: Final = {
     "transactions": 0.0,
     "checkouts": 0.0,
     "pings": 0.0,
+    "modules": 0.0,
 }
-"""Calls may grow by 2%; round trips are exact."""
+"""Calls may grow by 2%; round trips and modules are exact."""
 EPSILON: Final = 1e-9
 
 type Kind = Literal["over", "under", "unbudgeted", "unmeasured"]

@@ -1,6 +1,5 @@
 """The registry of installed domains (``django.apps.apps``)."""
 
-import difflib
 import threading
 from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import asynccontextmanager
@@ -229,6 +228,8 @@ async def _stop(config: DomainConfig) -> None:
 
 def _describe_unknown(name: str, known: list[str]) -> str:
     """Name an unknown setting and suggest the closest known one."""
+    import difflib  # Only for a setting that fails: not on startup's path (PERF-15).
+
     matches = difflib.get_close_matches(name, known, n=1)
     return f"{name} (did you mean {matches[0]}?)" if matches else name
 

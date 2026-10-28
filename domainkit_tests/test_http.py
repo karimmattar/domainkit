@@ -745,7 +745,12 @@ def test_readiness_probes_share_one_round_of_checks(
         finish.set()
         return [*answers, again, await expired]
 
-    with override_settings(READINESS_CACHE_SECONDS=5, READINESS_TIMEOUT=0.5):
+    # A ledger configured: readiness checks ledgers only where one is (PERF-15).
+    with override_settings(
+        READINESS_CACHE_SECONDS=5,
+        READINESS_TIMEOUT=0.5,
+        LEDGERS={"audit": {"URL": "memory://"}},
+    ):
         answers = asyncio.run(probe_flood())
 
     assert rounds == [1, 1]  # At 15 s the result is stale: a second round.
@@ -792,7 +797,10 @@ def test_readiness_checks_every_kind_at_once(monkeypatch: pytest.MonkeyPatch) ->
             async with asyncio.timeout(5):
                 return await health._failing_checks(request)  # type: ignore[arg-type]
 
-    with override_settings(READINESS_CACHE_SECONDS=0):
+    # A ledger configured: readiness checks ledgers only where one is (PERF-15).
+    with override_settings(
+        READINESS_CACHE_SECONDS=0, LEDGERS={"audit": {"URL": "memory://"}}
+    ):
         assert asyncio.run(probe()) == ["failing4"] * 4
     assert started == [5.0] * 4
     assert contexts == [(None, None, None)] * 4  # The probe's request stays its own.
