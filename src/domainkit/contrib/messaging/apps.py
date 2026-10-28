@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import lifecycle
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.broker import brokers
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.hooks import on_committed, on_stage
@@ -71,6 +72,8 @@ class MessagingConfig(DomainConfig):
         on_committed(self.publish_committed)
         if find_spec("prometheus_client") is not None:
             import_module(f"{self.name}.metrics")
+        on_erase_subject(self.erase_copies)
+        on_export_subject(self.export_copies)
 
     async def stage_outbox(
         self,
@@ -99,13 +102,13 @@ class MessagingConfig(DomainConfig):
         rows = _committing.pop(uow.session, [])
         await notify_committed(self.get_settings(), uow.alias, rows)
 
-    async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
+    async def erase_copies(self, subject: str, reason: str) -> Mapping[str, int]:
         """Blank dead messages about ``subject``; count pending ones (``erasure``)."""
         from .erasure import erase_subject
 
         return await erase_subject(subject)
 
-    async def export_subject(self, subject: str) -> Mapping[str, object]:
+    async def export_copies(self, subject: str) -> Mapping[str, object]:
         """The queued and dead messages about ``subject``, with their arguments."""
         from .erasure import export_subject
 

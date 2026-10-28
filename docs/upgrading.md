@@ -23,6 +23,50 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.11 to 0.12
+
+### Breaking changes
+
+- **A hook registered with the wrong arguments fails `setup()`**
+  (DSGN-03). The points of `domainkit.db.hooks` (`on_stage`, ...) check a
+  function when it registers: it must take the arguments the point calls
+  it with, and be an `async` function. 0.11 accepted it and failed the
+  first commit or `migrate` that called it. **Fix:** give the hook the
+  point's arguments (`async def hook(uow, events, tasks)` for `on_stage`).
+  A `HookPoint` of a project's own checks nothing unless it is made with
+  `arguments=` or `awaited=`.
+
+### Deprecated, removed in 0.13
+
+Each still works in 0.12, with a `DomainkitDeprecationWarning` that names
+its replacement.
+
+| Deprecated | Use instead | Audit id |
+| --- | --- | --- |
+| Overriding a hook method of `DomainConfig`: `startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings` | A function registered in `ready()` on the point of the same name: `domainkit.apps.hooks.on_startup(...)`, `on_shutdown`, `on_check`, `on_seed`, `on_erase_subject`, `on_export_subject`, `on_check_application`, `on_deployment_warnings`. The warning names the domain and the point, at the method's line | DSGN-03 |
+| Overriding `stage`, `committed`, `stage_transaction`, `transaction_committed`, or `migrated` (0.10 added the points, without a warning) | `domainkit.db.hooks.on_stage(...)`, `on_committed`, `on_stage_transaction`, `on_transaction_committed`, `on_migrated` in `ready()` | DSGN-03 |
+| `with expect_version(Order, order_id, versions):` (`domainkit.ddd.preconditions`), which every unit of work of the context honoured | `with uow.expect(Order, order_id, versions):` on the unit of work the service changes the aggregate through | DSGN-14 |
+
+`DomainConfig.databases` and `holds_table` stay methods: they answer where
+a domain's tables are ([ADR 0101](adr/0101-register-every-domain-hook-and-check-it-when-it-registers.md)).
+A method moves like this:
+
+```python
+# 0.11
+class SearchConfig(DomainConfig):
+    async def startup(self) -> None:
+        await index.connect()
+
+
+# 0.12
+from domainkit.apps.hooks import on_startup
+
+
+class SearchConfig(DomainConfig):
+    def ready(self) -> None:
+        on_startup(index.connect)
+```
+
 ## 0.10 to 0.11
 
 ### Breaking changes

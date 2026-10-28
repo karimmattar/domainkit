@@ -9,6 +9,76 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.apps.hooks` declares the rest of a domain's hooks as points
+  it registers on in `ready()`, as 0.10 did for commits: `on_startup`,
+  `on_shutdown`, `on_check` (readiness), `on_seed`, `on_erase_subject`,
+  `on_export_subject`, `on_check_application`, and
+  `on_deployment_warnings`. Only the domains that registered are called:
+  a round of `/ready` checks of 22 domains, 21 without a check, takes 4
+  Python calls instead of 1,736, and the domains' lifespan 315 instead of
+  2,484. A domain's several hooks of a kind keep one label: its readiness
+  checks run in turn, its erasures are audited as one record
+  (DSGN-03; ADR 0101).
+- A hook point checks a function when it registers: a hook that cannot
+  take the point's arguments, or is a plain function where the point
+  awaits it (or the reverse), fails `setup()`, naming the domain, the
+  point, and the function, where 0.11 failed every commit or readiness
+  probe that called it. `HookPoint(name, arguments=..., awaited=...)` does
+  the same for a project's own points; `point.hooks(registry)` and
+  `point.of(label, registry)` read a `DomainRegistry` of one's own
+  (DSGN-03; ADR 0101).
+- `UnitOfWork.expect(model, id, versions)`: hold an aggregate to the
+  versions a client read, on the unit of work that changes it. Its
+  repositories check the aggregate when they first load it, and its
+  `commit` refuses before they did; it yields the `Expectation`
+  (`domainkit.ddd.preconditions`), whose `checked` says whether the block
+  loaded it. The resource routes use it: another unit of work a service
+  opens in a checked request (an audit record written first) commits as
+  it would, where 0.11 refused it until the aggregate was loaded
+  (DSGN-14; ADR 0102).
+- `ResourceRouter.batch_route(..., retry=Retry(...))` runs work that lost
+  a race again, as `command_route(retry=)` does: without `atomic`, the
+  item that lost, its reach check and `If-Match` made again; with
+  `atomic`, the whole batch, in a new transaction. Once the runs are
+  spent the item answers `503 database_busy`, as without `retry`.
+  Batches retry only when they say so; the isolation level stays the
+  unit of work's (FIN-78; ADR 0092).
+
+### Changed
+
+- A service that changes the aggregate an `If-Match` request names
+  through another unit of work than the one the route gave it is no
+  longer held to `If-Match`: the request still fails with the
+  `RuntimeError` it did, but that write stands, where 0.11 refused it.
+  Change aggregates through the unit of work the route passes (DSGN-14;
+  ADR 0102).
+- The mail and notification backends share one base for what they share:
+  sending a batch, `deployable`, the memory and console backends, and
+  loading the class a setting names. `BaseEmailBackend`, `SmsBackend`,
+  `PushBackend`, and their memory, console, and SMTP backends keep their
+  names, import paths, output, and errors (DSGN-10).
+- **Breaking:** a function registered on a point of `domainkit.db.hooks`
+  with the wrong arguments, or not `async`, fails `setup()`. **Fix:**
+  give it the point's arguments; `docs/upgrading.md` lists them (DSGN-03).
+
+### Deprecated
+
+- Overriding a hook method of `DomainConfig`: `startup`, `shutdown`,
+  `check`, `seed`, `erase_subject`, `export_subject`,
+  `check_application`, `deployment_warnings`, and the SQL ones 0.10
+  moved (`stage`, `committed`, `stage_transaction`,
+  `transaction_committed`, `migrated`). An override is still called, and
+  loading the domain warns `DomainkitDeprecationWarning` once, at the
+  method's line, naming the domain and the point to register on
+  (`on_startup`, ...). 0.13 removes them. `databases` and `holds_table`
+  stay (DSGN-03; ADR 0101).
+- `domainkit.ddd.preconditions.expect_version`, which held every unit of
+  work and repository of the context to the expected versions. Use
+  `uow.expect(model, id, versions)`; it still works, warning
+  `DomainkitDeprecationWarning`, and 0.13 removes it (DSGN-14; ADR 0102).
+
 ## [0.11.2] - 2026-10-28
 
 A patch release: one fix of savepoints in the SQL unit of work. Nothing a

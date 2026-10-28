@@ -1,6 +1,6 @@
 # 0085. Register commit and migration hooks by type, for the domains that have them
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-28 (at the end) by [0101](0101-register-every-domain-hook-and-check-it-when-it-registers.md)
 - Date: 2026-10-26
 - Amends: [0019](0019-idempotency-keys-commit-with-changes.md), [0062](0062-claim-idempotency-keys-in-one-statement.md)
 
@@ -67,3 +67,18 @@ rest; Litestar's plugins implement small protocols.
   to a privacy point) and then deprecates the methods together.
 - `db/uow.py` still names `domainkit.contrib.messaging` to refuse durable
   work nobody runs; a point the outbox registers on would replace it.
+
+## Amendment (2026-10-28, 0.12): every hook registers, and the methods are deprecated
+
+0.11 did not move the rest; 0.12 does
+([0101](0101-register-every-domain-hook-and-check-it-when-it-registers.md)).
+`startup`, `shutdown`, `check`, `seed`, `erase_subject`,
+`export_subject`, `check_application`, and `deployment_warnings` are
+points of `domainkit.apps.hooks` (`on_startup`, ...), and points check a
+function's arguments, and whether it is awaited, when it registers. The
+checks stayed in `domainkit.apps.hooks` rather than `domainkit.checks`,
+which the registry imports, and erasure did not move to
+`contrib.privacy`, which the apps keeping copies must not need. Overriding
+any of the thirteen hook methods, the five SQL ones included, now warns
+`DomainkitDeprecationWarning` when the domains load; 0.13 removes them.
+`databases`, `holds_table`, and the declarations stay on `DomainConfig`.

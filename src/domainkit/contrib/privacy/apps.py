@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 
 from domainkit.apps import DomainConfig, Requirement
+from domainkit.apps.hooks import on_check_application
 from domainkit.db.routing import DatabaseRouter
 
 from .models import problems
@@ -17,7 +18,11 @@ class PrivacyConfig(DomainConfig):
     verbose_name = "Privacy"
     requires = (Requirement(AUDIT, "it records every operation in the audit trail"),)
 
-    def check_application(self, app: FastAPI) -> list[str]:
+    def ready(self) -> None:
+        """Check the markers and retention policies once the app is built."""
+        on_check_application(self.application_problems)
+
+    def application_problems(self, app: FastAPI) -> list[str]:
         """Markers and retention policies that cannot be applied.
 
         Checked once every domain has mapped its aggregates; ``check``

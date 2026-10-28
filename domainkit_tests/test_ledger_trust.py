@@ -43,7 +43,7 @@ from domainkit.ledger.trust import (
     use_states,
 )
 from domainkit.management import call_command
-from domainkit_tests.conftest import ALPHA
+from domainkit_tests.conftest import ALPHA, domain_warnings
 
 pytestmark = pytest.mark.anyio
 
@@ -801,10 +801,9 @@ def test_evidence_without_audit_warns_where_deployed(
             EVIDENCE={"SUBJECT_KEY": "s" * 40},
         ):
             setup()
-            evidence = registry.get_domain_config("evidence")
-            deployed = evidence.deployment_warnings()
+            deployed = domain_warnings("evidence")
             monkeypatch.setattr(evidence_apps, "DEPLOYED_ENVIRONMENTS", set())
-            elsewhere = evidence.deployment_warnings()
+            elsewhere = domain_warnings("evidence")
     finally:
         registry.clear()
 

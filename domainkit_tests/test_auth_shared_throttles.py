@@ -13,14 +13,19 @@ import pytest
 from fastapi import FastAPI
 from starlette.requests import Request
 
-from domainkit.apps import registry
 from domainkit.cache import caches
 from domainkit.checks import CheckMessage
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import throttling
 from domainkit.http.errors import APIError
 from domainkit.http.ratelimit import Decision, MemoryBackend, RedisBackend
-from domainkit_tests.conftest import AUTH, Api, UseAuth
+from domainkit_tests.conftest import (
+    AUTH,
+    Api,
+    UseAuth,
+    domain_problems,
+    domain_warnings,
+)
 
 PBKDF2: Final = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
 REDIS_BACKEND: Final = "domainkit.http.ratelimit.RedisBackend"
@@ -89,9 +94,8 @@ def test_each_process_counts_attempts_on_its_own_in_memory(api: Api) -> None:
 def shared_problems(use_auth: UseAuth, settings: dict[str, Any], **auth: Any) -> Any:  # noqa: ANN401
     """The ``auth.E105`` findings and the ``auth.W004`` warnings, with ``settings``."""
     use_auth(settings=settings, PASSWORD_HASHERS=PBKDF2, **auth)
-    config = registry.get_domain_config("auth")
-    errors = config.check_application(FastAPI())
-    warnings = config.deployment_warnings()
+    errors = domain_problems("auth", FastAPI())
+    warnings = domain_warnings("auth")
     return (
         [found for found in errors if getattr(found, "id", None) == "auth.E105"],
         [found for found in warnings if getattr(found, "id", None) == "auth.W004"],

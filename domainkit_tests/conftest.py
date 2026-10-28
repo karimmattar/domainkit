@@ -25,6 +25,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.apps.hooks import (
+    on_check_application,
+    on_deployment_warnings,
+    on_startup,
+)
 from domainkit.cache import caches
 from domainkit.conf import override_settings, use_settings
 from domainkit.conf.env import (
@@ -248,6 +253,26 @@ AUTH: Final = "domainkit.contrib.auth"
 SHOP: Final = "domainkit_tests.sample_domains.shop"
 ALPHA: Final = "domainkit_tests.sample_domains.alpha"
 FAST_HASHER: Final = "domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"
+
+
+def domain_warnings(label: str) -> list[str]:
+    """What domain ``label`` registered ``on_deployment_warnings`` to find."""
+    return [found for hook in on_deployment_warnings.of(label) for found in hook.call()]
+
+
+def domain_problems(label: str, app: Any) -> list[str]:  # noqa: ANN401 - any app.
+    """What domain ``label`` registered ``on_check_application`` to find in ``app``."""
+    return [
+        found for hook in on_check_application.of(label) for found in hook.call(app)
+    ]
+
+
+async def start_domain(label: str) -> None:
+    """Run domain ``label``'s ``on_startup`` hooks."""
+    for hook in on_startup.of(label):
+        await hook.call()
+
+
 TEMPLATE_PREFIX: Final = "domainkit_template_"
 """PostgreSQL databases migrated once per run, which tests get copies of."""
 

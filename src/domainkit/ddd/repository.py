@@ -26,7 +26,7 @@ from domainkit.ddd._dataclass import EntityMeta
 from domainkit.ddd.exceptions import Conflict, NotFound
 from domainkit.ddd.model import AggregateRoot
 from domainkit.ddd.pagination import Page
-from domainkit.ddd.preconditions import check_expected
+from domainkit.ddd.preconditions import Expectation, check_expected
 from domainkit.ddd.query import (
     ID,
     Criteria,
@@ -151,6 +151,9 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
     """
 
     model: type[AggregateT]
+    _expected: Sequence[Expectation] = ()
+    """What the unit of work that lent the repository out expects
+    (``UnitOfWork.expect``): the same list, which it changes."""
 
     def __init__(self) -> None:
         """Start with no tracked aggregates."""
@@ -208,7 +211,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         aggregate = await self._get(id_)
         if aggregate is None or (_is_deleted(aggregate) and not include_deleted):
             return None
-        check_expected(aggregate)
+        check_expected(aggregate, self._expected)
         self._track(aggregate)
         return aggregate
 
@@ -261,7 +264,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         """
         found = await self._filter(self._prepare(as_query(query)))
         for aggregate in found:
-            check_expected(aggregate)
+            check_expected(aggregate, self._expected)
             self._track(aggregate)
         return found
 

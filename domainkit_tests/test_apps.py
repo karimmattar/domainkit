@@ -261,10 +261,14 @@ def test_lifespan_starts_in_order_and_stops_in_reverse(
         {
             "apps.py": """
                 from domainkit.apps import DomainConfig
+                from domainkit.apps.hooks import on_startup
                 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
                 class LateConfig(DomainConfig):
-                    async def startup(self) -> None:
+                    def ready(self) -> None:
+                        on_startup(self.start)
+
+                    async def start(self) -> None:
                         AlphaConfig.calls.append("late startup")
                         raise RuntimeError("late failed")
             """
@@ -301,9 +305,13 @@ def test_slow_checks_time_out(make_package: MakePackage) -> None:
             "apps.py": """
                 import asyncio
                 from domainkit.apps import DomainConfig
+                from domainkit.apps.hooks import on_check
 
                 class SlowConfig(DomainConfig):
-                    async def check(self) -> None:
+                    def ready(self) -> None:
+                        on_check(self.probe)
+
+                    async def probe(self) -> None:
                         await asyncio.sleep(1)
             """
         },

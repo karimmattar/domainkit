@@ -6,10 +6,17 @@ id it acts on and an ``if_match`` of its own: it runs as a request of its
 own to a command route would, in a context of its own. Without
 ``atomic``, each item is a use case of its own; with it, all run in one
 transaction, and the first failure undoes them all.
+
+A batch route that declares ``retry`` runs work that lost a race again
+(``UnitOfWork.run``): without ``atomic``, the item that lost, its reach
+check and ``If-Match`` included; with it, the whole batch, in a new
+transaction, since the race ended the one it ran in. Once the retries are
+spent, the batch answers as one that does not retry.
 """
 
 import dataclasses
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from fastapi import Response, status
@@ -17,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from domainkit.ddd.messages import Command
 from domainkit.ddd.uow import UnitOfWork
+from domainkit.exceptions import DomainkitError
 from domainkit.http.responses import BuiltJSONResponse
 from domainkit.utils.text import snake_case
 
@@ -37,6 +45,7 @@ from .declaring import add_route
 from .values import changes, check_given, summary_of
 
 if TYPE_CHECKING:
+    from domainkit.ddd.uow import Retry
     from domainkit.http.access import Rule
 
     from . import ResourceRouter
@@ -72,6 +81,7 @@ class BatchRoute:
         summary: str | None,
         provide: Mapping[str, Callable[..., object]] | None,
         body_limit: int | None = None,
+        retry: "Retry | None" = None,
     ) -> None:
         """Check the command against what gives its fields.
 
@@ -89,6 +99,8 @@ class BatchRoute:
         self.router = router
         self.command = command
         self.service = service
+        self.retry = retry
+        """Run what lost a race again: an item, or an atomic batch (``run``)."""
         self.detail = lookup in names
         self.from_path = (
             {router.parent_field}
@@ -156,21 +168,41 @@ class BatchRoute:
             },
         }
         payload = cast(_Batch, context.body)
+        retry = self.retry
+        uow = context.uow
 
         async def settle(each: BaseModel, work: UnitOfWork) -> Render:
             try:
-                return await self.attempt(context, fixed, each, work)
+                if retry is None or payload.atomic:
+                    return await self.attempt(context, fixed, each, work)
+                run = partial(self.attempt, context, fixed, each, work)
+                return await work.run(run, retry=retry)
             except Exception as exc:
+                if retry is not None and payload.atomic and _lost(uow, retry, exc):
+                    raise _LostRace(exc) from exc  # The whole batch runs again.
                 refused = failure(exc)
                 if refused is None:
                     raise
                 return _Settled(refused)
 
         if not payload.atomic:
-            renders = [await settle(each, context.uow) for each in payload.items]
+            renders = [await settle(each, uow) for each in payload.items]
             results = [await render() for render in renders]
+        elif retry is None:
+            results = await _atomically(uow, payload.items, settle)
         else:
-            results = await _atomically(context.uow, payload.items, settle)
+            whole = dataclasses.replace(retry, retry_on=(*retry.retry_on, _LostRace))
+            try:
+                results = await uow.run(
+                    partial(_atomically, uow, payload.items, settle), retry=whole
+                )
+            except _LostRace as lost:
+                refused = failure(lost.exc)
+                if refused is None:  # Not a refusal: raised, as without retry.
+                    for note in getattr(lost, "__notes__", ()):
+                        lost.exc.add_note(note)
+                    raise lost.exc from None
+                results = _undone(len(payload.items), lost.at, refused)
         answer = BatchAnswer(
             results=results,
             failed=sum(
@@ -232,7 +264,11 @@ async def _atomically(
             async with uow.savepoint():
                 lent = cast(UnitOfWork, Enlisted(uow))
                 for each in items:
-                    render = await settle(each, lent)
+                    try:
+                        render = await settle(each, lent)
+                    except _LostRace as lost:
+                        lost.at = len(renders)
+                        raise
                     renders.append(render)
                     if isinstance(render, _Settled):
                         failed = render.result
@@ -243,10 +279,29 @@ async def _atomically(
             await uow.commit()
     if failed is None:
         return [await render() for render in renders]
-    return [
-        failed if index == len(renders) - 1 else not_applied()
-        for index in range(len(items))
-    ]
+    return _undone(len(items), len(renders) - 1, failed)
+
+
+def _undone(count: int, at: int, failed: BatchResult) -> list[BatchResult]:
+    """The answer of an atomic batch whose item ``at`` failed: the rest undone."""
+    return [failed if index == at else not_applied() for index in range(count)]
+
+
+def _lost(uow: UnitOfWork, retry: "Retry", exc: Exception) -> bool:
+    """Whether ``exc`` is a race lost that ``retry`` runs work again after."""
+    return isinstance(exc, retry.retry_on) or uow._conflicted(exc)
+
+
+class _LostRace(DomainkitError):
+    """An item of an atomic batch lost a race: the batch runs again, whole."""
+
+    def __init__(self, exc: Exception) -> None:
+        """Carry the item's failure; ``at`` is set where it is known."""
+        super().__init__(str(exc))
+        self.exc = exc
+        """What the item raised, answered if the batch is not run again."""
+        self.at = 0
+        """The index of the item that lost."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

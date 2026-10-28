@@ -34,6 +34,13 @@ runs it again, whole, when it does (``Retry``)::
 
 ``lock(name)`` holds a lock by name until the transaction ends, for work
 that has no row to lock.
+
+``expect(model, id, versions)`` holds an aggregate to the versions a client
+read (``If-Match``): the repositories check it when they first load it, and
+the unit of work refuses to commit before they did::
+
+    with uow.expect(Order, order_id, {3}) as expected:
+        await services.cancel_order(command, uow)
 """
 
 import asyncio
@@ -41,8 +48,17 @@ import logging
 import math
 import secrets
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Hashable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import TracebackType
@@ -50,7 +66,7 @@ from typing import Any, Final, Self
 
 from domainkit import clock, deadlines
 from domainkit.ddd.events import DomainEvent, EventBus, event_bus
-from domainkit.ddd.preconditions import check_loaded
+from domainkit.ddd.preconditions import Expectation, check_loaded, expectation
 from domainkit.ddd.query import RowLock
 from domainkit.ddd.repository import Mark, Repository, RowLocks
 from domainkit.exceptions import DomainkitError
@@ -174,6 +190,9 @@ class UnitOfWork(ABC):
     ``_named_locks``: ``repositories()`` walks the instance's attributes."""
     _named_locks: bool = False
     """Whether this unit of work holds named locks in memory (``lock``)."""
+    _expected: list[Expectation] | tuple[()] = ()
+    """What ``expect`` holds the repositories to. Set on the instance only
+    while it holds something, for the same reason as ``_commits``."""
 
     def __init__(
         self, *, events: EventBus | None = None, readonly: bool | None = None
@@ -206,8 +225,45 @@ class UnitOfWork(ABC):
         self._deferred.append(DeferredTask(function, kwargs, delay, dedupe_key))
 
     async def __aenter__(self) -> Self:
-        """Begin the unit of work."""
+        """Begin the unit of work: its repositories hold to what it expects."""
+        if self._expected:
+            self._lend_expectations()
         return self
+
+    @contextmanager
+    def expect(
+        self, model: type, id_: Hashable, versions: Collection[int] | None
+    ) -> Iterator[Expectation]:
+        """Hold aggregate ``id_`` of ``model`` to one of ``versions`` in the block.
+
+        This unit of work's repositories check the aggregate the first time
+        they hand it out (``get``, ``find``, ``filter``, ``first``, and the
+        locking reads), and ``commit`` refuses to write before they did.
+        ``versions`` None only notes whether the aggregate is loaded
+        (``If-Match: *``). Read ``checked`` on what it yields to know whether
+        the block loaded it. Other units of work are not held to it.
+
+        Raises:
+            PreconditionFailed: In the block, when a repository loads the
+                aggregate at another version.
+        """
+        expected = expectation(model, id_, versions)
+        held = self._expected
+        if not isinstance(held, list):
+            held = self._expected = []
+        held.append(expected)
+        self._lend_expectations()
+        try:
+            yield expected
+        finally:
+            held.remove(expected)
+            if not held:
+                del self._expected  # Back to the class's: none.
+
+    def _lend_expectations(self) -> None:
+        """Give each repository this unit of work's expectations, to check loads."""
+        for repository in self.repositories():
+            repository._expected = self._expected
 
     async def __aexit__(
         self,
@@ -233,7 +289,7 @@ class UnitOfWork(ABC):
             )
         if self._savepoints:
             raise RuntimeError("Leave every savepoint before committing.")
-        check_loaded()
+        check_loaded(self._expected)
         events = self.collect_new_events()
         deferred, self._deferred = self._deferred, []
         await self._stage(events, deferred)

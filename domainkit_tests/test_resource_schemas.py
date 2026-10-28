@@ -6,7 +6,7 @@ from dataclasses import field
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any, NewType, get_args
+from typing import Annotated, Any, NewType, Self, get_args
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,16 +17,19 @@ from domainkit.ddd import (
     AggregateRoot,
     Digits,
     Entity,
+    EventBus,
     InMemoryRepository,
     MaxLength,
     PreconditionFailed,
     Reference,
+    UnitOfWork,
     Unset,
     ValueObject,
 )
 from domainkit.ddd.fields import fields_of, unaliased
 from domainkit.ddd.preconditions import check_expected, expect_version
 from domainkit.ddd.query import F
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.resources import (
     DomainSchema,
     FieldPolicy,
@@ -394,14 +397,35 @@ def test_if_match_names_versions(header: str, versions: set[int] | None) -> None
     assert expected == (None if versions is None else frozenset(versions))
 
 
+class OrdersUnitOfWork(UnitOfWork):
+    """Orders in memory, to hold them to what a client read."""
+
+    def __init__(self, orders: InMemoryRepository[Order, OrderId]) -> None:
+        """Work on ``orders``."""
+        super().__init__(events=EventBus())
+        self.orders = orders
+        self.commits = 0
+
+    async def _commit(self) -> None:
+        """Count the commit."""
+        self.commits += 1
+
+    async def _rollback(self) -> None:
+        """Nothing to undo."""
+
+
 @pytest.mark.anyio
 async def test_expectations_are_checked_once_when_first_loaded() -> None:
     """The first load checks; later loads, after the use case's own changes, do not."""
     order = make_order(version=3)
     other = make_order(id=OrderId(uuid4()), version=1)
-    repository = InMemoryRepository[Order, OrderId]([order, other])
+    uow = OrdersUnitOfWork(InMemoryRepository[Order, OrderId]([order, other]))
+    repository = uow.orders
 
-    with expect_version(Order, order.id, {3}) as expected:
+    with uow.expect(Order, order.id, {3}) as expected:
+        with uow.expect(Line, order.id, None):  # Nested: both held, then one.
+            assert len(uow._expected) == 2
+        assert uow._expected == [expected]
         assert not expected.checked
         await repository.get(other.id)
         assert not expected.checked
@@ -410,18 +434,19 @@ async def test_expectations_are_checked_once_when_first_loaded() -> None:
         order.version = 4
         assert await repository.get(order.id) is order
     with (
-        expect_version(Order, order.id, {3}),
+        uow.expect(Order, order.id, {3}),
         pytest.raises(PreconditionFailed) as stale,
     ):
         await repository.get(order.id)
-    with expect_version(Order, order.id, None) as anything:
+    with uow.expect(Order, order.id, None) as anything:
         await repository.get(order.id)
-    with expect_version(Line, order.id, {9}) as unrelated:
+    with uow.expect(Line, order.id, {9}) as unrelated:
         await repository.get(order.id)
 
     assert stale.value.code == "precondition_failed"
     assert anything.checked
     assert not unrelated.checked
+    assert "_expected" not in vars(uow)  # Each block's expectation ends with it.
     check_expected(order)  # Outside any expectation: nothing to check.
 
 
@@ -429,10 +454,84 @@ async def test_expectations_are_checked_once_when_first_loaded() -> None:
 async def test_stale_aggregates_are_refused_by_filters_too() -> None:
     """A query that loads the aggregate checks it as ``get`` does."""
     order = make_order(version=2)
-    repository = InMemoryRepository[Order, OrderId]([order])
+    uow = OrdersUnitOfWork(InMemoryRepository[Order, OrderId]([order]))
 
-    with expect_version(Order, order.id, {1}), pytest.raises(PreconditionFailed):
-        await repository.first(F("id") == order.id)
+    with uow.expect(Order, order.id, {1}), pytest.raises(PreconditionFailed):
+        await uow.orders.first(F("id") == order.id)
+
+
+@pytest.mark.anyio
+async def test_an_expectation_is_its_unit_of_works_alone() -> None:
+    """Another unit of work commits; this one refuses to before the load (DSGN-14).
+
+    The expectation used to be the context's: every unit of work in it
+    refused to commit until the aggregate was loaded, an audit record
+    written first included.
+    """
+    order = make_order(version=3)
+    uow = OrdersUnitOfWork(InMemoryRepository[Order, OrderId]([order]))
+    other = OrdersUnitOfWork(InMemoryRepository[Order, OrderId]([]))
+
+    with uow.expect(Order, order.id, {3}) as expected:
+        async with other:
+            await other.commit()  # Not held to it.
+        lone = make_order(id=order.id, version=1)
+        standalone = InMemoryRepository[Order, OrderId]([lone])
+        assert await standalone.get(order.id) is lone  # Lent by no one: unchecked.
+        assert not expected.checked
+        async with uow:
+            with pytest.raises(
+                RuntimeError,
+                match=r"^The service did not load Order \S+ through its repository "
+                r"before committing, so If-Match could not be checked; nothing was "
+                r"written\.$",
+            ):
+                await uow.commit()
+            await uow.orders.get(order.id)
+            await uow.commit()
+
+    assert expected.checked
+    assert (uow.commits, other.commits) == (1, 1)
+
+
+@pytest.mark.anyio
+async def test_repositories_made_on_entering_hold_to_the_expectation() -> None:
+    """A unit of work that makes its repositories when entered lends them too."""
+    order = make_order(version=3)
+    rows = [order]
+
+    class Fresh(OrdersUnitOfWork):
+        async def __aenter__(self) -> Self:
+            self.orders = InMemoryRepository[Order, OrderId](rows)
+            return await super().__aenter__()
+
+    uow = Fresh(InMemoryRepository[Order, OrderId]([]))
+    with uow.expect(Order, order.id, {2}):
+        async with uow:
+            with pytest.raises(PreconditionFailed):
+                await uow.orders.get(order.id)
+    async with uow:  # Nothing expected: nothing lent, nothing checked.
+        assert await uow.orders.get(order.id) is order
+
+
+@pytest.mark.anyio
+async def test_the_context_wide_expectation_still_works_and_is_deprecated() -> None:
+    """``expect_version`` holds every unit of work of the context, until 0.13."""
+    order = make_order(version=3)
+    uow = OrdersUnitOfWork(InMemoryRepository[Order, OrderId]([order]))
+
+    with pytest.warns(DomainkitDeprecationWarning, match=r"uow\.expect\(model"):
+        held = expect_version(Order, order.id, {2})
+    with held, pytest.raises(PreconditionFailed):
+        await uow.orders.get(order.id)
+    with pytest.warns(DomainkitDeprecationWarning):
+        held = expect_version(Order, order.id, {3})
+    with held as expected:
+        with pytest.raises(RuntimeError, match="did not load Order"):
+            await uow.commit()
+        await uow.orders.get(order.id)
+        await uow.commit()
+    assert expected.checked
 
 
 def test_field_policies_name_only_known_fields() -> None:

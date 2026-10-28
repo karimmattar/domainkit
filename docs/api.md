@@ -30,7 +30,7 @@ domainkit: a Django-style framework for domain-driven FastAPI services.
 
 Installed domains (`django.apps`): configuration classes and the registry.
 
-- `DomainConfig`: Describe one installed domain and its lifecycle hooks.
+- `DomainConfig`: Describe one installed domain: its label, settings, and what it requires.
 - `DomainRegistry`: Installed domains in `INSTALLED_DOMAINS` order.
 - `Requirement`: A domain package another needs in `INSTALLED_DOMAINS`, and why.
 - `registry`: The process-wide registry populated by `domainkit.setup()`.
@@ -41,6 +41,14 @@ Typed hooks a domain registers for what it takes part in.
 
 - `Hook`: One registered function, and the domain that registered it.
 - `HookPoint`: Functions installed domains registered for one purpose, in domain order.
+- `on_check`: Raise when the domain cannot serve traffic (`/ready`): `()`.
+- `on_check_application`: Problems with the built application: `(app)`, best as `CheckMessage`.
+- `on_deployment_warnings`: Weak but valid settings where deployed: `()`; none elsewhere.
+- `on_erase_subject`: Erase the copies kept of a person's data: `(subject, reason)`.
+- `on_export_subject`: What the domain keeps about a person outside its aggregates: `(subject)`.
+- `on_seed`: Add the rows a fresh database needs (`manage.py seed`): `()`.
+- `on_shutdown`: Release what the domain's startup hooks opened: `()`.
+- `on_startup`: Open process resources, such as clients and pools: `()`.
 
 ## `domainkit.architecture`
 
@@ -822,6 +830,7 @@ Domain-driven design building blocks ("seedwork").
 
 Expected versions: change an aggregate only if it is still as the caller saw it.
 
+- `Expectation`: The version an aggregate must have when a use case loads it.
 - `expect_version`: Expect aggregate `id_` of `model` at one of `versions` in the block.
 
 ## `domainkit.ddd.query`

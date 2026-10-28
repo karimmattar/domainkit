@@ -10,14 +10,14 @@ import asyncio
 import logging
 import smtplib
 import ssl
-import sys
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Sequence
-from typing import ClassVar, Final
+from typing import Final
 
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
+from domainkit.utils.delivery import ConsoleDelivery, DeliveryBackend, MemoryDelivery
 
 from .message import EmailMessage
 from .settings import MailSettings, SmtpSettings
@@ -44,11 +44,12 @@ class MailDeliveryFailed(DomainkitError):
     """
 
 
-class BaseEmailBackend(ABC):
-    """Sends messages somewhere; subclasses say where."""
+class BaseEmailBackend(DeliveryBackend[EmailMessage]):
+    """Sends messages somewhere; subclasses say where.
 
-    deployable: ClassVar[bool] = True
-    """False for backends made for development and tests; deployments refuse them."""
+    ``deployable`` is False for backends made for development and tests;
+    deployments refuse them.
+    """
 
     @abstractmethod
     async def send_messages(self, messages: Sequence[EmailMessage]) -> int:
@@ -59,31 +60,21 @@ class BaseEmailBackend(ABC):
         """
 
 
-class MemoryBackend(BaseEmailBackend):
+class MemoryBackend(MemoryDelivery[EmailMessage], BaseEmailBackend):
     """Keeps messages in ``outbox``, for tests: nothing leaves the process."""
 
-    deployable = False
-
-    async def send_messages(self, messages: Sequence[EmailMessage]) -> int:
-        """Append ``messages`` to ``outbox``."""
-        outbox.extend(messages)
-        return len(messages)
+    outbox = outbox
 
 
-class ConsoleBackend(BaseEmailBackend):
+class ConsoleBackend(ConsoleDelivery[EmailMessage], BaseEmailBackend):
     """Writes each message to standard output, for development.
 
     Messages carry reset links and other secrets: deployments refuse it.
     """
 
-    deployable = False
-
-    async def send_messages(self, messages: Sequence[EmailMessage]) -> int:
-        """Write ``messages`` in their MIME form, each followed by a rule."""
-        for message in messages:
-            sys.stdout.write(f"{message.to_mime().as_string()}\n{'-' * 79}\n")
-        sys.stdout.flush()
-        return len(messages)
+    def render(self, message: EmailMessage) -> str:
+        """The message in its MIME form."""
+        return message.to_mime().as_string()
 
 
 class SmtpBackend(BaseEmailBackend):

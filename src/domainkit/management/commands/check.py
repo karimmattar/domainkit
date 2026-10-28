@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from fastapi import FastAPI
 
 from domainkit.apps import registry
+from domainkit.apps.hooks import on_deployment_warnings
 from domainkit.architecture import check_domains
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
 from domainkit.checks import CheckMessage, describe, silence
@@ -98,7 +99,7 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("caches.W001", cache_deployment_warnings())
     warnings += _tagged("deploy.W006", pool_sizing_warnings())
     warnings += _tagged("live.W001", websockets.deployment_warnings(app))
-    warnings += [found for config in registry for found in config.deployment_warnings()]
+    warnings += [found for hook in on_deployment_warnings for found in hook.call()]
     if deployed:
         warnings += _tagged("servers.W001", websockets.server_warnings(app))
         warnings += _tagged(

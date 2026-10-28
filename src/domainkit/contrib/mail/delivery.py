@@ -9,12 +9,11 @@ mail clients can drop a copy that comes twice.
 """
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from domainkit.apps import registry
 from domainkit.contrib.messaging import enqueue
-from domainkit.exceptions import ImproperlyConfigured
-from domainkit.utils.module_loading import import_string
+from domainkit.utils.delivery import load_backend
 
 from .backends import BaseEmailBackend
 from .message import EmailMessage
@@ -38,15 +37,8 @@ def get_backend() -> BaseEmailBackend:
     Raises:
         ImproperlyConfigured: The path names no ``BaseEmailBackend``.
     """
-    path = mail_settings().BACKEND
-    try:
-        backend = import_string(path)
-    except ImportError as exc:
-        raise ImproperlyConfigured(f"MAIL.BACKEND: {exc}") from exc
-    if not (isinstance(backend, type) and issubclass(backend, BaseEmailBackend)):
-        raise ImproperlyConfigured(f"MAIL.BACKEND: {path!r} is not a BaseEmailBackend.")
-    instance: BaseEmailBackend = backend()
-    return instance
+    backend = load_backend("MAIL.BACKEND", mail_settings().BACKEND, BaseEmailBackend)
+    return cast(BaseEmailBackend, backend)
 
 
 def prepare(message: EmailMessage) -> EmailMessage:
