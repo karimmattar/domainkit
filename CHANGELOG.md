@@ -9,6 +9,45 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.apps.hooks` declares the rest of a domain's hooks as points
+  it registers on in `ready()`, as 0.10 did for commits: `on_startup`,
+  `on_shutdown`, `on_check` (readiness), `on_seed`, `on_erase_subject`,
+  `on_export_subject`, `on_check_application`, and
+  `on_deployment_warnings`. Only the domains that registered are called:
+  a round of `/ready` checks of 22 domains, 21 without a check, takes 4
+  Python calls instead of 1,736, and the domains' lifespan 315 instead of
+  2,484. A domain's several hooks of a kind keep one label: its readiness
+  checks run in turn, its erasures are audited as one record
+  (DSGN-03; ADR 0101).
+- A hook point checks a function when it registers: a hook that cannot
+  take the point's arguments, or is a plain function where the point
+  awaits it (or the reverse), fails `setup()`, naming the domain, the
+  point, and the function, where 0.11 failed every commit or readiness
+  probe that called it. `HookPoint(name, arguments=..., awaited=...)` does
+  the same for a project's own points; `point.hooks(registry)` and
+  `point.of(label, registry)` read a `DomainRegistry` of one's own
+  (DSGN-03; ADR 0101).
+
+### Changed
+
+- **Breaking:** a function registered on a point of `domainkit.db.hooks`
+  with the wrong arguments, or not `async`, fails `setup()`. **Fix:**
+  give it the point's arguments; `docs/upgrading.md` lists them (DSGN-03).
+
+### Deprecated
+
+- Overriding a hook method of `DomainConfig`: `startup`, `shutdown`,
+  `check`, `seed`, `erase_subject`, `export_subject`,
+  `check_application`, `deployment_warnings`, and the SQL ones 0.10
+  moved (`stage`, `committed`, `stage_transaction`,
+  `transaction_committed`, `migrated`). An override is still called, and
+  loading the domain warns `DomainkitDeprecationWarning` once, at the
+  method's line, naming the domain and the point to register on
+  (`on_startup`, ...). 0.13 removes them. `databases` and `holds_table`
+  stay (DSGN-03; ADR 0101).
+
 ## [0.11.1] - 2026-10-28
 
 A patch release: one fix of reads on their own, and the contributors'

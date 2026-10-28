@@ -11,6 +11,7 @@ from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import on_check_application, on_deployment_warnings
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
@@ -109,6 +110,8 @@ class AuthConfig(DomainConfig):
             from .erasure import forget_credentials
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
+        on_check_application(self.application_problems)
+        on_deployment_warnings(self.weak_settings)
 
     async def stamp_changes(
         self,
@@ -142,7 +145,7 @@ class AuthConfig(DomainConfig):
             await uow.commit()
         return issued.access_token
 
-    def check_application(self, app: FastAPI) -> list[str]:
+    def application_problems(self, app: FastAPI) -> list[str]:
         """Rules no middleware can answer, and what auth's own routes lack.
 
         Routes that declare no rule are the core's to find
@@ -252,7 +255,7 @@ class AuthConfig(DomainConfig):
                 )
         return problems
 
-    def deployment_warnings(self) -> list[str]:
+    def weak_settings(self) -> list[str]:
         """Weak choices in staging and production.
 
         Login and code checks without a rate, or counted in each process

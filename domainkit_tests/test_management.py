@@ -11,7 +11,9 @@ from typing import Any
 
 import pytest
 
+from domainkit import setup
 from domainkit.apps import registry
+from domainkit.apps.hooks import on_deployment_warnings
 from domainkit.architecture import check_domain
 from domainkit.conf import UNSET, override_settings, use_settings
 from domainkit.conf.env import project_prefix
@@ -280,21 +282,16 @@ def test_check_warns_of_pools_smaller_than_the_requests_admitted() -> None:
         assert pool_sizing_warnings() == []
 
 
-def test_check_lists_the_domains_warnings_too(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_check_lists_the_domains_warnings_too() -> None:
     """Each installed domain may add warnings of its own settings."""
-    from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
-
-    monkeypatch.setattr(
-        AlphaConfig, "deployment_warnings", lambda self: ["ALPHA is weak here."]
-    )
     with override_settings(
         ENVIRONMENT="production",
         API_DOCS=False,
         CACHES=BOUNDED_CACHES,
         SILENCED_CHECKS=["deploy.W005"],
     ):
+        setup()
+        on_deployment_warnings(lambda: ["ALPHA is weak here."], domain="alpha")
         output = run("check")
 
     assert output.startswith(

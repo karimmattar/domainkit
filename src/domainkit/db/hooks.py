@@ -21,7 +21,8 @@ called, typed on the SQL unit of work they join::
 
 A ``DomainConfig`` that overrides ``stage``, ``committed``,
 ``stage_transaction``, ``transaction_committed``, or ``migrated`` is called
-through that method as before.
+through that method as before, with a ``DomainkitDeprecationWarning``; the
+methods go in 0.13.
 """
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -51,17 +52,23 @@ type CommittedHook = Callable[["SqlAlchemyUnitOfWork"], Awaitable[None]]
 type ConnectionHook = Callable[["AsyncConnection", str], Awaitable[None]]
 type DatabaseHook = Callable[[str], Awaitable[None]]
 
-on_stage: HookPoint[StageHook] = HookPoint("stage", method="stage")
+on_stage: HookPoint[StageHook] = HookPoint(
+    "stage", method="stage", arguments=3, awaited=True
+)
 """Add rows to a committing SQL unit of work: ``(uow, events, tasks)``."""
-on_committed: HookPoint[CommittedHook] = HookPoint("committed", method="committed")
+on_committed: HookPoint[CommittedHook] = HookPoint(
+    "committed", method="committed", arguments=1, awaited=True
+)
 """Follow up after a SQL unit of work committed: ``(uow)``."""
 on_stage_transaction: HookPoint[ConnectionHook] = HookPoint(
-    "stage_transaction", method="stage_transaction"
+    "stage_transaction", method="stage_transaction", arguments=2, awaited=True
 )
 """Join a transaction committed outside a unit of work: ``(connection, alias)``."""
 on_transaction_committed: HookPoint[DatabaseHook] = HookPoint(
-    "transaction_committed", method="transaction_committed"
+    "transaction_committed", method="transaction_committed", arguments=1, awaited=True
 )
 """Follow up after such a transaction committed: ``(alias)``."""
-on_migrated: HookPoint[ConnectionHook] = HookPoint("migrated", method="migrated")
+on_migrated: HookPoint[ConnectionHook] = HookPoint(
+    "migrated", method="migrated", arguments=2, awaited=True
+)
 """Fill a database ``migrate`` upgraded: ``(owner_connection, alias)``."""

@@ -3,6 +3,7 @@
 from importlib import import_module
 
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import on_deployment_warnings
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.routing import DatabaseRouter
@@ -39,8 +40,9 @@ class EvidenceConfig(DomainConfig):
             )
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+        on_deployment_warnings(self.weak_settings)
 
-    def deployment_warnings(self) -> list[str]:
+    def weak_settings(self) -> list[str]:
         """Evidence on a ledger whose trusted state ends with the process.
 
         Without ``domainkit.contrib.audit`` nothing keeps the state the

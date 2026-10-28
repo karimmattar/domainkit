@@ -11,7 +11,7 @@ from fastapi.telemetry import TelemetryConfig
 from starlette.types import Receive, Scope, Send
 
 from domainkit import setup
-from domainkit.apps import registry
+from domainkit.apps.hooks import on_check_application
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
@@ -198,7 +198,7 @@ def application_problems(app: FastAPI) -> list[str]:
 
     Every route must declare who may call it (``REQUIRE_ROUTE_RULES``),
     whatever authenticates requests. Domains report through
-    ``DomainConfig.check_application``.
+    ``domainkit.apps.hooks.on_check_application``.
     """
     problems: list[str] = [
         CheckMessage("openapi.E001", problem)
@@ -210,7 +210,7 @@ def application_problems(app: FastAPI) -> list[str]:
             for problem in route_rule_problems(app)
         )
     problems.extend(
-        problem for config in registry for problem in config.check_application(app)
+        problem for hook in on_check_application for problem in hook.call(app)
     )
     return problems
 

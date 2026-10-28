@@ -37,7 +37,12 @@ from domainkit.contrib.audit.tables import (
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
-from domainkit_tests.conftest import POSTGRES_VARIABLE
+from domainkit_tests.conftest import (
+    POSTGRES_VARIABLE,
+    domain_problems,
+    domain_warnings,
+    start_domain,
+)
 from domainkit_tests.test_postgres import Migration
 
 pytestmark = pytest.mark.anyio
@@ -121,7 +126,7 @@ async def tables(installed: str) -> AsyncIterator[None]:
 def test_nothing_is_asked_outside_staging_and_production(configured: None) -> None:
     """Development and tests may run without a ledger or a schedule."""
     assert settings_problems() == []
-    assert registry.get_domain_config("audit").deployment_warnings() == []
+    assert domain_warnings("audit") == []
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
@@ -134,13 +139,12 @@ def test_deployments_warn_without_a_ledger_or_a_schedule(
     ``SILENCED_CHECKS`` cannot name; ``REQUIRE_BASELINE = False`` keeps
     0.9's warnings (SEC-10b-8).
     """
-    config = registry.get_domain_config("audit")
     with override_settings(ENVIRONMENT=environment):
-        refused = config.check_application(None)  # type: ignore[arg-type]
-        warned = config.deployment_warnings()
+        refused = domain_problems("audit", None)
+        warned = domain_warnings("audit")
     with override_settings(ENVIRONMENT=environment, AUDIT={"REQUIRE_BASELINE": False}):
-        relaxed = config.check_application(None)  # type: ignore[arg-type]
-        only_warned = config.deployment_warnings()
+        relaxed = domain_problems("audit", None)
+        only_warned = domain_warnings("audit")
 
     assert refused == [NO_LEDGER, NO_SCHEDULE]
     assert [getattr(problem, "id", None) for problem in refused] == [
@@ -204,7 +208,7 @@ async def test_startup_says_nothing_outside_deployments(
 ) -> None:
     """The probe runs only in staging and production."""
     with caplog.at_level(logging.WARNING, logger=baseline.__name__):
-        await registry.get_domain_config("audit").startup()
+        await start_domain("audit")
 
     assert caplog.records == []
 
@@ -217,7 +221,7 @@ async def test_startup_warns_of_what_is_missing(
         override_settings(AUDIT={"REQUIRE_BASELINE": False}),
         caplog.at_level(logging.WARNING, logger=baseline.__name__),
     ):
-        await registry.get_domain_config("audit").startup()
+        await start_domain("audit")
 
     messages = [record.getMessage() for record in caplog.records]
     assert messages[:2] == [NO_LEDGER, NO_SCHEDULE]

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Final
 
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.exceptions import ImproperlyConfigured
@@ -63,14 +64,16 @@ class WebhooksConfig(DomainConfig):
         webhooks_alias()  # One database.
         start_mappers()
         register(config)
+        on_erase_subject(self.erase_copies)
+        on_export_subject(self.export_copies)
 
-    async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
+    async def erase_copies(self, subject: str, reason: str) -> Mapping[str, int]:
         """Blank the deliveries about ``subject``, and cancel the pending ones."""
         from .delivery import erase_subject
 
         return await erase_subject(subject)
 
-    async def export_subject(self, subject: str) -> Mapping[str, object]:
+    async def export_copies(self, subject: str) -> Mapping[str, object]:
         """The deliveries about ``subject``, with their bodies."""
         from .delivery import export_subject
 

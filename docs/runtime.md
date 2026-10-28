@@ -103,7 +103,7 @@ command ends, the process shuts down in phases, all within
 
 | Phase | What stops | Ends at |
 | --- | --- | --- |
-| `domains` | Each started domain's `DomainConfig.shutdown`, in reverse order (the application only) | 30% |
+| `domains` | Each started domain's `on_shutdown` hooks, in reverse domain order (the application only) | 30% |
 | `drain` | Closers registered to finish work in flight, such as a publisher sending the messages it holds | 50% |
 | `tasks` | The loop's background tasks: cancelled, and waited for | 60% |
 | `resources` | Caches, databases, ledgers, brokers, and kinds others register (an HTTP client), all at once | 90% |

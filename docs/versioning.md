@@ -68,8 +68,16 @@ All done: 0.11 removed the names and the setting that 0.10 deprecated,
 refuses `crud=True` without the fields it writes, and makes `"refuse"` the
 default of `SCOPED_CREDENTIALS` and `IDEMPOTENCY.ANONYMOUS`.
 [upgrading.md](upgrading.md#010-to-011) lists each, with its replacement
-and the setting that keeps a default's old behaviour. Nothing is
-deprecated for 0.12 yet.
+and the setting that keeps a default's old behaviour.
+
+### Deprecations planned for 0.13
+
+0.13 removes what 0.12 deprecates; [upgrading.md](upgrading.md#011-to-012)
+lists each with its replacement.
+
+| Deprecated in 0.12 | Use instead | Removed in |
+| --- | --- | --- |
+| The hook methods of `DomainConfig` (`startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated`), overridden | The points `on_<method>` of `domainkit.apps.hooks` and `domainkit.db.hooks`, registered in `ready()`; 0.13 refuses a configuration that still defines one | 0.13 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:

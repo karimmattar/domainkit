@@ -51,7 +51,12 @@ from domainkit.http.ratelimit import (
 from domainkit.tasks import owned, shutdown
 from domainkit.utils.rates import parse_rate
 from domainkit_tests import sample_routes
-from domainkit_tests.conftest import ALPHA, POSTGRES_VARIABLE
+from domainkit_tests.conftest import (
+    ALPHA,
+    POSTGRES_VARIABLE,
+    domain_problems,
+    domain_warnings,
+)
 from domainkit_tests.test_http import headerless, started
 
 postgres_only = pytest.mark.skipif(
@@ -1445,7 +1450,7 @@ def test_keyed_routes_that_outlast_the_lease_are_problems() -> None:
 
     with override_settings(INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA]):
         setup()
-        problems = registry.get_domain_config("idempotency").check_application(app)
+        problems = domain_problems("idempotency", app)
     registry.clear()
 
     tail = (
@@ -1502,8 +1507,9 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
                 **(options or {}),
             ):
                 setup()  # Workers and commands start: only the application refuses.
-                config = registry.get_domain_config("idempotency")
-                return config.check_application(FastAPI()), config.deployment_warnings()
+                return domain_problems("idempotency", FastAPI()), domain_warnings(
+                    "idempotency"
+                )
         finally:
             registry.clear()
 
@@ -1547,7 +1553,7 @@ def test_the_anonymous_policy_is_no_warning_where_deployed(
                 IDEMPOTENCY=chosen,
             ):
                 setup()
-                return registry.get_domain_config("idempotency").deployment_warnings()
+                return domain_warnings("idempotency")
         finally:
             registry.clear()
 

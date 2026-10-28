@@ -8,14 +8,13 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 
-from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.cookies import CookieAuthentication, csrf_token
 from domainkit.contrib.auth.settings import AuthSettings, CookieSettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.application import application_problems
-from domainkit_tests.conftest import Api, UseAuth
+from domainkit_tests.conftest import Api, UseAuth, domain_warnings
 from domainkit_tests.test_auth_http import (
     PASSWORD,
     audited,
@@ -147,7 +146,7 @@ def test_deployments_warn_of_names_without_the_prefix(
             AUTHENTICATION_CLASSES=classes,
             COOKIE=cookie,
         )
-        return registry.get_domain_config("auth").deployment_warnings()
+        return domain_warnings("auth")
 
     assert warnings(NAME="sid", CSRF_NAME="csrftoken") == [
         (
@@ -166,9 +165,9 @@ def test_deployments_warn_of_names_without_the_prefix(
     assert warnings(NAME="sid", DOMAIN="example.com") == []  # It cannot hold.
     assert warnings(NAME="sid", PATH="/api") == []
     use_auth(settings=deployed, PASSWORD_HASHERS=hashers, COOKIE={"NAME": "sid"})
-    assert registry.get_domain_config("auth").deployment_warnings() == []
+    assert domain_warnings("auth") == []
     use_auth(settings={"ENVIRONMENT": "test"}, COOKIE={"NAME": "sid"})
-    assert registry.get_domain_config("auth").deployment_warnings() == []
+    assert domain_warnings("auth") == []
 
 
 def test_both_cookies_take_the_cookie_settings(identity: Api) -> None:

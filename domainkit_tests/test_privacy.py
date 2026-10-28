@@ -44,7 +44,7 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
-from domainkit_tests.conftest import ALPHA, MakeDatabase
+from domainkit_tests.conftest import ALPHA, MakeDatabase, domain_problems
 from domainkit_tests.sample_domains.patients import tables
 from domainkit_tests.sample_domains.patients.apps import PatientsConfig
 from domainkit_tests.sample_domains.patients.models import Visit
@@ -224,7 +224,7 @@ def test_markers_privacy_cannot_follow_are_problems(clinic: str) -> None:
         found = problems()
         with pytest.raises(ImproperlyConfigured) as refused:
             personal_models()
-        assert registry.get_domain_config("privacy").check_application(None) == found  # type: ignore[arg-type]
+        assert domain_problems("privacy", None) == found
 
     assert str(refused.value) == "Privacy cannot be applied:\n  " + "\n  ".join(found)
     assert found == [
