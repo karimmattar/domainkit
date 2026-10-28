@@ -1898,6 +1898,7 @@ def twins(records: list[logging.LogRecord]) -> tuple[dict[str, Any], dict[str, A
     return first, second
 
 
+@pytest.mark.reads_own_source
 def test_log_enabled_makes_the_record_logger_log_makes(
     kept: tuple[logging.Logger, Kept],
 ) -> None:
@@ -1951,6 +1952,7 @@ class OwnLogger(logging.Logger):
         return record
 
 
+@pytest.mark.reads_own_source
 def test_log_enabled_logs_through_a_logger_class_of_its_own() -> None:
     """Such a logger's own ``log`` makes its record, naming the same caller."""
     logger = OwnLogger("domainkit.tests.own")
@@ -1967,6 +1969,7 @@ def test_log_enabled_logs_through_a_logger_class_of_its_own() -> None:
     assert (record.__dict__["own"], record.getMessage()) == (True, "failed here")
 
 
+@pytest.mark.reads_own_source
 def test_access_lines_name_the_middleware_as_their_caller(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

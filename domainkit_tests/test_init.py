@@ -55,11 +55,16 @@ def init(*args: str) -> str:
 def run(
     cwd: Path, *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``python *args`` in ``cwd`` as a user would: no test settings."""
+    """Run ``python *args`` in ``cwd`` as a user would: no test settings.
+
+    Nor mutmut's: under its stats run the child would look for mutmut's
+    settings in the project, and fail.
+    """
     clean = {
         name: value
         for name, value in os.environ.items()
         if not name.startswith(("DOMAINKIT_", "BILLING_API_"))
+        and name != "MUTANT_UNDER_TEST"
     }
     return subprocess.run(  # noqa: S603 - the test interpreter and generated files.
         [sys.executable, *args],

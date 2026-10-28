@@ -252,6 +252,7 @@ def test_likely_n_plus_one_queries_are_logged_by_template(
     ]
 
 
+@pytest.mark.reads_own_source
 def test_no_log_line_takes_the_path_from_the_scope() -> None:
     """Every log line names a path through ``logged_path`` (SEC-10c-1)."""
     source = Path(domainkit.__file__).parent
