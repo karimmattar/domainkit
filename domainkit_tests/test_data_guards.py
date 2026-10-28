@@ -488,7 +488,11 @@ def test_guarded_dumps_are_audited(
         run("migrate")
         with (
             override_settings(ENVIRONMENT="staging"),
-            pytest.raises(CommandError, match=r"^Name the operator who runs dumpdata"),
+            pytest.raises(
+                CommandError,
+                match=r"^Name the operator who runs dumpdata --include-guarded in "
+                r"staging: give --operator NAME, or set DOMAINKIT_OPERATOR\.$",
+            ),
         ):
             run("dumpdata", users.name, "--include-guarded")
         with override_settings(ENVIRONMENT="staging"):
