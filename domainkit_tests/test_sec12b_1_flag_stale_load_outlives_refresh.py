@@ -30,7 +30,7 @@ pytestmark = pytest.mark.usefixtures("project")
 
 
 def test_a_flag_turned_off_is_not_served_on_after_its_change_lands(
-    replicas: tuple[Replicas, Loads],
+    replicas: tuple[Replicas, Loads],  # noqa: F811 - the fixture.
 ) -> None:
     """Replica 1 misses and reads ``kill`` on; it is turned off and refreshed."""
     shared, loads = replicas

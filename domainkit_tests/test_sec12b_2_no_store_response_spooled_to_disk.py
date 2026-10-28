@@ -43,7 +43,7 @@ def secret(size: int) -> Any:  # noqa: ANN401 - an ASGI app.
 
 
 def test_a_no_store_response_never_reaches_a_temporary_file(
-    spooling: list[IO[bytes]],
+    spooling: list[IO[bytes]],  # noqa: F811 - the fixture.
 ) -> None:
     """4 MiB marked no-store, never kept: nothing of it is written to the disk."""
     status, _, _ = keyed(secret(4 * MIB), PART)
