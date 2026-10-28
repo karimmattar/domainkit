@@ -13,7 +13,7 @@ together.
 | `django-admin startproject` | `domainkit init` ([tutorial](tutorial/1-first-resource.md)) |
 | `manage.py startapp` | `manage.py startdomain`, a layered package; `--minimal` for a small one ([generators](resources.md#generators)) |
 | `INSTALLED_APPS`, `AppConfig.ready()` | `INSTALLED_DOMAINS`, `DomainConfig.ready()` ([api.md](api.md)) |
-| `settings.py` per environment, `django-environ` | `config/settings/{base,local,test,production}.py`, `domainkit.conf.env.Env` ([operations.md](operations.md#configuration)) |
+| `settings.py` per environment, `django-environ` | `config/settings/{base,local,test,production}.py`, `domainkit.conf.Env` ([operations.md](operations.md#configuration)) |
 | `manage.py check --deploy` | `manage.py check --deploy`: errors and warnings with ids, `SILENCED_CHECKS` ([deployment checks](reference.md#deployment-checks)) |
 | `django.core.signing`, `SECRET_KEY_FALLBACKS` | `domainkit.signing`, `SECRET_KEY_FALLBACKS` ([security.md](security.md)) |
 
