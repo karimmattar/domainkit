@@ -194,7 +194,7 @@ def test_a_content_length_the_body_does_not_match_is_not_trusted(
     """The body as read is fingerprinted, whatever length was declared."""
 
     async def read(declared: bytes) -> str | None:
-        incoming = [
+        incoming: list[Message] = [
             {"type": "http.request", "body": b"ab", "more_body": True},
             {"type": "http.request", "body": b"c"},
         ]
@@ -285,7 +285,7 @@ def test_a_client_gone_before_its_last_part_leaves_no_file(
         ran.append(True)
 
     async def scenario() -> None:
-        incoming = [
+        incoming: list[Message] = [
             {"type": "http.request", "body": b"x" * (2 * MIB), "more_body": True},
             {"type": "http.disconnect"},
         ]
