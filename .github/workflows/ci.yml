@@ -802,6 +802,7 @@ jobs:
               domainkit.contrib.auth.erasure.* domainkit.contrib.auth.exceptions.*
               domainkit.contrib.auth.mfa.* domainkit.contrib.auth.models.*
               domainkit.contrib.auth.recovery.* domainkit.contrib.auth.tables.*
+              domainkit.contrib.auth.testing.*
               domainkit.contrib.auth.throttling.* domainkit.contrib.auth.validators.*
           - name: http-1
             mutants: >-

@@ -440,9 +440,9 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
     tests = tutorial.shell.cwd / "tests" / "domains" / "accounts"
     assert "def test_deposits_must_be_positive" in (tests / "test_model.py").read_text()
     printed = tutorial.shell.printed["pytest"]
-    # Twice: after part 2, and with part 5's three tests (one of them twice).
+    # Twice: after part 2, and with part 5's four tests (one of them twice).
     first, second = re.findall(r"(\d+) passed", printed)
-    assert int(second) == int(first) + 4
+    assert int(second) == int(first) + 5
     [check] = [
         output
         for line, output in tutorial.shell.printed.items()

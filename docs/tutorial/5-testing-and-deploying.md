@@ -60,6 +60,28 @@ def test_an_archived_account_refuses_deposits(admin_client: TestClient) -> None:
     assert admin_client.get(item).json()["balance"] == "0.00"
 ```
 
+A test can also make the user it needs, and sign in as them: here the
+clerk of part 3, who may read accounts but not deposit. `create_user`
+stores a user granted permissions, as the application would, and
+`authenticated_as` returns a client that signs in as that user. A sync
+test runs the async `create_user` in the client's event loop with
+`client.run`; an async one awaits it:
+
+```python title="tests/domains/accounts/test_deposit_account.py"
+from domainkit.contrib.auth.testing import create_user
+
+
+def test_a_clerk_reads_but_cannot_deposit(admin_client: TestClient) -> None:
+    """``view_account`` alone: the account, but ``403`` for a deposit."""
+    item = admin_client.post(URL, json=new_account_request()).headers["location"]
+    clerk = admin_client.run(create_user, "accounts.view_account")
+    as_clerk = admin_client.authenticated_as(clerk)
+
+    assert as_clerk.get(item).status_code == 200
+    answer = as_clerk.post(f"{item}/deposit", json={"amount": "1.00"})
+    assert answer.status_code == 403
+```
+
 Run them all:
 
 ```bash
@@ -67,8 +89,8 @@ pytest
 ```
 
 The plugin's other fixtures (a client for any user, frozen time, counted
-queries, factories, the outbox's messages) are in
-[testing.md](../testing.md).
+queries, factories, the outbox's messages, settings changed for one test)
+are in [testing.md](../testing.md).
 
 ## Check it as production starts it
 

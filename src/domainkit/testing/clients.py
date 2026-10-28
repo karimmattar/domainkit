@@ -10,7 +10,9 @@ both, requests see the context variables of the code that sends them: a
 
 ``user_token`` stores a user with permissions and returns an access token,
 as the ``client_for`` fixtures do, through the installed domain that issues
-tokens (``TokenIssuer``: ``domainkit.contrib.auth``).
+tokens (``TokenIssuer``: ``domainkit.contrib.auth``). ``token_for`` returns
+one for a user stored already (a factory's), and the clients'
+``authenticated_as`` sign in as one.
 """
 
 import asyncio
@@ -83,6 +85,33 @@ class TestClient(StarletteTestClient):
         portal = CarryingPortal(self._entered())
         token = portal.call(partial(user_token, *permissions, **fields))
         return self.another({"Authorization": f"Bearer {token}"})
+
+    def authenticated_as(self, user: object) -> "TestClient":
+        """Return a client that authenticates as ``user``, a stored user.
+
+        For a user a test made itself (with a factory, or
+        ``domainkit.contrib.auth.testing.create_user``), as DRF's
+        ``force_authenticate`` does; see ``token_for``. Enter this client first.
+        """
+        portal = CarryingPortal(self._entered())
+        token = portal.call(token_for, user)
+        return self.another({"Authorization": f"Bearer {token}"})
+
+    def run[T](
+        self,
+        function: Callable[..., Awaitable[T]],
+        *args: object,
+        **kwargs: object,
+    ) -> T:
+        """Await ``function(*args, **kwargs)`` in this client's event loop.
+
+        For async setup in a sync test, on the application's own database
+        connections: ``user = client.run(create_user, "shop.view_product")``.
+        It sees the caller's context, a frozen clock too. Enter this client
+        first.
+        """
+        portal = CarryingPortal(self._entered())
+        return cast("T", portal.call(partial(function, *args, **kwargs)))
 
     def _entered(self) -> BlockingPortal:
         """This client's portal; refuse a client that is not entered.
@@ -218,6 +247,13 @@ class AsyncTestClient(httpx2.AsyncClient):
         token = await user_token(*permissions, **fields)
         return self.another({"Authorization": f"Bearer {token}"})
 
+    async def authenticated_as(self, user: object) -> "AsyncTestClient":
+        """Return a client that authenticates as ``user``, a stored user.
+
+        See ``token_for``; close it with ``aclose()``.
+        """
+        return self.another({"Authorization": f"Bearer {await token_for(user)}"})
+
 
 class Lifespan:
     """Run an ASGI application's lifespan in the running event loop."""
@@ -290,6 +326,42 @@ class TokenIssuer(Protocol):
     ) -> str:
         """Store a new user granted ``permissions``, set ``fields``; its token."""
         ...
+
+
+@runtime_checkable
+class StoredUserTokenIssuer(Protocol):
+    """An installed domain that issues access tokens for users stored already.
+
+    ``domainkit.contrib.auth`` is one; ``token_for`` and the clients'
+    ``authenticated_as`` ask it.
+    """
+
+    async def issue_test_token_for(self, user_id: Any) -> str:  # noqa: ANN401 - any user model's id.
+        """An access token for the stored user ``user_id``."""
+        ...
+
+
+async def token_for(user: object) -> str:
+    """Return an access token for ``user``, a user stored already.
+
+    Signs in as a user a test made itself, with a factory or with
+    ``domainkit.contrib.auth.testing.create_user``, as DRF's
+    ``force_authenticate`` does: ``user`` is the user, or its id. The first
+    installed domain that issues such tokens (``StoredUserTokenIssuer``)
+    makes it: with ``domainkit.contrib.auth``, the first
+    ``AUTH.AUTHENTICATION_CLASSES`` class, as a login's would.
+
+    Raises:
+        ImproperlyConfigured: No installed domain issues tokens.
+    """
+    user_id = getattr(user, "id", user)
+    for config in registry:
+        if isinstance(config, StoredUserTokenIssuer):
+            return await config.issue_test_token_for(user_id)
+    raise ImproperlyConfigured(
+        "token_for needs an installed domain that issues tokens, such as "
+        "domainkit.contrib.auth."
+    )
 
 
 async def user_token(*permissions: str, **fields: Any) -> str:  # noqa: ANN401 - the user model's fields.
