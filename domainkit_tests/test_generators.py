@@ -638,7 +638,9 @@ class Project:
             **{
                 name: value
                 for name, value in os.environ.items()
+                # Nor mutmut's: the project runs its own code, not mutants.
                 if not name.startswith(("DOMAINKIT_", "SHOP_"))
+                and name != "MUTANT_UNDER_TEST"
             },
             "PYTHONPATH": str(Path(domainkit.__file__).parents[1]),
         }
@@ -662,8 +664,8 @@ class Project:
         except subprocess.TimeoutExpired:
             process.kill()
             output, _ = process.communicate()
-            pytest.fail(f"{process.args} ran past {STEP_TIMEOUT} s:\n{output}")
-        assert process.returncode == 0, f"{process.args}:\n{output}"
+            pytest.fail(f"{process.args!r} ran past {STEP_TIMEOUT} s:\n{output}")
+        assert process.returncode == 0, f"{process.args!r}:\n{output}"
         return output
 
 
@@ -684,8 +686,8 @@ def generated(
     monkeypatch.syspath_prepend(str(project.root / "src"))
     for arguments in GENERATE:
         run(*arguments)
-    for arguments in MANAGE:
-        project.finished(project.start("manage.py", *arguments))
+    for command in MANAGE:
+        project.finished(project.start("manage.py", *command))
     return project
 
 

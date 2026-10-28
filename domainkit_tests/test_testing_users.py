@@ -8,6 +8,7 @@ pytest-django's does. Until 0.12 a test could only sign in as a new user
 ``client_for`` made, and reached for ``AuthUnitOfWork`` to make one.
 """
 
+from collections.abc import Iterator
 from contextlib import ExitStack
 from uuid import UUID
 
@@ -15,7 +16,7 @@ import pytest
 
 from domainkit.apps import registry
 from domainkit.conf import override_settings, settings
-from domainkit.contrib.auth import AuthUnitOfWork
+from domainkit.contrib.auth import AbstractUser, AuthUnitOfWork
 from domainkit.contrib.auth.exceptions import (
     GroupNameTaken,
     UnknownGroup,
@@ -41,7 +42,7 @@ ROUTES = {
 
 
 @pytest.fixture
-def routes(auth_project: str) -> None:
+def routes(auth_project: str) -> Iterator[None]:
     """``auth_project``, serving the sample auth routes."""
     with override_settings(**ROUTES):
         yield
@@ -68,6 +69,7 @@ async def test_an_async_test_signs_in_through_groups(routes: None) -> None:
     ann = await create_user(
         groups=[editors.name], password="correct-horse-battery", email="a@x.example"
     )
+    assert isinstance(ann, AbstractUser)  # The default user model.
     async with AsyncTestClient(get_asgi_application()) as client:
         signed_in = await client.authenticated_as(ann)
         listed = await signed_in.get("/products")
@@ -93,6 +95,7 @@ async def test_an_async_test_signs_in_through_groups(routes: None) -> None:
 async def test_superusers_and_what_cannot_be_made(routes: None) -> None:
     """``superuser`` makes staff too; unknown keys, groups and names are refused."""
     root = await create_user(superuser=True, username="root")
+    assert isinstance(root, AbstractUser)
     nameless = await create_user()
     named = await create_group(name="clerks")
 
