@@ -2,6 +2,7 @@
 
 import io
 import re
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,9 @@ from typing import Any
 
 import pytest
 from alembic.script import ScriptDirectory
-from sqlalchemy import Column, Integer, MetaData, String, Table
+from sqlalchemy import Column, Integer, MetaData, String, Table, make_url, text
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
@@ -641,3 +644,132 @@ def test_empty_revisions_make_their_directories(project: Path, tmp_path: Path) -
         empty = created(run("makemigrations", "--empty", "-m", "start"))
 
     assert empty.parent == deep
+
+
+UNREACHABLE = {
+    "postgresql+asyncpg://app:s3cret@127.0.0.1:1/app": (
+        "postgresql+asyncpg://app:***@127.0.0.1:1/app (ConnectionRefusedError: "
+    ),
+    "postgresql+asyncpg://app:s3cret@no-such-host.invalid/app": (
+        "postgresql+asyncpg://app:***@no-such-host.invalid/app (gaierror: "
+    ),
+}
+"""Databases nothing answers at, and what the error says of each."""
+
+
+@pytest.mark.parametrize("url", sorted(UNREACHABLE))
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("migrate",),
+        ("migrate", "--plan"),
+        ("migrate", "--fake", "base"),
+        ("showmigrations",),
+        ("makemigrations", "-m", "shelves"),
+        ("makemigrations", "-m", "shelves", "--check"),
+    ],
+)
+def test_a_database_out_of_reach_is_one_line_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str, command: tuple[str, ...]
+) -> None:
+    """Which database, at what URL (no password), why, and what to look at.
+
+    On 0.11 each of these printed the driver's traceback, 174 lines for a
+    refused connection, and no word of which database it was (INFRA-08).
+    """
+    monkeypatch.setattr(migrations_module, "metadata", metadata)
+    with (
+        override_settings(
+            MIGRATIONS_DIR=tmp_path / "migrations", DATABASES={"default": {"URL": url}}
+        ),
+        pytest.raises(CommandError) as refused,
+    ):
+        run(*command)
+
+    said = str(refused.value)
+    assert said.startswith(
+        f"Database 'default' cannot be reached at {UNREACHABLE[url]}"
+    )
+    assert said.endswith(
+        "Is the server running, and are its URL (or MIGRATION_URL) and "
+        "credentials right?"
+    )
+    assert "s3cret" not in said
+    assert "\n" not in said
+    assert refused.value.__cause__ is None
+    assert refused.value.__suppress_context__
+
+
+class AdaptedError(Exception):
+    """What SQLAlchemy's asyncpg adapter raises, the driver's error its cause."""
+
+
+class InvalidPasswordError(Exception):
+    """asyncpg's own."""
+
+
+def adapted() -> AdaptedError:
+    """An adapted error, raised from the driver's."""
+    try:
+        raise AdaptedError("adapted") from InvalidPasswordError(
+            'password authentication failed for user "app"'
+        )
+    except AdaptedError as exc:
+        return exc
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (TimeoutError(), "(TimeoutError)"),
+        (
+            DBAPIError(None, None, sqlite3.OperationalError("unable to open")),
+            "(OperationalError: unable to open)",
+        ),
+        (
+            DBAPIError(None, None, adapted()),
+            '(InvalidPasswordError: password authentication failed for user "app")',
+        ),
+    ],
+)
+async def test_the_reason_is_the_drivers_own(
+    failure: BaseException, reason: str
+) -> None:
+    """The driver's error, not its adapter's; a timeout says only that it is one.
+
+    A real SQLite file that cannot be opened is not used here: aiosqlite
+    stops its thread after a failed open by calling into the event loop,
+    which ``asyncio.run`` may have closed by then.
+    """
+
+    class Engine:
+        url = make_url("postgresql+asyncpg://app:s3cret@db.internal/app")
+
+        def connect(self) -> Any:  # noqa: ANN401 - a connection's context.
+            raise failure
+
+    with pytest.raises(migrations_module.DatabaseUnreachable) as refused:
+        async with migrations_module._connected(Engine()):  # type: ignore[arg-type]
+            pass
+
+    assert str(refused.value) == (
+        f"cannot be reached at postgresql+asyncpg://app:***@db.internal/app {reason}"
+    )
+    assert refused.value.__cause__ is failure
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("begin", [False, True])
+async def test_errors_once_connected_are_not_called_unreachable(begin: bool) -> None:
+    """Only opening the connection is reported so: the rest stays as it was."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        with pytest.raises(OperationalError, match="no such table"):
+            async with migrations_module._connected(engine, begin=begin) as connection:
+                await connection.execute(text("SELECT * FROM missing"))
+        async with migrations_module._connected(engine, begin=begin) as connection:
+            assert connection.in_transaction() is begin
+            assert (await connection.execute(text("SELECT 1"))).scalar() == 1
+    finally:
+        await engine.dispose()

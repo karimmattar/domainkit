@@ -584,6 +584,14 @@ The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
 They count requests, passwords, and codes in Redis, from `REDIS_URL`.
 
+There `check` also says, as `security.I001` (information: never a
+failure, nothing to silence), what it cannot check: HTTPS. The
+application serves plain HTTP, and TLS ends in front of it, where no
+setting reaches. The line names where a request's scheme comes from: the
+`PROXY_SCHEME_HEADER` of `TRUSTED_PROXIES`, which the proxy must set over
+a caller's, or the connection alone, where every request counts as plain
+HTTP ([security.md](security.md), "The edge").
+
 ## Middleware
 
 The order matters; this is the order to keep, outermost first. The project

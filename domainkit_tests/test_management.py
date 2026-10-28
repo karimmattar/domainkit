@@ -30,6 +30,22 @@ from domainkit.utils import formatting
 from domainkit_tests.conftest import MakePackage
 from domainkit_tests.test_db import test_metadata
 
+HTTPS_DIRECT = (
+    "  Info: security.I001: HTTPS is not checked: the application serves plain "
+    "HTTP, and TLS must end in front of it. It takes a request's scheme from the "
+    "connection alone (TRUSTED_PROXIES is empty), so every request counts as "
+    "plain HTTP, even one a proxy received over HTTPS.\n"
+    "    Hint: Redirect plain HTTP to HTTPS at the proxy, and keep "
+    "SECURE_HSTS_SECONDS set (docs/security.md, 'The edge').\n"
+)
+"""What ``check`` says of HTTPS where deployed with no trusted proxy."""
+HTTPS_PROXIED = HTTPS_DIRECT.replace(
+    "from the connection alone (TRUSTED_PROXIES is empty), so every request "
+    "counts as plain HTTP, even one a proxy received over HTTPS.",
+    "from the X-Forwarded-Proto header of TRUSTED_PROXIES only, so the proxy "
+    "must set it, over a caller's.",
+)
+"""And behind trusted proxies, which say the scheme."""
 BUILTINS = {
     "addcommand",
     "addevent",
@@ -171,7 +187,8 @@ def test_check_lists_weak_deployment_choices() -> None:
         assert run("check") == (
             "System check identified no issues and 3 warnings (1 silenced). "
             "Domains: alpha.\n"
-            "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
+            + HTTPS_DIRECT
+            + "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
             "/openapi.json to anyone; set it to False unless the API is public.\n"
             "  Warning: security.W002: SECURE_HSTS_SECONDS is 0, so browsers may "
             "still use plain HTTP; set it (31536000 is a year) once HTTPS works "
@@ -196,7 +213,8 @@ def test_check_lists_weak_deployment_choices() -> None:
         assert run("check") == (
             "System check identified no issues and 1 warning (1 silenced). "
             "Domains: alpha.\n"
-            "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
+            + HTTPS_PROXIED
+            + "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
             "/openapi.json to anyone; set it to False unless the API is public.\n"
         )
     with override_settings(**{**hardened, "CACHES": {"default": {}}}):

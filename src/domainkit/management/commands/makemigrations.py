@@ -4,11 +4,14 @@
 """
 
 from argparse import ArgumentParser
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from alembic.util.exc import CommandError as AlembicError
 
 from domainkit.db import migrations
 from domainkit.management.base import BaseCommand, CommandError
+from domainkit.management.commands.migrate import unreachable
 
 
 class Command(BaseCommand):
@@ -76,17 +79,15 @@ class Command(BaseCommand):
             path = migrations.make_empty_migration(message, targets[0])
             self.write(f"Created {path}.")
             return
-        try:
-            if check:
-                self._check(targets)
-                return
-            created = [
-                path
-                for target in targets
-                if (path := migrations.make_migration(message, target))
-            ]
-        except AlembicError as exc:
-            raise CommandError(f"{exc} Run 'manage.py migrate' first.") from exc
+        if check:
+            self._check(targets)
+            return
+        created = []
+        for target in targets:
+            with _reaching(target):
+                path = migrations.make_migration(message, target)
+            if path is not None:
+                created.append(path)
         self.write(
             "\n".join(f"Created {path}." for path in created) or "No changes detected."
         )
@@ -102,11 +103,11 @@ class Command(BaseCommand):
 
     def _check(self, targets: tuple[str, ...]) -> None:
         """Fail if any target has model changes without a revision."""
-        missing = {
-            target: changes
-            for target in targets
-            if (changes := migrations.pending_changes(target))
-        }
+        missing: dict[str, str] = {}
+        for target in targets:
+            with _reaching(target):
+                if changes := migrations.pending_changes(target):
+                    missing[target] = changes
         if missing:
             raise CommandError(
                 "Model changes have no migration: "
@@ -115,3 +116,14 @@ class Command(BaseCommand):
                 )
             )
         self.write("No changes detected.")
+
+
+@contextmanager
+def _reaching(target: str) -> Iterator[None]:
+    """Report a database out of reach, or a history not migrated, on one line."""
+    try:
+        yield
+    except migrations.DatabaseUnreachable as exc:
+        raise unreachable(target, exc) from None
+    except AlembicError as exc:
+        raise CommandError(f"{exc} Run 'manage.py migrate' first.") from exc
