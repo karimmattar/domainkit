@@ -32,6 +32,7 @@ from domainkit.testing import (
     SettingsOverrides,
     TestClient,
     token_for,
+    user_token,
 )
 from domainkit_tests.conftest import MIDDLEWARE
 
@@ -161,3 +162,23 @@ def test_settings_change_until_the_test_ends() -> None:
     assert during == (not before[0], not before[0], 8)
     assert default == 15.0
     assert before == (settings.DEBUG, settings.SHUTDOWN_TIMEOUT)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("environment", ["local", "production"])
+async def test_test_tokens_are_refused_outside_the_test_settings(
+    routes: None, environment: str
+) -> None:
+    """Neither a new user's token nor a stored one's: no credentials (SEC-12a-2)."""
+    stored = await create_user(superuser=True)
+    with override_settings(ENVIRONMENT=environment):
+        with pytest.raises(ImproperlyConfigured) as for_stored:
+            await token_for(stored)
+        with pytest.raises(ImproperlyConfigured) as for_new:
+            await user_token(is_superuser=True)
+
+    assert str(for_stored.value) == (
+        "issue_test_token_for signs users in without credentials, so it needs "
+        f'ENVIRONMENT = "test", not {environment!r}.'
+    )
+    assert str(for_new.value).startswith("issue_test_token signs users in")

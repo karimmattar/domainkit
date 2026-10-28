@@ -46,6 +46,13 @@ to keep the old behaviour, for as long as the project needs it.
   recorded in the audit trail and, in staging and production, needs
   `--operator` or `DOMAINKIT_OPERATOR`. **To keep the old behaviour:**
   `--include-guarded` on every dump that should hold them.
+- **Test tokens need the test settings** (SEC-12a-2). `user_token`,
+  `token_for`, and the clients' `authenticated` and `authenticated_as`
+  (`client_for`, `admin_client`) raise `ImproperlyConfigured` unless
+  `ENVIRONMENT = "test"`: they sign users in without credentials.
+  **Fix:** run the code that uses them with the test settings, as the
+  database fixtures already require. There is no setting to keep the old
+  behaviour.
 
 ### Deprecated, removed in 0.13
 

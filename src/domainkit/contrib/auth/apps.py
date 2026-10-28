@@ -134,9 +134,13 @@ class AuthConfig(DomainConfig):
         ``fields`` set the user's fields; the username is unique unless
         given. The token comes from the first ``AUTH.AUTHENTICATION_CLASSES``
         class, as a login's would.
+
+        Raises:
+            ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
         """
         from .uow import AuthUnitOfWork
 
+        _only_in_tests("issue_test_token")
         username = fields.pop(self.user_model.USERNAME_FIELD, f"user-{uuid4().hex}")
         async with AuthUnitOfWork() as uow:
             user = await uow.users.create_user(username, **fields)
@@ -152,10 +156,12 @@ class AuthConfig(DomainConfig):
         would be: a user made by a factory or by ``create_user``.
 
         Raises:
+            ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
             NotFound: No user has the id.
         """
         from .uow import AuthUnitOfWork
 
+        _only_in_tests("issue_test_token_for")
         async with AuthUnitOfWork() as uow:
             user = await uow.users.get(user_id)
             issued = await get_authenticators()[0].issue(uow, user)
@@ -583,3 +589,21 @@ def _user_table(config: AuthSettings, model: type[AbstractBaseUser]) -> Table:
             "the installed domain that defines it."
         )
     return table
+
+
+def _only_in_tests(what: str) -> None:
+    """Refuse to sign anyone in without credentials outside the test settings.
+
+    The test tokens skip the password, the second factor, and the login's
+    audit record: in any other process they would be a bearer token for
+    anyone, a superuser included (SEC-12a-2). The database fixtures refuse
+    such settings for the same reason.
+
+    Raises:
+        ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
+    """
+    if settings.ENVIRONMENT != "test":
+        raise ImproperlyConfigured(
+            f"{what} signs users in without credentials, so it needs "
+            f'ENVIRONMENT = "test", not {settings.ENVIRONMENT!r}.'
+        )

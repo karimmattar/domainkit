@@ -229,6 +229,18 @@ and a status.
   plugin's own tests took, sleep 0.15 s where 0.25 s was, still half again
   what the detector reports (TEST-09).
 
+### Security
+
+- **Breaking:** the test tokens (`user_token`, `token_for`, the clients'
+  `authenticated` and `authenticated_as`, and so `client_for` and
+  `admin_client`) are refused with `ImproperlyConfigured` unless
+  `ENVIRONMENT = "test"`, as the database fixtures are. They sign a user
+  in without a password, a second factor, or a login record, and in a
+  deployed process `token_for` gave a full access token for any user id,
+  a superuser's included, to any code that called it. **Fix:** run tests
+  with test settings (`ENVIRONMENT = "test"`, which `domainkit init`'s
+  `config.settings.test` has) (SEC-12a-2).
+
 ## [0.11.2] - 2026-10-28
 
 A patch release: one fix of savepoints in the SQL unit of work. Nothing a
