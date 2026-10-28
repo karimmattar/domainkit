@@ -48,6 +48,25 @@ POSTGRES_VARIABLE: Final = "DOMAINKIT_TEST_POSTGRES_URL"
 """A PostgreSQL server URL; when set, database tests run there (see database_url)."""
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Keep the tutorial's parts in the order a reader reads them.
+
+    They share one reader's walk (``test_walkthroughs.Tutorial``), so a
+    shuffled order tests nothing more, and a late part run first plays
+    every part before it. pytest-randomly shuffles first; the parts take
+    the places it gave them, in page order.
+    """
+    places = [
+        index
+        for index, item in enumerate(items)
+        if item.nodeid.startswith("domainkit_tests/test_walkthroughs.py::test_part_")
+    ]
+    parts = sorted((items[index] for index in places), key=lambda item: item.name)
+    for index, item in zip(places, parts, strict=True):
+        items[index] = item
+
+
 @pytest.fixture(autouse=True)
 def framework_settings() -> Iterator[None]:
     """Run against ``domainkit_tests.settings`` with a fresh registry."""

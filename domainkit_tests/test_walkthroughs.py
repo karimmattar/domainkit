@@ -46,6 +46,15 @@ TYPED = {"PASSWORD": "correct-horse-battery", "CLERK_PASSWORD": "staple-lantern-
 """What the user types at each ``read -rsp`` prompt of the pages."""
 QUIET = ("-p", "no:cacheprovider")
 """The generated project's tests leave no cache behind."""
+STEP_TIMEOUT = 120
+"""Seconds one line may run: one that runs two minutes hangs, as a test does."""
+WALKED = pytest.mark.timeout(func_only=True)
+"""A test whose walk is played by its fixtures, each line within ``STEP_TIMEOUT``.
+
+pytest-timeout's two minutes then hold its own body only: a walk is a
+reader's dozens of commands, which a loaded machine ran past two minutes
+together, though none came near it alone.
+"""
 _BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.DOTALL | re.MULTILINE)
 _FENCE = re.compile(
     r"^```(?P<info>[^\n]*)\n(?P<body>.*?)^```$", re.DOTALL | re.MULTILINE
@@ -170,7 +179,13 @@ class Walk:
                 "pytest": [sys.executable, "-m", "pytest", "-q", *QUIET],
             }[program] + args
             done = subprocess.run(  # noqa: S603 - this interpreter, the page's line.
-                argv, cwd=self.cwd, env=env, capture_output=True, text=True, check=False
+                argv,
+                cwd=self.cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=STEP_TIMEOUT,
             )
             assert done.returncode == 0, f"{line}\n{done.stdout}{done.stderr}"
             if output is not None:
@@ -199,6 +214,7 @@ class Walk:
             capture_output=True,
             text=True,
             check=False,
+            timeout=STEP_TIMEOUT,
         )
         assert done.returncode == 0, done.stdout + done.stderr
         *answered, state = [
@@ -250,13 +266,31 @@ def without_environment(page: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return [(where, step) for where, step in page if step not in ENVIRONMENT_LINES]
 
 
-def test_the_quick_start_works_as_written(tmp_path: Path) -> None:
-    """The README's commands, then its login and first request, as printed."""
+@dataclass
+class QuickStart:
+    """The README's quick start, walked: its lines, the shell, and the answers."""
+
+    readme: str
+    lines: list[str]
+    shell: Walk
+    answers: list[dict[str, Any]]
+
+
+@pytest.fixture
+def quick_start(tmp_path: Path) -> QuickStart:
+    """Walk the README's quick start in a new directory."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     lines = shell_lines(section(readme, "Quick start"))
     shell = Walk(tmp_path)
+    answers = shell.play(without_environment([("$", line) for line in lines]))
+    return QuickStart(readme, lines, shell, answers)
 
-    login, listed = shell.play(without_environment([("$", line) for line in lines]))
+
+@WALKED
+def test_the_quick_start_works_as_written(quick_start: QuickStart) -> None:
+    """The README's commands, then its login and first request, as printed."""
+    readme, lines, shell = quick_start.readme, quick_start.lines, quick_start.shell
+    login, listed = quick_start.answers
 
     assert login["output"].startswith("dkt_")
     assert json.loads(listed["output"]) == {"items": [], "next_cursor": None}
@@ -280,24 +314,46 @@ def test_the_quick_start_works_as_written(tmp_path: Path) -> None:
 
 @dataclass
 class Tutorial:
-    """The getting-started path, walked once: the shell, and each part's answers."""
+    """The getting-started path, walked part by part as tests need it.
+
+    One reader walks it, in one directory: each test's fixture plays the
+    parts up to its own that no test has played yet, so a worker that runs
+    only the first parts walks only those.
+    """
 
     shell: Walk
-    answers: dict[str, list[dict[str, Any]]]
+    answers: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    failed: str | None = None
+    """The part that failed: the walk cannot go on past it."""
+
+    def through(self, part: str) -> list[dict[str, Any]]:
+        """Play every part up to ``part`` not played yet; ``part``'s answers."""
+        for earlier in PARTS[: PARTS.index(part) + 1]:
+            if self.failed is not None:
+                pytest.fail(f"{self.failed} failed, so the walk stopped there")
+            if earlier in self.answers:
+                continue
+            page = steps((TUTORIAL / earlier).read_text(encoding="utf-8"))
+            if earlier == PARTS[0]:
+                page = without_environment(page)
+            self.failed = earlier
+            self.answers[earlier] = self.shell.play(page)
+            self.failed = None
+        return self.answers[part]
 
 
 @pytest.fixture(scope="module")
-def tutorial(tmp_path_factory: pytest.TempPathFactory) -> Tutorial:
-    """Walk every part in order, in one directory, as one reader would."""
+def reader(tmp_path_factory: pytest.TempPathFactory) -> Tutorial:
+    """The tutorial's reader, in a new directory, before the first part."""
     assert sorted(path.name for path in TUTORIAL.glob("*.md")) == list(PARTS)
-    shell = Walk(tmp_path_factory.mktemp("tutorial"))
-    answers: dict[str, list[dict[str, Any]]] = {}
-    for part in PARTS:
-        page = steps((TUTORIAL / part).read_text(encoding="utf-8"))
-        if part == PARTS[0]:
-            page = without_environment(page)
-        answers[part] = shell.play(page)
-    return Tutorial(shell, answers)
+    return Tutorial(Walk(tmp_path_factory.mktemp("tutorial")))
+
+
+@pytest.fixture
+def tutorial(reader: Tutorial, request: pytest.FixtureRequest) -> Tutorial:
+    """The reader, walked through the part the test is about (``test_part_N_``)."""
+    reader.through(PARTS[int(request.node.name.split("_")[2]) - 1])
+    return reader
 
 
 def body(answer: dict[str, Any]) -> Any:  # noqa: ANN401 - JSON.
@@ -308,9 +364,10 @@ def body(answer: dict[str, Any]) -> Any:  # noqa: ANN401 - JSON.
     return json.loads(output)
 
 
+@WALKED
 def test_part_1_serves_a_first_resource(tutorial: Tutorial) -> None:
     """Install to a created and listed account, behind a login."""
-    anonymous, login, created, kept, blank = tutorial.answers[PARTS[0]]
+    anonymous, login, created, kept, blank = tutorial.through(PARTS[0])
 
     assert body(anonymous)["code"] == "not_authenticated"
     assert login["output"].startswith("dkt_")
@@ -321,9 +378,10 @@ def test_part_1_serves_a_first_resource(tutorial: Tutorial) -> None:
     assert body(blank)["code"] == "invalid_account_name"
 
 
+@WALKED
 def test_part_2_holds_the_rules_written_by_hand(tutorial: Tutorial) -> None:
     """A deposit adds to the balance; the aggregate and the API refuse the rest."""
-    answers = tutorial.answers[PARTS[1]]
+    answers = tutorial.through(PARTS[1])
     deposited, negative, too_precise, closed, archived, late = answers
 
     assert body(deposited)["balance"] == "100.00"
@@ -336,9 +394,10 @@ def test_part_2_holds_the_rules_written_by_hand(tutorial: Tutorial) -> None:
     assert body(late)["code"] == "account_is_archived"
 
 
+@WALKED
 def test_part_3_grants_a_clerk_only_what_they_need(tutorial: Tutorial) -> None:
     """403 without the permission, reads with it, and still no deposits."""
-    answers = tutorial.answers[PARTS[2]]
+    answers = tutorial.through(PARTS[2])
     made, login, refused, granted, listed, deposit = answers
 
     assert made["status"] == 201
@@ -354,9 +413,10 @@ def test_part_3_grants_a_clerk_only_what_they_need(tutorial: Tutorial) -> None:
     assert not {"PASSWORD", "CLERK_PASSWORD"} & set(tutorial.shell.variables)
 
 
+@WALKED
 def test_part_4_runs_a_durable_handler_in_the_worker(tutorial: Tutorial) -> None:
     """The deposit's reaction waits in the outbox until the worker runs it."""
-    [deposited] = tutorial.answers[PARTS[3]]
+    [deposited] = tutorial.through(PARTS[3])
     printed = tutorial.shell.printed
 
     assert body(deposited)["balance"] == "125.00"
@@ -371,11 +431,12 @@ def test_part_4_runs_a_durable_handler_in_the_worker(tutorial: Tutorial) -> None
     assert f"Deposited 25.00 into account {account}" in ran
 
 
+@WALKED
 def test_part_5_tests_the_rules_and_passes_the_production_checks(
     tutorial: Tutorial,
 ) -> None:
     """The project's tests pass with the new ones; production settings check out."""
-    assert tutorial.answers[PARTS[4]] == []
+    assert tutorial.through(PARTS[4]) == []
     tests = tutorial.shell.cwd / "tests" / "domains" / "accounts"
     assert "def test_deposits_must_be_positive" in (tests / "test_model.py").read_text()
     printed = tutorial.shell.printed["pytest"]
