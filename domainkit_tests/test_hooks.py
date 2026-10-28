@@ -217,7 +217,11 @@ def test_hooks_register_in_ready_or_for_a_named_domain(
 
     with override_settings(INSTALLED_DOMAINS=[ALPHA, "quiet", "typed"]):
         setup()
-        with pytest.raises(ImproperlyConfigured, match=r"Register probe hooks in"):
+        with pytest.raises(
+            ImproperlyConfigured,
+            match=r"^Register probe hooks in DomainConfig\.ready\(\), or name the "
+            r"domain: domain='label'\.$",
+        ):
             point(probe)
         assert point(probe, domain="typed") is probe
         point(probe, domain="elsewhere")  # Not installed: never called.

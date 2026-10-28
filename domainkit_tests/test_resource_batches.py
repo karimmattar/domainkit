@@ -325,8 +325,9 @@ class Raced(Exception):
     """A failure a batch's ``retry`` runs again after, and no refusal."""
 
 
+@pytest.mark.parametrize("attempts", [1, 2])
 def test_an_atomic_batch_raises_what_it_kept_losing_to_if_no_refusal(
-    store: InMemoryGadgets, use_auth: UseAuth
+    store: InMemoryGadgets, use_auth: UseAuth, attempts: int
 ) -> None:
     """Once the runs are spent, an error that is no refusal is raised, noted."""
     use_auth()
@@ -341,7 +342,7 @@ def test_an_atomic_batch_raises_what_it_kept_losing_to_if_no_refusal(
         RenameGadget,
         service=losing,
         body=RenameIn,
-        retry=Retry(attempts=2, backoff=0, retry_on=(Raced,)),
+        retry=Retry(attempts=attempts, backoff=0, retry_on=(Raced,)),
     )
     client = client_of(resource)
     known = ids(store)
@@ -356,5 +357,6 @@ def test_an_atomic_batch_raises_what_it_kept_losing_to_if_no_refusal(
             headers=as_("changer"),
         )
 
-    assert raised.value.__notes__ == ["The work ran 2 times; each run lost a race."]
-    assert runs == [known["a"], known["a"]]
+    notes = ["The work ran 2 times; each run lost a race."] if attempts > 1 else []
+    assert getattr(raised.value, "__notes__", []) == notes
+    assert runs == [known["a"]] * attempts

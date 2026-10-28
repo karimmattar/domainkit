@@ -112,6 +112,15 @@ class Probe:
 class OddConfig(DomainConfig):
     check = Probe()
 """
+BORROWED = """
+from domainkit.apps import DomainConfig
+
+from borrowed import hooks
+
+
+class BorrowedConfig(DomainConfig):
+    startup = hooks.startup
+"""
 TWICE = """
 from domainkit.apps import DomainConfig
 from domainkit.apps.hooks import on_check, on_seed, on_shutdown, on_startup
@@ -253,6 +262,11 @@ def test_registrations_are_checked_against_the_point() -> None:
     assert on_check_application(anything, domain="alpha") is anything
     probe = Probe()
     assert on_check(probe, domain="alpha") is probe
+    with pytest.raises(ImproperlyConfigured) as unnamed:
+        on_erase_subject(probe, domain="alpha")  # type: ignore[arg-type]
+    assert str(unnamed.value).startswith(
+        f"alpha's erase_subject hook {probe!r} must take 2 positional arguments ("
+    )
     unsigned: Any = max  # A built-in without a signature is trusted.
     assert on_deployment_warnings(unsigned, domain="alpha") is unsigned
     free: HookPoint[Any] = HookPoint("free")
@@ -310,6 +324,46 @@ def test_old_hook_methods_still_work_and_warn_once_at_their_line(
         str(__import__("oldstyle.apps").apps.__file__)
     }
     assert len({line for _, line in found}) == len(methods)
+
+
+def test_the_warning_is_the_projects_own_module_s(old_calls: list[str]) -> None:
+    """A filter on the project's module catches it, as ``filterwarnings`` would."""
+    with (
+        override_settings(INSTALLED_DOMAINS=[ALPHA, "oldstyle"]),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("ignore", DomainkitDeprecationWarning)
+        warnings.filterwarnings(
+            "error", category=DomainkitDeprecationWarning, module=r"oldstyle\.apps$"
+        )
+        with pytest.raises(DomainkitDeprecationWarning, match="'oldstyle'"):
+            setup()
+
+
+def test_a_hook_method_defined_elsewhere_is_warned_where_it_is(
+    make_package: MakePackage,
+) -> None:
+    """A function assigned as the method is warned of at its own line."""
+    make_package(
+        "borrowed",
+        {
+            "hooks.py": "async def startup(self):\n    return None\n",
+            "apps.py": BORROWED,
+        },
+    )
+
+    with (
+        override_settings(INSTALLED_DOMAINS=[ALPHA, "borrowed"]),
+        pytest.warns(
+            DomainkitDeprecationWarning, match="BorrowedConfig.startup"
+        ) as caught,
+    ):
+        setup()
+
+    assert (caught[0].filename, caught[0].lineno) == (
+        __import__("borrowed.hooks").hooks.__file__,
+        1,
+    )
 
 
 def test_an_inherited_hook_method_names_the_class_that_defines_it(
@@ -413,6 +467,18 @@ def test_readiness_runs_a_domains_checks_in_turn(
     assert twice_calls == ["check first", "check second"] * 2
     assert "Readiness check 'twice' failed" in caplog.text
     assert asyncio.run(DomainRegistry().check(1.0)) == []
+
+
+def test_seed_skips_the_domains_not_named(twice_calls: list[str]) -> None:
+    """A domain left out is skipped; those after it are seeded."""
+    from domainkit.management import call_command
+
+    with override_settings(INSTALLED_DOMAINS=[ALPHA, "bare", "twice"]):
+        setup()
+        on_seed(functools.partial(asyncio.sleep, 0), domain="alpha")
+        call_command("seed", "twice")
+
+    assert twice_calls == ["seed", "seed again"]
 
 
 def test_seed_runs_every_hook_and_names_each_domain_once(

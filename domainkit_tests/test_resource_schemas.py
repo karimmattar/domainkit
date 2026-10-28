@@ -477,7 +477,12 @@ async def test_an_expectation_is_its_unit_of_works_alone() -> None:
         assert await standalone.get(order.id) is lone  # Lent by no one: unchecked.
         assert not expected.checked
         async with uow:
-            with pytest.raises(RuntimeError, match=r"did not load Order .* nothing"):
+            with pytest.raises(
+                RuntimeError,
+                match=r"^The service did not load Order \S+ through its repository "
+                r"before committing, so If-Match could not be checked; nothing was "
+                r"written\.$",
+            ):
                 await uow.commit()
             await uow.orders.get(order.id)
             await uow.commit()
