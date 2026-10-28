@@ -66,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.types import TypeEngine
 
 from domainkit.db.connections import connections, create_owner_engine
+from domainkit.db.derive import ValueObjectType
 from domainkit.db.models import installed_models
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
@@ -252,23 +253,52 @@ async def load(
     tables: Sequence[tuple[Table, list[dict[str, Any]]]],
     *,
     replace: bool,
-) -> None:
+) -> list[TableLoad]:
     """Write the rows, parents first, in one transaction; then fix sequences.
 
     Without ``replace`` the rows are only inserted: one whose primary key
     is stored, even one stored since ``plan_load`` counted, fails the load
-    with the database's ``IntegrityError``.
+    with the database's ``IntegrityError``. Returns what each table got,
+    counted in the load's own transaction once it holds the tables' write
+    lock, so a row stored after ``plan_load`` counted is counted as
+    replaced: what the load wrote, not what it planned.
     """
     engine = create_owner_engine(connections.config(database))
+    loaded = []
     try:
         async with engine.begin() as connection:
+            await _lock(connection, [table for table, _ in tables])
             for table, rows in tables:
+                replaced = await _stored(connection, table, rows)
                 statement = _insert(connection, table, replace=replace)
                 for start in range(0, len(rows), CHUNK):
                     await connection.execute(statement, rows[start : start + CHUNK])
+                loaded.append(
+                    TableLoad(table.name, len(rows), replaced, guarded(table))
+                )
             await _reset_sequences(connection, [table for table, _ in tables])
     finally:
         await engine.dispose()
+    return loaded
+
+
+async def _lock(connection: AsyncConnection, tables: Sequence[Table]) -> None:
+    """Hold ``tables`` against other writers until the transaction ends.
+
+    PostgreSQL: ``SHARE ROW EXCLUSIVE``, which lets readers in and keeps
+    every other writer (another load too) out. SQLite: the database's
+    write lock, taken as the transaction begins (``BEGIN IMMEDIATE``).
+    """
+    if connection.dialect.name == "postgresql":
+        if tables:
+            names = ", ".join(
+                connection.dialect.identifier_preparer.format_table(t) for t in tables
+            )
+            await connection.exec_driver_sql(
+                f"LOCK TABLE {names} IN SHARE ROW EXCLUSIVE MODE"
+            )
+        return
+    await connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 async def flush_plan(database: str, *, include_guarded: bool) -> FlushPlan:
@@ -451,10 +481,14 @@ def _encoded_row(table: Table, row: RowMapping) -> dict[str, Any]:
 def _encoded(column: Column[Any], value: object) -> object:
     """One value as JSON: bytes as base64, the rest as pydantic writes them.
 
-    Decimals, ids, times, durations, and enums become text.
+    Decimals, ids, times, durations, and enums become text. A single-field
+    value object's column (``ValueObjectType``: a password hash, a
+    project's ``ProductName``) holds the field, as the database does.
     """
     if value is None or isinstance(column.type, JSON):
         return value
+    if isinstance(column.type, ValueObjectType):
+        value = getattr(value, column.type.field)
     if isinstance(value, bytes):
         return base64.b64encode(value).decode()
     return jsonable(value)
@@ -479,16 +513,23 @@ def _decoded(column: Column[Any], value: object) -> object:
 
     A ``Decimal`` number (as ``loaddata`` reads one with a fraction) stays
     one for a decimal column, and is the float it always was for any
-    other, JSON columns included.
+    other, JSON columns included. A single-field value object's column
+    takes the field's value, made into the object.
     """
     if value is None:
         return value
-    python_type = _python_type(column.type)
-    if isinstance(column.type, JSON) or python_type is None:
+    if isinstance(column.type, ValueObjectType):
+        return _value_object(column, column.type, value)
+    return _converted(column, column.type, value)
+
+
+def _converted(column: Column[Any], type_: TypeEngine[Any], value: object) -> object:
+    """``value`` as the Python type ``type_`` holds, for ``column``."""
+    python_type = _python_type(type_)
+    if isinstance(type_, JSON) or python_type is None:
         return _floats(value)
     if not (isinstance(python_type, type) and issubclass(python_type, Decimal)):
         value = _floats(value)
-    where = f"{column.table.name}.{column.name}"
     try:
         if python_type is bytes:
             if not isinstance(value, str):
@@ -497,8 +538,36 @@ def _decoded(column: Column[Any], value: object) -> object:
         return TypeAdapter(python_type).validate_python(value)
     except (ValidationError, TypeError, binascii.Error):
         raise FixtureError(
-            f"{where} holds a value that is not {python_type.__name__}."
+            f"{_where(column)} holds a value that is not {python_type.__name__}."
         ) from None
+
+
+def _value_object(
+    column: Column[Any], type_: ValueObjectType[Any], value: object
+) -> object:
+    """A value object column's value: its field's, made into the object.
+
+    The object checks what it holds, as it does in the domain: a password
+    hash that is not a hash is refused. Fixtures written before 0.12 hold
+    the object as ``{"<field>": ...}``, which reads the same.
+
+    Raises:
+        FixtureError: The value is not one the object takes.
+    """
+    if isinstance(value, dict) and set(value) == {type_.field}:
+        value = value[type_.field]
+    field = _converted(column, type_.impl_instance, value)
+    try:
+        return type_.cls(field)
+    except (ValueError, TypeError):
+        raise FixtureError(
+            f"{_where(column)} holds a value that is not {type_.cls.__name__}."
+        ) from None
+
+
+def _where(column: Column[Any]) -> str:
+    """``table.column``, as errors name a column."""
+    return f"{column.table.name}.{column.name}"
 
 
 def _floats(value: object) -> object:

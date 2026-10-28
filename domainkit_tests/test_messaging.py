@@ -1928,26 +1928,24 @@ async def wait_at_gate(name: str) -> None:
 async def test_stopping_waits_for_every_running_delivery(
     broker_tables: MemoryBroker,
 ) -> None:
-    """Deliveries running when the worker stops all finish before it returns."""
+    """Deliveries running when the worker stops all finish before it returns.
+
+    The tasks get ``SLOW``'s timeout: under ``FAST``'s 0.2 seconds, a loaded
+    machine let "b" time out while the test waited, and the worker returned.
+    """
     gates.update(a=asyncio.Event(), b=asyncio.Event())
     await enqueue(wait_at_gate, name="a")
     await enqueue(wait_at_gate, name="b")
     stop = asyncio.Event()
-    config = registry.settings(MessagingSettings)
+    config = MessagingSettings(**{**BROKERED, **SLOW})
     running = asyncio.create_task(
-        BrokerWorkers([Worker()], ["default"], config).run(stop)
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
     )
-    for _ in range(500):
-        if {"a:started", "b:started"} <= set(ran):
-            break
-        await asyncio.sleep(0.01)
+    await until(lambda: {"a:started", "b:started"} <= set(ran))
 
     stop.set()
     gates["a"].set()
-    for _ in range(500):
-        if "a:done" in ran:
-            break
-        await asyncio.sleep(0.01)
+    await until(lambda: "a:done" in ran)
     await asyncio.sleep(0.02)
     assert not running.done()  # "b" still runs, so the worker waits.
     gates["b"].set()

@@ -145,6 +145,23 @@ class AuthConfig(DomainConfig):
             await uow.commit()
         return issued.access_token
 
+    async def issue_test_token_for(self, user_id: Any) -> str:  # noqa: ANN401 - any user model's id.
+        """An access token for the stored user ``user_id`` (``testing``).
+
+        From the first ``AUTH.AUTHENTICATION_CLASSES`` class, as a login's
+        would be: a user made by a factory or by ``create_user``.
+
+        Raises:
+            NotFound: No user has the id.
+        """
+        from .uow import AuthUnitOfWork
+
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(user_id)
+            issued = await get_authenticators()[0].issue(uow, user)
+            await uow.commit()
+        return issued.access_token
+
     def application_problems(self, app: FastAPI) -> list[str]:
         """Rules no middleware can answer, and what auth's own routes lack.
 

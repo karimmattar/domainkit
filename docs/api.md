@@ -418,6 +418,13 @@ Signing up: anyone may ask for an account, if `AUTH.SIGNUP_ENABLED` says so.
 
 - `router`: The routes: signing up: anyone may ask for an account, if `AUTH.SIGNUP_ENABLED` says so.
 
+## `domainkit.contrib.auth.testing`
+
+Users and groups for tests, stored as the application stores them.
+
+- `create_group`: Store a group granted `permissions` (keys); `group-<hex>` unless named.
+- `create_user`: Store a user granted `permissions` (keys), in `groups` (names).
+
 ## `domainkit.contrib.auth.validators`
 
 Rules for new passwords (Django's `password_validation`).
@@ -1338,12 +1345,14 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `LazyAttribute`: `LazyAttribute(lambda o: o.name.lower())`: computed from other fields.
 - `LazyFunction`: `LazyFunction(uuid4)`: the function's result, called for each object.
 - `Sequence`: `Sequence(lambda n: f"user-{n}")`: the object's number, from 0.
+- `SettingsOverrides`: The `settings` fixture: settings changed until the test ends.
 - `SubFactory`: `SubFactory(MoneyFactory, currency="EUR")`: another factory's object.
 - `TestClient`: Starlette's `TestClient`; the application sees the caller's context.
 - `assert_max_queries`: Check that the `with` block runs at most `limit` SQL statements.
 - `assert_num_queries`: Check that the `with` block runs exactly `expected` SQL statements.
 - `freeze_time`: Return a clock frozen at `when` (default: now), for a `with` block.
 - `migrated_database`: Make, migrate, and later drop the test databases; yield the default's URL.
+- `token_for`: Return an access token for `user`, a user stored already.
 - `user_token`: Store a new user granted `permissions`; return an access token for them.
 
 ## `domainkit.tracing`

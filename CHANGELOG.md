@@ -87,6 +87,33 @@ and a status.
   from a replica (DOCS-05).
 - `docs/from-django.md` maps what a Django or Django REST framework user
   reaches for to its name here, and its page (DOCS-12, DOCS-10).
+- `domainkit.contrib.auth.testing`: `await create_user(*permissions,
+  password=None, groups=(), superuser=False, **fields)` and `await
+  create_group(*permissions, name=None)` store users and groups for tests
+  as the application does, through `AuthUnitOfWork`, so their events are
+  published (`docs/testing.md`; ADR 0107) (TEST-08).
+- `client.authenticated_as(user)` and `await
+  async_client.authenticated_as(user)` sign a test client in as a user
+  stored already (one a test made, or a factory stored), as DRF's
+  `force_authenticate` does; `await token_for(user)` returns the token.
+  Until now a test could sign in only as a new user `client_for` made.
+  Another provider of users implements the new protocol
+  `StoredUserTokenIssuer` to take part (TEST-08).
+- `TestClient.run(function, *args, **kwargs)` awaits async setup in the
+  sync client's event loop, with the caller's context (TEST-08).
+- A `settings` fixture in the pytest plugin, as pytest-django's:
+  `settings.DEBUG = True` changes a setting, validated, until the test
+  ends (TEST-08).
+- `docs/testing.md` compares the plugin with pytest-django, DRF's test
+  tools, Litestar's, and factory_boy: what each gives, what domainkit
+  gives, and what it does not yet (TEST-08).
+- `dumpdata --include-guarded` and `--operator`: a dump with guarded
+  tables is recorded as `operator.dumpdata` (its tables, their row counts,
+  and the SHA-256 of what was written), and in staging and production
+  needs a named operator (DATA-12; ADR 0100).
+- CI's `mutation (changed)` job runs, on each pull request that changes
+  code, the mutants of the functions and methods it changed, and fails
+  when one lives; not a required check (ADR 0106) (TEST-02, TEST-07).
 
 ### Changed
 
@@ -135,6 +162,18 @@ and a status.
   PostgreSQL on the newest asyncpg and SQLAlchemy, with settling on for
   releases `_PROVEN` does not name yet; the suite then says whether to
   widen `_PROVEN` (CONC-08; ADR 0048's amendment).
+- **Breaking:** `dumpdata` leaves guarded tables (users and their password
+  hashes, groups, permissions, content types, object grants, dynamic
+  settings) out of a dump of every table, and says so on standard error,
+  and refuses a guarded table named, alone or by its domain. **To keep the
+  old behaviour:** `dumpdata --include-guarded` (DATA-12).
+- A fixture holds a single-field value object's column (`ValueObjectType`:
+  a password hash, a project's `ProductName`) as its field, not as
+  `{"value": ...}`, and `loaddata` makes the object from it, so the
+  object's checks apply: a raw password in place of a hash is refused.
+  Fixtures written by 0.11 load as before. `PasswordHashType` is a
+  `ValueObjectType`, with the same constructor and repr, so migrations
+  naming it are unchanged (DATA-12).
 
 ### Deprecated
 
@@ -166,6 +205,29 @@ and a status.
   with status 1: `Database 'default' cannot be reached at
   postgresql+asyncpg://app:***@db/app (ConnectionRefusedError: ...)`,
   the URL without its password, and the driver's own reason (INFRA-08).
+- A user dumped by `dumpdata` could not be loaded again, even with
+  `--include-guarded`: the password hash was refused. It loads back as it
+  was (DATA-12).
+- `loaddata --replace` recorded the counts its plan read before the load's
+  transaction, so a row stored in between was recorded as added, not
+  replaced. The load holds its tables' write lock (`SHARE ROW EXCLUSIVE` on
+  PostgreSQL, `BEGIN IMMEDIATE` on SQLite) while it counts and writes, and
+  `operator.loaddata` holds what it wrote (DATA-12).
+- The weekly mutation run stopped in every shard before its first mutant:
+  four tests that read domainkit's source text or the frames of its calls
+  failed on mutmut's rewritten copy, and three generated projects started
+  under mutmut's own variable. Those tests carry the marker
+  `reads_own_source`, which mutation runs leave out, and the projects
+  start without the variable (TEST-02, TEST-07).
+- Tests that failed under load now pass at any load, each for the reason
+  it failed: the rate limiter and the middleware read different clocks
+  (`test_held_addresses_are_let_go`), a task timed out at 0.2 s while the
+  test waited (`test_stopping_waits_for_every_running_delivery`), and the
+  walkthroughs and the generated-code test held dozens of commands to one
+  test's two minutes, now each command to its own (TEST-01, TEST-02).
+- The blocking detector's nested test sessions, most of the time the
+  plugin's own tests took, sleep 0.15 s where 0.25 s was, still half again
+  what the detector reports (TEST-09).
 
 ## [0.11.2] - 2026-10-28
 

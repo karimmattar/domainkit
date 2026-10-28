@@ -40,7 +40,7 @@ from sqlalchemy.types import TypeDecorator
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.contrib.contenttypes.tables import start_mappers as start_content_types
-from domainkit.db import UTCDateTime, map_imperatively, metadata
+from domainkit.db import UTCDateTime, ValueObjectType, map_imperatively, metadata
 
 from .exceptions import GroupNameTaken, UsernameTaken
 from .models import (
@@ -55,23 +55,24 @@ from .models import (
 from .tokens import AuthToken
 
 
-class PasswordHashType(TypeDecorator[PasswordHash]):
-    """Store a ``PasswordHash`` as text."""
+class PasswordHashType(ValueObjectType[PasswordHash]):
+    """Store a ``PasswordHash`` as text.
 
-    impl = String(255)
+    A single-field value object's column, so fixtures write the hash as the
+    text it is stored as, and read it back through ``PasswordHash``, which
+    refuses anything that is not a hash.
+    """
+
     cache_ok = True
 
-    def process_bind_param(
-        self, value: PasswordHash | None, dialect: Dialect
-    ) -> str | None:
-        """Unwrap the value object."""
-        return None if value is None else value.value
+    def __init__(self, length: int = 255) -> None:
+        """Hold hashes of up to ``length`` characters."""
+        super().__init__(PasswordHash, String(length))
+        self.length = length
 
-    def process_result_value(
-        self, value: str | None, dialect: Dialect
-    ) -> PasswordHash | None:
-        """Wrap the stored text."""
-        return None if value is None else PasswordHash(value)
+    def __repr__(self) -> str:
+        """``PasswordHashType(length=255)``, as migrations have it."""
+        return f"PasswordHashType(length={self.length})"
 
 
 class ScopesType(TypeDecorator[frozenset[str]]):

@@ -1,6 +1,6 @@
 # 0100. Guard credentials and grants from `loaddata` and `flush`, and load new rows only
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-28 (at the end)
 - Date: 2026-10-26
 
 ## Context
@@ -133,3 +133,47 @@ The options:
   with `--include-guarded` (the password column's type takes a
   `PasswordHash`, not the text a fixture holds, and `dumpdata` writes it
   as `{"value": ...}`). That is a bug of the fixture format, not a guard.
+
+## Amendment (2026-10-28, 0.12): `dumpdata`, the count a load records, and users in fixtures
+
+Three gaps 0.11 left, each proved by a test that failed on 0.11.1
+(`test_data_guards.py`):
+
+- **`dumpdata` copied guarded tables out unrecorded.** Any operator could
+  write users with their password hashes, dynamic settings (which may be
+  secret), and grants to a file or a terminal, and no row said so.
+  `dumpdata` now treats them as `loaddata` does: a guarded table, named
+  or reached by its domain's label, is refused without
+  `--include-guarded`; a dump of every table leaves them out and says so
+  on standard error, rather than failing, since that is how it already
+  left out state, and a project with auth would otherwise have no bare
+  `dumpdata` at all. With the option, the dump is recorded as
+  `operator.dumpdata` (the tables, their row counts, the output's name,
+  and the SHA-256 of the text written: no row), and needs a named
+  operator in staging and production. A dump without guarded tables is
+  not recorded, as reads are not: it holds nothing a load of it could not
+  write back without the option either.
+- **`loaddata --replace` recorded the plan's count.** The counts came
+  from `plan_load`, read before the load's own transaction: a row stored
+  in between was replaced but recorded as added (0 replaced, where 1
+  was). The load now takes its tables' write lock first (`LOCK TABLE ...
+  IN SHARE ROW EXCLUSIVE MODE` on PostgreSQL, which lets readers in and
+  keeps other writers, another load among them, out; `BEGIN IMMEDIATE` on
+  SQLite), counts the stored keys inside that transaction, and the record
+  holds those counts. The plan is still printed first, as advice.
+  Counting from `RETURNING` (`xmax <> 0` on PostgreSQL) was the other
+  candidate: no lock, but nothing on SQLite tells an insert from an
+  update, and it rests on PostgreSQL's storage internals.
+- **A user row did not round-trip.** `dumpdata` wrote the password hash
+  as the value object's JSON (`{"value": ...}`), which `loaddata`
+  refused, even with `--include-guarded`. The bug was in the fixture
+  format, not the guard: any single-field value object's column
+  (`ValueObjectType`, a project's `ProductName` too) had it. Such columns
+  now hold the field's value in a fixture, as the database stores it, and
+  loading makes the object from it, so the object's checks still apply: a
+  raw password in place of a hash is refused (`PasswordHash` takes only
+  hashes). `PasswordHashType` became a `ValueObjectType`, keeping its
+  constructor and repr (`PasswordHashType(length=255)`), so migrations
+  that name it are unchanged. Fixtures 0.11 wrote, with `{"value": ...}`,
+  load too. The guard is not opened: loading a user still needs
+  `--include-guarded`.

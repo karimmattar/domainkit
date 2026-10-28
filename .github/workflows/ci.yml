@@ -818,6 +818,78 @@ jobs:
           path: junit.xml
           retention-days: 14
 
+  # On a pull request that changes code: the mutants of the functions and
+  # methods it changed (.github/scripts/changed_mutants.py, against the base
+  # it merges into), so a change gets its mutation score before it merges,
+  # not at the next weekly run. mutmut runs the suite once for its stats,
+  # then each mutant with only the tests that reach its function. Not a
+  # check the ruleset requires (ADR 0106): it fails when a run does not
+  # finish, or when a changed function's mutant lives, and the summary
+  # lists them, for the author to kill or to explain.
+  mutation-changed:
+    name: mutation (changed)
+    needs: changes
+    if: >-
+      ${{ !cancelled() && !failure() && github.event_name == 'pull_request'
+      && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      # The merge commit and its first parent, the base branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --all-extras --with dev
+      - name: Find the changed functions
+        id: changed
+        shell: bash
+        run: |
+          set -f
+          mutants="$(poetry run python .github/scripts/changed_mutants.py HEAD^1)"
+          echo "mutants=$mutants" >> "$GITHUB_OUTPUT"
+          if [ -z "$mutants" ]; then
+            echo "### Mutation of the changed functions: none changed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # The patterns are mutant names, not files: no globbing by the shell.
+      # Interrupted (SIGINT) before the job's limit, mutmut stops and keeps
+      # what it found, so the summary still reports it, as incomplete.
+      - name: Run their mutants
+        if: steps.changed.outputs.mutants != ''
+        shell: bash
+        env:
+          MUTANTS: ${{ steps.changed.outputs.mutants }}
+        run: |
+          set -f
+          status=0
+          timeout --signal=INT --kill-after=5m 45m poetry run mutmut run $MUTANTS || status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "::error::The changed functions' mutants did not finish in 45 minutes."
+          fi
+          exit "$status"
+      - name: Summarise the changed functions' mutants
+        if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
+        shell: bash
+        env:
+          MUTANTS: ${{ steps.changed.outputs.mutants }}
+        run: |
+          set -f
+          poetry run python .github/scripts/mutation_summary.py changed --lived-fails $MUTANTS >> "$GITHUB_STEP_SUMMARY"
+      - if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutmut-results-changed
+          path: |
+            changed-mutants.txt
+            mutmut-results.txt
+            mutation-summary.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   # The whole package's mutants take longer than one job may run, so they run
   # in shards, balanced by the time their mutants' tests take: about 200
   # minutes each on four workers if every mutant ran all its tests (from
@@ -860,6 +932,7 @@ jobs:
               domainkit.contrib.auth.erasure.* domainkit.contrib.auth.exceptions.*
               domainkit.contrib.auth.mfa.* domainkit.contrib.auth.models.*
               domainkit.contrib.auth.recovery.* domainkit.contrib.auth.tables.*
+              domainkit.contrib.auth.testing.*
               domainkit.contrib.auth.throttling.* domainkit.contrib.auth.validators.*
           - name: http-1
             mutants: >-

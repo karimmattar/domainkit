@@ -38,6 +38,10 @@ every database the settings name, so they refuse settings whose
 ``assert_num_queries``, ``assert_max_queries``
     ``with assert_num_queries(3):``: fail unless the block runs exactly
     three SQL statements (at most three), listing those it ran.
+``settings``
+    ``settings.DEBUG = True``: the setting is changed, and validated, until
+    the test ends, as ``override_settings`` changes it for a block;
+    ``del settings.CACHES`` restores a default.
 
 ``pytest --detect-blocking`` fails a test that holds its event loop for
 ``--blocking-seconds`` (0.1) or more in one step (``domainkit.testing.blocking``).
@@ -54,12 +58,15 @@ reports and queued logs are sent before the next test starts; call
 import os
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import ExitStack
 from typing import Any, Final
 
 import pytest
 
 from domainkit.cache import caches
 from domainkit.clock import FrozenClock, Moment, freeze_time
+from domainkit.conf import UNSET, override_settings
+from domainkit.conf import settings as current_settings
 from domainkit.conf.env import project_prefix
 from domainkit.db.snapshots import Snapshot, restore_snapshot, take_snapshot
 from domainkit.http import get_asgi_application
@@ -68,7 +75,7 @@ from domainkit.management.base import run_async
 from domainkit.reporting import flush_reports
 
 from . import blocking
-from .clients import AsyncTestClient, TestClient, user_token
+from .clients import AsyncTestClient, TestClient, token_for, user_token
 from .databases import IN_MEMORY, migrated_database, worker_id
 from .factories import Factory, LazyAttribute, LazyFunction, Sequence, SubFactory
 from .queries import CapturedQueries, assert_max_queries, assert_num_queries
@@ -85,12 +92,14 @@ __all__ = [
     "LazyAttribute",
     "LazyFunction",
     "Sequence",
+    "SettingsOverrides",
     "SubFactory",
     "TestClient",
     "assert_max_queries",
     "assert_num_queries",
     "freeze_time",
     "migrated_database",
+    "token_for",
     "user_token",
 ]
 
@@ -105,6 +114,37 @@ OUTBOXES: Final = (
 type ClientFor = Callable[..., TestClient]
 type AsyncClientFor = Callable[..., Awaitable[AsyncTestClient]]
 type FreezeTime = Callable[..., FrozenClock]
+
+
+class SettingsOverrides:
+    """The ``settings`` fixture: settings changed until the test ends.
+
+    ``settings.DEBUG = True`` overrides one, validated as
+    ``override_settings`` validates it; ``del settings.CACHES`` puts its
+    default back. Reading an attribute reads the current setting. The
+    changes are undone in reverse order when the test ends, as
+    pytest-django's ``settings`` fixture undoes them.
+    """
+
+    def __init__(self, stack: ExitStack) -> None:
+        """Keep the changes on ``stack``, which the fixture closes."""
+        object.__setattr__(self, "_stack", stack)
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - any setting.
+        """The current value of setting ``name``."""
+        return getattr(current_settings, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Change setting ``name`` until the test ends.
+
+        Raises:
+            ImproperlyConfigured: The settings refuse the value.
+        """
+        self._stack.enter_context(override_settings(**{name: value}))
+
+    def __delattr__(self, name: str) -> None:
+        """Put setting ``name``'s default back until the test ends."""
+        self._stack.enter_context(override_settings(**{name: UNSET}))
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -254,6 +294,13 @@ def _freeze_time() -> Iterator[FreezeTime]:
     yield freeze
     for clock in reversed(started):
         clock.stop()
+
+
+@pytest.fixture(name="settings")
+def _settings() -> Iterator[SettingsOverrides]:
+    """Change settings until the test ends: ``settings.DEBUG = True``."""
+    with ExitStack() as stack:
+        yield SettingsOverrides(stack)
 
 
 @pytest.fixture(name="assert_num_queries")

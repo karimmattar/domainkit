@@ -95,17 +95,12 @@ class Command(BaseCommand):
                 fixture=path.name,
                 sha256=digest,
                 database=database,
-                rows=sum(entry.rows for entry in loads),
-                replaced=sum(entry.replaced for entry in loads),
-                tables={
-                    entry.table: {"rows": entry.rows, "replaced": entry.replaced}
-                    for entry in loads
-                },
                 replace=replace,
                 include_guarded=include_guarded,
-            ):
-                await self._load(path, database, tables, replace=replace)
-            self.write(f"Loaded {_rows(sum(e.rows for e in loads))} from {path}.")
+            ) as details:
+                loaded = await self._load(path, database, tables, replace=replace)
+                details.update(_counts(loaded))
+            self.write(f"Loaded {_rows(sum(e.rows for e in loaded))} from {path}.")
 
     async def _load(
         self,
@@ -114,10 +109,13 @@ class Command(BaseCommand):
         tables: list[tuple[Table, list[dict[str, Any]]]],
         *,
         replace: bool,
-    ) -> None:
-        """Write the rows; a constraint the database refuses names the fixture."""
+    ) -> list[fixtures.TableLoad]:
+        """Write the rows; what each table got, as the load counted it.
+
+        A constraint the database refuses names the fixture.
+        """
         try:
-            await fixtures.load(database, tables, replace=replace)
+            return await fixtures.load(database, tables, replace=replace)
         except IntegrityError as exc:
             violation = integrity_violation(exc, metadata)
             what = violation.kind.replace("_", " ") if violation else "a constraint"
@@ -159,6 +157,22 @@ def _refuse(
             f"{path}: {_rows(stored)} would replace stored rows with the same "
             "primary key. Nothing was loaded; repeat with --replace to replace them."
         )
+
+
+def _counts(loaded: list[fixtures.TableLoad]) -> dict[str, object]:
+    """The record's counts: what the load wrote, in total and per table.
+
+    Counted by the load, in its transaction, not by the plan printed
+    before it: a row stored in between is a replaced row.
+    """
+    return {
+        "rows": sum(entry.rows for entry in loaded),
+        "replaced": sum(entry.replaced for entry in loaded),
+        "tables": {
+            entry.table: {"rows": entry.rows, "replaced": entry.replaced}
+            for entry in loaded
+        },
+    }
 
 
 def _rows(count: int) -> str:

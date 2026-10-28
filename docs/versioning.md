@@ -199,7 +199,11 @@ One-time setup, before the first release:
     upstream releases is not the change's doing. Neither is `stress
     (3.14t)`, which runs the free-threading tests 30 times on 3.14t: on
     3.14.6t they crash the interpreter in some runs, inside SQLAlchemy's
-    compiled extensions, at 0.9.2 too. `domainkit_tests/test_ci.py` checks that the
+    compiled extensions, at 0.9.2 too. Nor is `mutation (changed)` (0.12),
+which runs the mutants of the functions a pull request changes, and fails
+when one lives: an equivalent mutant can live, which the author explains
+rather than kills ([ADR 0106](adr/0106-mutate-what-a-pull-request-changes.md)).
+`domainkit_tests/test_ci.py` checks that the
     list is every other job a pull request runs, and is this one.
   - `release-tags.json`: nobody, admins included, moves or deletes a `v*`
     tag.

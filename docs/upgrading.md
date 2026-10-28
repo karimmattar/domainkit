@@ -27,6 +27,9 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+Each changes what a project gets without changing its code. Each says how
+to keep the old behaviour, for as long as the project needs it.
+
 - **A hook registered with the wrong arguments fails `setup()`**
   (DSGN-03). The points of `domainkit.db.hooks` (`on_stage`, ...) check a
   function when it registers: it must take the arguments the point calls
@@ -35,6 +38,14 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   point's arguments (`async def hook(uow, events, tasks)` for `on_stage`).
   A `HookPoint` of a project's own checks nothing unless it is made with
   `arguments=` or `awaited=`.
+- **`dumpdata` leaves guarded tables out** (DATA-12). A dump of every
+  table leaves out users and their password hashes, groups, permissions,
+  content types, object grants, and dynamic settings, and says so on
+  standard error; naming one, or a domain that holds one, is refused.
+  **Fix:** dump them on purpose: `dumpdata --include-guarded`, which is
+  recorded in the audit trail and, in staging and production, needs
+  `--operator` or `DOMAINKIT_OPERATOR`. **To keep the old behaviour:**
+  `--include-guarded` on every dump that should hold them.
 
 ### Deprecated, removed in 0.13
 
