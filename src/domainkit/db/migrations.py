@@ -75,7 +75,7 @@ def where(url: URL) -> str:
         host = "***"  # The password's tail, then the host.
     shown = URL.create(url.drivername, host=host, port=url.port, database=url.database)
     hint = " (encode an @ in the password as %40)" if host == "***" else ""
-    return shown.render_as_string(hide_password=False) + hint
+    return shown.render_as_string() + hint  # It holds no password to hide.
 
 
 @asynccontextmanager
