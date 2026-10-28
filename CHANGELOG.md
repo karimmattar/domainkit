@@ -9,6 +9,14 @@ and a status.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-28
+
+A minor release: what 0.10 deprecated is removed or refused, two defaults
+it announced take effect, and some changes break. `docs/upgrading.md`
+lists each with its fix. Messaging and idempotency have a new table and a
+new column: run `makemigrations` and `migrate` before the new version
+serves requests, and `check --deploy` after upgrading.
+
 ### Added
 
 - `ACCEPT_REQUEST_ID` (`"proxies"`, `"anyone"`, or `"never"`; default
@@ -3619,7 +3627,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/karimmattar/domainkit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/karimmattar/domainkit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/karimmattar/domainkit/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/karimmattar/domainkit/compare/v0.9.2...v0.9.3
