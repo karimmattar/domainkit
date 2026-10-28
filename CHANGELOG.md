@@ -48,6 +48,11 @@ and a status.
   `RuntimeError` it did, but that write stands, where 0.11 refused it.
   Change aggregates through the unit of work the route passes (DSGN-14;
   ADR 0102).
+- The mail and notification backends share one base for what they share:
+  sending a batch, `deployable`, the memory and console backends, and
+  loading the class a setting names. `BaseEmailBackend`, `SmsBackend`,
+  `PushBackend`, and their memory, console, and SMTP backends keep their
+  names, import paths, output, and errors (DSGN-10).
 - **Breaking:** a function registered on a point of `domainkit.db.hooks`
   with the wrong arguments, or not `async`, fails `setup()`. **Fix:**
   give it the point's arguments; `docs/upgrading.md` lists them (DSGN-03).

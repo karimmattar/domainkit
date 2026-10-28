@@ -6,12 +6,12 @@ the classes. The console and memory backends here are for development and
 tests: staging and production refuse them.
 """
 
-import sys
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Sequence
-from typing import ClassVar, Final
+from typing import Final
 
 from domainkit.exceptions import DomainkitError
+from domainkit.utils.delivery import ConsoleDelivery, DeliveryBackend, MemoryDelivery
 
 from .messages import PushMessage, SmsMessage
 
@@ -41,11 +41,12 @@ class NotificationFailed(DomainkitError):
     """
 
 
-class SmsBackend(ABC):
-    """Sends text messages through a provider."""
+class SmsBackend(DeliveryBackend[SmsMessage]):
+    """Sends text messages through a provider.
 
-    deployable: ClassVar[bool] = True
-    """False for backends made for development and tests; deployments refuse them."""
+    ``deployable`` is False for backends made for development and tests;
+    deployments refuse them.
+    """
 
     @abstractmethod
     async def send_messages(self, messages: Sequence[SmsMessage]) -> int:
@@ -56,11 +57,12 @@ class SmsBackend(ABC):
         """
 
 
-class PushBackend(ABC):
-    """Sends push notifications through a provider."""
+class PushBackend(DeliveryBackend[PushMessage]):
+    """Sends push notifications through a provider.
 
-    deployable: ClassVar[bool] = True
-    """False for backends made for development and tests; deployments refuse them."""
+    ``deployable`` is False for backends made for development and tests;
+    deployments refuse them.
+    """
 
     @abstractmethod
     async def send_messages(self, messages: Sequence[PushMessage]) -> int:
@@ -71,51 +73,29 @@ class PushBackend(ABC):
         """
 
 
-class MemorySmsBackend(SmsBackend):
+class MemorySmsBackend(MemoryDelivery[SmsMessage], SmsBackend):
     """Keeps text messages in ``sms_outbox``, for tests."""
 
-    deployable = False
-
-    async def send_messages(self, messages: Sequence[SmsMessage]) -> int:
-        """Append ``messages`` to ``sms_outbox``."""
-        sms_outbox.extend(messages)
-        return len(messages)
+    outbox = sms_outbox
 
 
-class MemoryPushBackend(PushBackend):
+class MemoryPushBackend(MemoryDelivery[PushMessage], PushBackend):
     """Keeps notifications in ``push_outbox``, for tests."""
 
-    deployable = False
-
-    async def send_messages(self, messages: Sequence[PushMessage]) -> int:
-        """Append ``messages`` to ``push_outbox``."""
-        push_outbox.extend(messages)
-        return len(messages)
+    outbox = push_outbox
 
 
-class ConsoleSmsBackend(SmsBackend):
+class ConsoleSmsBackend(ConsoleDelivery[SmsMessage], SmsBackend):
     """Writes text messages to standard output, for development."""
 
-    deployable = False
-
-    async def send_messages(self, messages: Sequence[SmsMessage]) -> int:
-        """Write each message: its number, then its text."""
-        for message in messages:
-            sys.stdout.write(f"SMS to {message.to}:\n{message.body}\n{'-' * 79}\n")
-        sys.stdout.flush()
-        return len(messages)
+    def render(self, message: SmsMessage) -> str:
+        """Its number, then its text."""
+        return f"SMS to {message.to}:\n{message.body}"
 
 
-class ConsolePushBackend(PushBackend):
+class ConsolePushBackend(ConsoleDelivery[PushMessage], PushBackend):
     """Writes push notifications to standard output, for development."""
 
-    deployable = False
-
-    async def send_messages(self, messages: Sequence[PushMessage]) -> int:
-        """Write each notification: its title, text, and data."""
-        for message in messages:
-            sys.stdout.write(
-                f"Push: {message.title}\n{message.body}\n{message.data}\n{'-' * 79}\n"
-            )
-        sys.stdout.flush()
-        return len(messages)
+    def render(self, message: PushMessage) -> str:
+        """Its title, text, and data."""
+        return f"Push: {message.title}\n{message.body}\n{message.data}"
