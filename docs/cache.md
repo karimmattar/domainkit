@@ -334,8 +334,8 @@ belongs to none of them (ADR 0071):
   fills the cache: with 30 seconds, a 31-second computation fails at 30,
   where 0.9.0 cached it, while a hung one frees its key at 30. The patch
   release keeps 0.9.0's default, so no project's cache breaks on
-  upgrade, and the hang is fixed by setting the bound; 0.10 plans a
-  bounded default.
+  upgrade, and the hang is fixed by setting the bound; `check` warns
+  without one where deployed, and the `init` template sets it.
 - **So the factory must use nothing a caller holds and releases**: not the
   session of the caller's unit of work, not a client the request closes.
   It opens what it needs (`async with ReportsUnitOfWork() as uow: ...`)
