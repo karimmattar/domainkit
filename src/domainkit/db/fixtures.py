@@ -547,9 +547,11 @@ def _value_object(
 ) -> object:
     """A value object column's value: its field's, made into the object.
 
-    The object checks what it holds, as it does in the domain: a password
-    hash that is not a hash is refused. Fixtures written before 0.12 hold
-    the object as ``{"<field>": ...}``, which reads the same.
+    The object checks what it holds, as it does in the domain, and so does
+    the column type (``ValueObjectType.loaded``): a password hash that is
+    not a hash, or one no configured hasher would make, is refused.
+    Fixtures written before 0.12 hold the object as ``{"<field>": ...}``,
+    which reads the same.
 
     Raises:
         FixtureError: The value is not one the object takes.
@@ -557,12 +559,13 @@ def _value_object(
     if isinstance(value, dict) and set(value) == {type_.field}:
         value = value[type_.field]
     field = _converted(column, type_.impl_instance, value)
+    what = f"{_where(column)} holds a value that is not {type_.cls.__name__}"
     try:
-        return type_.cls(field)
+        return type_.loaded(field)
+    except FixtureError as exc:  # Says why, never the value.
+        raise FixtureError(f"{what}: {exc}") from None
     except (ValueError, TypeError):
-        raise FixtureError(
-            f"{_where(column)} holds a value that is not {type_.cls.__name__}."
-        ) from None
+        raise FixtureError(f"{what}.") from None
 
 
 def _where(column: Column[Any]) -> str:

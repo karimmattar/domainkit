@@ -51,8 +51,15 @@ from domainkit_tests.test_data_commands import (
 )
 
 USER_ID: uuid.UUID = uuid.UUID("0b6f3c1e-8f0a-4d7b-9c55-2b1d3e4f5a6b")
-STORED_HASH = "pbkdf2_sha256$1$stored$c3RvcmVkLWhhc2g="
-FORGED_HASH = "pbkdf2_sha256$1$forged$Zm9yZ2VkLWhhc2g="
+STORED_HASH = (
+    "pbkdf2_sha256$1$storedsaltstoredsalt12$"
+    "W+srH9/Im56gLCidrwK9+XBMvaiKOVdOcogLjZpzAEg="
+)
+"""The test hasher's hash, as it makes them: a fixture may load it (SEC-12a-3)."""
+FORGED_HASH = (
+    "pbkdf2_sha256$1$forgedsaltforgedsalt12$"
+    "2xjnWtDU5PuCaZ1ILz9owjpUU+0R1aR4pzeM/E9/LSc="
+)
 user_groups, user_permissions = DEFAULT_USER_TABLES[1:]
 
 
@@ -621,3 +628,46 @@ def test_password_hash_columns_keep_their_length_and_their_nulls() -> None:
     assert repr(hashes) == "PasswordHashType(length=128)"
     assert fixtures_module._encoded(column, None) is None
     assert fixtures_module._encoded(column, PasswordHash(STORED_HASH)) == STORED_HASH
+
+
+@pytest.mark.parametrize(
+    ("password", "why"),
+    [
+        ("plaintext$hunter2", "no hasher of AUTH.PASSWORD_HASHERS made it"),
+        ("pbkdf2_sha256$x", "no hasher of AUTH.PASSWORD_HASHERS made it"),
+        (
+            "pbkdf2_sha256$1$short$c2hvcnQ=",
+            "AUTH.PASSWORD_HASHERS would make it again, more strongly",
+        ),
+    ],
+    ids=["unknown-algorithm", "malformed", "short-salt"],
+)
+def test_a_fixture_loads_only_hashes_the_hashers_would_make(
+    stored_user: str, tmp_path: Path, password: str, why: str
+) -> None:
+    """Each refusal says why, never the hash; an unusable password still loads.
+
+    At 0.12's first cut ``PasswordHash`` checked the text's shape only, so
+    a password in clear, or the test hasher's in production, loaded
+    (SEC-12a-3).
+    """
+    row = user_row(id=str(uuid.uuid4()), username="eve", password=password)
+    path = fixture_file(tmp_path / "users.json", (users, [row]))
+
+    with pytest.raises(CommandError) as refused:
+        run("loaddata", str(path), "--include-guarded")
+
+    assert str(refused.value) == (
+        f"{path}: domainkit_users.password holds a value that is not "
+        f"PasswordHash: {why}"
+    )
+    assert password not in str(refused.value)
+    unusable = user_row(
+        id=str(uuid.uuid4()), username="ivy", password=PasswordHash.unusable().value
+    )
+    run(
+        "loaddata",
+        str(fixture_file(tmp_path / "ivy.json", (users, [unusable]))),
+        "--include-guarded",
+    )
+    assert count(users) == 2

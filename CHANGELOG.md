@@ -240,6 +240,13 @@ and a status.
   a superuser's included, to any code that called it. **Fix:** run tests
   with test settings (`ENVIRONMENT = "test"`, which `domainkit init`'s
   `config.settings.test` has) (SEC-12a-2).
+- **Breaking:** `loaddata` refuses a user whose password hash no hasher of
+  `AUTH.PASSWORD_HASHERS` made, or one it would make again more strongly:
+  a password kept in clear (`plaintext$...`) or a test database's
+  single-iteration hash loaded into production was a login a copy of the
+  table gives up at once. Unusable passwords load as before. **Fix:** load
+  users where the hashers that made their hashes are configured, or give
+  them unusable passwords in the fixture and reset them (SEC-12a-3).
 
 ## [0.11.2] - 2026-10-28
 

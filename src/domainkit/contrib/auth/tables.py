@@ -74,6 +74,36 @@ class PasswordHashType(ValueObjectType[PasswordHash]):
         """``PasswordHashType(length=255)``, as migrations have it."""
         return f"PasswordHashType(length={self.length})"
 
+    def loaded(self, value: object) -> PasswordHash:
+        """A fixture's hash, if ``AUTH.PASSWORD_HASHERS`` would make it so.
+
+        A hash no configured hasher identifies (a password kept in clear,
+        ``plaintext$...``), or one it would make again more strongly (the
+        test hasher's single iteration, under production's), is refused:
+        either is a password a copy of the table gives up. An unusable
+        password is kept (SEC-12a-3).
+
+        Raises:
+            ValueError: Not a hash at all.
+            FixtureError: No configured hasher would make it.
+        """
+        from domainkit.db.fixtures import FixtureError
+
+        from .hashers import identify_hasher
+
+        hashed = PasswordHash(value)  # type: ignore[arg-type]
+        if not hashed.usable:
+            return hashed
+        try:
+            weaker = identify_hasher(hashed.value).must_update(hashed.value)
+        except ValueError:
+            raise FixtureError("no hasher of AUTH.PASSWORD_HASHERS made it") from None
+        if weaker:
+            raise FixtureError(
+                "AUTH.PASSWORD_HASHERS would make it again, more strongly"
+            )
+        return hashed
+
 
 class ScopesType(TypeDecorator[frozenset[str]]):
     """Store a token's scopes as permission keys separated by spaces."""

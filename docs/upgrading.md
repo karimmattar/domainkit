@@ -53,6 +53,13 @@ to keep the old behaviour, for as long as the project needs it.
   **Fix:** run the code that uses them with the test settings, as the
   database fixtures already require. There is no setting to keep the old
   behaviour.
+- **Fixtures load only password hashes the configured hashers would
+  make** (SEC-12a-3). A user's hash that no hasher of
+  `AUTH.PASSWORD_HASHERS` identifies, or that it would make again more
+  strongly (fewer iterations, a shorter salt), refuses the fixture.
+  **Fix:** dump and load users between environments with the same
+  hashers, or write unusable passwords (`!...`) in the fixture and reset
+  them after loading. There is no setting to keep the old behaviour.
 
 ### Deprecated, removed in 0.13
 
