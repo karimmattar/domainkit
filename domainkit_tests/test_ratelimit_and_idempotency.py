@@ -1813,23 +1813,25 @@ def test_request_bodies_are_read_and_replayed() -> None:
     async def receive() -> Message:
         return incoming.pop(0)
 
-    async def scenario() -> tuple[bytes, Message, Message, bytes]:
-        read = await idempotency._read_body(receive)
-        bare = await idempotency._read_body(receive_bare)
-        assert read is not None
-        assert bare is not None
-        body, replay = read
+    # The body is kept in a spool now, and fingerprinted as it is read (PERF-11).
+    scope: Scope = {"method": "POST", "path": "/pay", "headers": []}
+
+    async def scenario() -> tuple[str | None, Message, Message, str | None]:
+        body, empty = idempotency._Spool(1024), idempotency._Spool(1024)
+        fingerprint = await idempotency._read_body(receive, scope, body)
+        bare = await idempotency._read_body(receive_bare, scope, empty)
+        replay = idempotency._replay(body, receive)
         first, second = await replay(), await replay()
-        return body, first, second, bare[0]
+        return fingerprint, first, second, bare
 
     async def receive_bare() -> Message:
         return {"type": "http.request"}
 
-    body, first, second, bare = asyncio.run(scenario())
-    assert body == b"abc"
+    fingerprint, first, second, bare = asyncio.run(scenario())
+    assert fingerprint == idempotency._hash("POST", "/pay", b"", b"abc")
     assert first == {"type": "http.request", "body": b"abc", "more_body": False}
     assert second == {"type": "http.disconnect"}
-    assert bare == b""
+    assert bare == idempotency._hash("POST", "/pay", b"", b"")
 
 
 def test_bodies_cut_short_by_a_disconnect_are_not_read() -> None:
@@ -1841,7 +1843,9 @@ def test_bodies_cut_short_by_a_disconnect_are_not_read() -> None:
         async def receive(messages: list[Message] = incoming) -> Message:
             return messages.pop(0)
 
-        assert asyncio.run(idempotency._read_body(receive)) is None
+        scope: Scope = {"method": "POST", "path": "/pay", "headers": []}
+        spool = idempotency._Spool(1024)
+        assert asyncio.run(idempotency._read_body(receive, scope, spool)) is None
 
 
 def test_requests_cut_short_claim_and_run_nothing(idempotent: TestClient) -> None:
