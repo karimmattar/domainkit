@@ -9,10 +9,11 @@ empties tables. A fixture is one JSON document::
 
 Values are JSON: numbers and text as they are, decimals, times, durations,
 ids, and enums as text, bytes as base64, JSON columns as JSON. Loading
-converts them back from each column's type, and puts a row whose primary
-key exists in place of the stored one. ``loaddata`` reads numbers with a
-fraction as ``Decimal``, so a decimal column gets every digit; any other
-column gets the float JSON's number always gave it.
+converts them back from each column's type, and only adds rows: one whose
+primary key is stored is refused, unless the load is told to replace
+(``loaddata --replace``). ``loaddata`` reads numbers with a fraction as
+``Decimal``, so a decimal column gets every digit; any other column gets
+the float JSON's number always gave it.
 
 Some tables hold state, not data, and are never dumped or loaded: the audit
 trail (its pseudonyms' keys would outlive ``forget`` in a copy), tokens,
@@ -20,6 +21,19 @@ the outbox, idempotency keys, and any table with ``info={"fixtures":
 False}``. ``flush`` keeps append-only tables (``info={"append_only":
 True}``, or with triggers of their own on PostgreSQL) and those with
 ``info={"flush": False}``, so the audit trail survives it.
+
+Guarded tables (``info={"guarded": True}``) hold credentials, grants, or
+secrets: users, groups, permissions and their links, tokens, second
+factors, content types, object grants, dynamic settings. A row written
+there is a login or a privilege, so ``loaddata`` refuses a fixture that
+writes one, and ``flush`` keeps them, with every table they reference,
+unless the operator says otherwise (``--include-guarded``).
+
+A kept table whose rows are about other tables' objects names the column
+that holds each row's model key (``info={"about_model": "content_type"}``,
+as object grants do): ``flush`` deletes its rows about the models whose
+tables it empties, in the same transaction. A grant goes with its object,
+so an object given a flushed one's id later starts without it.
 
 Every operation runs as the schema owner (``MIGRATION_URL`` when set), in
 one transaction per database.
@@ -41,6 +55,7 @@ from sqlalchemy import (
     Table,
     delete,
     func,
+    inspect,
     select,
     text,
     tuple_,
@@ -51,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.types import TypeEngine
 
 from domainkit.db.connections import connections, create_owner_engine
+from domainkit.db.models import installed_models
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
 from domainkit.exceptions import DomainkitError
@@ -93,6 +109,22 @@ class TableLoad:
     rows: int
     replaced: int
     """Rows already stored under the same primary key, which loading replaces."""
+    guarded: bool = False
+    """Whether the table is guarded (``guarded``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class FlushPlan:
+    """What ``flush`` deletes and what it keeps."""
+
+    counts: dict[str, int]
+    """Rows deleted, by table, parents first."""
+    kept: list[str]
+    """Tables kept for good: append-only, triggered, or ``info={"flush": False}``."""
+    guarded: list[str]
+    """Tables kept unless guarded ones are included: guarded, or referenced by one."""
+    about: dict[str, int]
+    """Rows of kept tables (``about_model``) deleted with the objects they are about."""
 
 
 def to_json(document: Mapping[str, Any], *, indent: int | None) -> str:
@@ -106,6 +138,11 @@ def tables_of(database: str) -> list[Table]:
     return [
         table for table in metadata.sorted_tables if router.holds_table(table, target)
     ]
+
+
+def guarded(table: Table) -> bool:
+    """Whether ``table`` holds credentials, grants, or secrets (``info["guarded"]``)."""
+    return table.info.get("guarded") is True
 
 
 def fixture_table(table: Table) -> bool:
@@ -198,7 +235,12 @@ async def plan_load(
     try:
         async with engine.connect() as connection:
             return [
-                TableLoad(table.name, len(rows), await _stored(connection, table, rows))
+                TableLoad(
+                    table.name,
+                    len(rows),
+                    await _stored(connection, table, rows),
+                    guarded(table),
+                )
                 for table, rows in tables
             ]
     finally:
@@ -206,28 +248,37 @@ async def plan_load(
 
 
 async def load(
-    database: str, tables: Sequence[tuple[Table, list[dict[str, Any]]]]
+    database: str,
+    tables: Sequence[tuple[Table, list[dict[str, Any]]]],
+    *,
+    replace: bool,
 ) -> None:
-    """Write the rows, parents first, in one transaction; then fix sequences."""
+    """Write the rows, parents first, in one transaction; then fix sequences.
+
+    Without ``replace`` the rows are only inserted: one whose primary key
+    is stored, even one stored since ``plan_load`` counted, fails the load
+    with the database's ``IntegrityError``.
+    """
     engine = create_owner_engine(connections.config(database))
     try:
         async with engine.begin() as connection:
             for table, rows in tables:
+                statement = _insert(connection, table, replace=replace)
                 for start in range(0, len(rows), CHUNK):
-                    await connection.execute(
-                        _upsert(connection, table), rows[start : start + CHUNK]
-                    )
+                    await connection.execute(statement, rows[start : start + CHUNK])
             await _reset_sequences(connection, [table for table, _ in tables])
     finally:
         await engine.dispose()
 
 
-async def flush_plan(database: str) -> tuple[dict[str, int], list[str]]:
+async def flush_plan(database: str, *, include_guarded: bool) -> FlushPlan:
     """Rows ``flush`` would delete, by table, and the tables it keeps."""
     engine = create_owner_engine(connections.config(database))
     try:
         async with engine.connect() as connection:
-            emptied, kept = await _flush_tables(connection, database)
+            emptied, kept, held = await _flush_tables(
+                connection, database, include_guarded=include_guarded
+            )
             counts = {
                 table.name: int(
                     (
@@ -238,17 +289,31 @@ async def flush_plan(database: str) -> tuple[dict[str, int], list[str]]:
                 )
                 for table in emptied
             }
+            about = {
+                table.name: int(
+                    (
+                        await connection.execute(
+                            select(func.count()).select_from(table).where(condition)
+                        )
+                    ).scalar_one()
+                )
+                for table, condition in _about(emptied, held)
+            }
     finally:
         await engine.dispose()
-    return counts, [table.name for table in kept]
+    return FlushPlan(counts, [t.name for t in kept], [t.name for t in held], about)
 
 
-async def flush(database: str) -> None:
+async def flush(database: str, *, include_guarded: bool) -> None:
     """Delete every row ``database`` holds, children first, but kept tables'."""
     engine = create_owner_engine(connections.config(database))
     try:
         async with engine.begin() as connection:
-            emptied, _ = await _flush_tables(connection, database)
+            emptied, _, held = await _flush_tables(
+                connection, database, include_guarded=include_guarded
+            )
+            for table, condition in _about(emptied, held):
+                await connection.execute(delete(table).where(condition))
             for table in reversed(emptied):
                 await connection.execute(delete(table))
             await _reset_sequences(connection, emptied)
@@ -256,38 +321,77 @@ async def flush(database: str) -> None:
         await engine.dispose()
 
 
+def _about(
+    emptied: Sequence[Table], held: Sequence[Table]
+) -> list[tuple[Table, ColumnElement[bool]]]:
+    """Each kept table's rows about the objects of ``emptied`` (``about_model``).
+
+    A row names its object's model by its key (``billing.invoice``), as
+    ``domainkit.db.models`` gives it; the models of the emptied tables are
+    looked up among the installed ones.
+    """
+    keys = sorted(
+        ".".join(model.key)
+        for model in installed_models()
+        if inspect(model.cls).local_table in emptied
+    )
+    return [
+        (table, table.c[table.info["about_model"]].in_(keys))
+        for table in held
+        if keys and "about_model" in table.info
+    ]
+
+
 async def _flush_tables(
-    connection: AsyncConnection, database: str
-) -> tuple[list[Table], list[Table]]:
-    """The tables ``flush`` empties, parents first, and those it keeps."""
+    connection: AsyncConnection, database: str, *, include_guarded: bool
+) -> tuple[list[Table], list[Table], list[Table]]:
+    """The tables ``flush`` empties, those it keeps, and the guarded ones it keeps.
+
+    Each list is parents first. A guarded table keeps every table it
+    references too: deleting a parent would fail, or cascade into it.
+    """
     triggered: set[str] = set()
     if connection.dialect.name == "postgresql":
         triggered = set((await connection.scalars(_TRIGGERED)).all())
     existing = await connection.run_sync(
         lambda sync: set(sync.dialect.get_table_names(sync))
     )
-    emptied, kept = [], []
-    for table in tables_of(database):
-        if table.name not in existing:
-            continue
+    tables = [table for table in tables_of(database) if table.name in existing]
+    held = set() if include_guarded else _referenced(filter(guarded, tables))
+    emptied, kept, guarded_kept = [], [], []
+    for table in tables:
         if (
             table.info.get("append_only") is True
             or table.info.get("flush") is False
             or table.name in triggered
         ):
             kept.append(table)
+        elif table in held:
+            guarded_kept.append(table)
         else:
             emptied.append(table)
-    return emptied, kept
+    return emptied, kept, guarded_kept
 
 
-def _upsert(connection: AsyncConnection, table: Table) -> Any:  # noqa: ANN401
-    """An insert that replaces the row stored under the same primary key."""
+def _referenced(tables: Iterable[Table]) -> set[Table]:
+    """``tables``, and every table they reference, directly or not."""
+    found: set[Table] = set()
+    waiting = list(tables)
+    while waiting:
+        table = waiting.pop()
+        if table not in found:
+            found.add(table)
+            waiting.extend(key.column.table for key in table.foreign_keys)
+    return found
+
+
+def _insert(connection: AsyncConnection, table: Table, *, replace: bool) -> Any:  # noqa: ANN401
+    """An insert; with ``replace``, one that replaces the row stored under its key."""
     dialect = postgresql if connection.dialect.name == "postgresql" else sqlite
     statement = dialect.insert(table)
     keys = list(table.primary_key.columns)
     others = [column for column in table.columns if column not in keys]
-    if not keys:
+    if not (replace and keys):
         return statement
     if not others:
         return statement.on_conflict_do_nothing(index_elements=keys)

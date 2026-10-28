@@ -37,7 +37,6 @@ from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.fields import fields_of
 from domainkit.ddd.query import F
 from domainkit.ddd.query import Selection as Listing
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.http import Filter, FilterSet, Pagination
 from domainkit.http.access import (
     AllOf,
@@ -1921,22 +1920,31 @@ def test_crud_writes_only_the_fields_writable_names(
     assert store.items[GadgetId(UUID(gadget_id))].stock is None
 
 
-def test_crud_without_writable_fields_is_deprecated(store: InMemoryGadgets) -> None:
-    """Every plain field, implicitly, warns; both schemas, or ``writable``, do not."""
+def test_crud_without_writable_fields_is_refused(store: InMemoryGadgets) -> None:
+    """WEB-09: no implicit write schemas; the error says what to pass.
+
+    ``writable=ALL_FIELDS`` says it on purpose, and takes every plain field,
+    as 0.10's implicit schemas did; both schemas need no ``writable``.
+    """
     plain = ["name", "label", "price", "made_at"]
     whole = schema_for(Gadget, write=True, include=plain)
     patch = schema_for(Gadget, partial=True, include=["name"])
-    with pytest.warns(DomainkitDeprecationWarning, match="without writable=") as caught:
-        resource = gadgets(store, crud=True)
-    with pytest.warns(DomainkitDeprecationWarning, match="removed in 0.11"):
-        gadgets(store, crud=True, create=whole)
+    needs = (
+        r"^crud=True on Gadget needs the fields its writes take: writable=\[\.\.\.\] "
+        r"naming them, writable=ALL_FIELDS for every plain field, or both create= "
+        r"and update=\.$"
+    )
+    halves: list[dict[str, Any]] = [{}, {"create": whole}, {"update": patch}]
+    for half in halves:
+        with pytest.raises(TypeError, match=needs):
+            gadgets(store, crud=True, **half)
 
-    assert caught[0].filename == __file__  # It names the declaration.
+    resource = gadgets(store, crud=True, writable=ALL_FIELDS)
     create = next(r for r in resource.operations if r.name == "create_gadget")
     assert create.body is not None
     assert {"stock", "price"} <= set(create.body.model_fields)
     gadgets(store, crud=True, create=whole, update=patch)
-    gadgets(store, crud=True, writable=ALL_FIELDS)
+    gadgets(store, crud=True, writable=ALL_FIELDS, create=whole)
 
 
 def test_writable_declarations_are_checked(store: InMemoryGadgets) -> None:
@@ -1945,11 +1953,17 @@ def test_writable_declarations_are_checked(store: InMemoryGadgets) -> None:
         Gadget, write=True, include=["name", "label", "price", "made_at"]
     )
     patch = schema_for(Gadget, partial=True, include=["name"])
-    with pytest.raises(TypeError, match="never writes Gadget's id, version"):
+    never = (
+        r"^crud=True never writes Gadget's id, version; "
+        r"leave them out of writable=\.$"
+    )
+    with pytest.raises(TypeError, match=never):
         gadgets(store, crud=True, writable=["name", "id", "version"])
-    with pytest.raises(TypeError, match="or ALL_FIELDS, not 'all'"):
+    odd = r"^writable= is a list of field names, or ALL_FIELDS, not 'all'\.$"
+    with pytest.raises(TypeError, match=odd):
         gadgets(store, crud=True, writable="all")
-    with pytest.raises(TypeError, match="create= and update= are given"):
+    both = r"^writable= shapes derived schemas; create= and update= are given\.$"
+    with pytest.raises(TypeError, match=both):
         gadgets(store, crud=True, writable=["name"], create=whole, update=patch)
     with pytest.raises(TypeError, match="crud is off"):
         gadgets(store, writable=["name"])

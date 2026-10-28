@@ -741,10 +741,10 @@ class Settings(BaseModel):
     REQUIRE_ROUTE_RULES: bool = True
     """Every route must say who may call it (``Require``, or ``Public``); staging
     and production refuse to start otherwise (``domainkit.http.access``)."""
-    SCOPED_CREDENTIALS: Literal["warn", "refuse"] = "warn"
+    SCOPED_CREDENTIALS: Literal["warn", "refuse"] = "refuse"
     """Credentials limited to scopes on a route that declares no rule that
-    checks scopes: ``warn`` lets them through with a deprecation warning and a
-    security log line, as before 0.10; ``refuse`` answers 403, as 0.11 will."""
+    checks scopes: ``refuse`` answers 403; ``warn`` lets them through with a
+    security log line, as 0.10 did by default."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
     EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"
@@ -836,6 +836,10 @@ class Settings(BaseModel):
         default="X-Forwarded-Proto", pattern=HEADER_NAME
     )
     """The header in which trusted proxies say the client's scheme; None: none does."""
+    ACCEPT_REQUEST_ID: Literal["proxies", "anyone", "never"] = "proxies"
+    """Whose ``X-Request-ID`` names a request: ``TRUSTED_PROXIES``' only, any
+    caller's (0.10's rule), or nobody's (always a new id). Out of format, it
+    is replaced either way."""
     RATE_LIMIT: str | None = None
     """Requests per caller, e.g. ``"300/minute"``; None disables the limit."""
     RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")

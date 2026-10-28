@@ -24,6 +24,8 @@ from domainkit.management.commands.init import TEMPLATE_DIR, requirement
 from domainkit.utils import formatting
 
 CHECKED = "System check identified no issues. Domains: messaging, contenttypes, auth.\n"
+REDIS_URL = "rediss://:s3cret@cache.internal:6380/0"
+"""The shared cache of the production settings: TLS, and a password."""
 PROJECT_FILES = {
     ".env",
     ".gitignore",
@@ -81,7 +83,7 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
         f"Created billingAPI in {project}.\n"
         "Next steps:\n"
         f"  cd {project.relative_to(Path.cwd(), walk_up=True)}\n"
-        '  pip install "domainkit[postgres,sqlite,testing]"   # or: uv sync\n'
+        '  pip install "domainkit[postgres,redis,sqlite,testing]"   # or: uv sync\n'
         "  python manage.py check\n"
         '  python manage.py makemigrations -m "auth"\n'
         "  python manage.py migrate\n"
@@ -181,7 +183,7 @@ def test_projects_get_the_ruff_the_templates_are_checked_with() -> None:
 
 
 def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
-    """Production starts only with its hosts, database URL, and proxies set."""
+    """Production starts only with its hosts, database, Redis, and proxies set."""
     project = tmp_path / "billing"
     init("billingAPI", str(project))
     production = {
@@ -189,6 +191,7 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
         "BILLING_API_ALLOWED_HOSTS": "api.example.com",
         "BILLING_API_TRUSTED_PROXIES": "10.0.0.0/8, fd00::/8",
         "BILLING_API_SECRET_KEY": "s3cret-" * 8,
+        "BILLING_API_REDIS_URL": REDIS_URL,
     }
     database = {"BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing"}
 
@@ -204,6 +207,9 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     without_key = run(project, "manage.py", "check", env=no_key)
     weak_key = {**no_key, "BILLING_API_SECRET_KEY": "domainkit-insecure-" * 3}
     with_weak_key = run(project, "manage.py", "check", env=weak_key)
+    no_redis = {**production, **database}
+    del no_redis["BILLING_API_REDIS_URL"]
+    without_redis = run(project, "manage.py", "check", env=no_redis)
     quiet = run(
         project / "src",
         "-c",
@@ -219,13 +225,16 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     # Empty: callers connect directly, and check says what that means.
     assert directly.returncode == 0
     assert "security.W004" in warned(directly.stdout)
-    # Docs are off, HSTS is on, and callers are rate limited; only the pool,
-    # left to SQLAlchemy's default size and smaller than the requests a
-    # process admits, and the per-process count of password and code
-    # guesses are left to warn about.
+    # Docs are off, HSTS is on, and callers, passwords, and codes are counted
+    # in Redis; only the pool, left to SQLAlchemy's default size and smaller
+    # than the requests a process admits, is left to warn about.
     summary = ready.stdout.splitlines()[0]
-    assert summary == CHECKED.replace("issues.", "issues and 3 warnings.").strip()
-    assert warned(ready.stdout) == ["deploy.W004", "deploy.W006", "auth.W004"]
+    assert summary == CHECKED.replace("issues.", "issues and 2 warnings.").strip()
+    assert warned(ready.stdout) == ["deploy.W004", "deploy.W006"]
+    assert without_redis.returncode == 1
+    assert "Set the BILLING_API_REDIS_URL environment variable." in (
+        without_redis.stderr
+    )
     assert without_key.returncode == 1
     assert "Set the BILLING_API_SECRET_KEY environment variable." in (
         without_key.stderr
@@ -251,12 +260,13 @@ def test_production_hardening_can_be_relaxed_from_the_environment(
         "BILLING_API_SECRET_KEY": "s3cret-" * 8,
         "BILLING_API_API_DOCS": "true",
         "BILLING_API_SECURE_HSTS_SECONDS": "0",
+        "BILLING_API_REDIS_URL": REDIS_URL,
     }
 
     checked = run(project, "manage.py", "check", env=relaxed)
 
     assert checked.stdout.splitlines()[0] == (
-        "System check identified no issues and 5 warnings. "
+        "System check identified no issues and 4 warnings. "
         "Domains: messaging, contenttypes, auth."
     )
     assert warned(checked.stdout) == [
@@ -264,7 +274,6 @@ def test_production_hardening_can_be_relaxed_from_the_environment(
         "security.W002",
         "deploy.W004",
         "deploy.W006",
-        "auth.W004",
     ]
 
 
@@ -289,6 +298,7 @@ def test_production_samples_access_lines_from_the_environment(
         "BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing",
         "BILLING_API_TRUSTED_PROXIES": "10.0.0.0/8",
         "BILLING_API_SECRET_KEY": "s3cret-" * 8,
+        "BILLING_API_REDIS_URL": REDIS_URL,
     }
     show = "from domainkit.conf import settings; print(settings.ACCESS_LOG_SAMPLE_RATE)"
 
@@ -357,9 +367,9 @@ def test_init_needs_an_empty_or_missing_directory(
 @pytest.mark.parametrize(
     ("version", "expected"),
     [
-        ("0.1.1", "domainkit[postgres,sqlite]>=0.1.1,<0.2"),
-        ("1.4.0", "domainkit[postgres,sqlite]>=1.4.0,<2"),
-        ("0.0.0+unknown", "domainkit[postgres,sqlite]"),
+        ("0.1.1", "domainkit[postgres,redis,sqlite]>=0.1.1,<0.2"),
+        ("1.4.0", "domainkit[postgres,redis,sqlite]>=1.4.0,<2"),
+        ("0.0.0+unknown", "domainkit[postgres,redis,sqlite]"),
     ],
 )
 def test_projects_depend_on_the_running_release_series(

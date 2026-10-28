@@ -434,7 +434,11 @@ server's clock, so replicas never race and their clocks do not matter. Each
 caller costs one key, `<KEY_PREFIX>:ratelimit:<caller>`, kept only until the
 caller's quota is full again. If Redis fails, or refuses the count (out of
 memory, a read-only replica), requests are let through and logged: the limit
-protects the service, and its outage should not stop it.
+protects the service, and its outage should not stop it. Password and code
+checks are the exception: with `domainkit.contrib.auth`, staging and
+production refuse them while Redis cannot count them, and refuse to start
+with a backend that counts in each process
+([auth.md](auth/logging-in.md#logging-in-and-out)).
 `cache clear` resets these counters too.
 
 ## Throttles for one route

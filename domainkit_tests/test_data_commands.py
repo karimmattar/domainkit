@@ -2,6 +2,7 @@
 
 import asyncio
 import enum
+import hashlib
 import io
 import json
 import os
@@ -265,7 +266,11 @@ def test_dumps_pick_tables_or_domains(project: str, tmp_path: Path) -> None:
 
 
 def test_loading_replaces_rows_and_says_so_first(project: str, tmp_path: Path) -> None:
-    """Rows with a stored key replace it; values convert back from JSON."""
+    """With ``--replace``, rows with a stored key replace it; values convert back.
+
+    Without it the load is refused, and nothing is written (DATA-12: until
+    0.11 every load replaced stored rows).
+    """
     path = tmp_path / "kinds.json"
     path.write_text(run("dumpdata", kinds.name), encoding="utf-8")
     document = json.loads(path.read_text())
@@ -273,10 +278,21 @@ def test_loading_replaces_rows_and_says_so_first(project: str, tmp_path: Path) -
     path.write_text(json.dumps(document), encoding="utf-8")
 
     assert run("loaddata", str(path), "--dry-run") == (
+        f"{path}: framework_test_kinds: 2 rows, 1 already stored\n"
+    )
+    with pytest.raises(CommandError) as refused:
+        run("loaddata", str(path))
+    assert str(refused.value) == (
+        f"{path}: 1 row would replace stored rows with the same primary key. "
+        "Nothing was loaded; repeat with --replace to replace them."
+    )
+    assert run("loaddata", str(path), "--dry-run", "--replace") == (
         f"{path}: framework_test_kinds: 2 rows, replacing 1\n"
     )
     assert count(kinds) == 1
-    assert run("loaddata", str(path)).endswith(f"Loaded 2 rows from {path}.\n")
+    assert run("loaddata", str(path), "--replace").endswith(
+        f"Loaded 2 rows from {path}.\n"
+    )
 
     async def second() -> Any:  # noqa: ANN401 - a row.
         try:
@@ -309,7 +325,7 @@ def test_loading_is_refused_in_deployments_without_force(
             assert output.getvalue() == (
                 f"{path}: shop_products: 1 row\n{path}: shop_stock_levels: 0 rows\n"
             )
-            assert run("loaddata", str(path), force=True).endswith(
+            assert run("loaddata", str(path), force=True, operator="ops").endswith(
                 f"Loaded 1 row from {path}.\n"
             )
 
@@ -509,11 +525,15 @@ def test_loads_and_flushes_are_audited_with_their_operator(
         "operator:alice",
         "success",
     )
-    assert loaded["details"] == {
+    assert loaded["details"] == {  # Its tables and digest since 0.11 (DATA-12).
         "fixture": "tags.json",
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "database": "default",
         "rows": 3,
         "replaced": 0,
+        "tables": {kind_tags.name: {"rows": 3, "replaced": 0}},
+        "replace": False,
+        "include_guarded": False,
         "operator_source": "option",
     }
     assert (refused["actor"], refused["outcome"]) == ("operator:ops-env", "failure")
@@ -537,7 +557,9 @@ def test_flush_is_refused_in_deployments_without_force(
         with override_settings(ENVIRONMENT="staging"):
             with pytest.raises(CommandError, match="repeat with --force"):
                 run("flush")
-            assert run("flush", force=True).endswith(" rows from 'default'.\n")
+            assert run("flush", force=True, operator="ops").endswith(
+                " rows from 'default'.\n"
+            )
 
 
 def test_flush_keeps_tables_with_triggers_on_postgres(project: str) -> None:
@@ -599,7 +621,7 @@ def test_tables_without_other_columns_or_keys(project: str, tmp_path: Path) -> N
     )
 
     run("loaddata", str(path))
-    plan = run("loaddata", str(path))
+    plan = run("loaddata", str(path), "--replace")
 
     assert f"{path}: framework_test_kind_notes: 1 row\n" in plan
     assert f"{path}: framework_test_kind_tags: 1 row, replacing 1\n" in plan
@@ -669,7 +691,7 @@ def test_fixtures_load_money_with_every_digit(tmp_path: Path) -> None:
     path = tmp_path / "money.json"
     path.write_text(text, encoding="utf-8")
 
-    loaded = fixtures_module._decoded_row(table, loaddata._read(path))
+    loaded = fixtures_module._decoded_row(table, loaddata._read(path)[0])
     as_floats = fixtures_module._decoded_row(table, json.loads(text))
 
     assert loaded["amount"] == Decimal("1234567890123456.78")
@@ -741,7 +763,7 @@ def test_dumps_go_to_new_files_only_their_owner_reads(
 
 
 def test_loading_updates_stored_rows(project: str, tmp_path: Path) -> None:
-    """Rows with a stored key replace the stored values, several at a time."""
+    """With ``--replace``, rows replace the stored values, several at a time."""
     path = tmp_path / "kinds.json"
     rows = [{"id": 1, "label": "replaced"}, {"id": 2, "label": "added"}]
     path.write_text(
@@ -754,9 +776,9 @@ def test_loading_updates_stored_rows(project: str, tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    run("loaddata", str(path))
+    run("loaddata", str(path), "--replace")
 
-    assert run("loaddata", str(path), "--dry-run") == (
+    assert run("loaddata", str(path), "--dry-run", "--replace") == (
         f"{path}: framework_test_kinds: 2 rows, replacing 2\n"
     )
     labels = asyncio.run(_scalars(select(kinds.c.label).order_by(kinds.c.id)))
@@ -783,7 +805,7 @@ def test_loading_works_in_chunks(
     run("loaddata", str(path))
 
     with CapturedQueries() as queries:
-        plan = run("loaddata", str(path))
+        plan = run("loaddata", str(path), "--replace")
 
     assert f"{path}: framework_test_kind_tags: 5 rows, replacing 5\n" in plan
     inserts = [
@@ -822,7 +844,10 @@ def test_dry_runs_cover_every_fixture(project: str, tmp_path: Path) -> None:
 def test_loading_names_constraints_it_cannot_describe(
     project: str, tmp_path: Path
 ) -> None:
-    """A unique value taken by another row is "a constraint"; nothing loads."""
+    """A unique value taken by another row is "a constraint"; nothing loads.
+
+    Content types are guarded since 0.11 (DATA-12): the load says so.
+    """
     domain = asyncio.run(_scalar(select(content_types.c.domain).limit(1)))
     model = asyncio.run(
         _scalar(select(content_types.c.model).where(content_types.c.domain == domain))
@@ -845,7 +870,7 @@ def test_loading_names_constraints_it_cannot_describe(
     )
 
     with pytest.raises(CommandError) as refused:
-        run("loaddata", str(path))
+        run("loaddata", str(path), "--include-guarded")
 
     assert str(refused.value) == (
         f"{path}: the database refused the rows (a constraint); nothing was loaded."
@@ -870,10 +895,12 @@ def test_force_is_a_flag(project: str, tmp_path: Path) -> None:
     with override_settings(DATABASES=sqlite):
         run("migrate")
         with override_settings(ENVIRONMENT="staging"):
-            assert run("loaddata", str(path), "--force").endswith(
+            assert run("loaddata", str(path), "--force", "--operator", "ops").endswith(
                 f"Loaded 1 row from {path}.\n"
             )
-            assert run("flush", "--force").endswith(" from 'default'.\n")
+            assert run("flush", "--force", "--operator", "ops").endswith(
+                " from 'default'.\n"
+            )
 
 
 def test_flush_says_how_many_rows_went(project: str) -> None:

@@ -26,3 +26,17 @@ async def slow(reads: Reads) -> dict[str, str]:
     async with GadgetsUnitOfWork(reads=reads) as uow:
         await uow.session.execute(text("SELECT pg_sleep(30)"))
     return {"slept": "30s"}
+
+
+@router.get("/slow-second")
+async def slow_second(reads: Reads | None = None) -> dict[str, str]:
+    """A statement of 0.3 seconds, then one of 3: a short deadline cuts the second.
+
+    In a transaction (no ``reads``), the first keeps the second's
+    ``statement_timeout``, the deadline's time when the transaction began,
+    from ending it before the deadline does: it ends 0.3 seconds later.
+    """
+    async with GadgetsUnitOfWork(reads=reads) as uow:
+        await uow.session.execute(text("SELECT pg_sleep(0.3)"))
+        await uow.session.execute(text("SELECT pg_sleep(3)"))
+    return {"slept": "3.3s"}

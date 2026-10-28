@@ -463,7 +463,7 @@ def lookup_owner() -> str | None:
         return None
     if request.actor:
         return f"actor:{request.actor}"
-    if request.client_ip is None:
+    if not request.client_ip:  # None, or a unix socket's empty host.
         return "ip:unknown"
     from domainkit.http.ratelimit import client_group  # It imports the HTTP stack.
 

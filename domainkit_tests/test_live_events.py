@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import anyio
 import pytest
 from anyio.abc import TaskStatus
+from fastapi.routing import APIWebSocketRoute
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 from starlette.testclient import WebSocketDenialResponse
@@ -30,10 +31,16 @@ from domainkit.contrib.auth import (
 )
 from domainkit.contrib.auth.events import UserCreated, UserPermissionGranted
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
-from domainkit.ddd import DomainEvent, EventBus, event_bus
+from domainkit.ddd import DomainEvent, EventBus, PermissionDenied, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, live
-from domainkit.http.access import AllowAny, BasePermission
+from domainkit.http.access import (
+    SCOPES_UNBOUNDED,
+    AllowAny,
+    BasePermission,
+    Public,
+    current_user,
+)
 from domainkit.http.live import TOO_SLOW, Closed
 from domainkit.http.live_events import (
     INTAKE_FACTOR,
@@ -377,6 +384,59 @@ async def test_a_subscription_is_checked_however_it_is_made() -> None:
     with pytest.raises(ImproperlyConfigured, match=NO_USERS):
         async with hub.subscribe(anonymous, UserCreated, rule=AllowAny()):
             pass
+    assert hub._subscribers == set()
+
+
+class ScopedToken:
+    """Credentials limited to viewing products, as a personal token's may be."""
+
+    scopes: Final = frozenset({VIEW_PRODUCT})
+
+
+def scoped(route: str = "/orders/live") -> HTTPConnection:
+    """A connection to a ``Public`` route, with credentials limited to scopes."""
+    return HTTPConnection(
+        {
+            "type": "websocket",
+            "headers": [],
+            "route": APIWebSocketRoute(route, scoped_endpoint, dependencies=[Public]),
+            "user": Someone(),
+            "auth": ScopedToken(),
+        }
+    )
+
+
+async def scoped_endpoint(websocket: WebSocket) -> None:
+    """A route anyone may open, never called."""
+
+
+@pytest.mark.anyio
+async def test_scoped_credentials_are_refused_where_current_user_refuses_them() -> None:
+    """A route that does not bound scopes hands their user no event (SEC-11a-3).
+
+    ``current_user`` refuses credentials limited to scopes on a ``Public``
+    route; until 0.11, live events asked the rule about ``scope["user"]``
+    directly, so such a token was streamed the events about its user
+    (``OwnEvents``). The subscription is now refused, and so is the stream,
+    before it starts; nothing is subscribed.
+    """
+    bus = EventBus()
+    hub = LiveEvents(bus)
+    connection = scoped()
+    with pytest.raises(PermissionDenied):
+        current_user(scoped())  # The promise of AUTH-01, on the same route.
+
+    async def first_event() -> DomainEvent:
+        async with hub.subscribe(
+            connection, UserPermissionGranted, rule=OwnEvents()
+        ) as events:  # pragma: no cover - refused before it is entered.
+            await bus.publish(granted(connection.scope["user"].id))
+            return await anext(events)
+
+    with pytest.raises(PermissionDenied, match="limited to scopes"):
+        await first_event()
+    with pytest.raises(PermissionDenied, match="limited to scopes"):
+        hub.stream(scoped(), UserPermissionGranted, rule=OwnEvents())
     assert hub._subscribers == set()
 
 
@@ -1038,6 +1098,52 @@ async def test_reauthentication_needs_the_same_principal(
 
 async def echo(scope: Scope, receive: Any, send: Any) -> None:  # noqa: ANN401
     """An application that is never called."""
+
+
+def scoped_token(username: str) -> Callable[[], Any]:
+    """Work that stores ``username`` and returns a token limited to viewing products."""
+
+    async def work() -> str:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.create_user(username)
+            token = await uow.tokens.issue(
+                user.id, ttl=timedelta(hours=1), scopes=frozenset({VIEW_PRODUCT})
+            )
+            await uow.commit()
+        return token
+
+    return work
+
+
+def test_public_live_routes_refuse_credentials_limited_to_scopes(
+    live_client: MakeClient,
+) -> None:
+    """Over SSE and WebSocket, a scoped token gets 403, and no event (SEC-11a-3).
+
+    The same routes send a token without scopes the events about its user.
+    """
+    client = live_client()
+    token = run(client, scoped_token("erin"))
+    erin = client.another({"Authorization": f"Bearer {token}"})
+    dave = client.authenticated(username="dave")
+
+    with (
+        pytest.raises(WebSocketDenialResponse) as socket_refused,
+        erin.websocket_connect("/live/mine"),
+    ):
+        pass  # pragma: no cover - the handshake is refused.
+    streamed = erin.get("/live/mine/feed")  # Served, it would never end.
+    with dave.websocket_connect("/live/mine") as socket:
+        run(client, grant_to("dave", "shop.add_product"))
+        own = socket.receive_json()
+
+    assert (streamed.status_code, streamed.json()["detail"]) == (
+        403,
+        SCOPES_UNBOUNDED,
+    )
+    assert socket_refused.value.status_code == 403
+    assert own["data"]["permission"] == "shop.add_product"
+    assert live_events._subscribers == set()
 
 
 def test_live_streams_need_their_routes_rule(live_client: MakeClient) -> None:

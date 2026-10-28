@@ -33,9 +33,9 @@ def requirement(version: str) -> str:
 
     Before 1.0 a minor release may break (``>=0.1.1,<0.2``); after it, a
     major one. A version without release numbers (a source checkout) pins
-    nothing.
+    nothing. The production settings count in Redis: ``redis`` is an extra.
     """
-    extras = "domainkit[postgres,sqlite]"
+    extras = "domainkit[postgres,redis,sqlite]"
     match = _RELEASE.fullmatch(version)
     if match is None:
         return extras
@@ -100,7 +100,7 @@ def _next_steps(name: str, target: Path) -> str:
             f"Created {name} in {target}.",
             "Next steps:",
             f"  cd {target.relative_to(Path.cwd(), walk_up=True)}",
-            '  pip install "domainkit[postgres,sqlite,testing]"   # or: uv sync',
+            '  pip install "domainkit[postgres,redis,sqlite,testing]"   # or: uv sync',
             "  python manage.py check",
             '  python manage.py makemigrations -m "auth"',
             "  python manage.py migrate",

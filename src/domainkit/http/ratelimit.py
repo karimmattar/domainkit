@@ -482,13 +482,15 @@ async def refuse(
 def address_key(scope: Scope) -> str:
     """The key a caller without an actor is counted by: its address.
 
-    It is worked out once per request: the scope keeps it (``ADDRESS``)
+    A client without an address (none, or the empty host Granian gives a
+    unix socket's peer) counts as ``ip:unknown``. It is worked out once
+    per request: the scope keeps it (``ADDRESS``)
     with the client host it is for, and it is used again only for that
     host. A key worked out before ``ProxyHeadersMiddleware`` put the real
     client in is not used for the real client.
     """
     client = scope.get("client")
-    host = client[0] if client else None
+    host = (client[0] or None) if client else None  # "": a unix socket's peer.
     kept = scope.get(ADDRESS)
     if kept is not None and kept[0] == host:
         known: str = kept[1]

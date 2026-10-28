@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -236,7 +237,11 @@ def test_hsts_follows_its_settings(
 
 
 def test_responses_carry_security_headers_and_request_ids(client: TestClient) -> None:
-    """Headers are added unless set; valid caller request ids are echoed."""
+    """Headers are added unless set; a caller's own request id is not taken.
+
+    Up to 0.10 a valid one was (WEB-13): only a trusted proxy's is now
+    (``test_request_ids.py``).
+    """
     response = client.get("/ok")
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["Cache-Control"] == "no-store"
@@ -244,7 +249,7 @@ def test_responses_carry_security_headers_and_request_ids(client: TestClient) ->
 
     assert client.get("/framed").headers["X-Frame-Options"] == "SAMEORIGIN"
     supplied = client.get("/ok", headers={"X-Request-ID": "abc-123"})
-    assert supplied.headers["X-Request-ID"] == "abc-123"
+    assert re.fullmatch(r"[0-9a-f]{32}", supplied.headers["X-Request-ID"])
     forged = client.get("/ok", headers={"X-Request-ID": "bad id\n"})
     assert forged.headers["X-Request-ID"] != "bad id\n"
 
@@ -335,7 +340,10 @@ def test_websockets_pass_through_http_middleware(client: TestClient) -> None:
 def test_websockets_run_in_a_request_context(
     client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Method WS, the path, and a request id, echoed when accepting."""
+    """Method WS, the path, and a request id of its own, echoed when accepting.
+
+    The caller's ``X-Request-ID`` is not taken, as for HTTP (WEB-13).
+    """
     caplog.set_level(logging.DEBUG, logger="domainkit.access")
     with client.websocket_connect("/ws/context") as socket:
         context = socket.receive_json()
@@ -352,7 +360,8 @@ def test_websockets_run_in_a_request_context(
     }
     assert len(context["request_id"]) == 32
     assert headers[b"x-request-id"] == context["request_id"].encode()
-    assert supplied == "abc-123"
+    assert re.fullmatch(r"[0-9a-f]{32}", supplied)
+    assert supplied != context["request_id"]
     (line, _) = [
         (record.getMessage(), record.levelno)
         for record in caplog.records

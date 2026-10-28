@@ -6,6 +6,8 @@ from importlib.util import find_spec
 from typing import Any
 from weakref import WeakKeyDictionary
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from domainkit import lifecycle
 from domainkit.apps import DomainConfig, registry
 from domainkit.broker import brokers
@@ -15,14 +17,16 @@ from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.lifecycle import Phase
 
+from . import runs
 from .dispatch import close_publishers
 from .outbox import notify_committed, rows_for, write
 from .settings import MessagingSettings
 
-_committing: WeakKeyDictionary[SqlAlchemyUnitOfWork, list[dict[str, Any]]] = (
-    WeakKeyDictionary()
-)
-"""Messages each unit of work wrote, to publish once it commits."""
+_committing: WeakKeyDictionary[AsyncSession, list[dict[str, Any]]] = WeakKeyDictionary()
+"""Messages each unit of work's session wrote, to publish once it commits.
+
+By session: a commit that failed leaves its rows with its session, which
+the next ``async with`` of the unit of work replaces (``UnitOfWork.run``)."""
 
 
 class MessagingConfig(DomainConfig):
@@ -54,7 +58,8 @@ class MessagingConfig(DomainConfig):
         Shutdown (``domainkit.lifecycle``) closes the background publishers
         in its drain phase, in the application and in management commands
         alike, within the time that phase always has (``drain_time``). Each
-        commit writes its outbox rows (``on_stage``) and hands them to the
+        commit joins the run of the message a worker is processing, if any,
+        writes its outbox rows (``on_stage``), and hands them to the
         publisher once it lands (``on_committed``).
         """
         config = self.get_settings()
@@ -73,18 +78,25 @@ class MessagingConfig(DomainConfig):
         events: Sequence[DomainEvent],
         tasks: Sequence[DeferredTask],
     ) -> None:
-        """Add outbox rows to the committing transaction."""
+        """Join the message being run, if any; add outbox rows to the transaction.
+
+        Inside a worker's run of a message, the commit renews the run's
+        lease or fails (``runs.LeaseLost``), and writes its inbox row
+        (``runs.AlreadyHandled`` if it is there already).
+        """
+        await runs.stage(uow)
         rows = rows_for(events, tasks, uow.events, self.get_settings())
         if not rows:
             return
         session = uow.session
         dialect = session.get_bind().dialect.name
         await write(session, dialect, rows)
-        _committing.setdefault(uow, []).extend(rows)
+        _committing[session] = rows
 
     async def publish_committed(self, uow: SqlAlchemyUnitOfWork) -> None:
         """Hand the messages the unit of work wrote to the background publisher."""
-        rows = _committing.pop(uow, [])
+        runs.committed(uow)
+        rows = _committing.pop(uow.session, [])
         await notify_committed(self.get_settings(), uow.alias, rows)
 
     async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:

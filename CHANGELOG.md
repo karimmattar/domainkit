@@ -9,6 +9,68 @@ and a status.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-28
+
+A minor release: what 0.10 deprecated is removed or refused, two defaults
+it announced take effect, and some changes break. `docs/upgrading.md`
+lists each with its fix. Messaging and idempotency have a new table and a
+new column: run `makemigrations` and `migrate` before the new version
+serves requests, and `check --deploy` after upgrading.
+
+### Added
+
+- `ACCEPT_REQUEST_ID` (`"proxies"`, `"anyone"`, or `"never"`; default
+  `"proxies"`): whose `X-Request-ID` names a request (WEB-13; ADR 0099).
+- `loaddata --replace` and `--include-guarded`, and `flush
+  --include-guarded`; `info={"guarded": True}` marks a project's own table
+  of credentials or grants as guarded (DATA-12; ADR 0100).
+- `UnitOfWork.run(work, retry=Retry(...))` runs work that lost a race with
+  another transaction again, whole: PostgreSQL's serialization failures
+  (`40001`) and deadlocks (`40P01`), and the errors in `retry_on`. The work
+  is a function that enters the unit of work itself, never part of an
+  `async with` block; what a failed run wrote (outbox messages, audit
+  entries, the `Idempotency-Key`'s mark) went with its transaction, and
+  events are published once, after the commit that succeeds. Waits are
+  bounded and jittered (`Retry(attempts=3, backoff=0.02, max_backoff=1.0)`),
+  never past the request's deadline; work that committed is never run
+  again, and the last failure is raised as it was, with a note
+  (`docs/databases.md`, ADR 0092) (FIN-78).
+- `ResourceRouter.command_route(..., retry=Retry())` runs a command's
+  service that way, with the reach check and `If-Match` made again in each
+  run. Routes retry only when they say so; without it a lost race answers
+  503 `database_busy`, as before (FIN-78).
+- `SqlAlchemyUnitOfWork(isolation=...)`, or `isolation = Isolation.SERIALIZABLE`
+  on the class: `READ_COMMITTED`, `REPEATABLE_READ`, or `SERIALIZABLE`,
+  set in the transaction's `BEGIN` on PostgreSQL, with no round trip more.
+  On SQLite the two stricter levels begin with `BEGIN IMMEDIATE`, so such
+  units of work run one at a time. The default stays the database's own
+  (FIN-78).
+- `Repository.get_many_for_update(ids)` locks several rows in one
+  statement, by ascending id whatever the order asked, so transfers that
+  lock the same rows cannot deadlock; `nowait` and `skip_locked` as for
+  one row (FIN-78).
+- `UnitOfWork.lock(name, nowait=False)` holds a lock by name until the
+  transaction ends, for work with no row to lock:
+  `pg_advisory_xact_lock` on a stable 64-bit hash of the name
+  (`domainkit.db.lock_key`) on PostgreSQL, the database's write lock on
+  SQLite, and a process-wide lock in memory (FIN-78).
+- `domainkit.contrib.messaging.inbox`: mark a durable handler or a task
+  `@inbox`, and its database work commits once per message, however often
+  the message is delivered. The run's first commit writes `(target,
+  message id)` to the new `domainkit_inbox` table, in its own transaction,
+  on the database it commits to; a later run of the message (a retry, a
+  redelivery after a crash, RabbitMQ handing it out again) is skipped, or
+  its commit refused with `AlreadyHandled`, and the message is recorded as
+  done (outcome `handled`). Opt-in: handlers not marked stay at least once.
+  In a chain only the last step may use it. A row lives as long as its
+  message may run: workers delete it with finished messages
+  (`Worker.prune_inbox`) once the message is done or cancelled, never while
+  it is pending or dead, however long a rate, a broker, a paused queue, or
+  an operator keeps it there; an earlier draft forgot rows after a fixed
+  retention, which a rate-limited task could outlast (SEC-11b-1). The inbox
+  holds no personal data. Projects with messaging run `makemigrations` and
+  `migrate` for the table (FIN-80, SEC-11b-1; ADR 0094).
+
 ### Changed
 
 - A release no longer creates the GitHub Release for its tag: the
@@ -16,6 +78,269 @@ and a status.
   and the workflow's `github-release` job failed on the one already
   there. The job and `.github/scripts/release_notes.py` are removed;
   `docs/versioning.md` says when to make the release.
+- **Breaking:** `loaddata` only adds rows: a row whose primary key is
+  stored refuses the fixture, before anything is written, and the dry run
+  says `N already stored`. **To keep the old behaviour:** `loaddata
+  --replace` (DATA-12).
+- **Breaking:** `loaddata` refuses a fixture that writes a guarded table
+  (users, the `AUTH.USER_TABLE`, groups, permissions and their links,
+  content types, object grants, dynamic settings), and `flush` keeps the
+  guarded tables, tokens, TOTP authenticators, and recovery codes
+  included, with the tables they reference, listed as `kept (guarded)`.
+  The object grants on the rows it deletes still go with them, so an
+  object given a flushed one's id starts without them. **To keep the old
+  behaviour:** `--include-guarded` on either command (DATA-12).
+- **Breaking:** in staging and production, `loaddata` and `flush` need
+  an operator named by `--operator` or `DOMAINKIT_OPERATOR`, beside
+  `--force`; the login name is refused. **Fix:** set
+  `DOMAINKIT_OPERATOR` where they run (DATA-12; ADR 0070).
+- **Breaking:** a request's id is the `X-Request-ID` of a trusted proxy
+  (`TRUSTED_PROXIES`, `"unix"` for a unix socket's peer), the last line
+  when there are several, else a new one; a caller's own header is
+  dropped. **Fix:** have the proxy set the header (nginx:
+  `proxy_set_header X-Request-ID $request_id;`; HAProxy:
+  `unique-id-header X-Request-ID`). **To keep the old behaviour:**
+  `ACCEPT_REQUEST_ID = "anyone"` (WEB-13).
+- `operator.loaddata` names each table with its rows and replaced rows,
+  the SHA-256 of the fixture as read, and whether `--replace` and
+  `--include-guarded` were given; `operator.flush` each table it emptied,
+  with its rows, the tables it kept, and the rows of kept tables it
+  deleted with their objects (`about`: object grants) (DATA-12).
+- **Breaking:** with `domainkit.contrib.auth` and an attempt rate set
+  (`LOGIN_RATE`, `EMAIL_RATE`, `MFA.RATE`, `MFA.ADDRESS_RATE`), staging and
+  production refuse to start, and `check` fails, while
+  `RATE_LIMIT_BACKEND` counts in each process (`MemoryBackend`, the
+  default): it is the error `auth.E105`, which `SILENCED_CHECKS` cannot
+  name, where 0.10 warned (`auth.W004`). Workers and commands still start.
+  **Fix:** `RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"`,
+  shared by every process. To keep the old behaviour, for a deployment of
+  one process, set `AUTH = {"REQUIRE_SHARED_THROTTLES": False}`, which
+  warns (`auth.W004`) (AUTH-09; ADR 0098).
+- **Breaking:** in staging and production, while `RATE_LIMIT_BACKEND`
+  cannot count (Redis down), password and code checks, and requests that
+  send mail, are refused with `503 throttle_unavailable` and
+  `Retry-After`, and so are the attempts the local fallback
+  (`RATE_LIMIT_FALLBACK_REPLICAS`) counted in one process:
+  `AUTH.THROTTLE_FAIL_CLOSED` defaults to `None`, which is `True` there and
+  `False` elsewhere. Other requests are served. To keep the old behaviour,
+  set `AUTH = {"THROTTLE_FAIL_CLOSED": False}` (AUTH-09; ADR 0098).
+- The production settings `init` writes count requests, wrong passwords,
+  and codes in Redis (`RedisBackend` on a `shared` cache), from
+  `<PREFIX>REDIS_URL`, which they require; new projects depend on the
+  `redis` extra (AUTH-09).
+- **Breaking:** an `Idempotency-Key` whose request committed, or pinned it
+  for a commit on another database, is no longer forgotten once
+  `IDEMPOTENCY.TTL_SECONDS` passes. Its response is dropped, but the key is
+  kept as a tombstone for `IDEMPOTENCY.TOMBSTONE_SECONDS` more (new: 7 days
+  by default, at most 90), and a retry with the same key and request gets
+  409 `idempotency_response_unavailable` instead of running again: it used
+  to make a second payment where the first had committed. Another request
+  with the key gets 422 `idempotency_key_reused`, as within the TTL. A key
+  nothing committed is forgotten at the TTL, as before. The keys table has
+  a new `tombstone` column: run `makemigrations` and `migrate`. The keyed
+  write makes the same statements as before; without messaging, a sweep
+  that is due makes one more, once a minute. ADR 0096 records the choice.
+  **To keep the old behaviour:** `IDEMPOTENCY = {"TOMBSTONE_SECONDS": 0}`
+  (FIN-84).
+- **Breaking:** `SCOPED_CREDENTIALS` defaults to `"refuse"`: credentials
+  limited to scopes, on a route that declares no rule that checks scopes,
+  get `403 permission_denied` ("Credentials limited to scopes cannot call
+  this route"), where 0.10 served them with a warning. Add
+  `HasScope(...)`, a permission rule, or `AllowScoped()` to the route. To
+  keep 0.10's behaviour, set `SCOPED_CREDENTIALS = "warn"`: such requests
+  are served, with the line on the `domainkit.security` logger, and no
+  longer with a `DomainkitDeprecationWarning`, as nothing is to be removed
+  (AUTH-01).
+- **Breaking:** `IDEMPOTENCY.ANONYMOUS` defaults to `"refuse"`: an
+  `Idempotency-Key` sent with no actor and none of `CREDENTIAL_HEADERS` is
+  answered 400 `idempotency_key_needs_caller`, and the request does not
+  run. 0.10 scoped it to the caller's address, which every caller behind
+  one NAT or proxy shares. To keep 0.10's behaviour, set `IDEMPOTENCY =
+  {"ANONYMOUS": "per-address"}`. `check` no longer warns
+  `idempotency.W002`, which asked deployments to choose while the default
+  was the unsafe one; an `idempotency.W002` in `SILENCED_CHECKS` silences
+  nothing now, and may go (DATA-09).
+- **Breaking:** `ResourceRouter(crud=True)` without `writable=`, or without
+  both `create=` and `update=`, is refused when the router is built, with a
+  `TypeError` that says what to pass: `writable=[...]` naming the fields
+  the writes take, `writable=ALL_FIELDS`, or both schemas. 0.10 made every
+  plain field writable, with a warning, so a field added to the aggregate
+  later was settable by any caller allowed to write. To keep 0.10's
+  behaviour, pass `writable=ALL_FIELDS` (WEB-09).
+- **Breaking:** a unit of work that a durable handler or task commits on
+  its outbox's database renews the run's lease in the same transaction,
+  and fails with `LeaseLost`, rolled back, when another worker took the
+  message over because the run outlived its lease (a blocked event loop, a
+  paused process, an ignored cancellation). Before, both runs committed.
+  Such a run, and one that finishes after losing its lease, ends as
+  `superseded` (logged, and counted in `messaging_messages_total`); the
+  worker holding the message runs it. Each such commit runs one more
+  statement (FIN-80; ADR 0095).
+
+### Removed
+
+- The access rules' old names in `domainkit.contrib.auth` and
+  `domainkit.contrib.auth.access`, deprecated in 0.10: `AllowAny`,
+  `BasePermission`, `HasObjectPermissions`, `HasPermissions`, `HasScope`,
+  `IsAuthenticated`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`,
+  `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`,
+  `check_object_permissions`, `mark_public`, and `open_routes`, and, from
+  `.access`, `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`,
+  `MODEL_ACTIONS`, `bearer`, `public`, `scopes_of`, `routes_need_users`,
+  and `unguarded_routes`. Import them from `domainkit.http.access`: an old
+  import raises `ImportError`, and type checkers report it. `IsAdminUser`,
+  `IsSuperuser`, `AuthenticatedUser`, `CurrentUser`, and `current_user`
+  stay in `domainkit.contrib.auth` (DSGN-02).
+- `AUTH.REQUIRE_ROUTE_RULES`, deprecated in 0.10: settings that still set
+  it are refused when they load, naming `REQUIRE_ROUTE_RULES`, the setting
+  to use instead (DSGN-02).
+- `Query` from `domainkit.ddd.query`, `Selection`'s name before 0.9.2,
+  deprecated in 0.10: use `domainkit.ddd.Selection`. `domainkit.ddd.Query`,
+  the base of CQRS query messages, stays (DSGN-09).
+- `domainkit.contrib.evidence.model`, deprecated in 0.10: import from
+  `domainkit.contrib.evidence`, or its `models` (DSGN-09).
+
+### Fixed
+
+- A request cut off at its deadline in the middle of a statement no longer
+  costs its database connection, with asyncpg outside PgBouncer: the
+  connection is kept once it has settled, within 2 seconds, where it was
+  closed and the next request opened another. Settling waits for asyncpg
+  to finish the cancelled exchange, rolls the transaction back at once
+  (its locks go with it), and clears asyncpg's and SQLAlchemy's record of
+  it, so a deadline that lands while `BEGIN` is answered cannot leave the
+  kept connection in a transaction nothing tracks, which would lose the
+  next unit of work's write. Code that goes on after the cut gets
+  `PendingRollbackError` until it rolls back, as before. Ten requests cut
+  off at a 1 s deadline opened and discarded ten connections; they now
+  open and discard none. A connection that does not settle in time, one
+  cut off under an anyio cancel scope, and those of other drivers are
+  closed, as before; with `POOL_PRE_PING = False`, the request after an
+  anyio scope's cut no longer gets the connection it closed ("connection
+  is closed") (CONC-08, SEC-10b-1).
+- The outbox messages of a commit that failed were handed to the
+  publisher, and to watchers such as the `outbox` fixture, with the next
+  commit of the same unit of work, though they were never stored. A unit
+  of work run again by `run` now hands on only what its last run
+  committed (FIN-78).
+- In memory, a failed savepoint keeps the events an aggregate it first
+  loaded recorded inside it no more: they are dropped, as for aggregates
+  loaded before it (FIN-78).
+- A request cut off at its deadline in the middle of a statement no longer
+  costs its database connection, with asyncpg outside PgBouncer: the
+  connection is kept once it has settled, within 2 seconds, where it was
+  closed and the next request opened another. Settling waits for asyncpg
+  to finish the cancelled exchange, rolls the transaction back at once
+  (its locks go with it), undoes in the same round trip what the cut
+  statement may have left in the session that a rollback does not end
+  (session advisory locks, cursors, temporary tables, `LISTEN`: the
+  statement may have finished before the cancel arrived), and clears
+  asyncpg's and SQLAlchemy's record of the transaction, so a deadline
+  that lands while `BEGIN` is answered cannot leave the
+  kept connection in a transaction nothing tracks, which would lose the
+  next unit of work's write. Code that goes on after the cut gets
+  `PendingRollbackError` until it rolls back, as before. Ten requests cut
+  off at a 1 s deadline opened and discarded ten connections; they now
+  open and discard none. A connection that does not settle in time, one
+  cut off under an anyio cancel scope, and those of other drivers are
+  closed, as before; with `POOL_PRE_PING = False`, the request after an
+  anyio scope's cut no longer gets the connection it closed ("connection
+  is closed") (CONC-08, SEC-10b-1).
+
+### Security
+
+- `loaddata` and `flush` wrote the tables behind the aggregates, the auth
+  tables included. A fixture of link rows gave a user every permission,
+  or a new group with them, and any row whose primary key was stored was
+  replaced, with no event, version check, or audit row naming the tables;
+  `flush` emptied users, tokens, authenticators, and recovery codes with
+  the data, turning every second factor off. Loads now only add rows
+  unless `--replace`; guarded tables (credentials, grants, second
+  factors, content types, dynamic settings) are written or emptied only
+  with `--include-guarded`, though a flush deletes the object grants on
+  the rows it deletes, which a later object with the same id would
+  otherwise inherit; staging and production need a named operator; and
+  the audit row names the tables, their counts, and the fixture's
+  SHA-256 (DATA-12, SEC-11a-4).
+- Any caller chose its request's id with `X-Request-ID`: the id its log
+  lines, error reports, audit rows, queued work, and outgoing calls
+  carry. A client could take another request's id, or give one id to
+  many requests. The header is now read only from trusted proxies, in
+  the same bounded format (up to 128 letters, digits, `.`, `_`, `:`,
+  `-`), and of several lines the last, the nearest proxy's: a proxy that
+  adds its own line (HAProxy, Apache, Caddy) leaves a client's in front
+  of it. A caller's own is dropped and the request gets a new id, which
+  its answer returns (WEB-13, SEC-11c-1).
+- JSON Web Tokens named no key, so `AUTH.JWT.SIGNING_KEY` could not be
+  replaced without refusing every outstanding access token at once, and
+  nothing could keep the old key to verify what it signed, for a while or
+  for good. Every token now names its key in its header (`kid`: a keyed
+  hash of an HMAC secret, the RFC 7638 thumbprint of a public key; neither
+  shows the key), and `AUTH.JWT.PREVIOUS_KEYS` keeps up to three keys that
+  signed before, each with the time it retired (`RETIRED_AT`) and its
+  `ALGORITHM`: their tokens verify until `RETIRED_AT` plus
+  `ACCESS_TOKEN_TTL` and `LEEWAY`, then are refused. The `kid` picks the
+  key and the one algorithm checked; one that names no key held is
+  refused without trying another, a token minted elsewhere with the same
+  key included. Tokens without `kid`, as 0.10 issued, are checked with the
+  signing key alone, so upgrading logs nobody out. Startup refuses a
+  previous key that is the signing key or is listed twice (`auth.E008`),
+  and one that retires more than a day ahead (`auth.E009`). Keys are
+  loaded once, not from PEM for every token (AUTH-10; ADR 0097).
+- Wrong passwords and codes were counted in each process by default, with
+  a warning, so a deployment of N processes checked N times `LOGIN_RATE`;
+  and while Redis could not count them they were let through, unless
+  `AUTH.THROTTLE_FAIL_CLOSED` was set. In staging and production, attempts
+  counted in each process now refuse to start (`auth.E105`), and attempts
+  that cannot be counted are refused with `503 throttle_unavailable`; both
+  are under **Changed**, with how to keep the old behaviour (AUTH-09; ADR
+  0098).
+- Live events read the principal for their rule from `scope["user"]`, so
+  credentials limited to scopes were not held to the route's rules there.
+  On a route anyone may open (`Public`) whose rule sends each user the
+  events about them, a token limited to `shop.view_product`, which
+  `current_user` refuses on that route, was streamed its user's events,
+  over Server-Sent Events and WebSockets. `live_events` now reads the
+  principal as `current_user` does: on a route that declares no rule that
+  checks scopes, `stream` answers `403`, and `forward` and `subscribe`
+  refuse the WebSocket or the subscription, audited, before any event
+  (AUTH-01, SEC-11a-3).
+- Behind a proxy on a unix socket served by Granian (`granian --uds`),
+  `TRUSTED_PROXIES = ["unix"]` trusted nobody: Granian reports the
+  socket's peer with an empty host (`("", "0")`), where uvicorn reports
+  none, and only a missing peer was taken for the socket. `X-Forwarded-For`
+  was never read, so every caller was the client `""`: one rate-limit key
+  and one hold on refused passwords for all of them, and one anonymous
+  caller spent everyone's `RATE_LIMIT` and held back everyone's logins,
+  as before 0.9.1. The proxy's `X-Request-ID` was dropped too. An empty
+  host is now the unix socket's peer, trusted with `"unix"`, as uvicorn's
+  is; without a trusted proxy, rate limits, auth's throttles, the outgoing
+  call guard and idempotency count it as an unknown address, and audit
+  rows record no address for it (WEB-02, SEC-11c-2).
+- With `IDEMPOTENCY.ANONYMOUS = "refuse"`, any value in one of
+  `CREDENTIAL_HEADERS` named the caller of an `Idempotency-Key`, even one
+  that authenticated nobody: `Authorization: Bearer null`, which
+  logged-out browser applications send, or a gateway's fixed `X-API-Key`.
+  Two logged-out callers behind one address shared keys, and the second
+  was replayed the first's response. Once an authentication middleware
+  has found no one in the request (its principal in `scope["user"]` is not
+  authenticated), a credential header names no caller, and such a key is
+  answered 400 `idempotency_key_needs_caller`; the cookies of
+  `SESSION_COOKIES` still name one. A layer of a project's own that
+  authenticates by a header names the caller by binding the actor, or by
+  putting an authenticated principal in `scope["user"]` (DATA-09,
+  SEC-11a-1).
+- Idempotency keys were scoped to the actor whatever credentials the
+  request carried, and a retry is answered before the route's rules run.
+  A personal token limited to scopes that sent a key its user's login had
+  used was replayed that response, on a route that refuses the token
+  (`SCOPED_CREDENTIALS = "refuse"` answers it 403), or told that the key
+  was taken. Credentials limited to scopes are now a caller apart, one for
+  each set of scopes; a login and a refreshed token, which carry no limit,
+  share the user's keys as before. Kept responses still name the user, so
+  erasure and exports find them, and tombstones are scoped as their keys.
+  A retry, after the upgrade, of a keyed request that such a token sent
+  before it is a new request, and runs (AUTH-01, SEC-11a-2).
 
 ## [0.10.1] - 2026-10-26
 
@@ -3302,7 +3627,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/karimmattar/domainkit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/karimmattar/domainkit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/karimmattar/domainkit/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/karimmattar/domainkit/compare/v0.9.2...v0.9.3

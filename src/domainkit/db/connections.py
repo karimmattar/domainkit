@@ -16,6 +16,14 @@ prepared ``;`` outside any transaction, where SQLAlchemy's own test takes
 three (``BEGIN``, the ``;``, ``ROLLBACK``); through PgBouncer, which needs
 the transaction, it keeps SQLAlchemy's.
 
+With asyncpg outside PgBouncer, a connection whose statement a cancellation
+cut off (a deadline) is kept once it has settled, where SQLAlchemy would
+close it (``_keep_cut_off``): asyncpg has finished the cancelled exchange,
+the server's transaction is rolled back, what the statement may have left
+in the session that outlives that is undone (``_UNDO_CUT``), and asyncpg's
+and SQLAlchemy's view of the transaction agree, within ``SETTLE_TIMEOUT``.
+Otherwise it is closed.
+
 Read-only sessions read in one of three ways (``Reads``). ``STATEMENTS``
 runs each statement on its own, without ``BEGIN`` or ``ROLLBACK``, on an
 engine of its own whose connections PostgreSQL holds read-only; each
@@ -31,11 +39,12 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from functools import cache, lru_cache, partial
+from importlib.metadata import version
 from typing import Any, Final
 from weakref import WeakKeyDictionary
 
 from sqlalchemy import Select, TextClause, event, literal_column, make_url, select, text
-from sqlalchemy.engine import Connection, ExceptionContext, ExecutionContext
+from sqlalchemy.engine import Connection, Engine, ExceptionContext, ExecutionContext
 from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -56,7 +65,7 @@ from sqlalchemy.sql.ddl import ExecutableDDLElement
 from sqlalchemy.sql.dml import UpdateBase
 from sqlalchemy.util import await_only
 
-from domainkit import deadlines
+from domainkit import deadlines, tasks
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, is_network_database
 from domainkit.db.drivers import connect_args, read_only_args, transaction_settings
@@ -129,6 +138,20 @@ role, every setting (``default_transaction_read_only`` back to ``on``
 among them), cursors, session advisory locks, temporary tables, sequence
 values, and ``LISTEN``. ``UNLISTEN`` runs only if something listens, as a
 standby refuses it."""
+_UNDO_CUT: Final = (
+    "CLOSE ALL; SELECT pg_advisory_unlock_all(); DISCARD TEMP; "
+    "DO $$BEGIN PERFORM * FROM pg_listening_channels() LIMIT 1; "
+    "IF FOUND THEN UNLISTEN *; END IF; END$$"
+)
+"""What ``_settle`` undoes in the session of a connection whose statement a
+cancellation cut off, after the rollback and in the same round trip: what
+the statement may have left that its caller, cut off, never learned of and
+cannot undo, and that outlives a rollback: cursors, session advisory
+locks, temporary tables, and ``LISTEN``. Settings and the role stay, as
+after any statement (a project may set them when a connection is made),
+and so do asyncpg's prepared statements."""
+_ROLLBACK_UNDO_CUT: Final = f"ROLLBACK; {_UNDO_CUT}"
+"""``_UNDO_CUT`` after the rollback of the cut statement's transaction."""
 _DIRTY: Final = "domainkit_reads_dirty"
 """A ``STATEMENTS`` connection's ``info`` key: it ran something that may
 have changed its session since it was last reset."""
@@ -165,6 +188,18 @@ _TYPE_WORDS: Final = frozenset(
 """Words that continue a type's name: ``DOUBLE PRECISION``, ``TIME ZONE``."""
 _SELECT_ONE: Final[Executable] = select(literal_column("1"))
 """A readiness probe a ``STATEMENTS`` connection needs no reset after."""
+SETTLE_TIMEOUT: Final = 2.0
+"""Seconds an asyncpg connection whose statement a cancellation cut off may
+take to settle (``_settle``), the cut-off work waiting, before it is closed
+instead: as long as SQLAlchemy gives such a connection to close gracefully."""
+_SETTLE_TASK: Final = "domainkit.db.settle"
+"""The name of the task that settles a cut-off connection (``tasks.spawn``)."""
+_PROVEN: Final = {"asyncpg": ((0, 32), (0, 33)), "sqlalchemy": ((2, 1), (2, 2))}
+"""The releases ``_settle`` was proven on: from the first major and minor
+release to the first past them. It reads and clears transaction state that
+asyncpg and SQLAlchemy keep privately; with other releases a cut-off
+connection is closed, as before, and ``test_db_cut_off`` fails until its
+tests pass on them and they are added here."""
 
 
 class Reads(StrEnum):
@@ -286,6 +321,9 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
         _listen(engine.sync_engine, "begin", _begin_snapshot)
     if backend.get_driver_name() == "asyncpg" and not config.PGBOUNCER:
         engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
+        _keep_settled(engine.sync_engine)
+        if not config.POOL_PRE_PING:
+            _listen(engine.sync_engine.pool, "checkout", _replace_closed)
     return _hiding_details(engine, config)
 
 
@@ -321,6 +359,7 @@ def create_read_engine(config: DatabaseConfig) -> AsyncEngine:
     _listen(sync.pool, "connect", _require_read_only)
     _listen(sync.pool, "checkout", _take_open)
     _listen(sync.pool, "reset", _reset_session)
+    _keep_settled(sync)
     return _hiding_details(engine, config)
 
 
@@ -564,10 +603,26 @@ def _take_open(
     Raises:
         DisconnectionError: It is closed; the pool connects afresh.
     """
-    driver = dbapi_connection.driver_connection
-    if _closed(driver):
+    _replace_closed(dbapi_connection, record, proxied)
+    record.info[_SENT] = _sent(dbapi_connection.driver_connection)
+
+
+def _replace_closed(
+    dbapi_connection: Any,  # noqa: ANN401 - SQLAlchemy's adapter.
+    record: ConnectionPoolEntry,
+    proxied: PoolProxiedConnection,
+) -> None:
+    """Replace a connection the driver knows is closed, as it leaves the pool.
+
+    For an asyncpg pool that does not ping: a connection closed while a
+    cancellation interrupted its own close (an anyio cancel scope) may be
+    back in the pool.
+
+    Raises:
+        DisconnectionError: It is closed; the pool connects afresh.
+    """
+    if _closed(dbapi_connection.driver_connection):
         raise DisconnectionError("The server closed this connection.")
-    record.info[_SENT] = _sent(driver)
 
 
 def _reset_session(
@@ -616,6 +671,103 @@ def _within_deadline(execute: _Execute, cursor: Any) -> None:  # noqa: ANN401
         await_only(bound.__aexit__(type(exc), exc, exc.__traceback__))
         raise
     await_only(bound.__aexit__(None, None, None))
+
+
+def _keep_settled(engine: Engine) -> None:
+    """Keep ``engine``'s connections a cancellation cuts off, once settled.
+
+    asyncpg's, on the releases of asyncpg and SQLAlchemy ``_settle`` was
+    proven on; other drivers' are closed, as SQLAlchemy does.
+    """
+    if engine.dialect.driver == "asyncpg" and _proven():
+        _listen(engine, "handle_error", _keep_cut_off)
+
+
+@cache
+def _proven() -> bool:
+    """Whether the installed asyncpg and SQLAlchemy are releases in ``_PROVEN``."""
+    return all(low <= _release(name) < high for name, (low, high) in _PROVEN.items())
+
+
+def _release(name: str) -> tuple[int, int]:
+    """The major and minor numbers of the installed distribution ``name``."""
+    major, minor = re.findall(r"[0-9]+", version(name))[:2]
+    return int(major), int(minor)
+
+
+def _keep_cut_off(context: ExceptionContext) -> None:
+    """Keep an asyncpg connection whose statement a cancellation cut off, once settled.
+
+    SQLAlchemy closes such a connection (CONC-08): asyncpg may still be
+    finishing the cancelled exchange, and the server may be inside a
+    transaction nobody tracks (SEC-10b-1: asyncpg keeps a transaction whose
+    ``BEGIN`` was cut off as begun, SQLAlchemy does not). ``_settle`` brings
+    it back to no transaction in a task of its own, which a cancellation of
+    the cut-off work does not reach, while that work waits. Settled, the
+    connection is kept, and its transaction, rolled back already, refuses
+    further statements until it is rolled back, as when the connection was
+    closed (``PendingRollbackError``). If it does not settle, or the wait
+    is cancelled again (an anyio cancel scope cancels every wait until it
+    exits), it is closed, as before. The cancellation goes on either way:
+    SQLAlchemy raises it once this returns.
+    """
+    connection = context.connection
+    if (
+        connection is None
+        or connection.invalidated
+        or not context.is_disconnect
+        or not isinstance(context.original_exception, asyncio.CancelledError)
+    ):
+        return
+    proxied = connection.connection
+    driver: Any = proxied.driver_connection
+    settling = tasks.spawn(
+        _settle(proxied.dbapi_connection, driver), name=_SETTLE_TASK, log_errors=False
+    )
+    try:
+        await_only(asyncio.wait([settling]))
+    except asyncio.CancelledError:  # Again: it cannot wait, so it is closed.
+        driver.terminate()
+        return
+    if settling.cancelled() or not settling.result():
+        return
+    transaction = connection.get_transaction()
+    if transaction is not None and transaction.is_active:
+        transaction._deactivate_from_connection()
+    context.is_disconnect = False
+
+
+async def _settle(adapter: Any, driver: Any) -> bool:  # noqa: ANN401 - SQLAlchemy's and asyncpg's.
+    """Bring a cut-off asyncpg connection back to no transaction; True if it did.
+
+    asyncpg begins each exchange by waiting for a cancelled one to end: the
+    cancel request sent, and the server's answer to what it cancelled read
+    up to its ReadyForQuery. So the statements sent here, in one round trip,
+    run only once nothing is in flight, and their ReadyForQuery tells
+    whether the server is in a transaction (``is_in_transaction``). They
+    are ``ROLLBACK``, where asyncpg or SQLAlchemy began a transaction, then
+    ``_UNDO_CUT``: the cancel may have reached the server after the
+    statement had finished there, and what it left in the session (an
+    advisory lock, say) outlives the rollback. Then the server must hold no
+    transaction, and asyncpg's and SQLAlchemy's trackers, which may still
+    hold one (asyncpg keeps a transaction whose ``BEGIN`` was cut off), are
+    cleared to agree. Anything else (an error, a transaction begun in SQL
+    text, or ``SETTLE_TIMEOUT`` running out) closes the connection: its
+    state is not known.
+    """
+    tracked = driver._top_xact is not None or adapter._transaction is not None
+    try:
+        async with asyncio.timeout(SETTLE_TIMEOUT):
+            await driver.execute(_ROLLBACK_UNDO_CUT if tracked else _UNDO_CUT)
+    except Exception:  # noqa: BLE001 - whatever failed, its state is unknown.
+        driver.terminate()
+        return False
+    if driver.is_closed() or driver.is_in_transaction():
+        driver.terminate()
+        return False
+    driver._top_xact = None
+    adapter._transaction = None
+    return True
 
 
 def _set_local(config: DatabaseConfig, connection: Connection) -> None:

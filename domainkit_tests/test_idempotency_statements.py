@@ -1,8 +1,13 @@
 """The keys' statements, built once, send what the statements built per request sent.
 
-The builders below are 0.9.1's, as each request ran them. Every statement
-built once must compile to the same SQL text with the same parameters, on
-each dialect and each clock, and send the same to the database.
+The builders below are 0.9.1's, as each request ran them, with what 0.11
+added for tombstones (FIN-84): the claim and the sweep leave an expired key
+that may have committed alone until it is a tombstone, the read of a held
+key says whether it expired, and ``bury`` makes tombstones. Without
+tombstones (``TOMBSTONE_SECONDS = 0``) the claim and the sweep are 0.9.1's
+unchanged. Every statement built once must compile to the same SQL text
+with the same parameters, on each dialect and each clock, and send the
+same to the database.
 """
 
 import asyncio
@@ -13,12 +18,15 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy import (
+    ColumnElement,
     Delete,
     Update,
+    and_,
     delete,
     event,
     make_url,
     null,
+    or_,
     select,
     update,
 )
@@ -39,6 +47,7 @@ from domainkit.contrib.idempotency.operations import (
     pin_lease,
 )
 from domainkit.contrib.idempotency.statements import (
+    EXPIRED,
     LAPSED,
     MARK_COMMITTED,
     PIN_LEASE,
@@ -56,7 +65,7 @@ OPERATION = Operation("h" * 64, "t" * 32)
 HELD_BY = "o" * 32
 FINGERPRINT = "f" * 64
 SUBJECTS = "\x1falice\x1f"
-TTL, LEASE = 86_400.0, 30.0
+TTL, LEASE, TOMBSTONE = 86_400.0, 30.0, 604_800.0
 FROZEN = datetime(2026, 10, 25, 9, 30, 15, 123456, tzinfo=UTC)
 DIALECTS: dict[str, Dialect] = {
     "asyncpg": postgresql.asyncpg.dialect(),  # type: ignore[no-untyped-call]
@@ -73,8 +82,25 @@ def later(now: dbclock.Moment, seconds: float) -> dbclock.Moment:
     return now + timedelta(seconds=seconds)
 
 
-def old_claim(dialect: str) -> Executable:
-    """0.9.1's claim, as ``_claim`` built it."""
+def forgotten(now: dbclock.Moment, tombstones: bool) -> ColumnElement[bool]:
+    """The expired rows a claim replaces, and a sweep deletes.
+
+    0.9.1's: every expired row. With tombstones (0.11), of those whose
+    request committed or pinned the key, only tombstones.
+    """
+    if not tombstones:
+        return keys.expires_at < now
+    return and_(
+        keys.expires_at < now,
+        or_(
+            and_(keys.committed_at.is_(None), keys.pinned.is_(False)),
+            keys.tombstone.is_(True),
+        ),
+    )
+
+
+def old_claim(dialect: str, tombstones: bool) -> Executable:
+    """0.9.1's claim, as ``_claim`` built it, and 0.11's with tombstones."""
     now = dbclock.now(dialect)
     upsert = postgresql.insert if dialect == "postgresql" else sqlite.insert
     claim = upsert(idempotency_keys).values(
@@ -85,6 +111,7 @@ def old_claim(dialect: str) -> Executable:
         token=OPERATION.token,
         locked_until=later(now, LEASE),
         pinned=False,
+        tombstone=False,  # 0.11's column, set as ``pinned`` is.
     )
     fresh = claim.excluded
     return claim.on_conflict_do_update(
@@ -101,28 +128,59 @@ def old_claim(dialect: str) -> Executable:
             "locked_until": fresh.locked_until,
             "pinned": False,
             "subjects": null(),  # 0.10's column, cleared as the others.
+            "tombstone": False,  # 0.11's.
         },
-        where=keys.expires_at < now,
+        where=forgotten(now, tombstones),
     ).returning(keys.token)
 
 
 def old_read_held(dialect: str) -> Executable:
-    """0.9.1's read of a held key's row."""
+    """0.9.1's read of a held key's row, with whether it expired (0.11)."""
     lapsed = keys.locked_until < dbclock.now(dialect)
-    return select(idempotency_keys, lapsed.label(LAPSED)).where(
+    expired = keys.expires_at < dbclock.now(dialect)
+    return select(idempotency_keys, lapsed.label(LAPSED), expired.label(EXPIRED)).where(
         keys.key_hash == OPERATION.key_hash
     )
 
 
-def old_sweep(dialect: str, batch: int) -> Delete:
-    """0.9.1's ``_sweep``."""
+def old_sweep(dialect: str, batch: int | None, tombstones: bool) -> Delete:
+    """0.9.1's ``_sweep``, and the hourly purge's delete (``batch`` None)."""
+    due = forgotten(dbclock.now(dialect), tombstones)
+    if batch is None:
+        return delete(idempotency_keys).where(due)
     oldest = (
-        select(keys.key_hash)
-        .where(keys.expires_at < dbclock.now(dialect))
-        .limit(batch)
-        .with_for_update(skip_locked=True)
+        select(keys.key_hash).where(due).limit(batch).with_for_update(skip_locked=True)
     )
     return delete(idempotency_keys).where(keys.key_hash.in_(oldest.scalar_subquery()))
+
+
+def new_bury(dialect: str, batch: int | None) -> Update:
+    """0.11's tombstones of expired keys that may have committed, built per call."""
+    now = dbclock.now(dialect)
+    due = and_(
+        keys.expires_at < now,
+        keys.tombstone.is_(False),
+        or_(keys.committed_at.is_not(None), keys.pinned.is_(True)),
+    )
+    if batch is not None:
+        oldest = (
+            select(keys.key_hash)
+            .where(due)
+            .limit(batch)
+            .with_for_update(skip_locked=True)
+        )
+        due = keys.key_hash.in_(oldest.scalar_subquery())
+    return (
+        update(idempotency_keys)
+        .where(due)
+        .values(
+            headers=null(),
+            body=null(),
+            subjects=null(),
+            tombstone=True,
+            expires_at=later(now, TOMBSTONE),
+        )
+    )
 
 
 def old_take_over(dialect: str) -> Update:
@@ -169,25 +227,33 @@ def pairs(dialect: str) -> list[Pair]:
     """Each 0.9.1 statement, and the one built once with its values, now."""
     built = clock_statements(dialect)
     now = built.now()
-    return [
+    claim_values = built.claim_values(
+        now, OPERATION.key_hash, FINGERPRINT, OPERATION.token, TTL, LEASE
+    )
+    sweeps: list[Pair] = [
         (
-            old_claim(dialect),
-            (
-                built.claim,
-                built.claim_values(
-                    now, OPERATION.key_hash, FINGERPRINT, OPERATION.token, TTL, LEASE
-                ),
-            ),
-        ),
+            old_sweep(dialect, batch, tombstones),
+            (built.sweep(batch, tombstones), built.sweep_values(now)),
+        )
+        for batch in (PURGE_BATCH, 2, None)
+        for tombstones in (True, False)
+    ]
+    burials: list[Pair] = [
+        (
+            new_bury(dialect, batch),
+            (built.bury(batch), built.bury_values(now, TOMBSTONE)),
+        )
+        for batch in (PURGE_BATCH, None)
+    ]
+    return [
+        (old_claim(dialect, tombstones=True), (built.claim, claim_values)),
+        (old_claim(dialect, tombstones=False), (built.claim_forgetting, claim_values)),
         (
             old_read_held(dialect),
             (built.read_held, built.read_held_values(now, OPERATION.key_hash)),
         ),
-        (
-            old_sweep(dialect, PURGE_BATCH),
-            (built.sweep(PURGE_BATCH), built.sweep_values(now)),
-        ),
-        (old_sweep(dialect, 2), (built.sweep(2), built.sweep_values(now))),
+        *sweeps,
+        *burials,
         (
             old_take_over(dialect),
             (
@@ -285,8 +351,11 @@ def test_each_dialect_and_clock_has_statements_of_its_own(
     local = clock_statements("sqlite")
     assert not local.database_clock
     assert len({id(database), id(frozen), id(local)}) == 3
-    assert database.sweep(PURGE_BATCH) is database.sweep(PURGE_BATCH)
-    assert database.sweep(2) is not database.sweep(PURGE_BATCH)
+    assert database.sweep(PURGE_BATCH, True) is database.sweep(PURGE_BATCH, True)
+    assert database.sweep(2, True) is not database.sweep(PURGE_BATCH, True)
+    assert database.sweep(2, False) is not database.sweep(2, True)
+    assert database.bury(2) is database.bury(2)
+    assert database.bury(2) is not database.bury(None)
 
 
 def test_what_reaches_the_database_is_the_same(database_url: str) -> None:

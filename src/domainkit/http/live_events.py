@@ -22,7 +22,10 @@ The route's own rule decides who may connect; ``rule`` decides, event by
 event, what each one sees: both ``has_permission`` and
 ``has_object_permission`` (with the event) must allow it, for the user as
 of the last re-check (``LIVE_REAUTH_INTERVAL``). Pass ``AllowAny()`` to
-send every event of those types to whoever may connect.
+send every event of those types to whoever may connect. The principal is
+read as ``current_user`` reads it: credentials limited to scopes are
+refused on a route that declares no rule that checks scopes
+(``SCOPED_CREDENTIALS``), a ``Public`` one included, before any event.
 
 Each event goes out as its type's name, its ``event_id``, and its fields
 as JSON, but those marked ``Personal``; ``render`` chooses other fields.
@@ -53,6 +56,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.ddd.personal import personal_fields
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.access import check_scopes_bounded, current_user
 from domainkit.http.live import TOO_SLOW, Closed, Closure, send_queue
 from domainkit.http.sse import EventSourceResponse, ServerSentEvent
 
@@ -195,9 +199,13 @@ class _Subscriber:
                     raise Closed(TOO_SLOW)
 
     async def _allowed(self, event: DomainEvent) -> bool:
-        """Whether the rule lets the connection's user see ``event``."""
+        """Whether the rule lets the connection's user see ``event``.
+
+        The user is read through ``current_user``, which holds scoped
+        credentials to the route's rules (decided once, at ``subscribe``).
+        """
         connection, rule = self.connection, self.rule
-        user = connection.scope["user"]
+        user = current_user(connection)
         return await rule.has_permission(
             connection, user
         ) and await rule.has_object_permission(connection, user, event)
@@ -241,8 +249,12 @@ class LiveEvents:
 
         Raises:
             ImproperlyConfigured: No types, or no ``AuthenticationMiddleware``.
+            PermissionDenied: Credentials limited to scopes, on a route that
+                declares no rule that checks scopes (``SCOPED_CREDENTIALS =
+                "refuse"``); the refusal is audited.
         """
         _check(connection, types)
+        await check_scopes_bounded(connection)
         subscriber = _Subscriber(connection, types, rule)
         with self._lock:
             # Hear the bus, once: it ignores repeats. Not just at the first
@@ -272,8 +284,12 @@ class LiveEvents:
 
         Raises:
             ImproperlyConfigured: No types, or no ``AuthenticationMiddleware``.
+            PermissionDenied: Credentials limited to scopes, on a route that
+                declares no rule that checks scopes: refused here, with 403,
+                before the stream starts.
         """
         _check(request, types)
+        current_user(request)  # Scoped credentials, before the 200 is sent.
         return EventSourceResponse(
             self._server_sent(request, types, rule, render), retry=retry
         )
@@ -307,6 +323,8 @@ class LiveEvents:
 
         Raises:
             ImproperlyConfigured: No types, or no ``AuthenticationMiddleware``.
+            PermissionDenied: Credentials limited to scopes, on a route that
+                declares no rule that checks scopes, before it accepts.
         """
         async with self.subscribe(websocket, *types, rule=rule) as events:
             if websocket.application_state is WebSocketState.CONNECTING:

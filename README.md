@@ -107,7 +107,7 @@ and a server).
 
 ```bash
 python3.13 -m venv .venv && . .venv/bin/activate
-pip install "domainkit[postgres,sqlite,testing]"
+pip install "domainkit[postgres,redis,sqlite,testing]"
 domainkit init billingAPI billing     # the name sets the variable prefix: BILLING_API_*
 cd billing
 python manage.py check
@@ -165,9 +165,11 @@ billing/
 ```
 
 The production settings read `BILLING_API_ALLOWED_HOSTS`,
-`BILLING_API_DATABASE_URL`, and `BILLING_API_TRUSTED_PROXIES` (the load
-balancers' networks, or empty) from the environment, and the deployment
-checks refuse to start without them, or without verified TLS to the database. They
+`BILLING_API_DATABASE_URL`, `BILLING_API_REDIS_URL` (where requests and
+login attempts are counted, once for every process), and
+`BILLING_API_TRUSTED_PROXIES` (the load balancers' networks, or empty)
+from the environment, and the deployment checks refuse to start without
+them, or without verified TLS to the database. They
 also turn the API docs off, send HSTS for a year, and limit each caller to
 300 requests a minute; `BILLING_API_API_DOCS`,
 `BILLING_API_SECURE_HSTS_SECONDS`, and `BILLING_API_RATE_LIMIT` change that.

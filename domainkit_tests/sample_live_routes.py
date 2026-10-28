@@ -106,6 +106,18 @@ async def user_feed(request: Request) -> EventSourceResponse:
     return live_events.stream(request, UserPermissionGranted, rule=OwnEvents())
 
 
+@router.websocket("/live/mine", dependencies=[Public])
+async def my_events(websocket: WebSocket) -> None:
+    """A route anyone may open: each event goes to the user it is about."""
+    await live_events.forward(websocket, UserPermissionGranted, rule=OwnEvents())
+
+
+@router.get("/live/mine/feed", dependencies=[Public])
+async def my_feed(request: Request) -> EventSourceResponse:
+    """The same as an event stream."""
+    return live_events.stream(request, UserPermissionGranted, rule=OwnEvents())
+
+
 @router.get("/live/count", dependencies=[Public])
 async def count(
     request: Request, events: int = 3, end: bool = False

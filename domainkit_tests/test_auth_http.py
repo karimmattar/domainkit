@@ -284,7 +284,6 @@ def test_a_saturated_login_answers_the_same_503_in_both_error_formats(
         refused = api().post(
             "/auth/login",
             json={"username": "alice", "password": PASSWORD},
-            headers={"X-Request-ID": "busy-1"},
         )
 
     assert refused.status_code == 503
@@ -294,7 +293,7 @@ def test_a_saturated_login_answers_the_same_503_in_both_error_formats(
         assert refused.json() == {
             "detail": detail,
             "code": "password_checks_busy",
-            "request_id": "busy-1",
+            "request_id": refused.headers["X-Request-ID"],
         }
     else:
         assert refused.headers["Content-Type"] == "application/problem+json"
@@ -305,7 +304,7 @@ def test_a_saturated_login_answers_the_same_503_in_both_error_formats(
             "detail": detail,
             "instance": "/auth/login",
             "code": "password_checks_busy",
-            "request_id": "busy-1",
+            "request_id": refused.headers["X-Request-ID"],
         }
 
 
@@ -527,14 +526,22 @@ def test_a_nul_in_a_login_is_a_refused_value(api: Api) -> None:
 
 
 def test_tokens_are_never_cached_or_kept_for_replay(api: Api) -> None:
-    """Login answers ``no-store``, so idempotency keeps no working token."""
+    """Login answers ``no-store``, so idempotency keeps no working token.
+
+    A login's caller is not known yet: by default since 0.11 its key is
+    refused before the login runs, and a header authentication found no
+    one in (a fixed ``X-API-Key``) names no one either (SEC-11a-1). So this
+    test keys anonymous callers by their address, as ``"per-address"``
+    does.
+    """
     create_user("alice")
     client = api()
     keyed = {"Idempotency-Key": "login-1"}
     body = {"username": "alice", "password": PASSWORD}
 
-    first = client.post("/auth/login", json=body, headers=keyed)
-    retry = client.post("/auth/login", json=body, headers=keyed)
+    with override_settings(IDEMPOTENCY={"ANONYMOUS": "per-address"}):
+        first = client.post("/auth/login", json=body, headers=keyed)
+        retry = client.post("/auth/login", json=body, headers=keyed)
 
     assert first.status_code == 200
     assert first.headers["Cache-Control"] == "no-store"

@@ -29,17 +29,24 @@ error after the commit, an exception, a body over ``MAX_RESPONSE_BYTES``,
 or one marked ``Cache-Control: no-store``, such as new tokens), a retry
 gets a 409 ``idempotency_response_unavailable`` instead of running the
 changes again. The same holds once the key is pinned for a commit on
-another database, even if that commit raised: it may have landed.
+another database, even if that commit raised: it may have landed. Past
+``TTL_SECONDS`` such a key's response is dropped, but the key is kept for
+``TOMBSTONE_SECONDS`` more, as a tombstone: its retries get the 409 too,
+and never run again (FIN-84).
 Only commits through a unit of work are seen: call payment providers and
 other services from deferred tasks, not from the handler.
 
 Keys are scoped to the authenticated actor (set by
-``AuthenticationMiddleware``, which must come first). Without an actor,
-they are scoped to the client address and the request's credentials (the
-``CREDENTIAL_HEADERS``, hashed), so callers behind one address never share
-keys where the project authenticates on its own with one of those headers.
-A key sent with neither is shared by every caller behind the address;
-``ANONYMOUS = "refuse"`` answers it 400 instead.
+``AuthenticationMiddleware``, which must come first), and to the scopes its
+credentials are limited to, if any: a token limited to scopes never shares
+its user's keys. Without an actor, they are scoped to the client address
+and the request's credentials (the ``CREDENTIAL_HEADERS``, hashed), so
+callers behind one address never share keys where the project
+authenticates on its own with one of those headers; once an
+authentication middleware found no one in the request, those headers name
+nobody.
+A key sent with neither is answered 400 (``ANONYMOUS = "refuse"``, the
+default); ``"per-address"`` shares it with every caller behind the address.
 List the middleware after ``RequestContextMiddleware`` and
 ``RequestBodyLimitMiddleware`` (it reads the whole body).
 """
@@ -64,7 +71,7 @@ from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
 from . import statements
-from .operations import Operation, run_operation
+from .operations import Operation, purge, run_operation
 from .settings import REFUSE, IdempotencySettings
 from .statements import RELEASE, STORE, clock_statements, holder
 
@@ -101,6 +108,8 @@ UNSEEN_BODIES: Final = frozenset(
 """ASGI messages that send a body the middleware never sees, so cannot keep."""
 LAPSED: Final = statements.LAPSED
 """Read with a held key's row: whether its lease ran out, on the database's clock."""
+EXPIRED: Final = statements.EXPIRED
+"""Read with a held key's row: whether it expired, on the database's clock."""
 
 
 def _hash(*parts: str | bytes) -> str:
@@ -215,7 +224,7 @@ class IdempotencyMiddleware:
             built = clock_statements(connection.dialect.name)
             now = built.now()
             claimed = await connection.scalar(
-                built.claim,
+                built.claim if config.TOMBSTONE_SECONDS else built.claim_forgetting,
                 built.claim_values(
                     now,
                     operation.key_hash,
@@ -235,10 +244,11 @@ class IdempotencyMiddleware:
                 ).first()
             if not registry.is_installed(MESSAGING) and self.sweeps.due():
                 # No hourly purge: sweep a few now and then.
-                swept = await connection.execute(
-                    built.sweep(PURGE_BATCH), built.sweep_values(now)
+                self.sweeps.swept(
+                    await purge(
+                        connection, built, now, config.TOMBSTONE_SECONDS, PURGE_BATCH
+                    )
                 )
-                self.sweeps.swept(swept.rowcount)
         if claimed is not None:
             return None
         return dict(row._mapping) if row is not None else {}
@@ -275,13 +285,25 @@ class IdempotencyMiddleware:
         receive: Receive,
         send: Send,
     ) -> None:
-        """Replay a finished response, or refuse a mismatch or a request in flight."""
+        """Replay a finished response, or refuse a mismatch or a request in flight.
+
+        A key past its TTL whose request may have committed is not replayed,
+        nor run again (FIN-84): its response is gone, or about to go.
+        """
         status_code = existing.get("status_code")
         if existing.get("fingerprint") not in {None, fingerprint}:
             response = error_response(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "This Idempotency-Key was used for a different request.",
                 code="idempotency_key_reused",
+            )
+        elif _buried(existing):
+            response = error_response(
+                status.HTTP_409_CONFLICT,
+                "The request with this Idempotency-Key already ran, and its "
+                "response is no longer kept; look up the result instead of "
+                "retrying.",
+                code="idempotency_response_unavailable",
             )
         elif status_code is None and not _died_after_commit(existing):
             response = error_response(
@@ -504,6 +526,20 @@ def _abandoned(existing: dict[str, Any], fingerprint: str) -> bool:
     )
 
 
+def _buried(existing: dict[str, Any]) -> bool:
+    """Whether the key is a tombstone, or expired after it may have committed.
+
+    The purge makes such a key a tombstone; until it runs, the claim leaves
+    it alone, and the response it still holds is past its TTL.
+    """
+    if existing.get("tombstone"):
+        return True
+    may_have_committed = existing.get("committed_at") is not None or bool(
+        existing.get("pinned")
+    )
+    return may_have_committed and bool(existing.get(EXPIRED))
+
+
 def _died_after_commit(existing: dict[str, Any]) -> bool:
     """Whether a committed request's lease ran out before it finished."""
     return existing.get("committed_at") is not None and bool(existing[LAPSED])
@@ -519,9 +555,20 @@ def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
 def _caller_of(
     actor: str | None, scope: Scope, credential_headers: tuple[str, ...]
 ) -> str:
-    """``_caller``, for a request whose ``actor`` was read already."""
+    """``_caller``, for a request whose ``actor`` was read already.
+
+    An actor's credentials limited to scopes (``scope["auth"].scopes``) are
+    a caller apart, one per set of scopes: the middleware replays before
+    the route's rules run, so a token limited to scopes must never be
+    replayed what the actor's other credentials were answered (SEC-11a-2).
+    Credentials without a limit (a login, a refreshed token) share the
+    actor's keys, as before.
+    """
     if actor:
-        return f"actor:{actor}"
+        scopes: frozenset[str] | None = getattr(scope.get("auth"), "scopes", None)
+        if scopes is None:
+            return f"actor:{actor}"
+        return f"actor:{actor}:scopes:{_hash(*sorted(scopes))}"
     client = scope.get("client")
     headers = Headers(scope=scope)
     credentials = _hash(
@@ -532,7 +579,8 @@ def _caller_of(
             for part in (name, str(len(values)), *values)
         )
     )
-    return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
+    host = (client[0] or "unknown") if client else "unknown"  # "": a unix socket.
+    return f"anonymous:{host}:{credentials}"
 
 
 def _unnamed(scope: Scope, config: IdempotencySettings) -> bool:
@@ -541,14 +589,23 @@ def _unnamed(scope: Scope, config: IdempotencySettings) -> bool:
     Named: an actor, one of ``CREDENTIAL_HEADERS``, or, for ``cookie``, a
     cookie of ``SESSION_COOKIES``. Any other cookie (consent, locale) many
     callers send alike, so it scopes a key to them all (SEC-10b-7).
+
+    A credential header names a caller only if no authentication
+    middleware judged the request, or one accepted it: where one put a
+    principal who is not authenticated in ``scope["user"]``, the header
+    authenticated nobody. ``Authorization: Bearer null``, which logged-out
+    browser applications send, or a gateway's fixed ``X-API-Key``, is the
+    same for many callers (SEC-11a-1). ``SESSION_COOKIES`` are named by the
+    project, for a layer of its own, so they hold whatever it found.
     """
     request = current_request()
     if request is not None and request.actor:
         return False
     headers = Headers(scope=scope)
+    nobody = "user" in scope and not getattr(scope["user"], "is_authenticated", True)
     for name in config.CREDENTIAL_HEADERS:
         if name.lower() != "cookie":
-            if name in headers:
+            if not nobody and name in headers:
                 return False
         elif _session_cookie(headers.getlist("cookie"), config.SESSION_COOKIES):
             return False

@@ -40,6 +40,7 @@ from domainkit.http.ratelimit import (
     MemoryBackend,
     RedisBackend,
 )
+from domainkit_tests.conftest import Api
 
 FAKE: Final = "redis://fakeredis:6379/0"
 SERVERS: Final = {
@@ -492,6 +493,32 @@ def test_rate_limit_middleware_on_redis(shared: dict[str, object]) -> None:
     assert refused.headers["RateLimit-Remaining"] == "0"
     assert int(refused.headers["Retry-After"]) > 0
     assert cleared == 1
+
+
+def test_wrong_passwords_are_counted_once_for_every_process(
+    shared: dict[str, object], api: Api
+) -> None:
+    """Two applications, one count in Redis: together they allow ``LOGIN_RATE``.
+
+    In memory, each would allow it on its own (AUTH-09): the deployment
+    checks refuse that in staging and production.
+    """
+    from domainkit_tests.test_auth_http import create_user
+
+    create_user("alice")
+    wrong = {"username": "alice", "password": "wrong"}
+    with override_settings(RATE_LIMIT_BACKEND="domainkit.http.ratelimit.RedisBackend"):
+        first, second = api(LOGIN_RATE="2/minute"), api(LOGIN_RATE="2/minute")
+        codes = [first.post("/auth/login", json=wrong).status_code for _ in range(2)]
+        codes += [second.post("/auth/login", json=wrong).status_code for _ in range(2)]
+
+        async def clear() -> int:
+            return await caches["shared"].clear()
+
+        assert first.portal is not None
+        first.portal.call(clear)
+
+    assert codes == [401, 401, 429, 429]
 
 
 def test_readiness_with_a_live_cache(server: dict[str, object]) -> None:

@@ -7,10 +7,10 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | Situation | Answer |
 | --- | --- |
 | Same key, same method, path, query and body | The stored response, replayed |
-| Same key, different request | 422 `idempotency_key_reused` |
+| Same key, different request | 422 `idempotency_key_reused`, past the TTL too while the key is a tombstone |
 | Same key while the first is still running, within its lease | 409 `idempotency_key_in_use`, `Retry-After: 1` |
 | Key not 1 to 255 printable ASCII characters | 400 `invalid_idempotency_key` |
-| Key from a caller with no actor and no credential header, with `ANONYMOUS = "refuse"` | 400 `idempotency_key_needs_caller`: nothing runs |
+| Key from a caller with no actor and no credential header (`ANONYMOUS = "refuse"`, the default) | 400 `idempotency_key_needs_caller`: nothing runs |
 | First request failed (a 5xx or an exception) or was refused (a 4xx) before committing anything | Not stored: the retry runs again |
 | First response marked `Cache-Control: no-store` (new tokens, from `/auth/login` and `/auth/refresh`) | Never stored: a retry runs again if nothing committed, else gets the 409 below |
 | First response larger than `MAX_RESPONSE_BYTES`, nothing committed | Not stored: the retry runs again |
@@ -19,10 +19,12 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | First request's commit on another database raised (its reply lost, refused, or cancelled while it ran) | 409 `idempotency_response_unavailable`: it may have committed, so it never runs again |
 | First request ran past its lease and a retry took its key | The first gets 409 `idempotency_key_taken_over`; its changes are not saved |
 | Client disconnected before sending the whole body | Nothing runs and no key is claimed: retry with the same key |
-| Same key after `TTL_SECONDS`, even if the first request committed | A new request: it runs again (below) |
+| Same key after `TTL_SECONDS`, the first request committed (or pinned its key) | 409 `idempotency_response_unavailable`: the response is gone, but the key is kept as a tombstone for `TOMBSTONE_SECONDS` more, and the request never runs again (below) |
+| Same key after `TTL_SECONDS`, the first request committed nothing | A new request: it runs again |
+| Same key after `TTL_SECONDS` and then `TOMBSTONE_SECONDS` | A new request: it runs again, even if the first committed (below) |
 
-Within its TTL, a key's request runs twice only if nothing it did was
-saved. When a SQL unit of work commits during a keyed request, the key is
+Within its TTL, and its tombstone's after it, a key's request runs twice
+only if nothing it did was saved. When a SQL unit of work commits during a keyed request, the key is
 marked committed in the same transaction, and a committed key is never released, even if the reply
 to the commit was lost. A retry then gets the stored response or, when the
 response could not be kept, a 409 telling the client to look up the result
@@ -34,15 +36,31 @@ through `connections.autocommit()` or a raw `engine.begin()` inside a keyed
 request are outside the key: a request that made them and then failed is
 released, and its retry makes them again.
 
-**After the TTL, a key is forgotten.** A key is remembered for
-`TTL_SECONDS` (24 hours) from its first request. After that, a request
-with the same key is a new request: it runs again, even if the first one
-committed, and its response replaces the old one. A client that retries a
-payment with a key older than the TTL (after a long outage, from a queue
-it replays) is charged twice. Keys are replays of recent requests, not a
-record of what was ever done: keep the TTL above the longest your clients
-retry for (at most 30 days), and refuse duplicates your domain must never
-accept, such as a payment reference, with a unique column of their own.
+**After the TTL, a tombstone.** A response is replayed for
+`TTL_SECONDS` (24 hours) from its first request. After that, a key whose
+request committed, or pinned it for a commit on another database, is
+kept as a tombstone for `TOMBSTONE_SECONDS` (7 days) more: the purge drops
+its response, its headers, and whom it was about, and keeps the hash of
+the caller and key, the request's fingerprint, its status, and when it
+committed. A retry with the same key and request gets 409
+`idempotency_response_unavailable` ("already ran, and its response is no
+longer kept"), and never runs again; another request with that key gets
+the 422. Until the purge comes, the key's response is past its TTL: it is
+not replayed, and retries get the same 409. A key nothing committed or
+pinned is forgotten at the TTL, as before: a request with it is new.
+
+A week covers the windows clients plausibly retry in once a day has
+passed: a queue replayed after an outage over a long weekend, a broker's
+default retention (Kafka keeps 7 days, SQS 4), messaging's own 7 days of
+finished messages. Past `TTL_SECONDS` and `TOMBSTONE_SECONDS` (at most 30
+and 90 days), a key is forgotten even if it committed: a request with it
+runs again. Keys are replays of recent requests, not a record of what was
+ever done: refuse duplicates your domain must never accept, such as a
+payment reference, with a unique column of their own. A tombstone costs
+about 390 bytes of table and index a key (ADR
+[0096](../adr/0096-keep-committed-idempotency-keys-as-tombstones.md)).
+`TOMBSTONE_SECONDS = 0` forgets a committed key with its response, as
+0.10 did.
 
 A request holds its key for `LEASE_SECONDS`. If the process dies before the
 request commits anything, a retry after the lease takes the key over and
@@ -126,38 +144,54 @@ request that fails before its unit of work commits pinned nothing, and its
 key is released as usual. A crash after the pin leaves the key in progress
 until it expires.
 
-**Upgrading.** The keys table has a new `pinned` column: run
-`makemigrations` and `migrate` in each project that installs idempotency.
+**Upgrading.** The keys table has a new `pinned` column (0.9.1), and a
+new `tombstone` column (0.11): run `makemigrations` and `migrate` in each
+project that installs idempotency. Since 0.11 a token limited to scopes
+has keys of its own: a retry, after the upgrade, of a keyed request it
+sent before it is a new request, and runs.
 
 Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
-it first), so one user cannot replay another's response. Without an
-actor, keys are scoped to the client address and a hash of the request's
-`CREDENTIAL_HEADERS` (`Authorization`, `Proxy-Authorization`, `Cookie`,
-`X-API-Key`): list the header your project authenticates with if it is
-another. A caller with neither has only its address: every caller behind
-one NAT or proxy shares its keys, so one that sends the same key and body
-as another is replayed the other's response (its status, `Location`, and
-body), and a different body learns that the key is taken. Clients make
-this unlikely with random keys, but not impossible with predictable ones
-(counters, order numbers). Where keyed routes serve anonymous callers
-(sign-up, a contact form, a payment link before login), set `ANONYMOUS =
-"refuse"`: such a key is answered 400 `idempotency_key_needs_caller`, and
-the client authenticates or sends the request without it. A `Cookie`
-names a caller only if it carries one of `SESSION_COOKIES` (none by
-default: auth's sessions set the actor): a consent or locale cookie, which
-many callers send alike, does not (SEC-10b-7). The default,
-`"per-address"`, keeps the behaviour of 0.9; it is deprecated: 0.11
-defaults to `"refuse"`, and staging and production warn
-(`idempotency.W002`) until `ANONYMOUS` is set, to either value (DATA-09). Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
+it first), so one user cannot replay another's response. Credentials
+limited to scopes (a personal token made for an integration) are a caller
+apart from their user's other credentials, one for each set of scopes: a
+retry is answered before the route's rules run, so such a token is never
+replayed what its user's login was answered on a route that refuses the
+token. A login and a refreshed token, which carry no limit, share the
+user's keys (SEC-11a-2). Without an actor, keys are scoped to the client
+address and a hash of the request's `CREDENTIAL_HEADERS`
+(`Authorization`, `Proxy-Authorization`, `Cookie`, `X-API-Key`): list the
+header your project authenticates with if it is another. Such a header
+names a caller only where no authentication middleware judged the request,
+or one accepted it. Once one found no one (its principal in
+`scope["user"]` is not authenticated), the header authenticated nobody,
+like `Authorization: Bearer null`, which logged-out browser applications
+send, or a gateway's fixed `X-API-Key`, and it names nobody (SEC-11a-1). A
+layer of your own that authenticates by a header names its caller by
+binding the actor, or by putting an authenticated principal in
+`scope["user"]`. A caller with neither has only its address, which every caller
+behind one NAT or proxy shares: keyed by it, one that sends the same key
+and body as another would be replayed the other's response (its status,
+`Location`, and body), and a different body would learn that the key is
+taken. Random keys make this unlikely, but predictable ones (counters,
+order numbers) do not. So by default (`ANONYMOUS = "refuse"`, since
+0.11) such a key is answered 400 `idempotency_key_needs_caller`, nothing
+runs, and the client authenticates or sends the request without it. A
+`Cookie` names a caller only if it carries one of `SESSION_COOKIES` (none
+by default: auth's sessions set the actor): a consent or locale cookie,
+which many callers send alike, does not (SEC-10b-7). `ANONYMOUS =
+"per-address"` keeps 0.10's default, keys scoped to the address, for a
+service whose anonymous callers each have their own (DATA-09). Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
-messaging installed, expired keys are purged hourly; without it, a new
-key deletes up to 100 expired ones once it has claimed its own, skipping
-those another request is deleting (`SKIP LOCKED` on PostgreSQL), so
-concurrent requests never queue behind one another's purge, nor deadlock
-through PgBouncer. A process does this once a minute, and again on the
-next key while each sweep deletes a full 100, so a backlog drains as
-fast as before; until 0.9.2 every keyed request did it, one more
-statement each.
+messaging installed, expired keys are purged hourly, and those that may
+have committed made tombstones; without it, a new key deletes up to 100
+expired ones once it has claimed its own, then makes tombstones of up to
+100 more, skipping those another request is purging (`SKIP LOCKED` on
+PostgreSQL), so concurrent requests never queue behind one another's
+purge, nor deadlock through PgBouncer. A process does this once a minute,
+and again on the next key while a sweep deletes or buries a full 100, so
+a backlog drains as fast as before; until 0.9.2 every keyed request did
+it, one more statement each. A tombstone's expiry moves on when it is
+made, so a purge reads only the keys due, however many tombstones wait.
 
 **What a key costs.** A request claims its key with one statement, an
 upsert that inserts the in-progress row or replaces an expired one, and
@@ -176,12 +210,13 @@ each request sent, for about 1,850 fewer Python calls a keyed write.
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Alias holding the keys. |
-| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days, and at least `LEASE_SECONDS`, or startup fails). |
+| `TTL_SECONDS` | `86400.0` | How long a key's response is replayed (24 hours; at most 30 days, and at least `LEASE_SECONDS`, or startup fails). |
+| `TOMBSTONE_SECONDS` | `604800.0` | How long a key whose request committed, or pinned it, is kept past `TTL_SECONDS` without its response, so retries get 409 instead of running again (7 days; at most 90 days). `0` forgets it at the TTL, as 0.10 did (FIN-84). |
 | `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day, and above `REQUEST_TIMEOUT`, or startup fails). |
 | `REQUIRE_DEADLINE` | `True` | Staging and production refuse to start while keyed requests have no deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`). `False` only warns, as 0.9 did. |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
-| `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |
-| `ANONYMOUS` | `"per-address"` | Keys from callers with no actor and no credential header: `"per-address"` scopes them to the client address, which callers behind one NAT share; `"refuse"` answers 400 `idempotency_key_needs_caller`. Deprecated default: 0.11 defaults to `"refuse"`, and staging and production warn while it is unset (`idempotency.W002`): set `"per-address"` to keep today's behaviour, or `"refuse"` now (DATA-09). |
+| `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart; not once an authentication middleware found no one in the request (SEC-11a-1). |
+| `ANONYMOUS` | `"refuse"` | Keys from callers with no actor and no credential header: `"refuse"` answers them 400 `idempotency_key_needs_caller`, and nothing runs; `"per-address"` scopes them to the client address, which callers behind one NAT share, as 0.10 did by default (DATA-09). |
 | `SESSION_COOKIES` | `()` | For `ANONYMOUS = "refuse"`: the cookies that name a caller the actor does not (a session another layer reads), at most 16 names. Any other cookie names nobody (SEC-10b-7). |
 

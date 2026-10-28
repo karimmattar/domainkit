@@ -41,7 +41,8 @@ This page has moved, a part a page:
 | `LOGIN_RATE` | `"10/minute"` | Wrong passwords at login per client address and per username, and at password changes per user; reset, verification, signup, and second-factor links that do not hold, per client address. Checks that succeed are not counted. `None` for no limit. |
 | `DEVICE_TTL` | 30 days | How long a client that logged in keeps a count of its own: a login that works hands out a signed, HttpOnly device proof for its account, and logins that send it count against `LOGIN_RATE` per device, not per account or address. From an hour to 400 days; `None` hands out none, as before 0.10 ([Wrong passwords](auth/logging-in.md#wrong-passwords-and-device-proofs)). |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
-| `THROTTLE_FAIL_CLOSED` | `False` | While `RATE_LIMIT_BACKEND` cannot count (Redis failing), refuse password and code checks, and requests for mail, with `503 throttle_unavailable`, rather than let them through uncounted. |
+| `THROTTLE_FAIL_CLOSED` | `None` | While `RATE_LIMIT_BACKEND` cannot count (Redis failing), refuse password and code checks, and requests for mail, with `503 throttle_unavailable`, rather than let them through uncounted. `None`: `True` in staging and production, `False` elsewhere (since 0.11; `False` lets them through, as before) ([Wrong passwords](auth/logging-in.md#logging-in-and-out)). |
+| `REQUIRE_SHARED_THROTTLES` | `True` | Staging and production refuse to start while password and code attempts are counted in each process (a `MemoryBackend` as `RATE_LIMIT_BACKEND`, `auth.E105`), since 0.11. `False` only warns (`auth.W004`), as 0.10 did: for a deployment of one process. |
 | `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
 | `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. Staging and production refuse `http://`, here and in the other link URLs. |
 | `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link works. |
@@ -53,7 +54,6 @@ This page has moved, a part a page:
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](auth/authentication.md#the-principal-cache)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
-| `REQUIRE_ROUTE_RULES` | `True` | Deprecated: the core's `REQUIRE_ROUTE_RULES` ([reference](reference.md)); `False` here still turns the check off until 0.11, with a warning. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
 
 | `AUTH["COOKIE"]` key | Default | Meaning |
@@ -95,12 +95,21 @@ This page has moved, a part a page:
 | --- | --- | --- |
 | `SIGNING_KEY` | `None` (required) | The HMAC secret, or the private key in PEM. |
 | `VERIFYING_KEY` | `None` | The public key in PEM, for asymmetric algorithms. |
-| `ALGORITHM` | `"HS256"` | The one algorithm accepted: `HS*`, `RS*`, `PS*`, `ES*`, or `EdDSA`. |
+| `ALGORITHM` | `"HS256"` | The algorithm `SIGNING_KEY` signs with, and the only one its tokens are checked with: `HS*`, `RS*`, `PS*`, `ES*`, or `EdDSA`. A token's own header never chooses one. |
+| `PREVIOUS_KEYS` | `()` | Keys that signed before `SIGNING_KEY`, at most 3, each kept to verify what it signed until it retired plus `ACCESS_TOKEN_TTL` and `LEEWAY` (below; [Replacing a key](auth/authentication.md#replacing-a-key)). |
 | `ACCESS_TOKEN_TTL` | 5 minutes | How long an access token works. |
 | `REFRESH_TOKEN_TTL` | 14 days | How long a login can be refreshed. |
 | `ISSUER` | `None` | `iss`, set and then required. |
 | `AUDIENCE` | `None` | `aud`, set and then required. |
 | `LEEWAY` | 0 | Clock difference tolerated on `exp` and `iat`. |
+
+Each `PREVIOUS_KEYS` entry:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `KEY` | required | The old HMAC secret, or the old public key in PEM. A private key is refused: a retired key only verifies. Kept secret in reprs. |
+| `ALGORITHM` | `None` | The algorithm it signed with; `None`: `ALGORITHM`. Its tokens are checked with this one only. |
+| `RETIRED_AT` | required | When the last process stopped signing with it, with a time zone: the end of the rollout of the new key, at most a day after startup (`auth.E009`). Its tokens are refused from `RETIRED_AT` plus `ACCESS_TOKEN_TTL` and `LEEWAY` on. |
 
 ## Commands
 

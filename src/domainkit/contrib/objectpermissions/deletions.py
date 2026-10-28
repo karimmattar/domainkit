@@ -12,7 +12,8 @@ user's database, in the same transaction.
 
 Bulk deletes (``delete_rows``) bypass the ORM, and leave their grants:
 remove such objects one by one, or delete their grants in the same
-transaction.
+transaction. ``flush`` deletes the grants about the tables it empties
+itself (the table's ``about_model``, ``domainkit.db.fixtures``).
 """
 
 from typing import Any

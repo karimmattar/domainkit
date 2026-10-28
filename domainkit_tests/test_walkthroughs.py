@@ -39,7 +39,7 @@ PARTS = (
 """The getting-started path, in the order a newcomer reads it."""
 ENVIRONMENT_LINES = (
     "python3.13 -m venv .venv && . .venv/bin/activate",
-    'pip install "domainkit[postgres,sqlite,testing]"',
+    'pip install "domainkit[postgres,redis,sqlite,testing]"',
 )
 """Lines that build the environment this interpreter already is."""
 TYPED = {"PASSWORD": "correct-horse-battery", "CLERK_PASSWORD": "staple-lantern-oak"}
@@ -387,10 +387,10 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
         for line, output in tutorial.shell.printed.items()
         if line.startswith("BANK_API_SETTINGS_MODULE=config.settings.production ")
     ]
-    assert "no issues and 3 warnings" in check
-    for warned in ("auth.W004", "deploy.W004", "deploy.W006"):
+    assert "no issues and 2 warnings" in check
+    for warned in ("deploy.W004", "deploy.W006"):
         assert f"Warning: {warned}: " in check
-    assert "RATE_LIMIT_BACKEND" in check
+    assert "auth." not in check  # Guesses are counted in Redis (auth.E105).
 
 
 @pytest.mark.parametrize(

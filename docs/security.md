@@ -26,6 +26,12 @@ surprises a rollout.
 - [ ] Every other secret from the environment or a file: database,
       broker, cache, and ledger credentials, `EVIDENCE.SUBJECT_KEY`, the JWT
       key. URLs that carry passwords are kept secret in logs and reprs.
+      Replace the JWT key on a schedule through `AUTH.JWT.PREVIOUS_KEYS`,
+      which keeps the old one for a token lifetime after it retires, then
+      refuses its tokens; a key that leaked, without it
+      ([auth.md](auth/authentication.md#replacing-a-key); a previous key
+      that is the signing key, or retires more than a day ahead, is
+      refused).
 - [ ] `ALLOWED_HOSTS` names the service's hosts (a wildcard is refused).
 
 **The edge**
@@ -36,11 +42,18 @@ surprises a rollout.
 - [ ] The server run with its own limits and `--no-proxy-headers`
       ([reference.md](reference.md#server-limits)), behind a proxy that
       bounds headers and slow clients.
+- [ ] The proxy sets `X-Request-ID` itself, over a client's or in a line
+      after it, or `ACCEPT_REQUEST_ID = "never"`: request ids come from trusted proxies
+      only, so a caller's own never names log lines or audit rows
+      ([operations.md](operations.md#request-ids)).
 - [ ] `RATE_LIMIT` set (warned when missing), counted in Redis
-      (`RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"`)
-      behind more than one process (warned), and a decision on
-      `AUTH.THROTTLE_FAIL_CLOSED`: whether password and code checks stop
-      while Redis is down.
+      (`RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"`):
+      with the auth app, attempts counted in each process are refused
+      (`auth.E105`; `AUTH.REQUIRE_SHARED_THROTTLES = False` warns instead,
+      for one process). Password and code checks stop while Redis is down
+      (`AUTH.THROTTLE_FAIL_CLOSED`, on by default there): an alarm on
+      `503 throttle_unavailable`
+      ([runbook.md](runbook.md#logins-are-refused-while-redis-is-down)).
 - [ ] `REQUEST_TIMEOUT` and `MAX_CONCURRENT_REQUESTS` with their middleware
       (warned when missing).
 - [ ] `API_DOCS` off unless the API is public on purpose (warned).
@@ -100,7 +113,12 @@ surprises a rollout.
       packages, on a schedule: new advisories appear with no change here.
 - [ ] Operators named in the audit trail: commands that change data
       (`messages --retry`, `auditforget`, `flush`, `privacy purge`) take
-      `--operator` or `$DOMAINKIT_OPERATOR`.
+      `--operator` or `$DOMAINKIT_OPERATOR`; `loaddata` and `flush`
+      refuse without one (refused).
+- [ ] `loaddata --include-guarded` and `flush --include-guarded` kept for
+      a restore you planned: without it, users, permissions, grants,
+      tokens, and second factors are left alone
+      ([reference.md](reference.md#data-fixtures-flush-and-seeds)).
 
 ## Verifying a release
 

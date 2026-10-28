@@ -202,7 +202,11 @@ Erasing again changes nothing.
 Fixtures (`dumpdata`, `loaddata`) never hold tokens, sessions,
 certificates, TOTP secrets, or recovery codes: their tables are state
 (`info={"fixtures": False}`). A fixture of users still holds password
-hashes: keep it as safe as the database.
+hashes: keep it as safe as the database. Auth's tables are guarded:
+`loaddata` writes users, groups, permissions, or their links only with
+`--include-guarded`, and `flush` keeps them, tokens and second factors
+included, unless it is given
+([reference.md](../reference.md#data-fixtures-flush-and-seeds)).
 
 ## Backends
 
@@ -308,7 +312,9 @@ products = ResourceRouter(
   integer the database hands out again) starts without them. A soft
   delete keeps them, for a restore. Bulk deletes (`delete_rows`) bypass
   the ORM and leave grants behind: remove such objects one by one, or
-  delete their grants in the same transaction.
+  delete their grants in the same transaction. `flush` keeps the grants
+  table (it is guarded), but deletes the grants on the objects of every
+  table it empties.
 
 ## Passwords
 

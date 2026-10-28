@@ -38,14 +38,14 @@ checkouts = 0
 pings = 0
 
 [rungs.default]
-calls = 423
+calls = 414
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.default-json]
-calls = 568
+calls = 546
 statements = 0
 transactions = 0
 checkouts = 0
@@ -59,7 +59,7 @@ checkouts = 0
 pings = 0
 
 [rungs.template-json]
-calls = 682
+calls = 661
 statements = 0
 transactions = 0
 checkouts = 0
@@ -108,7 +108,7 @@ checkouts = 3
 pings = 3
 
 [rungs.throttled]
-calls = 803
+calls = 778
 statements = 0
 transactions = 0
 checkouts = 0
