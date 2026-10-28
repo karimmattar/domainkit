@@ -15,6 +15,7 @@ recorded, as the export of one person's is.
 import io
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,12 @@ from domainkit.management import CommandError, call_command
 from domainkit.management.base import run_async
 from domainkit_tests.sample_domains.patients import tables
 from domainkit_tests.test_privacy import audited, clinic, insert_rows  # noqa: F401
+
+
+@pytest.fixture
+def database_url(tmp_path: Path) -> str:
+    """SQLite, always: staging refuses PostgreSQL without TLS (security.E007)."""
+    return f"sqlite+aiosqlite:///{tmp_path / 'clinic.sqlite3'}"
 
 
 def test_a_dump_of_personal_data_is_recorded_where_deployed(

@@ -14,19 +14,43 @@ runs in a deployed process (a shell, a task, a plugin that imports
 must be refused.
 """
 
+import io
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
 
+from domainkit import setup
+from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.auth.testing import create_user
+from domainkit.management import call_command
 from domainkit.testing import token_for
+from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, FAST_HASHER, SHOP
 
 pytestmark = pytest.mark.anyio
 
 
-async def test_no_test_token_for_a_stored_user_where_deployed(
-    auth_project: str,
-) -> None:
+@pytest.fixture
+def auth_on_sqlite(tmp_path: Path) -> Iterator[None]:
+    """Auth, migrated, on SQLite: production refuses PostgreSQL without TLS."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, SHOP, ALPHA],
+        DATABASES={"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'a.db'}"}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER]},
+    ):
+        setup()
+        call_command("makemigrations", "-m", "init", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        yield
+    registry.clear()
+
+
+@pytest.mark.usefixtures("auth_on_sqlite")
+async def test_no_test_token_for_a_stored_user_where_deployed() -> None:
     """``token_for`` refuses in production, as the database fixtures do."""
     admin = await create_user(superuser=True, username="root")
     assert "production" in DEPLOYED_ENVIRONMENTS
