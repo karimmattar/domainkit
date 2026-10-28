@@ -734,3 +734,19 @@ def test_startdomain_next_steps_leave_out_what_it_did(tmp_path: Path) -> None:
             '-H "Authorization: Bearer $TOKEN"'
         ),
     ]
+
+
+def test_the_smaller_domain_asks_only_for_the_permissions_it_uses(
+    tmp_path: Path,
+) -> None:
+    """``--minimal`` deletes nothing, so its next steps grant no ``delete_``."""
+    context = startdomain.template_context("invoices", "domains", "Invoice", None)
+
+    output = startdomain._next_steps(
+        context, tmp_path / "p", tmp_path / "t", ["Installed."], minimal=True
+    )
+
+    assert (
+        "  3. Grant invoices.view_invoice (and add_, change_) to the users or "
+        "groups that need them; superusers have them."
+    ) in output.splitlines()

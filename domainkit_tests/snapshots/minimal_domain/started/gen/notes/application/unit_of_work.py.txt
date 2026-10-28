@@ -1,0 +1,12 @@
+"""Transaction boundary of the notes use cases (a port)."""
+
+from abc import ABC
+
+from domainkit.ddd import UnitOfWork
+from gen.notes.domain.model import NoteRepository
+
+
+class NotesUnitOfWork(UnitOfWork, ABC):
+    """Repositories the notes use cases may touch in one transaction."""
+
+    notes: NoteRepository

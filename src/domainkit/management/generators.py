@@ -695,6 +695,13 @@ class Names:
         return self.snake.replace("_", " ")
 
 
+STARTED: Final = {
+    "domain/events.py": '"""Facts the {domain} model records."""\n',
+    "application/handlers.py": '"""Reactions to the {domain} events."""\n',
+}
+"""Modules of a domain the generators start, with these docstrings, if missing."""
+
+
 @dataclass
 class Domain:
     """A domain package ``startdomain`` made, and its tests, being added to."""
@@ -764,11 +771,16 @@ class Domain:
     def edit(self, relative: str, *, tests: bool = False) -> Source:
         """The file to edit, read once.
 
+        The modules a smaller domain leaves out (``startdomain --minimal``:
+        its events and their handlers) are started when missing.
+
         Raises:
             CommandError: It is missing or broken.
         """
         path = (self.tests if tests else self.directory) / relative
         if path not in self.sources:
+            if not tests and relative in STARTED and not path.exists():
+                return self.start(path, STARTED[relative].format(domain=self.name))
             self.sources[path] = Source.read(path)
         return self.sources[path]
 

@@ -430,8 +430,14 @@ API.
 object, a collection of child entities, and an id-only reference; its
 filters, `PATCH`, commands, and `DELETE`; and tests at every layer. In a
 project laid out as `init` makes it, it also installs the domain and
-mounts its router. Then the generators add to it, every layer at once,
-with tests:
+mounts its router. `startdomain catalog --aggregate Product --minimal`
+writes a smaller one, in the same four layers: an aggregate with a name
+that must not be blank, commands to create and rename it, its table, its
+resource, an in-memory unit of work, and two tests; 13 files of the
+package where the full one has 15, and 15 names from domainkit where it
+has 29. Its events and their handlers' modules are left out until a
+generator needs them. Then the generators add to either, every layer at
+once, with tests:
 
 ```bash
 python manage.py startdomain catalog --aggregate Product

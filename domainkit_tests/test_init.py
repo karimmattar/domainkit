@@ -123,6 +123,8 @@ def test_generated_code_never_blocks_the_event_loop(tmp_path: Path) -> None:
         project, "manage.py", "startdomain", "invoices", "--aggregate", "Invoice"
     )
     assert started.returncode == 0, started.stderr
+    smaller = run(project, "manage.py", "startdomain", "notes", "--minimal")
+    assert smaller.returncode == 0, smaller.stderr
 
     linted = run(project, "-m", "ruff", "check", "--no-cache", ".")
     checked = run(project, "manage.py", "check")
@@ -132,7 +134,7 @@ def test_generated_code_never_blocks_the_event_loop(tmp_path: Path) -> None:
     assert linted.returncode == 0, linted.stdout + linted.stderr
     assert checked.stdout == (
         "System check identified no issues. "
-        "Domains: messaging, contenttypes, auth, invoices.\n"
+        "Domains: messaging, contenttypes, auth, invoices, notes.\n"
     )
 
 

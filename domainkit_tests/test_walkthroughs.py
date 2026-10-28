@@ -263,7 +263,7 @@ def test_the_quick_start_works_as_written(tmp_path: Path) -> None:
     assert '`{"items":[],"next_cursor":null}`' in readme
     # startdomain prints the same four lines, for the user it cannot know.
     started = shell.printed[
-        "python manage.py startdomain invoices --aggregate Invoice"
+        "python manage.py startdomain invoices --aggregate Invoice --minimal"
         "   # installs and mounts it"
     ]
     printed = [line.strip() for line in started.splitlines()[-4:]]

@@ -1,0 +1,16 @@
+"""Installation hooks for the notes domain (Django's ``AppConfig``)."""
+
+from domainkit.apps import DomainConfig
+from domainkit.ddd import event_bus
+from gen.notes.application.handlers import on_note_read
+from gen.notes.domain.events import NoteRead
+from gen.notes.infrastructure.orm import start_mappers
+
+
+class NotesConfig(DomainConfig):
+    """Map the notes tables once settings are loaded."""
+
+    def ready(self) -> None:
+        """Connect the layers."""
+        start_mappers()
+        event_bus.subscribe(NoteRead, on_note_read, durable=True)

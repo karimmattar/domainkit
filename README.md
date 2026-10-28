@@ -111,7 +111,7 @@ pip install "domainkit[postgres,redis,sqlite,testing]"
 domainkit init billingAPI billing     # the name sets the variable prefix: BILLING_API_*
 cd billing
 python manage.py check
-python manage.py startdomain invoices --aggregate Invoice   # installs and mounts it
+python manage.py startdomain invoices --aggregate Invoice --minimal   # installs and mounts it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate
 read -rsp "Password: " PASSWORD && export PASSWORD    # admin's, typed, not echoed
 BILLING_API_SUPERUSER_PASSWORD="$PASSWORD" \
@@ -138,7 +138,13 @@ curl http://127.0.0.1:8000/api/v1/invoices/invoices -H "Authorization: Bearer $T
 The answer is the first page, empty: `{"items":[],"next_cursor":null}`. The
 domain's router is mounted at `/api/v1/invoices`, and its resource is
 `/invoices` within it; `startdomain` prints both commands for the domain it
-made. A route the caller may not reach answers 404, as an unknown path does,
+made. `--minimal` keeps the domain small: an `Invoice` with a name that
+must not be blank, a command to create one and one to rename it, its
+table, its resource, and two tests, in 13 files and the four layers `check`
+holds apart. `startaggregate`, `addcommand`, `addquery`, and `addevent`
+grow it. Without `--minimal`, `startdomain` writes a fuller example (notes
+as child entities, an owner, events and a handler, filters); the tutorial
+starts from that one. A route the caller may not reach answers 404, as an unknown path does,
 so check the path first (`/docs` lists every route). `createsuperuser`
 without options asks for each value instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
 goes on from here, in five parts: rules written by hand, permissions,

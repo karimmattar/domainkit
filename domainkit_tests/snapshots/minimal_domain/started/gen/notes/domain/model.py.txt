@@ -1,0 +1,53 @@
+"""The ``Note`` aggregate: its fields, its rule, its storage port."""
+
+from typing import Annotated, Final, NewType, Self
+from uuid import UUID, uuid4
+
+from domainkit.ddd import (
+    AggregateRoot,
+    BusinessRuleViolation,
+    MaxLength,
+    NotFound,
+    Repository,
+)
+
+NoteId = NewType("NoteId", UUID)
+NAME_LENGTH: Final = 200
+
+
+class NoteNotFound(NotFound):
+    """No note has the requested id."""
+
+
+class InvalidNoteName(BusinessRuleViolation):
+    """The name is blank."""
+
+
+class Note(AggregateRoot[NoteId]):
+    """One note; change it only through its methods."""
+
+    name: Annotated[str, MaxLength(NAME_LENGTH)]
+
+    @classmethod
+    def create(cls, name: str) -> Self:
+        """Start a new note."""
+        return cls(id=NoteId(uuid4()), name=_checked(name))
+
+    def rename(self, name: str) -> None:
+        """Change the name."""
+        self.name = _checked(name)
+
+
+class NoteRepository(Repository[Note, NoteId]):
+    """Every note: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: NoteId) -> NoteNotFound:
+        """Report a missing note."""
+        return NoteNotFound(f"Note {id_} does not exist.")
+
+
+def _checked(name: str) -> str:
+    """The name, trimmed; a blank one breaks the rule."""
+    if not name.strip():
+        raise InvalidNoteName("The name must not be blank.")
+    return name.strip()

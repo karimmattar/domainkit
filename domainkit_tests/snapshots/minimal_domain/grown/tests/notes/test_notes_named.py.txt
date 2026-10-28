@@ -1,0 +1,37 @@
+"""``NotesNamed``: its handler, and its route."""
+
+import pytest
+from gen.notes.application import queries
+from gen.notes.application.queries import NotesNamed
+
+from domainkit.testing import TestClient
+
+from .fakes import FakeNotesUnitOfWork, new_note, new_note_request
+
+URL = "/api/v1/notes/notes"
+
+
+@pytest.mark.anyio
+async def test_notes_named_finds_what_it_asks_for() -> None:
+    """The note that matches the query is found."""
+    uow = FakeNotesUnitOfWork()
+    note = new_note()
+    async with uow:
+        await uow.notes.add(note)
+        await uow.commit()
+
+    found = await queries.notes_named(NotesNamed(name=note.name), uow)
+
+    assert found == [note]
+
+
+def test_notes_named_route(admin_client: TestClient) -> None:
+    """``GET /named`` answers the query's notes."""
+    created = admin_client.post(URL, json=new_note_request())
+    assert created.status_code == 201, created.json()
+    body = created.json()
+
+    answer = admin_client.get(f"{URL}/named", params={"name": body["name"]})
+
+    assert answer.status_code == 200, answer.json()
+    assert [each["id"] for each in answer.json()["items"]] == [body["id"]]

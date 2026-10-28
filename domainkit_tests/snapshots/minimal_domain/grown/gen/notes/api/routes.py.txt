@@ -1,0 +1,67 @@
+"""HTTP resources of the notes domain (docs/resources.md).
+
+Reads are generic; each change is a command, one use case. Every route
+needs its model permission: ``notes.view_note`` to read, and
+``add_`` or ``change_`` to change; superusers have them all.
+"""
+
+from fastapi import APIRouter
+from pydantic import AwareDatetime, BaseModel
+
+from domainkit.resources import ModelActions, ResourceRouter, schema_for
+from gen.notes.application import queries, services
+from gen.notes.application.commands import (
+    CreateLabel,
+    CreateNote,
+    DeleteLabel,
+    PinNote,
+    RenameNote,
+)
+from gen.notes.application.queries import NotesNamed
+from gen.notes.domain.model import Label, Note
+from gen.notes.infrastructure.unit_of_work import SqlAlchemyNotesUnitOfWork
+
+router = APIRouter(tags=["notes"])
+
+
+async def get_unit_of_work() -> SqlAlchemyNotesUnitOfWork:
+    """A unit of work on the database; tests may override this dependency."""
+    return SqlAlchemyNotesUnitOfWork()
+
+
+NoteIn = schema_for(Note, write=True, include=["name"])
+
+
+class PinNoteIn(BaseModel):
+    """What ``PinNote`` takes."""
+
+    at: AwareDatetime
+
+
+notes = ResourceRouter(
+    "/notes",
+    model=Note,
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.notes,
+    rule=ModelActions(Note),
+)
+notes.command_route(CreateNote, service=services.create_note, body=NoteIn)
+notes.command_route(
+    RenameNote, service=services.rename_note, body=NoteIn, path="/rename"
+)
+notes.command_route(PinNote, service=services.pin_note, body=PinNoteIn, path="/pin")
+notes.query_route(NotesNamed, handler=queries.notes_named, path="/named")
+router.include_router(notes)
+
+
+LabelIn = schema_for(Label, write=True)
+labels = ResourceRouter(
+    "/labels",
+    model=Label,
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.labels,
+    rule=ModelActions(Label),
+)
+labels.command_route(CreateLabel, service=services.create_label, body=LabelIn)
+labels.command_route(DeleteLabel, service=services.delete_label, method="DELETE")
+router.include_router(labels)

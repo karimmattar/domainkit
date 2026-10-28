@@ -1,0 +1,25 @@
+"""Queries of the notes domain: questions that change nothing.
+
+Each query is a message, answered by the handler of its name in snake case;
+``api/routes.py`` serves them (``query_route``).
+"""
+
+from typing import Annotated
+
+from domainkit.ddd import MaxLength, Query
+from domainkit.ddd.query import F
+from gen.notes.application.unit_of_work import NotesUnitOfWork
+from gen.notes.domain.model import NAME_LENGTH, Note
+
+
+class NotesNamed(Query):
+    """Notes named."""
+
+    name: Annotated[str, MaxLength(NAME_LENGTH)]
+
+
+async def notes_named(query: NotesNamed, uow: NotesUnitOfWork) -> list[Note]:
+    """The first 100 notes with the query's name."""
+    async with uow:
+        page = await uow.notes.paginate(F("name") == query.name, limit=100)
+    return page.items

@@ -1,0 +1,47 @@
+"""In-memory adapters, and examples: test the domain without a database.
+
+``new_<name>()`` is a valid aggregate and ``new_<name>_request()`` a valid
+body to create one; the generators' tests start from them.
+"""
+
+from domainkit.ddd import EventBus, InMemoryRepository
+
+from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Repository
+
+
+class InMemory{{ Aggregate }}Repository(
+    InMemoryRepository[{{ Aggregate }}, {{ Aggregate }}Id], {{ Aggregate }}Repository
+):
+    """Dictionary-backed ``{{ Aggregate }}Repository``; it answers queries as SQL does."""
+
+
+class Fake{{ Domain }}UnitOfWork({{ Domain }}UnitOfWork):
+    """Unit of work that records commits instead of writing anywhere."""
+
+    {{ aggregates }}: InMemory{{ Aggregate }}Repository
+
+    def __init__(self, events: EventBus | None = None) -> None:
+        """Start empty; publish to ``events`` (a private bus in tests)."""
+        super().__init__(events=events or EventBus())
+        self.{{ aggregates }} = InMemory{{ Aggregate }}Repository()
+        self.commits = 0
+
+    async def _commit(self) -> None:
+        """Count the commit."""
+        self.commits += 1
+
+    async def _rollback(self) -> None:
+        """Nothing to undo: the repositories are the state."""
+
+
+def new_{{ aggregate }}() -> {{ Aggregate }}:
+    """A valid {{ aggregate }}, its events taken: tests start from it."""
+    {{ aggregate }} = {{ Aggregate }}.create("First")
+    {{ aggregate }}.pull_events()
+    return {{ aggregate }}
+
+
+def new_{{ aggregate }}_request() -> dict[str, object]:
+    """A valid body of ``POST /{{ aggregates }}``."""
+    return {"name": "First"}

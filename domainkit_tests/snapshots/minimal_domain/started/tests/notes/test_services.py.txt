@@ -1,0 +1,32 @@
+"""Use-case tests against in-memory adapters: no database, no HTTP."""
+
+import pytest
+from gen.notes.application import services
+from gen.notes.application.commands import CreateNote, RenameNote
+from gen.notes.domain.model import InvalidNoteName
+
+from .fakes import FakeNotesUnitOfWork
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_create_and_rename_commit_once_each() -> None:
+    """The name is trimmed, and each use case commits its change."""
+    uow = FakeNotesUnitOfWork()
+
+    note = await services.create_note(CreateNote(name=" First "), uow)
+    command = RenameNote(note_id=note.id, name="Second")
+    await services.rename_note(command, uow)
+
+    assert uow.notes.items == {note.id: note}
+    assert (note.name, uow.commits) == ("Second", 2)
+
+
+async def test_a_blank_name_is_refused_before_anything_is_stored() -> None:
+    """The aggregate's rule holds in every use case."""
+    uow = FakeNotesUnitOfWork()
+
+    with pytest.raises(InvalidNoteName):
+        await services.create_note(CreateNote(name="   "), uow)
+
+    assert (uow.notes.items, uow.commits) == ({}, 0)

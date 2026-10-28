@@ -1,0 +1,91 @@
+"""The ``Note`` aggregate: its fields, its rule, its storage port."""
+
+from datetime import datetime
+from typing import Annotated, Final, NewType, Self
+from uuid import UUID, uuid4
+
+from domainkit.ddd import (
+    AggregateRoot,
+    BusinessRuleViolation,
+    MaxLength,
+    NotFound,
+    Repository,
+)
+from gen.notes.domain.events import LabelCreated, LabelDeleted, NotePined
+
+NoteId = NewType("NoteId", UUID)
+NAME_LENGTH: Final = 200
+
+
+class NoteNotFound(NotFound):
+    """No note has the requested id."""
+
+
+class InvalidNoteName(BusinessRuleViolation):
+    """The name is blank."""
+
+
+class Note(AggregateRoot[NoteId]):
+    """One note; change it only through its methods."""
+
+    name: Annotated[str, MaxLength(NAME_LENGTH)]
+
+    @classmethod
+    def create(cls, name: str) -> Self:
+        """Start a new note."""
+        return cls(id=NoteId(uuid4()), name=_checked(name))
+
+    def rename(self, name: str) -> None:
+        """Change the name."""
+        self.name = _checked(name)
+
+    def pin(self, *, at: datetime) -> None:
+        """Pin the note."""
+        self.record(NotePined(note_id=self.id, at=at))
+
+
+class NoteRepository(Repository[Note, NoteId]):
+    """Every note: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: NoteId) -> NoteNotFound:
+        """Report a missing note."""
+        return NoteNotFound(f"Note {id_} does not exist.")
+
+
+def _checked(name: str) -> str:
+    """The name, trimmed; a blank one breaks the rule."""
+    if not name.strip():
+        raise InvalidNoteName("The name must not be blank.")
+    return name.strip()
+
+
+LabelId = NewType("LabelId", UUID)
+
+
+class LabelNotFound(NotFound):
+    """No label has the requested id."""
+
+
+class Label(AggregateRoot[LabelId]):
+    """Consistency boundary for one label; change it only through methods."""
+
+    title: Annotated[str, MaxLength(50)]
+
+    @classmethod
+    def create(cls, *, title: str) -> Self:
+        """Start a new label and record that it was created."""
+        label = cls(id=LabelId(uuid4()), title=title)
+        label.record(LabelCreated(label_id=label.id))
+        return label
+
+    def delete(self) -> None:
+        """Record that the label goes; the repository removes it."""
+        self.record(LabelDeleted(label_id=self.id))
+
+
+class LabelRepository(Repository[Label, LabelId]):
+    """Every label: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: LabelId) -> LabelNotFound:
+        """Report a missing label."""
+        return LabelNotFound(f"Label {id_} does not exist.")

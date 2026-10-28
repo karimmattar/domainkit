@@ -51,16 +51,17 @@ def run(*args: str, **options: Any) -> str:  # noqa: ANN401 - command options.
 class Shop:
     """A domain ``startdomain`` made: ``gen.shop``, with its tests."""
 
-    def __init__(self, root: Path) -> None:
-        """The domain's files under ``root``."""
+    def __init__(self, root: Path, name: str = "shop") -> None:
+        """The domain ``name``'s files under ``root``."""
         self.root = root
-        self.package = root / "gen" / "shop"
-        self.tests = root / "tests" / "shop"
+        self.name = name
+        self.package = root / "gen" / name
+        self.tests = root / "tests" / name
 
     def __call__(self, command: str, *args: str, **options: Any) -> str:  # noqa: ANN401 - options.
         """Run a generator on the domain."""
         return run(
-            command, "shop", *args, parent="gen", tests_dir=self.tests, **options
+            command, self.name, *args, parent="gen", tests_dir=self.tests, **options
         )
 
     def read(self, relative: str) -> str:
@@ -401,9 +402,11 @@ def test_generators_refuse_files_changed_beyond_recognition(shop: Shop) -> None:
     (shop.package / "domain" / "events.py").write_text("def (:\n", encoding="utf-8")
     with pytest.raises(CommandError, match="is not valid Python"):
         shop("startaggregate", "Box")
-    (shop.package / "domain" / "events.py").unlink()
+    (shop.package / "domain" / "events.py").unlink()  # Started again: optional.
+    (shop.package / "application" / "commands.py").unlink()
     with pytest.raises(CommandError, match="does not exist; was the domain made"):
         shop("startaggregate", "Box")
+    assert not (shop.package / "domain" / "events.py").exists()  # Nothing written.
     with pytest.raises(CommandError, match="is not a domain made by startdomain"):
         run("startaggregate", "nowhere", "Box", parent="gen")
     with pytest.raises(CommandError, match="not a valid snake_case domain name"):
@@ -1222,3 +1225,92 @@ def test_generators_plan_everything_before_they_write() -> None:
         isinstance(load_command(command), AggregateGenerator) for command in commands
     )
     assert isinstance(load_command("startdomain"), Generator)
+
+
+MINIMAL_SNAPSHOTS = Path(__file__).parent / "snapshots" / "minimal_domain"
+"""What ``startdomain --minimal`` writes, then the generators on it; as above."""
+
+
+def snapshot(written: dict[str, str], directory: Path) -> None:
+    """Hold ``written`` to the files under ``directory`` (or write them)."""
+    if os.environ.get("UPDATE_SNAPSHOTS"):
+        for relative, text in written.items():
+            target = directory / f"{relative}.txt"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+    expected = {
+        path.relative_to(directory).as_posix().removesuffix(".txt"): path.read_text(
+            encoding="utf-8"
+        )
+        for path in directory.rglob("*.txt")
+    }
+    assert sorted(written) == sorted(expected)
+    for relative, text in written.items():
+        assert text == expected[relative], relative
+
+
+@pytest.fixture
+def notes(
+    make_package: MakePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Shop:
+    """``gen.notes``, the smaller domain, with the aggregate ``Note``."""
+    make_package("gen", {})
+    monkeypatch.setattr(generators_module, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+    domain = Shop(tmp_path, "notes")
+    run(
+        "startdomain",
+        "notes",
+        aggregate="Note",
+        parent="gen",
+        tests_dir=domain.tests.parent,
+        minimal=True,
+    )
+    return domain
+
+
+def written_by(domain: Shop) -> dict[str, str]:
+    """Every Python file of the domain and its tests, by path."""
+    return {
+        path.relative_to(domain.root).as_posix(): path.read_text(encoding="utf-8")
+        for path in [*domain.package.rglob("*.py"), *domain.tests.rglob("*.py")]
+    }
+
+
+@pytest.mark.skipif(find_spec("ruff") is None, reason="needs ruff to format")
+def test_the_smaller_domain_is_what_its_snapshots_hold_and_grows(notes: Shop) -> None:
+    """``--minimal``'s files, then each generator's additions, as reviewed.
+
+    The domain has no events or handlers module: the first generator that
+    needs one starts it (DSGN-11).
+    """
+    snapshot(written_by(notes), MINIMAL_SNAPSHOTS / "started")
+    assert not (notes.package / "domain" / "events.py").exists()
+    assert check_domain("gen.notes") == []
+
+    notes("addcommand", "Note", "PinNote", fields=["at:datetime"])
+    notes("addevent", "Note", "NoteRead")
+    notes("addquery", "Note", "NotesNamed", by=["name"])
+    notes("startaggregate", "Label", fields=["title:str:50"])
+
+    assert notes.read("domain/events.py").startswith(
+        '"""Facts the notes model records."""\n'
+    )
+    assert notes.read("application/handlers.py").startswith(
+        '"""Reactions to the notes events."""\n'
+    )
+    snapshot(written_by(notes), MINIMAL_SNAPSHOTS / "grown")
+    assert check_domain("gen.notes") == []
+
+
+def test_a_started_module_is_edited_once_and_kept_where_it_is(notes: Shop) -> None:
+    """Two generators of one run share the module they started; tests are not."""
+    domain = Domain.locate("notes", notes.package, notes.tests, notes.root)
+
+    events = domain.edit("domain/events.py")
+    assert domain.edit("domain/events.py") is events
+    assert events.path == notes.package / "domain" / "events.py"
+    with pytest.raises(CommandError, match="does not exist"):
+        domain.edit("domain/events.py", tests=True)
+    with pytest.raises(CommandError, match="does not exist"):
+        domain.edit("domain/policies.py")

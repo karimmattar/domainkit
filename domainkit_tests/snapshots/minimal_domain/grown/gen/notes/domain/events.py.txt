@@ -1,0 +1,31 @@
+"""Facts the notes model records."""
+
+from datetime import datetime
+from uuid import UUID
+
+from domainkit.ddd import DomainEvent
+
+
+class NotePined(DomainEvent):
+    """A note was pined."""
+
+    note_id: UUID
+    at: datetime
+
+
+class NoteRead(DomainEvent):
+    """Note read."""
+
+    note_id: UUID
+
+
+class LabelCreated(DomainEvent):
+    """A label was created."""
+
+    label_id: UUID
+
+
+class LabelDeleted(DomainEvent):
+    """A label was deleted."""
+
+    label_id: UUID

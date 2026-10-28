@@ -1,0 +1,53 @@
+"""The ``{{ Aggregate }}`` aggregate: its fields, its rule, its storage port."""
+
+from typing import Annotated, Final, NewType, Self
+from uuid import UUID, uuid4
+
+from domainkit.ddd import (
+    AggregateRoot,
+    BusinessRuleViolation,
+    MaxLength,
+    NotFound,
+    Repository,
+)
+
+{{ Aggregate }}Id = NewType("{{ Aggregate }}Id", UUID)
+NAME_LENGTH: Final = 200
+
+
+class {{ Aggregate }}NotFound(NotFound):
+    """No {{ aggregate }} has the requested id."""
+
+
+class Invalid{{ Aggregate }}Name(BusinessRuleViolation):
+    """The name is blank."""
+
+
+class {{ Aggregate }}(AggregateRoot[{{ Aggregate }}Id]):
+    """One {{ aggregate }}; change it only through its methods."""
+
+    name: Annotated[str, MaxLength(NAME_LENGTH)]
+
+    @classmethod
+    def create(cls, name: str) -> Self:
+        """Start a new {{ aggregate }}."""
+        return cls(id={{ Aggregate }}Id(uuid4()), name=_checked(name))
+
+    def rename(self, name: str) -> None:
+        """Change the name."""
+        self.name = _checked(name)
+
+
+class {{ Aggregate }}Repository(Repository[{{ Aggregate }}, {{ Aggregate }}Id]):
+    """Every {{ aggregate }}: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: {{ Aggregate }}Id) -> {{ Aggregate }}NotFound:
+        """Report a missing {{ aggregate }}."""
+        return {{ Aggregate }}NotFound(f"{{ Aggregate }} {id_} does not exist.")
+
+
+def _checked(name: str) -> str:
+    """The name, trimmed; a blank one breaks the rule."""
+    if not name.strip():
+        raise Invalid{{ Aggregate }}Name("The name must not be blank.")
+    return name.strip()

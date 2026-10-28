@@ -3,8 +3,11 @@
 Like Django's ``startapp``, but the result is a layered package (``domain``,
 ``application``, ``infrastructure``, ``api``) with a working aggregate (a
 child entity, and a reference to another aggregate), its tables, its HTTP
-resource, and tests, ready to rename and grow. In a project laid out as
-``init`` makes it, the domain is also installed and its router mounted.
+resource, and tests, ready to rename and grow. ``--minimal`` makes a smaller
+one: an aggregate with a name, two commands, a table, a resource, and two
+tests, in the same layers, which the other generators grow. In a project
+laid out as ``init`` makes it, the domain is also installed and its router
+mounted.
 """
 
 import keyword
@@ -21,6 +24,8 @@ from domainkit.utils.formatting import format_python
 from domainkit.utils.text import camel_case, pluralize, snake_case
 
 TEMPLATE_DIR: Final = Path(__file__).resolve().parents[1] / "templates" / "domain"
+MINIMAL_DIR: Final = TEMPLATE_DIR / "minimal"
+"""The smaller domain of ``--minimal``: its ``package`` and ``tests``."""
 TEMPLATE_SUFFIX: Final = "-tpl"
 _PLACEHOLDER: Final = re.compile(r"\{\{ (\w+) \}\}")
 _SNAKE_NAME: Final = re.compile(r"[a-z][a-z0-9_]*")
@@ -108,6 +113,7 @@ class NewDomain:
     tests_root: Path
     root: Path
     install: bool
+    minimal: bool = False
 
 
 class Command(Generator[NewDomain]):
@@ -138,6 +144,12 @@ class Command(Generator[NewDomain]):
             action="store_true",
             help="neither install the domain nor mount its router; print how",
         )
+        parser.add_argument(
+            "--minimal",
+            action="store_true",
+            help="a smaller domain: an aggregate with a name, create and rename, "
+            "a table, a resource, two tests",
+        )
 
     def plan(
         self,
@@ -148,6 +160,7 @@ class Command(Generator[NewDomain]):
         parent: str,
         tests_dir: Path | None,
         manual: bool = False,
+        minimal: bool = False,
         **options: object,
     ) -> NewDomain:
         """Check the names, and that neither directory exists yet."""
@@ -158,7 +171,7 @@ class Command(Generator[NewDomain]):
         for directory in (package_dir, tests_root / name):
             if directory.exists():
                 raise CommandError(f"{directory} already exists.")
-        return NewDomain(context, package_dir, tests_root, root, not manual)
+        return NewDomain(context, package_dir, tests_root, root, not manual, minimal)
 
     def apply(self, plan: NewDomain) -> str:
         """Render the package and its tests, install it if safe; what is left."""
@@ -169,8 +182,9 @@ class Command(Generator[NewDomain]):
             plan.root,
         )
         name = context["domain"]
-        render(TEMPLATE_DIR / "package", package_dir, context)
-        render(TEMPLATE_DIR / "tests", tests_root / name, context)
+        template = MINIMAL_DIR if plan.minimal else TEMPLATE_DIR
+        render(template / "package", package_dir, context)
+        render(template / "tests", tests_root / name, context)
         directory = tests_root
         while directory != root and directory.is_relative_to(root):
             init = directory / "__init__.py"
@@ -179,11 +193,18 @@ class Command(Generator[NewDomain]):
             directory = directory.parent
         format_python([package_dir, tests_root / name])
         done = install(context["package"], name, root) if plan.install else []
-        return _next_steps(context, package_dir, tests_root / name, done)
+        return _next_steps(
+            context, package_dir, tests_root / name, done, minimal=plan.minimal
+        )
 
 
 def _next_steps(
-    context: dict[str, str], package_dir: Path, tests_dir: Path, done: list[str]
+    context: dict[str, str],
+    package_dir: Path,
+    tests_dir: Path,
+    done: list[str],
+    *,
+    minimal: bool = False,
 ) -> str:
     """Say what was done, and explain what is left to do."""
     package, domain = context["package"], context["domain"]
@@ -204,8 +225,9 @@ def _next_steps(
         f'python manage.py makemigrations -m "create {domain}"',
         "python manage.py migrate",
         (
-            f"Grant {domain}.view_{context['model']} (and add_, change_, delete_) to "
-            "the users or groups that need them; superusers have them."
+            f"Grant {domain}.view_{context['model']} (and add_, change_"
+            f"{'' if minimal else ', delete_'}) to the users or groups that need "
+            "them; superusers have them."
         ),
         (
             "python manage.py runserver; then, from another shell, log in as a "
