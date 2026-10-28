@@ -296,10 +296,7 @@ def rows_of(outbox: str, after: tuple[str, uuid.UUID] | None, size: int) -> Sele
         .order_by(inbox_table.c.target, inbox_table.c.message_id)
         .limit(size)
     )
-    if after is None:
-        return rows
-    types = [inbox_table.c.target.type, inbox_table.c.message_id.type]
-    return rows.where(_key() > tuple_(*after, types=types))
+    return rows if after is None else rows.where(_key() > tuple_(*after))
 
 
 def unfinished(ids: Sequence[uuid.UUID]) -> Select[Any]:
@@ -309,9 +306,9 @@ def unfinished(ids: Sequence[uuid.UUID]) -> Select[Any]:
     )
 
 
-def forget(outbox: str, keys: Sequence[tuple[str, uuid.UUID]]) -> Delete:
-    """Delete the rows ``keys`` of messages in ``outbox``."""
-    return delete(inbox_table).where(inbox_table.c.outbox == outbox, _key().in_(keys))
+def forget(keys: Sequence[tuple[str, uuid.UUID]]) -> Delete:
+    """Delete the rows ``keys``, each ``(target, message_id)``."""
+    return delete(inbox_table).where(_key().in_(keys))
 
 
 def _key() -> Tuple:

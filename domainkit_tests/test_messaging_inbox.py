@@ -10,13 +10,14 @@ Tests wait on events, never on the wall clock.
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import pytest
 from prometheus_client import REGISTRY
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import event, func, insert, select, update
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import OperationalError
 
 from domainkit import clock, setup
@@ -36,6 +37,7 @@ from domainkit.contrib.messaging.outbox import message_row
 from domainkit.contrib.messaging.registry import CHAIN, dump_event, qualified_name
 from domainkit.contrib.messaging.runs import (
     Run,
+    prune_statement,
     record,
     uses_inbox,
 )
@@ -208,8 +210,18 @@ async def test_a_message_run_again_after_its_commit_applies_its_effect_once(
     subscribed: Callable[[Callable[..., Any]], None],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The handler committed, the outcome was lost, the lease ran out: one effect."""
-    subscribed(credit)
+    """The handler committed, the outcome was lost, the lease ran out: one effect.
+
+    The second run finds the inbox row before it calls the handler at all.
+    """
+    calls: list[NoteWritten] = []
+
+    @inbox
+    async def counted(event: NoteWritten) -> None:
+        calls.append(event)
+        await write_credit()
+
+    subscribed(counted)
     await publish_note_written()
     first = slow_worker()
     failing_once(first)
@@ -221,14 +233,57 @@ async def test_a_message_run_again_after_its_commit_applies_its_effect_once(
     with caplog.at_level(logging.INFO, "domainkit.contrib.messaging.worker"):
         assert await slow_worker().run_once() == 1  # Delivered again, and skipped.
 
-    assert await credits() == 1
+    assert (len(calls), await credits()) == (1, 1)
     (row,) = await events_rows()
     assert (row["status"], row["attempts"], row["payload"]) == (DONE, 2, {})
-    assert await inbox_rows() == [(qualified_name(credit), row["id"])]
+    assert await inbox_rows() == [(qualified_name(counted), row["id"])]
     assert outcomes("handled") == handled + 1
     assert caplog.messages == [
-        f"Skipped event {qualified_name(credit)}: a run of it committed before (inbox)"
+        f"Skipped event {qualified_name(counted)}: a run of it committed before (inbox)"
     ]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_row_of_another_target_or_message_never_skips_a_run(
+    subscribed: Callable[[Callable[..., Any]], None],
+) -> None:
+    """The look-up before a later attempt matches both the target and the id."""
+    calls: list[int] = []
+
+    @inbox
+    async def fails_first(event: NoteWritten) -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("not yet")
+        await write_credit()
+
+    subscribed(fails_first)
+    await publish_note_written()
+    (row,) = await events_rows()
+    others = [
+        ("someone.else", row["id"]),
+        (qualified_name(fails_first), uuid.uuid4()),
+    ]
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            insert(inbox_table),
+            [
+                {
+                    "target": target,
+                    "message_id": message_id,
+                    "outbox": "default",
+                    "handled_at": clock.now(),
+                }
+                for target, message_id in others
+            ],
+        )
+
+    await slow_worker().run_once()  # Fails, then the retry looks, and runs.
+
+    assert (len(calls), await credits()) == (2, 1)
+    assert sorted(await inbox_rows()) == sorted(
+        [*others, (qualified_name(fails_first), row["id"])]
+    )
 
 
 @pytest.mark.usefixtures("tables")
@@ -438,7 +493,14 @@ def test_methods_and_marks() -> None:
 
         async def unmarked(self, event: NoteWritten) -> None: ...
 
+    class Later:
+        async def handle(self, event: NoteWritten) -> None: ...
+
     handlers = Handlers()
+    later = Later()
+    assert inbox(later.handle) == later.handle  # A bound method: its function.
+    assert uses_inbox(later.handle)
+    assert uses_inbox(Later.handle)
     assert uses_inbox(handlers.marked)
     assert uses_inbox(Handlers.marked)
     assert not uses_inbox(handlers.unmarked)
@@ -452,8 +514,13 @@ def test_methods_and_marks() -> None:
 
 def test_only_a_chains_last_step_may_use_the_inbox() -> None:
     """A step that hands its result on is refused; the last one is not."""
-    with pytest.raises(ImproperlyConfigured, match=r"^tests\.inbox\.last_step uses"):
+    refused = (
+        "tests.inbox.last_step uses the inbox, so only the last step of a chain "
+        "may be it: a skipped run has no result to hand on."
+    )
+    with pytest.raises(ImproperlyConfigured) as caught:
         chain(last_step, first_step)
+    assert str(caught.value) == refused
     with pytest.raises(ImproperlyConfigured, match=r"^tests\.inbox\.credit_task uses"):
         chain(first_step, credit_task, last_step)
     assert chain(first_step, last_step).keys == [
@@ -630,10 +697,44 @@ async def test_a_commit_renews_the_lease(
 
 
 @pytest.mark.usefixtures("tables")
+async def test_a_commit_renews_its_own_messages_lease_only(
+    subscribed: Callable[[Callable[..., Any]], None],
+) -> None:
+    """Messages claimed together share a lock id; a commit renews its own."""
+
+    async def commits(event: NoteWritten) -> None:
+        await write_credit()
+
+    subscribed(commits)
+    await publish_note_written()
+    await publish_note_written()
+    worker = slow_worker()
+    first, second = await worker.claim(10)
+    assert first.lock_id == second.lock_id
+    past = datetime.now(UTC) - timedelta(seconds=1)
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(messages).where(messages.c.id == second.id).values(locked_until=past)
+        )
+
+    await worker.process(first)
+
+    async with connections.engine().connect() as connection:
+        locked = await connection.scalar(
+            select(messages.c.locked_until).where(messages.c.id == second.id)
+        )
+    assert locked == past
+
+
+@pytest.mark.usefixtures("tables")
 async def test_work_left_running_after_the_message_commits_on_its_own(
     subscribed: Callable[[Callable[..., Any]], None],
 ) -> None:
-    """A task the handler started outlives the run; its commits are not fenced."""
+    """A task the handler started outlives the run; its commits are not fenced.
+
+    One started in a clean context (``spawn``), and one that inherits the
+    run's context (``create_task``), which knows the run has ended.
+    """
     release = asyncio.Event()
     left: list[asyncio.Task[None]] = []
 
@@ -643,14 +744,15 @@ async def test_work_left_running_after_the_message_commits_on_its_own(
 
     async def starts_work(event: NoteWritten) -> None:
         left.append(spawn(later(), name="tests.inbox.later"))
+        left.append(asyncio.get_running_loop().create_task(later()))
 
     subscribed(starts_work)
     await publish_note_written()
     await slow_worker().run_once()
     release.set()
-    await within(left[0])
+    await within(asyncio.gather(*left))
 
-    assert await credits() == 1
+    assert await credits() == 2
     assert (await events_rows())[0]["status"] == DONE
 
 
@@ -728,15 +830,20 @@ async def test_the_inbox_on_another_database_than_the_outbox(
 
 
 async def handled(
-    *statuses: str | None, database: str = "default", outbox: str = "default"
+    *statuses: str | None,
+    database: str = "default",
+    outbox: str = "default",
+    keys: Sequence[tuple[str, uuid.UUID]] = (),
 ) -> list[uuid.UUID]:
     """A message in each of ``statuses`` (None: none) in ``outbox``, a row for each.
 
     The rows go to the inbox of ``database``, handled a year ago: their age
-    never matters. Return the messages' ids, in order.
+    never matters. ``keys`` gives their ``(target, message_id)`` (default:
+    ``t`` and a new id). Return the messages' ids, in order.
     """
     long_ago = datetime.now(UTC) - timedelta(days=365)
-    ids = [uuid.uuid4() for _ in statuses]
+    keys = keys or [("t", uuid.uuid4()) for _ in statuses]
+    ids = [message_id for _, message_id in keys]
     kept = [
         {
             **message_row(
@@ -756,12 +863,12 @@ async def handled(
             insert(inbox_table),
             [
                 {
-                    "target": "t",
+                    "target": target,
                     "message_id": message_id,
                     "outbox": outbox,
                     "handled_at": long_ago,
                 }
-                for message_id in ids
+                for target, message_id in keys
             ],
         )
     return ids
@@ -829,13 +936,51 @@ async def test_a_held_back_message_commits_once_whatever_its_wait() -> None:
     assert await inbox_rows() == []  # Every message is done: every row went.
 
 
+def statements(database: str, starting: str) -> tuple[list[str], Callable[[], None]]:
+    """Collect the statements ``database``'s engine runs that start with ``starting``.
+
+    Returns the list, and a function that stops collecting.
+    """
+    seen: list[str] = []
+    engine = connections.engine(database).sync_engine
+
+    def collect(*args: Any) -> None:  # noqa: ANN401 - before_cursor_execute's.
+        if str(args[2]).lstrip().startswith(starting):
+            seen.append(str(args[2]))
+
+    def stop() -> None:
+        event.remove(engine, "before_cursor_execute", collect)
+
+    event.listen(engine, "before_cursor_execute", collect)
+    return seen, stop
+
+
+def test_a_prune_batch_is_bounded_and_skips_locked_rows() -> None:
+    """The size is written into the SQL, as cleanup's is (PERF-02)."""
+    dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+    compiled = prune_statement("default", 1000).compile(
+        dialect=dialect, compile_kwargs={"render_postcompile": True}
+    )
+    sql = str(compiled)
+
+    assert "LIMIT 1000" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "domainkit_inbox.outbox = " in sql
+    assert "NOT (EXISTS (SELECT domainkit_messages.id" in sql
+
+
 @pytest.mark.usefixtures("tables")
 async def test_rows_are_pruned_in_batches() -> None:
     """Up to CLEANUP_BATCH_SIZE rows per statement, until none is left."""
     await handled(*[DONE] * 5)
     worker = Worker(MessagingSettings(**{**FAST, "CLEANUP_BATCH_SIZE": 2}))
+    deletes, stop = statements("default", "DELETE FROM domainkit_inbox")
+    try:
+        assert await worker.prune_inbox() == 5
+    finally:
+        stop()
 
-    assert await worker.prune_inbox() == 5
+    assert len(deletes) == 3  # 2, 2, then 1.
 
     assert await inbox_rows() == []
     assert (worker._prune_batch, worker._cleanup_batch) == (2, 2)
@@ -848,7 +993,7 @@ async def test_a_failed_prune_halves_the_next_batch(
 ) -> None:
     """The inbox's batches shrink and grow on their own, as the outbox's do."""
     await handled(DONE, DONE, DONE)
-    worker = Worker(MessagingSettings(**{**FAST, "CLEANUP_BATCH_SIZE": 4}))
+    worker = Worker(MessagingSettings(**{**FAST, "CLEANUP_BATCH_SIZE": 5}))
     statement = worker.inbox_statement
 
     def broken(dialect: str, size: int) -> Any:  # noqa: ANN401 - a statement.
@@ -857,9 +1002,10 @@ async def test_a_failed_prune_halves_the_next_batch(
     monkeypatch.setattr(worker, "inbox_statement", broken)
     with pytest.raises(OperationalError):
         await worker.prune_inbox()
-    assert (worker._prune_batch, worker._cleanup_batch) == (2, 4)
+    assert (worker._prune_batch, worker._cleanup_batch) == (2, 5)  # 5 // 2.
+    assert isinstance(worker._prune_batch, int)
     monkeypatch.setattr(worker, "inbox_statement", statement)
-    assert await worker.prune_inbox() == 3  # Batches of 2, then 1.
+    assert await worker.prune_inbox() == 3  # Batches of 2, then 1 of up to 4.
     assert worker._prune_batch == 4
 
 
@@ -891,17 +1037,37 @@ async def test_cleanup_prunes_the_inbox(
 
 @pytest.mark.usefixtures("two_databases")
 async def test_rows_of_another_outbox_are_pruned_by_what_it_holds() -> None:
-    """That outbox says which messages finished; a batch at a time, in key order."""
-    statuses = [PENDING, DONE, DEAD, DONE, CANCELLED, None]
-    ids = await handled(*statuses, outbox="other")
+    """That outbox says which messages finished; a batch at a time, in key order.
+
+    Keys run ``(a, 3) (a, 4) (b, 1) (b, 2) (b, 5) (b, 6)``, written in the
+    reverse order: read by key, not by id nor as written, or some rows
+    would never be read.
+    """
+    keys = [
+        ("a", uuid.UUID(int=3)),
+        ("a", uuid.UUID(int=4)),
+        ("b", uuid.UUID(int=1)),
+        ("b", uuid.UUID(int=2)),
+        ("b", uuid.UUID(int=5)),
+        ("b", uuid.UUID(int=6)),
+    ]
+    statuses = [DONE, CANCELLED, PENDING, None, DEAD, DONE]
+    await handled(*statuses[::-1], outbox="other", keys=keys[::-1])
     await handled(DONE)  # This outbox's own, in the same pass.
-    worker = Worker(MessagingSettings(**{**FAST, **SLOW, "CLEANUP_BATCH_SIZE": 2}))
+    worker = Worker(MessagingSettings(**{**FAST, **SLOW, "CLEANUP_BATCH_SIZE": 3}))
     stopped = asyncio.Event()
     stopped.set()
 
     assert await worker._prune(stopped) == 0  # Stopped: nothing more starts.
-    assert await worker.prune_inbox() == 5
+    asked, stop = statements("other", "SELECT domainkit_messages.id")
+    try:
+        assert await worker.prune_inbox() == 5
+    finally:
+        stop()
 
-    kept = {ids[0], ids[2]}  # Pending and dead, in "other".
-    assert {message_id for _, message_id in await inbox_rows()} == kept
-    assert await worker.prune_inbox() == 0  # A full batch kept, then none left.
+    assert len(asked) == 2  # Two batches of three, each asked once.
+    assert sorted(message_id for _, message_id in await inbox_rows()) == [
+        uuid.UUID(int=1),  # Pending in "other".
+        uuid.UUID(int=5),  # Dead there.
+    ]
+    assert await worker.prune_inbox() == 0  # Nothing finished is left.

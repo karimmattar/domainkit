@@ -1249,7 +1249,7 @@ class Worker:
                 if row.message_id not in live
             ]:
                 async with self.engine.begin() as connection:
-                    result = await connection.execute(forget(outbox, finished))
+                    result = await connection.execute(forget(finished))
                     pruned += int(result.rowcount)
             if len(rows) < size:
                 break
