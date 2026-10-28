@@ -658,6 +658,7 @@ async def test_sqlite_keeps_a_rule_across_rows_when_serializable(
             await uow.commit()
             return "took"
 
+    await connections.close_all()  # The fixture's engine waits 0.1 seconds.
     with override_settings(
         DATABASES={"default": {"URL": sqlite_file, "CONNECT_ARGS": {"timeout": 5}}}
     ):
