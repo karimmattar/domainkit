@@ -708,8 +708,10 @@ were before the failed run.
 `ResourceRouter.command_route(..., retry=Retry())` runs a command's service
 that way ([resources.md](resources.md)): the check that the caller may
 reach the aggregate, and `If-Match`, are made again in each run's
-transaction, so a run after another committed sees its version. Command
-routes do not retry unless they say so.
+transaction, so a run after another committed sees its version.
+`batch_route(..., retry=Retry())` does the same for each item, or, for an
+atomic batch, runs the whole batch again. Routes do not retry unless they
+say so.
 
 ### Locks
 

@@ -40,6 +40,14 @@ and a status.
   it would, where 0.11 refused it until the aggregate was loaded
   (DSGN-14; ADR 0102).
 
+- `ResourceRouter.batch_route(..., retry=Retry(...))` runs work that lost
+  a race again, as `command_route(retry=)` does: without `atomic`, the
+  item that lost, its reach check and `If-Match` made again; with
+  `atomic`, the whole batch, in a new transaction. Once the runs are
+  spent the item answers `503 database_busy`, as without `retry`.
+  Batches retry only when they say so; the isolation level stays the
+  unit of work's (FIN-78; ADR 0092).
+
 ### Changed
 
 - A service that changes the aggregate an `If-Match` request names

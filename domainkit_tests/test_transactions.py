@@ -13,7 +13,7 @@ import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any, ClassVar, Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -1103,3 +1103,193 @@ async def test_a_rule_that_looks_at_the_aggregate_is_asked_in_each_run(
     assert (taken.status_code, taken.json()["stock"]) == (200, 4)
     assert SeesGadgets.seen == ["one", "one"]
     assert waits == [0.0]
+
+
+# Batch routes that declare retries ------------------------------------------------
+
+
+class Taken(BaseModel):
+    """A batch item's body: nothing but the gadget it takes from."""
+
+
+def batch_app(
+    service: Any,  # noqa: ANN401 - each test's service.
+    *,
+    retry: Retry | None,
+    unit_of_work: type[GadgetsUnitOfWork] = GadgetsUnitOfWork,
+) -> FastAPI:
+    """The gadget resource with ``POST /gadgets/batch`` run by ``service``."""
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=unit_of_work,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+    )
+    resource.batch_route(Take, service=service, retry=retry)
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    app.add_middleware(RequestContextMiddleware)
+    return app
+
+
+def taking(lose: Callable[[], None], runs: list[str]) -> Any:  # noqa: ANN401 - a service.
+    """A service that takes one of a gadget's stock, and may lose a race first."""
+
+    async def take(command: Take, uow: GadgetsUnitOfWork) -> Gadget:
+        async with uow:
+            found = await uow.gadgets.get(GadgetId(command.gadget_id))
+            runs.append(found.name)
+            found.stock = (found.stock or 0) - 1
+            if found.name == "two":
+                lose()
+            await uow.commit()
+            return found
+
+    return take
+
+
+@pytest.mark.parametrize("atomic", [False, True])
+@pytest.mark.parametrize("retry", [None, NOW])
+async def test_a_batch_that_retries_runs_a_lost_item_again(
+    tables: None, waits: list[float], retry: Retry | None, atomic: bool
+) -> None:
+    """Without ``retry`` the item that lost answers 503; with it, every item 200.
+
+    Apart, the item that lost runs again; atomically, the whole batch does,
+    in a new transaction, since the race ended it.
+    """
+    one, two = make_gadget("one", stock=5), make_gadget("two", stock=5)
+    await store(one, two)
+    runs: list[str] = []
+    app = batch_app(taking(losing(1, conflict), runs), retry=retry)
+    items = [{"gadget_id": str(one.id)}, {"gadget_id": str(two.id)}]
+
+    async with AsyncTestClient(app) as client:
+        answer = await client.post(
+            "/gadgets/batch", json={"items": items, "atomic": atomic}
+        )
+    statuses = [each["status"] for each in answer.json()["results"]]
+
+    assert answer.status_code == 207
+    if retry is None:
+        assert statuses == ([424, 503] if atomic else [200, 503])
+        assert answer.json()["results"][1]["error"]["code"] == "database_busy"
+        assert (runs, waits) == (["one", "two"], [])
+        assert await total_stock() == (10 if atomic else 9)
+    else:
+        assert statuses == [200, 200]
+        again = ["one", "two", "one", "two"] if atomic else ["one", "two", "two"]
+        assert (runs, waits) == (again, [0.0])
+        assert await total_stock() == 8
+
+
+@postgres_only  # On SQLite the batch's first SAVEPOINT begins the transaction,
+# and its RELEASE commits it, before the commit this test makes fail.
+async def test_an_atomic_batch_lost_at_its_commit_runs_again(
+    tables: None, waits: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A race lost as the batch commits runs the batch again; without retry, 503."""
+    one = make_gadget("one", stock=5)
+    await store(one)
+    runs: list[str] = []
+    commit = GadgetsUnitOfWork._commit
+    lose = losing(1, conflict)
+
+    async def committing(self: GadgetsUnitOfWork) -> None:
+        lose()
+        await commit(self)
+
+    items = {"items": [{"gadget_id": str(one.id)}], "atomic": True}
+    monkeypatch.setattr(GadgetsUnitOfWork, "_commit", committing)
+    async with AsyncTestClient(
+        batch_app(taking(lambda: None, runs), retry=NOW)
+    ) as client:
+        answer = await client.post("/gadgets/batch", json=items)
+    lose = losing(1, conflict)
+    async with AsyncTestClient(
+        batch_app(taking(lambda: None, runs), retry=None)
+    ) as client:
+        busy = await client.post("/gadgets/batch", json=items)
+
+    assert (answer.status_code, answer.json()["results"][0]["status"]) == (207, 200)
+    assert (busy.status_code, busy.json()["code"]) == (503, "database_busy")
+    assert (runs, waits) == (["one", "one", "one"], [0.0])
+    assert await total_stock() == 4
+
+
+@pytest.mark.parametrize("atomic", [False, True])
+async def test_a_batch_that_keeps_losing_answers_as_one_that_does_not_retry(
+    tables: None, waits: list[float], atomic: bool
+) -> None:
+    """Once ``attempts`` runs lost, the item answers 503; refusals never run again."""
+    one, two = make_gadget("one", stock=5), make_gadget("two", stock=5)
+    await store(one, two)
+    runs: list[str] = []
+    retry = Retry(attempts=2, backoff=0)
+    app = batch_app(taking(losing(9, conflict), runs), retry=retry)
+    items = [
+        {"gadget_id": str(one.id)},
+        {"gadget_id": str(two.id)},
+        {"gadget_id": str(uuid4())},
+    ]
+
+    async with AsyncTestClient(app) as client:
+        answer = await client.post(
+            "/gadgets/batch", json={"items": items, "atomic": atomic}
+        )
+    results = answer.json()["results"]
+
+    assert [each["status"] for each in results] == (
+        [424, 503, 424] if atomic else [200, 503, 404]
+    )
+    assert results[1]["error"]["code"] == "database_busy"
+    assert runs == (["one", "two", "one", "two"] if atomic else ["one", "two", "two"])
+    assert waits == [0.0]
+    assert await total_stock() == (10 if atomic else 9)
+
+
+async def test_a_batch_runs_each_items_checks_again_with_it(
+    tables: None, waits: list[float]
+) -> None:
+    """The reach check and the item's ``If-Match`` are made again in each run."""
+    one = make_gadget("one", stock=5)
+    two = make_gadget("two", stock=5)
+    await store(one, two)
+    checks: list[str] = []
+
+    async def scope(request: HTTPConnection) -> Any:  # noqa: ANN401 - criteria.
+        checks.append("scope")
+        return F("active") == True  # noqa: E712 - a condition, not a test.
+
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=GadgetsUnitOfWork,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+        scope=scope,
+    )
+    runs: list[str] = []
+    resource.batch_route(Take, service=taking(losing(1, conflict), runs), retry=NOW)
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    app.add_middleware(RequestContextMiddleware)
+    async with AsyncTestClient(app) as client:
+        tag = (await client.get(f"/gadgets/{two.id}")).headers["etag"]
+        checks.clear()
+        answer = await client.post(
+            "/gadgets/batch",
+            json={"items": [{"gadget_id": str(two.id), "if_match": tag}]},
+        )
+        stale = await client.post(
+            "/gadgets/batch",
+            json={"items": [{"gadget_id": str(two.id), "if_match": tag}]},
+        )
+
+    assert [each["status"] for each in answer.json()["results"]] == [200]
+    assert [each["status"] for each in stale.json()["results"]] == [412]
+    assert checks == ["scope", "scope", "scope"]
+    assert runs == ["two", "two"]

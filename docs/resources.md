@@ -206,6 +206,12 @@ body's fields and, for a command on one product, its `product_id` and an
   `500`, as it would for one item.
 - `action` defaults to `change` for commands on one aggregate and `add`
   for the others; the route needs that permission once, for the batch.
+- `retry=Retry()` runs work that lost a race again, as a command route's
+  does: without `atomic`, the item that lost, with its reach check and
+  `If-Match`; with `atomic`, the whole batch, in a new transaction, since
+  the race ended the one it ran in. Once the runs are spent, the item
+  answers `503 database_busy`, as without `retry`. Batches do not retry
+  unless they say so.
 
 ## Exports
 
