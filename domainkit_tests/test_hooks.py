@@ -219,12 +219,19 @@ def test_hooks_register_in_ready_or_for_a_named_domain(
         setup()
         with pytest.raises(
             ImproperlyConfigured,
-            match=r"^Register probe hooks in DomainConfig\.ready\(\), or name the "
-            r"domain: domain='label'\.$",
+            match=r"^Register probe hooks in DomainConfig\.ready\(\); outside it, "
+            r"once the domains are loaded, name an installed domain: "
+            r"domain='label'\.$",
         ):
             point(probe)
         assert point(probe, domain="typed") is probe
-        point(probe, domain="elsewhere")  # Not installed: never called.
+        with pytest.raises(
+            ImproperlyConfigured,
+            match=r"^probe hook .*probe names domain 'elsewhere', which is not "
+            r"loaded: register it in that domain's DomainConfig\.ready\(\), where "
+            r"it is kept as long as the domain is installed\.$",
+        ):
+            point(probe, domain="elsewhere")  # It would never be called (SEC-12a-1).
 
         assert list(point) == [Hook("typed", probe)]
         assert repr(point) == "<HookPoint probe>"

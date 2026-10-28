@@ -128,9 +128,14 @@ class HookPoint[F: Callable[..., object]]:
     def __call__(self, function: F, *, domain: str | None = None) -> F:
         """Register ``function`` for the domain being made ready; return it.
 
+        ``domain`` registers for an installed domain from outside its
+        ``ready()``, once the domains are loaded (a test, a command).
+
         Raises:
             ImproperlyConfigured: Called outside a domain's ``ready()``
-                without ``domain``, or ``function`` cannot take the point's
+                without ``domain``; ``domain`` names no domain loaded yet
+                (the registration would be forgotten when they load, or
+                never be called); or ``function`` cannot take the point's
                 arguments, or is not awaitable where the point awaits it
                 (or the reverse).
         """
@@ -139,10 +144,18 @@ class HookPoint[F: Callable[..., object]]:
             readying = registry.readying
             if readying is None:
                 raise ImproperlyConfigured(
-                    f"Register {self.name} hooks in DomainConfig.ready(), or "
-                    "name the domain: domain='label'."
+                    f"Register {self.name} hooks in DomainConfig.ready(); "
+                    "outside it, once the domains are loaded, name an "
+                    "installed domain: domain='label'."
                 )
             domain = readying.label
+        elif not any(config.label == domain for config in registry):
+            raise ImproperlyConfigured(
+                f"{self.name} hook {_name(function)} names domain {domain!r}, "
+                "which is not loaded: register it in that domain's "
+                "DomainConfig.ready(), where it is kept as long as the "
+                "domain is installed."
+            )
         self._check(function, domain)
         with self._lock:
             self._current(registry).functions.setdefault(domain, []).append(function)
@@ -211,16 +224,23 @@ class HookPoint[F: Callable[..., object]]:
     def _collect(
         self, registry: "DomainRegistry", registered: "_Registered[F]"
     ) -> Iterator[Hook[F]]:
-        """Each domain's registered hooks, then its overriding method, if any."""
+        """Each domain's registered hooks, then its overriding method, if any.
+
+        A method the domain registered too is called once, as registered.
+        """
         from domainkit.apps.config import DomainConfig
 
         for config in registry:
-            for function in registered.functions.get(config.label, ()):
+            functions = registered.functions.get(config.label, ())
+            for function in functions:
                 yield Hook(config.label, function)
-            if self.method is not None and getattr(
-                type(config), self.method
-            ) is not getattr(DomainConfig, self.method):
-                yield Hook(config.label, cast(F, getattr(config, self.method)))
+            if self.method is None or getattr(type(config), self.method) is getattr(
+                DomainConfig, self.method
+            ):
+                continue
+            override = getattr(config, self.method)
+            if override not in functions:  # Registered already: called once.
+                yield Hook(config.label, cast(F, override))
 
     def _current(self, registry: "DomainRegistry") -> "_Registered[F]":
         """What ``registry``'s domains registered since it last changed.

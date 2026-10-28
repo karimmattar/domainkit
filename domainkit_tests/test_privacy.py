@@ -587,12 +587,16 @@ def test_a_domains_hooks_are_audited_as_one_and_exported_merged(
     async def empty(subject: str) -> dict[str, object]:
         return {}
 
+    async def counted(subject: str) -> dict[str, object]:
+        return {"cache": 2, "index": ["again"]}
+
     on_erase_subject(first, domain="alpha")
     on_erase_subject(second, domain="alpha")
     on_erase_subject(nothing, domain="patients")
     on_export_subject(kept, domain="alpha")
     on_export_subject(more, domain="alpha")
     on_export_subject(empty, domain="patients")
+    on_export_subject(counted, domain="alpha")
     with caplog.at_level(logging.WARNING, "domainkit.contrib.privacy.operations"):
         run_async(erase_subject("nobody", reason="ticket 9"))
     exported = run_async(export_subject("nobody"))
@@ -608,7 +612,9 @@ def test_a_domains_hooks_are_audited_as_one_and_exported_merged(
             "work); they are erased once it ends: erase the subject again then"
         )
     ]
-    assert exported["copies"] == {"alpha": {"index": ["nobody"], "cache": 1}}
+    assert exported["copies"] == {  # Nothing lost to a kind named twice.
+        "alpha": {"index": ["nobody", "again"], "cache": [1, 2]}
+    }
 
 
 def test_a_hook_that_answers_more_than_counts_is_named(clinic: str) -> None:

@@ -225,8 +225,14 @@ class UnitOfWork(ABC):
         self._deferred.append(DeferredTask(function, kwargs, delay, dedupe_key))
 
     async def __aenter__(self) -> Self:
-        """Begin the unit of work: its repositories hold to what it expects."""
+        """Begin the unit of work: its repositories hold to what it expects.
+
+        Each transaction checks the expected aggregates again, the first
+        time it loads them.
+        """
         if self._expected:
+            for expected in self._expected:
+                expected.renew()
             self._lend_expectations()
         return self
 
@@ -237,11 +243,15 @@ class UnitOfWork(ABC):
         """Hold aggregate ``id_`` of ``model`` to one of ``versions`` in the block.
 
         This unit of work's repositories check the aggregate the first time
-        they hand it out (``get``, ``find``, ``filter``, ``first``, and the
-        locking reads), and ``commit`` refuses to write before they did.
-        ``versions`` None only notes whether the aggregate is loaded
-        (``If-Match: *``). Read ``checked`` on what it yields to know whether
-        the block loaded it. Other units of work are not held to it.
+        they hand it out in each of its transactions (``get``, ``find``,
+        ``filter``, ``first``, and the locking reads), and ``commit``
+        refuses to write before they did. A version this unit of work's own
+        commit produced is accepted afterwards; any other is refused, so a
+        service that reads in one block and writes in the next cannot write
+        over another client's change made in between. ``versions`` None
+        only notes whether the aggregate is loaded (``If-Match: *``). Read
+        ``checked`` on what it yields to know whether the block loaded it.
+        Other units of work are not held to it.
 
         Raises:
             PreconditionFailed: In the block, when a repository loads the
@@ -259,6 +269,13 @@ class UnitOfWork(ABC):
             held.remove(expected)
             if not held:
                 del self._expected  # Back to the class's: none.
+
+    def _accept_committed(self) -> None:
+        """Let a later transaction load the versions this commit produced."""
+        for repository in self.repositories():
+            for aggregate in repository.seen:
+                for expected in self._expected:
+                    expected.accept(aggregate)
 
     def _lend_expectations(self) -> None:
         """Give each repository this unit of work's expectations, to check loads."""
@@ -296,6 +313,8 @@ class UnitOfWork(ABC):
         await self._commit()
         if self._commits is not None:
             self._commits.count += 1
+        if self._expected:
+            self._accept_committed()
         self._finish()
         await self._committed()
         await self.events.publish_all(events)

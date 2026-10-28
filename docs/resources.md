@@ -321,7 +321,11 @@ The check needs nothing from the service. The route hands the service a
 unit of work that holds the request's expectation
 (`uow.expect(Order, order_id, versions)`), and its repositories check the
 aggregate when they first hand it out, inside the transaction that changes
-it: `get`, `find`, `filter`, `first`, and `get_for_update` all do. Only
+it: `get`, `find`, `filter`, `first`, and `get_for_update` all do. A
+service that enters the unit of work again (it reads in one block, calls
+a payment provider, and writes in the next) is checked again in each new
+transaction: a change another client stored in between is refused, and
+only the version the unit of work's own commit produced is accepted. Only
 that unit of work is held to it: another one the service opens, to write
 an audit record first, say, commits as it would. A route of your own does
 the same:

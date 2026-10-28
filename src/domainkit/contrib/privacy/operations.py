@@ -143,7 +143,7 @@ async def export_subject(subject: str) -> dict[str, Any]:
     copies: dict[str, dict[str, object]] = {}
     for hook in on_export_subject:
         if kept := await hook.call(subject):
-            copies.setdefault(hook.domain, {}).update(kept)
+            _merge(copies.setdefault(hook.domain, {}), kept)
     await record("privacy.export", target=subject, records=count, copies=sorted(copies))
     return {
         "subject": subject,
@@ -219,6 +219,25 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     await forget(subject)
     await record("privacy.erase", target=subject, aggregates=erased, reason=reason)
     return erased
+
+
+def _merge(copies: dict[str, object], kept: Mapping[str, object]) -> None:
+    """Add what one export hook ``kept`` to its domain's ``copies``, losing nothing.
+
+    Two hooks that name the same kind both give copies of it: their values
+    are listed together (a list's items, or the value itself), as the
+    erasure of that kind sums both hooks' counts.
+    """
+    for kind, value in kept.items():
+        if kind in copies:
+            copies[kind] = [*_listed(copies[kind]), *_listed(value)]
+        else:
+            copies[kind] = value
+
+
+def _listed(value: object) -> list[object]:
+    """``value``'s items if it is a list, else ``value`` alone."""
+    return list(value) if isinstance(value, list) else [value]
 
 
 def _name(call: object) -> str:

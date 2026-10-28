@@ -274,6 +274,27 @@ and a status.
   person's data out with no one named and nothing recorded, where
   `privacy export` of one person is recorded. **Fix:** set
   `DOMAINKIT_OPERATOR` where it runs (SEC-12a-7).
+- A domain hook registered with `domain=` before the domains load (at the
+  top of an `apps` module), or for a label that is not installed, was
+  accepted and then forgotten without a word: an erasure hook registered
+  so was never called, and `privacy erase` reported success while the
+  copies stayed. Such a registration now fails with `ImproperlyConfigured`;
+  register in the domain's `ready()` (SEC-12a-1).
+- A deprecated hook method that the domain also registered
+  (`on_startup(self.startup)`) ran twice: two starts, two erasures audited
+  as twice the copies, two outbox or audit rows per commit. It runs once
+  now, and the warning says to register the function under a name of its
+  own (SEC-12a-4).
+- A subject's export kept only the last of a domain's hooks that named the
+  same kind, while erasure summed them all: the export left out copies
+  the erasure removed. A kind named twice now lists every hook's copies
+  (SEC-12a-5).
+- `If-Match` held only the first transaction of the unit of work that
+  checked it: a service that read in one block and wrote in a later one
+  wrote over a change another client stored in between. Each transaction
+  checks the aggregate again the first time it loads it, and accepts only
+  the client's versions and those the unit of work's own commits produced;
+  a stale one is `412 precondition_failed` (SEC-12a-6).
 
 ## [0.11.2] - 2026-10-28
 

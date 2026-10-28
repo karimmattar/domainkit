@@ -515,6 +515,38 @@ async def test_repositories_made_on_entering_hold_to_the_expectation() -> None:
 
 
 @pytest.mark.anyio
+async def test_a_later_transaction_accepts_what_the_unit_of_work_committed() -> None:
+    """Its own change moves the version on; another client's is refused (SEC-12a-6)."""
+    order = make_order(version=3)
+    other = make_order(id=OrderId(uuid4()), version=7)
+    rows = [order, other]
+
+    class Fresh(OrdersUnitOfWork):
+        async def __aenter__(self) -> Self:
+            self.orders = InMemoryRepository[Order, OrderId](rows)
+            return await super().__aenter__()
+
+    uow = Fresh(InMemoryRepository[Order, OrderId]([]))
+    with (
+        uow.expect(Order, order.id, {3}) as expected,
+        uow.expect(Order, other.id, None) as anything,
+    ):
+        async with uow:  # Changes it: version 4 is this unit of work's own.
+            found = await uow.orders.get(order.id)
+            await uow.orders.get(other.id)
+            found.version = 4
+            await uow.commit()
+        async with uow:
+            assert await uow.orders.get(order.id) is found
+        assert expected.versions == frozenset({3, 4})
+        assert anything.versions is None
+        order.version = 5  # Another client's change.
+        async with uow:
+            with pytest.raises(PreconditionFailed):
+                await uow.orders.get(order.id)
+
+
+@pytest.mark.anyio
 async def test_the_context_wide_expectation_still_works_and_is_deprecated() -> None:
     """``expect_version`` holds every unit of work of the context, until 0.13."""
     order = make_order(version=3)
