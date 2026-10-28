@@ -1055,7 +1055,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
-| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
+| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent`, `--include-guarded`, `--operator` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
 | `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force`, `--replace`, `--include-guarded`, `--operator` | Load fixtures, saying first what each table gets and how many of its rows are stored already. A row whose primary key is stored is refused without `--replace`; a fixture that writes a guarded table (users, permissions, grants, ...) without `--include-guarded` ([guarded tables](#data-fixtures-flush-and-seeds)). Staging and production refuse without `--force` and a named operator. Each load is audited with its tables and the fixture's SHA-256 ([operators](#operators)). |
 | `flush` | `--database`, `--dry-run`, `--force`, `--include-guarded`, `--operator` | Delete every row but the audit trail's and, without `--include-guarded`, the guarded tables', saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force` and a named operator. Audited, with its tables ([operators](#operators)). |
 | `seed` | `[LABEL ...]` | Run installed domains' `DomainConfig.seed` hooks, in `INSTALLED_DOMAINS` order. |
@@ -1084,6 +1084,7 @@ Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
 `auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
+`dumpdata --include-guarded`, which copies credentials out (0.12);
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
 `addcertificate`, `cleartokens`, `flags`, and `webhooks`. Their listings
@@ -1112,8 +1113,8 @@ sources are recorded as `operator_source` `system`, so the trail shows
 that nobody gave a name; and in a container that runs as `root` or `app`,
 or under a uid, they name nobody: set `DOMAINKIT_OPERATOR` from your
 access tooling, or pass `--operator`. In staging and production
-`loaddata` and `flush` need a name from one of the first two (0.11); the
-other commands keep running unattended. Prefer a staff id or handle to an
+`loaddata` and `flush` need a name from one of the first two (0.11), and
+so does `dumpdata --include-guarded` (0.12); the other commands keep running unattended. Prefer a staff id or handle to an
 email address: the trail keeps what it is given for good. The name is what
 the operator says: it attributes an action, it does not authenticate
 anyone, so keep who can run `manage.py` against production as narrow as
@@ -1149,7 +1150,11 @@ A fixture is one JSON document, its tables parents first:
 ```
 
 Numbers and text are written as they are; decimals, times, durations, ids,
-and enums as text; bytes as base64; JSON columns as JSON. `loaddata`
+and enums as text; bytes as base64; JSON columns as JSON; a single-field
+value object (a password hash, a project's `ProductName`) as its field,
+which loading makes into the object again, so the object's own checks
+refuse what it would not hold. Fixtures from 0.11, which wrote such an
+object as `{"value": ...}`, load the same. `loaddata`
 converts each value back by its column's type, and refuses one that does
 not fit without quoting it. A number with a fraction reaches a decimal
 column with every digit, as written (`1234567890123456.78`), never through
@@ -1158,7 +1163,10 @@ and on PostgreSQL serial ids then continue after the highest one loaded.
 
 A load only adds rows: a row whose primary key is stored refuses the
 whole fixture, before anything is written, unless `--replace` is given,
-and then it replaces the stored row. A row that replaces another bypasses
+and then it replaces the stored row. The load holds its tables' write
+lock while it counts and writes (`SHARE ROW EXCLUSIVE` on PostgreSQL,
+`BEGIN IMMEDIATE` on SQLite), so its record (`operator.loaddata`) holds
+the rows it replaced, a row stored since the plan was printed included. A row that replaces another bypasses
 the aggregate's version, its rules, and its events: keep `--replace` for
 development data.
 
@@ -1169,7 +1177,13 @@ them), object grants, and dynamic settings (which may be secret), and any
 table with `info={"guarded": True}`. A row added there is a login or a
 privilege, so `loaddata` refuses a fixture that writes one unless
 `--include-guarded` is given, and `flush` keeps them, and every table they
-reference, unless it is given. The audit trail is never loaded or
+reference, unless it is given. `dumpdata` leaves them out of a dump of
+every table, and says so on standard error, and refuses a table or domain
+named that holds one, unless `--include-guarded` is given: a dump of
+users holds their password hashes. A dump with guarded tables is recorded
+(`operator.dumpdata`: the tables, their row counts, and the SHA-256 of
+what was written), and in staging and production needs an operator named
+by `--operator` or `DOMAINKIT_OPERATOR`. The audit trail is never loaded or
 flushed, guarded or not. A kept table whose rows are about other tables'
 objects names the column of their model key (`info={"about_model":
 "content_type"}`, as object grants do): `flush` deletes its rows about

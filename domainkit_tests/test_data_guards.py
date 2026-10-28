@@ -34,6 +34,7 @@ from domainkit.contrib.auth.tables import (
 )
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections
+from domainkit.db import fixtures as fixtures_module
 from domainkit.management import CommandError, call_command
 from domainkit.management.commands.flush import Command as FlushCommand
 from domainkit.management.commands.loaddata import Command as LoadCommand
@@ -398,3 +399,133 @@ def test_the_commands_say_what_each_option_does() -> None:
         ),
     ):
         assert said in flushing
+
+
+def test_dumps_leave_guarded_tables_out(stored_user: str, tmp_path: Path) -> None:
+    """Named, a guarded table is refused; with no names, left out and said so.
+
+    At 0.11 ``dumpdata`` wrote users with their password hashes, dynamic
+    settings, and grants to anyone who could run it, and no audit row said
+    it had (DATA-12).
+    """
+    printed, said = io.StringIO(), io.StringIO()
+    call_command("dumpdata", stdout=printed, stderr=said)
+    named = [entry["table"] for entry in json.loads(printed.getvalue())["tables"]]
+
+    assert users.name not in named
+    assert not [name for name in named if name.startswith("domainkit_users")]
+    assert kinds.name in named
+    assert said.getvalue().startswith(
+        "Left out guarded tables (domainkit_content_types, "  # Parents first.
+    )
+    assert said.getvalue().endswith("); --include-guarded dumps them.\n")
+    assert users.name in said.getvalue()
+    for names in ([users.name], ["auth"], [kinds.name, user_permissions.name]):
+        with pytest.raises(CommandError) as refused:
+            run("dumpdata", *names, "-o", str(tmp_path / "out.json"))
+        assert str(refused.value).endswith(
+            "hold logins, password hashes, permissions, and secrets. Nothing was "
+            "written; repeat with --include-guarded if that is what you mean."
+        )
+    assert not (tmp_path / "out.json").exists()
+    assert operator_rows() == []
+
+
+def test_guarded_dumps_are_audited(
+    stored_user: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Which tables, how many rows, and the SHA-256 of what was written.
+
+    A dump without guarded tables is not recorded: it holds nothing a load
+    of it could not write back without the option either.
+    """
+    monkeypatch.delenv("DOMAINKIT_OPERATOR", raising=False)
+    path = tmp_path / "users.json"
+
+    run("dumpdata", kinds.name, "--include-guarded")
+    printed = run("dumpdata", users.name, "--include-guarded", "--operator", "alice")
+    run("dumpdata", users.name, "--include-guarded", "-o", str(path))
+    sqlite = {"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'other.db'}"}}
+    with (
+        override_settings(ENVIRONMENT="staging", DATABASES=sqlite),
+        pytest.raises(CommandError, match=r"^Name the operator who runs dumpdata"),
+    ):
+        run("dumpdata", users.name, "--include-guarded")
+
+    printing, writing = operator_rows()
+    assert (printing["action"], printing["actor"]) == (
+        "operator.dumpdata",
+        "operator:alice",
+    )
+    assert printing["details"] == {
+        "database": "default",
+        "output": "stdout",
+        "include_guarded": True,
+        "rows": 1,
+        "tables": {users.name: 1},
+        "sha256": hashlib.sha256(printed.encode()).hexdigest(),
+        "operator_source": "option",
+    }
+    assert writing["details"]["output"] == "users.json"
+    assert writing["details"]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert writing["details"]["operator_source"] == "system"
+
+
+def test_a_user_round_trips_through_a_fixture(stored_user: str, tmp_path: Path) -> None:
+    """Dumped with its hash as the text it is stored as, and loaded back.
+
+    At 0.11 ``dumpdata`` wrote the hash as ``{"value": ...}``, which
+    ``loaddata`` refused, even with ``--include-guarded``. Such fixtures
+    load now too; a raw password in place of a hash is still refused.
+    """
+    path = tmp_path / "users.json"
+    run("dumpdata", users.name, "--include-guarded", "-o", str(path))
+    before = stored_user_row()
+    document = json.loads(path.read_text(encoding="utf-8"))
+    run("flush", "--include-guarded")
+
+    run("loaddata", str(path), "--include-guarded")
+
+    assert document["tables"][0]["rows"][0]["password"] == STORED_HASH
+    assert stored_user_row() == before
+    (row,) = document["tables"][0]["rows"]
+    older = fixture_file(
+        tmp_path / "older.json", (users, [{**row, "password": {"value": STORED_HASH}}])
+    )
+    run("flush", "--include-guarded")
+    run("loaddata", str(older), "--include-guarded")
+    assert stored_user_row() == before
+    for refused in ("correct-horse-battery", {"value": "hunter2"}, 7):
+        raw = fixture_file(
+            tmp_path / "raw.json", (users, [{**row, "password": refused}])
+        )
+        with pytest.raises(CommandError, match=r"domainkit_users\.password holds a"):
+            run("loaddata", str(raw), "--include-guarded", "--replace")
+    assert stored_user_row() == before
+
+
+def test_the_trail_counts_what_a_load_replaced_not_what_it_planned(
+    stored_user: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row stored after the plan was counted is a replaced row in the record.
+
+    At 0.11 the record held the plan's count, made before the load's
+    transaction: here 0 replaced, of a row the load did replace.
+    """
+    path = fixture_file(tmp_path / "kinds.json", (kinds, [{"id": 5, "label": "x"}]))
+    plan = fixtures_module.plan_load
+
+    async def planned_then_stored(*args: Any) -> Any:  # noqa: ANN401 - the plan.
+        loads = await plan(*args)
+        async with connections.engine().begin() as connection:
+            await connection.execute(insert(kinds).values(id=5, label="meanwhile"))
+        await connections.close_all()
+        return loads
+
+    monkeypatch.setattr(fixtures_module, "plan_load", planned_then_stored)
+    printed = run("loaddata", str(path), "--replace", "--operator", "alice")
+
+    assert f"{path}: {kinds.name}: 1 row\n" in printed  # The plan saw none.
+    (loaded,) = operator_rows()
+    assert loaded["details"]["replaced"] == 1
+    assert loaded["details"]["tables"] == {kinds.name: {"rows": 1, "replaced": 1}}

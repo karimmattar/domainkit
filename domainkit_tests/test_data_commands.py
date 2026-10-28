@@ -223,8 +223,12 @@ def count(table: Table) -> int:
 
 
 def test_dumps_are_json_tables_parents_first(project: str) -> None:
-    """Every fixture table, in foreign key order, values as JSON; no state."""
-    document = json.loads(run("dumpdata"))
+    """Every fixture table, in foreign key order, values as JSON; no state.
+
+    Guarded tables included: content types come before the permissions that
+    reference them.
+    """
+    document = json.loads(run("dumpdata", "--include-guarded"))
 
     assert (document["format"], document["version"]) == ("domainkit.fixture", 1)
     names = [entry["table"] for entry in document["tables"]]

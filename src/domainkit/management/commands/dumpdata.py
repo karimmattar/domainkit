@@ -1,26 +1,35 @@
 """``dumpdata``: write a database's rows as a fixture (JSON, parents first)."""
 
 import asyncio
+import hashlib
 import os
 from argparse import ArgumentParser
 from pathlib import Path
 
+from sqlalchemy import Table
+
 from domainkit.conf import DEFAULT_DB_ALIAS
 from domainkit.db import fixtures
 from domainkit.management.base import BaseCommand, CommandError
+from domainkit.management.operators import require_named
 
 
 class Command(BaseCommand):
     """Print the fixture, or write it to a file.
 
     State is left out: the audit trail, tokens, the outbox, idempotency
-    keys, and tables marked ``info={"fixtures": False}``. A fixture can hold
-    personal data and password hashes; keep it as safe as the database.
-    ``--output`` writes a new file only its owner can read, and refuses a
-    path that exists, a symbolic link too.
+    keys, and tables marked ``info={"fixtures": False}``. So are guarded
+    tables (users and their password hashes, permissions, grants, dynamic
+    settings), unless ``--include-guarded``: named, one is refused; with no
+    names, they are left out and the command says so. A dump with guarded
+    tables is audited (``operator.dumpdata``), and needs a named operator
+    in staging and production. A fixture can hold personal data; keep it as
+    safe as the database. ``--output`` writes a new file only its owner can
+    read, and refuses a path that exists, a symbolic link too.
     """
 
     help = "Write rows as a JSON fixture: every table, or the tables or domains named."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept tables or domain labels, an alias, and an output file."""
@@ -42,6 +51,12 @@ class Command(BaseCommand):
         parser.add_argument(
             "--indent", type=int, default=2, help="spaces per level (default: 2)"
         )
+        parser.add_argument(
+            "--include-guarded",
+            action="store_true",
+            help="dump guarded tables too: users and their password hashes, "
+            "permissions, grants, dynamic settings, ...",
+        )
 
     async def handle(
         self,
@@ -50,24 +65,78 @@ class Command(BaseCommand):
         database: str,
         output: Path | None,
         indent: int,
+        include_guarded: bool,
         **options: object,
     ) -> None:
         """Read the tables and write their rows."""
         try:
-            tables = fixtures.select_tables(database, names)
-            document = await fixtures.dump(database, tables)
-            text = fixtures.to_json(document, indent=indent or None)
+            tables = self._tables(database, names, include_guarded=include_guarded)
+            if not include_guarded or not any(map(fixtures.guarded, tables)):
+                await self._write(database, tables, output, indent)
+                return
+            require_named(self.operator, "dumpdata --include-guarded")
+            async with self.recorded(
+                "dumpdata",
+                database=database,
+                output="stdout" if output is None else output.name,
+                include_guarded=True,
+            ) as details:
+                details.update(await self._write(database, tables, output, indent))
         except (fixtures.FixtureError, ValueError) as exc:
             raise CommandError(str(exc)) from None
+
+    def _tables(
+        self, database: str, names: list[str], *, include_guarded: bool
+    ) -> list[Table]:
+        """The tables to dump; guarded ones only if included.
+
+        Raises:
+            CommandError: A guarded table is named, alone or by its domain,
+                without ``--include-guarded``.
+        """
+        tables = fixtures.select_tables(database, names)
+        if include_guarded:
+            return tables
+        held = [table.name for table in tables if fixtures.guarded(table)]
+        if held and names:
+            raise CommandError(
+                f"Guarded tables ({', '.join(held)}) hold logins, password "
+                "hashes, permissions, and secrets. Nothing was written; repeat "
+                "with --include-guarded if that is what you mean."
+            )
+        if held:
+            self.stderr.write(
+                f"Left out guarded tables ({', '.join(held)}); "
+                "--include-guarded dumps them.\n"
+            )
+        return [table for table in tables if not fixtures.guarded(table)]
+
+    async def _write(
+        self, database: str, tables: list[Table], output: Path | None, indent: int
+    ) -> dict[str, object]:
+        """Dump ``tables`` to ``output``; what the record of it holds.
+
+        Table names, row counts, and the SHA-256 of the text written: no row.
+        """
+        document = await fixtures.dump(database, tables)
+        text = fixtures.to_json(document, indent=indent or None)
+        rows = {entry["table"]: len(entry["rows"]) for entry in document["tables"]}
         if output is None:
             self.write(text)
-            return
-        try:
-            await asyncio.to_thread(_write_new, output, f"{text}\n")
-        except FileExistsError:
-            raise CommandError(f"{output} exists; name a new file.") from None
-        rows = sum(len(entry["rows"]) for entry in document["tables"])
-        self.write(f"Wrote {rows} row(s) of {len(tables)} table(s) to {output}.")
+        else:
+            try:
+                await asyncio.to_thread(_write_new, output, f"{text}\n")
+            except FileExistsError:
+                raise CommandError(f"{output} exists; name a new file.") from None
+            self.write(
+                f"Wrote {sum(rows.values())} row(s) of {len(tables)} table(s) "
+                f"to {output}."
+            )
+        return {
+            "rows": sum(rows.values()),
+            "tables": rows,
+            "sha256": hashlib.sha256(f"{text}\n".encode()).hexdigest(),
+        }
 
 
 def _write_new(path: Path, text: str) -> None:
