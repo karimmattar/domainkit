@@ -618,47 +618,97 @@ GENERATE = [
         *("--field", "quantity:int", "--field", "at:datetime"),
     ],
     ["addevent", "catalog", "Category", "CategoryNoted", "--no-handler"],
-    ["makemigrations", "-m", "catalog"],
-    ["migrate"],
-    ["check"],
 ]
+"""Every generator, as ``python manage.py`` would get them."""
+MANAGE = [("makemigrations", "-m", "catalog"), ("migrate",), ("check",)]
+"""The commands that read the project's settings, run by its ``manage.py``."""
+
+
+STEP_TIMEOUT = 120
+"""Seconds one command may run: one that runs two minutes hangs, as a test does."""
+
+
+class Project:
+    """A new project's own interpreter: its commands, run in its directory."""
+
+    def __init__(self, root: Path) -> None:
+        """Run commands in ``root``, with this domainkit and none of our settings."""
+        self.root = root
+        self.env = {
+            **{
+                name: value
+                for name, value in os.environ.items()
+                if not name.startswith(("DOMAINKIT_", "SHOP_"))
+            },
+            "PYTHONPATH": str(Path(domainkit.__file__).parents[1]),
+        }
+
+    def start(self, *args: str) -> subprocess.Popen[str]:
+        """Start ``python args`` in the project."""
+        return subprocess.Popen(  # noqa: S603 - the test interpreter and generated files.
+            [sys.executable, *args],
+            cwd=self.root,
+            env=self.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+    @staticmethod
+    def finished(process: subprocess.Popen[str]) -> str:
+        """What ``process`` printed; fail unless it succeeded in time."""
+        try:
+            output, _ = process.communicate(timeout=STEP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            output, _ = process.communicate()
+            pytest.fail(f"{process.args} ran past {STEP_TIMEOUT} s:\n{output}")
+        assert process.returncode == 0, f"{process.args}:\n{output}"
+        return output
+
+
+@pytest.fixture
+def generated(
+    tmp_path: Path, make_package: MakePackage, monkeypatch: pytest.MonkeyPatch
+) -> Project:
+    """A new project with every generator run in it, migrated and checked.
+
+    The generators run here, as the other tests of this module run them,
+    and import what they write; ``manage.py`` runs the commands that need
+    the project's settings.
+    """
+    project = Project(tmp_path / "shop")
+    run("init", "shop", str(project.root))
+    monkeypatch.setattr(generators_module, "project_root", lambda: project.root)
+    monkeypatch.setattr(startdomain, "project_root", lambda: project.root)
+    monkeypatch.syspath_prepend(str(project.root / "src"))
+    for arguments in GENERATE:
+        run(*arguments)
+    for arguments in MANAGE:
+        project.finished(project.start("manage.py", *arguments))
+    return project
 
 
 @pytest.mark.skipif(
     find_spec("mypy") is None or find_spec("ruff") is None,
     reason="needs mypy and ruff",
 )
-def test_generated_code_passes_its_tests_ruff_and_mypy(tmp_path: Path) -> None:
-    """Every generator in a new project; then its tests, ruff, and mypy --strict."""
-    source = str(Path(domainkit.__file__).parents[1])
-    env = {
-        **{
-            name: value
-            for name, value in os.environ.items()
-            if not name.startswith(("DOMAINKIT_", "SHOP_"))
-        },
-        "PYTHONPATH": source,
-    }
+@pytest.mark.timeout(func_only=True)
+def test_generated_code_passes_its_tests_ruff_and_mypy(generated: Project) -> None:
+    """Every generator in a new project; then its tests, ruff, and mypy --strict.
 
-    def python(*args: str) -> str:
-        done = subprocess.run(  # noqa: S603 - the test interpreter and generated files.
-            [sys.executable, *args],
-            cwd=tmp_path / "shop",
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert done.returncode == 0, f"{args}:\n{done.stdout}{done.stderr}"
-        return done.stdout
-
-    run("init", "shop", str(tmp_path / "shop"))
-    for arguments in GENERATE:
-        python("manage.py", *arguments)
-    tested = python("-m", "pytest", "-q", "-p", "no:cacheprovider")
-    python("-m", "ruff", "check", "--no-cache", ".")
-    python("-m", "ruff", "format", "--check", "--no-cache", ".")
-    python("-m", "mypy", "--strict", "--no-incremental", "src", "tests")
+    Its tests, ruff, and mypy do not depend on each other: they run side by
+    side. Generating, each command in an interpreter of its own, and the
+    checks one after another, took 32 seconds on an idle machine, inside
+    the two minutes this test's body has, and ran past them on a loaded one.
+    """
+    checks = [
+        generated.start("-m", "pytest", "-q", "-p", "no:cacheprovider"),
+        generated.start("-m", "ruff", "check", "--no-cache", "."),
+        generated.start("-m", "ruff", "format", "--check", "--no-cache", "."),
+        generated.start("-m", "mypy", "--strict", "--no-incremental", "src", "tests"),
+    ]
+    tested, *_ = [generated.finished(process) for process in checks]
 
     assert " passed" in tested
     assert "failed" not in tested
