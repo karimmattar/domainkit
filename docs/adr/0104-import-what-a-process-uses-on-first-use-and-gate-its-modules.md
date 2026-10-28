@@ -52,7 +52,7 @@ The options:
 - **Names imported on first use.** `domainkit.http`'s names, messaging's
   worker names (`Worker`, `Attempt`, `current_attempt`, `Budget`), and
   `domainkit.__version__` are module attributes resolved when first read
-  (`domainkit.utils.module_loading.lazy_names`), then set on the module,
+  (a module `__getattr__` made by an internal helper, `lazy_names`), then set on the module,
   so later reads are plain attribute reads. Type checkers see them
   through imports under `TYPE_CHECKING`; `from domainkit.http import
   get_asgi_application` and every other public path still work, and
