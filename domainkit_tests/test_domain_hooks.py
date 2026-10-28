@@ -350,6 +350,11 @@ def test_the_base_methods_are_deprecated_too() -> None:
     """Each says what to use instead, to type checkers and when called."""
     for method, replacement in REPLACED_HOOKS.items():
         assert replacement in getattr(DomainConfig, method).__deprecated__
+    domain = DomainConfig("plain", __import__("domainkit_tests"))
+    with pytest.warns(DomainkitDeprecationWarning, match="on_check_application"):
+        assert domain.check_application(FastAPI()) == []
+    with pytest.warns(DomainkitDeprecationWarning, match="on_deployment_warnings"):
+        assert domain.deployment_warnings() == []
 
 
 @pytest.mark.usefixtures("twice_calls")
