@@ -171,7 +171,10 @@ async def test_test_tokens_are_refused_outside_the_test_settings(
 ) -> None:
     """Neither a new user's token nor a stored one's: no credentials (SEC-12a-2)."""
     stored = await create_user(superuser=True)
-    with override_settings(ENVIRONMENT=environment):
+    # Deployed settings refuse PostgreSQL without TLS; the refusal reads no
+    # database, so any accepted URL will do.
+    elsewhere = {"default": {"URL": IN_MEMORY}}
+    with override_settings(ENVIRONMENT=environment, DATABASES=elsewhere):
         with pytest.raises(ImproperlyConfigured) as for_stored:
             await token_for(stored)
         with pytest.raises(ImproperlyConfigured) as for_new:

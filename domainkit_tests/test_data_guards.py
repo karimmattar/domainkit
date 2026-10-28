@@ -34,8 +34,10 @@ from domainkit.contrib.auth.tables import (
     users,
 )
 from domainkit.contrib.contenttypes.tables import content_types
-from domainkit.db import connections
+from domainkit.db import ValueObjectType, connections
 from domainkit.db import fixtures as fixtures_module
+from domainkit.db.fixtures import FixtureError
+from domainkit.ddd import ValueObject
 from domainkit.management import CommandError, call_command
 from domainkit.management.commands.dumpdata import Command as DumpCommand
 from domainkit.management.commands.flush import Command as FlushCommand
@@ -672,3 +674,27 @@ def test_a_fixture_loads_only_hashes_the_hashers_would_make(
         "--include-guarded",
     )
     assert count(users) == 2
+
+
+class Sku(ValueObject):
+    """A project's single-field value object, which refuses lower case."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Upper case only."""
+        if not self.value.isupper():
+            raise ValueError("lower case")
+
+
+def test_a_value_object_column_loads_what_its_class_takes() -> None:
+    """By default the class decides, and a refusal does not say why or quote."""
+    column: Column[Sku] = Column("sku", ValueObjectType(Sku, String(10)))
+    Table("framework_test_skus", MetaData(), column)
+
+    assert fixtures_module._decoded(column, "AB") == Sku("AB")
+    with pytest.raises(FixtureError) as refused:
+        fixtures_module._decoded(column, "ab")
+    assert (
+        str(refused.value) == "framework_test_skus.sku holds a value that is not Sku."
+    )
