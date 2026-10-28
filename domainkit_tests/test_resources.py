@@ -1953,11 +1953,17 @@ def test_writable_declarations_are_checked(store: InMemoryGadgets) -> None:
         Gadget, write=True, include=["name", "label", "price", "made_at"]
     )
     patch = schema_for(Gadget, partial=True, include=["name"])
-    with pytest.raises(TypeError, match="never writes Gadget's id, version"):
+    never = (
+        r"^crud=True never writes Gadget's id, version; "
+        r"leave them out of writable=\.$"
+    )
+    with pytest.raises(TypeError, match=never):
         gadgets(store, crud=True, writable=["name", "id", "version"])
-    with pytest.raises(TypeError, match="or ALL_FIELDS, not 'all'"):
+    odd = r"^writable= is a list of field names, or ALL_FIELDS, not 'all'\.$"
+    with pytest.raises(TypeError, match=odd):
         gadgets(store, crud=True, writable="all")
-    with pytest.raises(TypeError, match="create= and update= are given"):
+    both = r"^writable= shapes derived schemas; create= and update= are given\.$"
+    with pytest.raises(TypeError, match=both):
         gadgets(store, crud=True, writable=["name"], create=whole, update=patch)
     with pytest.raises(TypeError, match="crud is off"):
         gadgets(store, writable=["name"])

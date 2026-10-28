@@ -119,7 +119,8 @@ class ProxyHeadersMiddleware:
 
     Only connections from ``TRUSTED_PROXIES`` are believed; ``"unix"``
     there believes the peer of a unix socket, which has no address
-    (``scope["client"]`` is None). The client is found by walking
+    (``scope["client"]`` is None under uvicorn, and has an empty host,
+    ``("", "0")``, under Granian). The client is found by walking
     ``X-Forwarded-For`` from the right, through trusted proxies only: it
     is the first hop that is not one, so a client cannot spoof its address
     by sending the header itself, and what it wrote to the left of its own
@@ -164,13 +165,14 @@ class ProxyHeadersMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Rewrite ``client`` and ``scheme`` for requests from a trusted proxy."""
         client = scope.get("client")
+        socket = client if client and client[0] else None  # None: a unix socket.
         if (
             self.enabled
             and scope["type"] in _PROXIED
-            and (self.trusted(client[0]) if client else self.unix)
+            and (self.trusted(socket[0]) if socket else self.unix)
         ):
             scope = dict(scope)
-            peer = scope[PEER] = client or UNIX_PEER
+            peer = scope[PEER] = socket or UNIX_PEER
             address, place, unreadable = self._walk(_values(scope, b"x-forwarded-for"))
             if address is not None:
                 scope["client"] = (address, 0)
@@ -499,7 +501,10 @@ class RequestContextMiddleware:
     The request id is the ``X-Request-ID`` a trusted proxy sent, the one
     ``ProxyHeadersMiddleware`` (before this one) believed, if it is up to
     128 letters, digits, ``.``, ``_``, ``:``, or ``-``; else a new one
-    (``new_request_id``). A caller's own header is dropped: it would name
+    (``new_request_id``). Of several lines, the last is read: the nearest
+    proxy's, as for the scheme, since a proxy that adds its line (HAProxy's
+    ``unique-id-header``, Apache's ``RequestHeader add``) leaves a
+    client's in front of it. A caller's own header is dropped: it would name
     the lines, reports, audit rows, and outgoing calls of its request.
     ``ACCEPT_REQUEST_ID`` takes any caller's (``"anyone"``) or nobody's
     (``"never"``) instead.
@@ -528,7 +533,7 @@ class RequestContextMiddleware:
             return
         websocket = scope["type"] == "websocket"
         supplied = (
-            _header(scope, _REQUEST_ID_NAME)
+            _last_header(scope, _REQUEST_ID_NAME)
             if self.ids_from_anyone or (self.ids_from_proxies and PEER in scope)
             else None
         )
@@ -681,6 +686,18 @@ def new_request_id() -> str:
     built, and no bits are spent on a version.
     """
     return os.urandom(16).hex()
+
+
+def _last_header(scope: Scope, name: bytes) -> str | None:
+    """The last ``name`` line of ``scope`` (lowercase): the nearest proxy's."""
+    headers = scope["headers"]
+    if type(headers) is not list:  # request_headers(), inline, as in _header.
+        headers = scope["headers"] = list(headers)
+    found: str | None = None
+    for key, value in headers:
+        if key == name:
+            found = value.decode("latin-1")
+    return found
 
 
 def _hostname(host_header: str) -> str:

@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, Final
 
 import pytest
@@ -17,13 +18,19 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.context import bind_request, current_request
+from domainkit.contrib.idempotency import middleware as idempotency
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.http import get_asgi_application
+from domainkit.http.access import AnonymousPrincipal
 from domainkit_tests import sample_routes
 
 ACTOR_HEADER: Final = "x-test-actor"
+VERDICT_HEADER: Final = "x-test-verdict"
+"""What an authentication middleware found: ``nobody``, ``someone``, or ``unsure``."""
+SCOPES_HEADER: Final = "x-test-scopes"
+"""The scopes the request's credentials are limited to, comma-separated."""
 NEEDS_CALLER: Final = {
     "detail": "An Idempotency-Key needs a caller this service knows: "
     "authenticate, or send the request without the key.",
@@ -49,6 +56,40 @@ class ActorFromHeader:
             await self.app(scope, receive, send)
 
 
+class Verdict:
+    """Put what an authentication middleware found in ``scope["user"]``.
+
+    ``nobody``: a principal who is not authenticated, as when no class
+    accepted the request's credentials; ``someone``: one who is, without an
+    actor; ``unsure``: an object that does not say. ``X-Test-Scopes`` puts
+    credentials limited to those scopes in ``scope["auth"]``.
+    """
+
+    PRINCIPALS: Final = {
+        "nobody": AnonymousPrincipal(),
+        "someone": SimpleNamespace(is_authenticated=True),
+        "unsure": object(),
+    }
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app``."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Set the principal, and the credentials, the request names."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        if (verdict := headers.get(VERDICT_HEADER)) is not None:
+            scope["user"] = self.PRINCIPALS[verdict]
+        if (limited := headers.get(SCOPES_HEADER)) is not None:
+            scope["auth"] = SimpleNamespace(
+                scopes=frozenset(filter(None, limited.split(",")))
+            )
+        await self.app(scope, receive, send)
+
+
 @contextmanager
 def keyed_app(database_url: str, **idempotency: object) -> Iterator[TestClient]:
     """The idempotency middleware, keys and payments on an empty database."""
@@ -64,6 +105,7 @@ def keyed_app(database_url: str, **idempotency: object) -> Iterator[TestClient]:
         MIDDLEWARE=[
             "domainkit.http.middleware.RequestContextMiddleware",
             "domainkit.http.middleware.RequestBodyLimitMiddleware",
+            f"{__name__}.Verdict",
             f"{__name__}.ActorFromHeader",
             "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware",
         ],
@@ -250,6 +292,83 @@ def test_refuse_counts_only_session_cookies(database_url: str, cookie: str) -> N
     assert ann.json().items() >= NEEDS_CALLER.items()
     assert bob.headers.get("Idempotent-Replayed") is None
     assert keys == []
+
+
+@pytest.mark.parametrize(
+    ("verdict", "named"),
+    [(None, True), ("someone", True), ("unsure", True), ("nobody", False)],
+)
+def test_a_header_names_no_caller_once_authentication_found_no_one(
+    database_url: str, verdict: str | None, named: bool
+) -> None:
+    """SEC-11a-1: ``Bearer null``, or a fixed ``X-API-Key``, after no one was found.
+
+    Ann and Bob behind one address both send it. Without an authentication
+    middleware, or once one accepted the request, the header names the
+    caller, as before; once one found no one, it names nobody, and the key
+    is refused rather than shared. A session cookie the project names
+    still names a caller.
+    """
+    found = {VERDICT_HEADER: verdict} if verdict else {}
+    with keyed_app(
+        database_url, ANONYMOUS="refuse", SESSION_COOKIES=("session",)
+    ) as client:
+        ann = post(client, {"item": "ann's"}, Authorization="Bearer null", **found)
+        key = post(client, {"item": "ann's"}, **{"X-API-Key": "gateway"}, **found)
+        cookie = post(client, {"item": "a"}, Cookie="session=s", **found)
+
+    for response in (ann, key):
+        assert response.status_code == (201 if named else 400)
+        assert (response.json().get("code") == NEEDS_CALLER["code"]) is not named
+    assert cookie.status_code == 201
+
+
+def test_credentials_limited_to_scopes_are_callers_apart(database_url: str) -> None:
+    """SEC-11a-2: a token limited to scopes never replays its user's other answers.
+
+    A login and a refreshed token, unlimited, share the user's keys; each
+    set of scopes, in any order, has keys of its own.
+    """
+    alice = {ACTOR_HEADER: "alice"}
+    with keyed_app(database_url, ANONYMOUS="refuse") as client:
+        login = post(client, {"n": 1}, **alice)
+        scoped = post(client, {"n": 1}, **alice, **{SCOPES_HEADER: "a.view,b.view"})
+        reordered = post(client, {"n": 1}, **alice, **{SCOPES_HEADER: "b.view,a.view"})
+        narrower = post(client, {"n": 1}, **alice, **{SCOPES_HEADER: "a.view"})
+        nothing = post(client, {"n": 1}, **alice, **{SCOPES_HEADER: ""})
+        refreshed = post(client, {"n": 1}, **alice)
+
+    assert [r.json()["count"] for r in (login, scoped, narrower, nothing)] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert reordered.headers["Idempotent-Replayed"] == "true"
+    assert reordered.json() == scoped.json()
+    assert refreshed.headers["Idempotent-Replayed"] == "true"
+    assert refreshed.json() == login.json()
+
+
+@pytest.mark.parametrize(
+    ("credentials", "caller"),
+    [
+        (None, "actor:alice"),
+        (object(), "actor:alice"),  # A provider's own, which carry no scopes.
+        (SimpleNamespace(scopes=None), "actor:alice"),
+        (
+            SimpleNamespace(scopes=frozenset({"b", "a"})),
+            f"actor:alice:scopes:{idempotency._hash('a', 'b')}",
+        ),
+    ],
+)
+def test_an_actors_caller_names_the_scopes_of_its_credentials(
+    credentials: object, caller: str
+) -> None:
+    """Unlimited credentials keep 0.10's caller, so their keys still match."""
+    scope = {"type": "http", "headers": [], "auth": credentials}
+
+    assert idempotency._caller_of("alice", scope, ()) == caller
 
 
 def test_session_cookie_names_are_bounded() -> None:

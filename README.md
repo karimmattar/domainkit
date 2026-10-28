@@ -107,7 +107,7 @@ and a server).
 
 ```bash
 python3.13 -m venv .venv && . .venv/bin/activate
-pip install "domainkit[postgres,sqlite,testing]"
+pip install "domainkit[postgres,redis,sqlite,testing]"
 domainkit init billingAPI billing     # the name sets the variable prefix: BILLING_API_*
 cd billing
 python manage.py check

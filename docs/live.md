@@ -240,6 +240,11 @@ async def order_socket(websocket: WebSocket) -> None:
   `has_object_permission` (with the event as the object) must both allow
   it, for the user as of the last re-check. `rule` is required: pass
   `AllowAny()` to send every event of those types to whoever may connect.
+- The user is read as `current_user` reads it. Credentials limited to
+  scopes need a route that declares a rule that checks scopes, a `Public`
+  one included ([Scopes on every route](auth/authentication.md#scopes-on-every-route)):
+  elsewhere `stream` answers `403`, and `forward` and `subscribe` refuse
+  the WebSocket or the subscription before any event.
 - Over Server-Sent Events, each event is named after its type, has its
   `event_id` as the id, and its fields as JSON data. Over a WebSocket, each
   is a JSON message, `{"event": ..., "id": ..., "data": {...}}`; what the

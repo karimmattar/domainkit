@@ -19,8 +19,10 @@ the transaction, it keeps SQLAlchemy's.
 With asyncpg outside PgBouncer, a connection whose statement a cancellation
 cut off (a deadline) is kept once it has settled, where SQLAlchemy would
 close it (``_keep_cut_off``): asyncpg has finished the cancelled exchange,
-the server's transaction is rolled back, and asyncpg's and SQLAlchemy's
-view of it agree, within ``SETTLE_TIMEOUT``. Otherwise it is closed.
+the server's transaction is rolled back, what the statement may have left
+in the session that outlives that is undone (``_UNDO_CUT``), and asyncpg's
+and SQLAlchemy's view of the transaction agree, within ``SETTLE_TIMEOUT``.
+Otherwise it is closed.
 
 Read-only sessions read in one of three ways (``Reads``). ``STATEMENTS``
 runs each statement on its own, without ``BEGIN`` or ``ROLLBACK``, on an
@@ -136,6 +138,20 @@ role, every setting (``default_transaction_read_only`` back to ``on``
 among them), cursors, session advisory locks, temporary tables, sequence
 values, and ``LISTEN``. ``UNLISTEN`` runs only if something listens, as a
 standby refuses it."""
+_UNDO_CUT: Final = (
+    "CLOSE ALL; SELECT pg_advisory_unlock_all(); DISCARD TEMP; "
+    "DO $$BEGIN PERFORM * FROM pg_listening_channels() LIMIT 1; "
+    "IF FOUND THEN UNLISTEN *; END IF; END$$"
+)
+"""What ``_settle`` undoes in the session of a connection whose statement a
+cancellation cut off, after the rollback and in the same round trip: what
+the statement may have left that its caller, cut off, never learned of and
+cannot undo, and that outlives a rollback: cursors, session advisory
+locks, temporary tables, and ``LISTEN``. Settings and the role stay, as
+after any statement (a project may set them when a connection is made),
+and so do asyncpg's prepared statements."""
+_ROLLBACK_UNDO_CUT: Final = f"ROLLBACK; {_UNDO_CUT}"
+"""``_UNDO_CUT`` after the rollback of the cut statement's transaction."""
 _DIRTY: Final = "domainkit_reads_dirty"
 """A ``STATEMENTS`` connection's ``info`` key: it ran something that may
 have changed its session since it was last reset."""
@@ -726,23 +742,23 @@ async def _settle(adapter: Any, driver: Any) -> bool:  # noqa: ANN401 - SQLAlche
 
     asyncpg begins each exchange by waiting for a cancelled one to end: the
     cancel request sent, and the server's answer to what it cancelled read
-    up to its ReadyForQuery. So the statement sent here returns only once
-    nothing is in flight, and its own ReadyForQuery tells whether the
-    server is in a transaction (``is_in_transaction``). Where asyncpg or
-    SQLAlchemy began one, that statement is ``ROLLBACK``; otherwise it is
-    the ping's prepared ``;``. Then the server must hold no transaction,
-    and asyncpg's and SQLAlchemy's trackers, which may still hold one
-    (asyncpg keeps a transaction whose ``BEGIN`` was cut off), are cleared
-    to agree. Anything else (an error, a transaction begun in SQL text, or
-    ``SETTLE_TIMEOUT`` running out) closes the connection: its state is not
-    known.
+    up to its ReadyForQuery. So the statements sent here, in one round trip,
+    run only once nothing is in flight, and their ReadyForQuery tells
+    whether the server is in a transaction (``is_in_transaction``). They
+    are ``ROLLBACK``, where asyncpg or SQLAlchemy began a transaction, then
+    ``_UNDO_CUT``: the cancel may have reached the server after the
+    statement had finished there, and what it left in the session (an
+    advisory lock, say) outlives the rollback. Then the server must hold no
+    transaction, and asyncpg's and SQLAlchemy's trackers, which may still
+    hold one (asyncpg keeps a transaction whose ``BEGIN`` was cut off), are
+    cleared to agree. Anything else (an error, a transaction begun in SQL
+    text, or ``SETTLE_TIMEOUT`` running out) closes the connection: its
+    state is not known.
     """
+    tracked = driver._top_xact is not None or adapter._transaction is not None
     try:
         async with asyncio.timeout(SETTLE_TIMEOUT):
-            if driver._top_xact is not None or adapter._transaction is not None:
-                await driver.execute("ROLLBACK")
-            else:
-                await driver.fetchrow(";")
+            await driver.execute(_ROLLBACK_UNDO_CUT if tracked else _UNDO_CUT)
     except Exception:  # noqa: BLE001 - whatever failed, its state is unknown.
         driver.terminate()
         return False

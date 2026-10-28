@@ -528,16 +528,20 @@ def test_a_nul_in_a_login_is_a_refused_value(api: Api) -> None:
 def test_tokens_are_never_cached_or_kept_for_replay(api: Api) -> None:
     """Login answers ``no-store``, so idempotency keeps no working token.
 
-    The client names itself with an API key: a key from a caller nothing
-    names is refused since 0.11, before the login runs.
+    A login's caller is not known yet: by default since 0.11 its key is
+    refused before the login runs, and a header authentication found no
+    one in (a fixed ``X-API-Key``) names no one either (SEC-11a-1). So this
+    test keys anonymous callers by their address, as ``"per-address"``
+    does.
     """
     create_user("alice")
     client = api()
-    keyed = {"Idempotency-Key": "login-1", "X-API-Key": "mobile-app"}
+    keyed = {"Idempotency-Key": "login-1"}
     body = {"username": "alice", "password": PASSWORD}
 
-    first = client.post("/auth/login", json=body, headers=keyed)
-    retry = client.post("/auth/login", json=body, headers=keyed)
+    with override_settings(IDEMPOTENCY={"ANONYMOUS": "per-address"}):
+        first = client.post("/auth/login", json=body, headers=keyed)
+        retry = client.post("/auth/login", json=body, headers=keyed)
 
     assert first.status_code == 200
     assert first.headers["Cache-Control"] == "no-store"

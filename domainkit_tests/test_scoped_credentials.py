@@ -275,10 +275,15 @@ def test_a_scoped_key_writes_where_no_scope_is_checked_under_warn(
         for path in UNCHECKED:
             response = client.post(f"/api{path}", headers=KEY)
             assert response.status_code == 200, path
-    assert warned == []
+        again = client.post(f"/api{UNCHECKED[0]}", headers=KEY)  # Held back.
+    access.scoped_log.flush()
+    assert (warned, again.status_code) == ([], 200)
     logged = [r.getMessage() for r in caplog.records if r.name == SECURITY_LOGGER]
-    assert len(logged) == len(UNCHECKED)
-    for path, line in zip(UNCHECKED, logged, strict=True):
+    *lines, held = logged
+    assert held == (
+        f"1 more scoped_credentials line(s) for POST /api{UNCHECKED[0]} were held back"
+    )
+    for path, line in zip(UNCHECKED, lines, strict=True):
         assert line == (
             f"Credentials limited to scopes called POST /api{path}, which declares "
             'no rule that checks scopes, served as SCOPED_CREDENTIALS is "warn": '

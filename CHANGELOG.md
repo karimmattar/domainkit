@@ -9,6 +9,14 @@ and a status.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-28
+
+A minor release: what 0.10 deprecated is removed or refused, two defaults
+it announced take effect, and some changes break. `docs/upgrading.md`
+lists each with its fix. Messaging and idempotency have a new table and a
+new column: run `makemigrations` and `migrate` before the new version
+serves requests, and `check --deploy` after upgrading.
+
 ### Added
 
 - `ACCEPT_REQUEST_ID` (`"proxies"`, `"anyone"`, or `"never"`; default
@@ -79,21 +87,25 @@ and a status.
   content types, object grants, dynamic settings), and `flush` keeps the
   guarded tables, tokens, TOTP authenticators, and recovery codes
   included, with the tables they reference, listed as `kept (guarded)`.
-  **To keep the old behaviour:** `--include-guarded` on either command
-  (DATA-12).
+  The object grants on the rows it deletes still go with them, so an
+  object given a flushed one's id starts without them. **To keep the old
+  behaviour:** `--include-guarded` on either command (DATA-12).
 - **Breaking:** in staging and production, `loaddata` and `flush` need
   an operator named by `--operator` or `DOMAINKIT_OPERATOR`, beside
   `--force`; the login name is refused. **Fix:** set
   `DOMAINKIT_OPERATOR` where they run (DATA-12; ADR 0070).
 - **Breaking:** a request's id is the `X-Request-ID` of a trusted proxy
-  (`TRUSTED_PROXIES`, `"unix"` for a unix socket's peer), else a new one;
-  a caller's own header is dropped. **Fix:** have the proxy set the
-  header (nginx: `proxy_set_header X-Request-ID $request_id;`). **To keep
-  the old behaviour:** `ACCEPT_REQUEST_ID = "anyone"` (WEB-13).
+  (`TRUSTED_PROXIES`, `"unix"` for a unix socket's peer), the last line
+  when there are several, else a new one; a caller's own header is
+  dropped. **Fix:** have the proxy set the header (nginx:
+  `proxy_set_header X-Request-ID $request_id;`; HAProxy:
+  `unique-id-header X-Request-ID`). **To keep the old behaviour:**
+  `ACCEPT_REQUEST_ID = "anyone"` (WEB-13).
 - `operator.loaddata` names each table with its rows and replaced rows,
   the SHA-256 of the fixture as read, and whether `--replace` and
   `--include-guarded` were given; `operator.flush` each table it emptied,
-  with its rows, and the tables it kept (DATA-12).
+  with its rows, the tables it kept, and the rows of kept tables it
+  deleted with their objects (`about`: object grants) (DATA-12).
 - **Breaking:** with `domainkit.contrib.auth` and an attempt rate set
   (`LOGIN_RATE`, `EMAIL_RATE`, `MFA.RATE`, `MFA.ADDRESS_RATE`), staging and
   production refuse to start, and `check` fails, while
@@ -214,6 +226,26 @@ and a status.
 - In memory, a failed savepoint keeps the events an aggregate it first
   loaded recorded inside it no more: they are dropped, as for aggregates
   loaded before it (FIN-78).
+- A request cut off at its deadline in the middle of a statement no longer
+  costs its database connection, with asyncpg outside PgBouncer: the
+  connection is kept once it has settled, within 2 seconds, where it was
+  closed and the next request opened another. Settling waits for asyncpg
+  to finish the cancelled exchange, rolls the transaction back at once
+  (its locks go with it), undoes in the same round trip what the cut
+  statement may have left in the session that a rollback does not end
+  (session advisory locks, cursors, temporary tables, `LISTEN`: the
+  statement may have finished before the cancel arrived), and clears
+  asyncpg's and SQLAlchemy's record of the transaction, so a deadline
+  that lands while `BEGIN` is answered cannot leave the
+  kept connection in a transaction nothing tracks, which would lose the
+  next unit of work's write. Code that goes on after the cut gets
+  `PendingRollbackError` until it rolls back, as before. Ten requests cut
+  off at a 1 s deadline opened and discarded ten connections; they now
+  open and discard none. A connection that does not settle in time, one
+  cut off under an anyio cancel scope, and those of other drivers are
+  closed, as before; with `POOL_PRE_PING = False`, the request after an
+  anyio scope's cut no longer gets the connection it closed ("connection
+  is closed") (CONC-08, SEC-10b-1).
 
 ### Security
 
@@ -225,16 +257,20 @@ and a status.
   the data, turning every second factor off. Loads now only add rows
   unless `--replace`; guarded tables (credentials, grants, second
   factors, content types, dynamic settings) are written or emptied only
-  with `--include-guarded`; staging and production need a named
-  operator; and the audit row names the tables, their counts, and the
-  fixture's SHA-256 (DATA-12).
+  with `--include-guarded`, though a flush deletes the object grants on
+  the rows it deletes, which a later object with the same id would
+  otherwise inherit; staging and production need a named operator; and
+  the audit row names the tables, their counts, and the fixture's
+  SHA-256 (DATA-12, SEC-11a-4).
 - Any caller chose its request's id with `X-Request-ID`: the id its log
   lines, error reports, audit rows, queued work, and outgoing calls
   carry. A client could take another request's id, or give one id to
   many requests. The header is now read only from trusted proxies, in
   the same bounded format (up to 128 letters, digits, `.`, `_`, `:`,
-  `-`); a caller's own is dropped and the request gets a new id, which
-  its answer returns (WEB-13).
+  `-`), and of several lines the last, the nearest proxy's: a proxy that
+  adds its own line (HAProxy, Apache, Caddy) leaves a client's in front
+  of it. A caller's own is dropped and the request gets a new id, which
+  its answer returns (WEB-13, SEC-11c-1).
 - JSON Web Tokens named no key, so `AUTH.JWT.SIGNING_KEY` could not be
   replaced without refusing every outstanding access token at once, and
   nothing could keep the old key to verify what it signed, for a while or
@@ -259,6 +295,52 @@ and a status.
   that cannot be counted are refused with `503 throttle_unavailable`; both
   are under **Changed**, with how to keep the old behaviour (AUTH-09; ADR
   0098).
+- Live events read the principal for their rule from `scope["user"]`, so
+  credentials limited to scopes were not held to the route's rules there.
+  On a route anyone may open (`Public`) whose rule sends each user the
+  events about them, a token limited to `shop.view_product`, which
+  `current_user` refuses on that route, was streamed its user's events,
+  over Server-Sent Events and WebSockets. `live_events` now reads the
+  principal as `current_user` does: on a route that declares no rule that
+  checks scopes, `stream` answers `403`, and `forward` and `subscribe`
+  refuse the WebSocket or the subscription, audited, before any event
+  (AUTH-01, SEC-11a-3).
+- Behind a proxy on a unix socket served by Granian (`granian --uds`),
+  `TRUSTED_PROXIES = ["unix"]` trusted nobody: Granian reports the
+  socket's peer with an empty host (`("", "0")`), where uvicorn reports
+  none, and only a missing peer was taken for the socket. `X-Forwarded-For`
+  was never read, so every caller was the client `""`: one rate-limit key
+  and one hold on refused passwords for all of them, and one anonymous
+  caller spent everyone's `RATE_LIMIT` and held back everyone's logins,
+  as before 0.9.1. The proxy's `X-Request-ID` was dropped too. An empty
+  host is now the unix socket's peer, trusted with `"unix"`, as uvicorn's
+  is; without a trusted proxy, rate limits, auth's throttles, the outgoing
+  call guard and idempotency count it as an unknown address, and audit
+  rows record no address for it (WEB-02, SEC-11c-2).
+- With `IDEMPOTENCY.ANONYMOUS = "refuse"`, any value in one of
+  `CREDENTIAL_HEADERS` named the caller of an `Idempotency-Key`, even one
+  that authenticated nobody: `Authorization: Bearer null`, which
+  logged-out browser applications send, or a gateway's fixed `X-API-Key`.
+  Two logged-out callers behind one address shared keys, and the second
+  was replayed the first's response. Once an authentication middleware
+  has found no one in the request (its principal in `scope["user"]` is not
+  authenticated), a credential header names no caller, and such a key is
+  answered 400 `idempotency_key_needs_caller`; the cookies of
+  `SESSION_COOKIES` still name one. A layer of a project's own that
+  authenticates by a header names the caller by binding the actor, or by
+  putting an authenticated principal in `scope["user"]` (DATA-09,
+  SEC-11a-1).
+- Idempotency keys were scoped to the actor whatever credentials the
+  request carried, and a retry is answered before the route's rules run.
+  A personal token limited to scopes that sent a key its user's login had
+  used was replayed that response, on a route that refuses the token
+  (`SCOPED_CREDENTIALS = "refuse"` answers it 403), or told that the key
+  was taken. Credentials limited to scopes are now a caller apart, one for
+  each set of scopes; a login and a refreshed token, which carry no limit,
+  share the user's keys as before. Kept responses still name the user, so
+  erasure and exports find them, and tombstones are scoped as their keys.
+  A retry, after the upgrade, of a keyed request that such a token sent
+  before it is a new request, and runs (AUTH-01, SEC-11a-2).
 
 ## [0.10.1] - 2026-10-26
 
@@ -3545,7 +3627,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/karimmattar/domainkit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/karimmattar/domainkit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/karimmattar/domainkit/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/karimmattar/domainkit/compare/v0.9.2...v0.9.3

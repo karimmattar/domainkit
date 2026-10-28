@@ -257,9 +257,9 @@ Each `BROKERS` entry:
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Responses from 400 up (client errors, refusals, and server errors), requests without a response, and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written, so only successes and redirects are sampled; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600): a request this slow or slower has its access line written whatever `ACCESS_LOG_SAMPLE_RATE` says. |
 | `ACCESS_LOG_PATH` | `"template"` | The path access lines, the request middleware's error lines, error reports, and the request context show: the matched route's template (`/accounts/{account_id}`), or `unmatched`; `"raw"` shows the path as sent, ids and tokens included ([runtime.md](runtime.md#paths-in-logs)). |
-| `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, and `"unix"` for the proxy on the other end of a unix socket (`uvicorn --uds`), which has no address. The client is found by walking `X-Forwarded-For` from the right, across every line of the header, through trusted proxies: it is the first hop that is not one, and nothing left of it is read. Hops may carry a port. A hop there that is no address (a proxy's `unknown`) counts the client as the last proxy passed, logged on `domainkit.security`. The scheme is the `PROXY_SCHEME_HEADER` value at the client's place from the right, or the right-most one when there are fewer. Empty: the socket peer is the client. |
+| `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, and `"unix"` for the proxy on the other end of a unix socket (`uvicorn --uds`, `granian --uds`), which has no address (uvicorn reports no client, Granian an empty host). The client is found by walking `X-Forwarded-For` from the right, across every line of the header, through trusted proxies: it is the first hop that is not one, and nothing left of it is read. Hops may carry a port. A hop there that is no address (a proxy's `unknown`) counts the client as the last proxy passed, logged on `domainkit.security`. The scheme is the `PROXY_SCHEME_HEADER` value at the client's place from the right, or the right-most one when there are fewer. Empty: the socket peer is the client. |
 | `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. `None` holds only where the server reads no proxy header itself: uvicorn, unless run with `--no-proxy-headers`, sets the scheme from `X-Forwarded-Proto` before domainkit sees the request, for every request from `FORWARDED_ALLOW_IPS` (`127.0.0.1` by default: a proxy on the same host). Granian reads none. |
-| `ACCEPT_REQUEST_ID` | `"proxies"` | Whose `X-Request-ID` names a request (in log lines, error reports, audit rows, and outgoing calls): `"proxies"`, only a trusted proxy's (`TRUSTED_PROXIES`, a unix socket's peer with `"unix"`), as `ProxyHeadersMiddleware` judged the connection; `"anyone"`, any caller's, as up to 0.10; `"never"`, nobody's. The proxy must set or overwrite the header (nginx: `proxy_set_header X-Request-ID $request_id;`), or a client's own passes through it: set `"never"` if it does not. Up to 128 letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or digit; another value, or none, gets a new id (32 hex digits). A caller's value is dropped, not logged ([operations.md](operations.md#request-ids)). |
+| `ACCEPT_REQUEST_ID` | `"proxies"` | Whose `X-Request-ID` names a request (in log lines, error reports, audit rows, and outgoing calls): `"proxies"`, only a trusted proxy's (`TRUSTED_PROXIES`, a unix socket's peer with `"unix"`), as `ProxyHeadersMiddleware` judged the connection; `"anyone"`, any caller's, as up to 0.10; `"never"`, nobody's. Of several lines, the last is read: the nearest proxy's. The proxy must set the header, overwriting a client's (nginx: `proxy_set_header X-Request-ID $request_id;`) or adding its line after it (HAProxy's `unique-id-header`), or a client's own passes through it: set `"never"` if it does neither. Up to 128 letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or digit; another value, or none, gets a new id (32 hex digits). A caller's value is dropped, not logged ([operations.md](operations.md#request-ids)). |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; password and code checks are refused meanwhile instead, in staging and production (`AUTH.THROTTLE_FAIL_CLOSED`), which also refuse to start with attempts counted in each process (`auth.E105`) ([auth.md](auth/logging-in.md#logging-in-and-out)). |
@@ -1131,8 +1131,9 @@ itself is recorded once it ends as `operator.<command>`
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. `operator.loaddata` names the fixture file,
 its SHA-256, and each table with its rows and how many it replaced;
-`operator.flush` each table emptied with its rows, and the tables kept;
-both say whether `--replace` and `--include-guarded` were given. Dry runs,
+`operator.flush` each table emptied with its rows, the tables kept, and
+the rows of kept tables it deleted with their objects (`about`: object
+grants); both say whether `--replace` and `--include-guarded` were given. Dry runs,
 listings, and refusals before the action (no `--force`) are not
 recorded. A successful action whose row cannot be written fails the
 command.
@@ -1169,7 +1170,12 @@ table with `info={"guarded": True}`. A row added there is a login or a
 privilege, so `loaddata` refuses a fixture that writes one unless
 `--include-guarded` is given, and `flush` keeps them, and every table they
 reference, unless it is given. The audit trail is never loaded or
-flushed, guarded or not.
+flushed, guarded or not. A kept table whose rows are about other tables'
+objects names the column of their model key (`info={"about_model":
+"content_type"}`, as object grants do): `flush` deletes its rows about
+the models whose tables it empties, so a grant goes with its object, as
+with a repository's `remove`, and an object given a flushed one's id
+starts bare.
 
 State is never dumped or loaded: the audit trail (a copy of its keys would
 outlive `auditforget`), tokens, the outbox, idempotency keys, webhook
@@ -1183,7 +1189,9 @@ directory cannot redirect it: delete an old fixture before dumping again.
 `flush` keeps append-only tables, those with `info={"append_only": True}`
 or, on PostgreSQL, triggers of their own, and those with
 `info={"flush": False}`: the audit trail survives it. It keeps guarded
-tables too, listed as `kept (guarded)`, unless `--include-guarded`.
+tables too, listed as `kept (guarded)`, unless `--include-guarded`, but
+not the object grants on the rows it deletes: the plan says `kept
+(guarded); delete N rows about emptied tables`.
 Serial ids start again on PostgreSQL.
 
 Each command works on one alias (`--database`, default `default`), as the

@@ -29,6 +29,12 @@ there is a login or a privilege, so ``loaddata`` refuses a fixture that
 writes one, and ``flush`` keeps them, with every table they reference,
 unless the operator says otherwise (``--include-guarded``).
 
+A kept table whose rows are about other tables' objects names the column
+that holds each row's model key (``info={"about_model": "content_type"}``,
+as object grants do): ``flush`` deletes its rows about the models whose
+tables it empties, in the same transaction. A grant goes with its object,
+so an object given a flushed one's id later starts without it.
+
 Every operation runs as the schema owner (``MIGRATION_URL`` when set), in
 one transaction per database.
 """
@@ -49,6 +55,7 @@ from sqlalchemy import (
     Table,
     delete,
     func,
+    inspect,
     select,
     text,
     tuple_,
@@ -59,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.types import TypeEngine
 
 from domainkit.db.connections import connections, create_owner_engine
+from domainkit.db.models import installed_models
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
 from domainkit.exceptions import DomainkitError
@@ -115,6 +123,8 @@ class FlushPlan:
     """Tables kept for good: append-only, triggered, or ``info={"flush": False}``."""
     guarded: list[str]
     """Tables kept unless guarded ones are included: guarded, or referenced by one."""
+    about: dict[str, int]
+    """Rows of kept tables (``about_model``) deleted with the objects they are about."""
 
 
 def to_json(document: Mapping[str, Any], *, indent: int | None) -> str:
@@ -279,9 +289,19 @@ async def flush_plan(database: str, *, include_guarded: bool) -> FlushPlan:
                 )
                 for table in emptied
             }
+            about = {
+                table.name: int(
+                    (
+                        await connection.execute(
+                            select(func.count()).select_from(table).where(condition)
+                        )
+                    ).scalar_one()
+                )
+                for table, condition in _about(emptied, held)
+            }
     finally:
         await engine.dispose()
-    return FlushPlan(counts, [t.name for t in kept], [t.name for t in held])
+    return FlushPlan(counts, [t.name for t in kept], [t.name for t in held], about)
 
 
 async def flush(database: str, *, include_guarded: bool) -> None:
@@ -289,14 +309,37 @@ async def flush(database: str, *, include_guarded: bool) -> None:
     engine = create_owner_engine(connections.config(database))
     try:
         async with engine.begin() as connection:
-            emptied, _, _ = await _flush_tables(
+            emptied, _, held = await _flush_tables(
                 connection, database, include_guarded=include_guarded
             )
+            for table, condition in _about(emptied, held):
+                await connection.execute(delete(table).where(condition))
             for table in reversed(emptied):
                 await connection.execute(delete(table))
             await _reset_sequences(connection, emptied)
     finally:
         await engine.dispose()
+
+
+def _about(
+    emptied: Sequence[Table], held: Sequence[Table]
+) -> list[tuple[Table, ColumnElement[bool]]]:
+    """Each kept table's rows about the objects of ``emptied`` (``about_model``).
+
+    A row names its object's model by its key (``billing.invoice``), as
+    ``domainkit.db.models`` gives it; the models of the emptied tables are
+    looked up among the installed ones.
+    """
+    keys = sorted(
+        ".".join(model.key)
+        for model in installed_models()
+        if inspect(model.cls).local_table in emptied
+    )
+    return [
+        (table, table.c[table.info["about_model"]].in_(keys))
+        for table in held
+        if keys and "about_model" in table.info
+    ]
 
 
 async def _flush_tables(

@@ -104,7 +104,9 @@ decided once a request,
 wherever the principal is first read: `Require`, `CurrentUser`,
 `AuthenticatedUser`, and `current_user` itself, so a dependency of your
 own that reads the principal through it, and a `Public` route that reads
-it, are held too. `CurrentUser` and `Require` record the refusal in the
+it, are held too; so are live events, which read it for their rule
+(`live_events.stream`, `forward`, and `subscribe`, before the first
+event). `CurrentUser` and `Require` record the refusal in the
 audit trail; a synchronous `current_user` refuses without the record, so
 a dependency of your own may `await check_scopes_bounded(request)` first.
 A middleware's principal read straight from `scope["user"]` is not

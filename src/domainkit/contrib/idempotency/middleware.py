@@ -37,10 +37,14 @@ Only commits through a unit of work are seen: call payment providers and
 other services from deferred tasks, not from the handler.
 
 Keys are scoped to the authenticated actor (set by
-``AuthenticationMiddleware``, which must come first). Without an actor,
-they are scoped to the client address and the request's credentials (the
-``CREDENTIAL_HEADERS``, hashed), so callers behind one address never share
-keys where the project authenticates on its own with one of those headers.
+``AuthenticationMiddleware``, which must come first), and to the scopes its
+credentials are limited to, if any: a token limited to scopes never shares
+its user's keys. Without an actor, they are scoped to the client address
+and the request's credentials (the ``CREDENTIAL_HEADERS``, hashed), so
+callers behind one address never share keys where the project
+authenticates on its own with one of those headers; once an
+authentication middleware found no one in the request, those headers name
+nobody.
 A key sent with neither is answered 400 (``ANONYMOUS = "refuse"``, the
 default); ``"per-address"`` shares it with every caller behind the address.
 List the middleware after ``RequestContextMiddleware`` and
@@ -551,9 +555,20 @@ def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
 def _caller_of(
     actor: str | None, scope: Scope, credential_headers: tuple[str, ...]
 ) -> str:
-    """``_caller``, for a request whose ``actor`` was read already."""
+    """``_caller``, for a request whose ``actor`` was read already.
+
+    An actor's credentials limited to scopes (``scope["auth"].scopes``) are
+    a caller apart, one per set of scopes: the middleware replays before
+    the route's rules run, so a token limited to scopes must never be
+    replayed what the actor's other credentials were answered (SEC-11a-2).
+    Credentials without a limit (a login, a refreshed token) share the
+    actor's keys, as before.
+    """
     if actor:
-        return f"actor:{actor}"
+        scopes: frozenset[str] | None = getattr(scope.get("auth"), "scopes", None)
+        if scopes is None:
+            return f"actor:{actor}"
+        return f"actor:{actor}:scopes:{_hash(*sorted(scopes))}"
     client = scope.get("client")
     headers = Headers(scope=scope)
     credentials = _hash(
@@ -564,7 +579,8 @@ def _caller_of(
             for part in (name, str(len(values)), *values)
         )
     )
-    return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
+    host = (client[0] or "unknown") if client else "unknown"  # "": a unix socket.
+    return f"anonymous:{host}:{credentials}"
 
 
 def _unnamed(scope: Scope, config: IdempotencySettings) -> bool:
@@ -573,14 +589,23 @@ def _unnamed(scope: Scope, config: IdempotencySettings) -> bool:
     Named: an actor, one of ``CREDENTIAL_HEADERS``, or, for ``cookie``, a
     cookie of ``SESSION_COOKIES``. Any other cookie (consent, locale) many
     callers send alike, so it scopes a key to them all (SEC-10b-7).
+
+    A credential header names a caller only if no authentication
+    middleware judged the request, or one accepted it: where one put a
+    principal who is not authenticated in ``scope["user"]``, the header
+    authenticated nobody. ``Authorization: Bearer null``, which logged-out
+    browser applications send, or a gateway's fixed ``X-API-Key``, is the
+    same for many callers (SEC-11a-1). ``SESSION_COOKIES`` are named by the
+    project, for a layer of its own, so they hold whatever it found.
     """
     request = current_request()
     if request is not None and request.actor:
         return False
     headers = Headers(scope=scope)
+    nobody = "user" in scope and not getattr(scope["user"], "is_authenticated", True)
     for name in config.CREDENTIAL_HEADERS:
         if name.lower() != "cookie":
-            if name in headers:
+            if not nobody and name in headers:
                 return False
         elif _session_cookie(headers.getlist("cookie"), config.SESSION_COOKIES):
             return False

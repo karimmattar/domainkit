@@ -39,7 +39,7 @@ PARTS = (
 """The getting-started path, in the order a newcomer reads it."""
 ENVIRONMENT_LINES = (
     "python3.13 -m venv .venv && . .venv/bin/activate",
-    'pip install "domainkit[postgres,sqlite,testing]"',
+    'pip install "domainkit[postgres,redis,sqlite,testing]"',
 )
 """Lines that build the environment this interpreter already is."""
 TYPED = {"PASSWORD": "correct-horse-battery", "CLERK_PASSWORD": "staple-lantern-oak"}
