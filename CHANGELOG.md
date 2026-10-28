@@ -9,6 +9,16 @@ and a status.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-28
+
+A minor release: a domain's hooks become typed registrations, checked when
+they register, and `If-Match` is held by the unit of work that changes the
+aggregate (the old ways still work, warned, until 0.13); a process imports
+what it uses on first use, and keyed bodies spill to disk; tools for a
+project's tests; a smaller first domain, and an image and CI for new
+projects. Some changes break: `docs/upgrading.md` lists each with its fix.
+No migration is added.
+
 ### Added
 
 - `domainkit.apps.hooks` declares the rest of a domain's hooks as points
@@ -3978,7 +3988,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/karimmattar/domainkit/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/karimmattar/domainkit/compare/v0.10.1...v0.11.0
