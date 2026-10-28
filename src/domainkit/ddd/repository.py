@@ -154,7 +154,8 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
 
     def __init__(self) -> None:
         """Start with no tracked aggregates."""
-        self._seen: dict[AggregateT, None] = {}
+        self._seen: dict[AggregateT, int] = {}
+        """Each tracked aggregate, with how many events it had when first seen."""
 
     @property
     def seen(self) -> tuple[AggregateT, ...]:
@@ -387,7 +388,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
 
     def _track(self, aggregate: AggregateT) -> None:
         """Remember ``aggregate`` so its events are collected on commit."""
-        self._seen.setdefault(aggregate)
+        self._seen.setdefault(aggregate, len(aggregate.pending_events))
 
     def _scope(
         self, criteria: CriteriaLike | None, *, include_deleted: bool
@@ -427,14 +428,17 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         )
 
     def _rewind(self, mark: Mark) -> None:
-        """Go back to ``mark``: forget what was tracked since, and its events."""
-        for aggregate in list(self._seen):
-            if aggregate not in mark.events:
-                del self._seen[aggregate]
-                continue
-            kept = aggregate.pull_events()[: mark.events[aggregate]]
+        """Go back to ``mark``: forget what was tracked since, and its events.
+
+        An aggregate first seen since keeps the events it had then: a
+        session hands the same object back if it is loaded again.
+        """
+        for aggregate, had in list(self._seen.items()):
+            kept = aggregate.pull_events()[: mark.events.get(aggregate, had)]
             for event in kept:
                 aggregate.record(event)
+            if aggregate not in mark.events:
+                del self._seen[aggregate]
         self._restore(mark.state)
 
     def _snapshot(self) -> object:
