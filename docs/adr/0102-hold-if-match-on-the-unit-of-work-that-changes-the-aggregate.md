@@ -1,6 +1,6 @@
 # 0102. Hold `If-Match` on the unit of work that changes the aggregate
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-28 (at the end)
 - Date: 2026-10-28
 - Amends: [0025](0025-resources-commands-and-expected-versions.md)
 
@@ -77,3 +77,28 @@ Two places could take the expectation explicitly:
 - Repositories still check, in the base `Repository`'s `find` and
   `filter`; a repository that overrides them must call `check_expected`
   with its `_expected`, as it had to call it before.
+
+## Amendment (2026-10-28, 0.12): each transaction checks again
+
+The security review of 0.12 found that an expectation, checked once, did
+not hold the unit of work's later transactions (SEC-12a-6, in code of
+[0025](0025-resources-commands-and-expected-versions.md) that this record
+kept). A service that read in one `async with uow:` block, called out, and
+wrote in the next loaded the aggregate afresh, at a version another client
+stored meanwhile, unchecked, and wrote over it: the lost update `If-Match`
+refuses. `Joined` gives every block after the first a transaction of its
+own, and a plain command route hands the service the unit of work itself.
+
+- Entering the unit of work renews its expectations: the first load of
+  the aggregate in each transaction is checked again against the
+  client's versions, and later loads in it are not (the use case's own
+  changes move the version on).
+- After a commit, the version this unit of work's own commit gave the
+  aggregate is accepted too: a later block may load what the service
+  wrote, but not what another client wrote.
+
+The other way, comparing each later load with the version the first one
+saw, would refuse the service's own committed change, or need the same
+record of what it committed. `checked` still means "loaded at least once",
+which the route asks after the service; the deprecated `expect_version`
+is unchanged.

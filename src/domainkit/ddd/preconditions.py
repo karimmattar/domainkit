@@ -14,8 +14,11 @@ A stale aggregate raises ``PreconditionFailed`` (412), and the unit of work
 rolls back; a commit before the aggregate was loaded at all is refused, as
 its version could not be checked. Optimistic locking (the ``version``
 column) still guards the commit against a change that lands after the
-check. Each expectation is checked once, when the aggregate is first
-loaded, since the use case's own changes move the version on afterwards.
+check. An expectation is checked when the aggregate is first loaded in
+each transaction of the unit of work, and not again in that transaction,
+since the use case's own changes move the version on afterwards. A
+version the unit of work's own commit produced is accepted from then on;
+any other, stored by another client between two transactions, is refused.
 
 The expectation belongs to that unit of work alone: another one the use
 case opens (an audit record, a lookup) neither checks nor needs it. Until
@@ -29,6 +32,7 @@ from collections.abc import Collection, Hashable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import Any, cast
 
 from domainkit.ddd.exceptions import PreconditionFailed
 from domainkit.deprecation import DomainkitDeprecationWarning
@@ -54,25 +58,48 @@ class Expectation:
     """The versions accepted; None accepts any (``If-Match: *``)."""
     checked: bool = False
     """Whether a repository has handed the aggregate out yet."""
+    held: bool = False
+    """Whether it was checked in the unit of work's current transaction."""
+
+    def matches(self, aggregate: object) -> bool:
+        """Whether ``aggregate`` is the one expected."""
+        return (
+            isinstance(aggregate, self.model)
+            and getattr(aggregate, "id", None) == self.id
+        )
 
     def check(self, aggregate: object) -> None:
         """Check ``aggregate`` if it is the one expected and not checked yet.
 
+        It is checked once per transaction: the first load in each one the
+        unit of work begins (``renew``) is checked again, so a change
+        another client stored between two transactions is refused.
+
         Raises:
             PreconditionFailed: Its version is not one of ``versions``.
         """
-        if (
-            self.checked
-            or not isinstance(aggregate, self.model)
-            or getattr(aggregate, "id", None) != self.id
-        ):
+        if self.held or not self.matches(aggregate):
             return
-        self.checked = True
+        self.held = self.checked = True
         version = getattr(aggregate, "version", None)
         if self.versions is not None and version not in self.versions:
             raise PreconditionFailed(
                 "This was changed since you read it; read it again before changing it."
             )
+
+    def renew(self) -> None:
+        """A new transaction begins: its first load is checked again."""
+        self.held = False
+
+    def accept(self, aggregate: object) -> None:
+        """Accept the version ``aggregate`` has now, if it is the one expected.
+
+        The unit of work calls it once it committed: the version its own
+        change produced is no other client's, so a later transaction may
+        load it.
+        """
+        if self.versions is not None and self.matches(aggregate):
+            self.versions = self.versions | {cast(Any, aggregate).version}
 
 
 _expected: ContextVar[tuple[Expectation, ...]] = ContextVar(
