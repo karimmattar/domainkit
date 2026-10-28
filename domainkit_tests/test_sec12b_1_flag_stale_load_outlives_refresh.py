@@ -35,7 +35,7 @@ def test_a_flag_turned_off_is_not_served_on_after_its_change_lands(
     """Replica 1 misses and reads ``kill`` on; it is turned off and refreshed."""
     shared, loads = replicas
 
-    async def scenario() -> bool:
+    async def scenario() -> object:
         await set_everyone("kill", on=True)
         loads.held = True
         reader = shared.run(1, current())  # A miss: load 0 reads "on", held.
