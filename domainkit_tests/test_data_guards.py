@@ -607,6 +607,8 @@ def test_a_load_returns_what_it_wrote_and_holds_its_tables(
     assert stored_user_row()["first_name"] == "Mal"
     if seen:  # PostgreSQL.
         assert seen == [{users.name, kinds.name}]
+    # A fixture of no tables locks nothing and loads nothing.
+    assert asyncio.run(fixtures_module.load("default", [], replace=False)) == []
 
 
 def test_password_hash_columns_keep_their_length_and_their_nulls() -> None:
