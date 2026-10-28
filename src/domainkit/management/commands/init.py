@@ -100,7 +100,7 @@ def _next_steps(name: str, target: Path) -> str:
             f"Created {name} in {target}.",
             "Next steps:",
             f"  cd {target.relative_to(Path.cwd(), walk_up=True)}",
-            '  pip install "domainkit[postgres,sqlite,testing]"   # or: uv sync',
+            '  pip install "domainkit[postgres,redis,sqlite,testing]"   # or: uv sync',
             "  python manage.py check",
             '  python manage.py makemigrations -m "auth"',
             "  python manage.py migrate",

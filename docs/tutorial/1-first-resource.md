@@ -10,11 +10,12 @@ You need Python 3.13 or 3.14, and `curl`.
 
 ```bash
 python3.13 -m venv .venv && . .venv/bin/activate
-pip install "domainkit[postgres,sqlite,testing]"
+pip install "domainkit[postgres,redis,sqlite,testing]"
 ```
 
 `sqlite` lets the project run without a database server; `postgres` is for
-production, and `testing` brings the pytest plugin.
+production, `redis` counts its rate limits and login attempts there, and
+`testing` brings the pytest plugin.
 
 ## Create a project
 

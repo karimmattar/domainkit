@@ -83,7 +83,7 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
         f"Created billingAPI in {project}.\n"
         "Next steps:\n"
         f"  cd {project.relative_to(Path.cwd(), walk_up=True)}\n"
-        '  pip install "domainkit[postgres,sqlite,testing]"   # or: uv sync\n'
+        '  pip install "domainkit[postgres,redis,sqlite,testing]"   # or: uv sync\n'
         "  python manage.py check\n"
         '  python manage.py makemigrations -m "auth"\n'
         "  python manage.py migrate\n"
