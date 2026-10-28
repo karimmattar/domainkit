@@ -1314,3 +1314,18 @@ def test_a_started_module_is_edited_once_and_kept_where_it_is(notes: Shop) -> No
         domain.edit("domain/events.py", tests=True)
     with pytest.raises(CommandError, match="does not exist"):
         domain.edit("domain/policies.py")
+
+
+def test_the_smaller_domains_next_steps_grant_what_it_serves(
+    make_package: MakePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It deletes nothing, so ``startdomain --minimal`` asks for no ``delete_``."""
+    make_package("gen", {})
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+
+    output = run("startdomain", "notes", aggregate="Note", parent="gen", minimal=True)
+
+    assert (
+        "  5. Grant notes.view_note (and add_, change_) to the users or groups "
+        "that need them; superusers have them.\n"
+    ) in output

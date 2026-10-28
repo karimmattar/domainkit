@@ -396,7 +396,11 @@ def test_reading_needs_no_migrations_directory(migration_project: Path) -> None:
 
 def test_migration_commands(migration_project: Path) -> None:
     """makemigrations, migrate, and --check work together."""
-    with pytest.raises(CommandError, match="have no migration"):
+    with pytest.raises(
+        CommandError,
+        match=r"^Model changes have no migration: default: New upgrade operations "
+        r"detected: \[\('add_table', Table\('framework_test_notes'",
+    ):
         run("makemigrations", "--check")
     assert run("makemigrations", "-m", "notes").startswith("Created ")
     with pytest.raises(CommandError, match=r"Run 'manage\.py migrate' first"):
