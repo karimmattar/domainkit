@@ -43,3 +43,21 @@ def test_a_password_in_the_query_is_masked(url: str) -> None:
     said = str(refused.value)
     assert "cannot be reached" in said
     assert SECRET not in said, said
+
+
+def test_a_password_with_an_unencoded_at_sign_is_masked() -> None:
+    """``p@ss`` written as it is: the URL's host becomes ``ss@db``, then printed.
+
+    The URL cannot be reached (its host is wrong), the very case the one
+    line is for, and it names the end of the password.
+    """
+    url = "postgresql+asyncpg://app:Hunter2@Tail-of-the-pw@127.0.0.1:1/app"
+    with (
+        override_settings(DATABASES={"default": {"URL": url}}),
+        pytest.raises(CommandError) as refused,
+    ):
+        run("showmigrations")
+
+    said = str(refused.value)
+    assert "cannot be reached" in said
+    assert "Tail-of-the-pw" not in said, said
