@@ -190,6 +190,9 @@ class UnitOfWork(ABC):
     ``_named_locks``: ``repositories()`` walks the instance's attributes."""
     _named_locks: bool = False
     """Whether this unit of work holds named locks in memory (``lock``)."""
+    _expected: list[Expectation] | tuple[()] = ()
+    """What ``expect`` holds the repositories to. Set on the instance only
+    while it holds something, for the same reason as ``_commits``."""
 
     def __init__(
         self, *, events: EventBus | None = None, readonly: bool | None = None
@@ -203,7 +206,6 @@ class UnitOfWork(ABC):
             self.readonly = readonly
         self._deferred: list[DeferredTask] = []
         self._savepoints = 0
-        self._expected: list[Expectation] = []
         self.queued_tasks: list[DeferredTask] = []
         """Deferred tasks of committed work (in memory, nothing runs them)."""
 
@@ -246,12 +248,17 @@ class UnitOfWork(ABC):
                 aggregate at another version.
         """
         expected = expectation(model, id_, versions)
-        self._expected.append(expected)
+        held = self._expected
+        if not isinstance(held, list):
+            held = self._expected = []
+        held.append(expected)
         self._lend_expectations()
         try:
             yield expected
         finally:
-            self._expected.remove(expected)
+            held.remove(expected)
+            if not held:
+                del self._expected  # Back to the class's: none.
 
     def _lend_expectations(self) -> None:
         """Give each repository this unit of work's expectations, to check loads."""

@@ -423,6 +423,9 @@ async def test_expectations_are_checked_once_when_first_loaded() -> None:
     repository = uow.orders
 
     with uow.expect(Order, order.id, {3}) as expected:
+        with uow.expect(Line, order.id, None):  # Nested: both held, then one.
+            assert len(uow._expected) == 2
+        assert uow._expected == [expected]
         assert not expected.checked
         await repository.get(other.id)
         assert not expected.checked
@@ -443,7 +446,7 @@ async def test_expectations_are_checked_once_when_first_loaded() -> None:
     assert stale.value.code == "precondition_failed"
     assert anything.checked
     assert not unrelated.checked
-    assert uow._expected == []  # Each block's expectation ends with it.
+    assert "_expected" not in vars(uow)  # Each block's expectation ends with it.
     check_expected(order)  # Outside any expectation: nothing to check.
 
 
