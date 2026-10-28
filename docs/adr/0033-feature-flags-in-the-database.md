@@ -1,6 +1,6 @@
 # 0033. Keep feature flags and dynamic settings in the database, cached whole
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-28 (at the end)
 - Date: 2026-10-19
 
 ## Context
@@ -47,3 +47,39 @@ settings, which stays small in practice. Values of dynamic settings are
 audited in clear, so they must never hold secrets. Rollouts are by user:
 without a user there is no stable bucket, so anonymous rollouts would need
 a key of their own, which this does not offer.
+
+## Amendment (2026-10-28, 0.12): a change replaces the cached entry instead of deleting it
+
+PERF-17 of the 0.9.0 audit: a change deleted the one entry every process
+reads, so with a Redis cache the next read missed in every process at
+once, and each read the tables. Twenty replicas, each a `Cache` of its
+own over one store, reading as a change landed: 20 loads.
+
+The options:
+
+- A versioned entry key (`domainkit.flags:<version>`) and a counter:
+  a change bumps the counter, and readers read it first. Every flag
+  check then costs a second round trip, to save one load per replica per
+  change, and the replicas still all miss the new key at once.
+- The process that made the change loads the flags and replaces the
+  entry, so readers are served the old one until the new one lands.
+  Two changes at once could lose one: a reload that read before the
+  other committed may store after the other's reload.
+
+Decision: the second, with a counter. A change increments
+`domainkit.flags.version` in `FLAGS.CACHE`, then loads the flags and
+replaces the entry with `Cache.refresh`, which stores as `get_or_set`
+does (its early recomputation still applies) and joins no computation
+already running. If the counter moved meanwhile, another change may have
+been overwritten, so it loads again; after three such races, or a load
+that fails, it deletes the entry, as before, and the next read loads.
+Measured the same way: one load, the writer's; every replica was served
+the old rules until the new ones landed, then the new ones. Two racing
+changes, the first reading before the second committed and storing after
+it: both kept, in three loads.
+
+What it does not change: processes with their own memory cache see a
+change within `CACHE_TTL`, as do changes made behind the store's back,
+and a reader's load that began before a change committed and stored after
+its reload (a race the deletion had too).
+

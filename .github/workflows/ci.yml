@@ -432,7 +432,9 @@ jobs:
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
-      - run: poetry sync --extras "postgres sqlite uvloop"
+      # Every extra, as make install: the modules each rung loads depend on
+      # what is installed (prometheus_client, opentelemetry), and are gated.
+      - run: poetry sync --all-extras
       - run: >-
           poetry run python -m benchmarks --strict --json ladder.json
           ${{ github.event_name == 'pull_request' && '--baseline base/src' || '' }}

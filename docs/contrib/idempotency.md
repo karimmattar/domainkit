@@ -117,6 +117,20 @@ middleware, so the key cannot keep it: it is treated as a response the
 key does not keep, and a retry runs the request again, or gets the 409
 after a commit.
 
+The middleware reads a keyed request's whole body before it runs, since
+the key's fingerprint covers it, and keeps what a response sends until it
+is stored. Both are held in memory up to `SPOOL_BYTES` (1 MiB), past it in
+a temporary file, unlinked from the start, written and read on a thread,
+and closed when the request ends; a body is fingerprinted as it arrives
+when `Content-Length` gives its length. A body held in memory reaches the
+application in one message; one from a file, in 64 KiB parts. An 8 MiB
+keyed body held 16 MiB in 0.11, and holds about 1 MiB; a kept response is
+held once, as the value stored. Files go to the temporary directory
+(`TMPDIR`), so a body past the threshold reaches the disk unless that is
+a `tmpfs`: set `SPOOL_BYTES` at or above your limits to keep them in
+memory. Where no temporary file can be made, the body stays in memory,
+with a warning ([ADR 0105](../adr/0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md)).
+
 The keys' database decides when a lease or a key runs out. On PostgreSQL,
 the claim, the take-over and the purge compare and write
 `statement_timestamp()`, as the outbox does, so hosts whose clocks

@@ -9,6 +9,63 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `IDEMPOTENCY.SPOOL_BYTES` (default 1 MiB, at most 1 GiB): how much of a
+  keyed request's body, and of a response being kept, the idempotency
+  middleware holds in memory; past it, the rest goes to a temporary file,
+  unlinked from the start and closed when the request ends. With
+  `MAX_REQUEST_BODY_SIZE` and `MAX_RESPONSE_BYTES` at their defaults,
+  nothing reaches the disk (PERF-11; ADR 0105).
+- `Cache.refresh(key, factory, ttl=...)` computes a value now and stores it
+  in place of the cached one, as `get_or_set` stores it: callers are
+  served the old value until it lands, so none of them misses, in any
+  process sharing the cache. A computation already running for the key is
+  not joined (PERF-17).
+
+### Changed
+
+- `import domainkit.http` loads 57 modules, not 679: its names, messaging's
+  worker names, and `domainkit.__version__` are imported when first read,
+  from the same paths. A served project no longer loads the ledgers, the
+  brokers, or messaging's worker and dispatcher unless it uses them: the
+  `init` project's `config.asgi` imports 806 modules, not 824 (PERF-15;
+  ADR 0104).
+- A keyed request's body is fingerprinted as it arrives when
+  `Content-Length` gives its length, and a body or kept response past
+  `IDEMPOTENCY.SPOOL_BYTES` is kept in a temporary file: an 8 MiB keyed
+  body held 16 MiB in the middleware, and holds 1.1 MiB; 32 MiB each way
+  held 96 MiB, and holds 32. Fingerprints, replays, leases and tombstones
+  are as before. A body held in memory reaches the application in one
+  message, as before; one from a file comes in 64 KiB parts, as a server
+  sends a large body. Without a writable temporary directory the body
+  stays in memory, with a warning (PERF-11; ADR 0105).
+- A change of a flag or dynamic setting replaces the flags' cache entry,
+  loaded again by the process that made it, instead of deleting it: with a
+  Redis cache, 20 replicas reading as a change lands read the database
+  once, not 20 times, and every process still sees the change at once.
+  Changes that race each other are counted in the cache
+  (`domainkit.flags.version`), so neither is lost (PERF-17; ADR 0033's
+  amendment).
+- The benchmark ladder counts the modules each rung's process holds, and
+  CI gates them (`benchmarks/budgets.toml`, within 2); its `bench` job
+  installs every extra, as `make install` does, so the budgets hold for
+  both (PERF-15; ADR 0104).
+- CI's `newest` job runs the proof of settling cut-off connections
+  (`test_db_cut_off.py`, `test_sec11b_2_cut_off_session_lock.py`) against
+  PostgreSQL on the newest asyncpg and SQLAlchemy, with settling on for
+  releases `_PROVEN` does not name yet; the suite then says whether to
+  widen `_PROVEN` (CONC-08; ADR 0048's amendment).
+
+### Fixed
+
+- Connections a WebSocket middleware shared by loops on several threads
+  (3.14t) accepted at once took their message-counter keys from a shared
+  `itertools.count` without a lock. CPython 3.14.6t gave no duplicates in
+  1.6 million draws on 8 threads, but nothing documents that, and two
+  connections with one key would share one count; the key is taken under
+  a lock (CONC-09).
+
 ## [0.11.1] - 2026-10-28
 
 A patch release: one fix of reads on their own, and the contributors'

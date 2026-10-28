@@ -1,6 +1,6 @@
 # 0048. Give every request a deadline, answer 503 when it passes, and pass it on
 
-- Status: Accepted; amended 2026-10-25 and 2026-10-26 (at the end)
+- Status: Accepted; amended 2026-10-25, 2026-10-26 and 2026-10-28 (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -255,3 +255,48 @@ Rejected:
 - asyncpg's private wait for the cancelled exchange: settling needs a
   round trip anyway, to roll back and undo the session state, and the
   server's answer to it, not asyncpg's protocol, is what proves the state.
+
+## Amendment (2026-10-28, 0.12): each new asyncpg and SQLAlchemy is proven in CI before `_PROVEN` admits it
+
+The 0.11 amendment runs settling only on the releases it was proven on,
+`_PROVEN` in `domainkit/db/connections.py` (asyncpg 0.32, SQLAlchemy
+2.1), and a test failed on any other. Nothing re-ran the proof on a new
+release: the `newest` job, which installs the newest releases the ranges
+allow (asyncpg below 1, SQLAlchemy below 3, ADR 0075), had no PostgreSQL,
+so the cut-off cases skipped there, and the one test that failed said
+only that the release was not proven.
+
+Policy for widening `_PROVEN`:
+
+- **The proof** is every case of `test_db_cut_off.py` and
+  `test_sec11b_2_cut_off_session_lock.py`, against PostgreSQL with
+  asyncpg: the cut `BEGIN` and statement, under asyncio and an anyio
+  scope, the transaction that refuses to go on, the read on its own whose
+  session is reset, the session state undone (an advisory lock, `LISTEN`,
+  a temporary table), the settle that takes too long, and what three cut
+  requests cost. With a release `_PROVEN` does not name, the cases run
+  with settling on (their `settling` fixture), so they prove or disprove
+  it on that release; with a named one they run as they always did.
+- **Where it runs**: the `newest` job has a PostgreSQL service, and runs
+  those two modules against it before its suite, a skip failing the step.
+  When asyncpg 0.33, a SQLAlchemy 2.2, or any release past `_PROVEN`
+  ships, the next run installs it and runs the proof on it.
+- **What decides**: the suite's
+  `test_the_installed_asyncpg_and_sqlalchemy_are_releases_proven` then
+  fails, naming the releases and saying what to do. If the proof passed,
+  widen `_PROVEN` to that minor (`(0, 32), (0, 34)` for asyncpg 0.33),
+  add the release to `test_releases_are_proven_by_major_and_minor`, and
+  amend this record. If a case failed, leave `_PROVEN`: such a connection
+  is discarded on that release, as before, until settling is fixed for it.
+  Until then a project on that release loses nothing it had: only the
+  connection a cut statement costs.
+- The private state settling reads (`Connection._top_xact`,
+  `AsyncAdapt_asyncpg_connection._transaction`,
+  `RootTransaction._deactivate_from_connection`) is checked by the same
+  test, on every run.
+
+Checked by narrowing `_PROVEN` locally so the installed asyncpg 0.32 was
+not named: the 27 cases of both modules passed with settling on, and only
+the installed-releases test (with its message) and the three rows of the
+range table that name 0.32 failed.
+

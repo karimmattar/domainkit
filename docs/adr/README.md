@@ -50,7 +50,7 @@ statuses, and the amendments they name.
 | [0030](0030-encrypt-totp-secrets-under-a-derived-key.md) | Encrypt TOTP secrets with AES-GCM under a key derived from `SECRET_KEY` | Accepted |
 | [0031](0031-operation-ids-from-route-names.md) | Operation ids from route names, for new projects | Accepted |
 | [0032](0032-problem-details-as-an-error-format.md) | Offer RFC 9457 problem details as an error format | Accepted |
-| [0033](0033-feature-flags-in-the-database.md) | Keep feature flags and dynamic settings in the database, cached whole | Accepted |
+| [0033](0033-feature-flags-in-the-database.md) | Keep feature flags and dynamic settings in the database, cached whole | Accepted; amended 2026-10-28 (at the end) |
 | [0034](0034-cron-schedules-by-wall-clock-time.md) | Run cron schedules by wall-clock time, queued ahead of each run | Accepted |
 | [0035](0035-task-policies-priorities-chains-in-the-outbox.md) | Keep per-task policies, priorities, chains, and rates in the outbox | Accepted |
 | [0036](0036-webhooks-through-the-outbox.md) | Send webhooks through the outbox, signed, to checked addresses only | Accepted |
@@ -65,7 +65,7 @@ statuses, and the amendments they name.
 | [0045](0045-own-background-tasks-per-loop.md) | Own background tasks per event loop, started in clean contexts | Accepted; amended 2026-10-25 (at the end) |
 | [0046](0046-one-shutdown-budget-in-phases.md) | Shut down in phases within one budget | Accepted; amended 2026-10-25 and 2026-10-26 (at the end) |
 | [0047](0047-seal-from-a-high-water-mark.md) | Seal the audit trail from a high-water mark, with a short late window | Accepted; amended 2026-10-21, 2026-10-25 and 2026-10-26 (at the end) |
-| [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted; amended 2026-10-25 and 2026-10-26 (at the end) |
+| [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted; amended 2026-10-25, 2026-10-26 and 2026-10-28 (at the end) |
 | [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted; amended 2026-10-21 and 2026-10-25 (at the end) |
 | [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted; amended 2026-10-21 (at the end) |
 | [0051](0051-logs-and-error-reports-leave-the-loop.md) | Write logs and error reports from threads, dropping what does not fit | Accepted; amended 2026-10-21 and 2026-10-26 (at the end) |
@@ -81,7 +81,7 @@ statuses, and the amendments they name.
 | [0061](0061-read-without-a-transaction-and-ping-once.md) | Read without a transaction where it is safe, and ping a connection once | Accepted; amended in place 2026-10-22 |
 | [0062](0062-claim-idempotency-keys-in-one-statement.md) | Claim idempotency keys in one statement, and commit the framework's short writes as they run | Accepted; amended in place 2026-10-22, and 2026-10-25 and 2026-10-26 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) and [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) |
 | [0063](0063-encode-json-with-pydantic-and-sample-the-access-log.md) | Encode JSON with pydantic where the bytes stay the same, and let projects sample the access log | Accepted |
-| [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted |
+| [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted; amended by [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) |
 | [0065](0065-upgrade-fastapi-sqlalchemy-asyncpg-behind-the-ladder.md) | Upgrade FastAPI, SQLAlchemy, and asyncpg behind the ladder, with FastAPI's telemetry off | Accepted; amended 2026-10-25 (at the end) |
 | [0066](0066-write-amounts-as-fixed-point-text.md) | Write amounts as fixed-point text | Accepted |
 | [0068](0068-count-failed-attempts-and-hold-back-only-guesses.md) | Count failed attempts, and hold back only what can be guessed | Accepted; amended 2026-10-25 (at the end); amended by [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) and [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) |
@@ -110,6 +110,8 @@ statuses, and the amendments they name.
 | [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) | Share the attempt throttles, and fail closed, where deployed | Accepted |
 | [0099](0099-take-request-ids-from-trusted-proxies-only.md) | Take request ids from trusted proxies only, and drop a caller's own | Accepted |
 | [0100](0100-guard-credentials-and-grants-from-loaddata-and-flush.md) | Guard credentials and grants from `loaddata` and `flush`, and load new rows only | Accepted |
+| [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) | Import what a process uses on first use, and gate the modules each rung loads | Accepted |
+| [0105](0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md) | Fingerprint keyed bodies as they arrive, and spool them past a threshold | Accepted |
 
 ### Decisions still without a record
 

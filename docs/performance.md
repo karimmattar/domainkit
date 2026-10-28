@@ -159,6 +159,13 @@ pings = 1
 - **Under budget by more than the tolerance passes with a hint**:
   `Under budget: me statements: budget 5, measured 1; lower the budget to
   lock it in.` Lower it in the same pull request, so the gain stays won.
+- **Modules are gated per process** (ADR 0104): each rung counts the
+  modules its process holds once it has built the application and served
+  its warm-up, past those the interpreter started with. Their tolerance
+  is 2 modules either way, so a new eager import of anything heavy fails
+  the job. What is installed changes the count (`prometheus_client`,
+  `opentelemetry`), so the budgets are written from a run with every
+  extra, as `make install` and CI's `bench` job install them.
 - **Time is never gated** (ADR 0064): a shared runner's timings are too
   noisy. CI's job summary shows CPU time per rung, beside the base branch's
   on pull requests.
@@ -866,3 +873,43 @@ to 1,497 µs, `throttled` 418 to 305 µs, each the best of its timed runs.
   models as it is added (about 190 ms of the admin routers' 230), Python's
   dataclasses compile each event class (auth's 27: about 60 ms), and
   FastAPI imports its OpenAPI models (about 150 ms).
+
+### 0.12: startup, keyed bodies, flag changes, and what was verified
+
+Measured on Python 3.13.17, against 0.11.1 (`--baseline`), PostgreSQL 18.
+
+- **Startup** (PERF-15, ADR 0104). Best of five fresh processes, every
+  extra installed: `import domainkit.http` 679 to 57 modules, 580 to 7 ms
+  of CPU, 69.2 to 10.1 MB; the `init` project's `config.asgi` with
+  production settings 824 to 806 modules, 85.6 to 84.8 MB, its CPU the
+  same (about 910 ms). A served project no longer loads the ledgers, the
+  brokers, or messaging's worker and dispatcher unless it uses them. The
+  ladder gates the modules: 18 fewer on each rung without a database
+  (template 800 to 782), 16 on those with one (827 to 811).
+- **Keyed bodies** (PERF-11, ADR 0105). The peak the idempotency
+  middleware holds, 0.11.1 to now: an 8 MiB keyed body 16.0 to 1.1 MiB;
+  an 8 MiB kept response 16.2 to 8.2 MiB; 32 MiB each way 96.2 to
+  32.3 MiB, the replay byte-identical. What is left is the value stored.
+  The `keyed-write` rung costs 16 calls more (3,639).
+- **Flag changes** (PERF-17, ADR 0033's amendment). 20 replicas over one
+  cache reading as a change lands: 20 loads of the flags, now one.
+- **FastAPI's dependency solver and telemetry** (PERF-13): verified, not
+  changed. domainkit now adds one dependency to each route, its access
+  rule, not two: `bare` costs 304 calls against plain FastAPI's 234
+  (62.7 against 53.8 µs), most of the 70 in FastAPI's dependency solver
+  for that one dependency. FastAPI's telemetry hooks, its own telemetry
+  off, cost 22 calls of `template`'s 519, and 11 of `me`'s 750. The rule
+  is how deny by default works (ADRs 0017, 0080), and the hooks are
+  FastAPI's: no cheap win.
+- **Memory per request** (PERF-16): verified, no leak. The peak a request
+  allocates on top of what the process holds, 2,000 requests on uvloop
+  with the loop running between them, as under a server: `template`
+  23.1 KB, `me` 25.3 KB, `read` 57.3 KB, `write` 67.0 KB, `keyed-write`
+  72.9 KB (70.8 at 0.11.1; the 0.9.0 audit measured 26 KB to 104 KB);
+  one collection per 1,000 requests, and nothing domainkit allocates is
+  still held after 4,000 (a tracemalloc snapshot diff). Requests that
+  never yield to the loop, as the ladder sends them in process, keep each
+  request's context until asyncio purges the cancelled deadline timers
+  that hold it, at its next iteration: about 4.4 KB a request, bounded by
+  that purge under a server.
+
