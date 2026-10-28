@@ -496,25 +496,28 @@ jobs:
           /tmp/clean/bin/python -c "import domainkit, domainkit.broker, domainkit.cache, domainkit.contrib.messaging; print(domainkit.__version__)"
           /tmp/clean/bin/domainkit init smokeAPI /tmp/smoke
           test -f /tmp/smoke/.env && test -f /tmp/smoke/manage.py
-      # The image a new project builds, with this wheel: it runs as a user
-      # without privileges, passes check with the production settings, and
-      # answers /health (INFRA-09).
+      # The image a new project builds, with this wheel: it leaves out an env
+      # file next to the Dockerfile, runs as a user without privileges,
+      # passes check with the production settings, and answers /health
+      # (INFRA-09, SEC-12c-2).
       - name: Build and run a new project's image
         run: |
           /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres,redis,sqlite]"
           cd /tmp/smoke
           /tmp/clean/bin/python manage.py startdomain orders --minimal
           /tmp/clean/bin/python manage.py makemigrations -m "create"
+          echo "SMOKE_API_SECRET_KEY=planted" > production.env
           docker build --build-context wheels="$GITHUB_WORKSPACE/dist" -t smoke .
           printf '%s\n' SMOKE_API_ALLOWED_HOSTS=api.example.com \
             SMOKE_API_DATABASE_URL=postgresql+asyncpg://app@db.internal/app \
             SMOKE_API_REDIS_URL=rediss://:s3cret@cache.internal:6380/0 \
             SMOKE_API_TRUSTED_PROXIES=10.0.0.0/8 \
-            "SMOKE_API_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(50))')" > smoke.env
+            "SMOKE_API_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(50))')" > /tmp/smoke.env
+          test -z "$(docker run --rm smoke find /app -name '*.env*')"
           test "$(docker run --rm smoke id -u)" = 10001
           if docker run --rm smoke touch /app/written; then exit 1; fi
-          docker run --rm --env-file smoke.env smoke python manage.py check
-          docker run -d --name smoke -p 8000:8000 --env-file smoke.env smoke
+          docker run --rm --env-file /tmp/smoke.env smoke python manage.py check
+          docker run -d --name smoke -p 8000:8000 --env-file /tmp/smoke.env smoke
           for _ in $(seq 30); do
             curl -sf -H "Host: api.example.com" http://127.0.0.1:8000/health && break
             sleep 1

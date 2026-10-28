@@ -27,6 +27,7 @@ from domainkit.management import (
 )
 from domainkit.management.commands.init import TEMPLATE_DIR, requirement
 from domainkit.utils import formatting
+from domainkit_tests.test_sec12c_2_image_bakes_env_file import ignored
 
 CHECKED = "System check identified no issues. Domains: messaging, contenttypes, auth.\n"
 REDIS_URL = "rediss://:s3cret@cache.internal:6380/0"
@@ -554,8 +555,28 @@ def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> 
     )
     assert cmd[:4] == ["uvicorn", "config.asgi:application", "--app-dir", "src"]
     assert cmd[4:8] == ["--host", "0.0.0.0", "--port", "8000"]  # noqa: S104
-    ignored = (project / ".dockerignore").read_text(encoding="utf-8").splitlines()
-    assert {".env", "*.sqlite3", ".venv/", ".git/"} <= set(ignored)
+    patterns = (project / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    copied = [
+        "manage.py",
+        "pyproject.toml",
+        "src/config/settings/production.py",
+        "migrations/0001_ab12_create.py",
+    ]
+    left_out = [
+        ".env",
+        ".git/config",
+        ".venv/bin/python",
+        "tests/test_health.py",
+        "db.sqlite3",
+        "production.env",
+        "secrets/jwt.key",
+        "src/config/.env.production",
+        "src/config/settings/__pycache__/base.cpython-313.pyc",
+    ]
+    assert [path for path in copied if ignored(patterns, path)] == []
+    assert [path for path in left_out if not ignored(patterns, path)] == []
+    gitignored = (project / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert {".env", ".env.*", "*.env", "secrets/"} <= set(gitignored)
 
 
 def test_the_projects_workflow_passes_on_a_new_project(tmp_path: Path) -> None:

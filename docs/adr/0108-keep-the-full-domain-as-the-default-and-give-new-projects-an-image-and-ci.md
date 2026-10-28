@@ -1,6 +1,6 @@
 # 0108. Keep the full domain as `startdomain`'s default; give new projects an image and CI
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-28 (at the end)
 - Date: 2026-10-28
 
 ## Context
@@ -84,3 +84,17 @@ builds and runs a new project's image with the wheel it built.
 - Two domain templates are kept. The snapshots pin both
   (`snapshots/generators` and `snapshots/minimal_domain`), so a change to
   one is reviewed as such.
+
+## Amendment (2026-10-28, 0.12)
+
+The security review of 0.12 found the first `.dockerignore` a deny list:
+it kept out `.env`, and so let in a `production.env` next to the
+`Dockerfile`, the file the `Dockerfile`'s own comment ran the image with
+(SEC-12c-2). The `.dockerignore` is now an allow list: every file is left
+out but `manage.py`, `pyproject.toml`, `src/`, and `migrations/`, and env
+files, `secrets/`, and SQLite files are left out even inside those. A
+project adds a `!` line for any other directory its application reads.
+`COPY . .` stays, so the list is in one place. The comment names an env
+file outside the project, `.gitignore` lists env files and `secrets/`,
+and CI's image build plants a `production.env` and checks that no env
+file is in `/app`.

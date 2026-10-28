@@ -2,13 +2,16 @@
 # as a user without privileges who can write nothing in /app.
 #
 #   docker build -t {{ project }} .
-#   docker run --rm --env-file production.env {{ project }} python manage.py migrate
-#   docker run --rm -p 8000:8000 --env-file production.env {{ project }}
+#   docker run --rm --env-file /etc/{{ project }}/production.env {{ project }} python manage.py migrate
+#   docker run --rm -p 8000:8000 --env-file /etc/{{ project }}/production.env {{ project }}
 #
 # Every setting comes from the environment ({{ prefix }}*), as
-# src/config/settings/production.py lists them; nothing secret is built in,
-# and .dockerignore keeps .env, databases, and caches out. WEB_CONCURRENCY
-# sets uvicorn's worker processes (one per core; one unless set).
+# src/config/settings/production.py lists them. Keep the env file out of the
+# project, as above, or better in a secret store: nothing secret is built
+# in. .dockerignore lets in only manage.py, pyproject.toml, src/, and
+# migrations/, and keeps env files, keys, and databases out even there.
+# WEB_CONCURRENCY sets uvicorn's worker processes (one per core; one unless
+# set).
 
 FROM scratch AS wheels
 # Empty. `docker build --build-context wheels=<directory> .` offers the wheels
@@ -33,7 +36,8 @@ ENV PATH=/opt/venv/bin:$PATH \
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
-# Owned by root: the application reads its code and cannot change it.
+# What .dockerignore lets in, owned by root: the application reads its
+# code and cannot change it.
 COPY . .
 USER 10001
 EXPOSE 8000

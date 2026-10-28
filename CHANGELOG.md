@@ -67,7 +67,8 @@ and a status.
   uses `--minimal` (DSGN-11; ADR 0108).
 - `init` writes a `Dockerfile` (dependencies in a build stage, the code
   owned by root, run as uid 10001 with uvicorn and the limits of "Server
-  limits"), a `.dockerignore` that keeps `.env` and SQLite files out, and
+  limits"), a `.dockerignore` that lets in only what the application
+  runs, and
   `.github/workflows/ci.yml` (ruff, `check`, migrations checked, the
   tests, and the image built), its actions pinned as domainkit's CI pins
   them. CI's build job builds and runs a new project's image with the
@@ -229,6 +230,26 @@ and a status.
 - The blocking detector's nested test sessions, most of the time the
   plugin's own tests took, sleep 0.15 s where 0.25 s was, still half again
   what the detector reports (TEST-09).
+
+### Security
+
+- The image of a project `init` made copied in an env file kept next to
+  its `Dockerfile`, such as the `production.env` its own comment ran it
+  with, holding `SECRET_KEY` and the database and Redis passwords:
+  `.dockerignore` kept out only `.env`. It now lets in only `manage.py`,
+  `pyproject.toml`, `src/`, and `migrations/`, and keeps `.env*`, `*.env`,
+  `secrets/`, and SQLite files out even there; the comment names an env
+  file outside the project, and `.gitignore` lists them too. A project
+  made with 0.12's earlier builds copies the new `.dockerignore` and
+  `.gitignore` from a new project, and checks no image it pushed holds
+  such a file (`docker run --rm <image> find /app -name '*.env*'`)
+  (SEC-12c-2).
+- The one line of `migrate`, `makemigrations`, and `showmigrations` for a
+  database out of reach printed a password given in the URL's query
+  (`?password=`, which asyncpg uses), and the end of a password whose `@`
+  was not encoded. It names the driver, host, port, and database alone,
+  and hides a host that holds an `@`, saying to encode it as `%40`
+  (SEC-12c-1).
 
 ## [0.11.2] - 2026-10-28
 

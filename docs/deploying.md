@@ -13,8 +13,11 @@ how. [operations.md](operations.md) explains what runs and why;
   write nothing in `/app`; `<PREFIX>SETTINGS_MODULE` set to
   `config.settings.production`; uvicorn with the limits of
   [Server limits](reference.md#server-limits). `WEB_CONCURRENCY` sets
-  its worker processes, one per core. `.dockerignore` keeps `.env`,
-  SQLite files, and caches out.
+  its worker processes, one per core. `.dockerignore` lets in only
+  `manage.py`, `pyproject.toml`, `src/`, and `migrations/`, and keeps env
+  files, `secrets/`, and SQLite files out even there: add a `!` line for
+  any other directory the application reads. `.gitignore` keeps env files
+  and `secrets/` out of the repository.
 - **`.github/workflows/ci.yml`**: on every push and pull request, ruff,
   `check`, `migrate` and `makemigrations --check` on a SQLite file, the
   tests, and a build of the image. Its actions are pinned to commit
@@ -39,6 +42,8 @@ how. [operations.md](operations.md) explains what runs and why;
       (`<NAME>_FILE=/run/secrets/<name>`): `SECRET_KEY` (50 random
       characters or more), the database and Redis URLs, and the JWT key if
       you use one ([security.md](security.md), "Settings and secrets").
+      An env file for `docker run --env-file` lives outside the project
+      (`/etc/<project>/production.env`), never next to the Dockerfile.
 - [ ] **`ALLOWED_HOSTS`** names the hosts callers use, and
       **`TRUSTED_PROXIES`** the networks of your load balancers (empty
       only when callers connect directly).

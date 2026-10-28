@@ -12,6 +12,7 @@ either.
 
 import fnmatch
 import io
+import re
 from pathlib import Path
 
 import pytest
@@ -49,7 +50,11 @@ def test_the_env_file_the_image_runs_with_stays_out_of_it(
     dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
     patterns = (project / ".dockerignore").read_text(encoding="utf-8").splitlines()
 
-    assert "--env-file production.env" in dockerfile
+    # The fix names an env file outside the project, so outside the build
+    # context; one kept next to the Dockerfile anyway stays out of the image.
+    named = re.findall(r"--env-file (\S+)", dockerfile)
+    assert named
+    assert all(path.startswith("/etc/") for path in named)
     assert "COPY . ." in dockerfile
     assert ignored(patterns, ".env")  # The rule itself works.
     assert ignored(patterns, secrets), f"{secrets} is copied into /app"
