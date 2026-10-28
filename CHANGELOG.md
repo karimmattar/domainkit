@@ -9,6 +9,21 @@ and a status.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-28
+
+A patch release: one fix of savepoints in the SQL unit of work. Nothing a
+project relies on changes.
+
+### Fixed
+
+- A failed `savepoint()` in a SQL unit of work kept the events of an
+  aggregate it first loaded. Its changes were undone, but while the caller
+  still held the aggregate, the session gave the same object back when it
+  was loaded again after the savepoint (to record what happened instead,
+  say), with those events, and the commit published them: events for
+  changes that never happened. A failed savepoint now drops them, as the
+  in-memory repositories did and `docs/queries.md` says.
+
 ## [0.11.1] - 2026-10-28
 
 A patch release: one fix of reads on their own, and the contributors'
@@ -3652,7 +3667,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/karimmattar/domainkit/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/karimmattar/domainkit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/karimmattar/domainkit/compare/v0.10.0...v0.10.1
