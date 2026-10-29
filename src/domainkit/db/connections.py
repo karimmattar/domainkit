@@ -321,6 +321,7 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
         event.listen(engine.sync_engine, "begin", partial(_set_local, config))
     else:
         _listen(engine.sync_engine, "begin", _begin_snapshot)
+        _listen(engine.sync_engine, "savepoint", _begin_before_savepoint)
     if backend.get_driver_name() == "asyncpg" and not config.PGBOUNCER:
         engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
         _keep_settled(engine.sync_engine)
@@ -817,6 +818,22 @@ def _begin_snapshot(connection: Connection) -> None:
     beyond the rollback that ends a read-only session.
     """
     if connection.get_execution_options().get(SNAPSHOT_BEGIN):
+        connection.exec_driver_sql("BEGIN", execution_options={INTERNAL: True})
+
+
+def _begin_before_savepoint(connection: Connection, name: str) -> None:
+    """Begin SQLite's transaction before a ``SAVEPOINT`` that would begin it.
+
+    SQLite's driver begins one only before a write, so a unit of work whose
+    first statement is a ``SAVEPOINT`` (``uow.savepoint()``, an atomic
+    batch) would have it begin the transaction, and its ``RELEASE`` commit
+    it: what the savepoint kept would be written before the unit of work
+    commits, and stay if that commit failed. A connection outside
+    transactions (``AUTOCOMMIT``) is left as it is.
+    """
+    if connection.get_execution_options().get("isolation_level") == "AUTOCOMMIT":
+        return
+    if not connection.connection.driver_connection.in_transaction:  # type: ignore[union-attr]
         connection.exec_driver_sql("BEGIN", execution_options={INTERNAL: True})
 
 

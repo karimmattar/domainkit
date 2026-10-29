@@ -656,8 +656,13 @@ class Worker:
             .values(locked_until=dbclock.at(dialect, lease), lock_id=lock_id)
             .returning(messages.c.id, messages.c.queue)
         )
-        async with self.engine.begin() as connection:
-            rows = (await connection.execute(statement)).all()
+        try:
+            async with self.engine.begin() as connection:
+                rows = (await connection.execute(statement)).all()
+        except asyncio.CancelledError:
+            # The driver may commit the lease as its caller is cancelled.
+            await _shielded(self._unlock(lock_id), "give back a lease cut off")
+            raise
         if not rows:
             return 0
         confirmed: list[uuid.UUID] = []
@@ -759,6 +764,21 @@ class Worker:
                     .where(messages.c.id.in_(unsent), ours)
                     .values(locked_until=None, lock_id=None)
                 )
+
+    async def _unlock(self, lock_id: uuid.UUID) -> None:
+        """Unlock the messages leased under ``lock_id``, if the lease committed.
+
+        A cancellation can cut off the relay as its lease commits: aiosqlite
+        commits in its own thread, and a PostgreSQL ``COMMIT`` may finish on
+        the server. The relay then never learns which messages it took, and
+        without this they would stay locked until the lease ran out.
+        """
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(messages)
+                .where(messages.c.lock_id == lock_id)
+                .values(locked_until=None, lock_id=None)
+            )
 
     async def take_over(
         self, message_id: uuid.UUID, relay_lock: uuid.UUID

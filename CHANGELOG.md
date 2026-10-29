@@ -9,6 +9,20 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- On SQLite, a unit of work whose first statement is a savepoint (an
+  atomic `batch_route`, or a service that opens `uow.savepoint()` before
+  anything else) now begins its transaction first. Before, the
+  savepoint's release committed it: an atomic batch that lost a race at
+  its commit had written already, and wrote again when it ran again, and
+  work left uncommitted kept what the savepoint had written. PostgreSQL
+  was not affected (FIN-78).
+- A publisher or relay cancelled as its lease of messages commits (a
+  shutdown) now gives that lease back. The driver could commit it after
+  the relay was cut off, and the messages then stayed locked until the
+  lease ran out, past the shutdown that was to unlock them (CONC-05).
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when
