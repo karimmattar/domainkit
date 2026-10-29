@@ -9,6 +9,18 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- The reference is a page for each area, under `docs/reference/`:
+  settings, databases and the other backends, HTTP, server limits,
+  deployment checks, errors and responses, signing, observability, the
+  test plugin, commands, and extension points; the public API is a page
+  for each part of the package, under `docs/api/`. `docs/reference.md`
+  and `docs/api.md` list the pages, and each section keeps its name and
+  its anchor on its new page; a link into `reference.md#<section>` from
+  before opens the list. The comments `init` writes, and the error
+  `SECRET_KEY` unset raises, name the new pages (DOCS-05; ADR 0114).
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when

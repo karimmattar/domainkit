@@ -131,7 +131,13 @@ nav:
           - reference/test-plugin.md
           - reference/commands.md
           - reference/extension-points.md
-      - api.md
+      - Public API:
+          - api.md
+          - api/core.md
+          - api/data.md
+          - api/http.md
+          - api/auth.md
+          - api/contrib.md
       - API reference: reference/api/index.md
       - versioning.md
       - Decisions: adr/README.md

@@ -57,9 +57,9 @@ to `.ci/`. `make services-down` stops them and drops their data.
   carries `@pytest.mark.reads_own_source`: mutmut rewrites both, and
   mutation runs leave such tests out.
 - **The public API** is what `docs/api.md` lists ([ADR 0076](docs/adr/0076-public-api-is-docs-api-md.md)).
-  A new public name goes in its module's `__all__` and on that page, with a
-  docstring (Google style, the repository's plain voice); the site renders
-  the docstring in the API reference.
+  A new public name goes in its module's `__all__` and on its package's
+  page of `docs/api/`, with a docstring (Google style, the repository's
+  plain voice); the site renders the docstring in the API reference.
 - **Compatibility.** A patch release changes no behaviour a project relies
   on. A minor release removes a public name only after a minor of
   deprecation: the old name keeps working, warning with
