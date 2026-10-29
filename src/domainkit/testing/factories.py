@@ -500,7 +500,9 @@ class Factory[T]:
         """
         given: dict[str, Any] = {}
         nested: dict[str, dict[str, Any]] = {}
-        for key, value in cls._with_traits(overrides).items():
+        merged = cls._with_traits(overrides)
+        whole = {key for key in merged if SEPARATOR not in key}
+        for key, value in merged.items():
             name, separator, field = key.partition(SEPARATOR)
             if not separator:
                 given[name] = value
@@ -509,7 +511,7 @@ class Factory[T]:
                     f"{cls.__name__}.{name} is not a SubFactory, a "
                     f"RelatedFactory, or a post_generation: {key}="
                 )
-            elif name not in cls._post and (name in given or name in overrides):
+            elif name not in cls._post and name in whole:
                 raise TypeError(f"Give {name}= or {name}{SEPARATOR}...=, not both.")
             else:
                 nested.setdefault(name, {})[field] = value
@@ -519,10 +521,13 @@ class Factory[T]:
     def _with_traits(cls, overrides: Mapping[str, Any]) -> dict[str, Any]:
         """``overrides`` over the defaults of the traits they turn on.
 
-        A trait's default yields to any given argument for the same field,
-        its ``name__field`` keys too.
+        A trait's default yields to the same key given, and to the field's
+        whole value given; a trait's whole value yields to any of the
+        field's ``name__key`` given. Other keys merge, as factory_boy merges
+        them: ``free=True, total__currency="GBP"`` keeps the trait's amount.
         """
-        given = {key.partition(SEPARATOR)[0] for key in overrides}
+        whole = {key for key in overrides if SEPARATOR not in key}
+        reached = {key.partition(SEPARATOR)[0] for key in overrides}
         turned_on: dict[str, Any] = {}
         for name, trait in cls._traits.items():
             if overrides.get(name):
@@ -530,7 +535,9 @@ class Factory[T]:
         kept = {
             key: value
             for key, value in turned_on.items()
-            if key.partition(SEPARATOR)[0] not in given
+            if key not in overrides
+            and key.partition(SEPARATOR)[0]
+            not in (whole if SEPARATOR in key else reached)
         }
         return {**kept, **overrides}
 

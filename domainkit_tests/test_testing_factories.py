@@ -544,6 +544,31 @@ def test_traits_turn_defaults_on_and_given_arguments_still_win() -> None:
     assert (priced.status, priced.total.amount) == ("free", Decimal(7))
     whole = Money(amount=Decimal(3), currency="GBP")
     assert OrderFactory.build(free=True, total=whole).total == whole
+    merged = OrderFactory.build(free=True, total__currency="GBP").total
+    assert merged == Money(amount=Decimal(0), currency="GBP")  # Both keys hold.
+
+
+def test_traits_declared_in_a_test_default_to_off() -> None:
+    """A trait is a parameter that is False until given; two may not collide."""
+
+    class Labelled(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        class Params:
+            loud = Trait(label="LOUD")
+            priced = Trait(price=Money(amount=Decimal(1), currency="EUR"))
+            cheap = Trait(price__amount=Decimal(0))
+
+        label = LazyAttribute(lambda fields: f"loud={fields.loud}")
+        price = SubFactory(MoneyFactory)
+
+    assert Labelled.build()["label"] == "loud=False"
+    assert Labelled.build(loud=True)["label"] == "LOUD"
+    with pytest.raises(TypeError, match=r"Give price= or price__\.\.\.=, not both"):
+        Labelled.build(priced=True, cheap=True)
+    with pytest.raises(TypeError, match=r"Give price= or price__\.\.\.=, not both"):
+        Labelled.build(price__amount=Decimal(1), price=None)
 
 
 def test_params_are_read_by_fields_and_never_reach_the_model() -> None:
@@ -566,9 +591,18 @@ def test_maybe_picks_by_a_field_or_a_declaration() -> None:
 
         size = 3
         label = Maybe(LazyAttribute(lambda shelf: shelf.size > 2), "big")
+        kind = Maybe("size", "sized", "empty")
+        category = Maybe("size", SubFactory(CategoryFactory, name="Shelf"))
 
-    assert Shelf.build() == {"size": 3, "label": "big"}
-    assert Shelf.build(size=1) == {"size": 1, "label": None}
+    assert Shelf.build(category=None) == {
+        "size": 3,
+        "label": "big",
+        "kind": "sized",
+        "category": None,
+    }
+    small = Shelf.build(size=0)
+    assert (small["label"], small["kind"], small["category"]) == (None, "empty", None)
+    assert Shelf.build(category__name="Hats")["category"].name == "Hats"
 
 
 @pytest.mark.anyio
@@ -627,6 +661,32 @@ def test_self_attribute_follows_paths_and_climbs_to_the_parent() -> None:
         Strict.build(broken=1)
 
 
+def test_hooks_run_on_built_objects_with_what_was_given() -> None:
+    """``build`` calls the hook with ``create=False``, the value, and the keywords."""
+    calls: list[tuple[object, ...]] = []
+
+    class Hooked(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        name = Sequence(lambda n: f"hooked-{n}")
+
+        @post_generation
+        def tags(
+            made: dict[str, Any], create: bool, extracted: object, **kw: object
+        ) -> None:
+            calls.append((made["name"], create, extracted, kw))
+
+    Hooked.build(tags=["a"], tags__loud=True)
+    Hooked.build()
+    assert calls == [
+        ("hooked-0", False, ["a"], {"loud": True}),
+        ("hooked-1", False, None, {}),
+    ]
+    order = OrderFactory.build(noted=["fragile"], noted__loud=True)
+    assert order.notes == ["FRAGILE"]
+
+
 def test_related_factories_build_after_the_object() -> None:
     """Built: a line pointing at the order; ``line__`` reaches it; a value skips it."""
     order = OrderFactory.build(line__sku="TEA")
@@ -666,22 +726,53 @@ async def test_related_factories_and_hooks_commit_with_the_object() -> None:
 @pytest.mark.anyio
 async def test_a_related_factory_without_a_repository_only_builds() -> None:
     """Its objects are built during ``create``, never added."""
+    made: list[dict[str, Any]] = []
+
+    def remember(**fields: Any) -> dict[str, Any]:  # noqa: ANN401 - any field.
+        made.append(fields)
+        return fields
 
     class Plain(Factory[dict[str, Any]]):
         class Meta:
-            model = dict
+            model = remember
 
-        made_for = None
+        kind = "plain"
 
     class WithPlain(CategoryFactory):
-        extra = RelatedFactory(Plain, "made_for")
+        extra = RelatedFactory(Plain, "made_for", kind="extra")
         skipped = RelatedFactory(Plain)
 
     uow = ShopUnitOfWork()
     category = await WithPlain.create(uow)
     assert list(uow.categories.items.values()) == [category]
+    assert made == [{"kind": "extra", "made_for": category}, {"kind": "plain"}]
     await WithPlain.create(uow, extra="given")
     assert uow.commits == 2
+    assert [fields["kind"] for fields in made[2:]] == ["plain"]
+
+
+@pytest.mark.anyio
+async def test_a_stored_sub_factory_reads_its_parent_during_create() -> None:
+    """``create`` adds a stored sub-factory's object knowing what made it."""
+
+    class Shelved(ProductFactory):
+        class Params:
+            shelf = "Teas"
+
+        category = SubFactory(CategoryFactory, name=SelfAttribute("..shelf"))
+
+    uow = ShopUnitOfWork()
+    product = await Shelved.create(uow)
+
+    assert uow.categories.items[product.category_id].name == "Teas"
+
+
+def test_a_declaration_given_as_an_argument_knows_its_field() -> None:
+    """Computed as a default would be, under its own name."""
+    with pytest.raises(ValueError, match=r"OrderFactory.receipt: '...x' climbs"):
+        OrderFactory.build(receipt=SelfAttribute("...x"))
+    # The refused build took ORD-0.
+    assert OrderFactory.build(receipt=SelfAttribute("number")).receipt == "ORD-1"
 
 
 def test_stubs_are_plain_data() -> None:

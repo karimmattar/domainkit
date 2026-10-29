@@ -462,7 +462,9 @@ class InvoiceFactory(Factory[Invoice]):
   fields read (`currency`), and **`Trait`s**: `InvoiceFactory.build(paid=True)`
   turns their defaults on, in the order they are declared; arguments
   given beside it still win (`paid=True, status="refunded"`), and
-  `total__amount=` keys reach a sub-factory.
+  `total__amount=` keys reach a sub-factory. A trait's `total__amount`
+  and a given `total__currency` both hold, as in factory_boy; a given
+  `total=` replaces the trait's keys for it.
 - **`SelfAttribute("customer.id")`** copies another field, or its
   attribute; each dot past the first climbs to the factory whose
   `SubFactory` made this object (`"..currency"`). `default=` is taken when
