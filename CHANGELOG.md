@@ -19,6 +19,15 @@ and a status.
   (`sa.Numeric(precision=6, scale=3)`, `sa.DateTime(timezone=True)`), as
   `docs/databases.md` says. A revision already written by hand is not
   changed.
+- `loaddata` dropped a column from every row of a table after the first,
+  when the first row left it out, and said it loaded them: `{"id": 1}`
+  then `{"id": 2, "day": "2026-10-29"}` stored the second row's `day` as
+  null. The other way round, a first row naming a column a later row
+  leaves out, failed the load with SQLAlchemy's `InvalidRequestError`.
+  `dumpdata` writes every column, so only hand-written fixtures met it.
+  Each row is now written with the columns it names, rows in order; a
+  fixture whose rows all name the same columns is written in as many
+  statements as before.
 
 ## [0.12.0] - 2026-10-28
 
