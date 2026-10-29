@@ -27,6 +27,13 @@ and a status.
   the run on 0.12.0 that pointed at missing tests are killed; the audit
   page lists, by module, what is left (TEST-06, TEST-07; ADR 0106).
 
+### Security
+
+- The test of the upgrade guide reads every **Breaking:** entry of a
+  release, under `Removed` and `Security` too, not only under `Changed`:
+  a breaking removal with no line in `docs/upgrading.md` fails it, where
+  it passed (SEC-13c-1).
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when

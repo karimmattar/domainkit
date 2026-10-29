@@ -628,9 +628,10 @@ def test_open_security_findings_are_listed_without_their_detail() -> None:
 def upgrade_entries(changelog: str) -> list[str]:
     """The entries a project must act on to reach the newest minor release.
 
-    Breaking and Deprecated ones: those of ``[Unreleased]`` when it has
-    some, as a patch release has none (``docs/versioning.md``); else those
-    of the releases down to the newest ``X.Y.0``.
+    Breaking ones, from any section, and Deprecated ones: those of
+    ``[Unreleased]`` when it has some, as a patch release has none
+    (``docs/versioning.md``); else those of the releases down to the newest
+    ``X.Y.0``.
     """
     unreleased = changelog.split("\n## [Unreleased]\n", 1)[1]
     first, *released = re.split(r"\n## \[([^\]]+)\][^\n]*\n", unreleased)
@@ -645,14 +646,18 @@ def upgrade_entries(changelog: str) -> list[str]:
 
 
 def _upgrade_entries(section: str) -> list[str]:
-    """The Breaking entries of Changed and every Deprecated one, of a release."""
+    """A release's Breaking entries, whichever section files them, and Deprecated.
+
+    A removal (``### Removed``) or a security fix (``### Security``) can
+    break a project as a change can (SEC-13c-1).
+    """
     entries = []
     for part in re.split(r"^### ", section, flags=re.MULTILINE)[1:]:
         title, _, body = part.partition("\n")
         items = re.split(r"^- ", body, flags=re.MULTILINE)[1:]
         if title == "Deprecated":
             entries += items
-        elif title == "Changed":
+        else:
             entries += [item for item in items if item.startswith("**Breaking:**")]
     return entries
 
@@ -669,7 +674,7 @@ def test_the_upgrade_guide_covers_every_breaking_change_and_deprecation() -> Non
 
 
 def test_the_upgrade_entries_are_read_from_their_sections() -> None:
-    """Breaking entries of Changed and every Deprecated one; nothing else.
+    """Breaking entries of any section and every Deprecated one; nothing else.
 
     Those of ``[Unreleased]``, or, when it has none, of every release down
     to the newest minor one.
