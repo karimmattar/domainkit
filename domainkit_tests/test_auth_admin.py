@@ -2,7 +2,7 @@
 
 import asyncio
 import io
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -280,14 +280,13 @@ def test_users_are_found_by_part_of_their_name(api: Api) -> None:
 
 
 def test_staff_create_users(api: Api) -> None:
-    """Passwords are validated; staff cannot make superusers."""
+    """A new user has the fields given, logs in, and is audited as the actor's."""
     client = api()
     headers = staff("admin", "auth.add_user", "auth.view_user")
     admin_id = audited("auth.user_created")[0]["details"]["user_id"]
-    url = f"{ADMIN}/users"
 
     response = client.post(
-        url,
+        f"{ADMIN}/users",
         json={
             "username": "newbie",
             "password": PASSWORD,
@@ -295,6 +294,7 @@ def test_staff_create_users(api: Api) -> None:
         },
         headers=headers,
     )
+
     assert response.status_code == 201, response.json()
     made = response.json()
     assert made["fields"].pop("date_joined")
@@ -322,8 +322,15 @@ def test_staff_create_users(api: Api) -> None:
         "username": run_async(pseudonym_of(made["id"], "username", "newbie")),
     }
 
+
+def test_staff_create_users_inactive_or_staff(api: Api) -> None:
+    """The flags given are kept; an inactive user cannot log in."""
+    client = api()
+    headers = staff("admin", "auth.add_user")
     flags = {"username": "keeper", "is_active": False, "is_staff": True}
-    kept = client.post(url, json=flags, headers=headers).json()
+
+    kept = client.post(f"{ADMIN}/users", json=flags, headers=headers).json()
+
     assert (kept["is_active"], kept["is_staff"], kept["is_superuser"]) == (
         False,
         True,
@@ -334,25 +341,65 @@ def test_staff_create_users(api: Api) -> None:
     )
     assert refused.status_code == 401
 
+
+type Refusal = Callable[[dict[str, Any], int], tuple[str, str]]
+
+
+def creating(client: TestClient, headers: Headers) -> Refusal:
+    """A function that posts a new user and returns the error's code and detail."""
+
     def refused_with(body: dict[str, Any], status: int) -> tuple[str, str]:
-        return error(client.post(url, json=body, headers=headers), status)
+        return error(client.post(f"{ADMIN}/users", json=body, headers=headers), status)
+
+    return refused_with
+
+
+def usernames(client: TestClient) -> set[str]:
+    """Every stored user's name but the lister's own, who is made to list them."""
+    root = staff("lister", "auth.view_user")
+    items = client.get(f"{ADMIN}/users", headers=root).json()["items"]
+    return {user["username"] for user in items} - {"lister"}
+
+
+def test_a_new_users_password_must_pass_the_validators(api: Api) -> None:
+    """Too short, like the username, or like a name given: refused, none stored."""
+    client = api()
+    refused_with = creating(client, staff("admin", "auth.add_user"))
+    named = {
+        "username": "x",
+        "password": "Monalisa-Gherardini",
+        "fields": {"first_name": "Monalisa Gherardini"},
+    }
 
     assert refused_with({"username": "nopass", "password": "short"}, 422)[0] == (
         "invalid_password"
     )
     similar = {"username": "kamalbasha", "password": "kamalbasha1"}
     assert refused_with(similar, 422)[0] == "invalid_password"
-    named = {
-        "username": "x",
-        "password": "Monalisa-Gherardini",
-        "fields": {"first_name": "Monalisa Gherardini"},
-    }
     assert refused_with(named, 422)[0] == "invalid_password"
+    assert usernames(client) == {"admin"}
+
+
+def test_a_new_username_must_be_free_and_not_an_erased_accounts(api: Api) -> None:
+    """A name taken answers 409; one starting ``erased-`` is kept back."""
+    client = api()
+    refused_with = creating(client, staff("admin", "auth.add_user"))
+    create_user("newbie")
+
     assert refused_with({"username": "newbie"}, 409)[0] == "username_taken"
     assert refused_with({"username": "erased-newbie"}, 422) == (
         "invalid_username",
         "Usernames that start with erased- are kept for erased accounts.",
     )
+    assert usernames(client) == {"admin", "newbie"}
+
+
+def test_a_new_users_fields_must_be_known_and_valid(api: Api) -> None:
+    """Fields the model lacks or keeps to itself, and wrong values, are refused."""
+    client = api()
+    headers = staff("admin", "auth.add_user")
+    refused_with = creating(client, headers)
+
     assert refused_with({"username": "x", "fields": {"password": "x"}}, 422) == (
         "unknown_user_field",
         "These user fields cannot be changed here: password.",
@@ -367,47 +414,46 @@ def test_staff_create_users(api: Api) -> None:
         "invalid_user_field",
         "first_name: Input should be a valid string.",
     )
+    extra = client.post(
+        f"{ADMIN}/users", json={"username": "x", "extra": 1}, headers=headers
+    )
+    assert extra.status_code == 422
+    assert usernames(client) == {"admin"}
+
+
+def test_only_superusers_make_superusers(api: Api) -> None:
+    """Staff are refused ``is_superuser``; a superuser may give it."""
+    client = api()
+    refused_with = creating(client, staff("admin", "auth.add_user"))
+    root = staff("root", is_superuser=True)
+
     assert refused_with({"username": "x", "is_superuser": True}, 403) == (
         "permission_denied",
         "Only superusers may make superusers.",
     )
-    assert (
-        client.post(
-            url, json={"username": "x", "extra": 1}, headers=headers
-        ).status_code
-        == 422
-    )
-    assert {
-        user["username"] for user in client.get(url, headers=headers).json()["items"]
-    } == {
-        "admin",
-        "newbie",
-        "keeper",
-    }
-
-    root = staff("root", is_superuser=True)
     boss = client.post(
-        url, json={"username": "boss", "is_superuser": True}, headers=root
+        f"{ADMIN}/users", json={"username": "boss", "is_superuser": True}, headers=root
     )
     assert boss.json()["is_superuser"] is True
+    assert usernames(client) == {"admin", "root", "boss"}
 
 
 def test_staff_change_users(api: Api) -> None:
-    """Flags and fields change, and each change is audited."""
+    """Flags and fields change, and each change is audited as the actor's."""
     client = api()
     headers = staff("admin", "auth.change_user", "auth.view_user")
     admin_id = audited("auth.user_created")[0]["details"]["user_id"]
     bob = create_user("bob")
-    url = f"{ADMIN}/users/{bob}"
 
     response = client.patch(
-        url,
+        f"{ADMIN}/users/{bob}",
         json={
             "is_active": False,
             "fields": {"email": "Bob@EXAMPLE.com", "last_name": "B", "first_name": ""},
         },
         headers=headers,
     )
+
     assert response.status_code == 200, response.json()
     assert response.json()["is_active"] is False
     assert response.json()["fields"]["email"] == "Bob@example.com"
@@ -420,67 +466,102 @@ def test_staff_change_users(api: Api) -> None:
     ]
     assert audited("auth.user_updated")[0]["actor"] == admin_id
 
+
+def test_a_change_to_what_a_user_has_records_nothing(api: Api) -> None:
+    """Flags already held, or nothing at all: 200, the user as it was, no record."""
+    client = api()
+    headers = staff("admin", "auth.change_user", "auth.view_user")
+    url = f"{ADMIN}/users/{create_user('bob')}"
     staffed = client.patch(
         url, json={"is_staff": True, "is_active": True}, headers=headers
     )
-    assert (staffed.json()["is_staff"], staffed.json()["is_active"]) == (True, True)
+
     same = client.patch(url, json={"is_superuser": False}, headers=headers)
-    assert same.status_code == 200
-    assert client.patch(url, json={}, headers=headers).status_code == 200
-    assert len(audited("auth.user_updated")) == 1
+    empty = client.patch(url, json={}, headers=headers)
+
+    assert (staffed.json()["is_staff"], staffed.json()["is_active"]) == (True, True)
+    assert (same.status_code, empty.status_code) == (200, 200)
+    assert audited("auth.user_updated") == []
     assert client.get(url, headers=headers).json() == staffed.json()
 
-    def refused_with(target: str, body: dict[str, Any], status: int) -> tuple[str, str]:
-        return error(client.patch(target, json=body, headers=headers), status)
 
-    root_headers = staff("adder", "auth.add_user")
+def test_a_users_fields_change_only_to_valid_values(api: Api) -> None:
+    """Fields kept to the model, values of another type, and addresses with a name."""
+    client = api()
+    headers = staff("admin", "auth.change_user", "auth.view_user")
+    adder = staff("adder", "auth.add_user")
+    url = f"{ADMIN}/users/{create_user('bob', email='bob@example.com')}"
 
-    assert refused_with(url, {"fields": {"username": "robert"}}, 422) == (
+    def refused_with(body: dict[str, Any], status: int) -> tuple[str, str]:
+        return error(client.patch(url, json=body, headers=headers), status)
+
+    assert refused_with({"fields": {"username": "robert"}}, 422) == (
         "unknown_user_field",
         "These user fields cannot be changed here: username.",
     )
     for value in (None, 7, True):
-        assert refused_with(url, {"fields": {"email": value}}, 422) == (
+        assert refused_with({"fields": {"email": value}}, 422) == (
             "invalid_user_field",
             "email: Input should be a valid string.",
         )
     for address in ("Bob <bob@example.com>", "\u212aelly@corp.example"):
-        assert refused_with(url, {"fields": {"email": address}}, 422) == (
+        assert refused_with({"fields": {"email": address}}, 422) == (
             "invalid_email",
             "Enter one email address, such as user@example.com, without a name.",
         )
         created = client.post(
             f"{ADMIN}/users",
             json={"username": "carol", "fields": {"email": address}},
-            headers=root_headers,
+            headers=adder,
         )
         assert error(created, 422)[0] == "invalid_email"
     assert client.get(url, headers=headers).json()["fields"]["email"] == (
-        "Bob@example.com"
+        "bob@example.com"
     )
-    assert refused_with(url, {"is_superuser": True}, 403) == (
+    assert usernames(client) == {"admin", "adder", "bob"}
+
+
+def test_only_superusers_change_superusers(api: Api) -> None:
+    """Staff can neither give ``is_superuser`` nor change a superuser; one can."""
+    client = api()
+    headers = staff("admin", "auth.change_user")
+    bob = f"{ADMIN}/users/{create_user('bob')}"
+    root_id = create_user("root", is_superuser=True)
+    root = token_for("root")
+
+    assert error(
+        client.patch(bob, json={"is_superuser": True}, headers=headers), 403
+    ) == (
         "permission_denied",
         "Only superusers may make or unmake superusers.",
     )
-    root_id = create_user("root", is_superuser=True)
-    assert refused_with(f"{ADMIN}/users/{root_id}", {}, 403) == (
+    changed = client.patch(f"{ADMIN}/users/{root_id}", json={}, headers=headers)
+    assert error(changed, 403) == (
         "permission_denied",
         "Only superusers may change superusers.",
     )
-    assert refused_with(f"{ADMIN}/users/{uuid4()}", {}, 404) == (
-        "user_not_found",
-        "No such user.",
-    )
-    missing = client.get(f"{ADMIN}/users/{uuid4()}", headers=headers)
-    assert error(missing, 404) == ("user_not_found", "No such user.")
-
-    root = token_for("root")
-    promoted = client.patch(url, json={"is_superuser": True}, headers=root)
+    promoted = client.patch(bob, json={"is_superuser": True}, headers=root)
     assert promoted.json()["is_superuser"] is True
     demoted = client.patch(
         f"{ADMIN}/users/{root_id}", json={"is_active": False}, headers=root
     )
     assert demoted.json()["is_active"] is False
+
+
+def test_a_user_who_is_not_there_is_not_found(api: Api) -> None:
+    """Reading or changing an unknown id answers 404 ``user_not_found``."""
+    client = api()
+    headers = staff("admin", "auth.change_user", "auth.view_user")
+    url = f"{ADMIN}/users/{uuid4()}"
+
+    assert error(client.patch(url, json={}, headers=headers), 404) == (
+        "user_not_found",
+        "No such user.",
+    )
+    assert error(client.get(url, headers=headers), 404) == (
+        "user_not_found",
+        "No such user.",
+    )
 
 
 def test_staff_only_change_users_who_hold_less(api: Api) -> None:
@@ -839,20 +920,22 @@ def test_deleting_a_user_deletes_their_second_factor(api: Api) -> None:
     assert audited("auth.user_status_changed") == []  # Deleted, not deactivated.
 
 
-def test_staff_set_groups_and_permissions_they_have(api: Api) -> None:
-    """Exactly the groups and permissions given; never more than the actor's."""
-    client = api()
-    headers = staff(
-        "admin", "auth.change_user", "shop.view_product", "shop.add_product"
-    )
-    make_group("crew", "shop.view_product")
-    make_group("leads", "shop.delete_product")
-    make_group("empty")
-    bob = create_user("bob")
-    url = f"{ADMIN}/users/{bob}"
+def setting(client: TestClient, user: UUID, headers: Headers) -> Any:  # noqa: ANN401 - a function.
+    """A function that PUTs one of ``user``'s lists, by default as ``headers``."""
 
     def put(path: str, body: dict[str, Any], by: Headers = headers) -> Any:  # noqa: ANN401 - a response.
-        return client.put(f"{url}{path}", json=body, headers=by)
+        return client.put(f"{ADMIN}/users/{user}{path}", json=body, headers=by)
+
+    return put
+
+
+def test_staff_set_a_users_groups(api: Api) -> None:
+    """Exactly the groups given, each once, by name; each join and leave audited."""
+    client = api()
+    headers = staff("admin", "auth.change_user", "shop.view_product")
+    make_group("crew", "shop.view_product")
+    make_group("empty")
+    put = setting(client, create_user("bob"), headers)
 
     joined = put("/groups", {"groups": ["empty", "crew", "crew"]})
     assert joined.json()["groups"] == ["crew", "empty"]
@@ -862,6 +945,18 @@ def test_staff_set_groups_and_permissions_they_have(api: Api) -> None:
     ]
     assert put("/groups", {"groups": ["crew"]}).json()["groups"] == ["crew"]
     assert [each["group"] for each in details("auth.user_left_group")] == ["empty"]
+    assert put("/groups", {"groups": []}).json()["groups"] == []
+
+
+def test_a_user_joins_no_group_that_grants_more_or_is_not_there(api: Api) -> None:
+    """A group with a permission the actor lacks: 403; unknown names: 404."""
+    client = api()
+    headers = staff("admin", "auth.change_user", "auth.view_user", "shop.view_product")
+    make_group("crew", "shop.view_product")
+    make_group("leads", "shop.delete_product")
+    bob = create_user("bob")
+    put = setting(client, bob, headers)
+
     assert error(put("/groups", {"groups": ["crew", "leads"]}), 403) == (
         "permission_denied",
         f"You can only grant permissions you have; {LACK_DELETE}",
@@ -870,7 +965,19 @@ def test_staff_set_groups_and_permissions_they_have(api: Api) -> None:
         "unknown_group",
         "No such group: ghost, nobody.",
     )
-    assert put("/groups", {"groups": []}).json()["groups"] == []
+    shown = client.get(f"{ADMIN}/users/{bob}", headers=headers).json()
+    assert shown["groups"] == []
+    assert audited("auth.user_joined_group") == []
+
+
+def test_staff_set_a_users_permissions(api: Api) -> None:
+    """Exactly the permissions given, sorted; each one taken away is audited."""
+    client = api()
+    headers = staff(
+        "admin", "auth.change_user", "shop.view_product", "shop.add_product"
+    )
+    bob = create_user("bob")
+    put = setting(client, bob, headers)
 
     granted = put(
         "/permissions", {"permissions": ["shop.view_product", "shop.add_product"]}
@@ -882,6 +989,20 @@ def test_staff_set_groups_and_permissions_they_have(api: Api) -> None:
     assert details("auth.user_permission_revoked") == [
         {"user_id": str(bob), "permission": "shop.view_product"}
     ]
+    assert client.get(
+        f"{ADMIN}/users/{bob}", headers=staff("viewer", "auth.view_user")
+    ).json()["permissions"] == ["shop.add_product"]
+
+
+def test_a_user_is_granted_no_permission_the_actor_lacks_or_none_there_is(
+    api: Api,
+) -> None:
+    """403 naming every permission the actor lacks, sorted; 404 for unknown ones."""
+    client = api()
+    headers = staff("admin", "auth.change_user", "auth.view_user", "shop.add_product")
+    bob = create_user("bob")
+    put = setting(client, bob, headers)
+
     assert error(put("/permissions", {"permissions": ["shop.delete_product"]}), 403)[
         1
     ] == (f"You can only grant permissions you have; {LACK_DELETE}")
@@ -896,43 +1017,48 @@ def test_staff_set_groups_and_permissions_they_have(api: Api) -> None:
         "unknown_permission",
         "No such permission: nope.nothing.",
     )
-    assert client.get(
-        f"{ADMIN}/users/{bob}", headers=staff("viewer", "auth.view_user")
-    ).json()["permissions"] == ["shop.add_product"]
+    shown = client.get(f"{ADMIN}/users/{bob}", headers=headers).json()
+    assert shown["permissions"] == []
 
+
+def test_staff_cannot_take_away_what_they_could_not_give(api: Api) -> None:
+    """A superuser's grants beyond the actor's stay: emptying either list is 403."""
+    client = api()
+    headers = staff("admin", "auth.change_user", "shop.view_product")
+    make_group("leads", "shop.delete_product")
+    put = setting(client, create_user("bob"), headers)
     root = staff("root", is_superuser=True)
+
     assert put("/groups", {"groups": ["leads"]}, root).json()["groups"] == ["leads"]
     assert (
         put("/permissions", {"permissions": ["shop.delete_product"]}, root).status_code
         == 200
     )
-    emptied: list[tuple[str, dict[str, Any]]] = [
-        ("/groups", {"groups": []}),
-        ("/permissions", {"permissions": []}),
-    ]
-    for path, body in emptied:
-        assert put(path, body).status_code == 403
+    assert put("/groups", {"groups": []}).status_code == 403
+    assert put("/permissions", {"permissions": []}).status_code == 403
 
 
-def test_staff_manage_groups(api: Api) -> None:
-    """Groups are created, listed, renamed, granted, and deleted."""
+GROUP_STAFF = (
+    "auth.view_group",
+    "auth.add_group",
+    "auth.change_group",
+    "auth.delete_group",
+    "shop.view_product",
+    "shop.add_product",
+)
+
+
+def test_staff_create_groups(api: Api) -> None:
+    """A group with the permissions given; its creation and grants audited."""
     client = api()
-    headers = staff(
-        "admin",
-        "auth.view_group",
-        "auth.add_group",
-        "auth.change_group",
-        "auth.delete_group",
-        "shop.view_product",
-        "shop.add_product",
-    )
-    url = f"{ADMIN}/groups"
+    headers = staff("admin", *GROUP_STAFF)
 
     response = client.post(
-        url,
+        f"{ADMIN}/groups",
         json={"name": "crew", "permissions": ["shop.view_product"]},
         headers=headers,
     )
+
     assert response.status_code == 201, response.json()
     crew = response.json()
     assert crew == {
@@ -944,8 +1070,17 @@ def test_staff_manage_groups(api: Api) -> None:
     assert details("auth.group_permission_granted") == [
         {"group_id": crew["id"], "permission": "shop.view_product"}
     ]
+    assert client.get(f"{ADMIN}/groups/{crew['id']}", headers=headers).json() == crew
+
+
+def test_groups_are_listed_by_name_in_pages(api: Api) -> None:
+    """Keyset pages by name, a cursor to go on, and none from elsewhere."""
+    client = api()
+    headers = staff("admin", "auth.view_group")
+    crew = make_group("crew", "shop.view_product")
     for name in ("delta", "bravo", "alpha"):
-        client.post(url, json={"name": name}, headers=headers)
+        make_group(name)
+    url = f"{ADMIN}/groups"
 
     first = client.get(url, params={"limit": 2}, headers=headers).json()
     assert [group["name"] for group in first["items"]] == ["alpha", "bravo"]
@@ -954,12 +1089,25 @@ def test_staff_manage_groups(api: Api) -> None:
     ).json()
     assert [group["name"] for group in second["items"]] == ["crew", "delta"]
     assert second["next_cursor"] is None
-    assert second["items"][0] == crew
+    assert second["items"][0] == {
+        "id": str(crew),
+        "name": "crew",
+        "permissions": ["shop.view_product"],
+    }
     bad = client.get(url, params={"cursor": encode_cursor(["a", "b"])}, headers=headers)
     assert error(bad, 422)[0] == "invalid_cursor"
 
+
+def test_a_new_group_needs_a_free_name_and_permissions_the_actor_has(
+    api: Api,
+) -> None:
+    """A name taken or blank, a permission the actor lacks or none has: refused."""
+    client = api()
+    headers = staff("admin", *GROUP_STAFF)
+    make_group("crew")
+
     def refused_with(body: dict[str, Any], status: int) -> tuple[str, str]:
-        return error(client.post(url, json=body, headers=headers), status)
+        return error(client.post(f"{ADMIN}/groups", json=body, headers=headers), status)
 
     assert refused_with({"name": "crew"}, 409) == (
         "group_name_taken",
@@ -972,29 +1120,45 @@ def test_staff_manage_groups(api: Api) -> None:
     assert refused_with({"name": "x", "permissions": ["nope.x"]}, 404)[0] == (
         "unknown_permission"
     )
+    listed = client.get(f"{ADMIN}/groups", headers=headers).json()["items"]
+    assert [group["name"] for group in listed] == ["crew"]
+    assert [row["actor"] for row in audited("auth.group_created")] == ["system"]
 
-    one = f"{url}/{crew['id']}"
-    assert client.get(one, headers=headers).json() == crew
+
+def test_staff_rename_groups(api: Api) -> None:
+    """A free name, stripped; the same name again changes nothing; a taken one 409."""
+    client = api()
+    headers = staff("admin", *GROUP_STAFF)
+    crew = make_group("crew")
+    make_group("alpha")
+    one = f"{ADMIN}/groups/{crew}"
+
     renamed = client.patch(one, json={"name": " squad "}, headers=headers)
     assert renamed.json()["name"] == "squad"
-    assert details("auth.group_renamed") == [{"group_id": crew["id"], "name": "squad"}]
+    assert details("auth.group_renamed") == [{"group_id": str(crew), "name": "squad"}]
     assert client.patch(one, json={"name": "squad"}, headers=headers).status_code == 200
     taken = client.patch(one, json={"name": "alpha"}, headers=headers)
     assert error(taken, 409) == ("group_name_taken", "A group called 'alpha' exists.")
     assert client.get(one, headers=headers).json()["name"] == "squad"
     assert len(audited("auth.group_renamed")) == 1
 
+
+def test_staff_set_a_groups_permissions_they_have(api: Api) -> None:
+    """Exactly those given, each one taken away audited; none the actor lacks."""
+    client = api()
+    headers = staff("admin", *GROUP_STAFF)
+    crew = make_group("crew", "shop.view_product")
+    url = f"{ADMIN}/groups/{crew}/permissions"
+
     granted = client.put(
-        f"{one}/permissions",
-        json={"permissions": ["shop.add_product"]},
-        headers=headers,
+        url, json={"permissions": ["shop.add_product"]}, headers=headers
     )
     assert granted.json()["permissions"] == ["shop.add_product"]
     assert details("auth.group_permission_revoked") == [
-        {"group_id": crew["id"], "permission": "shop.view_product"}
+        {"group_id": str(crew), "permission": "shop.view_product"}
     ]
     lacking = client.put(
-        f"{one}/permissions",
+        url,
         json={"permissions": ["shop.add_product", "shop.delete_product"]},
         headers=headers,
     )
@@ -1002,11 +1166,21 @@ def test_staff_manage_groups(api: Api) -> None:
         error(lacking, 403)[1]
         == f"You can only grant permissions you have; {LACK_DELETE}"
     )
+    shown = client.get(f"{ADMIN}/groups/{crew}", headers=headers).json()
+    assert shown["permissions"] == ["shop.add_product"]
 
+
+def test_a_deleted_group_is_gone_and_leaves_its_members(api: Api) -> None:
+    """Deletion is audited; the group answers 404 after; its members are in none."""
+    client = api()
+    headers = staff("admin", *GROUP_STAFF)
+    crew = make_group("squad")
     create_user("bob")
     join("bob", "squad")
+    one = f"{ADMIN}/groups/{crew}"
+
     assert client.delete(one, headers=headers).status_code == 204
-    assert details("auth.group_deleted") == [{"group_id": crew["id"], "name": "squad"}]
+    assert details("auth.group_deleted") == [{"group_id": str(crew), "name": "squad"}]
     for method in ("GET", "PATCH", "DELETE"):
         response = client.request(method, one, json={"name": "x"}, headers=headers)
         assert error(response, 404) == ("group_not_found", "No such group.")
