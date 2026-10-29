@@ -48,6 +48,17 @@ and a status.
   column (`sa.String(length=20)`, `sa.Numeric(precision=12, scale=2)`)
   (DATA-12).
 
+### Security
+
+- A `PasswordHash` in a model's own field, or inside another value object
+  (`Credential(hash: PasswordHash)`, an API client's secret), loaded any
+  text shaped like a hash through `loaddata`, `plaintext$hunter2` included:
+  the check that the configured `AUTH.PASSWORD_HASHERS` would make it
+  (SEC-12a-3) held only the users table's `password`. `contrib.auth`
+  registers its column type for `PasswordHash`, so every such column gets
+  the same check. Its storage is the `Text` it always derived: no
+  migration (SEC-13a-1).
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when
