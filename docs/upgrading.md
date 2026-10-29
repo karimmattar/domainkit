@@ -61,7 +61,8 @@ a way, how to keep the old behaviour for as long as the project needs it.
   and no expectation is held for the whole context any more. **Fix:** hold
   it on the unit of work the service changes the aggregate through:
   `with uow.expect(Order, order_id, versions):` in place of `with
-  expect_version(Order, order_id, versions):`.
+  expect_version(Order, order_id, versions):`. The expectation is still checked
+  again in each transaction of the unit of work (SEC-12a-6).
 - **A test that did not request the database is refused it** (TEST-08).
   The pytest plugin raises `domainkit.db.DatabaseAccessRefused` when a
   test reaches the test databases without requesting `db`, or a fixture
