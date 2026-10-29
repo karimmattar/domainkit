@@ -9,6 +9,45 @@ and a status.
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking:** the hook methods of `DomainConfig` that 0.12 deprecated:
+  `startup`, `shutdown`, `check`, `seed`, `erase_subject`,
+  `export_subject`, `check_application`, `deployment_warnings`, `stage`,
+  `committed`, `stage_transaction`, `transaction_committed`, and
+  `migrated`, with their warnings and the path that called an override.
+  `setup()` refuses a domain that still defines one of these names, on
+  its class, a base, or the instance, set in the class body or later,
+  since nothing would call it (an `erase_subject` left behind would keep
+  a person's data through an erasure that reports success). One check
+  `apps.E002` per name says the domain, the class, and the point to
+  register on. **To change:** register the function in `ready()`,
+  `on_erase_subject(erase_copies)`, under a name of its own. The refusal
+  stays until 1.0. `HookPoint` no longer takes `method=` (DSGN-03;
+  ADR 0111).
+- **Breaking:** `domainkit.ddd.preconditions.expect_version`, and the
+  context-wide expectation every repository load and commit read. Importing
+  it raises `ImportError`. **To change:** `with uow.expect(Order, order_id,
+  versions):` on the unit of work the service changes the aggregate
+  through. An expectation is still checked again in each transaction of
+  the unit of work (SEC-12a-6) (DSGN-14; ADR 0102).
+
+### Fixed
+
+- A single-field value object around another (`Code(sku: Sku)`) did not
+  survive `dumpdata` then `loaddata`: the dump held the inner object,
+  `{"value": "LAMP-1"}`, which the load refused. A fixture holds such a
+  column as the database does, its innermost value, and the load makes
+  each object from the inside out, so each checks what it holds. Fixtures
+  written by 0.11 and 0.12 load (DATA-12).
+- `makemigrations` wrote a revision that failed with `NameError` for a
+  single-field value object around another, or around a `Decimal` or a
+  `datetime`: Alembic rendered the column type as
+  `domainkit.db.derive.ValueObjectType(...)`, naming classes the revision
+  does not import. It renders the type the column stores, as for a plain
+  column (`sa.String(length=20)`, `sa.Numeric(precision=12, scale=2)`)
+  (DATA-12).
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when

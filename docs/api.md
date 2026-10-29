@@ -838,7 +838,6 @@ Domain-driven design building blocks ("seedwork").
 Expected versions: change an aggregate only if it is still as the caller saw it.
 
 - `Expectation`: The version an aggregate must have when a use case loads it.
-- `expect_version`: Expect aggregate `id_` of `model` at one of `versions` in the block.
 
 ## `domainkit.ddd.query`
 
