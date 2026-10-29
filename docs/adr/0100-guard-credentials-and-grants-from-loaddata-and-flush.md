@@ -1,6 +1,6 @@
 # 0100. Guard credentials and grants from `loaddata` and `flush`, and load new rows only
 
-- Status: Accepted; amended twice on 2026-10-28 (at the end)
+- Status: Accepted; amended 2026-10-28, twice, and 2026-10-29 (at the end)
 - Date: 2026-10-26
 
 ## Context
