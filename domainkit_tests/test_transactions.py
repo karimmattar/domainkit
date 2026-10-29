@@ -640,6 +640,67 @@ async def test_sqlite_begins_without_a_statement_of_the_work(
             await two.gadgets.count()
 
 
+async def in_transaction(uow: GadgetsUnitOfWork) -> bool:
+    """Whether SQLite's driver holds a transaction open for ``uow``'s session."""
+    connection = await uow.session.connection()
+    raw = await connection.get_raw_connection()
+    return bool(raw.driver_connection.in_transaction)  # type: ignore[union-attr]
+
+
+async def test_sqlite_begins_before_a_first_savepoint(sqlite_file: str) -> None:
+    """Its ``RELEASE`` no longer commits: work left uncommitted leaves nothing.
+
+    SQLite's driver begins a transaction only before a write, so a
+    ``SAVEPOINT`` sent first began one, and its ``RELEASE`` committed it.
+    The ``BEGIN`` is the framework's: ``assert_num_queries`` skips it.
+    """
+    async with GadgetsUnitOfWork() as uow:
+        with assert_num_queries(3):  # SAVEPOINT, INSERT, RELEASE.
+            async with uow.savepoint():
+                await uow.gadgets.add(make_gadget("a", stock=5))
+        assert await in_transaction(uow)
+    assert await total_stock() == 0
+
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.count()  # A read: still outside a transaction.
+        assert not await in_transaction(uow)
+        async with uow.savepoint():
+            await uow.gadgets.add(make_gadget("b", stock=2))
+        await uow.commit()
+    assert await total_stock() == 2
+
+
+async def test_sqlite_savepoints_inside_a_transaction_begin_nothing(
+    sqlite_file: str,
+) -> None:
+    """After a write, or ``BEGIN IMMEDIATE``, the transaction is begun already."""
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.add(make_gadget("a", stock=1))
+        await uow.session.flush()
+        with assert_num_queries(3):  # SAVEPOINT, INSERT, RELEASE: no BEGIN.
+            async with uow.savepoint():
+                await uow.gadgets.add(make_gadget("b", stock=1))
+        await uow.commit()
+    async with GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as uow:
+        async with uow.savepoint():
+            await uow.gadgets.add(make_gadget("c", stock=1))
+        assert await in_transaction(uow)
+    assert await total_stock() == 2
+
+
+async def test_sqlite_autocommit_savepoints_are_left_as_they_are(
+    sqlite_file: str,
+) -> None:
+    """A connection outside transactions gets no ``BEGIN``: its ``RELEASE`` commits."""
+    await store(make_gadget("a", stock=0))
+    async with connections.autocommit() as connection:
+        async with connection.begin_nested():
+            await connection.execute(gadgets.update().values(stock=3))
+        raw = await connection.get_raw_connection()
+        assert not raw.driver_connection.in_transaction  # type: ignore[union-attr]
+    assert await total_stock() == 3
+
+
 async def test_sqlite_keeps_a_rule_across_rows_when_serializable(
     sqlite_file: str,
 ) -> None:
@@ -1224,8 +1285,6 @@ async def test_a_batch_that_retries_runs_a_lost_item_again(
         assert await total_stock() == 8
 
 
-@postgres_only  # On SQLite the batch's first SAVEPOINT begins the transaction,
-# and its RELEASE commits it, before the commit this test makes fail.
 async def test_an_atomic_batch_lost_at_its_commit_runs_again(
     tables: None, waits: list[float], monkeypatch: pytest.MonkeyPatch
 ) -> None:
