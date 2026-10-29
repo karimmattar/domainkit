@@ -30,7 +30,7 @@ from typing import Any, Final
 from domainkit.conf.env import project_root
 from domainkit.management.base import BaseCommand, CommandError
 from domainkit.utils.formatting import format_python
-from domainkit.utils.text import pluralize, snake_case
+from domainkit.utils.text import plural_of, snake_case
 
 __all__ = [
     "AggregateGenerator",
@@ -684,7 +684,11 @@ class Names:
             CommandError: A name is not valid, or the plural is the singular.
         """
         snake = snake_case(class_name(aggregate, "aggregate name"))
-        many = snake_name(plural or pluralize(snake), "plural")
+        many = snake_name(plural or plural_of(snake), "plural")
+        if plural is None and many == snake:
+            raise CommandError(
+                f"{aggregate} reads as a plural: name the aggregate in the singular."
+            )
         if many == snake:
             raise CommandError(f"{many!r} is not a plural of {snake!r}.")
         return cls(aggregate, snake, many)

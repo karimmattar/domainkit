@@ -420,13 +420,15 @@ def test_template_context_validates_names() -> None:
         "DOMAIN": "ORDER_LINES",
         "domain_title": "Order Lines",
         "package": "domains.order_lines",
-        "Aggregate": "OrderLines",
-        "aggregate": "order_lines",
-        "model": "orderlines",
-        "aggregates": "order_lineses",
-        "aggregates_title": "order lineses",
-        "table": "order_lines_order_lineses",
+        "Aggregate": "OrderLine",
+        "aggregate": "order_line",
+        "model": "orderline",
+        "aggregates": "order_lines",
+        "aggregates_title": "order lines",
+        "table": "order_lines_order_lines",
     }
+    catalog = startdomain.template_context("catalog", "domains", None, None)
+    assert (catalog["Aggregate"], catalog["aggregates"]) == ("Catalog", "catalogs")
     assert (
         startdomain.template_context("shop", "d", "Box", None)["aggregates"] == "boxes"
     )
@@ -436,6 +438,12 @@ def test_template_context_validates_names() -> None:
         ("class", None, None, "'class' is not a valid snake_case package name."),
         ("shop", "box", None, "'box' is not a valid CamelCase class name."),
         ("shop", "Box", "box", "'box' is not a valid snake_case plural."),
+        (
+            "notes",
+            "Notes",
+            None,
+            "Notes reads as a plural: name the aggregate in the singular.",
+        ),
         ("shop", "Box", "Bad-Plural", "'Bad-Plural' is not a valid snake_case plural."),
     ]:
         with pytest.raises(CommandError) as refused:

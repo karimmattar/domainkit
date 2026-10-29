@@ -237,6 +237,7 @@ def test_addevent_adds_a_logger_where_there_is_none(shop: Shop) -> None:
         ("startaggregate", ["Product"], {}, "gen.shop already has Product"),
         ("startaggregate", ["category"], {}, "not a valid CamelCase aggregate name"),
         ("startaggregate", ["Sheep"], {"plural": "sheep"}, "not a plural of 'sheep'"),
+        ("startaggregate", ["Notes"], {}, "Notes reads as a plural: name the"),
         (
             "startaggregate",
             ["Box"],
@@ -551,6 +552,7 @@ def test_names_and_words() -> None:
     assert [
         past_tense(verb) for verb in ("Publish", "Archive", "Copy", "Play", "Destroy")
     ] == ["Published", "Archived", "Copied", "Played", "Destroyed"]
+    assert Names.of("Notes", "note_list").plural == "note_list"
     assert default_path("OrderLinesByOwner", names) == "/by-owner"
     assert default_path("OrderLines", names) == "/order-lines"
     assert default_path("EveryOrderLine", names) == "/every-order-line"

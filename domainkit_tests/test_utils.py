@@ -8,7 +8,13 @@ import pytest
 from domainkit.deprecation import DomainkitDeprecationWarning, moved
 from domainkit.http.access import Require
 from domainkit.utils.module_loading import import_string
-from domainkit.utils.text import camel_case, pluralize, snake_case
+from domainkit.utils.text import (
+    camel_case,
+    plural_of,
+    pluralize,
+    singular_of,
+    snake_case,
+)
 
 
 def test_import_string() -> None:
@@ -62,6 +68,65 @@ def test_camel_case() -> None:
 def test_pluralize(word: str, plural: str) -> None:
     """Common English endings are handled."""
     assert pluralize(word) == plural
+    assert plural_of(word) == plural
+
+
+@pytest.mark.parametrize(
+    ("plural", "singular"),
+    [
+        ("notes", "note"),
+        ("orders", "order"),
+        ("order_lines", "order_line"),
+        ("categories", "category"),
+        ("keys", "key"),
+        ("boxes", "box"),
+        ("classes", "class"),
+        ("matches", "match"),
+        ("dishes", "dish"),
+        ("statuses", "status"),
+        ("aliases", "alias"),
+        ("houses", "house"),
+        ("sizes", "size"),
+        ("caches", "cache"),
+        ("movies", "movie"),
+        ("settings", "setting"),
+    ],
+)
+def test_a_plural_is_its_own_plural_and_has_a_singular(
+    plural: str, singular: str
+) -> None:
+    """``startdomain notes`` names its aggregate ``Note``, not ``Notes``.
+
+    Before 0.12.1, ``pluralize("notes")`` was ``noteses``, and the generators
+    wrote it. ``pluralize`` keeps that: routes' default plurals come from it.
+    """
+    assert plural_of(plural) == plural
+    assert singular_of(plural) == singular
+    assert plural_of(singular) == plural
+    assert pluralize(plural) == f"{plural}es"
+
+
+@pytest.mark.parametrize(
+    "word",
+    [
+        "status",
+        "class",
+        "analysis",
+        "bus",
+        "lens",
+        "news",
+        "series",
+        "box",
+        "s",
+        "order_s",
+        "trys",
+        "billing",
+    ],
+)
+def test_a_word_that_is_not_a_plural_is_its_own_singular(word: str) -> None:
+    """Singular nouns in ``s``, nouns the same in both, and what reads as no word."""
+    assert singular_of(word) == word
+    assert plural_of(word) == pluralize(word)
 
 
 def test_format_python_sorts_imports_and_formats(tmp_path: Path) -> None:
