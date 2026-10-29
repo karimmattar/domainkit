@@ -60,6 +60,7 @@ together.
 | Storage backends | `domainkit.storage` ([uploads.md](uploads.md)) |
 | `TestCase`, `self.client`, `override_settings` | pytest fixtures: `client`, `admin_client`, `client_for`; `override_settings` from `domainkit.conf` ([testing.md](testing.md)) |
 | `assertNumQueries`, `factory_boy`, `freezegun` | `assert_num_queries`, `Factory`, `freeze_time` ([testing.md](testing.md)) |
+| `LiveServerTestCase`; pytest-django's `live_server` and `django_db_blocker` | `live_server`, `database_blocker` ([testing.md](testing.md#a-live-server)) |
 
 What has no Django name: aggregates and their rules, commands, the
 transactional outbox, the inbox, the audit trail and its seals, evidence

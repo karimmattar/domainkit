@@ -23,6 +23,26 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.12 to 0.13
+
+### Breaking changes
+
+Each changes what a project gets without changing its code. Each says how
+to keep the old behaviour, for as long as the project needs it.
+
+- **A test that did not request the database is refused it** (TEST-08).
+  The pytest plugin raises `domainkit.db.DatabaseAccessRefused` when a
+  test reaches the test databases without requesting `db`, or a fixture
+  that does (`client`, `async_client`, `live_server`, ...); the message
+  names the fixture. 0.12 let such a test read whatever the test before
+  it left, and, run first, reach the databases the test settings name.
+  **Fix:** request `db` in the test, or in its function-scoped fixtures
+  that reach the database; a module- or session-scoped fixture opens the
+  databases with `with database_blocker.unblock():`. **To keep the old
+  behaviour:** `@pytest.mark.allow_database` on a test, or `pytestmark =
+  pytest.mark.allow_database` in a module; or, for the whole suite,
+  `domainkit_allow_database = true` under `[tool.pytest.ini_options]`.
+
 ## 0.11 to 0.12
 
 ### Breaking changes

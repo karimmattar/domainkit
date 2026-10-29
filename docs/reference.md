@@ -1031,6 +1031,12 @@ factories, a clock to freeze (`freeze_time`), and query-count assertions
 tests that hold their event loop. [docs/testing.md](testing.md) covers them
 all.
 
+A test that did not request `db` is refused the databases
+(`DatabaseAccessRefused`); `@pytest.mark.allow_database` on a test, or
+the ini option `domainkit_allow_database = true` for every test, allows
+them as 0.12 did. `live_server` serves the application on a port of the
+test process ([docs/testing.md](testing.md#database-access)).
+
 Fixtures for published events and queued work (`captured_events`,
 `outbox`, `execute_deferred`) come with messaging's own plugin
 ([contrib.md](contrib/messaging.md#testing)).

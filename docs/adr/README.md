@@ -117,6 +117,8 @@ statuses, and the amendments they name.
 | [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted |
 | [0107](0107-make-test-users-through-the-domain-and-sign-in-through-a-protocol.md) | Make test users through the domain, and sign in as them through a protocol | Accepted |
 | [0108](0108-keep-the-full-domain-as-the-default-and-give-new-projects-an-image-and-ci.md) | Keep the full domain as `startdomain`'s default; give new projects an image and CI | Accepted; amended 2026-10-28 (at the end) |
+| [0112](0112-refuse-the-test-databases-to-a-test-that-did-not-request-them.md) | Refuse the test databases to a test that did not request them | Accepted |
+| [0113](0113-reset-module-state-through-public-resets-the-plugin-calls.md) | Reset module state through public resets the plugin calls | Accepted |
 
 ### Decisions still without a record
 

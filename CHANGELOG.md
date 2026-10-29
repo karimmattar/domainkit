@@ -9,6 +9,62 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `live_server` in the pytest plugin: the project's application served by
+  uvicorn on a port of the test process, for browsers and other
+  processes, on the `db` databases, with `127.0.0.1` in `ALLOWED_HOSTS`.
+  It starts for the test and stops after it (about 2 ms and 0.14 s), so
+  each test's application has its own settings and nothing it served
+  reaches the next; its thread carries the test's context, a frozen clock
+  too. `LiveServer(app)` serves any ASGI application in a `with` block
+  (`docs/testing.md`) (TEST-08).
+- factory_boy's `Trait`, `post_generation`, `RelatedFactory`,
+  `SelfAttribute`, `Maybe`, and `stub()` / `stub_batch()` for
+  `domainkit.testing.Factory`. Parameters and traits go in `class Params`
+  and never reach the model; `post_generation` methods and related
+  factories run after `create` adds the object and before the unit of
+  work commits, so what they change, the events they record, and the
+  objects they add are committed with it. A declaration given as an
+  argument is computed (`currency=SelfAttribute("..currency")`). No
+  `Faker`: it would be a new dependency (TEST-08).
+- `client.browser_session_as(user)`, `await
+  async_client.browser_session_as(user)`, and `await
+  browser_session_for(user)`: a test client signed in with a browser
+  session, its cookies and CSRF token, without posting to
+  `/auth/session`, as Litestar's `set_session_data`. Auth starts it
+  (`AuthConfig.issue_test_session`, through the new `BrowserSessionIssuer`
+  protocol) as the route does, and refuses unless `ENVIRONMENT = "test"`,
+  as the test tokens do (TEST-08, SEC-12a-2).
+- `database_blocker` and `DatabaseBlocker`: `with
+  database_blocker.unblock():` lets a fixture wider than one test reach
+  the test databases, as pytest-django's `django_db_blocker`;
+  `ConnectionHandler.refuse(reason)` and `allow()` underneath, which raise
+  `domainkit.db.DatabaseAccessRefused` (ADR 0112) (TEST-08).
+- Public resets for what a test can leave behind:
+  `domainkit.log.reset_throttled()` and `ThrottledLog.reset()`,
+  `EventBus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`,
+  and `domainkit.http.metrics.refreshers_kept()`. The plugin calls them:
+  before each test the throttled logs and the principal cache forget what
+  they hold, and once the domains are loaded the subscriptions, tasks, and
+  metric refreshers a test adds are dropped after it, where 0.12 left them
+  for every later test. `docs/testing.md` lists what each test starts
+  from, and the reset behind each line (ADR 0113) (TEST-05).
+
+### Changed
+
+- **Breaking:** the pytest plugin refuses the test databases to a test
+  that did not request `db` (or a fixture that does: `client`,
+  `async_client`, `live_server`, ...), as pytest-django does: it raises
+  `DatabaseAccessRefused`, naming the fixture to request. Until now such
+  a test saw whatever the test before it left, and when it ran first it
+  reached the databases the test settings name. **Fix:** request `db`;
+  in a fixture wider than one test, use `database_blocker.unblock()`.
+  **To keep the old behaviour:** mark a test or a module
+  `@pytest.mark.allow_database`, or set `domainkit_allow_database = true`
+  in the pytest settings. It costs a test nothing measurable (ADR 0112)
+  (TEST-08).
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when
