@@ -264,5 +264,5 @@ python manage.py privacy purge             # in a nightly job
 The actor is whoever runs them. From the `privacy` command it is the
 operator, `operator:<name>`, from `--operator` (before the action:
 `privacy --operator alice erase --subject ...`), `DOMAINKIT_OPERATOR`, or
-the login name ([operators](reference.md#operators)); from code run
+the login name ([operators](reference/commands.md#operators)); from code run
 outside a request, `system`.

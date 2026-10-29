@@ -580,7 +580,7 @@ def test_metric_handles_kept_are_bounded(
     labelled: list[tuple[str, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Past ``MAX_SERIES``, a series is looked up for each request, and counted."""
-    assert metrics.MAX_SERIES == 4096  # As docs/reference.md says.
+    assert metrics.MAX_SERIES == 4096  # As docs/reference/observability.md says.
     monkeypatch.setattr(metrics, "MAX_SERIES", 1)
     counter = MetricsMiddleware(_nothing_app)
 

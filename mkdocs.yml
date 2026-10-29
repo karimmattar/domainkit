@@ -119,6 +119,18 @@ nav:
       - upgrading.md
   - Reference:
       - reference.md
+      - Settings, checks, and commands:
+          - reference/settings.md
+          - reference/backends.md
+          - reference/http.md
+          - reference/servers.md
+          - reference/checks.md
+          - reference/responses.md
+          - reference/signing.md
+          - reference/observability.md
+          - reference/test-plugin.md
+          - reference/commands.md
+          - reference/extension-points.md
       - api.md
       - API reference: reference/api/index.md
       - versioning.md

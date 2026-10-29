@@ -69,7 +69,8 @@ to `.ci/`. `make services-down` stops them and drops their data.
   today's behaviour, and gets a row in its table with its default and
   bounds (`test_docs.py` checks the rows).
 - **Docs.** Change the page that describes what you changed. A new command
-  or setting is named in `docs/reference.md`.
+  or setting is named on its page of `docs/reference/` (`docs/reference.md`
+  lists them).
 - **Layers.** `domainkit.architecture` keeps each layer to its own imports,
   and the core never imports `domainkit.contrib`
   ([ADR 0080](docs/adr/0080-access-rules-are-core-auth-is-one-provider.md)).

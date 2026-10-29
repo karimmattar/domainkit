@@ -19,5 +19,5 @@ request path, the benchmark ladder before and after. -->
 - [ ] New and changed code is covered, branches included, and mutants of the changed functions are killed or explained
 - [ ] An entry under `## [Unreleased]` in `CHANGELOG.md`; a **Breaking:** one is in `docs/upgrading.md` too
 - [ ] Public names in `__all__` and `docs/api.md`, with docstrings; a renamed or moved name keeps working, deprecated, for a minor
-- [ ] The page in `docs/` that describes the change, and `docs/reference.md` for a new setting or command
+- [ ] The page in `docs/` that describes the change, and its page of `docs/reference/` for a new setting, check, or command
 - [ ] An ADR for a decision that is costly to reverse ([CONTRIBUTING.md](../CONTRIBUTING.md#writing-it-up))

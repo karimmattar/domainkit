@@ -12,7 +12,7 @@ The decisions behind this page are ADRs
 [0009](adr/0009-sharding-with-hash-buckets.md),
 [0010](adr/0010-postgresql-range-partitioning.md), and
 [0011](adr/0011-immudb-ledger-for-evidence.md). Settings are listed in
-[reference.md](reference.md#databases-and-migrations).
+[reference/backends.md](reference/backends.md#databases-and-migrations).
 
 Querying repositories, pages, filters, bulk changes, soft delete, row
 locks, and savepoints are in [queries.md](queries.md). Read replicas and

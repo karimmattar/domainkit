@@ -41,8 +41,8 @@ COPY --from=build /opt/venv /opt/venv
 COPY . .
 USER 10001
 EXPOSE 8000
-# The limits docs/reference.md gives ("Server limits"); proxy headers are
-# the application's (TRUSTED_PROXIES), not uvicorn's.
+# The limits docs/reference/servers.md gives ("Server limits"); proxy
+# headers are the application's (TRUSTED_PROXIES), not uvicorn's.
 CMD ["uvicorn", "config.asgi:application", "--app-dir", "src", \
      "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", \
      "--limit-concurrency", "1200", "--backlog", "2048", \

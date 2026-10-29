@@ -73,7 +73,7 @@ def secret_keys() -> tuple[bytes, ...]:
     if settings.SECRET_KEY is None:
         raise ImproperlyConfigured(
             "Set SECRET_KEY: it signs the values this service hands out "
-            "(docs/reference.md)."
+            "(docs/reference/signing.md)."
         )
     keys = (settings.SECRET_KEY, *settings.SECRET_KEY_FALLBACKS)
     return tuple(key.get_secret_value().encode() for key in keys)
