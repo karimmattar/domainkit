@@ -397,6 +397,27 @@ def test_deployments_accept_adapters(install: Install) -> None:
     assert isinstance(notifications.get_push_backend(), PushService)
 
 
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        (
+            {"SMS_BACKEND": ADAPTERS["PUSH_BACKEND"]},
+            r"^NOTIFICATIONS\.SMS_BACKEND: '.*PushService' is not a SmsBackend\.$",
+        ),
+        (
+            {"PUSH_BACKEND": ADAPTERS["SMS_BACKEND"]},
+            r"^NOTIFICATIONS\.PUSH_BACKEND: '.*GatewaySms' is not a PushBackend\.$",
+        ),
+    ],
+)
+def test_each_backend_names_its_own_setting_when_refused(
+    install: Install, options: dict[str, Any], message: str
+) -> None:
+    """A push service set as the SMS backend, or the reverse, names the setting."""
+    with pytest.raises(ImproperlyConfigured, match=message):
+        install(**options)
+
+
 @pytest.mark.parametrize("number", ["+33612345678", "+1234567", "+123456789012345"])
 def test_phone_numbers_are_e164(number: str) -> None:
     """A plus, a country code, and up to 15 digits."""

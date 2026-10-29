@@ -1,6 +1,6 @@
 # 0100. Guard credentials and grants from `loaddata` and `flush`, and load new rows only
 
-- Status: Accepted; amended twice on 2026-10-28 (at the end)
+- Status: Accepted; amended 2026-10-28, twice, and 2026-10-29 (at the end)
 - Date: 2026-10-26
 
 ## Context
@@ -208,3 +208,30 @@ with a proof that failed on the merged branch (`test_sec12a_3_*`,
   inspect it, and the record is what was missing. In development and
   tests nothing changes, as with the other operator commands.
 
+
+## Amendment (2026-10-29, 0.12.1): rows of one table that name different columns
+
+A load wrote each table's rows as one `executemany` per `CHUNK`, which
+takes its columns from the batch's first row. A hand-written fixture
+whose first row left out a column, and a later row gave it, lost that
+value: the load said it wrote the row, and the column was null. The other
+way round, the load failed with SQLAlchemy's `InvalidRequestError`.
+`dumpdata` writes every column, so only hand-written fixtures met it.
+
+Two fixes were tried against the fixtures the test suite loads, all of
+which name the same columns in every row of a table:
+
+- **Refuse rows that name different columns.** A clear error instead of
+  a lost value, but a hand-written fixture that leaves out what it has no
+  value for, a use `--replace`'s tests already make, would have to spell
+  out every column as null.
+- **Write each run of rows naming the same columns as its own batch.**
+  Every fixture that loaded still loads, the two that did not now do, and
+  a fixture `dumpdata` wrote is written in as many statements as before.
+
+Loading takes the second. Runs are consecutive, not one batch per set of
+columns, so rows keep their order: in a table that references itself, a
+row is written before the rows that reference it, as the fixture gives
+them. A fixture that alternates its columns row by row costs one
+statement per row. The counts a load prints and records are unchanged:
+they are of rows, not statements.

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from gen.notes.application import services
 from gen.notes.application.commands import PinNote
-from gen.notes.domain.events import NotePined
+from gen.notes.domain.events import NotePinned
 
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.testing import TestClient
@@ -16,15 +16,15 @@ URL = "/api/v1/notes/notes"
 
 
 @pytest.mark.anyio
-async def test_pin_note_publishes_note_pined() -> None:
-    """The use case changes the note and commits; NotePined follows."""
+async def test_pin_note_publishes_note_pinned() -> None:
+    """The use case changes the note and commits; NotePinned follows."""
     published: list[DomainEvent] = []
     bus = EventBus()
 
-    async def collect(event: NotePined) -> None:
+    async def collect(event: NotePinned) -> None:
         published.append(event)
 
-    bus.subscribe(NotePined, collect)
+    bus.subscribe(NotePinned, collect)
     uow = FakeNotesUnitOfWork(bus)
     note = new_note()
     async with uow:
@@ -36,7 +36,7 @@ async def test_pin_note_publishes_note_pined() -> None:
     )
 
     assert uow.commits == 2
-    assert [type(each) for each in published] == [NotePined]
+    assert [type(each) for each in published] == [NotePinned]
 
 
 def test_pin_note_route(admin_client: TestClient) -> None:

@@ -42,9 +42,10 @@ one transaction per database.
 import base64
 import binascii
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from itertools import batched, groupby
 from typing import Any, Final
 
 from pydantic import TypeAdapter, ValidationError
@@ -290,8 +291,8 @@ async def load(
             for table, rows in tables:
                 replaced = await _stored(connection, table, rows)
                 statement = _insert(connection, table, replace=replace)
-                for start in range(0, len(rows), CHUNK):
-                    await connection.execute(statement, rows[start : start + CHUNK])
+                for batch in _batches(rows):
+                    await connection.execute(statement, batch)
                 loaded.append(
                     TableLoad(table.name, len(rows), replaced, guarded(table))
                 )
@@ -299,6 +300,18 @@ async def load(
     finally:
         await engine.dispose()
     return loaded
+
+
+def _batches(rows: Sequence[dict[str, Any]]) -> Iterator[tuple[dict[str, Any], ...]]:
+    """``rows`` in order, ``CHUNK`` at a time, each batch naming the same columns.
+
+    A batch is one ``executemany``, which takes its columns from its first
+    row: a column a later row named and the first left out would be
+    dropped without a word. Rows stay in order, so a row a later one
+    references (in a table that references itself) is written first.
+    """
+    for _, alike in groupby(rows, key=frozenset):
+        yield from batched(alike, CHUNK, strict=False)
 
 
 async def _lock(connection: AsyncConnection, tables: Sequence[Table]) -> None:

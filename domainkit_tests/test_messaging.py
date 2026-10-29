@@ -27,6 +27,7 @@ from prometheus_client import REGISTRY
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncTransaction
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -61,6 +62,7 @@ from domainkit.contrib.messaging import (
     periodic,
     task,
 )
+from domainkit.contrib.messaging import apps as apps_module
 from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import worker as worker_module
@@ -220,6 +222,24 @@ async def outbox() -> list[dict[str, object]]:
             select(messages).order_by(messages.c.created_at)
         )
         return [dict(row._mapping) for row in rows]
+
+
+def test_ready_loads_the_metrics_where_prometheus_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outbox's gauges are registered by ``ready()``, prometheus_client present.
+
+    Recorded, not imported again: a second import would register the gauges
+    twice.
+    """
+    imported: list[str] = []
+    monkeypatch.setattr(apps_module, "import_module", imported.append)
+    registry.clear()
+    with override_settings(INSTALLED_DOMAINS=[MESSAGING, ALPHA]):
+        setup()
+    registry.clear()
+
+    assert imported == ["domainkit.contrib.messaging.metrics"]
 
 
 async def test_deferred_tasks_commit_with_the_change(tables: None) -> None:
@@ -1462,6 +1482,70 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
     (row,) = await outbox()
     # The publication cut short gave its message back: the relay sends it now.
     assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+async def shut_down_as_a_lease_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shut down while the publisher's lease has committed, before it learns so.
+
+    aiosqlite commits in its own thread, and a PostgreSQL ``COMMIT`` may
+    finish on the server, after the caller is cancelled. Here the commit
+    goes through, then the publisher is held until shutdown cancels it.
+    """
+    exit_transaction = AsyncTransaction.__aexit__
+    leased = asyncio.Event()
+
+    async def committed_then_held(self: AsyncTransaction, *exc: object) -> None:
+        await exit_transaction(self, *exc)
+        task = asyncio.current_task()
+        if task is not None and task.get_name().startswith("messaging.publisher"):
+            leased.set()
+            await asyncio.sleep(5)  # Cancelled by the shutdown.
+
+    monkeypatch.setattr(AsyncTransaction, "__aexit__", committed_then_held)
+    await enqueue(remember, value=uuid.uuid4())
+    task = commit_publisher(registry.settings(MessagingSettings))._task
+    assert task is not None
+    async with asyncio.timeout(5):
+        await leased.wait()
+        (row,) = await outbox()
+        assert row["lock_id"] is not None
+        await close_publishers(within=0.1)
+        await asyncio.wait({task})
+
+
+async def test_shutdown_gives_back_a_lease_cut_off_as_it_commits(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lease the driver committed as the publisher was cancelled is given back.
+
+    Before 0.12.1 the message stayed locked until its lease ran out, as a
+    loaded run of the test above once saw.
+    """
+    await shut_down_as_a_lease_commits(monkeypatch)
+
+    (row,) = await outbox()
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+async def test_a_give_back_that_fails_is_logged_and_the_lease_runs_out(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The shutdown goes on; the message waits for its lease, as before 0.12.1."""
+
+    async def refused(self: Worker, lock_id: uuid.UUID) -> None:
+        raise DriverError("08006")
+
+    monkeypatch.setattr(Worker, "_unlock", refused)
+
+    await shut_down_as_a_lease_commits(monkeypatch)
+
+    (row,) = await outbox()
+    assert row["lock_id"] is not None
+    assert "Could not give back a lease cut off; their locks expire" in (
+        caplog.messages
+    )
 
 
 class RecordingWorker:

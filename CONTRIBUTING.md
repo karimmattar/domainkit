@@ -52,7 +52,9 @@ to `.ci/`. `make services-down` stops them and drops their data.
   module goes in one of the weekly shards in `.github/workflows/ci.yml`
   (`test_ci.py` checks it). A pull request's `mutation (changed)` check
   runs the mutants of the functions it changed and lists those that lived
-  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)). A
+  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)); for
+  a release-size change, it hands what it did not reach to the shards
+  `mutation (changed, N)`, and `mutation (changed, summary)` lists them. A
   test that reads domainkit's source text, or the frames of its calls,
   carries `@pytest.mark.reads_own_source`: mutmut rewrites both, and
   mutation runs leave such tests out.

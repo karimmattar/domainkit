@@ -52,6 +52,36 @@ type MakePackage = Callable[[str, dict[str, str]], Path]
 
 POSTGRES_VARIABLE: Final = "DOMAINKIT_TEST_POSTGRES_URL"
 """A PostgreSQL server URL; when set, database tests run there (see database_url)."""
+MUTMUT_FAILURES: Final = Path("mutmut-failures.txt")
+"""The test mutmut's own runs of the suite stopped at, in mutmut's copy.
+
+mutmut runs its stats and its clean run in a forked child
+(``process_isolation = "forkserver"``) and never shows that child's
+output, so a failure there read only "failed to collect stats. runner
+returned 1". CI's mutation jobs print this file then: the test that was
+running, and what failed. A test that hangs until pytest-timeout ends the
+process leaves only the first line.
+"""
+
+
+def _mutmut_checks_the_suite() -> bool:
+    """Whether mutmut runs the suite unmutated: its stats, or its clean run."""
+    return os.environ.get("MUTANT_UNDER_TEST", "-") in {"stats", ""}
+
+
+def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) -> None:
+    """Note the test mutmut's own run is at, in place of the last one."""
+    if _mutmut_checks_the_suite():
+        MUTMUT_FAILURES.write_text(f"running {nodeid}\n", encoding="utf-8")
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Add what failed, when it fails in mutmut's own run."""
+    if report.failed and _mutmut_checks_the_suite():
+        with MUTMUT_FAILURES.open("a", encoding="utf-8") as noted:
+            noted.write(
+                f"failed {report.nodeid} ({report.when})\n{report.longreprtext}\n"
+            )
 
 
 @pytest.hookimpl(trylast=True)

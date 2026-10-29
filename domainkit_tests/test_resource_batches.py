@@ -193,6 +193,24 @@ def test_batches_answer_as_their_commands_do(
     assert names.json()["results"] == [{"status": 200, "item": {"name": "n"}}]
 
 
+def test_a_batch_route_takes_its_own_name_and_summary(store: InMemoryGadgets) -> None:
+    """``name`` and ``summary`` reach the operation, as a command route's do."""
+    resource = gadgets(store)
+    resource.batch_route(
+        RenameGadget,
+        service=rename,
+        body=RenameIn,
+        name="rename_many",
+        summary="Rename several gadgets",
+    )
+
+    document = client_of(resource).get("/openapi.json").json()
+    operation = document["paths"][BATCH]["post"]
+
+    assert operation["operationId"] == "rename_many_gadgets_batch_post"
+    assert operation["summary"] == "Rename several gadgets"
+
+
 def test_batch_routes_come_before_item_routes(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:

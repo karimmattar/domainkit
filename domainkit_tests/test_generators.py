@@ -237,6 +237,7 @@ def test_addevent_adds_a_logger_where_there_is_none(shop: Shop) -> None:
         ("startaggregate", ["Product"], {}, "gen.shop already has Product"),
         ("startaggregate", ["category"], {}, "not a valid CamelCase aggregate name"),
         ("startaggregate", ["Sheep"], {"plural": "sheep"}, "not a plural of 'sheep'"),
+        ("startaggregate", ["Notes"], {}, "Notes reads as a plural: name the"),
         (
             "startaggregate",
             ["Box"],
@@ -551,6 +552,7 @@ def test_names_and_words() -> None:
     assert [
         past_tense(verb) for verb in ("Publish", "Archive", "Copy", "Play", "Destroy")
     ] == ["Published", "Archived", "Copied", "Played", "Destroyed"]
+    assert Names.of("Notes", "note_list").plural == "note_list"
     assert default_path("OrderLinesByOwner", names) == "/by-owner"
     assert default_path("OrderLines", names) == "/order-lines"
     assert default_path("EveryOrderLine", names) == "/every-order-line"
@@ -562,6 +564,150 @@ def test_names_and_words() -> None:
         "a and b",
         "a, b and c",
     ]
+
+
+def _before_0_12_1(verb: str) -> str:
+    """``past_tense`` as 0.12.0 wrote it: ``ed``, ``d`` after an ``e``, ``ied``."""
+    if verb.endswith("e"):
+        return f"{verb}d"
+    if verb.endswith("y") and verb[-2:-1] not in set("aeiou"):
+        return f"{verb[:-1]}ied"
+    return f"{verb}ed"
+
+
+REGULAR_VERBS = [
+    "Accept",
+    "Add",
+    "Approve",
+    "Archive",
+    "Assign",
+    "Audit",
+    "Book",
+    "Bus",
+    "Cancel",
+    "Charge",
+    "Check",
+    "Close",
+    "Complete",
+    "Confirm",
+    "Copy",
+    "Credit",
+    "Debit",
+    "Delay",
+    "Deliver",
+    "Deposit",
+    "Destroy",
+    "Edit",
+    "Enable",
+    "Enter",
+    "Expire",
+    "Filter",
+    "Fix",
+    "Flush",
+    "Gas",
+    "Import",
+    "Label",
+    "Limit",
+    "Load",
+    "Lock",
+    "Mark",
+    "Model",
+    "Offer",
+    "Open",
+    "Order",
+    "Pass",
+    "Play",
+    "Post",
+    "Process",
+    "Publish",
+    "Reckon",
+    "Refund",
+    "Register",
+    "Reject",
+    "Relay",
+    "Release",
+    "Remember",
+    "Rename",
+    "Render",
+    "Reopen",
+    "Replay",
+    "Report",
+    "Request",
+    "Restock",
+    "Retry",
+    "Return",
+    "Revoke",
+    "Show",
+    "Sign",
+    "Start",
+    "Submerge",
+    "Sync",
+    "Target",
+    "Total",
+    "Track",
+    "Travel",
+    "Unlock",
+    "Update",
+    "Upgrade",
+    "Upload",
+    "Verify",
+    "Visit",
+    "Void",
+]
+
+
+@pytest.mark.parametrize(
+    ("verb", "done"),
+    [
+        ("Pay", "Paid"),
+        ("Send", "Sent"),
+        ("Sell", "Sold"),
+        ("Buy", "Bought"),
+        ("Build", "Built"),
+        ("Write", "Written"),
+        ("Freeze", "Frozen"),
+        ("Do", "Done"),
+        ("Set", "Set"),
+        ("Read", "Read"),
+        ("Ship", "Shipped"),
+        ("Stop", "Stopped"),
+        ("Plan", "Planned"),
+        ("Quiz", "Quizzed"),
+        ("Submit", "Submitted"),
+        ("Commit", "Committed"),
+        ("Refer", "Referred"),
+        ("Unpin", "Unpinned"),
+        ("Unstrap", "Unstrapped"),
+        ("Overlap", "Overlapped"),
+        ("Resend", "Resent"),
+        ("Repay", "Repaid"),
+        ("Rebuild", "Rebuilt"),
+        ("Undo", "Undone"),
+        ("Overwrite", "Overwritten"),
+        ("Withdraw", "Withdrawn"),
+        ("Reset", "Reset"),
+        ("CheckIn", "CheckedIn"),
+        ("LogOut", "LoggedOut"),
+        ("PayOut", "PaidOut"),
+        ("Back", "Backed"),
+        ("SyncAPI", "SyncAPIed"),
+        ("BulkShip", "BulkShipped"),
+        ("payOut", "paidOut"),
+        ("Pay_", "Pay_ed"),
+    ],
+)
+def test_an_event_is_named_with_the_verbs_participle(verb: str, done: str) -> None:
+    """Irregular verbs, with a prefix too, doubled consonants, phrasal verbs.
+
+    ``addcommand PayOrder`` named its event ``OrderPayed`` before 0.12.1.
+    """
+    assert past_tense(verb) == done
+
+
+@pytest.mark.parametrize("verb", REGULAR_VERBS)
+def test_a_regular_verbs_event_keeps_the_name_it_had(verb: str) -> None:
+    """A generated project's tests compare names: a regular verb's is 0.12.0's."""
+    assert past_tense(verb) == _before_0_12_1(verb)
 
 
 GENERATE = [
@@ -749,6 +895,37 @@ def test_install_adds_the_domain_and_mounts_its_router(tmp_path: Path) -> None:
     assert urls.endswith(
         'router.include_router(catalog_router, prefix="/api/v1/catalog")\n'
     )
+
+
+@pytest.mark.parametrize("install_it", [True, False])
+def test_startdomain_installs_only_unless_told_not_to(
+    tmp_path: Path, install_it: bool
+) -> None:
+    """``--manual`` writes the domain and leaves the project's files alone.
+
+    test_init runs ``--manual`` in a generated project, in a process of its
+    own; this runs it here.
+    """
+    root = project(tmp_path / "project")
+    context = startdomain.template_context("notes", "domains", None, None)
+    plan = startdomain.NewDomain(
+        context,
+        root / "src" / "domains" / "notes",
+        root / "tests" / "domains",
+        root,
+        install=install_it,
+        minimal=True,
+    )
+
+    output = startdomain.Command(stdout=io.StringIO()).apply(plan)
+
+    settings = (root / SETTINGS_FILE).read_text(encoding="utf-8")
+    assert ('"domains.notes"' in settings) is install_it
+    assert ("Added 'domains.notes' to INSTALLED_DOMAINS" in output) is install_it
+    assert (root / "src" / "domains" / "notes" / "domain" / "model.py").is_file()
+    assert (root / "tests" / "domains" / "__init__.py").read_text(
+        encoding="utf-8"
+    ) == '"""Tests of domains."""\n'
 
 
 @pytest.mark.parametrize(
@@ -1381,3 +1558,26 @@ def test_the_smaller_domains_next_steps_grant_what_it_serves(
         "  5. Grant notes.view_note (and add_, change_) to the users or groups "
         "that need them; superusers have them.\n"
     ) in output
+
+
+def test_startdomain_names_the_aggregates_by_the_plural_it_is_given(
+    make_package: MakePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--plural`` names the table, the repository and the URL."""
+    parent = make_package("gen", {})
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+
+    output = run(
+        "startdomain",
+        "notes",
+        aggregate="Note",
+        plural="memos",
+        parent="gen",
+        minimal=True,
+    )
+
+    assert "/api/v1/notes/memos" in output
+    orm = parent / "notes" / "infrastructure" / "orm.py"
+    assert 'table_for(Note, "notes_memos", domain="notes")' in orm.read_text(
+        encoding="utf-8"
+    )

@@ -1,6 +1,6 @@
 # 0092. Run units of work again after a lost race, let them choose their isolation, and lock in order
 
-- Status: Accepted; amended 2026-10-28 (at the end)
+- Status: Accepted; amended 2026-10-28 and 2026-10-29 (at the end)
 - Date: 2026-10-26
 
 ## Context
@@ -214,3 +214,54 @@ Before, a batch could not say it; each item that lost a race answered
 503, and an atomic batch was undone. A test that fails one item's
 transaction once answers `[200, 503]` without `retry` and `[200, 200]`
 with it, and `[424, 503]` and `[200, 200]` atomically.
+
+## Amendment (2026-10-29, 0.12.1): a first savepoint begins the transaction on SQLite
+
+SQLite's driver begins a transaction only before `INSERT`, `UPDATE`,
+`DELETE` or `REPLACE`. A unit of work whose first statement was a
+`SAVEPOINT` (an atomic batch, or a service that opens `uow.savepoint()`
+first) had that `SAVEPOINT` begin the transaction and its `RELEASE`
+commit it. A batch that then lost a race at its commit had written
+already, and its run again wrote a second time: the test of a race lost
+at the commit left a stock of 2 where 4 was right. A unit of work that
+never committed left its savepoint's rows too.
+
+Three ways out were tried on the whole SQLite suite:
+
+- SQLAlchemy's recipe, a `BEGIN` on every transaction's `begin` event:
+  32 tests failed and 10 errored. Reads before the first write now hold
+  the transaction, so concurrent writers fail with "database is locked"
+  (the reason given above for not doing it), `lock()`'s
+  `BEGIN IMMEDIATE` finds a transaction begun and takes no write lock,
+  and the statements tests count change.
+- Python's `sqlite3` with `autocommit=False` (3.12 on, passed through by
+  aiosqlite): the driver holds a transaction open at all times, so
+  `BEGIN IMMEDIATE` never runs (`SERIALIZABLE` and `lock()` fail their
+  tests), and SQLAlchemy's `AUTOCOMMIT` no longer reaches the driver.
+- A `BEGIN` before a `SAVEPOINT` the driver is not in a transaction for,
+  on SQLAlchemy's `savepoint` event: the suite passes, and only units of
+  work that start with a savepoint change. Taken.
+
+The `BEGIN` carries the `INTERNAL` option, so `assert_num_queries` counts
+what it did. A transaction begun already (a write, `BEGIN IMMEDIATE`, a
+read-only session's `BEGIN`) gets nothing more, and an `AUTOCOMMIT`
+connection is left as it was: there the `RELEASE` still commits. Reads
+before the savepoint stay outside the transaction, as reads before a
+write always were.
+
+SEC-121-1, from 0.12.1's security review: the `BEGIN` is `BEGIN IMMEDIATE`.
+`lock()` on SQLite sends `BEGIN IMMEDIATE` only outside a transaction,
+and SQLite's driver does not say whether one holds the write lock. A
+deferred `BEGIN` left a transaction open, holding no lock, so `lock()`
+after a savepoint released or rolled back, or inside one, returned at
+once and held nothing: two units of work went past the same lock. That
+held inside a savepoint, and after one rolled back, since 0.11. Taking the
+lock in `lock()` instead would need a write, to the data or to the
+database's header, to take it. With `BEGIN IMMEDIATE`, work that starts
+with a savepoint holds the write lock from it, as a write would, and
+runs one at a time with other writers. That also fixes an older refusal:
+two such units of work that both read, then write, had the second
+refused with "database is locked" at its first write, at once, whatever
+its busy timeout. Now it waits for the first. Readers are not held up.
+`SERIALIZABLE` work, begun with `BEGIN IMMEDIATE` already, gets nothing
+more, and `assert_num_queries` still skips the `INTERNAL` statement.
