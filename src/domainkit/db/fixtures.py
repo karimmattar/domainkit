@@ -311,7 +311,7 @@ def _batches(rows: Sequence[dict[str, Any]]) -> Iterator[tuple[dict[str, Any], .
     references (in a table that references itself) is written first.
     """
     for _, alike in groupby(rows, key=frozenset):
-        yield from batched(alike, CHUNK)
+        yield from batched(alike, CHUNK, strict=False)
 
 
 async def _lock(connection: AsyncConnection, tables: Sequence[Table]) -> None:
