@@ -33,19 +33,21 @@ PLAN = Path("mutation-shards.json")
 STATS = Path("mutants") / "mutmut-stats.json"
 START = 4.0
 """A worker's seconds a mutant takes besides its tests (ADR 0106)."""
-SHARE = 0.25
+SHARE = 0.35
 """The share of its tests' time a mutant takes on average: most fail one
 early, and mutmut stops at the first failure (ADR 0106)."""
-SHARD = 6000.0
-"""A worker's seconds of mutants in one shard: 25 minutes on its four."""
+SHARD = 5000.0
+"""A worker's seconds of mutants in one shard: 21 minutes on its four,
+besides its clean run of their tests, which can take 15."""
 SHARDS = 12
 """The most shards one pull request starts."""
 UNIT = 100
-"""The most mutants of one function a shard takes together."""
+"""The most mutants of one function a shard takes together, and at most
+half a shard's time."""
 
 
 def units(names: list[str], stats: dict[str, Any]) -> dict[tuple[str, ...], float]:
-    """``names`` grouped by function, at most ``UNIT`` a group, with their cost.
+    """``names`` grouped by function, ``UNIT`` or half a shard at most, with cost.
 
     A group costs a worker's seconds: ``START`` a mutant, and ``SHARE`` of
     the time of the tests that reach its function.
@@ -59,8 +61,9 @@ def units(names: list[str], stats: dict[str, Any]) -> dict[tuple[str, ...], floa
     for function, mutants in by_function.items():
         reach = sum(duration.get(test, 0.0) for test in tests.get(function, []))
         each = START + SHARE * reach
-        for first in range(0, len(mutants), UNIT):
-            group = tuple(mutants[first : first + UNIT])
+        size = max(1, min(UNIT, int(SHARD / 2 / each)))
+        for first in range(0, len(mutants), size):
+            group = tuple(mutants[first : first + size])
             found[group] = each * len(group)
     return found
 

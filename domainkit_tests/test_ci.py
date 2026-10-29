@@ -1430,6 +1430,19 @@ def test_many_mutants_left_make_several_shards_and_none_make_none(
     plan = json.loads((tmp_path / "mutation-shards.json").read_text())["shards"]
     # A function's mutants go a hundred together: 19 groups of 100, then 99.
     assert sorted(len(shard) for shard in plan) == [999, 1000]
+    # Tests of 200 seconds: 74 seconds a mutant, 33 a group (half a shard).
+    (root / "mutmut-stats.json").write_text(
+        json.dumps(
+            {
+                "tests_by_mangled_function_name": {"domainkit.a.x_f": ["t"]},
+                "duration_by_test": {"t": 200.0},
+            }
+        )
+    )
+    meta(root, {f"domainkit.a.x_f__mutmut_{n}": None for n in range(1, 100)})
+    assert plan_shards(tmp_path, "plan", "domainkit.a.*").stdout == "shards=[1, 2]\n"
+    plan = json.loads((tmp_path / "mutation-shards.json").read_text())["shards"]
+    assert sorted(len(shard) for shard in plan) == [33, 66]
     meta(root, {f"domainkit.a.x_f__mutmut_{n}": None for n in range(1, 100_000)})
     assert plan_shards(tmp_path, "plan", "domainkit.a.*").stdout == (
         f"shards={list(range(1, 13))}\n"
