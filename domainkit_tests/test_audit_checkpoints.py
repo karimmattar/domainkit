@@ -8,6 +8,7 @@ the public key alone (DATA-05).
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import os
@@ -172,6 +173,20 @@ async def checkpoints() -> list[Any]:
                 )
             ).all()
         )
+
+
+def test_prunes_are_recorded_under_keys_and_values_ledgers_already_hold() -> None:
+    """The key and value a prune writes, byte for byte: a ledger keeps them.
+
+    Prunes recorded by earlier releases are read back by later ones, so
+    neither may change: compact JSON naming the checkpoint's SHA-256, under
+    ``domainkit/audit-pruned/[<namespace>/]<database>``.
+    """
+    digest = hashlib.sha256(b'{"seq":7}').hexdigest()
+
+    assert pruned_record('{"seq":7}') == f'{{"checkpoint":"{digest}"}}'.encode()
+    assert pruned_key("default") == b"domainkit/audit-pruned/default"
+    assert pruned_key("default", "billing") == b"domainkit/audit-pruned/billing/default"
 
 
 async def test_a_pruned_chain_still_verifies(trail: Ledger) -> None:
