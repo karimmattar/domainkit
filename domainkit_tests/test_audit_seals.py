@@ -1059,69 +1059,81 @@ async def test_sealing_makes_the_anonymous_keys_of_today_and_tomorrow(
     assert keys == 3  # 19th, 20th, and now the 21st.
 
 
-def test_seal_and_verify_commands(
+def run_command(*args: str) -> str:
+    """What a command writes on its standard output."""
+    output = io.StringIO()
+    call_command(*args, stdout=output)
+    return output.getvalue()
+
+
+@pytest.fixture
+def two_trails(
     audited: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``auditseal`` reports what it sealed; ``auditverify`` names each problem."""
+) -> Iterator[list[uuid.UUID]]:
+    """Four rows on ``default``'s trail, ``reports``'s empty; the rows' ids."""
     shared = MemoryLedger()  # Commands close their ledgers; this one stays.
     monkeypatch.setattr(ledgers, "_factories", {"memory": lambda config: shared})
     reports = f"sqlite+aiosqlite:///{tmp_path / 'reports.sqlite3'}"
     databases = {**settings.DATABASES, "reports": {"URL": reports}}
 
-    def run(*args: str) -> str:
-        output = io.StringIO()
-        call_command(*args, stdout=output)
-        return output.getvalue()
+    async def prepare() -> list[uuid.UUID]:
+        for alias in ("default", "reports"):
+            async with connections.engine(alias).begin() as connection:
+                for table in (audit_log, audit_keys, audit_seals, audit_checkpoints):
+                    await connection.run_sync(table.create)
+        start = datetime.now(UTC)
+        entries = [await add(start + timedelta(seconds=n)) for n in range(4)]
+        await connections.close_all()
+        return entries
 
     with override_settings(DATABASES=databases):
+        yield asyncio.run(prepare())
 
-        async def prepare() -> list[uuid.UUID]:
-            for alias in ("default", "reports"):
-                async with connections.engine(alias).begin() as connection:
-                    for table in (
-                        audit_log,
-                        audit_keys,
-                        audit_seals,
-                        audit_checkpoints,
-                    ):
-                        await connection.run_sync(table.create)
-            start = datetime.now(UTC)
-            entries = [await add(start + timedelta(seconds=n)) for n in range(4)]
-            await connections.close_all()
-            return entries
 
-        first, second, third, _ = asyncio.run(prepare())
+def test_auditseal_reports_what_it_sealed(two_trails: list[uuid.UUID]) -> None:
+    """The rows sealed and the anchor; then nothing new, late rows included."""
+    assert run_command("auditseal") == "default: sealed 4 rows, anchored #4.\n"
+    assert run_command("auditseal") == "default: sealed 0 rows.\n"
+    assert run_command("auditseal", "--late") == "default: sealed 0 rows.\n"
 
-        assert run("auditseal") == "default: sealed 4 rows, anchored #4.\n"
-        assert run("auditseal") == "default: sealed 0 rows.\n"
-        assert run("auditseal", "--late") == "default: sealed 0 rows.\n"
-        assert run("auditverify") == "default: 4 seals, 1 anchors: intact.\n"
-        assert run("auditverify", "--database", "reports") == (
-            "reports: 0 seals, 0 anchors: intact.\n"
-        )
-        with override_settings(AUDIT={}):
-            assert run("auditverify") == "default: 4 seals, 0 anchors: intact.\n"
 
-        async def tamper() -> None:
-            for entry in (first, third):
-                await change(
-                    update(audit_log).where(audit_log.c.id == entry).values(actor="eve")
-                )
-            await change(delete(audit_log).where(audit_log.c.id == second))
+def test_auditverify_reports_an_intact_trail(two_trails: list[uuid.UUID]) -> None:
+    """Its seals and anchors per database; anchors left unread without a ledger."""
+    run_command("auditseal")
+
+    assert run_command("auditverify") == "default: 4 seals, 1 anchors: intact.\n"
+    assert run_command("auditverify", "--database", "reports") == (
+        "reports: 0 seals, 0 anchors: intact.\n"
+    )
+    with override_settings(AUDIT={}):
+        assert run_command("auditverify") == "default: 4 seals, 0 anchors: intact.\n"
+
+
+def test_auditverify_names_each_problem(two_trails: list[uuid.UUID]) -> None:
+    """Changed and missing rows, broken links, rewritten anchors, unsealed rows."""
+    first, second, third, _ = two_trails
+    run_command("auditseal")
+
+    async def tamper() -> None:
+        for entry in (first, third):
             await change(
-                update(audit_seals).where(audit_seals.c.seq == 2).values(link="f" * 64)
+                update(audit_log).where(audit_log.c.id == entry).values(actor="eve")
             )
-            await change(delete(audit_seals).where(audit_seals.c.seq == 4))
-            await add(datetime.now(UTC) - 2 * LOOKBACK)
-            await connections.close_all()
+        await change(delete(audit_log).where(audit_log.c.id == second))
+        await change(
+            update(audit_seals).where(audit_seals.c.seq == 2).values(link="f" * 64)
+        )
+        await change(delete(audit_seals).where(audit_seals.c.seq == 4))
+        await add(datetime.now(UTC) - 2 * LOOKBACK)
+        await connections.close_all()
 
-        asyncio.run(tamper())
-        output = io.StringIO()
-        with pytest.raises(
-            CommandError,
-            match=r"^The audit trail failed verification: \['default'\]\.$",
-        ):
-            call_command("auditverify", "--database", "default", stdout=output)
+    asyncio.run(tamper())
+    output = io.StringIO()
+    with pytest.raises(
+        CommandError,
+        match=r"^The audit trail failed verification: \['default'\]\.$",
+    ):
+        call_command("auditverify", "--database", "default", stdout=output)
 
     assert output.getvalue() == (
         "default: 3 seals, 1 anchors: NOT INTACT.\n"
