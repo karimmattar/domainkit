@@ -681,10 +681,13 @@ PREPARED = EmailMessage(
 async def test_smtp_sends_over_starttls_with_a_checked_certificate(
     tables: Install, tls_files: tuple[Path, Path]
 ) -> None:
-    """STARTTLS, the server's certificate checked against TLS_CA, then AUTH."""
+    """STARTTLS, the server's certificate checked against TLS_CA, then AUTH.
+
+    The clock stands still, so both copies carry the same ``Date``.
+    """
     cert, key = tls_files
     server = SmtpServer(tls=server_context(cert, key), user="mailer", password="s3cret")
-    with smtp_server(server):
+    with smtp_server(server), clock.freeze_time():
         backend = SmtpBackend(
             smtp_settings(server, TLS_CA=cert, USER="mailer", PASSWORD="s3cret")
         )
