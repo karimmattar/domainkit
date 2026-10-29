@@ -279,7 +279,11 @@ async def test_read_only_work_refuses_to_commit() -> None:
     reading = FakeGadgetsUnitOfWork(stocked("a"), readonly=True)
     async with reading:
         assert await reading.gadgets.count() == 1
-        with pytest.raises(ReadOnlyError, match="FakeGadgetsUnitOfWork is read-only"):
+        with pytest.raises(
+            ReadOnlyError,
+            match=r"^FakeGadgetsUnitOfWork is read-only; open one without readonly "
+            r"to change data\.$",
+        ):
             await reading.commit()
     async with Reports(stocked()) as reports:
         with pytest.raises(ReadOnlyError):
@@ -343,7 +347,9 @@ async def test_a_savepoint_that_succeeds_keeps_its_part() -> None:
             with pytest.raises(ValueError, match="inner"):
                 await inner()
             assert a.name == "outer"
-            with pytest.raises(RuntimeError, match="Leave every savepoint"):
+            with pytest.raises(
+                RuntimeError, match=r"^Leave every savepoint before committing\.$"
+            ):
                 await uow.commit()
         await uow.commit()
     assert a.name == "outer"
