@@ -55,11 +55,12 @@ project's conftest never needs a private name for it:
 | Every [factory](#factories) numbers its objects from 0, so a test sees the same `Sequence` values in any order. | `Factory.reset_sequence()` |
 | The throttled logs (`domainkit.log.ThrottledLog`) have forgotten what they held back, so a test's first line is written. | `domainkit.log.reset_throttled()` |
 | The principal cache is empty: a user is read from the database again. | `domainkit.contrib.auth.principals.invalidate_all()` |
+| Memory ledgers (`memory://` in `LEDGERS`) and memory storages are empty, as the databases' ids start again after `db`. Ledgers that hold connections (immudb's) stay open. | `ledgers.reset()`, `storages.reset()` |
 | The databases are refused unless the test requested them ([Database access](#database-access)). | `database_blocker` |
 
 | After each test | Through |
 | --- | --- |
-| Once the domains are loaded, the subscriptions, tasks, and metric refreshers the test added are dropped, and those it removed come back. The test that loads the domains keeps what their `ready()` registered. | `event_bus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()` |
+| The subscriptions, tasks, and metric refreshers the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped; a test whose body loads them itself keeps what it registers, as its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()` |
 | Its error reports are sent and its logs written (below). | `flush_reports()`, `flush_logs()` |
 
 What a module- or session-scoped fixture sends is gone by the time a test
@@ -272,7 +273,12 @@ def test_the_home_page(live_server: LiveServer, page: Page) -> None:
   fixture's too), and nothing it served reaches the next test. Starting
   takes about 2 ms; stopping about 0.14 s, as uvicorn checks every 0.1 s
   whether to stop.
-- `127.0.0.1` is added to `ALLOWED_HOSTS` while it runs.
+- `127.0.0.1` is added to `ALLOWED_HOSTS` through the `settings`
+  fixture, so it is undone with the test's other changes, in reverse
+  order, whatever order the fixtures were requested in.
+- Its thread is a daemon, so an interrupted run never waits for it; a
+  request still open when it stops (a stream, a WebSocket) is cancelled
+  after `stop_seconds` (5).
 - Its thread starts with the test's context: request `freeze_time` (and
   freeze the clock) before `live_server`, and the application's clock is
   the test's, moving with `clock.tick()`.

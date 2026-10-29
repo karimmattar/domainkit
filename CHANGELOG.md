@@ -129,6 +129,21 @@ and a status.
   registers its column type for `PasswordHash`, so every such column gets
   the same check. Its storage is the `Text` it always derived: no
   migration (SEC-13a-1).
+- `live_server` no longer leaves `127.0.0.1` in `ALLOWED_HOSTS` after a
+  test that also changed a setting through the `settings` fixture: the
+  host now goes through that fixture's own changes, which are undone in
+  reverse order. Before, every later test, and its application, accepted
+  `Host: 127.0.0.1` (SEC-13b-1).
+- The first test whose fixtures load the domains (a client, `db`) no
+  longer keeps the handlers and tasks its body registers for every later
+  test: the plugin keeps the registrations from the start of the test's
+  call. What `ready()` registered stays (SEC-13b-2).
+- Memory ledgers (`memory://`) and memory storages start empty in every
+  test, through the new `LedgerHandler.reset()` and `storages.reset()`;
+  a later test's `customer:1` met an earlier test's evidence, as the
+  databases' ids start again after `db`. `LiveServer`'s thread is a
+  daemon, and stopping cancels requests still open after `stop_seconds`
+  (SEC-13b-3).
 - The test of the upgrade guide reads every **Breaking:** entry of a
   release, under `Removed` and `Security` too, not only under `Changed`:
   a breaking removal with no line in `docs/upgrading.md` fails it, where

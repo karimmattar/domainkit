@@ -66,6 +66,18 @@ class LedgerHandler:
         """Run one ledger's readiness check."""
         await self[alias].check()
 
+    def reset(self) -> None:
+        """Forget the memory ledgers made so far: the next use starts empty (tests).
+
+        Ledgers that hold connections (immudb's) stay until ``close_all``.
+        The test plugin calls it before each test.
+        """
+        self._ledgers = {
+            key: ledger
+            for key, ledger in self._ledgers.items()
+            if not isinstance(ledger, MemoryLedger)
+        }
+
     async def close_all(self) -> None:
         """Close every ledger opened so far, even if one fails (it is raised).
 

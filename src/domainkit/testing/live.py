@@ -7,7 +7,9 @@ block ends. The ``live_server`` fixture serves the project's application
 on the test databases (``db``), with ``127.0.0.1`` added to
 ``ALLOWED_HOSTS``, for one test.
 
-The server's thread starts with the context of the code that starts it, as
+The server's thread is a daemon, so an interrupted run (Ctrl-C) never
+waits for it, and stopping cancels requests still open after
+``STOP_SECONDS``. It starts with the context of the code that starts it, as
 the test clients carry the caller's: a clock frozen before the server
 starts is the application's clock too, and moving it moves both.
 """
@@ -26,6 +28,9 @@ LIVE_HOST: Final = "127.0.0.1"
 """Where the live server listens: this machine only."""
 WAIT_SECONDS: Final = 0.005
 """How often entering checks whether the startup is done."""
+STOP_SECONDS: Final = 5
+"""How long stopping waits for requests still open (a stream, a WebSocket)
+before uvicorn cancels them."""
 
 
 class LiveServer:
@@ -39,10 +44,17 @@ class LiveServer:
 
     __test__ = False
 
-    def __init__(self, app: ASGIApp, *, host: str = LIVE_HOST) -> None:
-        """Serve ``app`` on ``host``, on a port the system picks when entered."""
+    def __init__(
+        self, app: ASGIApp, *, host: str = LIVE_HOST, stop_seconds: int = STOP_SECONDS
+    ) -> None:
+        """Serve ``app`` on ``host``, on a port the system picks when entered.
+
+        Stopping waits ``stop_seconds`` for requests still open, then
+        cancels them, so an open stream never holds the test's teardown.
+        """
         self.app = app
         self.host = host
+        self.stop_seconds = stop_seconds
         self.port = 0
         """The port it listens on, once entered."""
         self._running: tuple[uvicorn.Server, threading.Thread, socket.socket] | None
@@ -71,12 +83,14 @@ class LiveServer:
             access_log=False,
             proxy_headers=False,
             server_header=False,
+            timeout_graceful_shutdown=self.stop_seconds,
         )
         server = uvicorn.Server(config)
         thread = threading.Thread(
             target=copy_context().run,
             args=(_serve, server, listening),
             name=f"live-server-{self.port}",
+            daemon=True,
         )
         self._running = (server, thread, listening)
         thread.start()

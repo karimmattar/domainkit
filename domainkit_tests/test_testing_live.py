@@ -1,5 +1,6 @@
 """``live_server``: the application on a port of the test process."""
 
+import asyncio
 import socket
 import sys
 import threading
@@ -10,6 +11,7 @@ from typing import Any
 import httpx2
 import pytest
 from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 # Loaded before pytester takes its snapshot of the loaded modules (see
@@ -22,6 +24,9 @@ from domainkit_tests.conftest import MIDDLEWARE
 from domainkit_tests.test_testing import prefix, run_plugin
 
 __all__ = ["prefix"]
+
+STARTUP_BOUND = 30
+"""Seconds a request on the stream may take to begin: a bound, not a wait."""
 
 
 @pytest.fixture
@@ -158,8 +163,12 @@ def test_the_server_stops_when_the_block_ends() -> None:
     server.__exit__(None, None, None)  # Not started: nothing to stop.
     with server:
         assert httpx2.get(server.url).json() == {"python": sys.version.split()[0]}
-        names = [thread.name for thread in threading.enumerate()]
-        assert f"live-server-{server.port}" in names
+        (thread,) = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == f"live-server-{server.port}"
+        ]
+        assert thread.daemon  # An interrupted run never waits for it.
     with pytest.raises(ConnectionRefusedError):
         socket.create_connection((server.host, server.port)).close()
     server.__exit__(None, None, None)  # Stopped already.
@@ -209,3 +218,25 @@ def test_a_startup_the_application_does_not_answer_fails(
     with pytest.raises(RuntimeError, match="did not start"), LiveServer(raw):
         pass  # pragma: no cover - never entered.
     assert "no lifespan here" in caplog.text
+
+
+def test_a_stream_still_open_does_not_hold_the_stop() -> None:
+    """Requests still open after ``stop_seconds`` are cancelled, not waited for."""
+    app = FastAPI()
+    opened = threading.Event()
+
+    @app.get("/stream")
+    async def stream() -> StreamingResponse:
+        async def forever() -> AsyncIterator[bytes]:
+            opened.set()
+            yield b"first\n"
+            await asyncio.Event().wait()  # Never set: only a cancel ends it.
+
+        return StreamingResponse(forever())
+
+    with LiveServer(app, stop_seconds=0) as server:
+        reader = httpx2.Client(base_url=server.url)
+        response = reader.send(reader.build_request("GET", "/stream"), stream=True)
+        assert opened.wait(STARTUP_BOUND)
+    response.close()
+    reader.close()

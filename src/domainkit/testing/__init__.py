@@ -162,8 +162,14 @@ OUTBOXES: Final = (
     ("domainkit.contrib.notifications.backends", "push_outbox"),
 )
 """Where the memory backends keep what they sent: (module, list)."""
-RESETS: Final = (("domainkit.contrib.auth.principals", "invalidate_all"),)
-"""What forgets a module's state before each test: (module, function)."""
+RESETS: Final = (
+    ("domainkit.contrib.auth.principals", "invalidate_all"),
+    ("domainkit.ledger.handler", "ledgers.reset"),
+    ("domainkit.storage.handler", "storages.reset"),
+)
+"""What forgets a module's state before each test: (module, dotted function)."""
+_KEPT: Final = pytest.StashKey["Kept"]()
+"""The registrations a test's run keeps, put back after its teardown."""
 KEPT: Final = (
     ("domainkit.contrib.messaging.registry", "tasks_kept"),
     ("domainkit.http.metrics", "refreshers_kept"),
@@ -276,16 +282,49 @@ def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object
     reset_throttled()
     for module, name in RESETS:
         if (loaded := sys.modules.get(module)) is not None:
-            getattr(loaded, name)()
+            target: Any = loaded
+            for part in name.split("."):
+                target = getattr(target, part)
+            target()
     with ExitStack() as stack:
+        item.stash[_KEPT] = kept = Kept()
+        stack.callback(kept.stack.close)
         if registry.ready:
-            stack.enter_context(event_bus.subscriptions_kept())
-            for module, name in KEPT:
-                if (loaded := sys.modules.get(module)) is not None:
-                    stack.enter_context(getattr(loaded, name)())
+            kept.keep()
         if item.get_closest_marker(ALLOW_DATABASE_MARK) is not None:
             stack.enter_context(DatabaseBlocker().unblock())
         return (yield)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Generator[None, object, object]:
+    """Keep the registrations from here if the test's setup loaded the domains.
+
+    So a client fixture's first ``setup()`` keeps what ``ready()``
+    registered, and what the test's body adds still ends with it. A body
+    that loads the domains itself keeps what it registers.
+    """
+    kept = item.stash.get(_KEPT, None)
+    if kept is not None and not kept.keeping and registry.ready:
+        kept.keep()
+    return (yield)
+
+
+class Kept:
+    """The subscriptions, tasks, and refreshers kept for one test's run."""
+
+    def __init__(self) -> None:
+        """Keep nothing yet."""
+        self.stack = ExitStack()
+        self.keeping = False
+
+    def keep(self) -> None:
+        """Keep them as they are now, until ``stack`` closes."""
+        self.keeping = True
+        self.stack.enter_context(event_bus.subscriptions_kept())
+        for module, name in KEPT:
+            if (loaded := sys.modules.get(module)) is not None:
+                self.stack.enter_context(getattr(loaded, name)())
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -387,13 +426,15 @@ def client(db: None) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def live_server(db: None) -> Iterator[LiveServer]:
-    """Serve the project's application on a port of this process, for one test."""
-    hosts = [*current_settings.ALLOWED_HOSTS, LIVE_HOST]
-    with (
-        override_settings(ALLOWED_HOSTS=hosts),
-        LiveServer(get_asgi_application()) as server,
-    ):
+def live_server(db: None, settings: SettingsOverrides) -> Iterator[LiveServer]:
+    """Serve the project's application on a port of this process, for one test.
+
+    The host goes through the ``settings`` fixture, so it is undone with
+    the test's other changes, in reverse order, however the fixtures were
+    ordered (SEC-13b-1).
+    """
+    settings.ALLOWED_HOSTS = [*current_settings.ALLOWED_HOSTS, LIVE_HOST]
+    with LiveServer(get_asgi_application()) as server:
         yield server
 
 
