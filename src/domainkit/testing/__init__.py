@@ -64,9 +64,14 @@ The async fixtures need async tests run by AnyIO (``pytest.mark.anyio``).
 Memory caches (``memory://``) are emptied before every test, so no test
 sees what another one cached. Redis caches are left alone. The memory
 backends' outboxes (``mail.outbox``, ``sms_outbox``, ``push_outbox``) are
-emptied too, and every ``Factory`` numbers its objects from 0 again. Error
-reports and queued logs are sent before the next test starts; call
+emptied too, every ``Factory`` numbers its objects from 0 again, the
+throttled logs forget what they held back, and the principal cache is
+empty. Once the domains are loaded, the subscriptions, tasks, and metric
+refreshers a test adds are dropped when it ends. Error reports and queued
+logs are sent before the next test starts; call
 ``domainkit.reporting.flush_reports()`` before checking what a test reported.
+Each of these goes through a public reset, which a project's own fixtures
+may call too.
 """
 
 import os
@@ -77,6 +82,7 @@ from typing import Any, Final
 
 import pytest
 
+from domainkit.apps import registry
 from domainkit.cache import caches
 from domainkit.clock import FrozenClock, Moment, freeze_time
 from domainkit.conf import UNSET, override_settings
@@ -84,8 +90,9 @@ from domainkit.conf import settings as current_settings
 from domainkit.conf.env import project_prefix
 from domainkit.db import connections
 from domainkit.db.snapshots import Snapshot, restore_snapshot, take_snapshot
+from domainkit.ddd import event_bus
 from domainkit.http import get_asgi_application
-from domainkit.log import flush_logs
+from domainkit.log import flush_logs, reset_throttled
 from domainkit.management.base import run_async
 from domainkit.reporting import flush_reports
 
@@ -155,6 +162,13 @@ OUTBOXES: Final = (
     ("domainkit.contrib.notifications.backends", "push_outbox"),
 )
 """Where the memory backends keep what they sent: (module, list)."""
+RESETS: Final = (("domainkit.contrib.auth.principals", "invalidate_all"),)
+"""What forgets a module's state before each test: (module, function)."""
+KEPT: Final = (
+    ("domainkit.contrib.messaging.registry", "tasks_kept"),
+    ("domainkit.http.metrics", "refreshers_kept"),
+)
+"""What puts a module's registrations back after each test: (module, function)."""
 
 type ClientFor = Callable[..., TestClient]
 type AsyncClientFor = Callable[..., Awaitable[AsyncTestClient]]
@@ -249,14 +263,28 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object]:
-    """Allow the databases to a test marked ``allow_database``, as 0.12 did.
+    """Reset module state around each test; allow a marked test the databases.
 
-    From its first fixture to its last teardown; they are not put back first.
-    A hook, not an autouse fixture: the other tests pay nothing for it.
+    Before the test, the throttled logs and the principal cache forget what
+    they hold. Once the domains are loaded (``registry.ready``), the
+    subscriptions, tasks, and refreshers the test adds are dropped after
+    it; the test that loads them keeps what their ``ready()`` registered.
+    A test marked ``allow_database`` reaches the databases from its first
+    fixture to its last teardown, as 0.12 let it; they are not put back
+    first. A hook, not autouse fixtures: each of those costs every test.
     """
-    if item.get_closest_marker(ALLOW_DATABASE_MARK) is None:
-        return (yield)
-    with DatabaseBlocker().unblock():
+    reset_throttled()
+    for module, name in RESETS:
+        if (loaded := sys.modules.get(module)) is not None:
+            getattr(loaded, name)()
+    with ExitStack() as stack:
+        if registry.ready:
+            stack.enter_context(event_bus.subscriptions_kept())
+            for module, name in KEPT:
+                if (loaded := sys.modules.get(module)) is not None:
+                    stack.enter_context(getattr(loaded, name)())
+        if item.get_closest_marker(ALLOW_DATABASE_MARK) is not None:
+            stack.enter_context(DatabaseBlocker().unblock())
         return (yield)
 
 

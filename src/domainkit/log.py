@@ -59,6 +59,7 @@ __all__ = [
     "flush_logs",
     "flush_throttled",
     "log_enabled",
+    "reset_throttled",
 ]
 
 SECURITY_LOGGER: Final = "domainkit.security"
@@ -286,6 +287,11 @@ class ThrottledLog:
             gone = [(seen, kept.held) for seen, kept in self._seen.items()]
             self._seen.clear()
         self._write_held(gone)
+
+    def reset(self) -> None:
+        """Forget every key and what it held back, writing nothing (between tests)."""
+        with self._lock:
+            self._seen.clear()
 
     def _expired(self, now: float) -> list[tuple[tuple[str, str], int]]:
         """Forget the keys whose interval has passed; each with what it held back.
@@ -861,6 +867,18 @@ def flush_throttled() -> None:
         throttled = list(_throttled_logs)
     for log in throttled:
         log.flush()
+
+
+def reset_throttled() -> None:
+    """Forget what every live ``ThrottledLog`` holds back, writing nothing.
+
+    The test plugin calls it before each test, so a line held back for an
+    earlier test is never counted, or written, in this one.
+    """
+    with _handlers_lock:
+        throttled = list(_throttled_logs)
+    for log in throttled:
+        log.reset()
 
 
 async def aflush_throttled() -> None:

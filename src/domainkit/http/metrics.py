@@ -11,7 +11,8 @@ import hmac
 import logging
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from typing import Final
 
 from fastapi import APIRouter, Request, status
@@ -34,6 +35,7 @@ from domainkit.http.middleware import route_template
 
 __all__ = [
     "MetricsMiddleware",
+    "refreshers_kept",
 ]
 
 METHODS: Final = frozenset(
@@ -83,6 +85,20 @@ def register_refresher(refresh: Callable[[], Awaitable[None]]) -> None:
     """Run ``refresh`` before each scrape (to update gauges from a database)."""
     if refresh not in _refreshers:
         _refreshers.append(refresh)
+
+
+@contextmanager
+def refreshers_kept() -> Iterator[None]:
+    """Put the scrape's refreshers back as they were when the block ends.
+
+    What the block registered (``register_refresher``) is dropped: the test
+    plugin keeps each test's to itself.
+    """
+    kept = list(_refreshers)
+    try:
+        yield
+    finally:
+        _refreshers[:] = kept
 
 
 def observe_admitted(change: int) -> None:

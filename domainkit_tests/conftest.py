@@ -23,7 +23,6 @@ from hypothesis import settings as hypothesis_settings
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from domainkit import log as domainkit_log
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.apps.hooks import (
@@ -40,9 +39,11 @@ from domainkit.conf.env import (
     project_root,
 )
 from domainkit.contrib.auth.principals import invalidate_all
-from domainkit.contrib.messaging import registry as task_registry
+from domainkit.contrib.messaging import tasks_kept
 from domainkit.ddd import event_bus
-from domainkit.http import get_asgi_application, metrics
+from domainkit.http import get_asgi_application
+from domainkit.http.metrics import refreshers_kept
+from domainkit.log import reset_throttled
 from domainkit.management import call_command
 from domainkit.reporting import flush_reports
 from domainkit.testing import DatabaseBlocker
@@ -122,27 +123,22 @@ def isolated_registries() -> Iterator[None]:
     """
     caches.reset()
     invalidate_all()
-    for throttled in list(domainkit_log._throttled_logs):
-        throttled._seen.clear()
+    reset_throttled()
     with registries_kept():
         yield
 
 
 @contextmanager
 def registries_kept() -> Iterator[None]:
-    """Put the tasks, subscriptions, and metric refreshers back as they were."""
-    tasks = dict(task_registry._tasks)
-    subscriptions = {key: list(value) for key, value in event_bus._handlers.items()}
-    refreshers = list(metrics._refreshers)
+    """Put the tasks, subscriptions, and metric refreshers back as they were.
+
+    Through their public resets, as the plugin does (TEST-05).
+    """
     calls = list(AlphaConfig.calls)
     try:
-        yield
+        with tasks_kept(), event_bus.subscriptions_kept(), refreshers_kept():
+            yield
     finally:
-        task_registry._tasks.clear()
-        task_registry._tasks.update(tasks)
-        event_bus._handlers.clear()
-        event_bus._handlers.update(subscriptions)
-        metrics._refreshers[:] = refreshers
         AlphaConfig.calls[:] = calls
 
 

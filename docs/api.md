@@ -555,6 +555,7 @@ Transactional outbox, durable event handlers, and background tasks.
 - `inbox`: Commit a handler's or task's database work once per message.
 - `periodic`: Register an argument-free task that runs on a schedule, cluster-wide.
 - `task`: Register an async function as a background task (`uow.defer(task)`).
+- `tasks_kept`: Put the registered tasks back as they were when the block ends.
 
 ## `domainkit.contrib.messaging.admin`
 
@@ -1023,6 +1024,7 @@ Live committed events: domain events streamed to the clients that may see them.
 Prometheus metrics (`domainkit[metrics]`).
 
 - `MetricsMiddleware`: Count requests and time them, by method, route template, and status.
+- `refreshers_kept`: Put the scrape's refreshers back as they were when the block ends.
 
 ## `domainkit.http.middleware`
 
@@ -1220,6 +1222,7 @@ Structured logging: JSON for log pipelines, escaped text for terminals.
 - `flush_logs`: Wait until every background handler has written what it queued.
 - `flush_throttled`: Write the counts every live `ThrottledLog` still holds back.
 - `log_enabled`: `logger.log(level, msg, *args, extra=extra)`, once `isEnabledFor` said yes.
+- `reset_throttled`: Forget what every live `ThrottledLog` holds back, writing nothing.
 
 ## `domainkit.management`
 
