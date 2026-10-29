@@ -128,15 +128,20 @@ def project(
 def test_a_nested_value_object_round_trips(tmp_path: Path) -> None:
     """Dumped as the text the database holds, loaded back as the objects."""
     path = tmp_path / "items.json"
+    unlabelled = {**ROW, "id": 2, "label": None}
+    asyncio.run(_execute(insert(items).values(**unlabelled)))
     run("dumpdata", items.name, "--output", str(path))
     asyncio.run(_execute(delete(items)))
 
     dumped = json.loads(path.read_text())["tables"][0]["rows"]
     loaded = run("loaddata", str(path))
 
-    assert dumped == [{"id": 1, "version": 1, "code": "LAMP-1", "label": "SHELF-9"}]
-    assert loaded.endswith(f"Loaded 1 row from {path}.\n")
-    assert stored() == [ROW]
+    assert dumped == [
+        {"id": 1, "version": 1, "code": "LAMP-1", "label": "SHELF-9"},
+        {"id": 2, "version": 1, "code": "LAMP-1", "label": None},
+    ]
+    assert loaded.endswith(f"Loaded 2 rows from {path}.\n")
+    assert stored() == [ROW, unlabelled]
 
 
 @pytest.mark.usefixtures("project")
@@ -183,3 +188,18 @@ def test_the_inner_object_checks_what_it_holds(tmp_path: Path) -> None:
     )
     assert "lamp 6" not in str(refused.value)
     assert len(stored()) == 1
+
+
+@pytest.mark.usefixtures("project")
+def test_a_value_of_the_wrong_kind_names_the_stored_type(tmp_path: Path) -> None:
+    """A number where the innermost field holds text is refused by the column."""
+    path = fixture(
+        tmp_path / "number.json", {"id": 7, "version": 1, "code": 5, "label": None}
+    )
+
+    with pytest.raises(CommandError) as refused:
+        run("loaddata", str(path))
+
+    assert str(refused.value).endswith(
+        "framework_test_coded_items.code holds a value that is not str."
+    )

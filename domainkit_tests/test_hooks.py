@@ -237,6 +237,25 @@ def test_hooks_register_in_ready_or_for_a_named_domain(
         assert repr(point) == "<HookPoint probe>"
 
 
+def test_a_points_own_checks_and_an_empty_point() -> None:
+    """A point checks ``arguments`` and ``awaited``; one unused has no hooks."""
+    setup()
+    point: HookPoint[Any] = HookPoint("own", arguments=0, awaited=True)
+
+    def plain() -> None:
+        """Not awaitable."""
+
+    assert list(point) == []
+    with pytest.raises(ImproperlyConfigured, match=r"own hook .*plain must be an"):
+        point(plain, domain="alpha")
+
+    async def one(value: object) -> None:
+        """Takes an argument the point does not give."""
+
+    with pytest.raises(ImproperlyConfigured, match=r"must take 0 positional arguments"):
+        point(one, domain="alpha")
+
+
 @pytest.mark.usefixtures("calls")
 def test_a_failed_follow_up_is_reported_with_its_domain(
     tmp_path: Path,
