@@ -119,6 +119,13 @@ and a status.
   column (`sa.String(length=20)`, `sa.Numeric(precision=12, scale=2)`)
   (DATA-12).
 
+### Security
+
+- The test of the upgrade guide reads every **Breaking:** entry of a
+  release, under `Removed` and `Security` too, not only under `Changed`:
+  a breaking removal with no line in `docs/upgrading.md` fails it, where
+  it passed (SEC-13c-1).
+
 ## [0.12.1] - 2026-10-29
 
 A patch release: fixes on SQLite (savepoints and `lock()`), in the
