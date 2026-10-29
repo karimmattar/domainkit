@@ -97,7 +97,11 @@ async def test_no_session_outside_the_test_settings() -> None:
     ann = await create_user(username="ann", superuser=True)
     with (
         override_settings(ENVIRONMENT="local"),
-        pytest.raises(ImproperlyConfigured, match='needs ENVIRONMENT = "test"'),
+        pytest.raises(
+            ImproperlyConfigured,
+            match=r"^issue_test_session signs users in without credentials, so it "
+            r'needs ENVIRONMENT = "test", not \'local\'\.$',
+        ),
     ):
         await browser_session_for(ann)
 

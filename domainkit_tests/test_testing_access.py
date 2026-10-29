@@ -183,8 +183,19 @@ def test_a_marked_first_test_reaches_the_test_databases(
         from domainkit.db import connections
         from domainkit.management.base import run_async
 
+        def url():
+            return settings.DATABASES["default"].URL.get_secret_value()
+
+        @pytest.fixture
+        def early():
+            assert url().endswith("test.sqlite3")
+
+        @pytest.mark.parametrize("unmarked", [True])
+        def test_unmarked_first(unmarked):
+            assert url() == "sqlite+aiosqlite:///:memory:"
+
         @pytest.mark.allow_database
-        def test_writes():
+        def test_writes(early):
             async def write():
                 async with connections.autocommit() as connection:
                     await connection.execute(text("CREATE TABLE written (id INT)"))
@@ -200,7 +211,7 @@ def test_a_marked_first_test_reaches_the_test_databases(
     ):
         result = run_plugin(pytester, "-p", "no:doctest", "plain.txt", ".")
 
-    result.assert_outcomes(passed=2)
+    result.assert_outcomes(passed=3)
 
 
 def test_the_ini_option_allows_every_test(
@@ -223,6 +234,19 @@ def test_unmarked():
     result = run_plugin(pytester, "-o", "domainkit_allow_database=true")
 
     result.assert_outcomes(passed=2)
+    refused = run_plugin(pytester, "-o", "domainkit_allow_database=false")
+    refused.assert_outcomes(passed=1, failed=1)
+
+
+def test_the_ini_option_is_described(pytester: pytest.Pytester) -> None:
+    """``pytest --help`` explains ``domainkit_allow_database``."""
+    result = pytester.runpytest_inprocess("-p", "domainkit.testing", "--help")
+
+    described = " ".join(result.stdout.str().split())  # However it wraps.
+    assert (
+        "domainkit_allow_database (bool): Let every test reach the databases "
+        "without requesting db, as before 0.13 (false)"
+    ) in described
 
 
 def test_a_wider_fixture_unblocks_while_it_works(
