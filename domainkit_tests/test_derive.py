@@ -353,7 +353,7 @@ class Point(UserDefinedType[str]):
 
     cache_ok = True
 
-    def get_col_spec(self) -> str:
+    def get_col_spec(self, **kw: object) -> str:
         """``POINT``."""
         return "POINT"
 
