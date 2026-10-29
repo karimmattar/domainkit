@@ -180,77 +180,87 @@ class ObjectsWhen:
         return (IsAuthenticated(), *([NotC()] if action in self.actions else []))
 
 
-def test_objects_are_asked_the_rules_of_the_routes_action(
-    store: InMemoryGadgets, use_auth: UseAuth
-) -> None:
-    """A rule on objects for one action leaves the others alone, on every route."""
-    use_auth()
+def statuses_under(store: InMemoryGadgets, *actions: str) -> dict[str, int]:
+    """What each route answers root about gadget c, under a rule on ``actions``."""
     root = as_("root")
     c = ids(store)["c"]
     item = f"{LOCATION}{c}"
-
-    def asked(*actions: str) -> dict[str, int]:
-        resource = gadgets(
-            store, rule=ObjectsWhen(*actions), crud=True, writable=ALL_FIELDS
-        )
-        resource.command_route(
-            RenameGadget, service=rename, body=RenameIn, path="/rename"
-        )
-        resource.batch_route(RenameGadget, service=rename, body=RenameIn)
-        resource.query_route(GadgetAgain, handler=again_or_first, path="/again")
-
-        @resource.get("/{gadget_id}/fetched", dependencies=[Public])
-        async def fetched(request: Request, gadget_id: UUID) -> str:
-            found = await resource.fetch(
-                request, FakeGadgetsUnitOfWork(store), gadget_id
-            )
-            return str(getattr(found, "name"))  # noqa: B009 - any aggregate.
-
-        reviews_uow, _, _ = nested_store(store)
-        nested = ResourceRouter(
-            "/reviews",
-            model=Review,
-            unit_of_work=reviews_uow,
-            repository=lambda uow: uow.reviews,
-            parent=resource,
-            parent_field="gadget",
-            rule=IsAuthenticated(),
-        )
-        client = client_of(resource, nested)
-        batch = client.post(
-            "/gadgets/batch",
-            json={"items": [{"gadget_id": str(c), "name": "c"}]},
-            headers=root,
-        )
-        return {
-            "read": client.get(item, headers=root).status_code,
-            "query": client.get(f"{item}/again", headers=root).status_code,
-            "fetch": client.get(f"{item}/fetched", headers=root).status_code,
-            "nested": client.get(f"{item}/reviews", headers=root).status_code,
-            "command": client.post(
-                f"{item}/rename", json={"name": "c"}, headers=root
-            ).status_code,
-            "batch": batch.json()["results"][0]["status"],
-            "patch": client.patch(item, json={"stock": 1}, headers=root).status_code,
-        }
-
-    viewing = asked("view")
-    changing = asked("change")
-    deleting = asked("delete")
-
-    seen = {"read": 403, "query": 403, "fetch": 403, "nested": 403}
-    changed = {"command": 403, "batch": 403, "patch": 403}
-    assert viewing == {**seen, **dict.fromkeys(changed, 200)}
-    assert changing == {**dict.fromkeys(seen, 200), **changed}
-    assert deleting == {**dict.fromkeys(seen, 200), **dict.fromkeys(changed, 200)}
-    assert (
-        client_of(
-            gadgets(store, rule=ObjectsWhen("delete"), crud=True, writable=ALL_FIELDS)
-        )
-        .delete(item, headers=root)
-        .status_code
-        == 403
+    resource = gadgets(
+        store, rule=ObjectsWhen(*actions), crud=True, writable=ALL_FIELDS
     )
+    resource.command_route(RenameGadget, service=rename, body=RenameIn, path="/rename")
+    resource.batch_route(RenameGadget, service=rename, body=RenameIn)
+    resource.query_route(GadgetAgain, handler=again_or_first, path="/again")
+
+    @resource.get("/{gadget_id}/fetched", dependencies=[Public])
+    async def fetched(request: Request, gadget_id: UUID) -> str:
+        found = await resource.fetch(request, FakeGadgetsUnitOfWork(store), gadget_id)
+        return str(getattr(found, "name"))  # noqa: B009 - any aggregate.
+
+    reviews_uow, _, _ = nested_store(store)
+    nested = ResourceRouter(
+        "/reviews",
+        model=Review,
+        unit_of_work=reviews_uow,
+        repository=lambda uow: uow.reviews,
+        parent=resource,
+        parent_field="gadget",
+        rule=IsAuthenticated(),
+    )
+    client = client_of(resource, nested)
+    batch = client.post(
+        "/gadgets/batch",
+        json={"items": [{"gadget_id": str(c), "name": "c"}]},
+        headers=root,
+    )
+    return {
+        "read": client.get(item, headers=root).status_code,
+        "query": client.get(f"{item}/again", headers=root).status_code,
+        "fetch": client.get(f"{item}/fetched", headers=root).status_code,
+        "nested": client.get(f"{item}/reviews", headers=root).status_code,
+        "command": client.post(
+            f"{item}/rename", json={"name": "c"}, headers=root
+        ).status_code,
+        "batch": batch.json()["results"][0]["status"],
+        "patch": client.patch(item, json={"stock": 1}, headers=root).status_code,
+    }
+
+
+SEEN = ("read", "query", "fetch", "nested")
+CHANGED = ("command", "batch", "patch")
+
+
+@pytest.mark.parametrize(
+    ("action", "refused"),
+    [("view", SEEN), ("change", CHANGED), ("delete", ())],
+)
+def test_objects_are_asked_the_rules_of_the_routes_action(
+    store: InMemoryGadgets, use_auth: UseAuth, action: str, refused: tuple[str, ...]
+) -> None:
+    """A rule on objects for one action refuses its routes and leaves the others."""
+    use_auth()
+
+    statuses = statuses_under(store, action)
+
+    assert statuses == {
+        route: 403 if route in refused else 200 for route in (*SEEN, *CHANGED)
+    }
+
+
+def test_a_rule_on_deleting_objects_refuses_their_deletion(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The generic DELETE asks the rule for ``delete``."""
+    use_auth()
+    resource = gadgets(
+        store, rule=ObjectsWhen("delete"), crud=True, writable=ALL_FIELDS
+    )
+
+    deleted = client_of(resource).delete(
+        f"{LOCATION}{ids(store)['c']}", headers=as_("root")
+    )
+
+    assert deleted.status_code == 403
 
 
 async def again_or_first(query: GadgetAgain, uow: FakeGadgetsUnitOfWork) -> Gadget:
