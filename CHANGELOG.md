@@ -9,6 +9,13 @@ and a status.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-29
+
+A patch release: fixes on SQLite (savepoints and `lock()`), in the
+messaging relay's shutdown, in `loaddata` and `makemigrations` for value
+objects, and in the generators' English; CI's mutation check of a pull
+request finishes on a large one. Nothing a project relies on changes.
+
 ### Fixed
 
 - On SQLite, a unit of work whose first statement is a savepoint (an
@@ -4062,7 +4069,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/karimmattar/domainkit/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/karimmattar/domainkit/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.11.1
