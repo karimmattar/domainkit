@@ -92,6 +92,7 @@ def make_client() -> Iterator[MakeClient]:
         yield make
 
 
+@pytest.mark.usefixtures("database_access")
 def test_requests_report_their_queries(
     make_client: MakeClient, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -113,6 +114,7 @@ def test_requests_report_their_queries(
     assert SECRET not in str(response.headers)
 
 
+@pytest.mark.usefixtures("database_access")
 def test_quiet_unless_asked(
     make_client: MakeClient, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -144,6 +146,7 @@ def test_websockets_pass_through(make_client: MakeClient) -> None:
         }
 
 
+@pytest.mark.usefixtures("database_access")
 def test_profiles_are_written_on_request(
     make_client: MakeClient, tmp_path: Path
 ) -> None:
@@ -159,6 +162,7 @@ def test_profiles_are_written_on_request(
     assert (tmp_path / name).stat().st_size > 0
 
 
+@pytest.mark.usefixtures("database_access")
 def test_one_profile_at_a_time(
     make_client: MakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -172,6 +176,7 @@ def test_one_profile_at_a_time(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.usefixtures("database_access")
 def test_profiles_need_a_directory(make_client: MakeClient) -> None:
     """Without ``PROFILE_DIR`` the header does nothing."""
     response = make_client().get("/books", headers={"X-Debug-Profile": "1"})
@@ -262,6 +267,7 @@ def test_request_bodies_reach_the_application(make_client: MakeClient) -> None:
     assert "Server-Timing" in response.headers
 
 
+@pytest.mark.usefixtures("database_access")
 def test_the_toolbar_counts_what_assert_num_queries_counts(
     make_client: MakeClient,
 ) -> None:
@@ -292,6 +298,7 @@ def test_timings_are_in_milliseconds() -> None:
     assert headers["x-debug-query-time"] == "375.0"
 
 
+@pytest.mark.usefixtures("database_access")
 def test_profiles_are_named_by_time(make_client: MakeClient, tmp_path: Path) -> None:
     """``<UTC time>-<8 hex digits>.prof``."""
     client = make_client(DEBUG_TOOLBAR={"PROFILE_DIR": tmp_path})

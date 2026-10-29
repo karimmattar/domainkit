@@ -576,7 +576,7 @@ async def test_read_only_transactions_refuse_writes_on_postgresql(tables: None) 
 
 
 @pytest.fixture
-async def sqlite_tables(tmp_path: Path) -> AsyncIterator[None]:
+async def sqlite_tables(database_access: None, tmp_path: Path) -> AsyncIterator[None]:
     """The gadget tables in a SQLite file, whatever server the suite targets."""
     url = f"sqlite+aiosqlite:///{tmp_path / 'gadgets.sqlite3'}"
     with override_settings(DATABASES={"default": {"URL": url}}):

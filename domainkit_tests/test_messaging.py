@@ -782,6 +782,7 @@ async def test_configuration_guards(tables: None) -> None:
         )
 
 
+@pytest.mark.usefixtures("database_access")
 async def test_durable_work_needs_messaging_installed(tmp_path: Path) -> None:
     """Without the messaging app durable work fails loudly at commit.
 

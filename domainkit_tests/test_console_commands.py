@@ -241,6 +241,7 @@ def test_diffsettings_all_marks_defaults() -> None:
 # shell ----------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("database_access")
 def test_shell_runs_code_with_top_level_await(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

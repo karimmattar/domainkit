@@ -2,6 +2,7 @@
 
 from domainkit.db.connections import (
     ConnectionHandler,
+    DatabaseAccessRefused,
     Reads,
     connections,
     create_engine,
@@ -25,6 +26,7 @@ from domainkit.db.uow import Isolation, SqlAlchemyUnitOfWork, lock_key
 
 __all__ = [
     "ConnectionHandler",
+    "DatabaseAccessRefused",
     "EnumValue",
     "ExactDecimal",
     "Isolation",

@@ -20,6 +20,11 @@ the rows are put back as ``migrate`` left them when the run ends.
 
 Only test settings are accepted (``ENVIRONMENT = "test"``): the databases
 are emptied, and the configured ones must never be the ones touched.
+
+``DatabaseBlocker`` refuses the databases between the moments a test asked
+for them, as pytest-django's ``django_db_blocker`` does: the plugin refuses
+them for the whole run, and its fixtures allow them while they work and
+while a test that requested ``db`` runs.
 """
 
 import io
@@ -33,7 +38,7 @@ from collections.abc import (
     Iterator,
     Mapping,
 )
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -45,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, override_settings, settings
+from domainkit.db import connections
 from domainkit.db.drivers import connect_args
 from domainkit.db.snapshots import restore_snapshot, take_snapshot
 from domainkit.management import call_command
@@ -62,8 +68,65 @@ MAINTENANCE_DATABASE: Final = "postgres"
 URL_FIELDS: Final = ("URL", "MIGRATION_URL")
 _WORKER: Final = re.compile(r"\w{1,32}", re.ASCII)
 _EXISTS: Final = text("SELECT 1 FROM pg_database WHERE datname = :name")
+REFUSAL: Final = (
+    "This test reached the database without requesting it, so it would see "
+    "whatever earlier tests left there. Request the db fixture (a client "
+    "fixture requests it too); in a fixture wider than one test, use "
+    "database_blocker.unblock(). To allow it as 0.12 did, mark the test "
+    "@pytest.mark.allow_database, or set domainkit_allow_database = true in "
+    "the pytest settings."
+)
+"""What a test that reached the databases without asking for them is told."""
 
 type _Action = Callable[..., Awaitable[None]]
+
+
+class DatabaseBlocker:
+    """Refuse the test databases, or allow them for a block.
+
+    The ``database_blocker`` fixture, as pytest-django's ``django_db_blocker``:
+    ``with database_blocker.unblock():`` lets a fixture wider than one test
+    reach the databases while it works. Each block puts back, when it ends,
+    whatever was in force when it started, so blocks nest. Blocking refuses
+    every engine and session of ``domainkit.db.connections``, and every
+    owner engine, with ``DatabaseAccessRefused``.
+    """
+
+    def __init__(self, reason: str = REFUSAL) -> None:
+        """Refuse with ``reason``, the message the refused code raises."""
+        self.reason = reason
+
+    @property
+    def blocked(self) -> bool:
+        """Whether the databases are refused now."""
+        return connections.refusal is not None
+
+    def block(self) -> AbstractContextManager[None]:
+        """Refuse the databases until the block ends."""
+        return _refusing(self.reason)
+
+    def unblock(self) -> AbstractContextManager[None]:
+        """Allow the databases until the block ends."""
+        return _refusing(None)
+
+
+@contextmanager
+def _refusing(reason: str | None) -> Iterator[None]:
+    """Refuse the databases with ``reason`` (allow them for None), then put back."""
+    previous = connections.refusal
+    _refuse(reason)
+    try:
+        yield
+    finally:
+        _refuse(previous)
+
+
+def _refuse(reason: str | None) -> None:
+    """Refuse the databases with ``reason``, or allow them for None."""
+    if reason is None:
+        connections.allow()
+    else:
+        connections.refuse(reason)
 
 
 def worker_id() -> str | None:

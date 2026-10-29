@@ -111,7 +111,7 @@ async def tables(database: str) -> AsyncIterator[None]:
 
 
 @pytest.fixture
-async def sqlite_tables(tmp_path: Path) -> AsyncIterator[None]:
+async def sqlite_tables(database_access: None, tmp_path: Path) -> AsyncIterator[None]:
     """The gadget tables on SQLite, whichever database the suite runs on.
 
     For what only SQLite does: these tests run in the PostgreSQL job too,
@@ -1369,6 +1369,7 @@ def bind_of(reads: Reads) -> AsyncEngine:
         ),
     ],
 )
+@pytest.mark.usefixtures("database_access")
 async def test_read_only_sessions_bind_to_one_engine_of_each_kind(
     url: str, transaction: dict[str, object], snapshot: dict[str, object]
 ) -> None:

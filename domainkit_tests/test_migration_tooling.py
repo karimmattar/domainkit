@@ -669,6 +669,7 @@ UNREACHABLE = {
         ("makemigrations", "-m", "shelves", "--check"),
     ],
 )
+@pytest.mark.usefixtures("database_access")
 def test_a_database_out_of_reach_is_one_line_not_a_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str, command: tuple[str, ...]
 ) -> None:

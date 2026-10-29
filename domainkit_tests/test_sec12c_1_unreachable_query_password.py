@@ -32,6 +32,7 @@ def run(*args: str, **options: Any) -> str:  # noqa: ANN401 - command options.
         f"postgresql+asyncpg://app:x@127.0.0.1:1/app?user=app&password={SECRET}",
     ],
 )
+@pytest.mark.usefixtures("database_access")
 def test_a_password_in_the_query_is_masked(url: str) -> None:
     """No credential of the URL appears in the one-line refusal."""
     with (
@@ -45,6 +46,7 @@ def test_a_password_in_the_query_is_masked(url: str) -> None:
     assert SECRET not in said, said
 
 
+@pytest.mark.usefixtures("database_access")
 def test_a_password_with_an_unencoded_at_sign_is_masked() -> None:
     """``p@ss`` written as it is: the URL's host becomes ``ss@db``, then printed.
 

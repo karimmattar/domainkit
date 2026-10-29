@@ -426,6 +426,7 @@ async def test_a_lock_wait_cut_off_leaves_no_lock(database_url: str) -> None:
         assert connections.pool_stats()["default"]["checked_out"] == 0
 
 
+@pytest.mark.usefixtures("database_access")
 async def test_the_frameworks_own_statements_are_not_counted() -> None:
     """assert_num_queries counts the work's statements, not INTERNAL ones."""
     with assert_num_queries(1) as queries:

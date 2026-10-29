@@ -19,7 +19,12 @@ every database the settings name, so they refuse settings whose
     The migrated databases, put back as ``migrate`` left them before the
     test: whatever earlier tests committed is gone, and the rows
     ``migrate`` wrote (content types, permissions) are there. Request it in
-    tests that reach the database without a client.
+    tests that reach the database without a client: a test that did not
+    request it is refused the databases (``DatabaseAccessRefused``).
+``database_blocker``
+    Session-wide: ``with database_blocker.unblock():`` lets a fixture wider
+    than one test reach the databases, as pytest-django's
+    ``django_db_blocker`` does.
 ``client``, ``async_client``
     A ``TestClient`` (an ``AsyncTestClient``) for the project's application,
     lifespan included, on the ``db`` databases. Requests send no credentials.
@@ -43,6 +48,10 @@ every database the settings name, so they refuse settings whose
     the test ends, as ``override_settings`` changes it for a block;
     ``del settings.CACHES`` restores a default.
 
+``@pytest.mark.allow_database`` lets a test reach the databases without
+``db``, as every test could until 0.13: they are not put back first. The
+ini option ``domainkit_allow_database = true`` does it for every test.
+
 ``pytest --detect-blocking`` fails a test that holds its event loop for
 ``--blocking-seconds`` (0.1) or more in one step (``domainkit.testing.blocking``).
 
@@ -57,7 +66,7 @@ reports and queued logs are sent before the next test starts; call
 
 import os
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Iterator
 from contextlib import ExitStack
 from typing import Any, Final
 
@@ -68,6 +77,7 @@ from domainkit.clock import FrozenClock, Moment, freeze_time
 from domainkit.conf import UNSET, override_settings
 from domainkit.conf import settings as current_settings
 from domainkit.conf.env import project_prefix
+from domainkit.db import connections
 from domainkit.db.snapshots import Snapshot, restore_snapshot, take_snapshot
 from domainkit.http import get_asgi_application
 from domainkit.log import flush_logs
@@ -76,7 +86,7 @@ from domainkit.reporting import flush_reports
 
 from . import blocking
 from .clients import AsyncTestClient, TestClient, token_for, user_token
-from .databases import IN_MEMORY, migrated_database, worker_id
+from .databases import IN_MEMORY, REFUSAL, DatabaseBlocker, migrated_database, worker_id
 from .factories import Factory, LazyAttribute, LazyFunction, Sequence, SubFactory
 from .queries import CapturedQueries, assert_max_queries, assert_num_queries
 
@@ -86,6 +96,7 @@ __all__ = [
     "AsyncTestClient",
     "CapturedQueries",
     "ClientFor",
+    "DatabaseBlocker",
     "Factory",
     "FreezeTime",
     "FrozenClock",
@@ -104,6 +115,10 @@ __all__ = [
 ]
 
 SETTINGS_INI: Final = "domainkit_settings"
+ALLOW_DATABASE_INI: Final = "domainkit_allow_database"
+ALLOW_DATABASE_MARK: Final = "allow_database"
+_REFUSED_BEFORE: Final = pytest.StashKey[str | None]()
+"""What ``connections`` refused before the plugin did, put back at the end."""
 OUTBOXES: Final = (
     ("domainkit.contrib.mail.backends", "outbox"),
     ("domainkit.contrib.notifications.backends", "sms_outbox"),
@@ -148,8 +163,15 @@ class SettingsOverrides:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Declare ``domainkit_settings``, ``--keepdb``, and ``--detect-blocking``."""
+    """Declare the ini options, ``--keepdb``, and ``--detect-blocking``."""
     parser.addini(SETTINGS_INI, "Settings module for the tests (config.settings.test)")
+    parser.addini(
+        ALLOW_DATABASE_INI,
+        "Let every test reach the databases without requesting db, as before "
+        "0.13 (false)",
+        type="bool",
+        default=False,
+    )
     group = parser.getgroup("domainkit")
     group.addoption(
         "--keepdb",
@@ -161,12 +183,60 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Select the test settings and keep the developer's ``.env`` out."""
+    """Select the test settings, keep the ``.env`` out, and refuse the databases.
+
+    The databases stay refused for the whole run, outside the moments a
+    fixture or a test asked for them (``database_blocker``).
+    """
     prefix = project_prefix()
     if module := config.getini(SETTINGS_INI):
         os.environ[f"{prefix}SETTINGS_MODULE"] = str(module)
     os.environ[f"{prefix}ENV_FILE"] = ""
+    config.addinivalue_line(
+        "markers",
+        f"{ALLOW_DATABASE_MARK}: the test may reach the test databases without "
+        f"requesting db; they are not put back first",
+    )
+    if not config.getini(ALLOW_DATABASE_INI):
+        config.stash[_REFUSED_BEFORE] = connections.refusal
+        connections.refuse(REFUSAL)
     blocking.configure(config)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Give a test marked ``allow_database`` the test databases, first of all.
+
+    So what it reaches are the databases ``database`` made, never the ones
+    the settings name, whichever test runs first.
+    """
+    for item in items:
+        if item.get_closest_marker(ALLOW_DATABASE_MARK) is None:
+            continue
+        names = getattr(item, "fixturenames", None)
+        if names is not None and "database" not in names:
+            names.insert(0, "database")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object]:
+    """Allow the databases to a test marked ``allow_database``, as 0.12 did.
+
+    From its first fixture to its last teardown; they are not put back first.
+    A hook, not an autouse fixture: the other tests pay nothing for it.
+    """
+    if item.get_closest_marker(ALLOW_DATABASE_MARK) is None:
+        return (yield)
+    with DatabaseBlocker().unblock():
+        return (yield)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Put back what ``connections`` refused before the run."""
+    if _REFUSED_BEFORE in config.stash:
+        if (previous := config.stash[_REFUSED_BEFORE]) is None:
+            connections.allow()
+        else:
+            connections.refuse(previous)
 
 
 @pytest.fixture(autouse=True)
@@ -209,26 +279,46 @@ def reports_and_logs_written() -> Iterator[None]:
 
 
 @pytest.fixture(scope="session")
-def database(
-    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
-) -> Iterator[str]:
-    """The migrated test database's URL."""
-    keepdb = bool(request.config.getoption("keepdb"))
-    scratch = tmp_path_factory.mktemp("database")
-    with migrated_database(scratch, keepdb=keepdb, worker=worker_id()) as url:
-        yield url
+def database_blocker() -> DatabaseBlocker:
+    """Refuse the test databases, or allow them for a block."""
+    return DatabaseBlocker()
 
 
 @pytest.fixture(scope="session")
-def _migrated_rows(database: str) -> Snapshot:
+def database(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+    database_blocker: DatabaseBlocker,
+) -> Iterator[str]:
+    """The migrated test database's URL.
+
+    The databases are reached while they are made and dropped, not between.
+    """
+    keepdb = bool(request.config.getoption("keepdb"))
+    scratch = tmp_path_factory.mktemp("database")
+    made = migrated_database(scratch, keepdb=keepdb, worker=worker_id())
+    with database_blocker.unblock():
+        url = made.__enter__()
+    try:
+        yield url
+    finally:
+        with database_blocker.unblock():
+            made.__exit__(None, None, None)
+
+
+@pytest.fixture(scope="session")
+def _migrated_rows(database: str, database_blocker: DatabaseBlocker) -> Snapshot:
     """Every table's rows, as ``migrate`` left them."""
-    return run_async(take_snapshot())
+    with database_blocker.unblock():
+        return run_async(take_snapshot())
 
 
 @pytest.fixture
-def db(_migrated_rows: Snapshot) -> None:
-    """Put the test databases back as ``migrate`` left them."""
-    run_async(restore_snapshot(_migrated_rows))
+def db(_migrated_rows: Snapshot, database_blocker: DatabaseBlocker) -> Iterator[None]:
+    """Put the test databases back as ``migrate`` left them; allow them in the test."""
+    with database_blocker.unblock():
+        run_async(restore_snapshot(_migrated_rows))
+        yield
 
 
 @pytest.fixture

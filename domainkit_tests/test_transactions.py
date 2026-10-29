@@ -572,7 +572,7 @@ async def test_the_level_is_set_as_the_transaction_begins(tables: None) -> None:
 
 
 @pytest.fixture
-async def sqlite_file(tmp_path: Path) -> AsyncIterator[str]:
+async def sqlite_file(database_access: None, tmp_path: Path) -> AsyncIterator[str]:
     """The gadget tables in a SQLite file, whatever server the suite targets.
 
     A writer waits 0.1 seconds for another's lock, then fails.

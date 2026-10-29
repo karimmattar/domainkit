@@ -1679,6 +1679,7 @@ async def test_computations_run_in_a_clean_context_as_owned_tasks() -> None:
     assert seen == [None, None, None, frozen_at]  # A test's frozen clock carries.
 
 
+@pytest.mark.usefixtures("database_access")
 def test_readiness_checks_only_caches_that_ask_for_it() -> None:
     """A cache marked READINESS fails /ready while it is down."""
     down = {**DOWN, "READINESS": True}

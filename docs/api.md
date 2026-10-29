@@ -722,6 +722,7 @@ Signatures in the Standard Webhooks scheme (https://www.standardwebhooks.com).
 SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 
 - `ConnectionHandler`: Lazily created engines and session factories per alias and event loop.
+- `DatabaseAccessRefused`: The databases were reached while `ConnectionHandler.refuse` refuses them.
 - `EnumValue`: An `Enum` stored by its members' values, so order follows them.
 - `ExactDecimal`: Fixed-point amounts that come back exactly as stored, also on SQLite.
 - `Isolation`: The isolation level of a unit of work's transaction (`isolation=`).
@@ -1339,6 +1340,7 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `AsyncTestClient`: An `httpx2.AsyncClient` that serves an ASGI application in this task.
 - `CapturedQueries`: The SQL statements run while it is entered; checked against a count.
 - `ClientFor`: The `client_for` fixture's type: a client for a new user with permissions.
+- `DatabaseBlocker`: Refuse the test databases, or allow them for a block.
 - `Factory`: Make `T` objects for tests: `build` keeps them in memory, `create` stores.
 - `FreezeTime`: The `freeze_time` fixture's type: freezes the clock, returning it.
 - `FrozenClock`: A clock that stands at a moment, or ticks on from it, until moved.

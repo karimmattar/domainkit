@@ -153,6 +153,7 @@ def commit() -> None:
 
 
 @pytest.mark.usefixtures("installed")
+@pytest.mark.usefixtures("database_access")
 def test_only_domains_that_registered_are_called(calls: list[tuple[str, ...]]) -> None:
     """In domain order: registered hooks first, then an overriding method (DSGN-03)."""
     assert [hook.domain for hook in on_stage] == ["legacy", "typed", "typed"]
@@ -173,6 +174,7 @@ def test_only_domains_that_registered_are_called(calls: list[tuple[str, ...]]) -
 
 
 @pytest.mark.usefixtures("installed")
+@pytest.mark.usefixtures("database_access")
 def test_migrated_hooks_run_on_the_migrated_database(
     calls: list[tuple[str, ...]],
 ) -> None:
@@ -238,6 +240,7 @@ def test_hooks_register_in_ready_or_for_a_named_domain(
 
 
 @pytest.mark.usefixtures("calls")
+@pytest.mark.usefixtures("database_access")
 def test_a_failed_follow_up_is_reported_with_its_domain(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
