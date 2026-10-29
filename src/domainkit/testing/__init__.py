@@ -92,7 +92,18 @@ from domainkit.reporting import flush_reports
 from . import blocking
 from .clients import AsyncTestClient, TestClient, token_for, user_token
 from .databases import IN_MEMORY, REFUSAL, DatabaseBlocker, migrated_database, worker_id
-from .factories import Factory, LazyAttribute, LazyFunction, Sequence, SubFactory
+from .factories import (
+    Factory,
+    LazyAttribute,
+    LazyFunction,
+    Maybe,
+    RelatedFactory,
+    SelfAttribute,
+    Sequence,
+    SubFactory,
+    Trait,
+    post_generation,
+)
 from .live import LIVE_HOST, LiveServer
 from .queries import CapturedQueries, assert_max_queries, assert_num_queries
 
@@ -109,14 +120,19 @@ __all__ = [
     "LazyAttribute",
     "LazyFunction",
     "LiveServer",
+    "Maybe",
+    "RelatedFactory",
+    "SelfAttribute",
     "Sequence",
     "SettingsOverrides",
     "SubFactory",
     "TestClient",
+    "Trait",
     "assert_max_queries",
     "assert_num_queries",
     "freeze_time",
     "migrated_database",
+    "post_generation",
     "token_for",
     "user_token",
 ]

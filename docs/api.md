@@ -1347,14 +1347,19 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `LazyAttribute`: `LazyAttribute(lambda o: o.name.lower())`: computed from other fields.
 - `LazyFunction`: `LazyFunction(uuid4)`: the function's result, called for each object.
 - `LiveServer`: An ASGI application served by uvicorn in a thread, on a free port.
+- `Maybe`: `Maybe("paid", yes, no)`: `yes` when the field `paid` is true, else `no`.
+- `RelatedFactory`: `RelatedFactory(LineFactory, "invoice")`: an object that points at this one.
+- `SelfAttribute`: `SelfAttribute("customer.id")`: another field's value, or its attribute's.
 - `Sequence`: `Sequence(lambda n: f"user-{n}")`: the object's number, from 0.
 - `SettingsOverrides`: The `settings` fixture: settings changed until the test ends.
 - `SubFactory`: `SubFactory(MoneyFactory, currency="EUR")`: another factory's object.
 - `TestClient`: Starlette's `TestClient`; the application sees the caller's context.
+- `Trait`: `shipped = Trait(status="shipped")` in `class Params`: defaults to turn on.
 - `assert_max_queries`: Check that the `with` block runs at most `limit` SQL statements.
 - `assert_num_queries`: Check that the `with` block runs exactly `expected` SQL statements.
 - `freeze_time`: Return a clock frozen at `when` (default: now), for a `with` block.
 - `migrated_database`: Make, migrate, and later drop the test databases; yield the default's URL.
+- `post_generation`: Run the decorated method on each object made: `(made, create, extracted)`.
 - `token_for`: Return an access token for `user`, a user stored already.
 - `user_token`: Store a new user granted `permissions`; return an access token for them.
 
