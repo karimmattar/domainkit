@@ -1,6 +1,6 @@
 # 0106. Mutate what a pull request changes, before it merges
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-29 (at the end)
 - Date: 2026-10-28
 
 ## Context
@@ -98,3 +98,87 @@ only a run that does not finish.
 - What would change this: mutmut learning which tests reach a function
   without a full run (a coverage map kept from the test jobs), which would
   cut the fixed cost to the mutants' own.
+
+## Amendment (2026-10-29, 0.12.1): shards for a release-size change
+
+The job was sized at 408 mutants in 6 minutes. 0.12's release pull request
+(#86) changed 176 functions, 3,247 mutants, and the job stopped at its
+45-minute limit: 1,660 killed, 72 survived, 204 timed out, and 1,311 never
+reached. It failed as it should, naming them, but no one learned what the
+1,311 hid (TEST-02).
+
+Measured on this repository (four workers, as GitHub's runners have), with
+the 3,095 mutants of those functions outside `batching.py`:
+
+- **The fixed cost.** Generating the mutants: 75 seconds. mutmut's stats,
+  the whole suite in one process under the trampolines: 16 minutes. Its
+  clean run, of the tests that reach the selected functions (for 176
+  functions, nearly the whole suite), in one process: 15 minutes. So a
+  release-size change has about 9 minutes of a 40-minute budget left for
+  its mutants.
+- **The mutants' cost** is not a second each. mutmut runs the cheapest
+  first. The first 2,189 took 53 minutes; the last 906, the mutants of
+  functions that every domain's setup reaches (`HookPoint`, the domains'
+  `ready`, `UnitOfWork.commit`, the idempotency middleware), took 118
+  minutes (other runs shared the machine for part of it): each runs, at
+  worst, tests of 140 to 260 seconds. In all 170 minutes of mutants, 204
+  with the fixed cost; 2,498 killed, 456 timed out, 141 survived. A
+  worker's time per mutant fits 4 seconds, plus 0.27 (the cheap ones) to
+  0.33 (the heavy ones) of its tests' time as mutmut's stats give it: most
+  mutants fail a test early, and mutmut stops there.
+- **The stats can be reused.** mutmut keeps them in
+  `mutants/mutmut-stats.json`; a run that finds them, for the same commit
+  and configuration, skips the 16 minutes and only lists the tests. Its
+  clean run covers only the tests of the mutants it is given.
+
+The options:
+
+- a longer limit for the one job: GitHub allows six hours, so 0.12's
+  mutants would finish, in about three and a half hours, and every pull
+  request waits as long as its slowest mutants;
+- a fixed matrix of shards by module, as the weekly run has: every pull
+  request pays every shard's 31 minutes of stats and clean run, for its
+  three changed functions;
+- one job first, as now, and shards only for what it leaves, made from
+  its stats.
+
+### Decision
+
+- `mutation (changed)` runs as before, stopping mutmut at 40 minutes (it
+  was 45). A typical pull request finishes there: one job.
+- When mutants are left unchecked, `mutation_shards.py plan` splits them
+  into shards, balanced by the estimate above (4 seconds and 0.35 of the
+  tests' time a mutant), at about 5,000 seconds of a worker's time (21
+  minutes on four, besides a clean run of up to 15) each, and 12 shards at
+  most. A function's mutants stay together, 100 or half a shard at most,
+  since each shard's clean run is the tests of its functions. The job
+  uploads the plan and its stats (`mutation-changed-plan`), and its
+  results.
+- `mutation (changed, N)`, a matrix made from the plan, takes the stats
+  and runs its mutants, stopped at 45 minutes (the job has 65).
+- `mutation (changed, summary)` reads every run's results, a checked
+  mutant winning over one interrupted or not reached, and fails, as the
+  single job did, when a mutant lived or was never checked, listing them
+  in its summary and an artifact.
+- None of them is required (`test_ci.py`'s `ADVISORY`), as before.
+
+### Consequences
+
+- 0.12's pull request would take 12 shards after the first job (its
+  3,247 mutants estimate at 64,551 seconds of a worker's time, 269
+  minutes on four, where the 3,095 here took 170: the estimate errs
+  long): about 45 minutes, then about 45 more, where it stopped
+  incomplete. A proof on three
+  modules' 889 mutants ran the first job (stopped before its mutants),
+  the plan, a shard in a fresh tree with only the plan and the stats (no
+  stats run), and the summary over both: complete, 878 killed and 11
+  survived, failing as it should.
+- A shard repeats its clean run of its functions' tests; a shard of the
+  functions every setup reaches pays nearly the whole suite again, about
+  15 minutes, inside its 45.
+- The estimate is fitted to this suite; when a shard does not finish, its
+  mutants read "not checked" in the summary, and the constants in
+  `mutation_shards.py` are the place to change.
+- What would change this: mutmut recording a mutant's duration under
+  forkserver (3.8 records zero), which would fit the estimate from each
+  run instead.

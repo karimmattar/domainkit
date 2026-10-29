@@ -19,6 +19,15 @@ and a status.
   doubles it (`OrderShipped`, `OrderSubmitted`); a phrasal verb's particle
   kept last (`GuestCheckedIn`). A regular verb's event keeps its name
   (`ProductPublished`, `OrderCanceled`); `--event` still names any other.
+- CI's `mutation (changed)` check could not finish a release-size pull
+  request: on 0.12's (3,247 mutants) it stopped at its 45-minute limit
+  with 1,311 mutants never reached. It runs what it can in 40 minutes, as
+  before, and a typical pull request still finishes there; what is left
+  goes to shards (`mutation (changed, N)`), balanced by the time of their
+  tests, which reuse its saved stats instead of running the whole suite
+  again, and `mutation (changed, summary)` fails when a mutant lived or
+  was never checked, and lists them. None is a required check
+  (TEST-02; ADR 0106).
 - The generators pluralized a plural again: `startdomain notes` wrote the
   aggregate `Notes`, its repository `noteses`, and the table
   `notes_noteses`. A domain named in the plural gets its aggregate in the
