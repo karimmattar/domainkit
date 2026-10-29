@@ -9,6 +9,17 @@ and a status.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-29
+
+A minor release. It removes what 0.12 deprecated: the hook methods of
+`DomainConfig`, which `setup()` now refuses, and `expect_version`. The
+pytest plugin refuses the test databases to a test that did not request
+them, and each test starts from its own registrations, ledgers and
+storages. `live_server`, factory_boy's other declarations and browser
+sessions join the testing tools, and the reference and the public API are
+a page for each area. Read [docs/upgrading.md](docs/upgrading.md) first:
+each **Breaking:** entry has its line there.
+
 ### Added
 
 - `live_server` in the pytest plugin: the project's application served by
@@ -4209,7 +4220,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/karimmattar/domainkit/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/karimmattar/domainkit/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/karimmattar/domainkit/compare/v0.11.1...v0.11.2
