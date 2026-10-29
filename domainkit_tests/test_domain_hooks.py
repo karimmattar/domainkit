@@ -2,35 +2,31 @@
 
 Each hook method of ``DomainConfig`` became a point a domain registers on
 in ``ready()``. A mistake in a registered hook fails ``setup()``, naming
-the domain; a method still overridden keeps working, warned of once.
+the domain; so does a hook method 0.13 removed, still defined.
 """
 
 import asyncio
 import functools
-import warnings
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 
 from domainkit import setup
 from domainkit.apps import DomainConfig, DomainRegistry, registry
 from domainkit.apps import hooks as hooks_module
-from domainkit.apps.config import REPLACED_HOOKS
+from domainkit.apps.config import REMOVED_HOOKS
 from domainkit.apps.hooks import (
     HookPoint,
     on_check,
     on_check_application,
     on_deployment_warnings,
     on_erase_subject,
-    on_export_subject,
     on_seed,
     on_startup,
 )
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import override_settings
 from domainkit.db import hooks as db_hooks
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import ALPHA, MakePackage
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
@@ -89,9 +85,20 @@ class OldStyleConfig(DomainConfig):
     def deployment_warnings(self):
         return ["old warning"]
 
+    async def stage(self, uow, events, tasks):
+        CALLS.append("stage")
 
-class Inheriting(OldStyleConfig):
-    pass
+    async def committed(self, uow):
+        CALLS.append("committed")
+
+    async def stage_transaction(self, connection, database):
+        CALLS.append("stage_transaction")
+
+    async def transaction_committed(self, database):
+        CALLS.append("transaction_committed")
+
+    async def migrated(self, connection, database):
+        CALLS.append("migrated")
 """
 INHERITED = """
 from oldstyle.apps import OldStyleConfig
@@ -120,6 +127,49 @@ from borrowed import hooks
 
 class BorrowedConfig(DomainConfig):
     startup = hooks.startup
+"""
+SHAPES = """
+from domainkit.apps import DomainConfig
+
+
+class Seeding:
+    async def seed(self):
+        return None
+
+
+class ShapesConfig(Seeding, DomainConfig):
+    check = property(lambda self: None)
+    migrated = staticmethod(lambda connection, database: None)
+
+    def __init__(self, name, module):
+        super().__init__(name, module)
+        self.shutdown = self.close
+
+    async def close(self):
+        return None
+
+
+async def erase(self, subject, reason):
+    return {}
+
+
+ShapesConfig.erase_subject = erase
+"""
+ERASING = """
+from domainkit.apps import DomainConfig
+from domainkit.apps.hooks import on_erase_subject
+
+ERASED = []
+
+
+async def erase_copies(subject, reason):
+    ERASED.append(subject)
+    return {"copies": 1}
+
+
+class ErasingConfig(DomainConfig):
+    def ready(self):
+        on_erase_subject(erase_copies)
 """
 TWICE = """
 from domainkit.apps import DomainConfig
@@ -177,9 +227,9 @@ class ClosingConfig(DomainConfig):
 
 @pytest.fixture
 def old_calls(make_package: MakePackage) -> list[str]:
-    """What the method-style domain did."""
+    """What the method-style domain did: nothing, ever, from 0.13."""
     make_package("oldlog", {"__init__.py": "CALLS = []\n"})
-    make_package("oldstyle", {"apps.py": OLD_STYLE.replace("\n\n\nclass Inh", "\n#")})
+    make_package("oldstyle", {"apps.py": OLD_STYLE})
     make_package("childstyle", {"apps.py": INHERITED})
     import oldlog  # type: ignore[import-not-found]
 
@@ -196,14 +246,6 @@ def twice_calls(make_package: MakePackage) -> list[str]:
     import twicelog  # type: ignore[import-not-found]
 
     return twicelog.CALLS  # type: ignore[no-any-return]
-
-
-@pytest.fixture
-def loud() -> Iterator[None]:
-    """Show deprecation warnings by the default filter, once per place."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("default", DomainkitDeprecationWarning)
-        yield
 
 
 def test_a_misspelt_or_mistyped_hook_fails_setup(make_package: MakePackage) -> None:
@@ -273,78 +315,69 @@ def test_registrations_are_checked_against_the_point() -> None:
     assert free(one, domain="alpha") is one  # Nothing to check.
 
 
-def test_old_hook_methods_still_work_and_warn_once_at_their_line(
-    old_calls: list[str], loud: None
-) -> None:
-    """Every hook method is still called, warned of where it is defined."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("default", DomainkitDeprecationWarning)
-        with override_settings(INSTALLED_DOMAINS=[ALPHA, "oldstyle"]):
-            setup()
-            registry.clear()
-            setup()  # Loaded again: not warned again.
-            assert asyncio.run(registry.check(1.0)) == []
-
-            async def live() -> None:
-                async with registry.lifespan():
-                    pass
-
-            asyncio.run(live())
-            assert [hook.call(FastAPI()) for hook in on_check_application] == [
-                ["old problem"]
-            ]
-            assert [hook.call() for hook in on_deployment_warnings] == [["old warning"]]
-            assert [hook.domain for hook in on_seed] == ["oldstyle"]
-            assert [hook.domain for hook in on_erase_subject] == ["oldstyle"]
-            assert [hook.domain for hook in on_export_subject] == ["oldstyle"]
-
-    assert old_calls == ["check", "startup", "shutdown"]
-    found = sorted(
-        (str(warning.message), warning.lineno)
-        for warning in caught
-        if warning.category is DomainkitDeprecationWarning
-    )
-    methods = [
-        "check",
-        "check_application",
-        "deployment_warnings",
-        "erase_subject",
-        "export_subject",
-        "seed",
-        "shutdown",
-        "startup",
-    ]
-    assert [message for message, _ in found] == [
-        f"Domain 'oldstyle': OldStyleConfig.{method} is a deprecated hook method; "
-        f"register the function with {REPLACED_HOOKS[method]}(...) in ready(), "
-        "under a name of its own. "
-        "Hook methods are removed in domainkit 0.13."
-        for method in methods
-    ]
-    assert {warning.filename for warning in caught} == {
-        str(__import__("oldstyle.apps").apps.__file__)
-    }
-    assert len({line for _, line in found}) == len(methods)
-
-
-def test_the_warning_is_the_projects_own_module_s(old_calls: list[str]) -> None:
-    """A filter on the project's module catches it, as ``filterwarnings`` would."""
+def refusal(domains: list[str]) -> CheckFailed:
+    """What ``setup()`` raises with ``domains`` installed after alpha."""
     with (
-        override_settings(INSTALLED_DOMAINS=[ALPHA, "oldstyle"]),
-        warnings.catch_warnings(),
+        override_settings(INSTALLED_DOMAINS=[ALPHA, *domains]),
+        pytest.raises(CheckFailed) as refused,
     ):
-        warnings.simplefilter("ignore", DomainkitDeprecationWarning)
-        warnings.filterwarnings(
-            "error", category=DomainkitDeprecationWarning, module=r"oldstyle\.apps$"
+        setup()
+    return refused.value
+
+
+def test_a_removed_hook_method_fails_setup_naming_its_point(
+    old_calls: list[str],
+) -> None:
+    """Every one of the 13 is named, with its point, before any ``ready()`` runs.
+
+    0.12 called an override and warned of it; 0.13 calls none, so one
+    left behind would be silently skipped: an ``erase_subject`` no one
+    calls keeps a person's data through an erasure that reports success.
+    """
+    AlphaConfig.calls.clear()
+
+    refused = refusal(["oldstyle"])
+
+    assert str(refused) == "Installed domains define removed hook methods:\n" + (
+        "\n".join(
+            f"  apps.E002: Domain 'oldstyle': OldStyleConfig.{method} is a hook "
+            "method, which domainkit 0.13 removed; nothing would call it.\n"
+            f"    Hint: Register the function with {point}(...) in ready(), "
+            "under a name of its own."
+            for method, point in REMOVED_HOOKS.items()
         )
-        with pytest.raises(DomainkitDeprecationWarning, match="'oldstyle'"):
-            setup()
+    )
+    assert [
+        message.id for message in refused.messages if isinstance(message, CheckMessage)
+    ] == ["apps.E002"] * 13
+    assert AlphaConfig.calls == []  # No domain was made ready.
+    assert not registry.ready
+    assert old_calls == []
 
 
-def test_a_hook_method_defined_elsewhere_is_warned_where_it_is(
+def test_every_domain_that_defines_one_is_named_in_domain_order(
+    old_calls: list[str], make_package: MakePackage
+) -> None:
+    """An inherited method names the class that defines it, and each domain."""
+    make_package("odd", {"apps.py": ODD})
+
+    refused = refusal(["odd", "childstyle"])
+
+    assert [message.partition(" is ")[0] for message in refused.messages] == [
+        "Domain 'odd': OddConfig.check",
+        *(f"Domain 'childstyle': OldStyleConfig.{method}" for method in REMOVED_HOOKS),
+    ]
+
+
+def test_a_name_is_found_however_the_domain_defines_it(
     make_package: MakePackage,
 ) -> None:
-    """A function assigned as the method is warned of at its own line."""
+    """A base, a property, a staticmethod, a later assignment, the instance.
+
+    A function assigned from another module counts as a method written in
+    the class does.
+    """
+    make_package("shapes", {"apps.py": SHAPES})
     make_package(
         "borrowed",
         {
@@ -353,63 +386,44 @@ def test_a_hook_method_defined_elsewhere_is_warned_where_it_is(
         },
     )
 
-    with (
-        override_settings(INSTALLED_DOMAINS=[ALPHA, "borrowed"]),
-        pytest.warns(
-            DomainkitDeprecationWarning, match="BorrowedConfig.startup"
-        ) as caught,
-    ):
-        setup()
+    refused = refusal(["shapes", "borrowed"])
 
-    assert (caught[0].filename, caught[0].lineno) == (
-        __import__("borrowed.hooks").hooks.__file__,
-        1,
-    )
+    assert [message.partition(" is ")[0] for message in refused.messages] == [
+        "Domain 'shapes': ShapesConfig.shutdown",  # On the instance.
+        "Domain 'shapes': ShapesConfig.check",  # A property.
+        "Domain 'shapes': Seeding.seed",  # A base that is no DomainConfig.
+        "Domain 'shapes': ShapesConfig.erase_subject",  # Set after the class.
+        "Domain 'shapes': ShapesConfig.migrated",  # A staticmethod.
+        "Domain 'borrowed': BorrowedConfig.startup",
+    ]
 
 
-def test_an_inherited_hook_method_names_the_class_that_defines_it(
-    old_calls: list[str],
-) -> None:
-    """The warning names the domain loaded and the class with the method."""
-    with (
-        override_settings(INSTALLED_DOMAINS=[ALPHA, "childstyle"]),
-        pytest.warns(DomainkitDeprecationWarning) as caught,
-    ):
-        setup()
-
-    assert str(caught[0].message).startswith(
-        "Domain 'childstyle': OldStyleConfig.startup is a deprecated hook method"
-    )
-
-
-def test_a_hook_method_that_is_no_function_is_warned_at_its_module(
+@pytest.mark.anyio
+async def test_a_domain_that_registers_instead_is_called(
     make_package: MakePackage,
 ) -> None:
-    """Without a line of its own, the warning points at its module's top."""
-    make_package("odd", {"apps.py": ODD})
-
-    with (
-        override_settings(INSTALLED_DOMAINS=[ALPHA, "odd"]),
-        pytest.warns(DomainkitDeprecationWarning, match="OddConfig.check") as caught,
-    ):
+    """``on_erase_subject`` in ``ready()``: the way that works."""
+    make_package("erasing", {"apps.py": ERASING})
+    with override_settings(INSTALLED_DOMAINS=[ALPHA, "erasing"]):
         setup()
+        answers = [
+            await hook.call("subject-1", "request")
+            for hook in on_erase_subject.of("erasing")
+        ]
+    from erasing.apps import ERASED  # type: ignore[import-not-found]
 
-    assert (caught[0].filename, caught[0].lineno) == (
-        __import__("odd.apps").apps.__file__,
-        1,
-    )
-    assert [hook.domain for hook in on_check] == ["alpha", "odd"]
+    assert (answers, ERASED) == ([{"copies": 1}], ["subject-1"])
 
 
-def test_the_base_methods_are_deprecated_too() -> None:
-    """Each says what to use instead, to type checkers and when called."""
-    for method, replacement in REPLACED_HOOKS.items():
-        assert replacement in getattr(DomainConfig, method).__deprecated__
-    domain = DomainConfig("plain", __import__("domainkit_tests"))
-    with pytest.warns(DomainkitDeprecationWarning, match="on_check_application"):
-        assert domain.check_application(FastAPI()) == []
-    with pytest.warns(DomainkitDeprecationWarning, match="on_deployment_warnings"):
-        assert domain.deployment_warnings() == []
+def test_the_base_class_defines_no_hook_method() -> None:
+    """A domain that defines none loads; ``databases`` and ``holds_table`` stay."""
+    for method in REMOVED_HOOKS:
+        assert not hasattr(DomainConfig, method)
+    setup()
+
+    assert [hook.domain for hook in on_check] == ["alpha"]
+    assert callable(DomainConfig.databases)
+    assert callable(DomainConfig.holds_table)
 
 
 @pytest.mark.usefixtures("twice_calls")
@@ -497,15 +511,15 @@ def test_seed_runs_every_hook_and_names_each_domain_once(
 
 
 def test_every_hook_method_has_its_point() -> None:
-    """The deprecated methods and the points' ``method`` agree."""
+    """Each removed method names the point of the same name, and only those."""
     points = {
-        point.method: f"{module.__name__}.{name}"
+        point.name: f"{module.__name__}.{name}"
         for module in (hooks_module, db_hooks)
         for name, point in vars(module).items()
         if isinstance(point, HookPoint)
     }
 
-    assert points == REPLACED_HOOKS
+    assert points == REMOVED_HOOKS
     assert all(
         name == f"on_{method}"
         for method, name in (

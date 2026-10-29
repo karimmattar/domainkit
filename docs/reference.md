@@ -539,7 +539,8 @@ schedule, and at startup `audit.E004` and `audit.E005`, an audited
 PostgreSQL database whose `protect()` triggers could not be checked or are
 missing, unless `AUDIT.REQUIRE_BASELINE = False`;
 [contrib.md](contrib/audit.md#in-staging-and-production)); `setup()` refuses a domain whose `requires` is not
-installed (`apps.E001`), anywhere. `check` adds layer rules
+installed (`apps.E001`), or that defines a hook method 0.13 removed
+(`apps.E002`), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
@@ -1161,11 +1162,13 @@ Numbers and text are written as they are; decimals, times, durations, ids,
 and enums as text; bytes as base64; JSON columns as JSON; a single-field
 value object (a password hash, a project's `ProductName`) as its field,
 which loading makes into the object again, so the object's own checks
-refuse what it would not hold. A password hash loads only if a hasher of
+refuse what it would not hold; one around another (`Code(sku: Sku)`) as
+the innermost field, made into each object from the inside out. A password hash loads only if a hasher of
 `AUTH.PASSWORD_HASHERS` made it and would not make it again more strongly:
 a password in clear, or the test hasher's single iteration under
 production's hashers, is refused. Fixtures from 0.11, which wrote such an
-object as `{"value": ...}`, load the same. `loaddata`
+object as `{"value": ...}`, and from 0.12, which wrote the inner object of
+two that way, load the same. `loaddata`
 converts each value back by its column's type, and refuses one that does
 not fit without quoting it. A number with a fraction reaches a decimal
 column with every digit, as written (`1234567890123456.78`), never through
@@ -1276,7 +1279,7 @@ revision: the test database migrates up, down, and up again.
 | Work after each commit | `async def hook(uow)` | `on_committed(hook)` in `ready()` (called by the unit of work; failures are reported, never raised) |
 | The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` in `ready()` (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
 | Rows after each `migrate` (`post_migrate`) | `async def hook(connection, database)` | `on_migrated(hook)` in `ready()` (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
-| The same hooks, as methods (deprecated, removed in 0.13) | `DomainConfig.startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated` | (an overriding method is still called, after the domain's registered hooks, and warned of with `DomainkitDeprecationWarning` when the domains load; [ADR 0101](adr/0101-register-every-domain-hook-and-check-it-when-it-registers.md)) |
+| The same hooks, as methods (removed in 0.13) | `DomainConfig.startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated` | (none: `setup()` refuses a domain that still defines one, `apps.E002`, naming the point to register on instead; [ADR 0111](adr/0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md)) |
 | Another hook point an app offers others | `domainkit.apps.hooks.HookPoint(name, arguments=..., awaited=...)` | (domains call it with a function in `ready()`, checked against `arguments` and `awaited` when given; the app iterates it) |
 | A scaffolding command | `management.generators.Generator` (`plan`, then `apply`), or `AggregateGenerator` for one that adds to an aggregate | a domain's `management/commands/` |
 | Sample or default data | `async def hook()` | `on_seed(hook)` in `ready()` (called by `seed`, in `INSTALLED_DOMAINS` order) |

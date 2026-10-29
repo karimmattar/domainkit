@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import clock, setup
 from domainkit.apps import DomainConfig, registry
-from domainkit.apps.hooks import Hook
+from domainkit.apps.hooks import Hook, on_erase_subject, on_export_subject
 from domainkit.conf import override_settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.idempotency.tables import idempotency_keys
@@ -44,7 +44,6 @@ from domainkit.contrib.webhooks.tables import CANCELLED, FAILED, deliveries
 from domainkit.contrib.webhooks.uow import WebhooksUnitOfWork
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
 from domainkit.ddd import DomainEvent, Personal, event_bus
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.management import call_command
@@ -438,13 +437,13 @@ def test_hooks_answer_counts_by_kind_or_are_refused(answer: dict[str, Any]) -> N
 
 
 def test_domains_keep_no_copies_by_default() -> None:
-    """The deprecated base methods erase and export nothing."""
-    domain = DomainConfig("plain", __import__("domainkit_tests"))
+    """A domain that registers no erasure or export hook has none to call."""
+    setup()
 
-    with pytest.warns(DomainkitDeprecationWarning, match="on_erase_subject"):
-        assert run_async(domain.erase_subject("ann", "request")) == {}
-    with pytest.warns(DomainkitDeprecationWarning, match="on_export_subject"):
-        assert run_async(domain.export_subject("ann")) == {}
+    assert not hasattr(DomainConfig, "erase_subject")
+    assert not hasattr(DomainConfig, "export_subject")
+    assert on_erase_subject.of("alpha") == ()
+    assert on_export_subject.of("alpha") == ()
 
 
 def test_subject_tags_name_each_subject_once() -> None:

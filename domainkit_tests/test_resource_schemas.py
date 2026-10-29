@@ -25,11 +25,11 @@ from domainkit.ddd import (
     UnitOfWork,
     Unset,
     ValueObject,
+    preconditions,
 )
 from domainkit.ddd.fields import fields_of, unaliased
-from domainkit.ddd.preconditions import check_expected, expect_version
+from domainkit.ddd.preconditions import check_expected
 from domainkit.ddd.query import F
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.resources import (
     DomainSchema,
     FieldPolicy,
@@ -447,7 +447,7 @@ async def test_expectations_are_checked_once_when_first_loaded() -> None:
     assert anything.checked
     assert not unrelated.checked
     assert "_expected" not in vars(uow)  # Each block's expectation ends with it.
-    check_expected(order)  # Outside any expectation: nothing to check.
+    check_expected(order, ())  # Outside any expectation: nothing to check.
 
 
 @pytest.mark.anyio
@@ -546,24 +546,14 @@ async def test_a_later_transaction_accepts_what_the_unit_of_work_committed() -> 
                 await uow.orders.get(order.id)
 
 
-@pytest.mark.anyio
-async def test_the_context_wide_expectation_still_works_and_is_deprecated() -> None:
-    """``expect_version`` holds every unit of work of the context, until 0.13."""
-    order = make_order(version=3)
-    uow = OrdersUnitOfWork(InMemoryRepository[Order, OrderId]([order]))
-
-    with pytest.warns(DomainkitDeprecationWarning, match=r"uow\.expect\(model"):
-        held = expect_version(Order, order.id, {2})
-    with held, pytest.raises(PreconditionFailed):
-        await uow.orders.get(order.id)
-    with pytest.warns(DomainkitDeprecationWarning):
-        held = expect_version(Order, order.id, {3})
-    with held as expected:
-        with pytest.raises(RuntimeError, match="did not load Order"):
-            await uow.commit()
-        await uow.orders.get(order.id)
-        await uow.commit()
-    assert expected.checked
+def test_the_context_wide_expectation_is_gone() -> None:
+    """0.13 removed ``expect_version``: importing it fails as for any missing name."""
+    with pytest.raises(ImportError, match="cannot import name 'expect_version'"):
+        from domainkit.ddd.preconditions import (  # type: ignore[attr-defined]  # noqa: F401
+            expect_version,
+        )
+    assert preconditions.__all__ == ["Expectation"]
+    assert not hasattr(preconditions, "_expected")  # No context-wide state.
 
 
 def test_field_policies_name_only_known_fields() -> None:

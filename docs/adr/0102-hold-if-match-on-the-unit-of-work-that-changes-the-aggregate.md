@@ -1,6 +1,6 @@
 # 0102. Hold `If-Match` on the unit of work that changes the aggregate
 
-- Status: Accepted; amended 2026-10-28 (at the end)
+- Status: Accepted; amended 2026-10-28 and 2026-10-29 (at the end)
 - Date: 2026-10-28
 - Amends: [0025](0025-resources-commands-and-expected-versions.md)
 
@@ -102,3 +102,13 @@ saw, would refuse the service's own committed change, or need the same
 record of what it committed. `checked` still means "loaded at least once",
 which the route asks after the service; the deprecated `expect_version`
 is unchanged.
+
+## Amendment (2026-10-29, 0.13): `expect_version` is gone
+
+0.13 removes `expect_version` and the context variable it set, which
+every repository load and every commit read. `UnitOfWork.expect` is the
+only way to hold an expectation; a load and a commit check only their
+unit of work's own. Importing the name fails as for any missing name
+(`ImportError: cannot import name 'expect_version'`). The 0.12 amendment
+above stands: each transaction of the unit of work checks the aggregate
+again (SEC-12a-6), and its test is unchanged.
