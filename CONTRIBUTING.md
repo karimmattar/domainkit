@@ -55,7 +55,9 @@ to `.ci/`. `make services-down` stops them and drops their data.
   ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)). A
   test that reads domainkit's source text, or the frames of its calls,
   carries `@pytest.mark.reads_own_source`: mutmut rewrites both, and
-  mutation runs leave such tests out.
+  mutation runs leave such tests out. Under mutmut's stats run the suite
+  empties domainkit's `functools` caches before each test, so a function
+  behind a cache is mapped to every test that reaches it, not the first.
 - **The public API** is what `docs/api.md` lists ([ADR 0076](docs/adr/0076-public-api-is-docs-api-md.md)).
   A new public name goes in its module's `__all__` and on its package's
   page of `docs/api/`, with a docstring (Google style, the repository's
