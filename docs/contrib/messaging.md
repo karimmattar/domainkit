@@ -542,7 +542,7 @@ A running message is refused. A cancelled message never runs, nor does the
 rest of its chain; it is kept as `cancelled`, without its arguments, and
 deleted after `RETENTION_SECONDS`. Retries and cancels are recorded in the
 audit trail with the operator who ran them
-([operators](../reference.md#operators)). `domainkit.contrib.messaging.admin`
+([operators](../reference/commands.md#operators)). `domainkit.contrib.messaging.admin`
 has the same operations for your own tools, unrecorded: `list_messages`,
 `cancel`, `queue_counts`, `queue_lag`, `retry_dead`, and
 `blanked_dead_letters`.

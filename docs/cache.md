@@ -38,7 +38,7 @@ CACHES = {
   entries.
 - In staging and production, a Redis on another host must use `rediss://`,
   with a password or a client certificate, and certificate checks on. The
-  [deployment checks](reference.md#deployment-checks) refuse anything else.
+  [deployment checks](reference/checks.md) refuse anything else.
   Set `TLS_CA` when a private CA signed the server's certificate.
 - Valkey speaks the same protocol: use the same `redis://` URLs. CI runs the
   suite against Redis 8.8 (plain and TLS) and Valkey 9.1. Redis 8 is
@@ -84,7 +84,7 @@ CACHES = {
 - The URLs take no `?options`; set timeouts and pool sizes with the cache's
   settings. Pools wait up to `CONNECT_TIMEOUT` for a free connection, as
   with one server; a Cluster has a pool of `MAX_CONNECTIONS` per node.
-- The [deployment checks](reference.md#deployment-checks) apply as for one
+- The [deployment checks](reference/checks.md) apply as for one
   server: `rediss+sentinel://` or `rediss+cluster://` when any host is
   elsewhere, a password or a client certificate, and certificate checks on.
 - A Sentinel group or Cluster that cannot be reached, or with slots no node

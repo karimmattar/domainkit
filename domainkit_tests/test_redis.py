@@ -521,6 +521,7 @@ def test_wrong_passwords_are_counted_once_for_every_process(
     assert codes == [401, 401, 429, 429]
 
 
+@pytest.mark.usefixtures("database_access")
 def test_readiness_with_a_live_cache(server: dict[str, object]) -> None:
     """A reachable cache marked READINESS keeps /ready green."""
     with (

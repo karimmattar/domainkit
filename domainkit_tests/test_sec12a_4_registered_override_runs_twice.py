@@ -13,16 +13,16 @@ audit trail says twice the copies were erased that were; and so on for
 each point, the SQL ones too (``on_stage(self.stage)``: two outbox or
 audit rows per commit). An override that is registered already must be
 called once, or refused.
-"""
 
-import warnings
+0.13 removed the hook methods and refuses a domain that still defines
+one (``apps.E002``), registered or not: the method's name is the mistake,
+so the domain never loads, and nothing runs twice.
+"""
 
 import pytest
 
 from domainkit.apps import DomainRegistry
-from domainkit.apps.hooks import on_erase_subject
-from domainkit.deprecation import DomainkitDeprecationWarning
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit_tests.conftest import ALPHA, MakePackage
 
 DUAL = """
@@ -47,23 +47,20 @@ class DualConfig(DomainConfig):
 """
 
 
-@pytest.mark.anyio
-async def test_a_registered_override_is_called_once(make_package: MakePackage) -> None:
-    """One start, one erasure, one delivery counted."""
+def test_a_registered_override_is_refused(make_package: MakePackage) -> None:
+    """Refused before ``ready()``: nothing started, nothing erased or counted."""
     make_package("dual", {"apps.py": DUAL})
     own = DomainRegistry()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DomainkitDeprecationWarning)
-        try:
-            own.populate([ALPHA, "dual"])
-        except ImproperlyConfigured:
-            return  # Refused, loudly: fixed.
+
+    with pytest.raises(CheckFailed) as refused:
+        own.populate([ALPHA, "dual"])
     from dual.apps import CALLS  # type: ignore[import-not-found]
 
-    async with own.lifespan():
-        pass
-    counted = 0
-    for hook in on_erase_subject.of("dual", own):  # As privacy sums them.
-        counted += (await hook.call("subject-1", "request"))["deliveries"]
-
-    assert (CALLS, counted) == (["startup", "erase"], 1)
+    assert [
+        message.id
+        for message in refused.value.messages
+        if isinstance(message, CheckMessage)
+    ] == ["apps.E002"] * 2
+    assert "DualConfig.startup is a hook method" in str(refused.value)
+    assert "DualConfig.erase_subject is a hook method" in str(refused.value)
+    assert (CALLS, own.ready) == ([], False)

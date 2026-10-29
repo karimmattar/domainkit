@@ -8,7 +8,12 @@ from typing import Final, NamedTuple, cast
 
 from pydantic import BaseModel, ValidationError
 
-from domainkit.apps.config import DomainConfig, warn_replaced_hooks
+from domainkit.apps.config import (
+    HOOKS_REMOVED_IN,
+    REMOVED_HOOKS,
+    DomainConfig,
+    defined_hook_methods,
+)
 from domainkit.apps.hooks import on_check, on_shutdown, on_startup, populating
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import describe_errors, unwrap_settings
@@ -53,11 +58,10 @@ class DomainRegistry:
                     f"({configs[config.label].name!r} and {name!r})."
                 )
             configs[config.label] = config
-        for config in configs.values():
-            warn_replaced_hooks(config)
         self._changed(configs)
         self._check_settings()
         self._check_requirements()
+        self._check_hook_methods()
         try:
             with populating(self):
                 for config in configs.values():
@@ -233,6 +237,30 @@ class DomainRegistry:
             raise CheckFailed(
                 "Installed domains need what INSTALLED_DOMAINS lacks", problems
             )
+
+    def _check_hook_methods(self) -> None:
+        """Refuse a domain that still defines a hook method 0.13 removed.
+
+        Nothing calls such a method any more: an ``erase_subject`` left
+        behind would keep a person's data through an erasure that reports
+        success. Every one is named, with the point to register on
+        instead, as check ``apps.E002``, before any domain's ``ready()``.
+
+        Raises:
+            CheckFailed: A domain defines one.
+        """
+        if problems := [
+            CheckMessage(
+                "apps.E002",
+                f"Domain {config.label!r}: {owner}.{method} is a hook method, "
+                f"which domainkit {HOOKS_REMOVED_IN} removed; nothing would call it.",
+                f"Register the function with {REMOVED_HOOKS[method]}(...) in "
+                "ready(), under a name of its own.",
+            )
+            for config in self
+            for method, owner in defined_hook_methods(config)
+        ]:
+            raise CheckFailed("Installed domains define removed hook methods", problems)
 
 
 class _ValidatedSettings(NamedTuple):

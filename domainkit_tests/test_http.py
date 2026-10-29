@@ -487,6 +487,40 @@ def test_request_body_limits(make_client: MakeClient) -> None:
     assert streamed.json()["detail"] == "Request body too large."
 
 
+def test_a_callers_repeated_refusals_are_held_back_by_their_kind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Each kind of refusal is counted apart, under the caller's address.
+
+    The second of each is held back, and written as a count when the
+    application stops: ``invalid_host`` and ``body_too_large`` lines.
+    """
+    caplog.set_level(logging.WARNING, logger=SECURITY_LOGGER)
+    with (
+        override_settings(MAX_REQUEST_BODY_SIZE=10),
+        TestClient(get_asgi_application(), client=("203.0.113.9", 1)) as caller,
+    ):
+        for _ in range(2):
+            assert (
+                caller.get("/ok", headers={"Host": "evil.example"}).status_code == 400
+            )
+            assert caller.post("/echo", content=b"x" * 11).status_code == 413
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+    ]
+    assert lines[:2] == [
+        "Rejected untrusted Host header 'evil.example'",
+        "Rejected request body of 11 bytes (limit 10)",
+    ]
+    assert sorted(lines[2:]) == [  # In the order their keys were last written.
+        "1 more body_too_large line(s) for ip:203.0.113.9 were held back",
+        "1 more invalid_host line(s) for ip:203.0.113.9 were held back",
+    ]
+
+
 @pytest.mark.parametrize(
     ("kind", "status", "code"),
     [
@@ -664,6 +698,7 @@ def test_cors_answers_with_every_setting(make_client: MakeClient) -> None:
     assert simple.headers["Access-Control-Expose-Headers"] == "X-Request-ID"
 
 
+@pytest.mark.usefixtures("database_access")
 def test_health_and_readiness(client: TestClient) -> None:
     """Liveness always answers; readiness hides failing names by default."""
     assert client.get("/health").json() == {"status": "ok"}
@@ -685,6 +720,7 @@ def test_readiness_details_are_opt_in(make_client: MakeClient) -> None:
     assert client.get("/ready").json()["failing"] == ["alpha", "database:default"]
 
 
+@pytest.mark.usefixtures("database_access")
 def test_readiness_results_are_cached(make_client: MakeClient) -> None:
     """Within ``READINESS_CACHE_SECONDS`` probes reuse the last result."""
     client = make_client(READINESS_CACHE_SECONDS=60)
@@ -858,6 +894,7 @@ def test_a_round_whose_checks_raise_is_kept_as_failing(
     assert str(logged.exc_info[1]) == "checks broke"
 
 
+@pytest.mark.usefixtures("database_access")
 def test_a_raising_readiness_check_answers_503(
     make_client: MakeClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -900,6 +937,7 @@ def test_a_cancelled_group_still_cancels_the_round(
     assert not hasattr(state, "readiness")
 
 
+@pytest.mark.usefixtures("database_access")
 def test_a_round_left_on_another_loop_is_not_awaited(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

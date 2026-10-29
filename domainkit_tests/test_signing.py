@@ -474,7 +474,7 @@ def test_refusals_say_why() -> None:
         derive_key("one")
     assert str(unset.value) == (
         "Set SECRET_KEY: it signs the values this service hands out "
-        "(docs/reference.md)."
+        "(docs/reference/signing.md)."
     )
 
 

@@ -207,11 +207,15 @@ def test_verify_follows_a_frozen_clock() -> None:
 # Subscriptions ------------------------------------------------------------------
 
 
-def test_subscriptions_record_their_changes_without_secrets() -> None:
-    """Events name the host and the fields changed; reprs hide secrets."""
+TOKEN_URL = "https://hooks.example.com/t/SECRET-TOKEN"
+
+
+def test_a_new_subscription_records_its_host_and_its_event_types_once() -> None:
+    """Its event names the host and the types, each once; no repr shows secrets."""
     subscription, secret = Subscription.create(
-        "https://hooks.example.com/t/SECRET-TOKEN", "hooks.example.com", ["a", "a", "b"]
+        TOKEN_URL, "hooks.example.com", ["a", "a", "b"]
     )
+
     created = subscription.pull_events()
 
     assert subscription.event_types == ["a", "b"]
@@ -229,15 +233,31 @@ def test_subscriptions_record_their_changes_without_secrets() -> None:
     assert "hooks.example.com" not in repr(subscription)
     assert "SECRET-TOKEN" not in repr(created)
 
+
+def test_a_change_to_what_a_subscription_holds_records_nothing() -> None:
+    """The same URL, types in another order, the same flag: no event."""
+    subscription, _ = Subscription.create(TOKEN_URL, "hooks.example.com", ["a", "b"])
+    subscription.pull_events()
+
     subscription.change(url=subscription.url, event_types=["b", "a"], active=True)
     subscription.change(description="", event_types=["a", "b"])
+
     assert subscription.pull_events() == []
+    assert (subscription.event_types, subscription.active) == (["a", "b"], True)
+
+
+def test_a_change_records_the_fields_and_hosts_not_the_url() -> None:
+    """One event names every field changed, and the old and new hosts only."""
+    subscription, _ = Subscription.create(TOKEN_URL, "hooks.example.com", ["a"])
+    subscription.pull_events()
+
     subscription.change(
         url="https://other.example.com/",
         event_types=["*"],
         active=False,
         description="d",
     )
+
     (changed,) = subscription.pull_events()
     assert isinstance(changed, SubscriptionChanged)
     assert changed.fields == ("url", "event_types", "active", "description")
@@ -254,53 +274,86 @@ def test_subscriptions_record_their_changes_without_secrets() -> None:
     )
     assert (subscription.active, subscription.description) == (False, "d")
 
+
+def test_a_changed_url_records_the_host_it_was_checked_for_or_none() -> None:
+    """The host the guard checked; else the URL's, lower case; "" when it has none."""
+    subscription, _ = Subscription.create(
+        "https://other.example.com/", "other.example.com", ["a"]
+    )
+    subscription.pull_events()
+
     subscription.change(
         url="https://User:pw@Attacker.Example:8443/in/T0K3N?x=1", host="checked"
     )
-    subscription.change(active=True)
-    redirected, activated = subscription.pull_events()
+    subscription.change(active=False)
+    redirected, deactivated = subscription.pull_events()
+    subscription.change(url="https:///in/T0K3N")  # No host at all.
+    (hostless,) = subscription.pull_events()
+    subscription.change(url="https://[::1/")  # Unparsable: no host to record.
+    (unparsable,) = subscription.pull_events()
+
     assert (redirected.host, redirected.previous_host) == (  # type: ignore[attr-defined]
         "checked",
         "other.example.com",
     )
-    subscription.change(url="https:///in/T0K3N")  # No host at all.
-    (hostless,) = subscription.pull_events()
+    assert (deactivated.host, deactivated.previous_host) == (None, None)  # type: ignore[attr-defined]
     assert (hostless.host, hostless.previous_host) == ("", "attacker.example")  # type: ignore[attr-defined]
-    subscription.change(url="https://[::1/")  # Unparsable: no host to record.
-    (unparsable,) = subscription.pull_events()
     assert (unparsable.host, unparsable.previous_host) == (  # type: ignore[attr-defined]
         "",
         "",
     )
-    assert (activated.host, activated.previous_host) == (None, None)  # type: ignore[attr-defined]
 
-    now = datetime.now(UTC)
+
+def test_a_rotated_secret_keeps_the_previous_one_for_the_overlap() -> None:
+    """Both decrypt, re-encrypted; the old one serves until the overlap ends."""
+    subscription, secret = Subscription.create(TOKEN_URL, "hooks.example.com", ["a"])
     sealed = subscription.secret
-    new = subscription.rotate_secret(timedelta(hours=1))
+    subscription.pull_events()
+
+    now = datetime(2026, 10, 29, 12, tzinfo=UTC)
+    with freeze_time(now):
+        new = subscription.rotate_secret(timedelta(hours=1))
+
     assert new != secret
     assert unsealed(subscription.secret, subscription) == (new, True)
     assert unsealed(subscription.previous_secret, subscription) == (secret, True)
     assert subscription.previous_secret != sealed  # Encrypted again.
+    assert subscription.previous_secret_expires_at == now + timedelta(hours=1)
     assert subscription.rotating(now)
+    assert subscription.rotating(now + timedelta(minutes=59, seconds=59.999999))
+    assert not subscription.rotating(now + timedelta(hours=1))  # Expired then.
     assert not subscription.rotating(now + timedelta(hours=2))
-    expires = subscription.previous_secret_expires_at
-    assert expires is not None
-    assert now + timedelta(hours=1) <= expires <= datetime.now(UTC) + timedelta(hours=1)
-    assert subscription.rotating(expires - timedelta(microseconds=1))
-    assert not subscription.rotating(expires)  # Expired at that moment.
+    (rotated,) = subscription.pull_events()
+    assert isinstance(rotated, SubscriptionSecretRotated)
+    assert rotated.subscription_id == subscription.id
+
+
+def test_a_secret_rotated_without_overlap_drops_the_previous_one() -> None:
+    """``timedelta(0)``: only the new secret is kept, and nothing is rotating."""
+    subscription, secret = Subscription.create(TOKEN_URL, "hooks.example.com", ["a"])
+    new = subscription.rotate_secret(timedelta(hours=1))
+
     newest = subscription.rotate_secret(timedelta(0))
+
     assert unsealed(subscription.secret, subscription) == (newest, True)
-    assert not subscription.rotating(now)
+    assert not subscription.rotating(datetime.now(UTC))
     assert subscription.previous_secret is None
     assert subscription.previous_secret_expires_at is None
-    subscription.delete()
-    rotated, _, deleted = subscription.pull_events()
-    assert isinstance(rotated, SubscriptionSecretRotated)
-    assert isinstance(deleted, SubscriptionDeleted)
-    assert rotated.subscription_id == deleted.subscription_id == subscription.id
     for shown in (secret, new, newest):
         assert shown not in repr(subscription)
         assert shown.encode() not in subscription.secret
+
+
+def test_a_deleted_subscription_records_its_deletion() -> None:
+    """One ``SubscriptionDeleted`` with its id."""
+    subscription, _ = Subscription.create(TOKEN_URL, "hooks.example.com", ["a"])
+    subscription.pull_events()
+
+    subscription.delete()
+
+    (deleted,) = subscription.pull_events()
+    assert isinstance(deleted, SubscriptionDeleted)
+    assert deleted.subscription_id == subscription.id
 
 
 def unsealed(sealed: bytes | None, subscription: Subscription) -> tuple[str, bool]:

@@ -515,12 +515,15 @@ def _encoded(column: Column[Any], value: object) -> object:
 
     Decimals, ids, times, durations, and enums become text. A single-field
     value object's column (``ValueObjectType``: a password hash, a
-    project's ``ProductName``) holds the field, as the database does.
+    project's ``ProductName``) holds the field, as the database does; one
+    around another (``Code(sku: Sku)``) holds the innermost field.
     """
     if value is None or isinstance(column.type, JSON):
         return value
-    if isinstance(column.type, ValueObjectType):
-        value = getattr(value, column.type.field)
+    type_ = column.type
+    while isinstance(type_, ValueObjectType):
+        value = getattr(value, type_.field)
+        type_ = type_.impl_instance
     if isinstance(value, bytes):
         return base64.b64encode(value).decode()
     return jsonable(value)
@@ -581,16 +584,23 @@ def _value_object(
 
     The object checks what it holds, as it does in the domain, and so does
     the column type (``ValueObjectType.loaded``): a password hash that is
-    not a hash, or one no configured hasher would make, is refused.
-    Fixtures written before 0.12 hold the object as ``{"<field>": ...}``,
-    which reads the same.
+    not a hash, or one no configured hasher would make, is refused. A
+    value object around another is made from the inside out, each checking
+    what it holds. Fixtures written before 0.12 hold an object as
+    ``{"<field>": ...}``, and 0.12 wrote the inner one of two that way;
+    both read the same.
 
     Raises:
-        FixtureError: The value is not one the object takes.
+        FixtureError: The value is not one an object takes.
     """
     if isinstance(value, dict) and set(value) == {type_.field}:
         value = value[type_.field]
-    field = _converted(column, type_.impl_instance, value)
+    inner = type_.impl_instance
+    field = (
+        _value_object(column, inner, value)
+        if isinstance(inner, ValueObjectType)
+        else _converted(column, inner, value)
+    )
     what = f"{_where(column)} holds a value that is not {type_.cls.__name__}"
     try:
         return type_.loaded(field)

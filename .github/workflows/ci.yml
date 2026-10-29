@@ -90,6 +90,7 @@ jobs:
           poetry run pytest -n auto --junitxml=junit.xml
           domainkit_tests/test_api.py domainkit_tests/test_ci.py
           domainkit_tests/test_docs.py domainkit_tests/test_recipes.py
+          domainkit_tests/test_sec13c_1_upgrade_guide_skips_removals.py
           domainkit_tests/test_walkthroughs.py
 
   lint:

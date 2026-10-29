@@ -390,19 +390,19 @@ def render_item(
     """Render ``TypeDecorator`` columns as their generic storage type.
 
     Revisions then never import domain code, which keeps changing after the
-    revision is written. A value object around another decorator (an
-    amount, a time) renders as what that one stores. SQLAlchemy's own
-    decorated types (``Interval``, ``PickleType``) keep their names:
-    ``Interval`` is a native ``INTERVAL`` on PostgreSQL, not the
-    ``DateTime`` it stores elsewhere. Returning False keeps Alembic's own
-    rendering.
+    revision is written. A decorator around another (a value object of a
+    value object, or of an amount) is followed down to what it stores.
+    SQLAlchemy's own decorated types (``Interval``, ``PickleType``) keep
+    their names: ``Interval`` is a native ``INTERVAL`` on PostgreSQL, not
+    the ``DateTime`` it stores elsewhere. Returning False keeps Alembic's
+    own rendering.
     """
     if type_ != "type" or not isinstance(obj, TypeDecorator):
         return False
     if _sqlalchemy_type(obj):
         return False
     impl = obj.impl_instance
-    if isinstance(impl, TypeDecorator) and not _sqlalchemy_type(impl):
+    while isinstance(impl, TypeDecorator) and not _sqlalchemy_type(impl):
         impl = impl.impl_instance
     if not type(impl).__module__.startswith("sqlalchemy.sql."):
         return False

@@ -1,7 +1,10 @@
 """``domainkit.testing`` factories: aggregates built in memory, or stored."""
 
 from collections.abc import AsyncIterator
+from dataclasses import field
+from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
@@ -21,8 +24,13 @@ from domainkit.testing import (
     Factory,
     LazyAttribute,
     LazyFunction,
+    Maybe,
+    RelatedFactory,
+    SelfAttribute,
     Sequence,
     SubFactory,
+    Trait,
+    post_generation,
 )
 from domainkit.testing.factories import Fields
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork
@@ -270,7 +278,7 @@ def test_fields_are_computed_once_and_cycles_are_refused() -> None:
     with pytest.raises(AttributeError, match="Missing has no field 'title'"):
         Missing.build()
     with pytest.raises(AttributeError):
-        Fields(Missing, {}, {})._private  # noqa: B018 - reading it raises.
+        Fields(Missing, {}, {}, parent=None, stub=False)._private  # noqa: B018
 
 
 def test_a_factory_needs_a_model() -> None:
@@ -404,3 +412,430 @@ def test_plain_defaults_are_copied_all_the_way_down() -> None:
 
     assert second["sizes"] == {"shirt": ["S", "M"]}
     assert Options.sizes == {"shirt": ["S", "M"]}
+
+
+# Traits, post-generation, related factories, SelfAttribute, Maybe, stub ----------
+
+
+class OrderNoted(DomainEvent):
+    """Someone wrote on an order."""
+
+    order_id: UUID
+    text: str
+
+
+class Order(AggregateRoot[UUID]):
+    """An order: lines refer to it by id, as aggregates refer to each other."""
+
+    number: str
+    status: str
+    paid_at: datetime | None
+    receipt: str
+    total: Money
+    notes: list[str] = field(default_factory=list)
+
+    def note(self, text: str) -> None:
+        """Write on the order, recording it."""
+        self.notes.append(text)
+        self.record(OrderNoted(order_id=self.id, text=text))
+
+
+class OrderLine(AggregateRoot[UUID]):
+    """One thing ordered, in the order's currency."""
+
+    order_id: UUID
+    sku: str
+    price: Money
+
+
+class OrdersUnitOfWork(ShopUnitOfWork):
+    """The shop's unit of work, with orders and their lines."""
+
+    def __init__(self, events: EventBus | None = None) -> None:
+        """Start empty."""
+        super().__init__(events)
+        self.orders = InMemoryRepository[Order, UUID]()
+        self.lines = InMemoryRepository[OrderLine, UUID]()
+
+
+BUILT_LINES: list[OrderLine] = []
+
+
+class LineFactory(Factory[OrderLine]):
+    """Lines, each pointing at the order ``RelatedFactory`` gives it."""
+
+    class Meta:
+        """Stored in ``lines``; ``order`` only gives the id and currency."""
+
+        model = OrderLine
+        repository = "lines"
+        exclude = ("order",)
+
+    class Params:
+        """The order's currency, not a field of the line."""
+
+        currency = SelfAttribute("order.total.currency", default="EUR")
+
+    id = LazyFunction(uuid4)
+    order = None
+    order_id = LazyAttribute(lambda line: line.order.id)
+    sku = Sequence(lambda n: f"SKU-{n}")
+    price = SubFactory(MoneyFactory, currency=SelfAttribute("..currency"))
+
+    @post_generation
+    def built(line: OrderLine, create: bool, extracted: object) -> None:
+        """Keep the lines that were only built."""
+        if not create:
+            BUILT_LINES.append(line)
+
+
+class OrderFactory(Factory[Order]):
+    """Orders, open unless a trait says otherwise."""
+
+    class Meta:
+        """Stored in ``orders``."""
+
+        model = Order
+        repository = "orders"
+        unit_of_work = OrdersUnitOfWork
+
+    class Params:
+        """What the order's defaults follow, not its fields."""
+
+        currency = "EUR"
+        paid = Trait(status="paid", paid_at=datetime(2026, 1, 1, tzinfo=UTC))
+        free = Trait(status="free", total__amount=Decimal(0))
+
+    id = LazyFunction(uuid4)
+    number = Sequence(lambda n: f"ORD-{n}")
+    status = "open"
+    paid_at = None
+    receipt = Maybe("paid_at", "sent", no="none")
+    total = SubFactory(MoneyFactory, currency=SelfAttribute("..currency"))
+    line = RelatedFactory(LineFactory, "order", sku="FIRST")
+
+    @post_generation
+    def noted(
+        order: Order, create: bool, extracted: list[str] | None, **options: object
+    ) -> None:
+        """Write the notes given, louder when asked."""
+        for text in extracted or ():
+            order.note(text.upper() if options.get("loud") else text)
+
+
+@pytest.fixture(autouse=True)
+def no_lines_built() -> None:
+    """Each test sees only the lines it built, and numbers orders from 0."""
+    BUILT_LINES.clear()
+    OrderFactory.reset_sequence()
+
+
+def test_traits_turn_defaults_on_and_given_arguments_still_win() -> None:
+    """``paid=True`` sets the status and the time; ``status=`` beside it wins."""
+    assert OrderFactory.build().status == "open"
+    paid = OrderFactory.build(paid=True)
+    assert (paid.status, paid.paid_at) == ("paid", datetime(2026, 1, 1, tzinfo=UTC))
+    refunded = OrderFactory.build(paid=True, status="refunded")
+    assert (refunded.status, refunded.paid_at) == ("refunded", paid.paid_at)
+    both = OrderFactory.build(paid=True, free=True)
+    assert both.status == "free"  # The trait declared later wins.
+    assert both.total.amount == Decimal(0)
+    priced = OrderFactory.build(free=True, total__amount=Decimal(7))
+    assert (priced.status, priced.total.amount) == ("free", Decimal(7))
+    whole = Money(amount=Decimal(3), currency="GBP")
+    assert OrderFactory.build(free=True, total=whole).total == whole
+    merged = OrderFactory.build(free=True, total__currency="GBP").total
+    assert merged == Money(amount=Decimal(0), currency="GBP")  # Both keys hold.
+
+
+def test_traits_declared_in_a_test_default_to_off() -> None:
+    """A trait is a parameter that is False until given; two may not collide."""
+
+    class Labelled(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        class Params:
+            loud = Trait(label="LOUD")
+            priced = Trait(price=Money(amount=Decimal(1), currency="EUR"))
+            cheap = Trait(price__amount=Decimal(0))
+
+        label = LazyAttribute(lambda fields: f"loud={fields.loud}")
+        price = SubFactory(MoneyFactory)
+
+    assert Labelled.build()["label"] == "loud=False"
+    assert Labelled.build(loud=True)["label"] == "LOUD"
+    with pytest.raises(TypeError, match=r"Give price= or price__\.\.\.=, not both"):
+        Labelled.build(priced=True, cheap=True)
+    with pytest.raises(TypeError, match=r"Give price= or price__\.\.\.=, not both"):
+        Labelled.build(price__amount=Decimal(1), price=None)
+    # A trait's whole value yields to a key of it given.
+    assert Labelled.build(priced=True, price__amount=Decimal(5))["price"].amount == 5
+
+
+def test_traits_reach_the_sub_factories_of_sub_factories() -> None:
+    """Keys of several levels follow the same rules as keys of one."""
+    order = OrderFactory.build()
+    existing = LineFactory.build(order=order)
+
+    class Holder(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        class Params:
+            cheap = Trait(line__price__amount=Decimal(0))
+            kept = Trait(line=existing)
+
+        line = SubFactory(LineFactory, order=order)
+
+    assert Holder.build(cheap=True)["line"].price.amount == Decimal(0)
+    assert Holder.build(cheap=True, line=existing)["line"] is existing
+    deeper = Holder.build(kept=True, line__price__amount=Decimal(4))["line"]
+    assert deeper is not existing
+    assert deeper.price.amount == Decimal(4)
+
+
+def test_params_are_read_by_fields_and_never_reach_the_model() -> None:
+    """``currency`` and the traits feed other fields; ``Order`` takes neither."""
+    order = OrderFactory.build(currency="CHF")
+    assert order.total.currency == "CHF"
+    assert BUILT_LINES[-1].price.currency == "CHF"
+    with pytest.raises(TypeError, match="unexpected keyword argument 'paid'"):
+        Order(**{**vars(OrderFactory.stub()), "paid": True})
+
+
+def test_maybe_picks_by_a_field_or_a_declaration() -> None:
+    """``receipt`` follows ``paid_at``; a decider may be computed too."""
+    assert OrderFactory.build().receipt == "none"
+    assert OrderFactory.build(paid=True).receipt == "sent"
+
+    class Shelf(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        size = 3
+        label = Maybe(LazyAttribute(lambda shelf: shelf.size > 2), "big")
+        kind = Maybe("size", "sized", "empty")
+        category = Maybe("size", SubFactory(CategoryFactory, name="Shelf"))
+
+    assert Shelf.build(category=None) == {
+        "size": 3,
+        "label": "big",
+        "kind": "sized",
+        "category": None,
+    }
+    small = Shelf.build(size=0)
+    assert (small["label"], small["kind"], small["category"]) == (None, "empty", None)
+    assert Shelf.build(category__name="Hats")["category"].name == "Hats"
+
+    class Lost(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        label = Maybe(SelfAttribute("...far"), "yes")
+
+    with pytest.raises(ValueError, match=r"Lost.label: '...far' climbs"):
+        Lost.build()
+
+
+@pytest.mark.anyio
+async def test_maybe_adds_the_sub_factory_it_picks() -> None:
+    """A stored sub-factory a ``Maybe`` picks is added with the object."""
+
+    class MaybeListed(Factory[Product]):
+        class Meta:
+            model = list_product
+            repository = "products"
+            exclude = ("category",)
+
+        class Params:
+            listed = False
+
+        id = LazyFunction(uuid4)
+        name = "Tea"
+        slug = "tea"
+        price = SubFactory(MoneyFactory)
+        category = Maybe("listed", SubFactory(CategoryFactory), None)
+        category_id = LazyAttribute(
+            lambda product: product.category.id if product.category else uuid4()
+        )
+        tags: ClassVar[list[str]] = []
+
+    class Lost(MaybeListed):
+        category = Maybe(SelfAttribute("...far"), SubFactory(CategoryFactory))
+
+    with pytest.raises(ValueError, match=r"Lost.category: '...far' climbs"):
+        await Lost.create(ShopUnitOfWork())
+
+    uow = ShopUnitOfWork()
+    unlisted = await MaybeListed.create(uow)
+    listed = await MaybeListed.create(uow, listed=True, category__name="Tea")
+
+    assert [category.name for category in uow.categories.items.values()] == ["Tea"]
+    assert listed.category_id in uow.categories.items
+    assert unlisted.category_id not in uow.categories.items
+
+
+def test_self_attribute_follows_paths_and_climbs_to_the_parent() -> None:
+    """Dotted paths read attributes; each extra dot climbs one factory up."""
+
+    class Tagged(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        price = SubFactory(MoneyFactory)
+        currency = SelfAttribute("price.currency")
+        missing = SelfAttribute("price.colour", default="none")
+        broken = SelfAttribute("...far")
+        Xmas = "December"  # A dict key, as a field may be named.
+        when = SelfAttribute("Xmas")  # Only dots climb.
+
+    with pytest.raises(ValueError, match=r"Tagged.broken: '...far' climbs past"):
+        Tagged.build()
+    tagged = Tagged.build(broken=1)
+    assert (tagged["currency"], tagged["missing"]) == ("EUR", "none")
+    assert tagged["when"] == "December"
+
+    class Strict(Tagged):
+        missing = SelfAttribute("price.colour")
+
+    with pytest.raises(AttributeError, match="colour"):
+        Strict.build(broken=1)
+
+
+def test_hooks_run_on_built_objects_with_what_was_given() -> None:
+    """``build`` calls the hook with ``create=False``, the value, and the keywords."""
+    calls: list[tuple[object, ...]] = []
+
+    class Hooked(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        name = Sequence(lambda n: f"hooked-{n}")
+
+        @post_generation
+        def tags(
+            made: dict[str, Any], create: bool, extracted: object, **kw: object
+        ) -> None:
+            calls.append((made["name"], create, extracted, kw))
+
+    Hooked.build(tags=["a"], tags__loud=True)
+    Hooked.build()
+    assert calls == [
+        ("hooked-0", False, ["a"], {"loud": True}),
+        ("hooked-1", False, None, {}),
+    ]
+    order = OrderFactory.build(noted=["fragile"], noted__loud=True)
+    assert order.notes == ["FRAGILE"]
+
+
+def test_related_factories_build_after_the_object() -> None:
+    """Built: a line pointing at the order; ``line__`` reaches it; a value skips it."""
+    order = OrderFactory.build(line__sku="TEA")
+    (line,) = BUILT_LINES
+    assert (line.order_id, line.sku, line.price.currency) == (order.id, "TEA", "EUR")
+    OrderFactory.build(line="none, thanks")
+    assert len(BUILT_LINES) == 1
+
+
+@pytest.mark.anyio
+async def test_related_factories_and_hooks_commit_with_the_object() -> None:
+    """Created: the line and the notes are in the order's one commit, announced."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: OrderNoted) -> None:
+        published.append(event)
+
+    bus.subscribe(OrderNoted, collect)
+    uow = OrdersUnitOfWork(bus)
+
+    order = await OrderFactory.create(uow, noted=["fragile"], noted__loud=True)
+
+    assert uow.commits == 1
+    assert uow.orders.items == {order.id: order}
+    (line,) = uow.lines.items.values()
+    assert (line.order_id, line.sku) == (order.id, "FIRST")
+    assert BUILT_LINES == []
+    assert order.notes == ["FRAGILE"]
+    assert [event.text for event in published] == ["FRAGILE"]  # type: ignore[attr-defined]
+    await OrderFactory.create(uow, line=None)
+    assert len(uow.lines.items) == 2  # None is no value: the line is made.
+    await OrderFactory.create(uow, line="none, thanks")
+    assert len(uow.lines.items) == 2
+
+
+@pytest.mark.anyio
+async def test_a_related_factory_without_a_repository_only_builds() -> None:
+    """Its objects are built during ``create``, never added."""
+    made: list[dict[str, Any]] = []
+
+    def remember(**fields: Any) -> dict[str, Any]:  # noqa: ANN401 - any field.
+        made.append(fields)
+        return fields
+
+    class Plain(Factory[dict[str, Any]]):
+        class Meta:
+            model = remember
+
+        kind = "plain"
+
+    class WithPlain(CategoryFactory):
+        extra = RelatedFactory(Plain, "made_for", kind="extra")
+        skipped = RelatedFactory(Plain)
+
+    uow = ShopUnitOfWork()
+    category = await WithPlain.create(uow)
+    assert list(uow.categories.items.values()) == [category]
+    assert made == [{"kind": "extra", "made_for": category}, {"kind": "plain"}]
+    await WithPlain.create(uow, extra="given")
+    assert uow.commits == 2
+    assert [fields["kind"] for fields in made[2:]] == ["plain"]
+
+
+@pytest.mark.anyio
+async def test_a_stored_sub_factory_reads_its_parent_during_create() -> None:
+    """``create`` adds a stored sub-factory's object knowing what made it."""
+
+    class Shelved(ProductFactory):
+        class Params:
+            shelf = "Teas"
+
+        category = SubFactory(CategoryFactory, name=SelfAttribute("..shelf"))
+
+    uow = ShopUnitOfWork()
+    product = await Shelved.create(uow)
+
+    assert uow.categories.items[product.category_id].name == "Teas"
+
+
+def test_a_declaration_given_as_an_argument_knows_its_field() -> None:
+    """Computed as a default would be, under its own name."""
+    with pytest.raises(ValueError, match=r"OrderFactory.receipt: '...x' climbs"):
+        OrderFactory.build(receipt=SelfAttribute("...x"))
+    # The refused build took ORD-0.
+    assert OrderFactory.build(receipt=SelfAttribute("number")).receipt == "ORD-1"
+
+
+def test_stubs_are_plain_data() -> None:
+    """No model is called, sub-factories give stubs, and no hook runs."""
+    stub = OrderFactory.stub(paid=True, noted=["x"])
+
+    assert isinstance(stub, SimpleNamespace)
+    assert (stub.status, stub.receipt) == ("paid", "sent")
+    assert isinstance(stub.total, SimpleNamespace)
+    assert stub.total.currency == "EUR"
+    assert not hasattr(stub, "paid")
+    assert not hasattr(stub, "noted")
+    assert BUILT_LINES == []
+    assert [s.number for s in OrderFactory.stub_batch(2)] == ["ORD-1", "ORD-2"]
+
+
+def test_nested_arguments_need_a_declaration_that_takes_them() -> None:
+    """``number__x=`` is refused, naming what takes them."""
+    with pytest.raises(
+        TypeError, match="not a SubFactory, a RelatedFactory, or a post_generation"
+    ):
+        OrderFactory.build(number__x=1)
+    with pytest.raises(TypeError, match="not a SubFactory"):
+        OrderFactory.build(receipt__x=1)

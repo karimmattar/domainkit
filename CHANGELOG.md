@@ -9,6 +9,157 @@ and a status.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-29
+
+A minor release. It removes what 0.12 deprecated: the hook methods of
+`DomainConfig`, which `setup()` now refuses, and `expect_version`. The
+pytest plugin refuses the test databases to a test that did not request
+them, and each test starts from its own registrations, ledgers and
+storages. `live_server`, factory_boy's other declarations and browser
+sessions join the testing tools, and the reference and the public API are
+a page for each area. Read [docs/upgrading.md](docs/upgrading.md) first:
+each **Breaking:** entry has its line there.
+
+### Added
+
+- `live_server` in the pytest plugin: the project's application served by
+  uvicorn on a port of the test process, for browsers and other
+  processes, on the `db` databases, with `127.0.0.1` in `ALLOWED_HOSTS`.
+  It starts for the test and stops after it (about 2 ms and 0.14 s), so
+  each test's application has its own settings and nothing it served
+  reaches the next; its thread carries the test's context, a frozen clock
+  too. `LiveServer(app)` serves any ASGI application in a `with` block
+  (`docs/testing.md`) (TEST-08).
+- factory_boy's `Trait`, `post_generation`, `RelatedFactory`,
+  `SelfAttribute`, `Maybe`, and `stub()` / `stub_batch()` for
+  `domainkit.testing.Factory`. Parameters and traits go in `class Params`
+  and never reach the model; `post_generation` methods and related
+  factories run after `create` adds the object and before the unit of
+  work commits, so what they change, the events they record, and the
+  objects they add are committed with it. A declaration given as an
+  argument is computed (`currency=SelfAttribute("..currency")`). No
+  `Faker`: it would be a new dependency (TEST-08).
+- `client.browser_session_as(user)`, `await
+  async_client.browser_session_as(user)`, and `await
+  browser_session_for(user)`: a test client signed in with a browser
+  session, its cookies and CSRF token, without posting to
+  `/auth/session`, as Litestar's `set_session_data`. Auth starts it
+  (`AuthConfig.issue_test_session`, through the new `BrowserSessionIssuer`
+  protocol) as the route does, and refuses unless `ENVIRONMENT = "test"`,
+  as the test tokens do (TEST-08, SEC-12a-2).
+- `database_blocker` and `DatabaseBlocker`: `with
+  database_blocker.unblock():` lets a fixture wider than one test reach
+  the test databases, as pytest-django's `django_db_blocker`;
+  `ConnectionHandler.refuse(reason)` and `allow()` underneath, which raise
+  `domainkit.db.DatabaseAccessRefused` (ADR 0112) (TEST-08).
+- Public resets for what a test can leave behind:
+  `domainkit.log.reset_throttled()` and `ThrottledLog.reset()`,
+  `EventBus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`,
+  and `domainkit.http.metrics.refreshers_kept()`. The plugin calls them:
+  before each test the throttled logs and the principal cache forget what
+  they hold, and once the domains are loaded the subscriptions, tasks, and
+  metric refreshers a test adds are dropped after it, where 0.12 left them
+  for every later test. `docs/testing.md` lists what each test starts
+  from, and the reset behind each line (ADR 0113) (TEST-05).
+
+### Changed
+
+- **Breaking:** the pytest plugin refuses the test databases to a test
+  that did not request `db` (or a fixture that does: `client`,
+  `async_client`, `live_server`, ...), as pytest-django does: it raises
+  `DatabaseAccessRefused`, naming the fixture to request. Until now such
+  a test saw whatever the test before it left, and when it ran first it
+  reached the databases the test settings name. **Fix:** request `db`;
+  in a fixture wider than one test, use `database_blocker.unblock()`.
+  **To keep the old behaviour:** mark a test or a module
+  `@pytest.mark.allow_database`, or set `domainkit_allow_database = true`
+  in the pytest settings. It costs a test nothing measurable (ADR 0112)
+  (TEST-08).
+- The reference is a page for each area, under `docs/reference/`:
+  settings, databases and the other backends, HTTP, server limits,
+  deployment checks, errors and responses, signing, observability, the
+  test plugin, commands, and extension points; the public API is a page
+  for each part of the package, under `docs/api/`. `docs/reference.md`
+  and `docs/api.md` list the pages, and each section keeps its name and
+  its anchor on its new page; a link into `reference.md#<section>` from
+  before opens the list. The comments `init` writes, and the error
+  `SECRET_KEY` unset raises, name the new pages (DOCS-05; ADR 0114).
+- The weekly mutation run maps a function behind a cache to every test
+  that reaches it, not only the first: the tests empty domainkit's caches
+  before each test of mutmut's stats run. The longest tests that checked
+  several behaviours are split into one test each, and the survivors of
+  the run on 0.12.0 that pointed at missing tests are killed; the audit
+  page lists, by module, what is left (TEST-06, TEST-07; ADR 0106).
+
+### Removed
+
+- **Breaking:** the hook methods of `DomainConfig` that 0.12 deprecated:
+  `startup`, `shutdown`, `check`, `seed`, `erase_subject`,
+  `export_subject`, `check_application`, `deployment_warnings`, `stage`,
+  `committed`, `stage_transaction`, `transaction_committed`, and
+  `migrated`, with their warnings and the path that called an override.
+  `setup()` refuses a domain that still defines one of these names, on
+  its class, a base, or the instance, set in the class body or later,
+  since nothing would call it (an `erase_subject` left behind would keep
+  a person's data through an erasure that reports success). One check
+  `apps.E002` per name says the domain, the class, and the point to
+  register on. **To change:** register the function in `ready()`,
+  `on_erase_subject(erase_copies)`, under a name of its own. The refusal
+  stays until 1.0. `HookPoint` no longer takes `method=` (DSGN-03;
+  ADR 0111).
+- **Breaking:** `domainkit.ddd.preconditions.expect_version`, and the
+  context-wide expectation every repository load and commit read. Importing
+  it raises `ImportError`. **To change:** `with uow.expect(Order, order_id,
+  versions):` on the unit of work the service changes the aggregate
+  through. An expectation is still checked again in each transaction of
+  the unit of work (SEC-12a-6) (DSGN-14; ADR 0102).
+
+### Fixed
+
+- A single-field value object around another (`Code(sku: Sku)`) did not
+  survive `dumpdata` then `loaddata`: the dump held the inner object,
+  `{"value": "LAMP-1"}`, which the load refused. A fixture holds such a
+  column as the database does, its innermost value, and the load makes
+  each object from the inside out, so each checks what it holds. Fixtures
+  written by 0.11 and 0.12 load (DATA-12).
+- `makemigrations` wrote a revision that failed with `NameError` for a
+  single-field value object around another (0.12.1 fixed one around a
+  `Decimal` or a `datetime`): Alembic rendered the column type as
+  `domainkit.db.derive.ValueObjectType(...)`, naming classes the revision
+  does not import. It renders the type the column stores, as for a plain
+  column (`sa.String(length=20)`, `sa.Numeric(precision=12, scale=2)`)
+  (DATA-12).
+
+### Security
+
+- A `PasswordHash` in a model's own field, or inside another value object
+  (`Credential(hash: PasswordHash)`, an API client's secret), loaded any
+  text shaped like a hash through `loaddata`, `plaintext$hunter2` included:
+  the check that the configured `AUTH.PASSWORD_HASHERS` would make it
+  (SEC-12a-3) held only the users table's `password`. `contrib.auth`
+  registers its column type for `PasswordHash`, so every such column gets
+  the same check. Its storage is the `Text` it always derived: no
+  migration (SEC-13a-1).
+- `live_server` no longer leaves `127.0.0.1` in `ALLOWED_HOSTS` after a
+  test that also changed a setting through the `settings` fixture: the
+  host now goes through that fixture's own changes, which are undone in
+  reverse order. Before, every later test, and its application, accepted
+  `Host: 127.0.0.1` (SEC-13b-1).
+- The first test whose fixtures load the domains (a client, `db`) no
+  longer keeps the handlers and tasks its body registers for every later
+  test: the plugin keeps the registrations from the start of the test's
+  call. What `ready()` registered stays (SEC-13b-2).
+- Memory ledgers (`memory://`) and memory storages start empty in every
+  test, through the new `LedgerHandler.reset()` and `storages.reset()`;
+  a later test's `customer:1` met an earlier test's evidence, as the
+  databases' ids start again after `db`. `LiveServer`'s thread is a
+  daemon, and stopping cancels requests still open after `stop_seconds`
+  (SEC-13b-3).
+- The test of the upgrade guide reads every **Breaking:** entry of a
+  release, under `Removed` and `Security` too, not only under `Changed`:
+  a breaking removal with no line in `docs/upgrading.md` fails it, where
+  it passed (SEC-13c-1).
+
 ## [0.12.1] - 2026-10-29
 
 A patch release: fixes on SQLite (savepoints and `lock()`), in the
@@ -4069,7 +4220,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/karimmattar/domainkit/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/karimmattar/domainkit/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/karimmattar/domainkit/compare/v0.11.1...v0.11.2

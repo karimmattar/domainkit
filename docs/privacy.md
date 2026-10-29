@@ -195,8 +195,9 @@ class SearchConfig(DomainConfig):
 
 A domain's hooks are summed into one record of what it erased, and its
 exports merged under its label. Until 0.12 these were the methods
-`erase_subject` and `export_subject` of `DomainConfig`; an override still
-works, warned of, until 0.13.
+`erase_subject` and `export_subject` of `DomainConfig`; 0.13 removed them,
+and `setup()` refuses a domain that still defines one (`apps.E002`), as
+nothing would call it.
 
 Return counts by kind, lower case, whole numbers: anything else is
 refused, since it would go into the audit trail. Count copies left to
@@ -264,5 +265,5 @@ python manage.py privacy purge             # in a nightly job
 The actor is whoever runs them. From the `privacy` command it is the
 operator, `operator:<name>`, from `--operator` (before the action:
 `privacy --operator alice erase --subject ...`), `DOMAINKIT_OPERATOR`, or
-the login name ([operators](reference.md#operators)); from code run
+the login name ([operators](reference/commands.md#operators)); from code run
 outside a request, `system`.

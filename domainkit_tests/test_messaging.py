@@ -802,6 +802,7 @@ async def test_configuration_guards(tables: None) -> None:
         )
 
 
+@pytest.mark.usefixtures("database_access")
 async def test_durable_work_needs_messaging_installed(tmp_path: Path) -> None:
     """Without the messaging app durable work fails loudly at commit.
 
@@ -1716,15 +1717,15 @@ async def test_a_commits_follow_up_publishes_only_what_it_is_asked_to(
 
 
 async def test_after_commit_failures_are_reported(
-    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+    broker_tables: MemoryBroker,
 ) -> None:
     """A domain's after-commit hook failing does not fail the unit of work."""
-    from domainkit.contrib.messaging.apps import MessagingConfig
+    from domainkit.db.hooks import on_committed
 
-    async def broken(self: MessagingConfig, uow: object) -> None:
+    async def broken(uow: object) -> None:
         raise RuntimeError("hook broke")
 
-    monkeypatch.setattr(MessagingConfig, "committed", broken)
+    on_committed(broken, domain="messaging")  # Forgotten when the domains reload.
     async with NotesUnitOfWork() as uow:
         await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="t"))
         uow.defer(remember, value=uuid.uuid4())

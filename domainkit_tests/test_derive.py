@@ -273,6 +273,28 @@ def test_revisions_name_the_storage_types() -> None:
     )
 
 
+def test_revisions_follow_a_value_object_down_to_what_it_stores() -> None:
+    """One around another, or around an amount or a time, renders as its storage.
+
+    Until 0.13 Alembic rendered these as ``domainkit.db.derive.ValueObjectType(
+    Code, ValueObjectType(...))``, naming classes the revision never imports,
+    so it failed to run. SQLAlchemy's own decorators keep their names.
+    """
+    context = AutogenContext(MigrationContext.configure(dialect_name="sqlite"))
+    nested = ValueObjectType(Label, ValueObjectType(Label, String(20)))
+
+    assert render_item("type", nested, context) == "sa.String(length=20)"
+    assert render_item("type", ValueObjectType(Label, ExactDecimal(6, 3)), context) == (
+        "sa.Numeric(precision=6, scale=3)"
+    )
+    assert render_item("type", ValueObjectType(Label, UTCDateTime()), context) == (
+        "sa.DateTime(timezone=True)"
+    )
+    assert render_item("type", ValueObjectType(Label, Interval()), context) == (
+        "sa.Interval()"
+    )
+
+
 BinId = NewType("BinId", int)
 
 
@@ -285,6 +307,7 @@ class Bin(AggregateRoot[BinId]):
     label: Label | None = None
 
 
+@pytest.mark.usefixtures("database_access")
 def test_makemigrations_writes_derived_tables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -368,6 +391,7 @@ def test_revisions_leave_other_types_to_alembic() -> None:
     assert render_item("server_default", EnumValue(Color), context) is False
 
 
+@pytest.mark.usefixtures("database_access")
 def test_makemigrations_writes_a_revision_of_amounts_and_times_that_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,6 +1,6 @@
 # 0101. Register every domain hook, and check it when it registers
 
-- Status: Accepted; amended 2026-10-28 (at the end)
+- Status: Accepted; amended 2026-10-28 and 2026-10-29 (at the end) by [0111](0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md)
 - Date: 2026-10-28
 - Amends: [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md)
 
@@ -139,3 +139,18 @@ Three ways a hook was dropped, doubled, or cut short (SEC-12a-1, -4, -5):
   same kind were merged with `dict.update`, and the first one's copies
   left the export while erasure summed both. Values of a kind named twice
   are now listed together: a list's items, or the value itself.
+
+## Amendment (2026-10-29, 0.13): the methods are gone, and refused
+
+0.13 removes the 13 hook methods, their warnings, `HookPoint(method=)`,
+and the path that called an override; a point calls only what domains
+registered. As this record said, a configuration that still defines one
+of the names is refused: `setup()` raises `CheckFailed` with one
+`apps.E002` per name, naming the domain, the class that defines it, and
+the point, before any domain's `ready()` runs. It looks wherever a lookup
+on the configuration would find the name (a base, a property, a name set
+after the class was made, the instance), and stays until 1.0
+([0111](0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md)
+records the choices and their proof of concept). The SEC-12a-4 rule
+above (a method a domain also registers is called once) has nothing left
+to apply to: such a domain is refused.

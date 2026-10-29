@@ -25,7 +25,7 @@ from domainkit_tests.test_privacy import audited, clinic, insert_rows  # noqa: F
 
 
 @pytest.fixture
-def database_url(tmp_path: Path) -> str:
+def database_url(database_access: None, tmp_path: Path) -> str:
     """SQLite, always: staging refuses PostgreSQL without TLS (security.E007)."""
     return f"sqlite+aiosqlite:///{tmp_path / 'clinic.sqlite3'}"
 

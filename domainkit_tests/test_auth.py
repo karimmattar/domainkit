@@ -815,6 +815,7 @@ def test_declared_permissions_are_checked(monkeypatch: pytest.MonkeyPatch) -> No
     assert [spec.name for spec in declared_permissions()] == ["Can fly"]
 
 
+@pytest.mark.usefixtures("database_access")
 def test_migrated_hooks_wait_for_their_tables(
     use_auth: UseAuth, tmp_path: Path
 ) -> None:

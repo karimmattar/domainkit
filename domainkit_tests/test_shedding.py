@@ -1109,6 +1109,7 @@ def busy_routes() -> Iterator[None]:
 
 
 @pytest.mark.usefixtures("busy_routes")
+@pytest.mark.usefixtures("database_access")
 async def test_the_application_sheds_with_its_error_body() -> None:
     """Through the default middleware: the 503 body names the request."""
     with override_settings(

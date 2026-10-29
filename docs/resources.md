@@ -338,9 +338,9 @@ async def cancel(order_id: OrderId, if_match: Annotated[str, Header()]) -> None:
         await services.cancel_order(CancelOrder(order_id=order_id), uow)
 ```
 
-Until 0.12 the route held the expectation for the whole request
+Until 0.12 the route could hold the expectation for the whole request
 (`domainkit.ddd.preconditions.expect_version`), and every unit of work in
-it was held to it; that still works, deprecated, until 0.13.
+it was held to it; 0.13 removed that.
 
 Optimistic locking (the `version` column) still refuses a change that
 lands after the check, with `409 concurrent_update`. A service that never

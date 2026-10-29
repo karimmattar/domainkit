@@ -16,7 +16,8 @@ it survives crashes and is retried.
 import asyncio
 import logging
 import threading
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Final
@@ -138,6 +139,22 @@ class EventBus:
         """Remove every subscription."""
         with self._lock:
             self._handlers.clear()
+
+    @contextmanager
+    def subscriptions_kept(self) -> Iterator[None]:
+        """Put the subscriptions back as they were when the block ends.
+
+        What the block subscribed is dropped, and what it unsubscribed or
+        cleared comes back: the test plugin keeps each test's to itself.
+        """
+        with self._lock:
+            kept = {kind: list(entries) for kind, entries in self._handlers.items()}
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._handlers.clear()
+                self._handlers.update(kept)
 
     def handlers_for(
         self, event_type: type[DomainEvent], *, durable: bool = False

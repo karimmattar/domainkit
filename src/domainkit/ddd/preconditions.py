@@ -22,24 +22,19 @@ any other, stored by another client between two transactions, is refused.
 
 The expectation belongs to that unit of work alone: another one the use
 case opens (an audit record, a lookup) neither checks nor needs it. Until
-0.12 it was held for the whole context instead (``expect_version``), and
-every unit of work in it refused to commit before the aggregate was loaded;
-that still works, deprecated, until 0.13.
+0.12 it could be held for the whole context instead (``expect_version``),
+every unit of work in it refusing to commit before the aggregate was
+loaded; 0.13 removed that.
 """
 
-import warnings
-from collections.abc import Collection, Hashable, Iterator, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Collection, Hashable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
 from domainkit.ddd.exceptions import PreconditionFailed
-from domainkit.deprecation import DomainkitDeprecationWarning
 
 __all__ = [
     "Expectation",
-    "expect_version",
 ]
 
 
@@ -102,11 +97,6 @@ class Expectation:
             self.versions = self.versions | {cast(Any, aggregate).version}
 
 
-_expected: ContextVar[tuple[Expectation, ...]] = ContextVar(
-    "domainkit_expected_versions", default=()
-)
-
-
 def expectation(
     model: type, id_: Hashable, versions: Collection[int] | None
 ) -> Expectation:
@@ -114,43 +104,17 @@ def expectation(
     return Expectation(model, id_, None if versions is None else frozenset(versions))
 
 
-@warnings.deprecated(
-    "Use uow.expect(model, id_, versions), held by the unit of work that "
-    "changes the aggregate; removed in domainkit 0.13.",
-    category=DomainkitDeprecationWarning,
-)
-@contextmanager
-def expect_version(
-    model: type, id_: Hashable, versions: Collection[int] | None
-) -> Iterator[Expectation]:
-    """Expect aggregate ``id_`` of ``model`` at one of ``versions`` in the block.
-
-    ``versions`` None only notes whether the aggregate is loaded. Every
-    repository and unit of work of the context holds to it.
-
-    Deprecated: use ``UnitOfWork.expect``, which only that unit of work
-    holds to; removed in 0.13.
-    """
-    made = expectation(model, id_, versions)
-    token = _expected.set((*_expected.get(), made))
-    try:
-        yield made
-    finally:
-        _expected.reset(token)
-
-
-def check_loaded(own: Sequence[Expectation] = ()) -> None:
+def check_loaded(own: Sequence[Expectation]) -> None:
     """Refuse to commit before every aggregate expected was loaded and checked.
 
     Units of work call it before they commit, with their own expectations
     (``own``), so a use case that changes an aggregate without reading it
-    through its repository writes nothing. Those of the context
-    (``expect_version``, deprecated) are held too.
+    through its repository writes nothing.
 
     Raises:
         RuntimeError: An expected aggregate was not loaded yet.
     """
-    for expectation in (*own, *_expected.get()):
+    for expectation in own:
         if not expectation.checked:
             raise RuntimeError(
                 f"The service did not load {expectation.model.__name__} "
@@ -159,8 +123,8 @@ def check_loaded(own: Sequence[Expectation] = ()) -> None:
             )
 
 
-def check_expected(aggregate: object, own: Sequence[Expectation] = ()) -> None:
-    """Hold ``aggregate`` to the repository's expectations, and the context's.
+def check_expected(aggregate: object, own: Sequence[Expectation]) -> None:
+    """Hold ``aggregate`` to the repository's expectations.
 
     Repositories call it for each aggregate they load, with those of the
     unit of work that lent them out (``own``).
@@ -169,6 +133,4 @@ def check_expected(aggregate: object, own: Sequence[Expectation] = ()) -> None:
         PreconditionFailed: The aggregate is stale.
     """
     for expectation in own:
-        expectation.check(aggregate)
-    for expectation in _expected.get():
         expectation.check(aggregate)

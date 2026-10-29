@@ -155,6 +155,7 @@ async def test_connections_are_per_event_loop(database: str) -> None:
     await connections.close_all()
 
 
+@pytest.mark.usefixtures("database_access")
 async def test_each_database_is_checked_on_its_own(tmp_path: Path) -> None:
     """A database that cannot be reached fails its own check, not the others'."""
     missing = tmp_path / "missing" / "other.sqlite3"
@@ -386,6 +387,7 @@ async def test_concurrent_changes_raise_instead_of_overwriting(
 
 
 @pytest.mark.parametrize("build", [create_engine, create_owner_engine])
+@pytest.mark.usefixtures("database_access")
 async def test_sql_parameters_stay_out_of_errors(
     tmp_path: Path, build: Callable[[DatabaseConfig], AsyncEngine]
 ) -> None:
@@ -413,6 +415,7 @@ async def test_sql_parameters_stay_out_of_errors(
     assert "s3cret-token" in messages[True]
 
 
+@pytest.mark.usefixtures("database_access")
 def test_the_schema_owner_keeps_no_pool() -> None:
     """Migrations connect when they run, and close when they are done."""
     engine = create_owner_engine(DatabaseConfig(URL="sqlite+aiosqlite://"))

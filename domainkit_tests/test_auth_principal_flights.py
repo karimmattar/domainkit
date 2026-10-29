@@ -256,6 +256,7 @@ async def test_kept_entries_are_read_again_by_one_request_ahead_of_time(
     assert await kept_or_read(KEY, CONFIG, Reads()) is old  # Not yet.
 
     clock.tick(0.2)
+    before = sample("refresh"), sample("invalidation")
     reads = Reads(held=True)
     refresher = await soon(kept_or_read(KEY, CONFIG, reads))
     others = [await kept_or_read(KEY, CONFIG, reads) for _ in range(3)]
@@ -263,6 +264,7 @@ async def test_kept_entries_are_read_again_by_one_request_ahead_of_time(
     fresh = await refresher
 
     assert reads.calls == 1
+    assert (sample("refresh"), sample("invalidation")) == (before[0] + 1, before[1])
     assert others == [old, old, old]
     assert fresh is not None
     assert fresh is not old
@@ -293,8 +295,13 @@ async def test_what_a_new_read_finds_changed_drops_the_kept_entry(
     clock.tick(CONFIG.TTL.total_seconds() * 0.9)
     gone = Reads()
     gone.answer = lambda: None
+    before = sample("refresh"), sample("invalidation")
 
     assert await kept_or_read(KEY, CONFIG, gone) is None
+    assert (sample("refresh"), sample("invalidation")) == (
+        before[0] + 1,
+        before[1] + 1,
+    )
     assert principal_cache.get(KEY, clock.monotonic()) is None
     assert await kept_or_read(KEY, CONFIG, gone) is None
     assert gone.calls == 2

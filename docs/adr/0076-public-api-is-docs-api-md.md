@@ -1,6 +1,6 @@
 # 0076. The public API is what `docs/api.md` lists, which is every `__all__`
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md)
 - Date: 2026-10-25
 
 ## Context
@@ -42,3 +42,13 @@ re-export rules, IDEs) and a test can hold to a written list.
 - The list is long (about 700 names in 96 modules). 1.0 freezes it after
   0.10's structural changes (DSGN-01, DSGN-02) have moved names to their
   final modules.
+
+## Amendment (2026-10-29, 0.13): the list is on a page per part of the package
+
+`docs/api.md` had grown to 1,377 lines, one section per module, 110 of
+them. The list is now on `docs/api/`, a page for each part of the package,
+and `docs/api.md` keeps the policy and links each page
+([0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md)).
+The rule is unchanged: a name is public when an `__all__` lists it, the
+pages together list every such name under its module, once, and
+`test_api.py` reads them all.

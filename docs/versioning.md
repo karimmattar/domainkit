@@ -72,13 +72,18 @@ and the setting that keeps a default's old behaviour.
 
 ### Deprecations planned for 0.13
 
-0.13 removes what 0.12 deprecates; [upgrading.md](upgrading.md#011-to-012)
-lists each with its replacement.
+All done: 0.13 removed what 0.12 deprecated.
+[upgrading.md](upgrading.md#012-to-013) lists each, with what to write
+instead.
 
-| Deprecated in 0.12 | Use instead | Removed in |
+| Deprecated in 0.12 | Use instead | What 0.13 did |
 | --- | --- | --- |
-| The hook methods of `DomainConfig` (`startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated`), overridden | The points `on_<method>` of `domainkit.apps.hooks` and `domainkit.db.hooks`, registered in `ready()`; 0.13 refuses a configuration that still defines one | 0.13 |
-| `domainkit.ddd.preconditions.expect_version` | `UnitOfWork.expect(model, id, versions)` | 0.13 |
+| The hook methods of `DomainConfig` (`startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated`), overridden | The points `on_<method>` of `domainkit.apps.hooks` and `domainkit.db.hooks`, registered in `ready()` | Removed them; `setup()` refuses a configuration that still defines one (`apps.E002`), until 1.0 |
+| `domainkit.ddd.preconditions.expect_version` | `UnitOfWork.expect(model, id, versions)` | Removed it, and the context-wide expectation |
+
+### Deprecations planned for 0.14
+
+None yet.
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:

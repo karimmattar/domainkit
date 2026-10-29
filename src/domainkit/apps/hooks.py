@@ -32,11 +32,9 @@ A mistake fails ``setup()``, naming the domain, rather than the first
 commit or probe that calls it.
 
 Hooks run in ``INSTALLED_DOMAINS`` order, each domain's in the order it
-registered them. A point may name the ``DomainConfig`` method that served
-the same purpose before it (``method``): a domain whose configuration
-overrides that method is called through it too, after its registered
-hooks, so method-style hooks keep working until 0.13, with a
-``DomainkitDeprecationWarning``.
+registered them. Only what a domain registered is called: 0.13 removed
+the hook methods, and ``setup()`` refuses a ``DomainConfig`` that still
+defines one (``apps.E002``).
 
 Registrations belong to the domains loaded at the time: ``registry.clear()``
 and the next ``populate`` forget them, and the domains register again in
@@ -48,7 +46,7 @@ import threading
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple, cast
+from typing import TYPE_CHECKING, NamedTuple
 from weakref import WeakKeyDictionary
 
 from domainkit.exceptions import ImproperlyConfigured
@@ -94,16 +92,13 @@ class HookPoint[F: Callable[..., object]]:
         self,
         name: str,
         *,
-        method: str | None = None,
         arguments: int | None = None,
         awaited: bool | None = None,
     ) -> None:
-        """Name the point (``stage``), and the ``DomainConfig`` method it replaces.
+        """Name the point (``stage``), and say how it calls its hooks.
 
         Args:
             name: How errors name the point.
-            method: The method a domain may still override instead of
-                registering; None if there is none.
             arguments: How many positional arguments the point calls a
                 hook with, checked when it registers; None checks nothing.
             awaited: Whether the point awaits a hook (it must be a
@@ -111,7 +106,6 @@ class HookPoint[F: Callable[..., object]]:
                 nothing.
         """
         self.name = name
-        self.method = method
         self.arguments = arguments
         self.awaited = awaited
         self._lock = threading.Lock()
@@ -224,23 +218,10 @@ class HookPoint[F: Callable[..., object]]:
     def _collect(
         self, registry: "DomainRegistry", registered: "_Registered[F]"
     ) -> Iterator[Hook[F]]:
-        """Each domain's registered hooks, then its overriding method, if any.
-
-        A method the domain registered too is called once, as registered.
-        """
-        from domainkit.apps.config import DomainConfig
-
+        """Each domain's registered hooks, in domain order."""
         for config in registry:
-            functions = registered.functions.get(config.label, ())
-            for function in functions:
+            for function in registered.functions.get(config.label, ()):
                 yield Hook(config.label, function)
-            if self.method is None or getattr(type(config), self.method) is getattr(
-                DomainConfig, self.method
-            ):
-                continue
-            override = getattr(config, self.method)
-            if override not in functions:  # Registered already: called once.
-                yield Hook(config.label, cast(F, override))
 
     def _current(self, registry: "DomainRegistry") -> "_Registered[F]":
         """What ``registry``'s domains registered since it last changed.
@@ -309,28 +290,20 @@ type ExportHook = Callable[[str], Awaitable[Mapping[str, object]]]
 type ApplicationCheck = Callable[["FastAPI"], Iterable[str]]
 type DeploymentCheck = Callable[[], Iterable[str]]
 
-on_startup: HookPoint[LifeHook] = HookPoint(
-    "startup", method="startup", arguments=0, awaited=True
-)
+on_startup: HookPoint[LifeHook] = HookPoint("startup", arguments=0, awaited=True)
 """Open process resources, such as clients and pools: ``()``."""
-on_shutdown: HookPoint[LifeHook] = HookPoint(
-    "shutdown", method="shutdown", arguments=0, awaited=True
-)
+on_shutdown: HookPoint[LifeHook] = HookPoint("shutdown", arguments=0, awaited=True)
 """Release what the domain's startup hooks opened: ``()``."""
-on_check: HookPoint[LifeHook] = HookPoint(
-    "check", method="check", arguments=0, awaited=True
-)
+on_check: HookPoint[LifeHook] = HookPoint("check", arguments=0, awaited=True)
 """Raise when the domain cannot serve traffic (``/ready``): ``()``."""
-on_seed: HookPoint[LifeHook] = HookPoint(
-    "seed", method="seed", arguments=0, awaited=True
-)
+on_seed: HookPoint[LifeHook] = HookPoint("seed", arguments=0, awaited=True)
 """Add the rows a fresh database needs (``manage.py seed``): ``()``.
 
 Write rows through the domain's own units of work, and make running twice
 harmless: rows that exist stay as they are.
 """
 on_erase_subject: HookPoint[EraseHook] = HookPoint(
-    "erase_subject", method="erase_subject", arguments=2, awaited=True
+    "erase_subject", arguments=2, awaited=True
 )
 """Erase the copies kept of a person's data: ``(subject, reason)``.
 
@@ -338,17 +311,17 @@ Return counts by kind (``{"deliveries": 2}``), never the data itself: they
 are audited. Count copies left to finish first under ``pending``.
 """
 on_export_subject: HookPoint[ExportHook] = HookPoint(
-    "export_subject", method="export_subject", arguments=1, awaited=True
+    "export_subject", arguments=1, awaited=True
 )
 """What the domain keeps about a person outside its aggregates: ``(subject)``.
 
 Return JSON-ready data, or nothing when there is nothing.
 """
 on_check_application: HookPoint[ApplicationCheck] = HookPoint(
-    "check_application", method="check_application", arguments=1, awaited=False
+    "check_application", arguments=1, awaited=False
 )
 """Problems with the built application: ``(app)``, best as ``CheckMessage``."""
 on_deployment_warnings: HookPoint[DeploymentCheck] = HookPoint(
-    "deployment_warnings", method="deployment_warnings", arguments=0, awaited=False
+    "deployment_warnings", arguments=0, awaited=False
 )
 """Weak but valid settings where deployed: ``()``; none elsewhere."""

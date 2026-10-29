@@ -16,6 +16,7 @@ Its links to groups and permissions get tables of their own, named after
 it (``accounts_users_groups``, ``accounts_users_permissions``).
 """
 
+from functools import partial
 from typing import Any
 
 from sqlalchemy import (
@@ -40,7 +41,13 @@ from sqlalchemy.types import TypeDecorator
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.contrib.contenttypes.tables import start_mappers as start_content_types
-from domainkit.db import UTCDateTime, ValueObjectType, map_imperatively, metadata
+from domainkit.db import (
+    UTCDateTime,
+    ValueObjectType,
+    map_imperatively,
+    metadata,
+    register_column_type,
+)
 
 from .exceptions import GroupNameTaken, UsernameTaken
 from .models import (
@@ -61,13 +68,18 @@ class PasswordHashType(ValueObjectType[PasswordHash]):
     A single-field value object's column, so fixtures write the hash as the
     text it is stored as, and read it back through ``PasswordHash``, which
     refuses anything that is not a hash.
+
+    It is registered for ``PasswordHash`` (``register_column_type``), as
+    ``Text``, the column a ``PasswordHash`` field always derived: a model's
+    own field, or one inside another value object, gets the fixture checks
+    of the users table's ``password`` (SEC-13a-1).
     """
 
     cache_ok = True
 
-    def __init__(self, length: int = 255) -> None:
-        """Hold hashes of up to ``length`` characters."""
-        super().__init__(PasswordHash, String(length))
+    def __init__(self, length: int | None = 255) -> None:
+        """Hold hashes of up to ``length`` characters; None, of any length."""
+        super().__init__(PasswordHash, Text() if length is None else String(length))
         self.length = length
 
     def __repr__(self) -> str:
@@ -103,6 +115,9 @@ class PasswordHashType(ValueObjectType[PasswordHash]):
                 "AUTH.PASSWORD_HASHERS would make it again, more strongly"
             )
         return hashed
+
+
+register_column_type(PasswordHash, partial(PasswordHashType, None))
 
 
 class ScopesType(TypeDecorator[frozenset[str]]):

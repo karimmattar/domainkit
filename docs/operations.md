@@ -46,7 +46,7 @@ every address and secret from `<PREFIX>*` variables:
 `ENVIRONMENT = "production"` (or `"staging"`) turns on the deployment
 checks: startup refuses `DEBUG`, wildcard hosts, weak keys, a database
 without verified TLS, and the rest of the list in
-[reference.md](reference.md#deployment-checks), and `check` warns about
+[reference/checks.md](reference/checks.md), and `check` warns about
 choices that are valid but weak. Run `python manage.py check` with the
 production settings in CI, against the real variable names, so a refusal
 shows up before a rollout.
@@ -56,7 +56,7 @@ shows up before a rollout.
 Run uvicorn or Granian with one worker process per core, behind a reverse
 proxy or load balancer that limits header sizes and slow clients. The
 whole command, with each limit, is in
-[reference.md](reference.md#server-limits); the two that matter most:
+[reference/servers.md](reference/servers.md); the two that matter most:
 
 - **Shutdown.** The server's graceful timeout (`--timeout-graceful-shutdown`)
   plus `SHUTDOWN_TIMEOUT` (15 seconds) must fit in the orchestrator's grace
@@ -108,7 +108,7 @@ for a network database without `POOL_SIZE`, and `deploy.W006` for a pool
 that holds fewer than a quarter of `MAX_CONCURRENT_REQUESTS`. Size the pool
 so that processes × (`POOL_SIZE` + `MAX_OVERFLOW`) stays below the
 server's `max_connections`, with room for migrations and the worker; the
-formula is in [reference.md](reference.md#sizing-pools). The defaults stay
+formula is in [reference/backends.md](reference/backends.md#sizing-pools). The defaults stay
 as they are: with a pool of 15 and 20 ms per request, a burst of 1,000
 requests was served within 3.3 seconds at a cap of 1,000, where a cap
 sized to the pool (60) refused 840 of them.
@@ -247,7 +247,7 @@ and test restores.
   production both need `--force` and an operator named with `--operator`
   or `DOMAINKIT_OPERATOR`, and each run is audited with the tables it
   touched and, for a load, the fixture's SHA-256
-  ([reference.md](reference.md#data-fixtures-flush-and-seeds)).
+  ([reference/commands.md](reference/commands.md#data-fixtures-flush-and-seeds)).
 
 ## Observability
 
@@ -259,7 +259,7 @@ and test restores.
   to `ERROR_REPORTERS`, such as Sentry's SDK.
 - **Traces**: run under `opentelemetry-instrument`; outbox messages carry
   the trace context of the commit that queued them
-  ([reference.md](reference.md#observability)).
+  ([reference/observability.md](reference/observability.md)).
 
 ### Request ids
 
@@ -293,7 +293,7 @@ callers who correlate their own calls (inside a private network); a
 caller's id then names its lines in the logs and the trail.
 
 **Metrics to alert on** (`domainkit[metrics]`; every metric and label is
-in [reference.md](reference.md#observability)). The thresholds are
+in [reference/observability.md](reference/observability.md)). The thresholds are
 starting points; tune them to the service.
 
 | Metric | Alert when | Runbook |

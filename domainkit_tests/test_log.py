@@ -81,6 +81,7 @@ def test_context_filter_adds_correlation_fields() -> None:
         "10.0.0.1",
     )
     assert anonymous.__dict__["client_ip"] == "-"
+    assert (outside.__dict__["trace_id"], outside.__dict__["span_id"]) == ("-", "-")
 
 
 def test_json_formatter() -> None:
@@ -152,6 +153,25 @@ def test_logging_without_a_queue_writes_on_the_callers_thread(
     assert "[req-1] direct" in capsys.readouterr().out
     (handler,) = logging.getLogger().handlers
     assert type(handler) is logging.StreamHandler
+
+
+def test_server_and_library_loggers_are_routed_through_domainkit() -> None:
+    """Server logs go to the root handler, uvicorn's access lines nowhere.
+
+    The background handler writes only what each handler's own level lets
+    through, as a handler on the caller's thread would.
+    """
+    config = build_logging_config(log_format="json", level="INFO")
+
+    assert config["loggers"] == {
+        "uvicorn": {"handlers": [], "propagate": True},
+        "uvicorn.error": {"handlers": [], "propagate": True},
+        "uvicorn.access": {"handlers": [], "propagate": False},
+        "alembic.runtime.plugins": {"level": "WARNING"},
+        "httpx2": {"level": "WARNING"},
+        "httpcore2": {"level": "WARNING"},
+    }
+    assert config["handlers"]["background"]["respect_handler_level"] is True
 
 
 @pytest.mark.parametrize("size", [0, -1])
@@ -1967,6 +1987,32 @@ def test_log_enabled_logs_through_a_logger_class_of_its_own() -> None:
         "test_log_enabled_logs_through_a_logger_class_of_its_own",
     )
     assert (record.__dict__["own"], record.getMessage()) == (True, "failed here")
+
+
+def test_a_logger_class_of_its_own_gets_the_level_message_and_extra() -> None:
+    """What its ``log`` is given, as ``log_enabled`` was: no frame read here.
+
+    The caller it names is checked above, by a test mutation runs leave
+    out (it reads frames).
+    """
+    logger = OwnLogger("domainkit.tests.own")
+    handler = Kept()
+    logger.addHandler(handler)
+
+    log.log_enabled(
+        logger, logging.ERROR, "failed %s %s", "here", 2, extra={"access": {"a": 1}}
+    )
+
+    [record] = handler.records
+    assert (record.levelno, record.msg, record.args) == (
+        logging.ERROR,
+        "failed %s %s",
+        ("here", 2),
+    )
+    assert (record.getMessage(), record.__dict__["access"]) == (
+        "failed here 2",
+        {"a": 1},
+    )
 
 
 @pytest.mark.reads_own_source

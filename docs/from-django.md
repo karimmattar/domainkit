@@ -12,9 +12,9 @@ together.
 | --- | --- |
 | `django-admin startproject` | `domainkit init` ([tutorial](tutorial/1-first-resource.md)) |
 | `manage.py startapp` | `manage.py startdomain`, a layered package; `--minimal` for a small one ([generators](resources.md#generators)) |
-| `INSTALLED_APPS`, `AppConfig.ready()` | `INSTALLED_DOMAINS`, `DomainConfig.ready()` ([api.md](api.md)) |
+| `INSTALLED_APPS`, `AppConfig.ready()` | `INSTALLED_DOMAINS`, `DomainConfig.ready()` ([api/core.md](api/core.md#domainkitapps)) |
 | `settings.py` per environment, `django-environ` | `config/settings/{base,local,test,production}.py`, `domainkit.conf.Env` ([operations.md](operations.md#configuration)) |
-| `manage.py check --deploy` | `manage.py check --deploy`: errors and warnings with ids, `SILENCED_CHECKS` ([deployment checks](reference.md#deployment-checks)) |
+| `manage.py check --deploy` | `manage.py check --deploy`: errors and warnings with ids, `SILENCED_CHECKS` ([deployment checks](reference/checks.md)) |
 | `django.core.signing`, `SECRET_KEY_FALLBACKS` | `domainkit.signing`, `SECRET_KEY_FALLBACKS` ([security.md](security.md)) |
 
 ## Models and queries
@@ -31,7 +31,7 @@ together.
 | `select_for_update()` | `get_for_update`, `get_many_for_update`, `uow.lock(name)` ([payments recipe](recipes/payments.md)) |
 | Database routers, read replicas | `DATABASE_ROUTING`, `REPLICAS`, `readonly=True` ([read replica recipe](recipes/read-replica.md)) |
 | Soft delete (packages) | Built in ([queries.md](queries.md#soft-delete)) |
-| `dumpdata`, `loaddata`, `flush` | The same commands ([reference.md](reference.md)) |
+| `dumpdata`, `loaddata`, `flush` | The same commands ([reference/commands.md](reference/commands.md#data-fixtures-flush-and-seeds)) |
 
 ## The API
 
@@ -60,6 +60,7 @@ together.
 | Storage backends | `domainkit.storage` ([uploads.md](uploads.md)) |
 | `TestCase`, `self.client`, `override_settings` | pytest fixtures: `client`, `admin_client`, `client_for`; `override_settings` from `domainkit.conf` ([testing.md](testing.md)) |
 | `assertNumQueries`, `factory_boy`, `freezegun` | `assert_num_queries`, `Factory`, `freeze_time` ([testing.md](testing.md)) |
+| `LiveServerTestCase`; pytest-django's `live_server` and `django_db_blocker` | `live_server`, `database_blocker` ([testing.md](testing.md#a-live-server)) |
 
 What has no Django name: aggregates and their rules, commands, the
 transactional outbox, the inbox, the audit trail and its seals, evidence

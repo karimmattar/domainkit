@@ -70,7 +70,7 @@ from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, is_network_database
 from domainkit.db.drivers import connect_args, read_only_args, transaction_settings
 from domainkit.ddd.uow import ReadOnlyError
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.utils.closing import close_each
 from domainkit.utils.readiness import failing_checks
 
@@ -202,6 +202,14 @@ connection is closed, as before. CI's ``newest`` job runs the proof
 (``test_db_cut_off``, ``test_sec11b_2_cut_off_session_lock``) against
 PostgreSQL on each new release, with settling on, and fails until it is
 added here (ADR 0048's 0.12 amendment)."""
+
+
+class DatabaseAccessRefused(DomainkitError, RuntimeError):
+    """The databases were reached while ``ConnectionHandler.refuse`` refuses them.
+
+    The test plugin refuses them to a test that did not ask for them; the
+    message names the fixture to request.
+    """
 
 
 class Reads(StrEnum):
@@ -859,7 +867,14 @@ def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:
 
     Migrations and partition maintenance change the schema, which may take
     longer than requests are allowed to, and needs the owner's privileges.
+    Refused, as the handler's engines are, while ``connections.refuse`` is
+    in force.
+
+    Raises:
+        DatabaseAccessRefused: ``connections.refuse`` is in force.
     """
+    if (refusal := connections.refusal) is not None:
+        raise DatabaseAccessRefused(refusal)
     url = (config.MIGRATION_URL or config.URL).get_secret_value()
     return _hiding_details(
         create_async_engine(
@@ -975,10 +990,18 @@ class ConnectionHandler:
     Loops on several threads share the handler: the registry of loops is
     changed and walked only with its lock held, while each loop's engines
     are its own.
+
+    ``refuse(reason)`` stops every engine and session from being handed out,
+    in every thread, until ``allow()``: the test plugin's guard against a
+    test that reaches the databases without asking for them.
     """
+
+    refusal: str | None
+    """Why the databases are refused now (``refuse``); None while they are not."""
 
     def __init__(self) -> None:
         """Start without engines."""
+        self.refusal = None
         self._lock = threading.Lock()
         self._engines: WeakKeyDictionary[asyncio.AbstractEventLoop, _Engines] = (
             WeakKeyDictionary()
@@ -1097,6 +1120,21 @@ class ConnectionHandler:
             }
         return stats
 
+    def refuse(self, reason: str) -> None:
+        """Refuse the databases until ``allow()``: raise ``DatabaseAccessRefused``.
+
+        Every engine and session this handler hands out, and every
+        ``create_owner_engine`` (migrations, fixtures, snapshots), raises it
+        with ``reason`` instead, in every thread; ``close_all`` and
+        ``pool_stats`` still work. The test plugin refuses them to tests that
+        did not request ``db``.
+        """
+        self.refusal = reason
+
+    def allow(self) -> None:
+        """Hand engines and sessions out again, after ``refuse``."""
+        self.refusal = None
+
     async def close_all(self) -> None:
         """Dispose the running loop's engines; the next use creates fresh ones.
 
@@ -1110,7 +1148,13 @@ class ConnectionHandler:
         await close_each([*disposed, *engines.reads.values()], AsyncEngine.dispose)
 
     def _loop_engines(self) -> _Engines:
-        """The running loop's engines; added, under the lock, on first use."""
+        """The running loop's engines; added, under the lock, on first use.
+
+        Raises:
+            DatabaseAccessRefused: ``refuse`` is in force.
+        """
+        if (refusal := self.refusal) is not None:
+            raise DatabaseAccessRefused(refusal)
         loop = asyncio.get_running_loop()
         engines = self._engines.get(loop)
         if engines is None:

@@ -189,3 +189,31 @@ The options:
 - What would change this: mutmut recording a mutant's duration under
   forkserver (3.8 records zero), which would fit the estimate from each
   run instead.
+
+## Amendment (2026-10-29, 0.13): what the first full weekly run showed
+
+The run on 0.12.0 (CI run 40846333116) reported 3,078 mutants that lived
+and 318 no test reaches, over 15 of its 17 shards. Three things in it
+were the run's, not missing tests:
+
+- **Functions behind a cache.** The stats run maps each function to the
+  tests that call it, and a function behind `functools.cache` runs for
+  the first test that needs it only, with everything it calls: a cached
+  statement builder's helper was mapped to 6 tests, and a mutant giving a
+  user every other user's groups lived, though the suite kills it at
+  once. Under the stats run (`MUTANT_UNDER_TEST=stats`), the tests now
+  empty domainkit's caches before each test (`domainkit_tests/conftest.py`):
+  the helper is mapped to 332 tests, and 982 functions to more than
+  before.
+- **Code only a server reaches.** The shards run on SQLite, so what only
+  PostgreSQL, Redis, immudb, or RabbitMQ runs is "no tests" or lives
+  (`db.connections`, `db.partitioning`, `ledger.immudb`, `cache.redis`,
+  the worker's `LISTEN`). Those mutants say nothing of the tests.
+- **A shard that stops.** One flaky test in a shard's stats run ends the
+  shard before its first mutant (`auth-4`; it ran in full on another
+  machine, see `docs/audit/0.9.0.md`, TEST-07), and a lost runner ends it
+  with nothing reported (`management-4`).
+
+The weekly run still reports what it did; the audit page lists, by
+module, what the 0.12.0 run left and why.
+

@@ -207,7 +207,7 @@ hashes: keep it as safe as the database. Auth's tables are guarded:
 or their links, only with `--include-guarded`, and `flush` keeps them,
 tokens and second factors included, unless it is given. A dumped user
 loads back as it was, its password hash included
-([reference.md](../reference.md#data-fixtures-flush-and-seeds)).
+([reference/commands.md](../reference/commands.md#data-fixtures-flush-and-seeds)).
 
 ## Backends
 

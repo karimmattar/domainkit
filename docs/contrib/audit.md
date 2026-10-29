@@ -22,7 +22,7 @@ await record("auth.login", Outcome.DENIED, reason="mfa")
 ```
 
 `python manage.py auditlog --actor alice --action catalog.product_created` reads the
-trail. Operators' commands add their own rows ([operators](../reference.md#operators)):
+trail. Operators' commands add their own rows ([operators](../reference/commands.md#operators)):
 `operator.loaddata` names the fixture file, its SHA-256, and each table
 with how many rows it got and replaced; `operator.flush` each table it
 emptied, with its rows, and the tables it kept; both say whether
@@ -93,7 +93,7 @@ python manage.py auditforget --anonymous-days 30     # anonymous callers' days b
 
 Each run is recorded as `operator.auditforget`, with the operator who ran
 it and how many subjects and keys, not which subjects (see
-[operators](../reference.md#operators)). Their pseudonyms stay in the trail,
+[operators](../reference/commands.md#operators)). Their pseudonyms stay in the trail,
 unchanged, but can no longer be linked to them by anyone: the key was
 random and is gone. A later event about them
 gets a new key, unlinkable to the old pseudonyms. Run `--anonymous-days` on

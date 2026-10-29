@@ -23,7 +23,6 @@ from domainkit.db.hooks import (
     on_transaction_committed,
 )
 from domainkit.db.migrations import run_migrated_hooks
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import ALPHA, MakePackage
 
@@ -52,23 +51,25 @@ class TypedConfig(DomainConfig):
     async def filled(self, connection, database):
         CALLS.append((self.label, "migrated", database))
 """
-LEGACY = """
+EARLY = """
 from domainkit.apps import DomainConfig
-from domainkit.db.hooks import on_committed
+from domainkit.db.hooks import on_committed, on_stage
 from hooklog import CALLS
 
 
-class LegacyConfig(DomainConfig):
+class EarlyConfig(DomainConfig):
     def ready(self):
         on_committed(self.registered)
+        on_stage(self.staged)
+        on_committed(self.followed)
 
     async def registered(self, uow):
         CALLS.append((self.label, "registered"))
 
-    async def stage(self, uow, events, tasks):
+    async def staged(self, uow, events, tasks):
         CALLS.append((self.label, "stage", uow.alias))
 
-    async def committed(self, uow):
+    async def followed(self, uow):
         CALLS.append((self.label, "committed", uow.alias))
 """
 FAILING = """
@@ -119,7 +120,7 @@ def calls(make_package: MakePackage) -> list[tuple[str, ...]]:
     """What the hooks of the throwaway domains did, in order."""
     make_package("hooklog", {"__init__.py": "CALLS = []\n"})
     make_package("typed", {"apps.py": TYPED})
-    make_package("legacy", {"apps.py": LEGACY})
+    make_package("early", {"apps.py": EARLY})
     make_package("quiet", {})
     make_package("failing", {"apps.py": FAILING})
     import hooklog  # type: ignore[import-not-found]
@@ -132,11 +133,10 @@ def installed(calls: list[tuple[str, ...]], tmp_path: Path) -> Iterator[None]:
     """The throwaway domains installed, on a SQLite file."""
     url = f"sqlite+aiosqlite:///{tmp_path / 'hooks.sqlite3'}"
     with override_settings(
-        INSTALLED_DOMAINS=[ALPHA, "quiet", "legacy", "typed"],
+        INSTALLED_DOMAINS=[ALPHA, "quiet", "early", "typed"],
         DATABASES={"default": {"URL": url}},
     ):
-        with pytest.warns(DomainkitDeprecationWarning, match="'legacy'"):
-            setup()
+        setup()
         yield
     asyncio.run(connections.close_all())
 
@@ -153,26 +153,28 @@ def commit() -> None:
 
 
 @pytest.mark.usefixtures("installed")
+@pytest.mark.usefixtures("database_access")
 def test_only_domains_that_registered_are_called(calls: list[tuple[str, ...]]) -> None:
-    """In domain order: registered hooks first, then an overriding method (DSGN-03)."""
-    assert [hook.domain for hook in on_stage] == ["legacy", "typed", "typed"]
-    assert [hook.domain for hook in on_committed] == ["legacy", "legacy", "typed"]
+    """In domain order, each domain's in the order it registered (DSGN-03)."""
+    assert [hook.domain for hook in on_stage] == ["early", "typed", "typed"]
+    assert [hook.domain for hook in on_committed] == ["early", "early", "typed"]
     assert list(on_stage_transaction) == []
     assert list(on_transaction_committed) == []
 
     commit()
 
     assert calls == [
-        ("legacy", "stage", "default"),
+        ("early", "stage", "default"),
         ("typed", "stage", "default"),
         ("typed", "stage again", "default"),
-        ("legacy", "registered"),
-        ("legacy", "committed", "default"),
+        ("early", "registered"),
+        ("early", "committed", "default"),
         ("typed", "committed", "default"),
     ]
 
 
 @pytest.mark.usefixtures("installed")
+@pytest.mark.usefixtures("database_access")
 def test_migrated_hooks_run_on_the_migrated_database(
     calls: list[tuple[str, ...]],
 ) -> None:
@@ -237,16 +239,33 @@ def test_hooks_register_in_ready_or_for_a_named_domain(
         assert repr(point) == "<HookPoint probe>"
 
 
+def test_a_points_own_checks_and_an_empty_point() -> None:
+    """A point checks ``arguments`` and ``awaited``; one unused has no hooks."""
+    setup()
+    point: HookPoint[Any] = HookPoint("own", arguments=0, awaited=True)
+
+    def plain() -> None:
+        """Not awaitable."""
+
+    assert list(point) == []
+    with pytest.raises(ImproperlyConfigured, match=r"own hook .*plain must be an"):
+        point(plain, domain="alpha")
+
+    async def one(value: object) -> None:
+        """Takes an argument the point does not give."""
+
+    with pytest.raises(ImproperlyConfigured, match=r"must take 0 positional arguments"):
+        point(one, domain="alpha")
+
+
 @pytest.mark.usefixtures("calls")
 def test_a_projects_own_point_checks_what_it_declares() -> None:
-    """A point a test builds keeps its method, arguments and awaited.
+    """A point a test builds keeps its arguments and awaited.
 
     The framework's points are built when it is imported, before a mutation
     run picks a mutant, so only a point built here runs ``__init__``'s.
     """
-    point: HookPoint[Any] = HookPoint(
-        "audited", method="startup", arguments=1, awaited=True
-    )
+    point: HookPoint[Any] = HookPoint("audited", arguments=1, awaited=True)
 
     async def one(record: object) -> None:
         """Take the record."""
@@ -267,15 +286,11 @@ def test_a_projects_own_point_checks_what_it_declares() -> None:
             point(plain, domain="typed")
         assert list(point) == [Hook("typed", one)]
 
-    assert (point.name, point.method, point.arguments, point.awaited) == (
-        "audited",
-        "startup",
-        1,
-        True,
-    )
+    assert (point.name, point.arguments, point.awaited) == ("audited", 1, True)
 
 
 @pytest.mark.usefixtures("calls")
+@pytest.mark.usefixtures("database_access")
 def test_a_failed_follow_up_is_reported_with_its_domain(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

@@ -23,6 +23,59 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.12 to 0.13
+
+### Breaking changes
+
+Upgrade from 0.12 with deprecations as errors first: the removals below
+were each deprecated in 0.12, with a warning that named its replacement.
+Each item says what fails and what to write instead, and, where there is
+a way, how to keep the old behaviour for as long as the project needs it.
+
+- **A domain that defines a removed hook method fails `setup()`**
+  (DSGN-03). `startup`, `shutdown`, `check`, `seed`, `erase_subject`,
+  `export_subject`, `check_application`, `deployment_warnings`, `stage`,
+  `committed`, `stage_transaction`, `transaction_committed`, and
+  `migrated` are no longer methods of `DomainConfig`, and nothing calls
+  them. A configuration that still has one of these names, written in its
+  class or a base, set on the class later, or on the instance, is refused
+  with `apps.E002`, which names the domain, the class, and the point:
+  `Domain 'search': SearchConfig.erase_subject is a hook method, which
+  domainkit 0.13 removed; nothing would call it.` **Fix:** register the
+  function in `ready()` under a name of its own, as 0.12's warning said:
+
+  ```python
+  class SearchConfig(DomainConfig):
+      def ready(self) -> None:
+          on_erase_subject(erase_documents)  # domainkit.apps.hooks
+  ```
+
+  The refusal stays until 1.0
+  ([ADR 0111](adr/0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md)).
+- **`HookPoint` takes no `method=`** (DSGN-03). It named the
+  `DomainConfig` method a point called too; `HookPoint("x", method="...")`
+  raises `TypeError`. **Fix:** drop the argument:
+  `HookPoint("x", arguments=1, awaited=True)`.
+- **`expect_version` is gone** (DSGN-14). `from
+  domainkit.ddd.preconditions import expect_version` raises `ImportError`,
+  and no expectation is held for the whole context any more. **Fix:** hold
+  it on the unit of work the service changes the aggregate through:
+  `with uow.expect(Order, order_id, versions):` in place of `with
+  expect_version(Order, order_id, versions):`. The expectation is still checked
+  again in each transaction of the unit of work (SEC-12a-6).
+- **A test that did not request the database is refused it** (TEST-08).
+  The pytest plugin raises `domainkit.db.DatabaseAccessRefused` when a
+  test reaches the test databases without requesting `db`, or a fixture
+  that does (`client`, `async_client`, `live_server`, ...); the message
+  names the fixture. 0.12 let such a test read whatever the test before
+  it left, and, run first, reach the databases the test settings name.
+  **Fix:** request `db` in the test, or in its function-scoped fixtures
+  that reach the database; a module- or session-scoped fixture opens the
+  databases with `with database_blocker.unblock():`. **To keep the old
+  behaviour:** `@pytest.mark.allow_database` on a test, or `pytestmark =
+  pytest.mark.allow_database` in a module; or, for the whole suite,
+  `domainkit_allow_database = true` under `[tool.pytest.ini_options]`.
+
 ## 0.11 to 0.12
 
 ### Breaking changes
