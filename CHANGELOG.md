@@ -9,6 +9,17 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- `makemigrations` wrote a revision that failed with `NameError` when it
+  ran, for a table with a one-field value object around a `Decimal` or a
+  `datetime` (`Code(value: Annotated[Decimal, Digits(6, 3)])`): it named
+  `domainkit.db.derive.ValueObjectType(Code, ExactDecimal(...))`, which the
+  revision never imports. Such a column is now written as what it stores
+  (`sa.Numeric(precision=6, scale=3)`, `sa.DateTime(timezone=True)`), as
+  `docs/databases.md` says. A revision already written by hand is not
+  changed.
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when
