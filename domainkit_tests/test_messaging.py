@@ -1465,16 +1465,12 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
     assert (row["lock_id"], row["locked_until"]) == (None, None)
 
 
-async def test_shutdown_gives_back_a_lease_cut_off_as_it_commits(
-    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A lease the driver committed as the publisher was cancelled is given back.
+async def shut_down_as_a_lease_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shut down while the publisher's lease has committed, before it learns so.
 
     aiosqlite commits in its own thread, and a PostgreSQL ``COMMIT`` may
     finish on the server, after the caller is cancelled. Here the commit
-    goes through, then the publisher is held until shutdown cancels it:
-    before 0.12.1 the message stayed locked until its lease ran out, as a
-    loaded run of the test above once saw.
+    goes through, then the publisher is held until shutdown cancels it.
     """
     exit_transaction = AsyncTransaction.__aexit__
     leased = asyncio.Event()
@@ -1497,8 +1493,40 @@ async def test_shutdown_gives_back_a_lease_cut_off_as_it_commits(
         await close_publishers(within=0.1)
         await asyncio.wait({task})
 
+
+async def test_shutdown_gives_back_a_lease_cut_off_as_it_commits(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lease the driver committed as the publisher was cancelled is given back.
+
+    Before 0.12.1 the message stayed locked until its lease ran out, as a
+    loaded run of the test above once saw.
+    """
+    await shut_down_as_a_lease_commits(monkeypatch)
+
     (row,) = await outbox()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+async def test_a_give_back_that_fails_is_logged_and_the_lease_runs_out(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The shutdown goes on; the message waits for its lease, as before 0.12.1."""
+
+    async def refused(self: Worker, lock_id: uuid.UUID) -> None:
+        raise DriverError("08006")
+
+    monkeypatch.setattr(Worker, "_unlock", refused)
+
+    await shut_down_as_a_lease_commits(monkeypatch)
+
+    (row,) = await outbox()
+    assert row["lock_id"] is not None
+    assert "Could not give back a lease cut off; their locks expire" in (
+        caplog.messages
+    )
 
 
 class RecordingWorker:
