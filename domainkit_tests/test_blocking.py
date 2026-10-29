@@ -5,6 +5,8 @@ import functools
 import io
 import logging
 import os
+import re
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -394,11 +396,98 @@ def blocking_tests(pytester: pytest.Pytester) -> pytest.Pytester:
     return pytester
 
 
+STALL_TICK = 0.005
+"""Seconds between the ticks of ``StallWitness``'s thread."""
+STALL_MARGIN = 0.02
+"""Seconds a reported step may exceed the stall seen in its test by."""
+SLOW_STEP = re.compile(r"took (\d+\.\d+) seconds")
+
+
+class StallWitness:
+    """A plugin for the inner sessions: how long the process stood still in each test.
+
+    The nested sessions run in this process, where other threads live. One
+    that holds the GIL, a C call or a collection, holds the inner loop with
+    it, mid-step: in CI, a step of a test that only awaits once took 0.651
+    seconds. A thread ticks every ``STALL_TICK`` seconds while each test
+    runs and adds up how late its ticks came: when another thread holds the
+    GIL, or the machine stops the process, it is late as long as the loop
+    is held. A test that holds its own loop with ``time.sleep`` lets the
+    GIL go, and the ticks stay on time.
+    """
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_runtest_call(self, item: pytest.Item) -> Iterator[None]:
+        """Watch while the test runs; keep the stall in its report."""
+        done = threading.Event()
+        stalled: list[float] = []
+
+        def tick() -> None:
+            while True:
+                started = time.perf_counter()
+                if done.wait(STALL_TICK):
+                    return
+                stalled.append(max(time.perf_counter() - started - STALL_TICK, 0))
+
+        witness = threading.Thread(target=tick, name="stall-witness", daemon=True)
+        witness.start()
+        try:
+            return (yield)
+        finally:
+            done.set()
+            witness.join()
+            item.user_properties.append(("stalled", sum(stalled, 0.0)))
+
+
 def run_inner(pytester: pytest.Pytester, *options: str) -> pytest.RunResult:
-    """Run the inner tests with the plugin, in order."""
+    """Run the inner tests with the plugin, in order, the stalls of each noted."""
     return pytester.runpytest_inprocess(
-        "-p", "domainkit.testing", "-p", "no:randomly", "-p", "no:cov", *options
+        "-p",
+        "domainkit.testing",
+        "-p",
+        "no:randomly",
+        "-p",
+        "no:cov",
+        *options,
+        plugins=[StallWitness()],
     )
+
+
+def assert_only_held_tests_fail(result: pytest.RunResult) -> None:
+    """``test_blocks`` fails for holding its loop; the failing test, for itself.
+
+    The others pass. A stalled process can only make a step look longer,
+    never shorter: a test that waits may fail only for steps no longer
+    than the stall seen while it ran, which ``StallWitness`` measured
+    apart from the loop. An await counted as holding the loop (0.15
+    seconds, with the process running) fails it still.
+    """
+    recorded: pytest.HookRecorder = result.reprec  # type: ignore[attr-defined] # In-process runs have it.
+    reports = {
+        report.nodeid.split("::")[-1].split("[")[0]: report
+        for report in recorded.getreports("pytest_runtest_logreport")
+        if report.when == "call"
+    }
+    assert sorted(reports) == [
+        "test_blocks",
+        "test_blocks_and_fails",
+        "test_sync",
+        "test_waits",
+    ]
+    blocks = reports["test_blocks"]
+    assert blocks.failed
+    assert "held its event loop" in blocks.longreprtext
+    assert reports["test_blocks_and_fails"].failed
+    assert "its own failure" in reports["test_blocks_and_fails"].longreprtext
+    assert reports["test_sync"].passed
+    waits = reports["test_waits"]
+    if waits.failed:
+        stalled = dict(waits.user_properties)["stalled"]
+        assert isinstance(stalled, float)
+        steps = [float(took) for took in SLOW_STEP.findall(waits.longreprtext)]
+        assert "held its event loop" in waits.longreprtext
+        assert steps
+        assert max(steps) <= stalled + STALL_MARGIN, (steps, stalled)
 
 
 def test_detect_blocking_fails_tests_that_hold_their_loop(
@@ -410,7 +499,7 @@ def test_detect_blocking_fails_tests_that_hold_their_loop(
     result = run_inner(blocking_tests, "--detect-blocking")
 
     assert os.environ.get(DEBUG_VARIABLE) == previous  # Put back after the run.
-    result.assert_outcomes(passed=2, failed=2)
+    assert_only_held_tests_fail(result)
     result.stdout.fnmatch_lines(
         [
             "*_ test_blocks?asyncio? _*",
@@ -466,7 +555,7 @@ def test_a_quiet_asyncio_logger_still_reports_to_the_detector(
 
     result = run_inner(blocking_tests, "--detect-blocking")
 
-    result.assert_outcomes(passed=2, failed=2)
+    assert_only_held_tests_fail(result)
     assert logging.getLogger("asyncio").level == logging.ERROR
 
 
@@ -476,7 +565,7 @@ def test_detection_restores_a_debug_variable_already_set(
     """A ``PYTHONASYNCIODEBUG`` set before the run is left as it was."""
     monkeypatch.setenv(DEBUG_VARIABLE, "x")
 
-    run_inner(blocking_tests, "--detect-blocking").assert_outcomes(passed=2, failed=2)
+    assert_only_held_tests_fail(run_inner(blocking_tests, "--detect-blocking"))
 
     assert os.environ[DEBUG_VARIABLE] == "x"
 

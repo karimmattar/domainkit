@@ -396,9 +396,10 @@ how principals are read.
 - **What is kept**: the user's columns, their groups and permissions,
   and the credential's kind, expiry, scopes, and login. Never a second
   factor's secret, recovery codes, or the token itself: entries are keyed
-  by the token's digest. The password hash is kept, in process memory, only
-  while `request.user.password` is deprecated (below), and never shows in a
-  `repr`, a log, a key, or a stamp. Each request gets its own user, built
+  by the token's digest. The password hash is not kept, only whether a
+  password can log the user in (`request.user.password` was removed in
+  0.10, below), so it never shows in a `repr`, a log, a key, or a stamp.
+  Each request gets its own user, built
   from what is kept, the same as a query builds; its groups and
   permissions are built the first time the request reads them, and
   `has_perm` (and the rules that ask it) answers from the keys of what the

@@ -29,7 +29,7 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.types import TypeEngine
+from sqlalchemy.types import TypeEngine, UserDefinedType
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -333,6 +333,87 @@ def test_makemigrations_writes_derived_tables(
     assert "sa.Numeric(precision=8, scale=2)" in text
     assert "sa.String(length=20)" in text  # The name, and the label.
     assert "domainkit_tests" not in text  # Revisions never import domain code.
+
+
+class Stamp(ValueObject):
+    """One field of a time."""
+
+    value: datetime
+
+
+HamperId = NewType("HamperId", int)
+
+
+class Hamper(AggregateRoot[HamperId]):
+    """An aggregate of value objects around an amount and a time."""
+
+    code: Code
+    packed: Stamp | None = None
+
+
+def test_revisions_render_a_value_object_around_an_amount_or_a_time() -> None:
+    """A one-field value object of a ``Decimal`` or a ``datetime`` is its storage.
+
+    Until 0.12.1 Alembic rendered these as ``domainkit.db.derive.ValueObjectType(
+    Code, ExactDecimal(...))``, naming classes the revision never imports.
+    SQLAlchemy's own decorators keep their names.
+    """
+    context = AutogenContext(MigrationContext.configure(dialect_name="sqlite"))
+
+    assert render_item("type", ValueObjectType(Code, ExactDecimal(6, 3)), context) == (
+        "sa.Numeric(precision=6, scale=3)"
+    )
+    assert render_item("type", ValueObjectType(Stamp, UTCDateTime()), context) == (
+        "sa.DateTime(timezone=True)"
+    )
+    assert render_item("type", ValueObjectType(Label, Interval()), context) == (
+        "sa.Interval()"
+    )
+
+
+class Point(UserDefinedType[str]):
+    """A project's own type, not a decorator: Alembic renders it."""
+
+    cache_ok = True
+
+    def get_col_spec(self, **kw: object) -> str:
+        """``POINT``."""
+        return "POINT"
+
+
+def test_revisions_leave_other_types_to_alembic() -> None:
+    """SQLAlchemy's own decorators and a project's own types render as Alembic does."""
+    context = AutogenContext(MigrationContext.configure(dialect_name="sqlite"))
+
+    assert render_item("type", Interval(), context) is False
+    assert render_item("type", Point(), context) is False
+    assert render_item("type", ValueObjectType(Label, Point()), context) is False
+    assert render_item("server_default", EnumValue(Color), context) is False
+
+
+def test_makemigrations_writes_a_revision_of_amounts_and_times_that_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Value objects around an amount or a time make a revision that applies."""
+    schema = MetaData(naming_convention=NAMING_CONVENTION)
+    table_for(Hamper, "framework_test_hampers", metadata=schema)
+    monkeypatch.setattr(migrations_module, "metadata", schema)
+    registry.clear()
+    database = tmp_path / "hampers.sqlite3"
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA],
+        DATABASES={"default": {"URL": f"sqlite+aiosqlite:///{database}"}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+    ):
+        setup()
+        call_command("makemigrations", "-m", "hampers", stdout=io.StringIO())
+        (revision,) = (tmp_path / "migrations").glob("*.py")
+        call_command("migrate", stdout=io.StringIO())
+    registry.clear()
+    text = revision.read_text()
+    assert "sa.Numeric(precision=6, scale=3)" in text  # The code.
+    assert "sa.DateTime(timezone=True)" in text  # When it was packed.
+    assert "domainkit" not in text.split("def upgrade", 1)[1]  # Nor name its types.
 
 
 def test_children_load_with_and_belong_to_their_aggregate() -> None:

@@ -398,6 +398,12 @@ fields too, and those of the entities they hold, in place: a child entity
 is the same object after the rewind, so one also mapped to a table keeps
 its mapping.
 
+On SQLite, whose driver begins a transaction only before a write, a
+savepoint that comes first in a unit of work begins its transaction
+before the `SAVEPOINT`: releasing it keeps its changes in the
+transaction, for `commit()` to write or the end of the block to roll
+back, as on PostgreSQL. Before 0.12.1 that release committed them.
+
 ## Read-only work
 
 `SomeUnitOfWork(readonly=True)`, or a subclass with `readonly = True`,

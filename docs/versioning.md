@@ -207,7 +207,9 @@ One-time setup, before the first release:
     compiled extensions, at 0.9.2 too. Nor is `mutation (changed)` (0.12),
 which runs the mutants of the functions a pull request changes, and fails
 when one lives: an equivalent mutant can live, which the author explains
-rather than kills ([ADR 0106](adr/0106-mutate-what-a-pull-request-changes.md)).
+rather than kills ([ADR 0106](adr/0106-mutate-what-a-pull-request-changes.md)),
+nor the shards it hands a large change's mutants to, `mutation (changed,
+N)`, and `mutation (changed, summary)`, which judges them (0.12.1).
 `domainkit_tests/test_ci.py` checks that the
     list is every other job a pull request runs, and is this one.
   - `release-tags.json`: nobody, admins included, moves or deletes a `v*`

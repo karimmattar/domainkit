@@ -47,13 +47,21 @@ class Summary:
 
 
 def results(mutants: Path, patterns: list[str]) -> dict[str, str]:
-    """The status of every mutant whose name matches one of ``patterns``."""
+    """The status of every mutant whose name matches one of ``patterns``.
+
+    A mutant can be in several runs' files below ``mutants``: the changed
+    functions' first run, and the shard it handed it to. A run that
+    checked it wins over one that did not.
+    """
     found: dict[str, str] = {}
     for meta in sorted(mutants.rglob("*.meta")):
         exit_codes = json.loads(meta.read_text())["exit_code_by_key"]
         for name, exit_code in exit_codes.items():
-            if any(fnmatchcase(name, pattern) for pattern in patterns):
-                found[name] = status_by_exit_code[exit_code]
+            if not any(fnmatchcase(name, pattern) for pattern in patterns):
+                continue
+            status = status_by_exit_code[exit_code]
+            if found.get(name, "not checked") in UNCHECKED:
+                found[name] = status
     return found
 
 

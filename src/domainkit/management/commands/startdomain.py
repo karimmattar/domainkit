@@ -21,7 +21,7 @@ from domainkit.conf.env import project_root
 from domainkit.management.base import CommandError
 from domainkit.management.generators import Generator, install, package_directory
 from domainkit.utils.formatting import format_python
-from domainkit.utils.text import camel_case, pluralize, snake_case
+from domainkit.utils.text import camel_case, plural_of, singular_of, snake_case
 
 TEMPLATE_DIR: Final = Path(__file__).resolve().parents[1] / "templates" / "domain"
 MINIMAL_DIR: Final = TEMPLATE_DIR / "minimal"
@@ -54,11 +54,15 @@ def template_context(
     """Return the placeholder values for domain ``name``; validates the names."""
     if not _SNAKE_NAME.fullmatch(name) or keyword.iskeyword(name):
         raise CommandError(f"{name!r} is not a valid snake_case package name.")
-    aggregate = aggregate or camel_case(name)
+    aggregate = aggregate or camel_case(singular_of(name))
     if not _CLASS_NAME.fullmatch(aggregate):
         raise CommandError(f"{aggregate!r} is not a valid CamelCase class name.")
     aggregate_snake = snake_case(aggregate)
-    aggregates = plural or pluralize(aggregate_snake)
+    aggregates = plural or plural_of(aggregate_snake)
+    if plural is None and aggregates == aggregate_snake:
+        raise CommandError(
+            f"{aggregate} reads as a plural: name the aggregate in the singular."
+        )
     if not _SNAKE_NAME.fullmatch(aggregates) or aggregates == aggregate_snake:
         raise CommandError(f"{aggregates!r} is not a valid snake_case plural.")
     return {
@@ -126,7 +130,10 @@ class Command(Generator[NewDomain]):
         parser.add_argument("name", help="snake_case package name, e.g. billing")
         parser.add_argument(
             "--aggregate",
-            help="aggregate root class name (default: the CamelCase domain name)",
+            help=(
+                "aggregate root class name (default: the CamelCase domain name, "
+                "in the singular)"
+            ),
         )
         parser.add_argument(
             "--plural", help="snake_case plural of the aggregate, for tables and URLs"

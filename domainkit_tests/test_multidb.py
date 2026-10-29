@@ -177,8 +177,11 @@ def test_migrate_moves_every_target(two_targets: Path) -> None:
 
 
 def test_missing_migrations_name_their_target(two_targets: Path) -> None:
-    """--check reports which target lacks a revision."""
-    with pytest.raises(CommandError, match="Model changes have no migration: default"):
+    """--check reports which target lacks a revision, each in turn."""
+    with pytest.raises(
+        CommandError,
+        match=r"^Model changes have no migration: default: .+; reports: .+$",
+    ):
         run("makemigrations", "--check")
     assert run("makemigrations", "--merge") == "Nothing to merge.\n"
 
@@ -205,6 +208,28 @@ def test_a_shard_group_shares_one_history(sharded: Path) -> None:
     assert run("migrate", "--database", "shard_b").splitlines() == [
         "Database 'shard_b' is at head."
     ]
+
+
+def test_a_group_of_one_database_names_it_in_showmigrations(
+    tmp_path: Path, make_database: MakeDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--database`` names a group: its database is named, even alone."""
+    monkeypatch.setattr(migrations_module, "metadata", schema)
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, MESSAGING],
+        DATABASES={
+            "default": {"URL": make_database("default")},
+            "shard_a": {"URL": make_database("shard_a")},
+        },
+        SHARDS={"tenants": {"DATABASES": ["shard_a"], "BUCKETS": 16}},
+        DATABASE_ROUTING={"alpha": "tenants"},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+    ):
+        setup()
+        assert run("showmigrations", "--database", "tenants") == (
+            "shard_a:\nNo migrations.\n"
+        )
+        assert run("showmigrations", "--database", "shard_a") == "No migrations.\n"
 
 
 def test_shard_groups_migrate_one_database_at_a_time(sharded: Path) -> None:

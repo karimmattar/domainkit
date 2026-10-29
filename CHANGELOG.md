@@ -112,12 +112,93 @@ and a status.
   each object from the inside out, so each checks what it holds. Fixtures
   written by 0.11 and 0.12 load (DATA-12).
 - `makemigrations` wrote a revision that failed with `NameError` for a
-  single-field value object around another, or around a `Decimal` or a
-  `datetime`: Alembic rendered the column type as
+  single-field value object around another (0.12.1 fixed one around a
+  `Decimal` or a `datetime`): Alembic rendered the column type as
   `domainkit.db.derive.ValueObjectType(...)`, naming classes the revision
   does not import. It renders the type the column stores, as for a plain
   column (`sa.String(length=20)`, `sa.Numeric(precision=12, scale=2)`)
   (DATA-12).
+
+## [0.12.1] - 2026-10-29
+
+A patch release: fixes on SQLite (savepoints and `lock()`), in the
+messaging relay's shutdown, in `loaddata` and `makemigrations` for value
+objects, and in the generators' English; CI's mutation check of a pull
+request finishes on a large one. Nothing a project relies on changes.
+
+### Fixed
+
+- On SQLite, a unit of work whose first statement is a savepoint (an
+  atomic `batch_route`, or a service that opens `uow.savepoint()` before
+  anything else) now begins its transaction first. Before, the
+  savepoint's release committed it: an atomic batch that lost a race at
+  its commit had written already, and wrote again when it ran again, and
+  work left uncommitted kept what the savepoint had written. PostgreSQL
+  was not affected (FIN-78).
+- A publisher or relay cancelled as its lease of messages commits (a
+  shutdown) now gives that lease back. The driver could commit it after
+  the relay was cut off, and the messages then stayed locked until the
+  lease ran out, past the shutdown that was to unlock them (CONC-05).
+- `makemigrations` wrote a revision that failed with `NameError` when it
+  ran, for a table with a one-field value object around a `Decimal` or a
+  `datetime` (`Code(value: Annotated[Decimal, Digits(6, 3)])`): it named
+  `domainkit.db.derive.ValueObjectType(Code, ExactDecimal(...))`, which the
+  revision never imports. Such a column is now written as what it stores
+  (`sa.Numeric(precision=6, scale=3)`, `sa.DateTime(timezone=True)`), as
+  `docs/databases.md` says. A revision already written by hand is not
+  changed.
+- `loaddata` dropped a column from every row of a table after the first,
+  when the first row left it out, and said it loaded them: `{"id": 1}`
+  then `{"id": 2, "day": "2026-10-29"}` stored the second row's `day` as
+  null. The other way round, a first row naming a column a later row
+  leaves out, failed the load with SQLAlchemy's `InvalidRequestError`.
+  `dumpdata` writes every column, so only hand-written fixtures met it.
+  Each row is now written with the columns it names, rows in order; a
+  fixture whose rows all name the same columns is written in as many
+  statements as before (ADR 0100's amendment).
+- `docs/auth/authentication.md` said a request's cached user keeps the
+  password hash while `request.user.password` is deprecated. It was
+  removed in 0.10, and nothing keeps the hash.
+- `addcommand` named an event with `-ed` added to the verb, whatever the
+  verb: `PayOrder` recorded `OrderPayed`, `ShipOrder` `OrderShiped`, and
+  `CheckInGuest` `GuestCheckIned`. It uses the verb's past participle: the
+  common irregular verbs (`OrderPaid`, `OrderSent`, `OrderSold`), with a
+  prefix too (`OrderResent`); a last consonant doubled where English
+  doubles it (`OrderShipped`, `OrderSubmitted`); a phrasal verb's particle
+  kept last (`GuestCheckedIn`). A regular verb's event keeps its name
+  (`ProductPublished`, `OrderCanceled`); `--event` still names any other.
+- CI's `mutation (changed)` check could not finish a release-size pull
+  request: on 0.12's (3,247 mutants) it stopped at its 45-minute limit
+  with 1,311 mutants never reached. It runs what it can in 40 minutes, as
+  before, and a typical pull request still finishes there; what is left
+  goes to shards (`mutation (changed, N)`), balanced by the time of their
+  tests, which reuse its saved stats instead of running the whole suite
+  again, and `mutation (changed, summary)` fails when a mutant lived or
+  was never checked, and lists them. None is a required check. A
+  mutation run that fails before its mutants, as the weekly `auth-4`
+  shard did once, said only "failed to collect stats": mutmut runs the
+  suite in a child whose output it never shows. Every mutation job now
+  prints the test that was running and what failed (TEST-02; ADR 0106).
+- The generators pluralized a plural again: `startdomain notes` wrote the
+  aggregate `Notes`, its repository `noteses`, and the table
+  `notes_noteses`. A domain named in the plural gets its aggregate in the
+  singular (`Note`, `notes`, `notes_notes`; `order_lines` gets
+  `OrderLine`), and an aggregate named in the plural (`startaggregate shop
+  Notes`) is refused, naming the fix, where it wrote `noteses`. Every other
+  name is unchanged, and `--aggregate` and `--plural` still name them. A
+  resource's default plural, in its operation ids and the admin's paths,
+  is unchanged.
+
+### Security
+
+- On SQLite, `uow.lock(name)` inside a savepoint, or after one rolled
+  back, took no write lock: it returned at once, so two units of work
+  could both go past the same lock, and do twice what it guarded outside
+  the database. The transaction a first savepoint begins now takes the
+  write lock (`BEGIN IMMEDIATE`), so the lock is held. Work that starts
+  with a savepoint now runs one at a time with other writers, and one
+  that reads, then writes, waits for another writer instead of failing
+  with "database is locked". PostgreSQL was not affected (SEC-121-1).
 
 ## [0.12.0] - 2026-10-28
 
@@ -4098,7 +4179,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/karimmattar/domainkit/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/karimmattar/domainkit/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.11.1

@@ -551,7 +551,11 @@ def test_services_that_never_load_the_item_cannot_take_if_match(
     client = client_of(resource)
     gadget = next(iter(store.items.values()))
 
-    with pytest.raises(RuntimeError, match="never loaded Gadget"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"^The service never loaded Gadget .+ through its repository, so "
+        r"If-Match could not be checked\.$",
+    ):
         client.post(
             f"{LOCATION}{gadget.id}/touch", headers=as_("changer", **{"If-Match": "*"})
         )

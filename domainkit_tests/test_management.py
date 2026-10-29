@@ -407,8 +407,53 @@ def test_migration_commands(migration_project: Path) -> None:
     assert run("makemigrations", "--check") == "No changes detected.\n"
     assert run("makemigrations") == "No changes detected.\n"
     assert run("migrate", "base", "--downgrade") == "Database 'default' is at base.\n"
-    with pytest.raises(CommandError, match="Can't locate revision"):
-        run("migrate", "nope")
+    with pytest.raises(CommandError, match=r"^Can't locate revision .*'nope'$"):
+        run("migrate", "nope")  # No hint for a revision that is not there.
+
+
+def test_startdomain_reads_its_command_line_as_its_help_says() -> None:
+    """Flags take no value, ``--tests-dir`` is a path, ``--help`` names each.
+
+    The other tests call the command with keywords, past the parser.
+    """
+    parser = startdomain.Command().create_parser("manage.py", "startdomain")
+
+    given = vars(
+        parser.parse_args(["notes", "--tests-dir", "t", "--manual", "--minimal"])
+    )
+    plain = vars(parser.parse_args(["notes"]))
+    shown = " ".join(parser.format_help().split())
+
+    assert given == {
+        "name": "notes",
+        "aggregate": None,
+        "plural": None,
+        "parent": "domains",
+        "tests_dir": Path("t"),
+        "manual": True,
+        "minimal": True,
+    }
+    assert (plain["tests_dir"], plain["manual"], plain["minimal"]) == (
+        None,
+        False,
+        False,
+    )
+    for line in (
+        "name snake_case package name, e.g. billing",
+        (
+            "--aggregate AGGREGATE aggregate root class name (default: the "
+            "CamelCase domain name, in the singular)"
+        ),
+        "--plural PLURAL snake_case plural of the aggregate, for tables and URLs",
+        "--parent PARENT package that holds the domains",
+        "--tests-dir TESTS_DIR directory for the tests (default: tests/<parent path>)",
+        "--manual neither install the domain nor mount its router; print how",
+        (
+            "--minimal a smaller domain: an aggregate with a name, create and "
+            "rename, a table, a resource, two tests"
+        ),
+    ):
+        assert line in shown, line
 
 
 def test_template_context_validates_names() -> None:
@@ -420,13 +465,15 @@ def test_template_context_validates_names() -> None:
         "DOMAIN": "ORDER_LINES",
         "domain_title": "Order Lines",
         "package": "domains.order_lines",
-        "Aggregate": "OrderLines",
-        "aggregate": "order_lines",
-        "model": "orderlines",
-        "aggregates": "order_lineses",
-        "aggregates_title": "order lineses",
-        "table": "order_lines_order_lineses",
+        "Aggregate": "OrderLine",
+        "aggregate": "order_line",
+        "model": "orderline",
+        "aggregates": "order_lines",
+        "aggregates_title": "order lines",
+        "table": "order_lines_order_lines",
     }
+    catalog = startdomain.template_context("catalog", "domains", None, None)
+    assert (catalog["Aggregate"], catalog["aggregates"]) == ("Catalog", "catalogs")
     assert (
         startdomain.template_context("shop", "d", "Box", None)["aggregates"] == "boxes"
     )
@@ -436,6 +483,12 @@ def test_template_context_validates_names() -> None:
         ("class", None, None, "'class' is not a valid snake_case package name."),
         ("shop", "box", None, "'box' is not a valid CamelCase class name."),
         ("shop", "Box", "box", "'box' is not a valid snake_case plural."),
+        (
+            "notes",
+            "Notes",
+            None,
+            "Notes reads as a plural: name the aggregate in the singular.",
+        ),
         ("shop", "Box", "Bad-Plural", "'Bad-Plural' is not a valid snake_case plural."),
     ]:
         with pytest.raises(CommandError) as refused:
@@ -656,7 +709,9 @@ def test_branches_must_be_merged(migration_project: Path) -> None:
 
     with pytest.raises(CommandError, match=r"2 heads \(0002_aaaa, 0002_bbbb\)"):
         run("check")
-    with pytest.raises(CommandError, match="makemigrations --merge"):
+    with pytest.raises(
+        CommandError, match=r"heads Run 'manage\.py makemigrations --merge' first\.$"
+    ):
         run("migrate")
     with pytest.raises(CommandError) as unmerged:
         run("makemigrations")
@@ -689,7 +744,11 @@ def test_downgrades_need_consent_in_deployments(
         run("migrate")
 
         with override_settings(ENVIRONMENT="staging"):
-            with pytest.raises(CommandError, match="--allow-data-loss"):
+            with pytest.raises(
+                CommandError,
+                match=r"^Downgrading in staging can drop data; repeat with "
+                r"--allow-data-loss after taking a backup\.$",
+            ):
                 run("migrate", "base", downgrade=True)
             assert run("migrate", "base", downgrade=True, allow_data_loss=True) == (
                 "Database 'default' is at base.\n"
