@@ -689,6 +689,7 @@ REGULAR_VERBS = [
         ("CheckIn", "CheckedIn"),
         ("LogOut", "LoggedOut"),
         ("PayOut", "PaidOut"),
+        ("Back", "Backed"),
         ("SyncAPI", "SyncAPIed"),
         ("BulkShip", "BulkShipped"),
         ("payOut", "paidOut"),

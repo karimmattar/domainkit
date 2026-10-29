@@ -84,6 +84,7 @@ def test_pluralize(word: str, plural: str) -> None:
         ("matches", "match"),
         ("dishes", "dish"),
         ("statuses", "status"),
+        ("user_statuses", "user_status"),
         ("aliases", "alias"),
         ("houses", "house"),
         ("sizes", "size"),
@@ -110,6 +111,8 @@ def test_a_plural_is_its_own_plural_and_has_a_singular(
     "word",
     [
         "status",
+        "focus",
+        "bad_news",
         "class",
         "analysis",
         "bus",
