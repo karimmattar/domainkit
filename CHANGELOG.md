@@ -28,6 +28,9 @@ and a status.
   Each row is now written with the columns it names, rows in order; a
   fixture whose rows all name the same columns is written in as many
   statements as before.
+- `docs/auth/authentication.md` said a request's cached user keeps the
+  password hash while `request.user.password` is deprecated. It was
+  removed in 0.10, and nothing keeps the hash.
 
 ## [0.12.0] - 2026-10-28
 
