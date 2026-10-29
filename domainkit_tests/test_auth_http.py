@@ -1031,18 +1031,25 @@ def test_changepassword_ends_every_session(
     assert stored_tokens(alice_id) == []
 
 
-def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) -> None:
-    """Access tokens are signed; refresh tokens rotate, once each."""
+def refresh(client: TestClient, token: str) -> Any:  # noqa: ANN401 - a response.
+    """Exchange the refresh ``token`` for new tokens."""
+    return client.post("/auth/refresh", json={"refresh_token": token})
+
+
+def test_jwt_logins_answer_a_signed_access_token_and_a_refresh_token(
+    api: Api,
+) -> None:
+    """A JWT of 300 seconds that names the user; a stored refresh token, 14 days."""
     alice = create_user("alice")
     client = api(**JWT)
+
     body = login(client, "alice")
 
     assert set(body) == {"access_token", "token_type", "expires_in", "refresh_token"}
     assert body["access_token"].count(".") == 2
     assert body["expires_in"] == 300
     assert body["refresh_token"].startswith("dkt_")
-    headers = bearer(body["access_token"])
-    assert client.get("/whoami", headers=headers).json() == {
+    assert client.get("/whoami", headers=bearer(body["access_token"])).json() == {
         "user": "alice",
         "actor": str(alice),
         "scheme": "jwt",
@@ -1050,9 +1057,17 @@ def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) 
     (issued,) = stored_tokens(alice)
     assert (issued["kind"], issued["name"]) == ("refresh", "login")
     assert issued["expires_at"] - issued["created_at"] == timedelta(days=14)
-    refreshed = client.post(
-        "/auth/refresh", json={"refresh_token": body["refresh_token"]}
-    ).json()
+
+
+def test_a_refresh_token_rotates_within_its_login(api: Api) -> None:
+    """Each refresh gives a new one, of the same login and expiry, that refreshes."""
+    alice = create_user("alice")
+    client = api(**JWT)
+    body = login(client, "alice")
+    (issued,) = stored_tokens(alice)
+
+    refreshed = refresh(client, body["refresh_token"]).json()
+
     assert refreshed["refresh_token"] != body["refresh_token"]
     unused = [row for row in stored_tokens(alice) if row["used_at"] is None]
     assert [(row["kind"], row["name"]) for row in unused] == [("refresh", "login")]
@@ -1061,19 +1076,24 @@ def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) 
         issued["expires_at"],
     )
     # The new refresh token refreshes in turn; the chain is one login.
-    chained = client.post(
-        "/auth/refresh", json={"refresh_token": refreshed["refresh_token"]}
-    ).json()
-    refreshed = {**chained, "refresh_token": chained["refresh_token"]}
-    assert (
-        client.get("/private", headers=bearer(refreshed["access_token"])).status_code
-        == 200
-    )
+    chained = refresh(client, refreshed["refresh_token"]).json()
+    private = client.get("/private", headers=bearer(chained["access_token"]))
+    assert private.status_code == 200
+
+
+def test_a_refresh_token_used_twice_ends_its_login(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """401, a security log line and an audit record; every token of it then fails."""
+    alice = create_user("alice")
+    client = api(**JWT)
+    body = login(client, "alice")
+    (issued,) = stored_tokens(alice)
+    refreshed = refresh(client, body["refresh_token"]).json()
 
     with caplog.at_level(logging.WARNING, logger=SECURITY_LOGGER):
-        reused = client.post(
-            "/auth/refresh", json={"refresh_token": body["refresh_token"]}
-        )
+        reused = refresh(client, body["refresh_token"])
+
     assert (reused.status_code, reused.json()["detail"]) == (
         401,
         "Refresh token reused; log in again.",
@@ -1090,25 +1110,23 @@ def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) 
     for token in (body["access_token"], refreshed["access_token"]):
         ended = client.get("/whoami", headers=bearer(token))
         assert ended.json()["detail"] == "Session ended; log in again."
-    rotated = client.post(
-        "/auth/refresh", json={"refresh_token": refreshed["refresh_token"]}
-    )
+    rotated = refresh(client, refreshed["refresh_token"])
     assert rotated.json()["detail"] == "Invalid refresh token."
 
-    again = login(client, "alice")
-    assert (
-        client.post("/auth/logout", headers=bearer(again["access_token"])).status_code
-        == 204
+
+def test_logging_out_ends_the_access_and_the_refresh_token(api: Api) -> None:
+    """After ``/auth/logout`` neither token of that login is accepted."""
+    create_user("alice")
+    client = api(**JWT)
+    body = login(client, "alice")
+
+    out = client.post("/auth/logout", headers=bearer(body["access_token"]))
+
+    assert out.status_code == 204
+    assert client.get("/whoami", headers=bearer(body["access_token"])).status_code == (
+        401
     )
-    assert (
-        client.get("/whoami", headers=bearer(again["access_token"])).status_code == 401
-    )
-    assert (
-        client.post(
-            "/auth/refresh", json={"refresh_token": again["refresh_token"]}
-        ).status_code
-        == 401
-    )
+    assert refresh(client, body["refresh_token"]).status_code == 401
 
 
 def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
