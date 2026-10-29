@@ -6,11 +6,13 @@ caller's scope, may the caller act on it, is it the parent's.
 """
 
 import json
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import Request
+from fastapi.testclient import TestClient
 from starlette.requests import HTTPConnection
 
 from domainkit.contrib.auth import AnyUser
@@ -297,10 +299,32 @@ def nested_store(store: InMemoryGadgets) -> tuple[Any, Review, Review]:
     return Reviews, mine, theirs
 
 
-def test_nested_routes_keep_to_their_parent_and_link_to_it(
-    store: InMemoryGadgets, use_auth: UseAuth
-) -> None:
-    """Generic writes, queries, batches, and exports under a parent, with links."""
+@dataclass(frozen=True)
+class Nested:
+    """Reviews nested under gadgets, the caller's and another's."""
+
+    client: TestClient
+    store: InMemoryGadgets
+    mine: Review
+    theirs: Review
+
+    @property
+    def base(self) -> str:
+        """The reviews of the caller's gadget."""
+        return f"/gadgets/{self.mine.gadget}/reviews"
+
+    @property
+    def links(self) -> dict[str, str]:
+        """The links of the caller's review."""
+        return {
+            "self": f"{self.base}/{self.mine.id}",
+            "parent": f"/gadgets/{self.mine.gadget}",
+        }
+
+
+@pytest.fixture
+def nested(store: InMemoryGadgets, use_auth: UseAuth) -> Nested:
+    """Generic writes, queries, batches, and exports of reviews, under a gadget."""
     use_auth()
     reviews_uow, mine, theirs = nested_store(store)
     parent = gadgets(store, scope=hide_b)
@@ -319,7 +343,14 @@ def test_nested_routes_keep_to_their_parent_and_link_to_it(
                 (F("gadget") == query.gadget) & (F("text") == query.text)
             )
 
-    nested = ResourceRouter(
+    async def write(command: WriteReview, uow: Any) -> Review:  # noqa: ANN401 - the unit.
+        review = Review(id=uuid4(), gadget=GadgetId(command.gadget), text=command.text)
+        async with uow:
+            await uow.reviews.add(review)
+            await uow.commit()
+        return review
+
+    router = ResourceRouter(
         "/reviews",
         model=Review,
         unit_of_work=reviews_uow,
@@ -332,67 +363,128 @@ def test_nested_routes_keep_to_their_parent_and_link_to_it(
         writable=ALL_FIELDS,
         exports=("ndjson",),
     )
-    nested.command_route(PolishReview, service=polish, path="/polish")
-    nested.query_route(ReviewAgain, handler=again, path="/again")
-    nested.query_route(ReviewsBy, handler=by_text, path="/by-text")
-    nested.batch_route(PolishReview, service=polish, path="/polish-all")
+    router.command_route(PolishReview, service=polish, path="/polish")
+    router.query_route(ReviewAgain, handler=again, path="/again")
+    router.query_route(ReviewsBy, handler=by_text, path="/by-text")
+    router.batch_route(PolishReview, service=polish, path="/polish-all")
+    router.batch_route(WriteReview, service=write, body=ReviewIn, path="/write-all")
+    return Nested(client_of(parent, router), store, mine, theirs)
 
-    async def write(command: WriteReview, uow: Any) -> Review:  # noqa: ANN401 - the unit.
-        review = Review(id=uuid4(), gadget=GadgetId(command.gadget), text=command.text)
-        async with uow:
-            await uow.reviews.add(review)
-            await uow.commit()
-        return review
 
-    nested.batch_route(WriteReview, service=write, body=ReviewIn, path="/write-all")
-    client = client_of(parent, nested)
-    gadget = mine.gadget
-    base = f"/gadgets/{gadget}/reviews"
-    viewer = as_("root")
+def test_a_nested_create_takes_its_parent_from_the_path(nested: Nested) -> None:
+    """201, a location under the parent, and a link to it."""
+    created = nested.client.post(nested.base, json={"text": "new"}, headers=as_("root"))
 
-    created = client.post(base, json={"text": "new"}, headers=viewer)
-    moved = client.post(
-        base, json={"gadget": str(theirs.gadget), "text": "x"}, headers=viewer
-    )
-    moving = client.patch(
-        f"{base}/{mine.id}", json={"gadget": str(theirs.gadget)}, headers=viewer
-    )
-    item = created.headers["location"]
-    patched = client.patch(item, json={"text": "newer"}, headers=viewer)
-    polished = client.post(f"{base}/{mine.id}/polish", headers=viewer)
-    foreign = client.post(f"{base}/{theirs.id}/polish", headers=viewer)
-    one = client.get(f"{base}/{mine.id}/again", headers=viewer)
-    found = client.get(f"{base}/by-text", params={"text": "good"}, headers=viewer)
-    batch = client.post(
-        f"{base}/polish-all",
-        json={"items": [{"review_id": str(mine.id)}, {"review_id": str(theirs.id)}]},
-        headers=viewer,
-    )
-    written = client.post(
-        f"{base}/write-all", json={"items": [{"text": "many"}]}, headers=viewer
-    )
-    lines = client.get(base, headers=as_("root", Accept="application/x-ndjson"))
-    hidden_parent = client.get(f"/gadgets/{ids(store)['b']}/reviews", headers=viewer)
+    assert created.status_code == 201
+    assert created.headers["location"].startswith(f"{nested.base}/")
+    assert created.json()["links"]["parent"] == f"/gadgets/{nested.mine.gadget}"
+    assert created.json()["gadget"] == str(nested.mine.gadget)
 
-    links = {"self": f"{base}/{mine.id}", "parent": f"/gadgets/{gadget}"}
-    assert (created.status_code, item.startswith(f"{base}/")) == (201, True)
-    assert created.json()["links"]["parent"] == f"/gadgets/{gadget}"
-    assert created.json()["gadget"] == str(gadget)
+
+def test_a_nested_item_never_moves_to_another_parent(nested: Nested) -> None:
+    """Creating or changing it with another parent's id is refused with 422."""
+    gadget = nested.mine.gadget
+    elsewhere = {"gadget": str(nested.theirs.gadget)}
+
+    moved = nested.client.post(
+        nested.base, json={**elsewhere, "text": "x"}, headers=as_("root")
+    )
+    moving = nested.client.patch(
+        f"{nested.base}/{nested.mine.id}", json=elsewhere, headers=as_("root")
+    )
+
     assert (moved.status_code, moving.status_code) == (422, 422)
-    assert mine.gadget == gadget
+    assert nested.mine.gadget == gadget
+
+
+def test_a_nested_change_links_to_the_item_it_changed(nested: Nested) -> None:
+    """A PATCH of a review made through the route answers it at its location."""
+    item = nested.client.post(
+        nested.base, json={"text": "new"}, headers=as_("root")
+    ).headers["location"]
+
+    patched = nested.client.patch(item, json={"text": "newer"}, headers=as_("root"))
+
     assert (patched.status_code, patched.json()["links"]["self"]) == (200, item)
-    assert (polished.json()["links"], foreign.status_code) == (links, 404)
-    assert one.json()["links"] == links
-    assert [each["links"] for each in found.json()["items"]] == [links]
-    assert [each["status"] for each in batch.json()["results"]] == [200, 404]
-    assert batch.json()["results"][0]["item"]["links"] == links
-    assert "location" not in batch.json()["results"][0]
+
+
+def test_a_nested_command_reaches_only_its_parents_items(nested: Nested) -> None:
+    """The caller's review answers with its links; another gadget's is 404."""
+    polished = nested.client.post(
+        f"{nested.base}/{nested.mine.id}/polish", headers=as_("root")
+    )
+    foreign = nested.client.post(
+        f"{nested.base}/{nested.theirs.id}/polish", headers=as_("root")
+    )
+
+    assert polished.json()["links"] == nested.links
+    assert foreign.status_code == 404
+
+
+def test_nested_queries_link_what_they_find(nested: Nested) -> None:
+    """A query of one review, and one of many, link each to itself and its parent."""
+    one = nested.client.get(
+        f"{nested.base}/{nested.mine.id}/again", headers=as_("root")
+    )
+    found = nested.client.get(
+        f"{nested.base}/by-text", params={"text": "good"}, headers=as_("root")
+    )
+
+    assert one.json()["links"] == nested.links
+    assert [each["links"] for each in found.json()["items"]] == [nested.links]
+
+
+def test_a_nested_batch_reaches_only_its_parents_items(nested: Nested) -> None:
+    """Each item answers for itself: the caller's 200 with links, another's 404."""
+    batch = nested.client.post(
+        f"{nested.base}/polish-all",
+        json={
+            "items": [
+                {"review_id": str(nested.mine.id)},
+                {"review_id": str(nested.theirs.id)},
+            ]
+        },
+        headers=as_("root"),
+    )
+
+    results = batch.json()["results"]
+    assert [each["status"] for each in results] == [200, 404]
+    assert results[0]["item"]["links"] == nested.links
+    assert "location" not in results[0]
+
+
+def test_a_nested_batch_of_creates_gives_each_its_parent_and_location(
+    nested: Nested,
+) -> None:
+    """201, the parent from the path, and the item's location under it."""
+    written = nested.client.post(
+        f"{nested.base}/write-all",
+        json={"items": [{"text": "many"}]},
+        headers=as_("root"),
+    )
+
     (made,) = written.json()["results"]
-    assert (made["status"], made["item"]["gadget"]) == (201, str(gadget))
-    assert made["location"] == f"{base}/{made['item']['id']}"
+    assert (made["status"], made["item"]["gadget"]) == (201, str(nested.mine.gadget))
+    assert made["location"] == f"{nested.base}/{made['item']['id']}"
+
+
+def test_a_nested_export_links_each_line(nested: Nested) -> None:
+    """NDJSON lines carry the same links as the items."""
+    lines = nested.client.get(
+        nested.base, headers=as_("root", Accept="application/x-ndjson")
+    )
+
     exported = [json.loads(line) for line in lines.text.splitlines()]
-    assert links in [each["links"] for each in exported]
-    assert hidden_parent.status_code == 404
+    assert nested.links in [each["links"] for each in exported]
+
+
+def test_the_items_of_a_hidden_parent_are_not_found(nested: Nested) -> None:
+    """A parent the caller cannot reach hides its items' list too: 404."""
+    hidden = nested.client.get(
+        f"/gadgets/{ids(nested.store)['b']}/reviews", headers=as_("root")
+    )
+
+    assert hidden.status_code == 404
 
 
 class Undocumented(Command):  # noqa: D101 - none, on purpose.
