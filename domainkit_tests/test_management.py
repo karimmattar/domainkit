@@ -407,8 +407,8 @@ def test_migration_commands(migration_project: Path) -> None:
     assert run("makemigrations", "--check") == "No changes detected.\n"
     assert run("makemigrations") == "No changes detected.\n"
     assert run("migrate", "base", "--downgrade") == "Database 'default' is at base.\n"
-    with pytest.raises(CommandError, match="Can't locate revision"):
-        run("migrate", "nope")
+    with pytest.raises(CommandError, match=r"^Can't locate revision .*'nope'$"):
+        run("migrate", "nope")  # No hint for a revision that is not there.
 
 
 def test_startdomain_reads_its_command_line_as_its_help_says() -> None:
@@ -709,7 +709,9 @@ def test_branches_must_be_merged(migration_project: Path) -> None:
 
     with pytest.raises(CommandError, match=r"2 heads \(0002_aaaa, 0002_bbbb\)"):
         run("check")
-    with pytest.raises(CommandError, match="makemigrations --merge"):
+    with pytest.raises(
+        CommandError, match=r"heads Run 'manage\.py makemigrations --merge' first\.$"
+    ):
         run("migrate")
     with pytest.raises(CommandError) as unmerged:
         run("makemigrations")
@@ -742,7 +744,11 @@ def test_downgrades_need_consent_in_deployments(
         run("migrate")
 
         with override_settings(ENVIRONMENT="staging"):
-            with pytest.raises(CommandError, match="--allow-data-loss"):
+            with pytest.raises(
+                CommandError,
+                match=r"^Downgrading in staging can drop data; repeat with "
+                r"--allow-data-loss after taking a backup\.$",
+            ):
                 run("migrate", "base", downgrade=True)
             assert run("migrate", "base", downgrade=True, allow_data_loss=True) == (
                 "Database 'default' is at base.\n"
