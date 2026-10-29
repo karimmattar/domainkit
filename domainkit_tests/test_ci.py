@@ -639,15 +639,13 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
         assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
 
 
-def test_releases_publish_only_attested_files() -> None:
+def test_the_run_that_builds_the_files_attests_them() -> None:
     """Provenance for the wheel and sdist, the bill of materials for the wheel.
 
     The run that built them attests them, so the provenance names it
     (ci.yml, on a push to main), not the release that only downloads them.
     Only that job, which checks out nothing, may mint an OIDC token or write
-    attestations, and never for a pull request. The release checks both
-    attestations of every file it publishes, signed by ci.yml on main at
-    the tagged commit, before publishing.
+    attestations, and never for a pull request.
     """
     attest = jobs()["attest"]
     assert attest["permissions"] == {
@@ -671,6 +669,14 @@ def test_releases_publish_only_attested_files() -> None:
         {"subject-path": "dist/*"},
         {"subject-path": "dist/*.whl", "sbom-path": "sbom/sbom.cdx.json"},
     ]
+
+
+def test_releases_publish_only_attested_files() -> None:
+    """The release checks both attestations of every file before publishing.
+
+    Signed by ci.yml on main at the tagged commit; the release attests
+    nothing itself.
+    """
     release = jobs("release.yml")
     assert "attest" not in release
     assert set(release["publish"]["needs"]) == {"ci", "audit"}
@@ -696,11 +702,17 @@ def test_releases_publish_only_attested_files() -> None:
     ):
         assert option in script, option
     assert check["env"]["SHA"] == "${{ github.sha }}"
+
+
+def test_the_bill_of_materials_is_one_attest_takes() -> None:
+    """A CycloneDX JSON document of the built wheel, uploaded as ``sbom``.
+
+    actions/attest takes a CycloneDX document only with a bomFormat, a
+    specVersion and a serialNumber, which --output-reproducible leaves out:
+    v0.9.2's release failed there.
+    """
     sbom = jobs()["sbom"]
     assert "build" in needs(sbom)
-    # actions/attest takes a CycloneDX document only with a bomFormat, a
-    # specVersion and a serialNumber, which --output-reproducible leaves out:
-    # v0.9.2's release failed there.
     written = next(
         step["run"] for step in sbom["steps"] if "cyclonedx-py" in step.get("run", "")
     )
