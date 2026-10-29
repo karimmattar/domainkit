@@ -1,7 +1,7 @@
 """The auth tables: user columns (Django's lengths) and password hashes."""
 
-from sqlalchemy import Column, MetaData, Table
-from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy import Column, MetaData, Table, make_url
+from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateTable
 
 from domainkit.contrib.auth import PasswordHash
@@ -66,7 +66,8 @@ def test_a_projects_user_table_refuses_taken_usernames_and_starts_unverified() -
     """
     columns = {column.name: column for column in abstract_user_columns()}
     table = Table("shop_users", MetaData(), *columns.values())
-    ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
+    postgres = make_url("postgresql+asyncpg://").get_dialect()()
+    ddl = str(CreateTable(table).compile(dialect=postgres))
 
     assert columns["username"].info == {"duplicate": UsernameTaken}
     assert "email_verified BOOLEAN DEFAULT false NOT NULL" in ddl
