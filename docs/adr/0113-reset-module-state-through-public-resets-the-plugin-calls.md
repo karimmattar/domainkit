@@ -52,9 +52,14 @@ the run.
   `domainkit.http.metrics.refreshers_kept()` (context managers that put
   the registrations back when the block ends).
 - The plugin calls them from its `pytest_runtest_protocol` hook: before
-  each test, the throttled logs and the principal cache forget; around it,
-  once `registry.ready`, the registrations are kept. Modules not imported
-  are passed over.
+  each test, the throttled logs, the principal cache, memory ledgers
+  (`LedgerHandler.reset()`), and storages (`storages.reset()`) forget;
+  the registrations are kept from the start of the test if the domains
+  are loaded then, or else from the start of its call (`pytest_runtest_call`),
+  once its fixtures loaded them, and put back after its teardown. A test
+  whose body loads the domains keeps what it registers: its registrations
+  cannot be told from `ready()`'s (SEC-13b-2). Modules not imported are
+  passed over.
 - `docs/testing.md` lists what each test starts from, and the reset
   behind each line. The repository's conftest uses the same names.
 

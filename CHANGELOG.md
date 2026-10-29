@@ -65,6 +65,24 @@ and a status.
   in the pytest settings. It costs a test nothing measurable (ADR 0112)
   (TEST-08).
 
+### Security
+
+- `live_server` no longer leaves `127.0.0.1` in `ALLOWED_HOSTS` after a
+  test that also changed a setting through the `settings` fixture: the
+  host now goes through that fixture's own changes, which are undone in
+  reverse order. Before, every later test, and its application, accepted
+  `Host: 127.0.0.1` (SEC-13b-1).
+- The first test whose fixtures load the domains (a client, `db`) no
+  longer keeps the handlers and tasks its body registers for every later
+  test: the plugin keeps the registrations from the start of the test's
+  call. What `ready()` registered stays (SEC-13b-2).
+- Memory ledgers (`memory://`) and memory storages start empty in every
+  test, through the new `LedgerHandler.reset()` and `storages.reset()`;
+  a later test's `customer:1` met an earlier test's evidence, as the
+  databases' ids start again after `db`. `LiveServer`'s thread is a
+  daemon, and stopping cancels requests still open after `stop_seconds`
+  (SEC-13b-3).
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when

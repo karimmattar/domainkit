@@ -8,6 +8,8 @@ this repository's conftest reached into private names to undo it.
 import logging
 import sys
 from collections.abc import Iterator
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -23,6 +25,8 @@ from domainkit.contrib.messaging import task, tasks_kept
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import metrics
 from domainkit.http.metrics import refreshers_kept
+from domainkit.ledger import Ledger, MemoryLedger
+from domainkit.ledger.handler import LedgerHandler
 from domainkit.log import ThrottledLog, reset_throttled
 from domainkit.testing import IN_MEMORY
 from domainkit_tests.conftest import MIDDLEWARE
@@ -92,7 +96,13 @@ def test_a_test_s_subscriptions_tasks_and_refreshers_end_with_it(
 def test_registrations_made_by_the_first_setup_stay(
     prefix: str, pytester: pytest.Pytester
 ) -> None:
-    """A test that loads the domains keeps what their ``ready()`` registered."""
+    """A test whose body loads the domains keeps what their ``ready()`` registered.
+
+    Intended: what its body registers cannot be told from what ``ready()``
+    did, and dropping both would leave every later test without the
+    domains' handlers. A test whose fixtures load them is kept from its
+    call on (``test_sec13b_2_first_test_keeps.py``).
+    """
     pytester.makepyfile(
         test_setup="""
         from domainkit import setup
@@ -234,3 +244,22 @@ def test_each_reset_puts_back_what_the_block_changed(
     reset_throttled()
     throttled.flush()
     assert caplog.messages == []
+
+
+def test_a_ledger_reset_forgets_memory_ledgers_only() -> None:
+    """Memory ledgers start empty again; one holding connections stays open."""
+    made: list[Ledger] = []
+
+    def make(config: object) -> Ledger:
+        remote = cast("Ledger", SimpleNamespace())  # Stands for immudb's.
+        made.append(MemoryLedger() if not made else remote)
+        return made[-1]
+
+    handler = LedgerHandler({"memory": make})
+    with override_settings(
+        LEDGERS={"evidence": {"URL": "memory://"}, "remote": {"URL": "memory://"}}
+    ):
+        memory, remote = handler["evidence"], handler["remote"]
+        handler.reset()
+        assert handler["remote"] is remote
+        assert handler["evidence"] is not memory
