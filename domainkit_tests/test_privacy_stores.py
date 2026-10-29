@@ -442,7 +442,8 @@ def test_domains_keep_no_copies_by_default() -> None:
 
     assert not hasattr(DomainConfig, "erase_subject")
     assert not hasattr(DomainConfig, "export_subject")
-    assert on_erase_subject.of("alpha") == on_export_subject.of("alpha") == ()
+    assert on_erase_subject.of("alpha") == ()
+    assert on_export_subject.of("alpha") == ()
 
 
 def test_subject_tags_name_each_subject_once() -> None:

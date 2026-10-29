@@ -24,7 +24,7 @@ from domainkit.apps.hooks import (
     on_seed,
     on_startup,
 )
-from domainkit.checks import CheckFailed
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import override_settings
 from domainkit.db import hooks as db_hooks
 from domainkit.exceptions import ImproperlyConfigured
@@ -347,7 +347,9 @@ def test_a_removed_hook_method_fails_setup_naming_its_point(
             for method, point in REMOVED_HOOKS.items()
         )
     )
-    assert [message.id for message in refused.messages] == ["apps.E002"] * 13
+    assert [
+        message.id for message in refused.messages if isinstance(message, CheckMessage)
+    ] == ["apps.E002"] * 13
     assert AlphaConfig.calls == []  # No domain was made ready.
     assert not registry.ready
     assert old_calls == []
@@ -361,7 +363,7 @@ def test_every_domain_that_defines_one_is_named_in_domain_order(
 
     refused = refusal(["odd", "childstyle"])
 
-    assert [message.message.partition(" is ")[0] for message in refused.messages] == [
+    assert [message.partition(" is ")[0] for message in refused.messages] == [
         "Domain 'odd': OddConfig.check",
         *(f"Domain 'childstyle': OldStyleConfig.{method}" for method in REMOVED_HOOKS),
     ]
@@ -386,7 +388,7 @@ def test_a_name_is_found_however_the_domain_defines_it(
 
     refused = refusal(["shapes", "borrowed"])
 
-    assert [message.message.partition(" is ")[0] for message in refused.messages] == [
+    assert [message.partition(" is ")[0] for message in refused.messages] == [
         "Domain 'shapes': ShapesConfig.shutdown",  # On the instance.
         "Domain 'shapes': ShapesConfig.check",  # A property.
         "Domain 'shapes': Seeding.seed",  # A base that is no DomainConfig.

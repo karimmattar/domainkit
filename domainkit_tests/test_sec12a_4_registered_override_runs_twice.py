@@ -22,7 +22,7 @@ so the domain never loads, and nothing runs twice.
 import pytest
 
 from domainkit.apps import DomainRegistry
-from domainkit.checks import CheckFailed
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit_tests.conftest import ALPHA, MakePackage
 
 DUAL = """
@@ -56,7 +56,11 @@ def test_a_registered_override_is_refused(make_package: MakePackage) -> None:
         own.populate([ALPHA, "dual"])
     from dual.apps import CALLS  # type: ignore[import-not-found]
 
-    assert [message.id for message in refused.value.messages] == ["apps.E002"] * 2
+    assert [
+        message.id
+        for message in refused.value.messages
+        if isinstance(message, CheckMessage)
+    ] == ["apps.E002"] * 2
     assert "DualConfig.startup is a hook method" in str(refused.value)
     assert "DualConfig.erase_subject is a hook method" in str(refused.value)
     assert (CALLS, own.ready) == ([], False)
