@@ -1,6 +1,6 @@
 # 0092. Run units of work again after a lost race, let them choose their isolation, and lock in order
 
-- Status: Accepted; amended 2026-10-28 (at the end)
+- Status: Accepted; amended 2026-10-28 and 2026-10-29 (at the end)
 - Date: 2026-10-26
 
 ## Context
