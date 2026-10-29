@@ -2,13 +2,15 @@
 
 import socket
 import sys
-from collections.abc import AsyncIterator, Iterator
+import threading
+from collections.abc import AsyncIterator, Awaitable, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx2
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from starlette.types import Receive, Scope, Send
 
 # Loaded before pytester takes its snapshot of the loaded modules (see
 # test_testing.py): the routes define tables, Alembic keeps global state.
@@ -130,7 +132,14 @@ def test_a_failed_startup_is_raised_and_frees_the_port(
         yield  # pragma: no cover - never reached.
 
     server = LiveServer(FastAPI(lifespan=broken))
-    with pytest.raises(RuntimeError, match="did not start"), server:
+    with (
+        pytest.raises(
+            RuntimeError,
+            match=r"^The live server did not start: its application's startup "
+            r"failed; uvicorn's log says why\.$",
+        ),
+        server,
+    ):
         pass  # pragma: no cover - never entered.
     assert server.port != 0
     assert "no database" in caplog.text
@@ -145,30 +154,58 @@ def test_the_server_stops_when_the_block_ends() -> None:
         return {"python": sys.version.split()[0]}
 
     server = LiveServer(app)
+    assert server.port == 0  # Until entered.
     server.__exit__(None, None, None)  # Not started: nothing to stop.
     with server:
         assert httpx2.get(server.url).json() == {"python": sys.version.split()[0]}
+        names = [thread.name for thread in threading.enumerate()]
+        assert f"live-server-{server.port}" in names
     with pytest.raises(ConnectionRefusedError):
         socket.create_connection((server.host, server.port)).close()
     server.__exit__(None, None, None)  # Stopped already.
 
 
-def test_an_application_that_takes_any_arguments_is_served() -> None:
-    """The application is named ASGI 3 to uvicorn: nothing is called to guess.
+def test_uvicorn_guesses_nothing_and_adds_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The application is named a factory and ASGI 3: uvicorn calls it only to serve.
 
-    Called with no arguments, as uvicorn does to find a factory, this one
-    returns a coroutine rather than refusing.
+    Called with no arguments, as uvicorn does to find a factory, the first
+    wrapper returns a coroutine rather than refusing; the second is a plain
+    function returning one, which uvicorn would take for ASGI 2. Neither
+    writes access lines of its own, adds its ``Server`` header, or takes a
+    client's ``X-Forwarded-For``: those are the application's.
     """
     app = FastAPI()
 
     @app.get("/")
-    def root() -> dict[str, bool]:
-        return {"served": True}
+    def root(request: Request) -> dict[str, str | None]:
+        return {"client": request.client.host if request.client else None}
 
-    class Wrapped:
+    class AnyArguments:
         async def __call__(self, *args: Any) -> None:  # noqa: ANN401 - ASGI's.
             await app(*args)
 
-    with LiveServer(Wrapped()) as server:  # type: ignore[arg-type]
-        assert httpx2.get(server.url).json() == {"served": True}
-        assert "server" not in httpx2.get(server.url).headers
+    class Plain:
+        def __call__(self, *args: Any) -> Awaitable[None]:  # noqa: ANN401 - ASGI's.
+            return app(*args)
+
+    for wrapped in (AnyArguments(), Plain()):
+        with LiveServer(wrapped) as server:
+            seen = httpx2.get(server.url, headers={"X-Forwarded-For": "203.0.113.9"})
+            assert seen.json() == {"client": "127.0.0.1"}
+            assert "server" not in seen.headers
+    assert [r.name for r in caplog.records if r.name.startswith("uvicorn")] == []
+
+
+def test_a_startup_the_application_does_not_answer_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An application that raises in its lifespan is not served without it."""
+
+    async def raw(scope: Scope, receive: Receive, send: Send) -> None:
+        raise RuntimeError("no lifespan here")
+
+    with pytest.raises(RuntimeError, match="did not start"), LiveServer(raw):
+        pass  # pragma: no cover - never entered.
+    assert "no lifespan here" in caplog.text
