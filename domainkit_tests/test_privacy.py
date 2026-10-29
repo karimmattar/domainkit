@@ -462,24 +462,29 @@ def test_only_types_some_subject_has_are_checked(
 # Erasure ---------------------------------------------------------------------------
 
 
-def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
-    """Fields become None, empty, or unique placeholders; others stay; all audited."""
+def erase_ann(*, times: int = 1) -> list[int]:
+    """Fill the clinic, audit a view of Ann, and erase her ``times``: the counts.
 
-    async def erase() -> tuple[int, int]:
+    The first erasure gives the reason ``ticket 42``; the next ones none.
+    """
+
+    async def erase() -> list[int]:
         await fill()
         await record("clinic.viewed", personal={"name": "Ann"}, subject=str(ANN))
-        first = await erase_subject(str(ANN), reason="ticket 42")
-        again = await erase_subject(str(ANN))
-        return first, again
+        counts = [await erase_subject(str(ANN), reason="ticket 42")]
+        counts += [await erase_subject(str(ANN)) for _ in range(times - 1)]
+        return counts
 
-    first, again = run_async(erase())
+    return run_async(erase())
+
+
+def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
+    """Fields become None or empty, versions go up; others' rows and fields stay."""
+    assert erase_ann() == [8]
+
     patients = run_async(rows_of(tables.patients))
     visits = run_async(rows_of(tables.visits))
     appointments = run_async(rows_of(tables.appointments))
-    cards = run_async(rows_of(tables.cards))
-    badges = run_async(rows_of(tables.badges))
-
-    assert (first, again) == (8, 1)  # The badge erases itself every time.
     assert [(p["name"], p["email"], p["version"]) for p in patients] == [
         ("", None, 2),
         ("Bob", None, 1),
@@ -493,6 +498,13 @@ def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
         ("", "555-0100"),
         ("Bob", None),
     ]
+
+
+def test_unique_personal_fields_get_unique_placeholders(clinic: str) -> None:
+    """Each card's number and code a placeholder of its own, cut to its column."""
+    erase_ann()
+
+    cards = run_async(rows_of(tables.cards))
     numbers = [card["number"] for card in cards]
     assert all(number.startswith(ERASED) for number in numbers)
     assert len(set(numbers)) == 2
@@ -501,9 +513,24 @@ def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
     assert all(code.startswith(ERASED) and len(code) == 16 for code in codes)
     assert len(set(codes)) == 2
     assert [card["nickname"] for card in cards] == ["", ""]
+
+
+def test_an_aggregate_that_erases_itself_is_called_every_time(clinic: str) -> None:
+    """Its own ``erase_personal_data`` runs on each erasure; it keeps ``born_on``."""
+    assert erase_ann(times=2) == [8, 1]
+
+    badges = run_async(rows_of(tables.badges))
     assert [(b["born_on"], b["erased_count"]) for b in badges] == [
         (date(1990, 1, 1), 2)
     ]
+
+
+def test_each_aggregate_erased_is_audited_with_its_fields_and_reason(
+    clinic: str,
+) -> None:
+    """A ``privacy.personal_data_erased`` per aggregate, each naming its model."""
+    erase_ann(times=2)
+
     events = run_async(audited("privacy.personal_data_erased"))
     assert len(events) == 9
     assert {
@@ -526,6 +553,14 @@ def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
         ("patients.card", "2"),
         ("patients.badge", "7"),
     }
+
+
+def test_an_erasure_is_audited_and_forgets_the_subjects_pseudonyms(
+    clinic: str,
+) -> None:
+    """A ``privacy.erase`` per run, with its count and reason; Ann's name unlinked."""
+    erase_ann(times=2)
+
     erasures = run_async(audited("privacy.erase"))
     assert [(row["target"], row["details"]) for row in erasures] == [
         (str(ANN), {"aggregates": 8, "reason": "ticket 42"}),
