@@ -27,7 +27,7 @@ from domainkit.ddd import (
     ValueObject,
 )
 from domainkit.ddd.fields import fields_of, unaliased
-from domainkit.ddd.preconditions import check_expected, expect_version
+from domainkit.ddd.preconditions import check_expected, expect_version, expectation
 from domainkit.ddd.query import F
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.resources import (
@@ -675,3 +675,28 @@ def test_write_schemas_nest_write_schemas_of_children() -> None:
     schema = schema_for(Order, write=True, include=["lines"]).model_json_schema()
 
     assert schema["properties"]["lines"]["items"] == {"$ref": "#/$defs/LineIn"}
+
+
+def test_an_expectation_refuses_what_has_no_id_or_no_version() -> None:
+    """An instance of the model without an id is not the one expected.
+
+    One with the id but no version is at no version the client read: it is
+    refused, as a stale one is, not failed with an ``AttributeError``.
+    """
+
+    class Bare:
+        """A model without the fields of an aggregate."""
+
+        id: int
+
+    expected = expectation(Bare, 1, {1})
+    assert not expected.matches(Bare())
+    unversioned = Bare()
+    unversioned.id = 1
+
+    assert expected.matches(unversioned)
+    with pytest.raises(PreconditionFailed):
+        expected.check(unversioned)
+    assert expected.held is True
+    expected.renew()
+    assert expected.held is False

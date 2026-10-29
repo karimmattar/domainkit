@@ -7,11 +7,12 @@ too), the brokers, and the messaging worker and dispatcher. They are
 imported on first use now; each check runs in a process of its own.
 """
 
+import importlib.metadata
 import os
 import subprocess
 import sys
 import textwrap
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import pytest
@@ -151,6 +152,35 @@ def test_the_lazy_names_are_the_public_ones() -> None:
     assert messaging.Worker is worker.Worker
     assert messaging.current_attempt is worker.current_attempt
     assert domainkit.__version__ == version("domainkit")
+
+
+def test_the_version_is_read_on_first_use_then_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first read asks the distribution and keeps the answer on the module.
+
+    The suite's first read keeps it for every test after: without clearing
+    it first, no test of a mutation run (one process, forked) called the
+    hook again, and its mutants lived.
+    """
+    monkeypatch.delattr(domainkit, "__version__", raising=False)
+    assert "__version__" not in vars(domainkit)
+
+    assert domainkit.__version__ == version("domainkit")
+    assert vars(domainkit)["__version__"] == version("domainkit")
+
+
+def test_a_source_tree_has_an_unknown_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run from a source tree, not installed: ``0.0.0+unknown``, then kept."""
+
+    def missing(name: str) -> str:
+        raise PackageNotFoundError(name)
+
+    monkeypatch.delattr(domainkit, "__version__", raising=False)
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+
+    assert domainkit.__version__ == "0.0.0+unknown"
+    assert vars(domainkit)["__version__"] == "0.0.0+unknown"
 
 
 @pytest.mark.parametrize("module", [domainkit, domainkit.http, messaging])

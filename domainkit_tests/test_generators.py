@@ -896,6 +896,37 @@ def test_install_adds_the_domain_and_mounts_its_router(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("install_it", [True, False])
+def test_startdomain_installs_only_unless_told_not_to(
+    tmp_path: Path, install_it: bool
+) -> None:
+    """``--manual`` writes the domain and leaves the project's files alone.
+
+    test_init runs ``--manual`` in a generated project, in a process of its
+    own; this runs it here.
+    """
+    root = project(tmp_path / "project")
+    context = startdomain.template_context("notes", "domains", None, None)
+    plan = startdomain.NewDomain(
+        context,
+        root / "src" / "domains" / "notes",
+        root / "tests" / "domains",
+        root,
+        install=install_it,
+        minimal=True,
+    )
+
+    output = startdomain.Command(stdout=io.StringIO()).apply(plan)
+
+    settings = (root / SETTINGS_FILE).read_text(encoding="utf-8")
+    assert ('"domains.notes"' in settings) is install_it
+    assert ("Added 'domains.notes' to INSTALLED_DOMAINS" in output) is install_it
+    assert (root / "src" / "domains" / "notes" / "domain" / "model.py").is_file()
+    assert (root / "tests" / "domains" / "__init__.py").read_text(
+        encoding="utf-8"
+    ) == '"""Tests of domains."""\n'
+
+
 @pytest.mark.parametrize(
     ("settings", "urls"),
     [
@@ -1526,3 +1557,26 @@ def test_the_smaller_domains_next_steps_grant_what_it_serves(
         "  5. Grant notes.view_note (and add_, change_) to the users or groups "
         "that need them; superusers have them.\n"
     ) in output
+
+
+def test_startdomain_names_the_aggregates_by_the_plural_it_is_given(
+    make_package: MakePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--plural`` names the table, the repository and the URL."""
+    parent = make_package("gen", {})
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+
+    output = run(
+        "startdomain",
+        "notes",
+        aggregate="Note",
+        plural="memos",
+        parent="gen",
+        minimal=True,
+    )
+
+    assert "/api/v1/notes/memos" in output
+    orm = parent / "notes" / "infrastructure" / "orm.py"
+    assert 'table_for(Note, "notes_memos", domain="notes")' in orm.read_text(
+        encoding="utf-8"
+    )

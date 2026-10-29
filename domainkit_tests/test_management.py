@@ -411,6 +411,51 @@ def test_migration_commands(migration_project: Path) -> None:
         run("migrate", "nope")
 
 
+def test_startdomain_reads_its_command_line_as_its_help_says() -> None:
+    """Flags take no value, ``--tests-dir`` is a path, ``--help`` names each.
+
+    The other tests call the command with keywords, past the parser.
+    """
+    parser = startdomain.Command().create_parser("manage.py", "startdomain")
+
+    given = vars(
+        parser.parse_args(["notes", "--tests-dir", "t", "--manual", "--minimal"])
+    )
+    plain = vars(parser.parse_args(["notes"]))
+    shown = " ".join(parser.format_help().split())
+
+    assert given == {
+        "name": "notes",
+        "aggregate": None,
+        "plural": None,
+        "parent": "domains",
+        "tests_dir": Path("t"),
+        "manual": True,
+        "minimal": True,
+    }
+    assert (plain["tests_dir"], plain["manual"], plain["minimal"]) == (
+        None,
+        False,
+        False,
+    )
+    for line in (
+        "name snake_case package name, e.g. billing",
+        (
+            "--aggregate AGGREGATE aggregate root class name (default: the "
+            "CamelCase domain name, in the singular)"
+        ),
+        "--plural PLURAL snake_case plural of the aggregate, for tables and URLs",
+        "--parent PARENT package that holds the domains",
+        "--tests-dir TESTS_DIR directory for the tests (default: tests/<parent path>)",
+        "--manual neither install the domain nor mount its router; print how",
+        (
+            "--minimal a smaller domain: an aggregate with a name, create and "
+            "rename, a table, a resource, two tests"
+        ),
+    ):
+        assert line in shown, line
+
+
 def test_template_context_validates_names() -> None:
     """Names must be valid snake_case packages and CamelCase classes."""
     context = startdomain.template_context("order_lines", "domains", None, None)

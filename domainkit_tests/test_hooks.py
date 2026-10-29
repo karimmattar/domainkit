@@ -238,6 +238,44 @@ def test_hooks_register_in_ready_or_for_a_named_domain(
 
 
 @pytest.mark.usefixtures("calls")
+def test_a_projects_own_point_checks_what_it_declares() -> None:
+    """A point a test builds keeps its method, arguments and awaited.
+
+    The framework's points are built when it is imported, before a mutation
+    run picks a mutant, so only a point built here runs ``__init__``'s.
+    """
+    point: HookPoint[Any] = HookPoint(
+        "audited", method="startup", arguments=1, awaited=True
+    )
+
+    async def one(record: object) -> None:
+        """Take the record."""
+
+    async def none() -> None:
+        """Take nothing."""
+
+    def plain(record: object) -> None:
+        """Take the record, without awaiting."""
+
+    with override_settings(INSTALLED_DOMAINS=[ALPHA, "quiet", "typed"]):
+        setup()
+        assert list(point) == []
+        assert point(one, domain="typed") is one
+        with pytest.raises(ImproperlyConfigured, match="must take 1 positional"):
+            point(none, domain="typed")
+        with pytest.raises(ImproperlyConfigured, match="must be an async function"):
+            point(plain, domain="typed")
+        assert list(point) == [Hook("typed", one)]
+
+    assert (point.name, point.method, point.arguments, point.awaited) == (
+        "audited",
+        "startup",
+        1,
+        True,
+    )
+
+
+@pytest.mark.usefixtures("calls")
 def test_a_failed_follow_up_is_reported_with_its_domain(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
