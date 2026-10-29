@@ -278,7 +278,7 @@ def test_fields_are_computed_once_and_cycles_are_refused() -> None:
     with pytest.raises(AttributeError, match="Missing has no field 'title'"):
         Missing.build()
     with pytest.raises(AttributeError):
-        Fields(Missing, {}, {})._private  # noqa: B018 - reading it raises.
+        Fields(Missing, {}, {}, parent=None, stub=False)._private  # noqa: B018
 
 
 def test_a_factory_needs_a_model() -> None:
@@ -569,6 +569,30 @@ def test_traits_declared_in_a_test_default_to_off() -> None:
         Labelled.build(priced=True, cheap=True)
     with pytest.raises(TypeError, match=r"Give price= or price__\.\.\.=, not both"):
         Labelled.build(price__amount=Decimal(1), price=None)
+    # A trait's whole value yields to a key of it given.
+    assert Labelled.build(priced=True, price__amount=Decimal(5))["price"].amount == 5
+
+
+def test_traits_reach_the_sub_factories_of_sub_factories() -> None:
+    """Keys of several levels follow the same rules as keys of one."""
+    order = OrderFactory.build()
+    existing = LineFactory.build(order=order)
+
+    class Holder(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        class Params:
+            cheap = Trait(line__price__amount=Decimal(0))
+            kept = Trait(line=existing)
+
+        line = SubFactory(LineFactory, order=order)
+
+    assert Holder.build(cheap=True)["line"].price.amount == Decimal(0)
+    assert Holder.build(cheap=True, line=existing)["line"] is existing
+    deeper = Holder.build(kept=True, line__price__amount=Decimal(4))["line"]
+    assert deeper is not existing
+    assert deeper.price.amount == Decimal(4)
 
 
 def test_params_are_read_by_fields_and_never_reach_the_model() -> None:
@@ -604,6 +628,15 @@ def test_maybe_picks_by_a_field_or_a_declaration() -> None:
     assert (small["label"], small["kind"], small["category"]) == (None, "empty", None)
     assert Shelf.build(category__name="Hats")["category"].name == "Hats"
 
+    class Lost(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        label = Maybe(SelfAttribute("...far"), "yes")
+
+    with pytest.raises(ValueError, match=r"Lost.label: '...far' climbs"):
+        Lost.build()
+
 
 @pytest.mark.anyio
 async def test_maybe_adds_the_sub_factory_it_picks() -> None:
@@ -628,6 +661,12 @@ async def test_maybe_adds_the_sub_factory_it_picks() -> None:
         )
         tags: ClassVar[list[str]] = []
 
+    class Lost(MaybeListed):
+        category = Maybe(SelfAttribute("...far"), SubFactory(CategoryFactory))
+
+    with pytest.raises(ValueError, match=r"Lost.category: '...far' climbs"):
+        await Lost.create(ShopUnitOfWork())
+
     uow = ShopUnitOfWork()
     unlisted = await MaybeListed.create(uow)
     listed = await MaybeListed.create(uow, listed=True, category__name="Tea")
@@ -648,11 +687,14 @@ def test_self_attribute_follows_paths_and_climbs_to_the_parent() -> None:
         currency = SelfAttribute("price.currency")
         missing = SelfAttribute("price.colour", default="none")
         broken = SelfAttribute("...far")
+        Xmas = "December"  # A dict key, as a field may be named.
+        when = SelfAttribute("Xmas")  # Only dots climb.
 
     with pytest.raises(ValueError, match=r"Tagged.broken: '...far' climbs past"):
         Tagged.build()
     tagged = Tagged.build(broken=1)
     assert (tagged["currency"], tagged["missing"]) == ("EUR", "none")
+    assert tagged["when"] == "December"
 
     class Strict(Tagged):
         missing = SelfAttribute("price.colour")

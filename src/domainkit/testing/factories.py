@@ -323,8 +323,8 @@ class Fields:
         given: Mapping[str, Any],
         nested: Mapping[str, dict[str, Any]],
         *,
-        parent: "Fields | None" = None,
-        stub: bool = False,
+        parent: "Fields | None",
+        stub: bool,
     ) -> None:
         """Compute ``factory``'s fields, with ``given`` values first.
 
