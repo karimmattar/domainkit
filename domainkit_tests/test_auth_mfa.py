@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from domainkit import signing
 from domainkit.conf import UNSET, override_settings
-from domainkit.contrib.auth import mfa, totp
+from domainkit.contrib.auth import AuthUnitOfWork, UserId, mfa, totp
 from domainkit.contrib.auth.settings import MfaSettings
 from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
 from domainkit.db import connections
@@ -825,6 +825,53 @@ def test_recovery_codes_are_stored_as_digests(
     assert sorted(stored) == sorted(mfa.recovery_digest(alice, code) for code in codes)
     assert not set(stored) & {code.replace("-", "") for code in codes}
     assert mfa.recovery_digest(uuid4(), codes[0]) not in stored
+
+
+def test_the_code_spent_says_which_factor_it_was(
+    identity: Api, clock: list[float]
+) -> None:
+    """``spend_code`` answers ``"totp"`` or ``"recovery"``, by the code spent."""
+    alice = create_user("alice")
+    client = identity()
+    secret, codes = enrol(client, bearer(login(client, "alice")["access_token"]), clock)
+    clock[0] += 30
+
+    async def spend(code: str) -> mfa.Method | None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(UserId(alice))
+            method = await mfa.spend_code(uow, user, code)
+            await uow.commit()
+        return method
+
+    assert run_async(spend(code_at(secret, clock[0]))) == "totp"
+    assert run_async(spend(codes[0])) == "recovery"
+    assert run_async(spend(codes[0])) is None  # Spent.
+
+
+def test_code_checks_count_under_names_of_their_own(
+    identity: Api, clock: list[float]
+) -> None:
+    """Wrong codes count as ``mfa``; forged challenges as ``mfa-challenge``.
+
+    A wrong code counts for its user and its address; a challenge that does
+    not hold, for its address, apart from both and from logins' counts.
+    """
+    alice = create_user("alice")
+    client = identity()
+    enrol(client, bearer(login(client, "alice")["access_token"]), clock)
+    token = log_in(client).json()["mfa_token"]
+    near = TestClient(client.app, client=("203.0.113.9", 1))
+    far = TestClient(client.app, client=("198.51.100.7", 1))
+
+    assert finish(near, token, "000000").status_code == 401
+    assert finish(far, f"{alice.hex}:1:{'A' * 43}", "000000").status_code == 400
+
+    counted = set(client.app.state.login_limiter._callers)  # type: ignore[attr-defined]
+    assert {key for key in counted if key.startswith("mfa")} == {
+        f"mfa:user:{alice}",
+        "mfa:ip:203.0.113.9",
+        "mfa-challenge:ip:198.51.100.7",
+    }
 
 
 def test_codes_need_a_confirmed_authenticator(
