@@ -138,3 +138,17 @@ def test_openapi_describes_every_option_as_reviewed() -> None:
         SNAPSHOT.write_text(text, encoding="utf-8")
 
     assert text == SNAPSHOT.read_text(encoding="utf-8")
+
+
+def test_a_batch_route_takes_the_summary_it_is_given() -> None:
+    """``summary=`` names the batch operation in place of its own."""
+    resource = gadgets(InMemoryGadgets([make_gadget("a")]))
+    resource.batch_route(
+        RenameGadget, service=rename, body=RenameIn, summary="Rename many gadgets"
+    )
+
+    document = client_of(resource).get("/openapi.json").json()
+
+    assert document["paths"]["/gadgets/batch"]["post"]["summary"] == (
+        "Rename many gadgets"
+    )

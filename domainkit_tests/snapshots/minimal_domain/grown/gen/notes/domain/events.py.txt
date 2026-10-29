@@ -6,8 +6,8 @@ from uuid import UUID
 from domainkit.ddd import DomainEvent
 
 
-class NotePined(DomainEvent):
-    """A note was pined."""
+class NotePinned(DomainEvent):
+    """A note was pinned."""
 
     note_id: UUID
     at: datetime

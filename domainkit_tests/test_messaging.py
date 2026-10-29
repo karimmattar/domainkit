@@ -62,6 +62,7 @@ from domainkit.contrib.messaging import (
     periodic,
     task,
 )
+from domainkit.contrib.messaging import apps as apps_module
 from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import worker as worker_module
@@ -221,6 +222,24 @@ async def outbox() -> list[dict[str, object]]:
             select(messages).order_by(messages.c.created_at)
         )
         return [dict(row._mapping) for row in rows]
+
+
+def test_ready_loads_the_metrics_where_prometheus_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outbox's gauges are registered by ``ready()``, prometheus_client present.
+
+    Recorded, not imported again: a second import would register the gauges
+    twice.
+    """
+    imported: list[str] = []
+    monkeypatch.setattr(apps_module, "import_module", imported.append)
+    registry.clear()
+    with override_settings(INSTALLED_DOMAINS=[MESSAGING, ALPHA]):
+        setup()
+    registry.clear()
+
+    assert imported == ["domainkit.contrib.messaging.metrics"]
 
 
 async def test_deferred_tasks_commit_with_the_change(tables: None) -> None:

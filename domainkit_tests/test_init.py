@@ -341,7 +341,13 @@ def test_production_samples_access_lines_from_the_environment(
 @pytest.mark.parametrize(
     ("name", "message"),
     [
-        ("_billing", "not a valid project name"),
+        (
+            "_billing",
+            (
+                r"^'_billing' is not a valid project name: use letters, digits, "
+                r"'\.', '-', and '_', starting and ending with a letter or digit\.$"
+            ),
+        ),
         ("billing-", "not a valid project name"),
         ("billing api", "not a valid project name"),
         ("2fa", "must start with a letter"),

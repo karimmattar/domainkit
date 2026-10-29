@@ -828,7 +828,11 @@ jobs:
   # then each mutant with only the tests that reach its function. Not a
   # check the ruleset requires (ADR 0106): it fails when a run does not
   # finish, or when a changed function's mutant lives, and the summary
-  # lists them, for the author to kill or to explain.
+  # lists them, for the author to kill or to explain. A pull request of a
+  # typical size finishes in this job. A larger one is stopped in time and
+  # hands the mutants left to shards (mutation_shards.py), balanced by the
+  # time of their tests, which reuse this job's stats instead of running
+  # the whole suite again; mutation-changed-summary then judges them all.
   mutation-changed:
     name: mutation (changed)
     needs: changes
@@ -837,6 +841,8 @@ jobs:
       && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 65
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
     steps:
       # The merge commit and its first parent, the base branch.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -860,8 +866,9 @@ jobs:
           fi
       # The patterns are mutant names, not files: no globbing by the shell.
       # Interrupted (SIGINT) before the job's limit, mutmut stops and keeps
-      # what it found, so the summary still reports it, as incomplete.
+      # what it found and its stats, for the shards.
       - name: Run their mutants
+        id: run
         if: steps.changed.outputs.mutants != ''
         shell: bash
         env:
@@ -869,25 +876,145 @@ jobs:
         run: |
           set -f
           status=0
-          timeout --signal=INT --kill-after=5m 45m poetry run mutmut run $MUTANTS || status=$?
+          timeout --signal=INT --kill-after=5m 40m poetry run mutmut run $MUTANTS || status=$?
           if [ "$status" -eq 124 ]; then
-            echo "::error::The changed functions' mutants did not finish in 45 minutes."
+            echo "::notice::The changed functions' mutants did not finish in 40 minutes; shards check the rest."
+            status=0
+          elif [ "$status" -ne 0 ] && [ -f mutants/mutmut-failures.txt ]; then
+            echo "::group::Where mutmut's own run of the suite stopped (conftest.py)"
+            cat mutants/mutmut-failures.txt
+            echo "::endgroup::"
           fi
           exit "$status"
-      - name: Summarise the changed functions' mutants
-        if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
+      - name: Hand the mutants left to shards
+        id: plan
+        if: steps.run.outcome == 'success'
         shell: bash
         env:
           MUTANTS: ${{ steps.changed.outputs.mutants }}
         run: |
           set -f
-          poetry run python .github/scripts/mutation_summary.py changed --lived-fails $MUTANTS >> "$GITHUB_STEP_SUMMARY"
+          poetry run python .github/scripts/mutation_shards.py plan $MUTANTS >> "$GITHUB_OUTPUT"
+      - name: Summarise the changed functions' mutants
+        if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
+        shell: bash
+        env:
+          MUTANTS: ${{ steps.changed.outputs.mutants }}
+          SHARDS: ${{ steps.plan.outputs.shards }}
+        run: |
+          set -f
+          if [ -n "$SHARDS" ]; then
+            echo "### Mutation of the changed functions: the rest goes to shards $SHARDS" >> "$GITHUB_STEP_SUMMARY"
+          else
+            poetry run python .github/scripts/mutation_summary.py changed --lived-fails $MUTANTS >> "$GITHUB_STEP_SUMMARY"
+          fi
       - if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutmut-results-changed
           path: |
             changed-mutants.txt
+            mutmut-results.txt
+            mutation-summary.json
+            mutants/**/*.meta
+          if-no-files-found: ignore
+          retention-days: 14
+      - if: steps.plan.outputs.shards != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-changed-plan
+          path: |
+            mutation-shards.json
+            mutants/mutmut-stats.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # The mutants mutation (changed) left, one shard each. The stats it saved
+  # spare a shard mutmut's run of the whole suite: it lists the tests, runs
+  # those of its mutants once clean, then the mutants.
+  mutation-changed-shard:
+    name: mutation (changed, ${{ matrix.shard }})
+    needs: mutation-changed
+    if: ${{ !cancelled() && needs.mutation-changed.outputs.shards != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.mutation-changed.outputs.shards) }}
+    env:
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --all-extras --with dev
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mutation-changed-plan
+      - name: Run the shard's mutants
+        shell: bash
+        run: |
+          set -f
+          mutants="$(poetry run python .github/scripts/mutation_shards.py names "$SHARD")"
+          status=0
+          timeout --signal=INT --kill-after=5m 45m poetry run mutmut run $mutants || status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "::error::Shard $SHARD of the changed functions' mutants did not finish in 45 minutes."
+          elif [ "$status" -ne 0 ] && [ -f mutants/mutmut-failures.txt ]; then
+            echo "::group::Where mutmut's own run of the suite stopped (conftest.py)"
+            cat mutants/mutmut-failures.txt
+            echo "::endgroup::"
+          fi
+          exit "$status"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-changed-shard-${{ matrix.shard }}
+          path: mutants/**/*.meta
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Every shard's results, with those of mutation (changed): it fails when a
+  # mutant was never checked, or a changed function's mutant lived, and the
+  # summary lists them.
+  mutation-changed-summary:
+    name: mutation (changed, summary)
+    needs: [mutation-changed, mutation-changed-shard]
+    if: ${{ !cancelled() && needs.mutation-changed.outputs.shards != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --only dev --no-root
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mutmut-results-changed
+      # Each shard's files in a directory of its own, below mutants/.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mutation-changed-shard-*
+          path: mutants/shards
+      - name: Summarise the changed functions' mutants
+        shell: bash
+        run: |
+          set -f
+          poetry run python .github/scripts/mutation_summary.py changed --lived-fails $(cat changed-mutants.txt) >> "$GITHUB_STEP_SUMMARY"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutmut-results-changed-summary
+          path: |
             mutmut-results.txt
             mutation-summary.json
           if-no-files-found: ignore
@@ -1065,6 +1192,10 @@ jobs:
           timeout --signal=INT --kill-after=5m 320m poetry run mutmut run $MUTANTS || status=$?
           if [ "$status" -eq 124 ]; then
             echo "::error::Shard $SHARD did not finish in 320 minutes; split it."
+          elif [ "$status" -ne 0 ] && [ -f mutants/mutmut-failures.txt ]; then
+            echo "::group::Where mutmut's own run of the suite stopped (conftest.py)"
+            cat mutants/mutmut-failures.txt
+            echo "::endgroup::"
           fi
           exit "$status"
       # The score and the mutants that lived go to the job summary and to

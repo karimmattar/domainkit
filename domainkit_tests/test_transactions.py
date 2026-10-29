@@ -294,6 +294,31 @@ async def test_a_run_inside_another_counts_its_commits_for_both(
     assert "_commits" not in vars(uow)  # repositories() walks vars(): untouched.
 
 
+async def test_a_run_inside_another_that_committed_is_not_run_again(
+    waits: list[float],
+) -> None:
+    """The count goes on from the outer run's commits: the inner one's is seen."""
+    uow = fake(make_gadget("a"))
+    runs = 0
+
+    async def inner() -> None:
+        nonlocal runs
+        runs += 1
+        async with uow:
+            await uow.commit()
+        raise Lost
+
+    async def outer() -> None:
+        async with uow:
+            await uow.commit()
+        await uow.run(inner, retry=Retry(retry_on=(Lost,)))
+
+    with pytest.raises(Lost):
+        await uow.run(outer, retry=Retry(retry_on=(Lost,)))
+
+    assert (runs, waits, uow.commits) == (1, [], 2)
+
+
 async def test_no_wait_passes_the_deadline(waits: list[float], most: None) -> None:
     """A wait that would end past the deadline raises the failure instead."""
     uow = fake()

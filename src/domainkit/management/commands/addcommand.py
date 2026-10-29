@@ -15,7 +15,9 @@ aggregate's name and the verb in the past tense (``--event`` names
 another).
 """
 
+import re
 from argparse import ArgumentParser
+from typing import Final
 
 from domainkit.management.base import CommandError
 from domainkit.management.generators import (
@@ -79,8 +81,171 @@ def verb_of(command: str, aggregate: str) -> str:
     return verb
 
 
+_IRREGULAR: Final = {
+    **dict.fromkeys(
+        ["bet", "bid", "broadcast", "burst", "cast", "cost", "cut", "hit", "hurt"],
+        None,
+    ),
+    **dict.fromkeys(["let", "put", "quit", "read", "set", "shed", "shut"], None),
+    **dict.fromkeys(["split", "spread", "upset", "offset", "input"], None),
+    "arise": "arisen",
+    "become": "become",
+    "begin": "begun",
+    "bend": "bent",
+    "bind": "bound",
+    "bite": "bitten",
+    "blow": "blown",
+    "break": "broken",
+    "bring": "brought",
+    "build": "built",
+    "buy": "bought",
+    "catch": "caught",
+    "choose": "chosen",
+    "come": "come",
+    "deal": "dealt",
+    "dig": "dug",
+    "do": "done",
+    "draw": "drawn",
+    "drive": "driven",
+    "eat": "eaten",
+    "fall": "fallen",
+    "feed": "fed",
+    "fight": "fought",
+    "find": "found",
+    "fly": "flown",
+    "forbid": "forbidden",
+    "forget": "forgotten",
+    "forgive": "forgiven",
+    "freeze": "frozen",
+    "get": "got",
+    "give": "given",
+    "go": "gone",
+    "grow": "grown",
+    "hear": "heard",
+    "hide": "hidden",
+    "hold": "held",
+    "keep": "kept",
+    "know": "known",
+    "lay": "laid",
+    "lead": "led",
+    "leave": "left",
+    "lend": "lent",
+    "lose": "lost",
+    "make": "made",
+    "mean": "meant",
+    "meet": "met",
+    "pay": "paid",
+    "relay": "relayed",
+    "ride": "ridden",
+    "rise": "risen",
+    "run": "run",
+    "say": "said",
+    "see": "seen",
+    "seek": "sought",
+    "sell": "sold",
+    "send": "sent",
+    "shake": "shaken",
+    "shoot": "shot",
+    "sit": "sat",
+    "sleep": "slept",
+    "slide": "slid",
+    "speak": "spoken",
+    "spend": "spent",
+    "spin": "spun",
+    "stand": "stood",
+    "steal": "stolen",
+    "stick": "stuck",
+    "strike": "struck",
+    "swear": "sworn",
+    "sweep": "swept",
+    "take": "taken",
+    "teach": "taught",
+    "tear": "torn",
+    "tell": "told",
+    "think": "thought",
+    "throw": "thrown",
+    "wake": "woken",
+    "wear": "worn",
+    "win": "won",
+    "write": "written",
+}
+"""Past participles that are not the verb and ``ed``; None: the verb itself."""
+_PREFIXES: Final = ("fore", "mis", "out", "over", "pre", "re", "un", "under", "up")
+_PREFIXES_WITH: Final = (*_PREFIXES, "with")
+"""Prefixes that keep a verb's participle: ``resend``, ``resent``."""
+_STRESSED_LAST: Final = frozenset(
+    {"abet", "acquit", "admit", "allot", "commit", "compel", "concur", "confer"}
+    | {"control", "debug", "defer", "deter", "dispel", "embed", "emit", "equip"}
+    | {"expel", "format", "incur", "infer", "kidnap", "occur", "omit", "patrol"}
+    | {"permit", "program", "propel", "submit", "transfer", "transmit"}
+)
+"""Verbs of two syllables or more that double their last consonant."""
+_ONE_SYLLABLE_CVC: Final = re.compile(r"[^aeiou]*[aeiou][b-df-hj-np-rtvz]")
+"""One vowel, then one consonant that doubles: ``ship``, ``stop``, ``plan``."""
+_ONSET: Final = re.compile(
+    r"(?:[bcdfghjklmnpqrstvwz]|[bcfgp][lr]|[dt]r|s[chklmnpqtw]|[stw]h|tw|wr"
+    r"|s[cp][lr]|str|[st]hr)"
+    r"[aeiouy]"
+)
+"""How an English word may start: a consonant or two, then a vowel."""
+_PARTICLES: Final = frozenset({"Back", "Down", "In", "Off", "On", "Out", "Over", "Up"})
+"""A phrasal verb's last word, left as it is: ``CheckIn``, ``CheckedIn``."""
+_WORDS: Final = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+")
+
+
 def past_tense(verb: str) -> str:
-    """``Published`` of ``Publish``; ``--event`` names those it gets wrong."""
+    """``Published`` of ``Publish``: the participle an event is named with.
+
+    English's common irregular verbs (``Paid`` of ``Pay``, ``Sent`` of
+    ``Send``), also after a prefix (``Resent``); a last consonant doubled
+    where English doubles it (``Shipped``, ``Submitted``); a phrasal verb's
+    particle kept last (``CheckedIn``). ``--event`` names those it gets wrong.
+    """
+    parts = _WORDS.findall(verb)
+    if "".join(parts) != verb:
+        return _regular(verb)
+    at = -2 if len(parts) > 1 and parts[-1] in _PARTICLES else -1
+    word = parts[at]
+    if word not in {word.lower(), word.capitalize()}:
+        return _regular(verb)  # An acronym: ``SyncAPI``.
+    done = _participle(word.lower())
+    parts[at] = done.capitalize() if word[0].isupper() else done
+    return "".join(parts)
+
+
+def _participle(verb: str) -> str:
+    """The past participle of the lower-case ``verb``."""
+    for prefix in ("", *_PREFIXES_WITH):
+        stem = verb.removeprefix(prefix)
+        if verb.startswith(prefix) and stem in _IRREGULAR:
+            done = _IRREGULAR[stem]
+            return verb if done is None else f"{prefix}{done}"
+    if _doubles(verb):
+        return f"{verb}{verb[-1]}ed"
+    return _regular(verb)
+
+
+def _doubles(verb: str) -> bool:
+    """Whether English doubles ``verb``'s last consonant: ``ship``, ``refer``.
+
+    After a prefix, only a stem that starts as a word can (``re-fer``), not
+    the rest of a word that only looks prefixed (``re-nder``, ``re-ckon``).
+    """
+    stems = [
+        verb.removeprefix(prefix)
+        for prefix in ("", *_PREFIXES)
+        if verb.startswith(prefix)
+        and (not prefix or _ONSET.match(verb.removeprefix(prefix)))
+    ]
+    return any(
+        stem in _STRESSED_LAST
+        or _ONE_SYLLABLE_CVC.fullmatch(stem.replace("qu", "q")) is not None
+        for stem in stems
+    )
+
+
+def _regular(verb: str) -> str:
+    """``ed`` added as English adds it to a regular verb."""
     if verb.endswith("e"):
         return f"{verb}d"
     if verb.endswith("y") and verb[-2:-1] not in set("aeiou"):
