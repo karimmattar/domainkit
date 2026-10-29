@@ -8,6 +8,7 @@ are pinned to commits and images to digests, and Renovate sees the images.
 """
 
 import ast
+import importlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import tomllib
 from collections.abc import Iterator
 from fnmatch import fnmatchcase
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -30,12 +32,20 @@ SUMMARY = ROOT / ".github" / "scripts" / "mutation_summary.py"
 FLOORS = ROOT / ".github" / "scripts" / "floors.py"
 CHANGED = ROOT / ".github" / "scripts" / "changed.py"
 CHANGED_MUTANTS = ROOT / ".github" / "scripts" / "changed_mutants.py"
+SHARDS = ROOT / ".github" / "scripts" / "mutation_shards.py"
 EVENTS = ("push", "pull_request", "schedule", "workflow_dispatch")
 # GitHub Actions, the app whose checks the ruleset accepts.
 ACTIONS_APP = 15368
 # Jobs that run on pull requests but gate nothing: the newest and oldest
 # releases the ranges allow are not this change's doing.
-ADVISORY = {"newest", "oldest", "free-threaded-stress", "mutation-changed"}
+ADVISORY = {
+    "newest",
+    "oldest",
+    "free-threaded-stress",
+    "mutation-changed",
+    "mutation-changed-shard",
+    "mutation-changed-summary",
+}
 # GitHub stops a job after six hours.
 JOB_LIMIT_MINUTES = 360
 
@@ -147,13 +157,19 @@ def _tokens(text: str) -> list[str]:
 
 
 def context(
-    event: str, *, code: str = "true", sha: str = "abc", number: int = 1
+    event: str,
+    *,
+    code: str = "true",
+    sha: str = "abc",
+    number: int = 1,
+    shards: str = "",
 ) -> dict[str, str]:
     """``github.*`` for a run of ``event`` on the main branch.
 
     A pull request (``number``) comes from a branch (``head_ref``) and, by
     its changes job, changes ``code`` (``"true"``) or docs alone
-    (``"false"``).
+    (``"false"``); its changed functions' mutants finish in one job, or
+    leave ``shards`` (``"[1,2]"``).
     """
     values = {"event_name": event, "ref": "refs/heads/main", "sha": sha}
     if event == "pull_request":
@@ -161,6 +177,7 @@ def context(
             "ref": f"refs/pull/{number}/merge",
             "head_ref": "feature",
             "needs.changes.outputs.code": code,
+            "needs.mutation-changed.outputs.shards": shards,
         }
     return values
 
@@ -187,9 +204,9 @@ def needs(job: dict[str, Any]) -> set[str]:
     return {wanted} if isinstance(wanted, str) else set(wanted)
 
 
-def running(event: str, *, code: str = "true") -> set[str]:
+def running(event: str, *, code: str = "true", shards: str = "") -> set[str]:
     """The jobs a run of ``event`` starts (for a pull request, by its changes)."""
-    values = context(event, code=code)
+    values = context(event, code=code, shards=shards)
     decided: dict[str, bool] = {}
     chain: dict[str, bool] = {}  # The job, and every job above it, ran.
     pending = jobs()
@@ -320,8 +337,10 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
         "oldest",
         "mutation",
     }
-    assert running("pull_request") == every - {"mutation", "docs", "attest"}
+    sharded = {"mutation-changed-shard", "mutation-changed-summary"}
+    assert running("pull_request") == every - {"mutation", "docs", "attest"} - sharded
     assert "mutation-changed" in running("pull_request")
+    assert running("pull_request", shards="[1,2]") == running("pull_request") | sharded
     assert running("pull_request", code="false") == {
         "changes",
         "docs",
@@ -334,6 +353,8 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
     assert running("push") == every - {
         "mutation",
         "mutation-changed",
+        "mutation-changed-shard",
+        "mutation-changed-summary",
         "newest",
         "oldest",
         "changes",
@@ -344,6 +365,8 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
         "docs",
         "attest",
         "mutation-changed",
+        "mutation-changed-shard",
+        "mutation-changed-summary",
     }
 
 
@@ -1235,11 +1258,202 @@ def test_the_pull_request_mutates_what_it_changed_within_its_time() -> None:
     kill_after, budget = int(match.group(1)), int(match.group(2))
     assert budget + kill_after + 15 <= job["timeout-minutes"]
     summary = steps["Summarise the changed functions' mutants"]
-    assert ".github/scripts/mutation_summary.py changed" in summary["run"]
+    assert ".github/scripts/mutation_summary.py changed --lived-fails" in summary["run"]
     assert "GITHUB_STEP_SUMMARY" in summary["run"]
+    assert (
+        "mutation_shards.py plan $MUTANTS"
+        in steps["Hand the mutants left to shards"]["run"]
+    )
+    assert job["outputs"]["shards"] == "${{ steps.plan.outputs.shards }}"
     config = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]
     assert config["mutmut"]["pytest_add_cli_args"] == ["-m", "not reads_own_source"]
     assert any(
         marker.startswith("reads_own_source:")
         for marker in config["pytest"]["ini_options"]["markers"]
     )
+
+
+def uploads(job: dict[str, Any]) -> dict[str, set[str]]:
+    """The artifacts ``job`` uploads, by name, and the paths in each."""
+    return {
+        step["with"]["name"]: set(step["with"]["path"].split())
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    }
+
+
+def downloads(job: dict[str, Any]) -> list[dict[str, str]]:
+    """What ``job`` downloads: each step's ``with``."""
+    return [
+        step["with"]
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    ]
+
+
+def test_a_large_pull_requests_mutants_go_to_shards_that_reuse_the_stats() -> None:
+    """``mutation (changed)`` hands what it left to shards; a summary judges all.
+
+    0.12's pull request had about 3,700 changed mutants and stopped at its
+    limit with 1,311 never reached (ADR 0106's amendment). The shards take
+    the first job's stats and plan, so none runs the whole suite again;
+    each runs within its job's time; the summary reads every run's results
+    and fails as the single job did.
+    """
+    first, shard, summary = (
+        jobs()[name]
+        for name in (
+            "mutation-changed",
+            "mutation-changed-shard",
+            "mutation-changed-summary",
+        )
+    )
+    assert uploads(first) == {
+        "mutmut-results-changed": {
+            "changed-mutants.txt",
+            "mutmut-results.txt",
+            "mutation-summary.json",
+            "mutants/**/*.meta",
+        },
+        "mutation-changed-plan": {"mutation-shards.json", "mutants/mutmut-stats.json"},
+    }
+
+    assert shard["name"] == "mutation (changed, ${{ matrix.shard }})"
+    assert shard["needs"] == "mutation-changed"
+    assert shard["strategy"] == {
+        "fail-fast": False,
+        "matrix": {"shard": "${{ fromJSON(needs.mutation-changed.outputs.shards) }}"},
+    }
+    assert downloads(shard) == [{"name": "mutation-changed-plan"}]
+    steps = {step.get("name", ""): step for step in shard["steps"]}
+    run = steps["Run the shard's mutants"]["run"]
+    assert 'mutation_shards.py names "$SHARD"' in run
+    match = re.search(r"timeout --signal=INT --kill-after=(\d+)m (\d+)m ", run)
+    assert match, run
+    assert int(match.group(1)) + int(match.group(2)) + 15 <= shard["timeout-minutes"]
+    assert uploads(shard) == {
+        "mutation-changed-shard-${{ matrix.shard }}": {"mutants/**/*.meta"}
+    }
+
+    assert set(summary["needs"]) == {"mutation-changed", "mutation-changed-shard"}
+    assert summary["if"].startswith("${{ !cancelled()")
+    assert downloads(summary) == [
+        {"name": "mutmut-results-changed"},
+        {"pattern": "mutation-changed-shard-*", "path": "mutants/shards"},
+    ]
+    judged = next(
+        step["run"]
+        for step in summary["steps"]
+        if "run" in step and "mutation_summary" in step["run"]
+    )
+    assert (
+        "mutation_summary.py changed --lived-fails $(cat changed-mutants.txt)" in judged
+    )
+    for job in (first, shard, summary):
+        assert job["timeout-minutes"] < JOB_LIMIT_MINUTES
+
+
+def plan_shards(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run the shards script in ``cwd``."""
+    return subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+        [sys.executable, str(SHARDS), *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def load_script(name: str, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """Import the CI script ``name``, as the job runs it: beside its siblings."""
+    monkeypatch.syspath_prepend(str(SHARDS.parent))
+    return importlib.import_module(name)
+
+
+def test_the_mutants_left_are_split_by_their_tests_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unchecked and interrupted mutants only, the costliest first, evenly."""
+    exit_codes: dict[str, int | None] = {
+        "domainkit.a.x_slow__mutmut_1": None,
+        "domainkit.a.x_slow__mutmut_2": 2,  # interrupted
+        "domainkit.a.x_fast__mutmut_1": None,
+        "domainkit.a.x_fast__mutmut_2": None,
+        "domainkit.a.x_fast__mutmut_3": None,
+        "domainkit.a.x_done__mutmut_1": 1,  # killed: not handed on
+        "domainkit.b.x_other__mutmut_1": None,  # not this pull request's
+    }
+    meta(tmp_path / "mutants" / "src" / "domainkit", exit_codes)
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text(
+        json.dumps(
+            {
+                "tests_by_mangled_function_name": {
+                    "domainkit.a.x_slow": ["t1", "t2"],
+                    "domainkit.a.x_fast": ["t3"],
+                },
+                "duration_by_test": {"t1": 30.0, "t2": 10.0, "t3": 1.0},
+            }
+        )
+    )
+
+    planned = plan_shards(tmp_path, "plan", "domainkit.a.*")
+
+    assert planned.returncode == 0, planned.stderr
+    assert planned.stdout == "shards=[1]\n"
+    plan = json.loads((tmp_path / "mutation-shards.json").read_text())
+    left = sorted(name for name, code in exit_codes.items() if code in {None, 2})[:-1]
+    assert plan == {"shards": [sorted(left)]}
+
+    split = load_script("mutation_shards", monkeypatch).split(
+        {"a": 41.0, "b": 41.0, "c": 2.0, "d": 2.0, "e": 2.0}, 2
+    )
+    assert [set(shard) for shard in split] == [{"a", "c", "e"}, {"b", "d"}]
+
+    named = plan_shards(tmp_path, "names", "1")
+    assert (named.returncode, named.stdout) == (0, " ".join(sorted(left)) + "\n")
+
+
+def test_many_mutants_left_make_several_shards_and_none_make_none(
+    tmp_path: Path,
+) -> None:
+    """``SHARD`` seconds a shard, ``SHARDS`` at most; none left: no matrix."""
+    root = tmp_path / "mutants"
+    meta(root, {f"domainkit.a.x_f__mutmut_{n}": None for n in range(1, 2000)})
+    (root / "mutmut-stats.json").write_text(
+        json.dumps({"tests_by_mangled_function_name": {}, "duration_by_test": {}})
+    )
+
+    planned = plan_shards(tmp_path, "plan", "domainkit.a.*")
+
+    # 1,999 mutants of 4 seconds with no test: 7,996 seconds, two shards.
+    assert planned.stdout == "shards=[1, 2]\n"
+    plan = json.loads((tmp_path / "mutation-shards.json").read_text())["shards"]
+    # A function's mutants go a hundred together: 19 groups of 100, then 99.
+    assert sorted(len(shard) for shard in plan) == [999, 1000]
+    meta(root, {f"domainkit.a.x_f__mutmut_{n}": None for n in range(1, 100_000)})
+    assert plan_shards(tmp_path, "plan", "domainkit.a.*").stdout == (
+        f"shards={list(range(1, 13))}\n"
+    )
+    meta(root, {"domainkit.a.x_f__mutmut_1": 1})
+    assert plan_shards(tmp_path, "plan", "domainkit.a.*").stdout == "shards=\n"
+    for wrong in ([], ["plan"], ["names", "0"], ["names", "x"], ["other"]):
+        refused = plan_shards(tmp_path, *wrong)
+        assert refused.returncode == 2, wrong
+        assert "Usage" in refused.stderr
+
+
+def test_a_summary_of_several_runs_takes_the_run_that_checked(tmp_path: Path) -> None:
+    """The first job interrupted a mutant, its shard killed it: killed."""
+    root = tmp_path / "mutants"
+    meta(root / "src", {"domainkit.a.x_f__mutmut_1": 2, "domainkit.a.x_f__mutmut_2": 1})
+    meta(
+        root / "shards" / "1",
+        {"domainkit.a.x_f__mutmut_1": 1, "domainkit.a.x_f__mutmut_2": None},
+    )
+    meta(root / "shards" / "2", {"domainkit.a.x_f__mutmut_1": None})
+
+    done = summarise(tmp_path, "changed", "--lived-fails", "domainkit.a.*")
+
+    assert done.returncode == 0, done.stdout
+    result = json.loads((tmp_path / "mutation-summary.json").read_text())
+    assert (result["counts"], result["complete"]) == ({"killed": 2}, True)
