@@ -27,6 +27,7 @@ from prometheus_client import REGISTRY
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncTransaction
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -1461,6 +1462,42 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
     assert left >= 1
     (row,) = await outbox()
     # The publication cut short gave its message back: the relay sends it now.
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+async def test_shutdown_gives_back_a_lease_cut_off_as_it_commits(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lease the driver committed as the publisher was cancelled is given back.
+
+    aiosqlite commits in its own thread, and a PostgreSQL ``COMMIT`` may
+    finish on the server, after the caller is cancelled. Here the commit
+    goes through, then the publisher is held until shutdown cancels it:
+    before 0.12.1 the message stayed locked until its lease ran out, as a
+    loaded run of the test above once saw.
+    """
+    exit_transaction = AsyncTransaction.__aexit__
+    leased = asyncio.Event()
+
+    async def committed_then_held(self: AsyncTransaction, *exc: object) -> None:
+        await exit_transaction(self, *exc)
+        task = asyncio.current_task()
+        if task is not None and task.get_name().startswith("messaging.publisher"):
+            leased.set()
+            await asyncio.sleep(5)  # Cancelled by the shutdown.
+
+    monkeypatch.setattr(AsyncTransaction, "__aexit__", committed_then_held)
+    await enqueue(remember, value=uuid.uuid4())
+    task = commit_publisher(registry.settings(MessagingSettings))._task
+    assert task is not None
+    async with asyncio.timeout(5):
+        await leased.wait()
+        (row,) = await outbox()
+        assert row["lock_id"] is not None
+        await close_publishers(within=0.1)
+        await asyncio.wait({task})
+
+    (row,) = await outbox()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
 
 

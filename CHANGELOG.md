@@ -18,6 +18,10 @@ and a status.
   its commit had written already, and wrote again when it ran again, and
   work left uncommitted kept what the savepoint had written. PostgreSQL
   was not affected (FIN-78).
+- A publisher or relay cancelled as its lease of messages commits (a
+  shutdown) now gives that lease back. The driver could commit it after
+  the relay was cut off, and the messages then stayed locked until the
+  lease ran out, past the shutdown that was to unlock them (CONC-05).
 
 ## [0.12.0] - 2026-10-28
 
