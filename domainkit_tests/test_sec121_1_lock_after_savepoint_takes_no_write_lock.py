@@ -33,7 +33,7 @@ pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
-async def sqlite_file(tmp_path: Path) -> AsyncIterator[str]:
+async def sqlite_file(database_access: None, tmp_path: Path) -> AsyncIterator[str]:
     """The gadget tables in a SQLite file; a writer waits 0.1 s, then fails."""
     url = f"sqlite+aiosqlite:///{tmp_path / 'gadgets.sqlite3'}"
     with override_settings(

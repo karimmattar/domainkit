@@ -391,6 +391,7 @@ def test_revisions_leave_other_types_to_alembic() -> None:
     assert render_item("server_default", EnumValue(Color), context) is False
 
 
+@pytest.mark.usefixtures("database_access")
 def test_makemigrations_writes_a_revision_of_amounts_and_times_that_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
