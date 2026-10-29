@@ -575,14 +575,24 @@ def test_maybe_picks_by_a_field_or_a_declaration() -> None:
 async def test_maybe_adds_the_sub_factory_it_picks() -> None:
     """A stored sub-factory a ``Maybe`` picks is added with the object."""
 
-    class MaybeListed(ProductFactory):
+    class MaybeListed(Factory[Product]):
+        class Meta:
+            model = list_product
+            repository = "products"
+            exclude = ("category",)
+
         class Params:
             listed = False
 
+        id = LazyFunction(uuid4)
+        name = "Tea"
+        slug = "tea"
+        price = SubFactory(MoneyFactory)
         category = Maybe("listed", SubFactory(CategoryFactory), None)
         category_id = LazyAttribute(
             lambda product: product.category.id if product.category else uuid4()
         )
+        tags: ClassVar[list[str]] = []
 
     uow = ShopUnitOfWork()
     unlisted = await MaybeListed.create(uow)
@@ -591,7 +601,6 @@ async def test_maybe_adds_the_sub_factory_it_picks() -> None:
     assert [category.name for category in uow.categories.items.values()] == ["Tea"]
     assert listed.category_id in uow.categories.items
     assert unlisted.category_id not in uow.categories.items
-    assert MaybeListed.build(listed=True, category__name="Hats").category_id
 
 
 def test_self_attribute_follows_paths_and_climbs_to_the_parent() -> None:

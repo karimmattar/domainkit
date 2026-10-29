@@ -416,7 +416,12 @@ through a unit of work:
 
 ```python
 from domainkit.testing import (
-    Factory, Maybe, RelatedFactory, SelfAttribute, SubFactory, Trait,
+    Factory,
+    Maybe,
+    RelatedFactory,
+    SelfAttribute,
+    SubFactory,
+    Trait,
     post_generation,
 )
 
