@@ -482,7 +482,7 @@ python manage.py makemigrations -m "catalog" && python manage.py migrate
 | Generator | Writes |
 | --- | --- |
 | `startaggregate` | The aggregate, its id, not-found error, and repository port; created and deleted events; create and delete commands and use cases; its table (`table_for`), mapping, and repository; its resource; an in-memory repository; `test_<plural>.py`. |
-| `addcommand` | The aggregate's method, which records the event (the rule and the change are yours to write); the command and its use case; `POST /<plural>/{id}/<verb>` with its body; `test_<command>.py`. The event is the aggregate and the verb with `-ed` added (`ProductPublished`); name irregular ones with `--event` (`ShipProduct --event ProductShipped`). |
+| `addcommand` | The aggregate's method, which records the event (the rule and the change are yours to write); the command and its use case; `POST /<plural>/{id}/<verb>` with its body; `test_<command>.py`. The event is the aggregate and the verb's past participle: `-ed` added (`ProductPublished`), a last consonant doubled where English doubles it (`ShipOrder`: `OrderShipped`), or a common irregular verb's (`PayOrder`: `OrderPaid`); name others with `--event` (`SpellWord --event WordSpelt`). |
 | `addquery` | A `Query` and its handler in `application/queries.py`, finding the first 100 aggregates whose `--by` fields equal the query's, typed as the aggregate types them; `GET /<plural>/<path>` (`query_route`); `test_<query>.py`. |
 | `addevent` | The event, carrying the aggregate's id; a durable handler, subscribed in `apps.py` (`--no-handler` leaves it out); `test_on_<event>.py`. |
 

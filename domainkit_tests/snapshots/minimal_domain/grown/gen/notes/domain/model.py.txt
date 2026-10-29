@@ -11,7 +11,7 @@ from domainkit.ddd import (
     NotFound,
     Repository,
 )
-from gen.notes.domain.events import LabelCreated, LabelDeleted, NotePined
+from gen.notes.domain.events import LabelCreated, LabelDeleted, NotePinned
 
 NoteId = NewType("NoteId", UUID)
 NAME_LENGTH: Final = 200
@@ -41,7 +41,7 @@ class Note(AggregateRoot[NoteId]):
 
     def pin(self, *, at: datetime) -> None:
         """Pin the note."""
-        self.record(NotePined(note_id=self.id, at=at))
+        self.record(NotePinned(note_id=self.id, at=at))
 
 
 class NoteRepository(Repository[Note, NoteId]):

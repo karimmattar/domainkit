@@ -566,6 +566,149 @@ def test_names_and_words() -> None:
     ]
 
 
+def _before_0_12_1(verb: str) -> str:
+    """``past_tense`` as 0.12.0 wrote it: ``ed``, ``d`` after an ``e``, ``ied``."""
+    if verb.endswith("e"):
+        return f"{verb}d"
+    if verb.endswith("y") and verb[-2:-1] not in set("aeiou"):
+        return f"{verb[:-1]}ied"
+    return f"{verb}ed"
+
+
+REGULAR_VERBS = [
+    "Accept",
+    "Add",
+    "Approve",
+    "Archive",
+    "Assign",
+    "Audit",
+    "Book",
+    "Bus",
+    "Cancel",
+    "Charge",
+    "Check",
+    "Close",
+    "Complete",
+    "Confirm",
+    "Copy",
+    "Credit",
+    "Debit",
+    "Delay",
+    "Deliver",
+    "Deposit",
+    "Destroy",
+    "Edit",
+    "Enable",
+    "Enter",
+    "Expire",
+    "Filter",
+    "Fix",
+    "Flush",
+    "Gas",
+    "Import",
+    "Label",
+    "Limit",
+    "Load",
+    "Lock",
+    "Mark",
+    "Model",
+    "Offer",
+    "Open",
+    "Order",
+    "Pass",
+    "Play",
+    "Post",
+    "Process",
+    "Publish",
+    "Reckon",
+    "Refund",
+    "Register",
+    "Reject",
+    "Relay",
+    "Release",
+    "Remember",
+    "Rename",
+    "Render",
+    "Reopen",
+    "Replay",
+    "Report",
+    "Request",
+    "Restock",
+    "Retry",
+    "Return",
+    "Revoke",
+    "Show",
+    "Sign",
+    "Start",
+    "Submerge",
+    "Sync",
+    "Target",
+    "Total",
+    "Track",
+    "Travel",
+    "Unlock",
+    "Update",
+    "Upgrade",
+    "Upload",
+    "Verify",
+    "Visit",
+    "Void",
+]
+
+
+@pytest.mark.parametrize(
+    ("verb", "done"),
+    [
+        ("Pay", "Paid"),
+        ("Send", "Sent"),
+        ("Sell", "Sold"),
+        ("Buy", "Bought"),
+        ("Build", "Built"),
+        ("Write", "Written"),
+        ("Freeze", "Frozen"),
+        ("Do", "Done"),
+        ("Set", "Set"),
+        ("Read", "Read"),
+        ("Ship", "Shipped"),
+        ("Stop", "Stopped"),
+        ("Plan", "Planned"),
+        ("Quiz", "Quizzed"),
+        ("Submit", "Submitted"),
+        ("Commit", "Committed"),
+        ("Refer", "Referred"),
+        ("Unpin", "Unpinned"),
+        ("Unstrap", "Unstrapped"),
+        ("Overlap", "Overlapped"),
+        ("Resend", "Resent"),
+        ("Repay", "Repaid"),
+        ("Rebuild", "Rebuilt"),
+        ("Undo", "Undone"),
+        ("Overwrite", "Overwritten"),
+        ("Withdraw", "Withdrawn"),
+        ("Reset", "Reset"),
+        ("CheckIn", "CheckedIn"),
+        ("LogOut", "LoggedOut"),
+        ("PayOut", "PaidOut"),
+        ("SyncAPI", "SyncAPIed"),
+        ("BulkShip", "BulkShipped"),
+        ("payOut", "paidOut"),
+        ("Pay_", "Pay_ed"),
+    ],
+)
+def test_an_event_is_named_with_the_verbs_participle(verb: str, done: str) -> None:
+    """Irregular verbs, with a prefix too, doubled consonants, phrasal verbs.
+
+    ``addcommand PayOrder`` named its event ``OrderPayed`` before 0.12.1.
+    """
+    assert past_tense(verb) == done
+
+
+@pytest.mark.parametrize("verb", REGULAR_VERBS)
+def test_a_regular_verbs_event_keeps_the_name_it_had(verb: str) -> None:
+    """A generated project's tests compare names: a regular verb's is 0.12.0's."""
+    assert past_tense(verb) == _before_0_12_1(verb)
+
+
 GENERATE = [
     ["startdomain", "catalog", "--aggregate", "Product"],
     [
