@@ -652,7 +652,8 @@ async def test_sqlite_begins_before_a_first_savepoint(sqlite_file: str) -> None:
 
     SQLite's driver begins a transaction only before a write, so a
     ``SAVEPOINT`` sent first began one, and its ``RELEASE`` committed it.
-    The ``BEGIN`` is the framework's: ``assert_num_queries`` skips it.
+    The ``BEGIN IMMEDIATE`` is the framework's: ``assert_num_queries``
+    skips it.
     """
     async with GadgetsUnitOfWork() as uow:
         with assert_num_queries(3):  # SAVEPOINT, INSERT, RELEASE.
@@ -686,6 +687,36 @@ async def test_sqlite_savepoints_inside_a_transaction_begin_nothing(
             await uow.gadgets.add(make_gadget("c", stock=1))
         assert await in_transaction(uow)
     assert await total_stock() == 2
+
+
+async def test_sqlite_work_that_begins_with_a_savepoint_waits_for_the_lock(
+    sqlite_file: str,
+) -> None:
+    """Two such units of work that read, then write, both commit, one after the other.
+
+    The ``BEGIN IMMEDIATE`` before the first savepoint takes the write lock:
+    the second waits for the first. A deferred ``BEGIN`` (and 0.12.0's
+    ``SAVEPOINT``) let both read, and SQLite refused the second's write at
+    once with "database is locked", whatever its busy timeout.
+    """
+
+    async def add(name: str) -> None:
+        async with GadgetsUnitOfWork() as uow:
+            async with uow.savepoint():
+                await uow.gadgets.count()
+                await asyncio.sleep(0.05)  # Both would read before either writes.
+                await uow.gadgets.add(make_gadget(name, stock=1))
+            await uow.commit()
+
+    await connections.close_all()  # The fixture's engine waits 0.1 seconds.
+    with override_settings(
+        DATABASES={"default": {"URL": sqlite_file, "CONNECT_ARGS": {"timeout": 5}}}
+    ):
+        await asyncio.gather(add("a"), add("b"))
+        left = await total_stock()
+        await connections.close_all()
+
+    assert left == 2
 
 
 async def test_sqlite_autocommit_savepoints_are_left_as_they_are(

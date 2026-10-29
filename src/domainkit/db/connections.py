@@ -822,19 +822,24 @@ def _begin_snapshot(connection: Connection) -> None:
 
 
 def _begin_before_savepoint(connection: Connection, name: str) -> None:
-    """Begin SQLite's transaction before a ``SAVEPOINT`` that would begin it.
+    """Begin SQLite's transaction, with its write lock, before a first ``SAVEPOINT``.
 
     SQLite's driver begins one only before a write, so a unit of work whose
     first statement is a ``SAVEPOINT`` (``uow.savepoint()``, an atomic
     batch) would have it begin the transaction, and its ``RELEASE`` commit
     it: what the savepoint kept would be written before the unit of work
-    commits, and stay if that commit failed. A connection outside
-    transactions (``AUTOCOMMIT``) is left as it is.
+    commits, and stay if that commit failed. ``BEGIN IMMEDIATE`` takes the
+    write lock too, as a write would: ``lock()`` in the transaction then
+    holds it (SEC-121-1), and work that reads, then writes, waits for
+    another writer instead of being refused at its first write. A
+    connection outside transactions (``AUTOCOMMIT``) is left as it is.
     """
     if connection.get_execution_options().get("isolation_level") == "AUTOCOMMIT":
         return
     if not connection.connection.driver_connection.in_transaction:  # type: ignore[union-attr]
-        connection.exec_driver_sql("BEGIN", execution_options={INTERNAL: True})
+        connection.exec_driver_sql(
+            "BEGIN IMMEDIATE", execution_options={INTERNAL: True}
+        )
 
 
 @cache

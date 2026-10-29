@@ -43,6 +43,17 @@ and a status.
   password hash while `request.user.password` is deprecated. It was
   removed in 0.10, and nothing keeps the hash.
 
+### Security
+
+- On SQLite, `uow.lock(name)` inside a savepoint, or after one rolled
+  back, took no write lock: it returned at once, so two units of work
+  could both go past the same lock, and do twice what it guarded outside
+  the database. The transaction a first savepoint begins now takes the
+  write lock (`BEGIN IMMEDIATE`), so the lock is held. Work that starts
+  with a savepoint now runs one at a time with other writers, and one
+  that reads, then writes, waits for another writer instead of failing
+  with "database is locked". PostgreSQL was not affected (SEC-121-1).
+
 ## [0.12.0] - 2026-10-28
 
 A minor release: a domain's hooks become typed registrations, checked when
