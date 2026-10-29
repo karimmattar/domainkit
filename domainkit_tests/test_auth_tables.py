@@ -1,9 +1,11 @@
 """The auth tables: user columns (Django's lengths) and password hashes."""
 
 from sqlalchemy import Column, MetaData, Table
-from sqlalchemy.dialects import sqlite
+from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.schema import CreateTable
 
 from domainkit.contrib.auth import PasswordHash
+from domainkit.contrib.auth.exceptions import UsernameTaken
 from domainkit.contrib.auth.tables import (
     PasswordHashType,
     abstract_base_user_columns,
@@ -53,6 +55,21 @@ def test_user_columns_keep_djangos_lengths() -> None:
         ("is_staff", "Boolean()", False, False, False),
         ("date_joined", "UTCDateTime(timezone=True)", False, False, False),
     ]
+
+
+def test_a_projects_user_table_refuses_taken_usernames_and_starts_unverified() -> None:
+    """A duplicate username is ``UsernameTaken``; existing rows get ``false``.
+
+    What a project's own table from ``abstract_user_columns()`` keeps: the
+    refusal its unique constraint answers with, and the default a migration
+    that adds ``email_verified`` to stored rows needs.
+    """
+    columns = {column.name: column for column in abstract_user_columns()}
+    table = Table("shop_users", MetaData(), *columns.values())
+    ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
+
+    assert columns["username"].info == {"duplicate": UsernameTaken}
+    assert "email_verified BOOLEAN DEFAULT false NOT NULL" in ddl
 
 
 def test_each_call_makes_new_columns() -> None:
