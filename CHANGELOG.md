@@ -26,8 +26,11 @@ and a status.
   goes to shards (`mutation (changed, N)`), balanced by the time of their
   tests, which reuse its saved stats instead of running the whole suite
   again, and `mutation (changed, summary)` fails when a mutant lived or
-  was never checked, and lists them. None is a required check
-  (TEST-02; ADR 0106).
+  was never checked, and lists them. None is a required check. A
+  mutation run that fails before its mutants, as the weekly `auth-4`
+  shard did once, said only "failed to collect stats": mutmut runs the
+  suite in a child whose output it never shows. Every mutation job now
+  prints the test that was running and what failed (TEST-02; ADR 0106).
 - The generators pluralized a plural again: `startdomain notes` wrote the
   aggregate `Notes`, its repository `noteses`, and the table
   `notes_noteses`. A domain named in the plural gets its aggregate in the

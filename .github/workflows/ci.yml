@@ -880,6 +880,10 @@ jobs:
           if [ "$status" -eq 124 ]; then
             echo "::notice::The changed functions' mutants did not finish in 40 minutes; shards check the rest."
             status=0
+          elif [ "$status" -ne 0 ] && [ -f mutants/mutmut-failures.txt ]; then
+            echo "::group::Where mutmut's own run of the suite stopped (conftest.py)"
+            cat mutants/mutmut-failures.txt
+            echo "::endgroup::"
           fi
           exit "$status"
       - name: Hand the mutants left to shards
@@ -961,6 +965,10 @@ jobs:
           timeout --signal=INT --kill-after=5m 45m poetry run mutmut run $mutants || status=$?
           if [ "$status" -eq 124 ]; then
             echo "::error::Shard $SHARD of the changed functions' mutants did not finish in 45 minutes."
+          elif [ "$status" -ne 0 ] && [ -f mutants/mutmut-failures.txt ]; then
+            echo "::group::Where mutmut's own run of the suite stopped (conftest.py)"
+            cat mutants/mutmut-failures.txt
+            echo "::endgroup::"
           fi
           exit "$status"
       - if: ${{ !cancelled() }}
@@ -1184,6 +1192,10 @@ jobs:
           timeout --signal=INT --kill-after=5m 320m poetry run mutmut run $MUTANTS || status=$?
           if [ "$status" -eq 124 ]; then
             echo "::error::Shard $SHARD did not finish in 320 minutes; split it."
+          elif [ "$status" -ne 0 ] && [ -f mutants/mutmut-failures.txt ]; then
+            echo "::group::Where mutmut's own run of the suite stopped (conftest.py)"
+            cat mutants/mutmut-failures.txt
+            echo "::endgroup::"
           fi
           exit "$status"
       # The score and the mutants that lived go to the job summary and to

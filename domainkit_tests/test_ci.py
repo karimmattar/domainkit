@@ -1470,3 +1470,57 @@ def test_a_summary_of_several_runs_takes_the_run_that_checked(tmp_path: Path) ->
     assert done.returncode == 0, done.stdout
     result = json.loads((tmp_path / "mutation-summary.json").read_text())
     assert (result["counts"], result["complete"]) == ({"killed": 2}, True)
+
+
+def test_a_mutation_run_that_stops_before_its_mutants_names_the_test() -> None:
+    """The stats and clean runs' output is hidden: every job prints the file.
+
+    conftest.py writes ``mutants/mutmut-failures.txt`` in those runs; a job
+    prints it when mutmut fails, unless it ran out of time.
+    """
+    runs = [
+        step["run"]
+        for name in ("mutation", "mutation-changed", "mutation-changed-shard")
+        for step in jobs()[name]["steps"]
+        if "mutmut run" in step.get("run", "")
+    ]
+    assert len(runs) == 3
+    for run in runs:
+        assert (
+            'elif [ "$status" -ne 0 ] && [ -f mutants/mutmut-failures.txt ]; then'
+            in run
+        )
+        assert "cat mutants/mutmut-failures.txt" in run
+
+
+def test_mutmut_s_own_runs_note_the_test_they_stopped_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In the stats and clean runs only: the test running, then what failed."""
+    from domainkit_tests import conftest
+
+    monkeypatch.chdir(tmp_path)
+    noted = tmp_path / conftest.MUTMUT_FAILURES
+    failed = pytest.TestReport(
+        "t.py::f", ("t.py", 1, "f"), {}, "failed", "boom", "call", []
+    )
+    passed = pytest.TestReport(
+        "t.py::f", ("t.py", 1, "f"), {}, "passed", None, "call", []
+    )
+
+    for mutant in ("stats", ""):
+        monkeypatch.setenv("MUTANT_UNDER_TEST", mutant)
+        conftest.pytest_runtest_logstart("t.py::f", ("t.py", 1, "f"))
+        conftest.pytest_runtest_logreport(passed)
+        assert noted.read_text(encoding="utf-8") == "running t.py::f\n"
+        conftest.pytest_runtest_logreport(failed)
+        assert noted.read_text(encoding="utf-8") == (
+            "running t.py::f\nfailed t.py::f (call)\nboom\n"
+        )
+    noted.unlink()
+    monkeypatch.setenv("MUTANT_UNDER_TEST", "domainkit.a.x_f__mutmut_1")
+    conftest.pytest_runtest_logstart("t.py::f", ("t.py", 1, "f"))
+    conftest.pytest_runtest_logreport(failed)
+    monkeypatch.delenv("MUTANT_UNDER_TEST")
+    conftest.pytest_runtest_logstart("t.py::f", ("t.py", 1, "f"))
+    assert not noted.exists()  # A mutant's run, or no mutation run: nothing.

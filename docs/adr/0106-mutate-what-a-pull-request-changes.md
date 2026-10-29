@@ -179,6 +179,13 @@ The options:
 - The estimate is fitted to this suite; when a shard does not finish, its
   mutants read "not checked" in the summary, and the constants in
   `mutation_shards.py` are the place to change.
+- mutmut runs its stats and its clean run in a forked child
+  (`process_isolation = "forkserver"`) and never shows that child's
+  output: the weekly run's `auth-4` shard failed once at its stats with
+  only "failed to collect stats. runner returned 1". `conftest.py` writes
+  the test that is running, and what failed, to
+  `mutants/mutmut-failures.txt` in those runs, and every mutation job
+  prints it when mutmut fails before its time is up.
 - What would change this: mutmut recording a mutant's duration under
   forkserver (3.8 records zero), which would fit the estimate from each
   run instead.
