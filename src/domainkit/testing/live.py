@@ -63,7 +63,14 @@ class LiveServer:
         listening.bind((self.host, 0))
         self.port = listening.getsockname()[1]
         config = uvicorn.Config(
-            self.app, lifespan="on", log_config=None, access_log=False
+            self._application,
+            factory=True,
+            interface="asgi3",
+            lifespan="on",
+            log_config=None,
+            access_log=False,
+            proxy_headers=False,
+            server_header=False,
         )
         server = uvicorn.Server(config)
         thread = threading.Thread(
@@ -82,6 +89,17 @@ class LiveServer:
                 "failed; uvicorn's log says why."
             )
         return self
+
+    def _application(self) -> ASGIApp:
+        """The application, for uvicorn: named as a factory, and as ASGI 3.
+
+        So uvicorn guesses neither: it calls an application with no
+        arguments to find out whether it is a factory, which an application
+        whose ``__call__`` takes any arguments answers with a coroutine.
+        Proxy headers are the application's to read (``TRUSTED_PROXIES``),
+        as ``runserver`` leaves them.
+        """
+        return self.app
 
     def __exit__(
         self,

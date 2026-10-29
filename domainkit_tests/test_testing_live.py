@@ -4,6 +4,7 @@ import socket
 import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx2
 import pytest
@@ -150,3 +151,24 @@ def test_the_server_stops_when_the_block_ends() -> None:
     with pytest.raises(ConnectionRefusedError):
         socket.create_connection((server.host, server.port)).close()
     server.__exit__(None, None, None)  # Stopped already.
+
+
+def test_an_application_that_takes_any_arguments_is_served() -> None:
+    """The application is named ASGI 3 to uvicorn: nothing is called to guess.
+
+    Called with no arguments, as uvicorn does to find a factory, this one
+    returns a coroutine rather than refusing.
+    """
+    app = FastAPI()
+
+    @app.get("/")
+    def root() -> dict[str, bool]:
+        return {"served": True}
+
+    class Wrapped:
+        async def __call__(self, *args: Any) -> None:  # noqa: ANN401 - ASGI's.
+            await app(*args)
+
+    with LiveServer(Wrapped()) as server:  # type: ignore[arg-type]
+        assert httpx2.get(server.url).json() == {"served": True}
+        assert "server" not in httpx2.get(server.url).headers
