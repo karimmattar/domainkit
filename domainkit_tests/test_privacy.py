@@ -807,16 +807,21 @@ def test_retention_is_audited_per_policy(clinic: str) -> None:
 def test_retention_works_in_batches(
     clinic: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Deletes and erasures of ``BATCH_SIZE`` rows at a time, until none is left."""
+    """Deletes and erasures of ``BATCH_SIZE`` rows at a time, counted together."""
     monkeypatch.setattr(operations, "BATCH_SIZE", 2)
     deleted, loaded = watch_batches(monkeypatch)
 
-    async def apply() -> None:
+    async def apply() -> list[Any]:
         await fill_old()
-        await purge(now=NOW)
+        return await purge(now=NOW)
 
-    run_async(apply())
+    done = run_async(apply())
 
+    assert [(r.action, r.count) for r in done] == [
+        ("deleted", 3),
+        ("deleted", 4),
+        ("erased", 3),
+    ]
     # Deleted 2 then 1 log rows, 2, 2, then none of the counts; erased 2, then 1.
     assert (deleted, loaded) == (
         ["patients_access_log"] * 2 + ["patients_daily_counts"] * 3,
