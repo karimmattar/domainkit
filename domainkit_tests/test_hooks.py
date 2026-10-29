@@ -23,7 +23,6 @@ from domainkit.db.hooks import (
     on_transaction_committed,
 )
 from domainkit.db.migrations import run_migrated_hooks
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import ALPHA, MakePackage
 
@@ -52,23 +51,25 @@ class TypedConfig(DomainConfig):
     async def filled(self, connection, database):
         CALLS.append((self.label, "migrated", database))
 """
-LEGACY = """
+EARLY = """
 from domainkit.apps import DomainConfig
-from domainkit.db.hooks import on_committed
+from domainkit.db.hooks import on_committed, on_stage
 from hooklog import CALLS
 
 
-class LegacyConfig(DomainConfig):
+class EarlyConfig(DomainConfig):
     def ready(self):
         on_committed(self.registered)
+        on_stage(self.staged)
+        on_committed(self.followed)
 
     async def registered(self, uow):
         CALLS.append((self.label, "registered"))
 
-    async def stage(self, uow, events, tasks):
+    async def staged(self, uow, events, tasks):
         CALLS.append((self.label, "stage", uow.alias))
 
-    async def committed(self, uow):
+    async def followed(self, uow):
         CALLS.append((self.label, "committed", uow.alias))
 """
 FAILING = """
@@ -119,7 +120,7 @@ def calls(make_package: MakePackage) -> list[tuple[str, ...]]:
     """What the hooks of the throwaway domains did, in order."""
     make_package("hooklog", {"__init__.py": "CALLS = []\n"})
     make_package("typed", {"apps.py": TYPED})
-    make_package("legacy", {"apps.py": LEGACY})
+    make_package("early", {"apps.py": EARLY})
     make_package("quiet", {})
     make_package("failing", {"apps.py": FAILING})
     import hooklog  # type: ignore[import-not-found]
@@ -132,11 +133,10 @@ def installed(calls: list[tuple[str, ...]], tmp_path: Path) -> Iterator[None]:
     """The throwaway domains installed, on a SQLite file."""
     url = f"sqlite+aiosqlite:///{tmp_path / 'hooks.sqlite3'}"
     with override_settings(
-        INSTALLED_DOMAINS=[ALPHA, "quiet", "legacy", "typed"],
+        INSTALLED_DOMAINS=[ALPHA, "quiet", "early", "typed"],
         DATABASES={"default": {"URL": url}},
     ):
-        with pytest.warns(DomainkitDeprecationWarning, match="'legacy'"):
-            setup()
+        setup()
         yield
     asyncio.run(connections.close_all())
 
@@ -154,20 +154,20 @@ def commit() -> None:
 
 @pytest.mark.usefixtures("installed")
 def test_only_domains_that_registered_are_called(calls: list[tuple[str, ...]]) -> None:
-    """In domain order: registered hooks first, then an overriding method (DSGN-03)."""
-    assert [hook.domain for hook in on_stage] == ["legacy", "typed", "typed"]
-    assert [hook.domain for hook in on_committed] == ["legacy", "legacy", "typed"]
+    """In domain order, each domain's in the order it registered (DSGN-03)."""
+    assert [hook.domain for hook in on_stage] == ["early", "typed", "typed"]
+    assert [hook.domain for hook in on_committed] == ["early", "early", "typed"]
     assert list(on_stage_transaction) == []
     assert list(on_transaction_committed) == []
 
     commit()
 
     assert calls == [
-        ("legacy", "stage", "default"),
+        ("early", "stage", "default"),
         ("typed", "stage", "default"),
         ("typed", "stage again", "default"),
-        ("legacy", "registered"),
-        ("legacy", "committed", "default"),
+        ("early", "registered"),
+        ("early", "committed", "default"),
         ("typed", "committed", "default"),
     ]
 
