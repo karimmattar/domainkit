@@ -29,7 +29,7 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.types import TypeEngine
+from sqlalchemy.types import TypeEngine, UserDefinedType
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -346,6 +346,26 @@ def test_revisions_render_a_value_object_around_an_amount_or_a_time() -> None:
     assert render_item("type", ValueObjectType(Label, Interval()), context) == (
         "sa.Interval()"
     )
+
+
+class Point(UserDefinedType[str]):
+    """A project's own type, not a decorator: Alembic renders it."""
+
+    cache_ok = True
+
+    def get_col_spec(self) -> str:
+        """``POINT``."""
+        return "POINT"
+
+
+def test_revisions_leave_other_types_to_alembic() -> None:
+    """SQLAlchemy's own decorators and a project's own types render as Alembic does."""
+    context = AutogenContext(MigrationContext.configure(dialect_name="sqlite"))
+
+    assert render_item("type", Interval(), context) is False
+    assert render_item("type", Point(), context) is False
+    assert render_item("type", ValueObjectType(Label, Point()), context) is False
+    assert render_item("server_default", EnumValue(Color), context) is False
 
 
 def test_makemigrations_writes_a_revision_of_amounts_and_times_that_runs(
