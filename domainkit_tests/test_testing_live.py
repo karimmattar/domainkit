@@ -1,6 +1,7 @@
 """``live_server``: the application on a port of the test process."""
 
 import asyncio
+import logging
 import socket
 import sys
 import threading
@@ -199,12 +200,20 @@ def test_uvicorn_guesses_nothing_and_adds_nothing(
         def __call__(self, *args: Any) -> Awaitable[None]:  # noqa: ANN401 - ASGI's.
             return app(*args)
 
+    # uvicorn warns when it guesses; its startup lines are INFO, which a test
+    # that configured logging before this one may have let through.
+    caplog.set_level(logging.WARNING, logger="uvicorn")
     for wrapped in (AnyArguments(), Plain()):
         with LiveServer(wrapped) as server:
             seen = httpx2.get(server.url, headers={"X-Forwarded-For": "203.0.113.9"})
             assert seen.json() == {"client": "127.0.0.1"}
             assert "server" not in seen.headers
-    assert [r.name for r in caplog.records if r.name.startswith("uvicorn")] == []
+    warned = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name.startswith("uvicorn") and r.levelno >= logging.WARNING
+    ]
+    assert warned == []
 
 
 def test_a_startup_the_application_does_not_answer_fails(
