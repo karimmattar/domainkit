@@ -27,7 +27,7 @@ and a status.
   `dumpdata` writes every column, so only hand-written fixtures met it.
   Each row is now written with the columns it names, rows in order; a
   fixture whose rows all name the same columns is written in as many
-  statements as before.
+  statements as before (ADR 0100's amendment).
 - `docs/auth/authentication.md` said a request's cached user keeps the
   password hash while `request.user.password` is deprecated. It was
   removed in 0.10, and nothing keeps the hash.
