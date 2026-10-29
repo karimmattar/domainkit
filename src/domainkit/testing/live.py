@@ -45,9 +45,8 @@ class LiveServer:
         self.host = host
         self.port = 0
         """The port it listens on, once entered."""
-        self._socket: socket.socket | None = None
-        self._server: uvicorn.Server | None = None
-        self._thread: threading.Thread | None = None
+        self._running: tuple[uvicorn.Server, threading.Thread, socket.socket] | None
+        self._running = None
 
     @property
     def url(self) -> str:
@@ -62,17 +61,17 @@ class LiveServer:
         """
         listening = socket.socket()
         listening.bind((self.host, 0))
-        self._socket = listening
         self.port = listening.getsockname()[1]
         config = uvicorn.Config(
             self.app, lifespan="on", log_config=None, access_log=False
         )
-        self._server = server = uvicorn.Server(config)
-        self._thread = thread = threading.Thread(
+        server = uvicorn.Server(config)
+        thread = threading.Thread(
             target=copy_context().run,
             args=(_serve, server, listening),
             name=f"live-server-{self.port}",
         )
+        self._running = (server, thread, listening)
         thread.start()
         while not server.started and thread.is_alive():
             thread.join(WAIT_SECONDS)
@@ -90,14 +89,17 @@ class LiveServer:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Stop serving, shut the application down, and free the port."""
-        if self._server is not None:
-            self._server.should_exit = True
-        if self._thread is not None:
-            self._thread.join()
-        if self._socket is not None:
-            self._socket.close()
-        self._server = self._thread = self._socket = None
+        """Stop serving, shut the application down, and free the port.
+
+        Once stopped, or before it started, there is nothing to do.
+        """
+        if self._running is None:
+            return
+        server, thread, listening = self._running
+        self._running = None
+        server.should_exit = True
+        thread.join()
+        listening.close()
 
 
 def _serve(server: uvicorn.Server, listening: socket.socket) -> None:

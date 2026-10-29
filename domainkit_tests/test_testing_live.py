@@ -143,7 +143,10 @@ def test_the_server_stops_when_the_block_ends() -> None:
     def root() -> dict[str, str]:
         return {"python": sys.version.split()[0]}
 
-    with LiveServer(app) as server:
+    server = LiveServer(app)
+    server.__exit__(None, None, None)  # Not started: nothing to stop.
+    with server:
         assert httpx2.get(server.url).json() == {"python": sys.version.split()[0]}
     with pytest.raises(ConnectionRefusedError):
         socket.create_connection((server.host, server.port)).close()
+    server.__exit__(None, None, None)  # Stopped already.
