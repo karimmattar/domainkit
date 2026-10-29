@@ -222,6 +222,18 @@ async def _scalars(statement: Any) -> list[Any]:  # noqa: ANN401 - any query.
         await connections.close_all()
 
 
+async def _rows(statement: Any) -> list[tuple[Any, ...]]:  # noqa: ANN401 - any query.
+    """Run a query on the default database; every row, by its first column."""
+    try:
+        async with connections.engine().connect() as connection:
+            return [
+                tuple(row)
+                for row in await connection.execute(statement.order_by(text("1")))
+            ]
+    finally:
+        await connections.close_all()
+
+
 def count(table: Table) -> int:
     """The rows ``table`` holds."""
     return int(asyncio.run(_scalar(select(func.count()).select_from(table))))
@@ -824,6 +836,85 @@ def test_loading_works_in_chunks(
     ]
     assert len(inserts) == 3
     assert count(kind_tags) == 5
+
+
+def test_rows_load_every_column_they_name(project: str, tmp_path: Path) -> None:
+    """A column one row leaves out and another gives is loaded where given.
+
+    Until 0.12.1 the rows of a table went to one ``executemany``, which
+    takes its columns from the first row: a column the first row left out
+    was dropped from every later row without a word, and one it named but
+    a later row left out failed the load. Rows naming the same columns
+    still go together, in order.
+    """
+    path = tmp_path / "kinds.json"
+    rows = [
+        {"id": 2, "label": "no day"},
+        {"id": 3, "label": "a day", "day": "2026-10-29"},
+        {"id": 4, "label": "an hour", "hour": "09:15:00"},
+        {"id": 5, "hour": "10:00:00", "label": "and another"},
+        {"id": 6, "label": "no day again"},
+    ]
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": kinds.name, "rows": rows}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with CapturedQueries() as queries:
+        plan = run("loaddata", str(path))
+
+    assert plan == (
+        f"{path}: framework_test_kinds: 5 rows\nLoaded 5 rows from {path}.\n"
+    )
+    stored = asyncio.run(
+        _rows(select(kinds.c.id, kinds.c.label, kinds.c.day, kinds.c.hour))
+    )
+    assert stored[1:] == [
+        (2, "no day", None, None),
+        (3, "a day", date(2026, 10, 29), None),
+        (4, "an hour", None, time(9, 15)),
+        (5, "and another", None, time(10)),
+        (6, "no day again", None, None),
+    ]
+    inserts = [
+        each
+        for each in queries.statements
+        if each.startswith(f"INSERT INTO {kinds.name}")
+    ]
+    assert len(inserts) == 4  # One per run of rows naming the same columns.
+
+
+def test_rows_naming_different_columns_replace_what_they_name(
+    project: str, tmp_path: Path
+) -> None:
+    """With ``--replace``, each row replaces the stored one, counted once."""
+    path = tmp_path / "kinds.json"
+    rows = [
+        {"id": 1, "label": "replaced"},
+        {"id": 2, "label": "added", "day": "2026-10-29"},
+    ]
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": kinds.name, "rows": rows}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plan = run("loaddata", str(path), "--replace")
+
+    assert plan.startswith(f"{path}: framework_test_kinds: 2 rows, replacing 1\n")
+    stored = asyncio.run(_rows(select(kinds.c.id, kinds.c.label, kinds.c.day)))
+    assert stored == [(1, "replaced", None), (2, "added", date(2026, 10, 29))]
 
 
 def test_dry_runs_cover_every_fixture(project: str, tmp_path: Path) -> None:

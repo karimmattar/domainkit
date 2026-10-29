@@ -22,6 +22,26 @@ and a status.
   shutdown) now gives that lease back. The driver could commit it after
   the relay was cut off, and the messages then stayed locked until the
   lease ran out, past the shutdown that was to unlock them (CONC-05).
+- `makemigrations` wrote a revision that failed with `NameError` when it
+  ran, for a table with a one-field value object around a `Decimal` or a
+  `datetime` (`Code(value: Annotated[Decimal, Digits(6, 3)])`): it named
+  `domainkit.db.derive.ValueObjectType(Code, ExactDecimal(...))`, which the
+  revision never imports. Such a column is now written as what it stores
+  (`sa.Numeric(precision=6, scale=3)`, `sa.DateTime(timezone=True)`), as
+  `docs/databases.md` says. A revision already written by hand is not
+  changed.
+- `loaddata` dropped a column from every row of a table after the first,
+  when the first row left it out, and said it loaded them: `{"id": 1}`
+  then `{"id": 2, "day": "2026-10-29"}` stored the second row's `day` as
+  null. The other way round, a first row naming a column a later row
+  leaves out, failed the load with SQLAlchemy's `InvalidRequestError`.
+  `dumpdata` writes every column, so only hand-written fixtures met it.
+  Each row is now written with the columns it names, rows in order; a
+  fixture whose rows all name the same columns is written in as many
+  statements as before (ADR 0100's amendment).
+- `docs/auth/authentication.md` said a request's cached user keeps the
+  password hash while `request.user.password` is deprecated. It was
+  removed in 0.10, and nothing keeps the hash.
 
 ## [0.12.0] - 2026-10-28
 

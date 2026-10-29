@@ -1171,6 +1171,9 @@ not fit without quoting it. A number with a fraction reaches a decimal
 column with every digit, as written (`1234567890123456.78`), never through
 a float; other columns get it as a float. Rows load in one transaction,
 and on PostgreSQL serial ids then continue after the highest one loaded.
+Rows of one table may name different columns (a hand-written fixture
+leaves out what it has no value for): each row is written with the
+columns it names.
 
 A load only adds rows: a row whose primary key is stored refuses the
 whole fixture, before anything is written, unless `--replace` is given,
