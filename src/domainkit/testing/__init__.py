@@ -90,7 +90,13 @@ from domainkit.management.base import run_async
 from domainkit.reporting import flush_reports
 
 from . import blocking
-from .clients import AsyncTestClient, TestClient, token_for, user_token
+from .clients import (
+    AsyncTestClient,
+    TestClient,
+    browser_session_for,
+    token_for,
+    user_token,
+)
 from .databases import IN_MEMORY, REFUSAL, DatabaseBlocker, migrated_database, worker_id
 from .factories import (
     Factory,
@@ -130,6 +136,7 @@ __all__ = [
     "Trait",
     "assert_max_queries",
     "assert_num_queries",
+    "browser_session_for",
     "freeze_time",
     "migrated_database",
     "post_generation",

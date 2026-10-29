@@ -1357,6 +1357,7 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `Trait`: `shipped = Trait(status="shipped")` in `class Params`: defaults to turn on.
 - `assert_max_queries`: Check that the `with` block runs at most `limit` SQL statements.
 - `assert_num_queries`: Check that the `with` block runs exactly `expected` SQL statements.
+- `browser_session_for`: Return the headers of a browser signed in as `user`, a user stored already.
 - `freeze_time`: Return a clock frozen at `when` (default: now), for a `with` block.
 - `migrated_database`: Make, migrate, and later drop the test databases; yield the default's URL.
 - `post_generation`: Run the decorated method on each object made: `(made, create, extracted)`.
