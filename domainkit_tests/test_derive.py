@@ -20,6 +20,7 @@ from sqlalchemy import (
     Double,
     Index,
     Integer,
+    Interval,
     MetaData,
     String,
     Text,
@@ -269,6 +270,28 @@ def test_revisions_name_the_storage_types() -> None:
     assert render_item("type", EnumValue(Size), context) == "sa.Integer()"
     assert render_item("type", ValueObjectType(Label, String(20)), context) == (
         "sa.String(length=20)"
+    )
+
+
+def test_revisions_follow_a_value_object_down_to_what_it_stores() -> None:
+    """One around another, or around an amount or a time, renders as its storage.
+
+    Until 0.13 Alembic rendered these as ``domainkit.db.derive.ValueObjectType(
+    Code, ValueObjectType(...))``, naming classes the revision never imports,
+    so it failed to run. SQLAlchemy's own decorators keep their names.
+    """
+    context = AutogenContext(MigrationContext.configure(dialect_name="sqlite"))
+    nested = ValueObjectType(Label, ValueObjectType(Label, String(20)))
+
+    assert render_item("type", nested, context) == "sa.String(length=20)"
+    assert render_item("type", ValueObjectType(Label, ExactDecimal(6, 3)), context) == (
+        "sa.Numeric(precision=6, scale=3)"
+    )
+    assert render_item("type", ValueObjectType(Label, UTCDateTime()), context) == (
+        "sa.DateTime(timezone=True)"
+    )
+    assert render_item("type", ValueObjectType(Label, Interval()), context) == (
+        "sa.Interval()"
     )
 
 
