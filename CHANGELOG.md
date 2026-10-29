@@ -64,6 +64,21 @@ and a status.
   `@pytest.mark.allow_database`, or set `domainkit_allow_database = true`
   in the pytest settings. It costs a test nothing measurable (ADR 0112)
   (TEST-08).
+- The reference is a page for each area, under `docs/reference/`:
+  settings, databases and the other backends, HTTP, server limits,
+  deployment checks, errors and responses, signing, observability, the
+  test plugin, commands, and extension points; the public API is a page
+  for each part of the package, under `docs/api/`. `docs/reference.md`
+  and `docs/api.md` list the pages, and each section keeps its name and
+  its anchor on its new page; a link into `reference.md#<section>` from
+  before opens the list. The comments `init` writes, and the error
+  `SECRET_KEY` unset raises, name the new pages (DOCS-05; ADR 0114).
+- The weekly mutation run maps a function behind a cache to every test
+  that reaches it, not only the first: the tests empty domainkit's caches
+  before each test of mutmut's stats run. The longest tests that checked
+  several behaviours are split into one test each, and the survivors of
+  the run on 0.12.0 that pointed at missing tests are killed; the audit
+  page lists, by module, what is left (TEST-06, TEST-07; ADR 0106).
 
 ### Removed
 

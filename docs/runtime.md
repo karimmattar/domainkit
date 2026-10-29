@@ -10,7 +10,7 @@ code is found before production, and which servers and Python builds
 domainkit runs on; how workers and the outbox stay correct under outages;
 and how a busy service stays responsive: request deadlines, load shedding,
 database timeouts, and outgoing calls. Settings are in
-[reference.md](reference.md#core).
+[reference/settings.md](reference/settings.md#core).
 
 ## Background tasks: spawn and supervise
 
@@ -530,7 +530,7 @@ domainkit is an ASGI application, served by
 [uvicorn](https://www.uvicorn.org/) (a dependency) or
 [Granian](https://github.com/emmett-framework/granian) (the `granian`
 extra). `manage.py runserver --server granian` develops on Granian;
-[reference.md](reference.md#server-limits) gives a production command and
+[reference/servers.md](reference/servers.md) gives a production command and
 the limits for each.
 
 - **uvicorn** is Python on uvloop and httptools. It answers 503 past
@@ -861,7 +861,7 @@ Retry-After: 1
   `REQUEST_BODY_TIMEOUT` seconds (10) in all, and closes the connection.
   A buffering proxy in front (nginx's `proxy_request_buffering on`) still
   reads slow bodies before the application sees them
-  ([reference.md](reference.md#server-limits)).
+  ([reference/servers.md](reference/servers.md)).
 - Shedding is logged at most every 10 seconds, with a count. With
   `domainkit[metrics]`, `http_requests_admitted` and `http_requests_queued`
   show the slots and the queue, and `http_requests_shed_total` counts
@@ -878,7 +878,7 @@ Retry-After: 1
 Set the cap from what the process can finish: with a database pool of
 `POOL_SIZE` plus `MAX_OVERFLOW` connections, requests past a few times that
 only queue for connections. Keep uvicorn's `--limit-concurrency` above
-the cap plus the queue, as a backstop ([reference.md](reference.md#server-limits)).
+the cap plus the queue, as a backstop ([reference/servers.md](reference/servers.md)).
 ADR 0049 explains the choices.
 
 ## Database timeouts and PgBouncer

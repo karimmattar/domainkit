@@ -12,7 +12,7 @@ how. [operations.md](operations.md) explains what runs and why;
   build stage; the code copied as root and run as uid 10001, who can
   write nothing in `/app`; `<PREFIX>SETTINGS_MODULE` set to
   `config.settings.production`; uvicorn with the limits of
-  [Server limits](reference.md#server-limits). `WEB_CONCURRENCY` sets
+  [Server limits](reference/servers.md). `WEB_CONCURRENCY` sets
   its worker processes, one per core. `.dockerignore` lets in only
   `manage.py`, `pyproject.toml`, `src/`, and `migrations/`, and keeps env
   files, `secrets/`, and SQLite files out even there: add a `!` line for
@@ -64,7 +64,7 @@ how. [operations.md](operations.md) explains what runs and why;
       `X-Request-ID`** over what a caller sent
       ([Request ids](operations.md#request-ids)).
 - [ ] **The proxy limits** header sizes and slow clients
-      ([Server limits](reference.md#server-limits)).
+      ([Server limits](reference/servers.md)).
 - [ ] **Probes send a `Host` of `ALLOWED_HOSTS`.** `/health` for
       liveness and `/ready` for readiness; a request with any other host
       is answered 400, a probe's included. On Kubernetes:

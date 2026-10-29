@@ -462,24 +462,29 @@ def test_only_types_some_subject_has_are_checked(
 # Erasure ---------------------------------------------------------------------------
 
 
-def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
-    """Fields become None, empty, or unique placeholders; others stay; all audited."""
+def erase_ann(*, times: int = 1) -> list[int]:
+    """Fill the clinic, audit a view of Ann, and erase her ``times``: the counts.
 
-    async def erase() -> tuple[int, int]:
+    The first erasure gives the reason ``ticket 42``; the next ones none.
+    """
+
+    async def erase() -> list[int]:
         await fill()
         await record("clinic.viewed", personal={"name": "Ann"}, subject=str(ANN))
-        first = await erase_subject(str(ANN), reason="ticket 42")
-        again = await erase_subject(str(ANN))
-        return first, again
+        counts = [await erase_subject(str(ANN), reason="ticket 42")]
+        counts += [await erase_subject(str(ANN)) for _ in range(times - 1)]
+        return counts
 
-    first, again = run_async(erase())
+    return run_async(erase())
+
+
+def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
+    """Fields become None or empty, versions go up; others' rows and fields stay."""
+    assert erase_ann() == [8]
+
     patients = run_async(rows_of(tables.patients))
     visits = run_async(rows_of(tables.visits))
     appointments = run_async(rows_of(tables.appointments))
-    cards = run_async(rows_of(tables.cards))
-    badges = run_async(rows_of(tables.badges))
-
-    assert (first, again) == (8, 1)  # The badge erases itself every time.
     assert [(p["name"], p["email"], p["version"]) for p in patients] == [
         ("", None, 2),
         ("Bob", None, 1),
@@ -493,6 +498,13 @@ def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
         ("", "555-0100"),
         ("Bob", None),
     ]
+
+
+def test_unique_personal_fields_get_unique_placeholders(clinic: str) -> None:
+    """Each card's number and code a placeholder of its own, cut to its column."""
+    erase_ann()
+
+    cards = run_async(rows_of(tables.cards))
     numbers = [card["number"] for card in cards]
     assert all(number.startswith(ERASED) for number in numbers)
     assert len(set(numbers)) == 2
@@ -501,9 +513,24 @@ def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
     assert all(code.startswith(ERASED) and len(code) == 16 for code in codes)
     assert len(set(codes)) == 2
     assert [card["nickname"] for card in cards] == ["", ""]
+
+
+def test_an_aggregate_that_erases_itself_is_called_every_time(clinic: str) -> None:
+    """Its own ``erase_personal_data`` runs on each erasure; it keeps ``born_on``."""
+    assert erase_ann(times=2) == [8, 1]
+
+    badges = run_async(rows_of(tables.badges))
     assert [(b["born_on"], b["erased_count"]) for b in badges] == [
         (date(1990, 1, 1), 2)
     ]
+
+
+def test_each_aggregate_erased_is_audited_with_its_fields_and_reason(
+    clinic: str,
+) -> None:
+    """A ``privacy.personal_data_erased`` per aggregate, each naming its model."""
+    erase_ann(times=2)
+
     events = run_async(audited("privacy.personal_data_erased"))
     assert len(events) == 9
     assert {
@@ -526,6 +553,14 @@ def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
         ("patients.card", "2"),
         ("patients.badge", "7"),
     }
+
+
+def test_an_erasure_is_audited_and_forgets_the_subjects_pseudonyms(
+    clinic: str,
+) -> None:
+    """A ``privacy.erase`` per run, with its count and reason; Ann's name unlinked."""
+    erase_ann(times=2)
+
     erasures = run_async(audited("privacy.erase"))
     assert [(row["target"], row["details"]) for row in erasures] == [
         (str(ANN), {"aggregates": 8, "reason": "ticket 42"}),
@@ -666,27 +701,48 @@ async def fill_old() -> None:
     )
 
 
-def test_retention_deletes_old_rows_and_erases_old_aggregates(
-    clinic: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Rows past ``keep`` go, in batches; old visits keep rows, not notes."""
-    monkeypatch.setattr(operations, "BATCH_SIZE", 2)
-    deleted, loaded = watch_batches(monkeypatch)
+def visits_kept() -> dict[int, tuple[Any, Any]]:
+    """Each stored visit's personal fields, by id."""
+    return {
+        row["id"].int: (row["notes"], row["symptoms"])
+        for row in run_async(rows_of(tables.visits))
+    }
 
-    async def apply() -> tuple[list[Any], list[Any]]:
-        await fill_old()
-        preview = await purge(dry_run=True, now=NOW)
-        done = await purge(now=NOW)
-        return preview, done
 
-    preview, done = run_async(apply())
-    batches = (list(deleted), list(loaded))
+def test_a_dry_run_of_retention_counts_what_it_would_do(clinic: str) -> None:
+    """Each policy's count, as "would delete" and "would erase"; nothing changes."""
 
-    assert [(r.policy, r.action, r.count) for r in preview] == [
+    def stored() -> tuple[Any, ...]:
+        return (
+            run_async(rows_of(tables.access_log)),
+            run_async(rows_of(tables.daily_counts)),
+            visits_kept(),
+        )
+
+    run_async(fill_old())
+    before = stored()
+
+    previewed = run_async(purge(dry_run=True, now=NOW))
+
+    assert [(r.policy, r.action, r.count) for r in previewed] == [
         ("patients.patients_access_log", "would delete", 3),
         ("patients.patients_daily_counts", "would delete", 4),
         ("patients.patients_visits", "would erase", 3),
     ]
+    assert stored() == before
+    assert [len(each) for each in before] == [5, 8, 5]
+    assert run_async(audited("privacy.purge")) == []
+
+
+def test_retention_deletes_old_rows_and_erases_old_aggregates(clinic: str) -> None:
+    """Rows past ``keep`` go; old visits keep their rows, not their notes."""
+
+    async def apply() -> list[Any]:
+        await fill_old()
+        return await purge(now=NOW)
+
+    done = run_async(apply())
+
     assert [(r.policy, r.database, r.action, r.count, r.refused) for r in done] == [
         ("patients.patients_access_log", "default", "deleted", 3, None),
         ("patients.patients_daily_counts", "default", "deleted", 4, None),
@@ -697,17 +753,25 @@ def test_retention_deletes_old_rows_and_erases_old_aggregates(
     assert [row["id"] for row in run_async(rows_of(tables.access_log))] == [1, 2]
     days = {row["day"] for row in run_async(rows_of(tables.daily_counts))}
     assert days == {date(2026, 10, 18), date(2026, 10, 12)}
-    visits = {
-        row["id"].int: (row["notes"], row["symptoms"])
-        for row in run_async(rows_of(tables.visits))
-    }
-    assert visits == {
+    assert visits_kept() == {
         1: ("note 1", "cough 1"),
         2: (None, None),
         3: (None, None),
         4: (None, None),
         5: (None, None),
     }
+    assert run_async(purge(now=NOW))[2].count == 0  # Nothing left to erase.
+
+
+def test_retention_is_audited_per_policy(clinic: str) -> None:
+    """A ``privacy.purge`` per policy, its cutoff and rows; erasures as retention."""
+
+    async def apply() -> None:
+        await fill_old()
+        await purge(now=NOW)
+
+    run_async(apply())
+
     purges = run_async(audited("privacy.purge"))
     assert [
         (row["target"], row["outcome"], row["details"]["rows"]) for row in purges
@@ -738,12 +802,31 @@ def test_retention_deletes_old_rows_and_erases_old_aggregates(
     ]
     erased = run_async(audited("privacy.personal_data_erased"))
     assert {row["details"]["reason"] for row in erased} == {"retention"}
+
+
+def test_retention_works_in_batches(
+    clinic: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deletes and erasures of ``BATCH_SIZE`` rows at a time, counted together."""
+    monkeypatch.setattr(operations, "BATCH_SIZE", 2)
+    deleted, loaded = watch_batches(monkeypatch)
+
+    async def apply() -> list[Any]:
+        await fill_old()
+        return await purge(now=NOW)
+
+    done = run_async(apply())
+
+    assert [(r.action, r.count) for r in done] == [
+        ("deleted", 3),
+        ("deleted", 4),
+        ("erased", 3),
+    ]
     # Deleted 2 then 1 log rows, 2, 2, then none of the counts; erased 2, then 1.
-    assert batches == (
+    assert (deleted, loaded) == (
         ["patients_access_log"] * 2 + ["patients_daily_counts"] * 3,
         [2, 1],
     )
-    assert run_async(purge(now=NOW))[2].count == 0  # Nothing left to erase.
 
 
 def watch_batches(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[int]]:
@@ -875,10 +958,12 @@ def clinic_shards(make_database: MakeDatabase, tmp_path: Path) -> Iterator[None]
     registry.clear()
 
 
-def test_every_shard_is_searched_erased_and_purged(
-    clinic_shards: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Each database of the domain's shard group, one after the other."""
+@pytest.fixture
+def ann_on_shards(clinic_shards: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ann on one shard, her visit on the other, access logs on both, 40 days old.
+
+    The domain keeps two policies: the access log's, and the visits'.
+    """
     log = PatientsConfig.RETENTION[0]
     monkeypatch.setattr(PatientsConfig, "RETENTION", (log, PatientsConfig.RETENTION[2]))
     patient = {
@@ -889,7 +974,7 @@ def test_every_shard_is_searched_erased_and_purged(
         "version": 1,
     }
 
-    async def scenario() -> tuple[dict[str, Any], int, list[Any], list[Any]]:
+    async def fill() -> None:
         await insert_rows(tables.patients, patient, database="clinic_a")
         await insert_rows(tables.visits, visit(1, days=400), database="clinic_b")
         for database, numbers in (("clinic_a", (1, 2)), ("clinic_b", (3,))):
@@ -901,18 +986,33 @@ def test_every_shard_is_searched_erased_and_purged(
                 ),
                 database=database,
             )
-        exported = await export_subject(str(ANN))
-        erased = await erase_subject(str(ANN))
-        preview = await purge(dry_run=True, now=NOW)
-        done = await purge(now=NOW)
-        return exported, erased, preview, done
 
-    exported, erased, preview, done = run_async(scenario())
+    run_async(fill())
+
+
+def test_every_shard_is_searched_for_an_export(ann_on_shards: None) -> None:
+    """A subject's export holds what each database of the group holds of them."""
+    exported = run_async(export_subject(str(ANN)))
 
     assert sorted(exported["domains"]["patients"]) == ["patient", "visit"]
+
+
+def test_every_shard_is_erased(ann_on_shards: None) -> None:
+    """An erasure reaches the patient on one shard and the visit on the other."""
+    erased = run_async(erase_subject(str(ANN)))
+
     assert erased == 2
     assert [p["name"] for p in run_async(rows_of(tables.patients, "clinic_a"))] == [""]
     assert [v["notes"] for v in run_async(rows_of(tables.visits, "clinic_b"))] == [None]
+
+
+def test_every_shard_is_purged_one_after_the_other(ann_on_shards: None) -> None:
+    """Each policy on each database in turn: previewed, applied, and audited."""
+    run_async(erase_subject(str(ANN)))
+
+    preview = run_async(purge(dry_run=True, now=NOW))
+    done = run_async(purge(now=NOW))
+
     assert [(r.policy, r.database, r.action, r.count) for r in preview] == [
         ("patients.patients_access_log", "clinic_a", "would delete", 2),
         ("patients.patients_access_log", "clinic_b", "would delete", 1),
@@ -933,6 +1033,12 @@ def test_every_shard_is_searched_erased_and_purged(
         "clinic_b",
     ]
 
+
+def test_a_shard_that_refuses_a_purge_is_reported_and_the_rest_go_on(
+    ann_on_shards: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A delete refused on each shard is reported per database; erasures still run."""
+
     class Refusal(Exception):
         sqlstate = "23503"
 
@@ -940,7 +1046,9 @@ def test_every_shard_is_searched_erased_and_purged(
         raise DBAPIError("DELETE", None, Refusal("referenced"))
 
     monkeypatch.setattr(operations, "_delete_old", refuse)
+
     refused = run_async(purge(now=NOW))
+
     assert [(r.database, r.refused is None) for r in refused] == [
         ("clinic_a", False),
         ("clinic_b", False),

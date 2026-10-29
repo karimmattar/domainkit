@@ -1,11 +1,11 @@
 """MkDocs hooks for the documentation site (``hooks:`` in ``mkdocs.yml``).
 
-- **The API reference.** For every module ``docs/api.md`` lists, a page
-  ``reference/api/<module>.md`` renders the docstrings of exactly the names
-  listed there, with mkdocstrings, beside an index of the modules. The
-  pages exist only in the build: ``docs/api.md`` is the public API (ADR
-  0076) and the docstrings are the text, so neither is written twice, and a
-  name added to both shows up without a change here.
+- **The API reference.** For every module ``docs/api.md``'s pages list
+  (``docs/api/*.md``), a page ``reference/api/<module>.md`` renders the
+  docstrings of exactly the names listed there, with mkdocstrings, beside
+  an index of the modules. The pages exist only in the build: the list is
+  the public API (ADR 0076) and the docstrings are the text, so neither is
+  written twice, and a name added to both shows up without a change here.
 - **Links out of ``docs/``.** A page may link a file beside the docs, such
   as ``../SECURITY.md``, which GitHub shows; on the site, that link goes to
   the file on GitHub instead, since the site holds only ``docs/``.
@@ -72,10 +72,17 @@ def index_page(found: dict[str, tuple[str, list[str]]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def listed(docs: Path) -> dict[str, tuple[str, list[str]]]:
+    """Every module the public API's pages list, in the order of their names."""
+    found: dict[str, tuple[str, list[str]]] = {}
+    for page in sorted((docs / "api").glob("*.md")):
+        found |= modules(page.read_text(encoding="utf-8"))
+    return dict(sorted(found.items()))
+
+
 def on_files(files: Files, config: Any) -> Files:  # noqa: ANN401 - MkDocsConfig.
     """Add the API reference's pages to the site."""
-    api = Path(config["docs_dir"], "api.md").read_text(encoding="utf-8")
-    found = modules(api)
+    found = listed(Path(config["docs_dir"]))
     files.append(
         File.generated(config, f"{PREFIX}/index.md", content=index_page(found))
     )

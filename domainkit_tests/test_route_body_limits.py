@@ -319,6 +319,17 @@ def test_a_routes_limit_is_bounded(size: int) -> None:
         body_limit(size)
 
 
+@pytest.mark.parametrize("size", [1, 2, MAX_ROUTE_BODY_SIZE])
+def test_a_routes_limit_may_be_one_byte_to_the_largest(size: int) -> None:
+    """The bounds are the limit's own: one byte is a limit, as 1 GiB is."""
+
+    async def endpoint() -> None:
+        """Take nothing."""
+
+    assert body_limit(size)(endpoint) is endpoint
+    assert route_body_limit(SimpleNamespace(endpoint=endpoint)) == size
+
+
 def test_limits_mark_the_endpoint() -> None:
     """Either side of the route's decorator, the endpoint carries the limit."""
 

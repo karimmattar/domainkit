@@ -16,7 +16,7 @@ INSTALLED_DOMAINS = [
 ]
 ROOT_ROUTER = "config.urls.router"
 # /docs, /redoc, and /openapi.json follow DEBUG: on locally, off when
-# deployed; API_DOCS = True serves them anywhere (docs/reference.md).
+# deployed; API_DOCS = True serves them anywhere (docs/reference/http.md).
 # Every request is authenticated; routes say who may call them (docs/auth.md).
 MIDDLEWARE = [
     "domainkit.http.middleware.ProxyHeadersMiddleware",
@@ -39,7 +39,7 @@ LANGUAGES = [("en", "English"), ("ar", "Arabic")]
 TIME_ZONE = "UTC"
 
 # Operation ids are route names, so generated clients keep their method
-# names when routers move (docs/reference.md, "The API surface").
+# names when routers move (docs/reference/responses.md, "The API surface").
 OPENAPI_OPERATION_IDS = "route_name"
 # Lines leave through a bounded queue and a thread, so writing them never
 # holds the event loop (docs/runtime.md, "Logging").

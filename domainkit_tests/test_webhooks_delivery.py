@@ -7,8 +7,8 @@ import socket
 import sys
 import threading
 import uuid
-from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime, timedelta
+from collections.abc import AsyncIterator, Callable, Iterator
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -20,6 +20,7 @@ from domainkit.conf import UNSET, override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging import worker as worker_module
+from domainkit.contrib.messaging.retry import Backoff
 from domainkit.contrib.messaging.tables import DONE, messages
 from domainkit.contrib.messaging.testing import drain
 from domainkit.contrib.webhooks import delivery as delivery_module
@@ -915,6 +916,42 @@ async def test_the_purge_runs_hourly(hooks: Receiver) -> None:
 
     assert [row.id for row in await rows(deliveries)] != [old.id]
     assert len(await rows(deliveries)) == 1
+
+
+async def test_deliveries_run_as_the_settings_say(hooks: Receiver) -> None:
+    """The task's queue, attempts, backoff, and a time limit past ``TIMEOUT``.
+
+    The limit leaves the delivery 30 seconds of its own for the database
+    after the call (``DATABASE_MARGIN``).
+    """
+    from domainkit.contrib.messaging import registry as tasks
+
+    spec = tasks.get_task(delivery_module.DELIVER)
+
+    assert spec is not None
+    assert (spec.max_attempts, spec.timeout) == (3, 2 + 30.0)
+    assert spec.backoff == Backoff(0.001, 0.001)
+
+
+def test_a_body_is_compact_json_with_its_text_as_written(
+    local_zone: Callable[[str], None],
+) -> None:
+    """What is signed: no spaces, non-ASCII text unescaped, the time in UTC.
+
+    Whatever the process's own time zone: the timestamp ends in ``Z``.
+    """
+    local_zone("Asia/Tokyo")
+    occurred = datetime(2026, 10, 29, 12, tzinfo=timezone(timedelta(hours=2)))
+
+    body = delivery_module.body_of("note.written", {"name": "Zoë", "n": 1}, occurred)
+
+    assert (
+        body
+        == (
+            '{"type":"note.written","timestamp":"2026-10-29T10:00:00Z",'
+            '"data":{"name":"Zoë","n":1}}'
+        ).encode()
+    )
 
 
 def test_webhooks_need_messaging(database_url: str) -> None:

@@ -487,6 +487,40 @@ def test_request_body_limits(make_client: MakeClient) -> None:
     assert streamed.json()["detail"] == "Request body too large."
 
 
+def test_a_callers_repeated_refusals_are_held_back_by_their_kind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Each kind of refusal is counted apart, under the caller's address.
+
+    The second of each is held back, and written as a count when the
+    application stops: ``invalid_host`` and ``body_too_large`` lines.
+    """
+    caplog.set_level(logging.WARNING, logger=SECURITY_LOGGER)
+    with (
+        override_settings(MAX_REQUEST_BODY_SIZE=10),
+        TestClient(get_asgi_application(), client=("203.0.113.9", 1)) as caller,
+    ):
+        for _ in range(2):
+            assert (
+                caller.get("/ok", headers={"Host": "evil.example"}).status_code == 400
+            )
+            assert caller.post("/echo", content=b"x" * 11).status_code == 413
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+    ]
+    assert lines[:2] == [
+        "Rejected untrusted Host header 'evil.example'",
+        "Rejected request body of 11 bytes (limit 10)",
+    ]
+    assert sorted(lines[2:]) == [  # In the order their keys were last written.
+        "1 more body_too_large line(s) for ip:203.0.113.9 were held back",
+        "1 more invalid_host line(s) for ip:203.0.113.9 were held back",
+    ]
+
+
 @pytest.mark.parametrize(
     ("kind", "status", "code"),
     [

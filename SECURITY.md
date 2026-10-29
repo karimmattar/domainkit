@@ -40,7 +40,7 @@ must say who may call it (`Require`, or `Public` for anyone): `check` lists
 routes that do not, and staging and production refuse to start with any.
 Staff using the admin API can grant only the permissions they hold. The
 settings reference
-([docs/reference.md](docs/reference.md)) lists every control, and
+([docs/reference.md](docs/reference.md), a page for each area) lists every control, and
 [docs/threat-model.md](docs/threat-model.md) what they defend against,
 boundary by boundary, and what is left to a project.
 

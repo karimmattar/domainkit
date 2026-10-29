@@ -9,7 +9,7 @@ domainkit itself is in [SECURITY.md](../SECURITY.md).
 
 "Refused" means startup fails with `ENVIRONMENT` set to `staging` or
 `production`, naming the setting; "warned" means `python manage.py check`
-warns there ([reference.md](reference.md#deployment-checks) has the whole
+warns there ([reference/checks.md](reference/checks.md) has the whole
 list). Run `check` with the production settings in CI, so neither
 surprises a rollout.
 
@@ -40,7 +40,7 @@ surprises a rollout.
       (warned when 0), and `TRUSTED_PROXIES` naming the proxies' networks
       only (every address is refused; none behind a load balancer is warned).
 - [ ] The server run with its own limits and `--no-proxy-headers`
-      ([reference.md](reference.md#server-limits)), behind a proxy that
+      ([reference/servers.md](reference/servers.md)), behind a proxy that
       bounds headers and slow clients.
 - [ ] The proxy sets `X-Request-ID` itself, over a client's or in a line
       after it, or `ACCEPT_REQUEST_ID = "never"`: request ids come from trusted proxies
@@ -118,7 +118,7 @@ surprises a rollout.
 - [ ] `loaddata --include-guarded` and `flush --include-guarded` kept for
       a restore you planned: without it, users, permissions, grants,
       tokens, and second factors are left alone
-      ([reference.md](reference.md#data-fixtures-flush-and-seeds)).
+      ([reference/commands.md](reference/commands.md#data-fixtures-flush-and-seeds)).
 
 ## Verifying a release
 

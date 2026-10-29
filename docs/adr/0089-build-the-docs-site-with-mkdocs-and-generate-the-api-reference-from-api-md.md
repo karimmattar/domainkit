@@ -1,6 +1,6 @@
 # 0089. Build the docs site with MkDocs, and generate the API reference from api.md
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md)
 - Date: 2026-10-26
 
 ## Context
@@ -52,3 +52,11 @@ reaches its end of life in May 2027 and names Zensical, which builds this
 - Moving to Zensical before Material's end of life means generating the
   API pages before the build instead of in a hook; the rest of
   `mkdocs.yml` carries over.
+
+## Amendment (2026-10-29, 0.13): the hook reads the public API's pages
+
+The public API is listed on `docs/api/`'s pages, which `docs/api.md` links
+([0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md)).
+The hook reads every one of them and renders a page per module they list,
+in the order of the modules' names, as before; the generated pages and
+their URLs are unchanged.

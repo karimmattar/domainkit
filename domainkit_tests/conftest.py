@@ -1,6 +1,7 @@
 """Fixtures for framework tests: isolated settings, registry, and packages."""
 
 import asyncio
+import functools
 import importlib
 import io
 import logging
@@ -100,9 +101,56 @@ def database_access() -> Iterator[None]:
         yield
 
 
+CACHED: Final = type(functools.cache(len))
+"""What ``functools.cache`` and ``lru_cache`` make of a function."""
+
+
+def domainkit_caches() -> list[Any]:
+    """Every ``functools`` cache of a loaded domainkit module, once each.
+
+    Told apart by type: asking an object for ``cache_clear`` would load the
+    lazy settings.
+    """
+    found: dict[int, Any] = {}
+    for name, module in list(sys.modules.items()):
+        if module is None or name.split(".", 1)[0] != "domainkit":
+            continue
+        for value in list(vars(module).values()):
+            if type(value) is CACHED:
+                found[id(value)] = value
+    return list(found.values())
+
+
+@pytest.fixture
+def every_caller_seen_by_mutmut() -> None:
+    """Under mutmut's stats run, start each test with domainkit's caches empty.
+
+    That run records which tests call each function, and a mutant runs only
+    those tests. A function behind a cache (a statement built once per
+    table, a parsed address) runs for the first test that needs it, and
+    with it every function it calls: the tests after it would be left out,
+    and a mutant there would live whatever they check. Mutants of other
+    runs keep their caches, filled by the mutated code itself.
+    """
+    forget_caches_under_mutmuts_stats()
+
+
+def forget_caches_under_mutmuts_stats() -> int:
+    """Empty domainkit's caches, in mutmut's stats run only; how many there are."""
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats":
+        return 0
+    cached = domainkit_caches()
+    for each in cached:
+        each.cache_clear()
+    return len(cached)
+
+
 @pytest.fixture(autouse=True)
-def framework_settings() -> Iterator[None]:
-    """Run against ``domainkit_tests.settings`` with a fresh registry."""
+def framework_settings(every_caller_seen_by_mutmut: None) -> Iterator[None]:
+    """Run against ``domainkit_tests.settings`` with a fresh registry.
+
+    After mutmut's stats run has emptied the caches: the settings are one.
+    """
     registry.clear()
     AlphaConfig.calls.clear()
     AlphaConfig.healthy = True

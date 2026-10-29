@@ -53,9 +53,9 @@ and a server).
   checklist, and [docs/upgrading.md](https://github.com/karimmattar/domainkit/blob/main/docs/upgrading.md) from one minor to
   the next
 
-- [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, middleware, errors,
-  the API surface (OpenAPI, versions, deprecations), observability,
-  testing, commands, and extension points
+- [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, deployment checks,
+  middleware, errors, the API surface (OpenAPI, versions, deprecations),
+  observability, testing, commands, and extension points, a page for each
 - [docs/databases.md](https://github.com/karimmattar/domainkit/blob/main/docs/databases.md): several databases, routing,
   sharding, partitioning, and ledgers
 - [docs/queries.md](https://github.com/karimmattar/domainkit/blob/main/docs/queries.md): querying repositories,
@@ -185,7 +185,7 @@ also turn the API docs off, send HSTS for a year, and limit each caller to
 
 Serve it with one worker process per core, each on its own event loop:
 `uvicorn config.asgi:application --workers 4 --loop uvloop`, or Granian
-(`pip install 'domainkit[granian]'`). [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md#server-limits)
+(`pip install 'domainkit[granian]'`). [docs/reference/servers.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference/servers.md)
 gives the whole command with its limits, and [docs/performance.md](https://github.com/karimmattar/domainkit/blob/main/docs/performance.md)
 how many cores a load needs.
 

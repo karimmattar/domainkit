@@ -145,10 +145,10 @@ In staging and production, `check` warns when the application serves
 WebSockets and the server's limit is above `MAX_REQUEST_BODY_SIZE`, read
 from its environment variables (`UVICORN_WS_MAX_SIZE`; 16 MiB when unset),
 and a deployed application logs the same warning when it starts, from the
-server's own command line ([reference.md](reference.md#server-limits)).
+server's own command line ([reference/servers.md](reference/servers.md)).
 uvicorn under gunicorn's uvicorn worker, or under `fastapi run`, always
-reads up to 16 MiB: neither passes it a limit, and reference.md shows how
-to set one. Hypercorn is not recognised, and its limit is yours to set.
+reads up to 16 MiB: neither passes it a limit, and
+[reference/servers.md](reference/servers.md) shows how to set one. Hypercorn is not recognised, and its limit is yours to set.
 `check` also warns when `WebSocketLimitsMiddleware` is not in `MIDDLEWARE`.
 
 ## Server-Sent Events
@@ -294,7 +294,7 @@ one with a source that ends.
 
 ## Settings
 
-The settings are listed in [reference.md](reference.md#live-connections).
+The settings are listed in [reference/http.md](reference/http.md#live-connections).
 
 A re-check costs what authenticating a request costs, once per connection
 per interval, never per message: 1,000 open connections at the default

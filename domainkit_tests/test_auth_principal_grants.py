@@ -217,6 +217,7 @@ async def test_a_group_read_answers_from_its_keys_until_its_permissions_are(
     assert {group.name: group.permission_keys() for group in user.groups} == {
         group.name: group.keys for group in principal.groups
     }
+    assert all("permissions" not in group.__dict__ for group in user.groups)
     for group in user.groups:
         assert {each.key for each in group.permissions} == group.permission_keys()
     assert await answers(user) == await answers(built_eagerly(principal))
@@ -239,6 +240,7 @@ def test_users_with_the_same_grants_share_their_keys(use_auth: UseAuth) -> None:
     for name in ("user_permissions", "groups", "*"):
         assert again.granted[name] is first.granted[name]
     assert first.user().__dict__[GRANTED] is first.granted
+    assert first.user().get_all_permissions() is first.granted["*"]
     empty = Principal(User, True, (), (), (), True)
     assert empty.granted["*"] is empty.granted["groups"]
     assert not empty.granted["*"]

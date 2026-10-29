@@ -47,6 +47,8 @@ from domainkit.contrib.webhooks.settings import WebhookSettings
 from domainkit.management import BUILTIN_COMMANDS, _find_commands
 
 DOCS = Path(__file__).parents[1] / "docs"
+REFERENCE = "reference/*.md"
+"""The reference's pages, by area (``docs/reference.md`` lists them)."""
 CONTRIB_COMMANDS = (
     "domainkit.contrib.messaging.management.commands",
     "domainkit.contrib.audit.management.commands",
@@ -58,25 +60,36 @@ CONTRIB_COMMANDS = (
 )
 
 
-def documented(page: str) -> set[str]:
-    """Return every word written in backticks on ``page``."""
-    text = re.sub(r"```.*?```", "", (DOCS / page).read_text(), flags=re.DOTALL)
-    return {word for code in re.findall(r"`([^`]+)`", text) for word in code.split()}
+def read(pages: str) -> list[str]:
+    """The text of ``pages``: one page, or each page a pattern matches."""
+    found = sorted(DOCS.glob(pages))
+    assert found, f"no page {pages}"
+    return [page.read_text(encoding="utf-8") for page in found]
+
+
+def documented(pages: str) -> set[str]:
+    """Return every word written in backticks on ``pages``."""
+    return {
+        word
+        for text in read(pages)
+        for code in re.findall(r"`([^`]+)`", re.sub(r"```.*?```", "", text, flags=re.S))
+        for word in code.split()
+    }
 
 
 @pytest.mark.parametrize(
     ("model", "page"),
     [
-        (Settings, "reference.md"),
-        (DatabaseConfig, "reference.md"),
-        (LedgerConfig, "reference.md"),
-        (ShardConfig, "reference.md"),
-        (CacheConfig, "reference.md"),
-        (BrokerConfig, "reference.md"),
-        (StorageConfig, "reference.md"),
-        (DebugToolbarConfig, "reference.md"),
-        (HttpClientConfig, "reference.md"),
-        (ArchitectureConfig, "reference.md"),
+        (Settings, REFERENCE),
+        (DatabaseConfig, REFERENCE),
+        (LedgerConfig, REFERENCE),
+        (ShardConfig, REFERENCE),
+        (CacheConfig, REFERENCE),
+        (BrokerConfig, REFERENCE),
+        (StorageConfig, REFERENCE),
+        (DebugToolbarConfig, REFERENCE),
+        (HttpClientConfig, REFERENCE),
+        (ArchitectureConfig, REFERENCE),
         (MessagingSettings, "contrib/messaging.md"),
         (AuditSettings, "contrib/audit.md"),
         (IdempotencySettings, "contrib/idempotency.md"),
@@ -115,7 +128,7 @@ def test_every_command_is_documented() -> None:
     for package in CONTRIB_COMMANDS:
         commands |= set(_find_commands(import_module(package).__path__))
 
-    assert commands - documented("reference.md") == set()
+    assert commands - documented("reference/commands.md") == set()
 
 
 ROOT = DOCS.parent
@@ -195,11 +208,114 @@ def test_every_link_leads_somewhere(page: Path) -> None:
     ] == []
 
 
+_NAMED_PAGE = re.compile(
+    r"\bdocs/(?P<path>[\w./-]+\.md)(?:#(?P<anchor>[\w-]+))?"
+    r"(?:(?:,\s*|\s+gives\s+\()[\"'](?P<heading>[^\"']+)[\"'])?"
+)
+
+
+def named_pages(text: str) -> list[tuple[str, str, str]]:
+    """The ``docs/`` pages a text names: (path, anchor, the heading it quotes).
+
+    Comments wrapped over lines are read as one line, so a heading quoted
+    across a line break is found whole.
+    """
+    joined = re.sub(r"\s*\n\s*(?:#\s*)?", " ", text)
+    return [
+        (match["path"], match["anchor"] or "", match["heading"] or "")
+        for match in _NAMED_PAGE.finditer(joined)
+    ]
+
+
+_LABEL = re.compile(r"^\*\*([^*]+)\*\*$")
+
+
+def headings(page: Path) -> list[str]:
+    """The headings of ``page`` without their marks, and its labels on a line.
+
+    A label (``**The edge**``) names a part of a list, as on security.md.
+    """
+    text = _FENCE.sub("", page.read_text(encoding="utf-8"))
+    return [
+        match[1]
+        for line in text.splitlines()
+        if (match := _HEADING.match(line) or _LABEL.match(line))
+    ]
+
+
+def sources() -> list[Path]:
+    """The code that names pages in its messages, docstrings, and comments."""
+    return [
+        *(ROOT / "src" / "domainkit").rglob("*.py"),
+        *(ROOT / "src" / "domainkit").rglob("*-tpl"),
+        *(ROOT / "benchmarks").rglob("*.py"),
+        ROOT / "benchmarks" / "budgets.toml",
+        ROOT / "Makefile",
+        ROOT / "pyproject.toml",
+    ]
+
+
+def unreachable(path: str, anchor: str, heading: str) -> str | None:
+    """Why ``docs/<path>``, at ``anchor`` or the quoted ``heading``, is not there."""
+    page = DOCS / path
+    if not page.is_file():
+        return f"docs/{path}: no such page"
+    if anchor and anchor not in anchors(page):
+        return f"docs/{path}#{anchor}: no such heading"
+    if heading and not any(
+        each.lower().startswith(heading.lower()) for each in headings(page)
+    ):
+        return f'docs/{path}, "{heading}": no such heading'
+    return None
+
+
+def test_every_page_the_code_names_has_the_section_it_names() -> None:
+    """``(docs/reference/servers.md, "Server limits")`` in a message leads there.
+
+    Error messages, docstrings, and the templates' comments name pages as
+    text, not links: a section that moves must take them along. A quoted
+    heading may be its first words (``"Logging"``).
+    """
+    problems = [
+        f"{source.relative_to(ROOT)}: {problem}"
+        for source in sources()
+        for named in named_pages(source.read_text(encoding="utf-8"))
+        if (problem := unreachable(*named))
+    ]
+    assert problems == []
+
+
+def test_the_named_pages_are_read_with_their_anchors_and_headings() -> None:
+    """Each way the code names a section is found, and a wrong one is refused."""
+    text = (
+        '# SQL per request (docs/reference/settings.md, "Debug\n# toolbar").\n'
+        "    \"set (docs/security.md, 'The edge').\",\n"
+        '# The limits docs/reference/servers.md gives ("Server limits")\n'
+        "See ``docs/cache.md`` and docs/databases.md#ledgers-immudb.\n"
+    )
+
+    assert named_pages(text) == [
+        ("reference/settings.md", "", "Debug toolbar"),
+        ("security.md", "", "The edge"),
+        ("reference/servers.md", "", "Server limits"),
+        ("cache.md", "", ""),
+        ("databases.md", "ledgers-immudb", ""),
+    ]
+    assert [unreachable(*named) for named in named_pages(text)] == [None] * 5
+    assert unreachable("reference.md", "", "Server limits") == (
+        'docs/reference.md, "Server limits": no such heading'
+    )
+    assert unreachable("reference.md", "server-limits", "") == (
+        "docs/reference.md#server-limits: no such heading"
+    )
+    assert unreachable("nowhere.md", "", "") == "docs/nowhere.md: no such page"
+
+
 def test_the_middleware_table_is_the_order_the_template_and_defaults_keep() -> None:
     """The template's and the default stacks are the table's, with rows left out."""
     from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE
 
-    reference = (DOCS / "reference.md").read_text(encoding="utf-8")
+    reference = (DOCS / "reference/http.md").read_text(encoding="utf-8")
     table = section_of(reference, "## Middleware")
     order = re.findall(r"^\| `(domainkit\.[\w.]+Middleware)` \|", table, re.MULTILINE)
     template = (
@@ -278,15 +394,15 @@ def test_every_status_names_its_amendments() -> None:
 
 
 SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
-    (Settings, "reference.md", "Setting"),
-    (DatabaseConfig, "reference.md", "DATABASES"),
-    (LedgerConfig, "reference.md", "LEDGERS"),
-    (ShardConfig, "reference.md", "SHARDS"),
-    (CacheConfig, "reference.md", "CACHES"),
-    (StorageConfig, "reference.md", "STORAGES"),
-    (BrokerConfig, "reference.md", "BROKERS"),
-    (HttpClientConfig, "reference.md", "HTTP_CLIENT"),
-    (DebugToolbarConfig, "reference.md", "DEBUG_TOOLBAR"),
+    (Settings, REFERENCE, "Setting"),
+    (DatabaseConfig, REFERENCE, "DATABASES"),
+    (LedgerConfig, REFERENCE, "LEDGERS"),
+    (ShardConfig, REFERENCE, "SHARDS"),
+    (CacheConfig, REFERENCE, "CACHES"),
+    (StorageConfig, REFERENCE, "STORAGES"),
+    (BrokerConfig, REFERENCE, "BROKERS"),
+    (HttpClientConfig, REFERENCE, "HTTP_CLIENT"),
+    (DebugToolbarConfig, REFERENCE, "DEBUG_TOOLBAR"),
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
     (WebhookSettings, "contrib/webhooks.md", "WEBHOOKS"),
     (AuditSettings, "contrib/audit.md", "AUDIT"),
@@ -325,15 +441,24 @@ PROSE_DEFAULTS = {
 _UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
 
 
-def settings_tables(page: str) -> dict[str, dict[str, tuple[str, str]]]:
-    """Each table of ``page`` with a Default column: {key: {name: (default, row)}}.
+def settings_tables(pages: str) -> dict[str, dict[str, tuple[str, str]]]:
+    """Each table of ``pages`` with a Default column: {key: {name: (default, row)}}.
 
     A table is known by its first header cell (``AUTH`` key), by the
     ``Each `X` entry`` line above a ``Key`` table, or as ``Setting``: the
-    top-level settings, whose tables the reference page splits by subject.
+    top-level settings, whose tables the reference splits by subject, over
+    several pages.
     """
-    lines = (DOCS / page).read_text(encoding="utf-8").splitlines()
     tables: dict[str, dict[str, tuple[str, str]]] = {}
+    for text in read(pages):
+        _read_tables(text.splitlines(), tables)
+    return tables
+
+
+def _read_tables(
+    lines: list[str], tables: dict[str, dict[str, tuple[str, str]]]
+) -> None:
+    """Add the tables of one page's ``lines`` to ``tables``."""
     for number, line in enumerate(lines):
         if not line.startswith("| --- |") or "| Default |" not in lines[number - 1]:
             continue
@@ -352,7 +477,6 @@ def settings_tables(page: str) -> dict[str, dict[str, tuple[str, str]]]:
             names, default, *meaning = row.strip("| ").split(" | ")
             for name in re.findall(r"`([^`]+)`", names):
                 rows[name] = (default, " | ".join([default, *meaning]))
-    return tables
 
 
 def documented_default(cell: str) -> tuple[bool, Any]:
@@ -571,7 +695,7 @@ def test_the_projects_image_runs_uvicorn_with_the_limits_the_reference_gives() -
 
     Its own processes are the image's ``WEB_CONCURRENCY``, not ``--workers``.
     """
-    reference = (DOCS / "reference.md").read_text(encoding="utf-8")
+    reference = (DOCS / "reference/servers.md").read_text(encoding="utf-8")
     block = reference.split("uvicorn, one process per core:\n\n```bash\n", 1)[1]
     given = shlex.split(block.split("```", 1)[0].replace("\\\n", " "))
     workers = given.index("--workers")

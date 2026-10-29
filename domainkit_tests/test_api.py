@@ -1,6 +1,7 @@
-"""``docs/api.md`` is the public API: it and every ``__all__`` agree.
+"""``docs/api.md`` is the public API: its pages and every ``__all__`` agree.
 
-The policy in ``docs/versioning.md`` covers exactly the names listed there.
+The policy in ``docs/versioning.md`` covers exactly the names listed on
+``docs/api/``'s pages, which ``docs/api.md`` lists.
 A name listed must import from the module it is listed under; a name a
 module puts in ``__all__`` must be listed; and a name the other pages tell
 users to import must be among them.
@@ -26,7 +27,7 @@ FROM_IMPORT: Final = re.compile(
 
 
 def listed(text: str) -> dict[str, list[str]]:
-    """The names ``docs/api.md`` lists, by module, in order."""
+    """The names a page of ``docs/api/`` lists, by module, in order."""
     sections: dict[str, list[str]] = {}
     names: list[str] | None = None
     for number, line in enumerate(text.splitlines(), 1):
@@ -69,13 +70,38 @@ def documented(text: str) -> set[str]:
     return names
 
 
-API: Final = listed((DOCS / "api.md").read_text(encoding="utf-8"))
+def api_pages() -> list[Path]:
+    """The pages that list the public API, by package (``docs/api/``)."""
+    return sorted((DOCS / "api").glob("*.md"))
+
+
+def listed_on(pages: list[Path]) -> dict[str, list[str]]:
+    """The names ``pages`` list, by module; a module on two pages fails."""
+    sections: dict[str, list[str]] = {}
+    for page in pages:
+        for module, names in listed(page.read_text(encoding="utf-8")).items():
+            assert module not in sections, f"{page.name}: {module} again"
+            sections[module] = names
+    return sections
+
+
+API: Final = listed_on([DOCS / "api.md", *api_pages()])
 EXPORTED: Final = exported(SRC)
+
+
+def test_the_index_links_every_page_of_the_api() -> None:
+    """``docs/api.md`` lists modules on no page of its own, and links each one."""
+    index = (DOCS / "api.md").read_text(encoding="utf-8")
+
+    assert api_pages()
+    assert listed(index) == {}
+    linked = [page.name for page in api_pages() if f"](api/{page.name})" in index]
+    assert linked == [page.name for page in api_pages()]
 
 
 def test_every_module_with_all_has_a_section_and_no_other_does() -> None:
     """A module's ``__all__`` makes it part of the API; its section says so."""
-    assert sorted(set(EXPORTED) - set(API)) == [], "Add a section to docs/api.md."
+    assert sorted(set(EXPORTED) - set(API)) == [], "Add a section to docs/api/."
     assert sorted(set(API) - set(EXPORTED)) == [], "Give the module an __all__."
 
 
@@ -134,6 +160,18 @@ def test_the_checks_read_sections_items_and_examples() -> None:
         "domainkit.ddd.Selection",
         "domainkit.clock.now",
     }
+
+
+def test_a_module_listed_on_two_pages_is_refused(tmp_path: Path) -> None:
+    """The pages together list each module once, whichever page holds it."""
+    one, two = tmp_path / "one.md", tmp_path / "two.md"
+    one.write_text("## `domainkit.x`\n\n- `A`: One.\n", encoding="utf-8")
+    two.write_text("## `domainkit.y`\n\n- `B`: Two.\n", encoding="utf-8")
+
+    assert listed_on([one, two]) == {"domainkit.x": ["A"], "domainkit.y": ["B"]}
+    two.write_text("## `domainkit.x`\n\n- `B`: Two.\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match=r"two\.md: domainkit\.x again"):
+        listed_on([one, two])
 
 
 def _is_module(dotted: str) -> bool:

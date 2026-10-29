@@ -8,6 +8,7 @@ the public key alone (DATA-05).
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import os
@@ -172,6 +173,20 @@ async def checkpoints() -> list[Any]:
                 )
             ).all()
         )
+
+
+def test_prunes_are_recorded_under_keys_and_values_ledgers_already_hold() -> None:
+    """The key and value a prune writes, byte for byte: a ledger keeps them.
+
+    Prunes recorded by earlier releases are read back by later ones, so
+    neither may change: compact JSON naming the checkpoint's SHA-256, under
+    ``domainkit/audit-pruned/[<namespace>/]<database>``.
+    """
+    digest = hashlib.sha256(b'{"seq":7}').hexdigest()
+
+    assert pruned_record('{"seq":7}') == f'{{"checkpoint":"{digest}"}}'.encode()
+    assert pruned_key("default") == b"domainkit/audit-pruned/default"
+    assert pruned_key("default", "billing") == b"domainkit/audit-pruned/billing/default"
 
 
 async def test_a_pruned_chain_still_verifies(trail: Ledger) -> None:
@@ -706,38 +721,62 @@ async def test_refusals_of_the_library_are_the_commands_errors(
             )
 
 
+def canonical(document: dict[str, object]) -> str:
+    """``document`` written as checkpoints are, before its fields are checked."""
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
 def test_checkpoint_documents_are_strict() -> None:
-    """Only canonical documents of the format, with every field well formed."""
+    """Only canonical documents of the format, each refusal saying what is wrong."""
     good = Checkpoint("default", "ns", 5, "a" * 64, T0, T1, (2, "b" * 64), "k")
     assert Checkpoint.parse(good.document()) == good
     document = json.loads(good.document())
+    seal = "Expected a seal number."
     bad = [
-        good.document().replace(",", ", ", 1),
-        "[]",
-        "not json",
-        json.dumps(
-            {**document, "format": "domainkit.audit.checkpoint/2"},
-            sort_keys=True,
-            separators=(",", ":"),
+        (
+            good.document().replace(",", ", ", 1),
+            "A checkpoint document is written canonically.",
         ),
-        json.dumps({**document, "extra": 1}, sort_keys=True, separators=(",", ":")),
-        json.dumps({**document, "seq": 0}, sort_keys=True, separators=(",", ":")),
-        json.dumps({**document, "seq": True}, sort_keys=True, separators=(",", ":")),
-        json.dumps(
-            {**document, "link": "A" * 64}, sort_keys=True, separators=(",", ":")
+        ("[]", "A checkpoint has exactly its fields."),
+        ("not json", "Not a checkpoint document."),
+        (
+            canonical({**document, "format": "domainkit.audit.checkpoint/2"}),
+            "Not a checkpoint of format domainkit.audit.checkpoint/1.",
         ),
-        json.dumps({**document, "link": 7}, sort_keys=True, separators=(",", ":")),
-        json.dumps(
-            {**document, "previous": {"seq": 5, "link": "b" * 64}},
-            sort_keys=True,
-            separators=(",", ":"),
+        (canonical({**document, "extra": 1}), "A checkpoint has exactly its fields."),
+        (canonical({**document, "seq": 0}), seal),
+        (canonical({**document, "seq": True}), seal),
+        (canonical({**document, "link": "A" * 64}), "Expected a link."),
+        (canonical({**document, "link": 7}), "Expected text."),
+        (canonical({**document, "database": 7}), "Expected text."),
+        (
+            canonical({**document, "previous": {"seq": 5, "link": "b" * 64}}),
+            "A checkpoint follows the one before it.",
         ),
     ]
-    for document_text in bad:
-        with pytest.raises(CheckpointInvalid):
+    for document_text, message in bad:
+        with pytest.raises(CheckpointInvalid) as refused:
             Checkpoint.parse(document_text)
+        assert str(refused.value) == message, document_text
     first = Checkpoint("default", None, 1, "a" * 64, T0, T1, None, "k")
     assert Checkpoint.parse(first.document()) == first
+
+
+def test_a_checkpoint_document_is_one_text_every_reader_signs_alike() -> None:
+    """Keys sorted, no spaces, ASCII only: what the signature covers, byte for byte.
+
+    A third party checks an exported checkpoint with its own JSON parser
+    and the public key alone, so the text never varies with key order or
+    a name's characters.
+    """
+    named = Checkpoint("dé", "ns", 5, "a" * 64, T0, T1, None, "k")
+
+    assert named.document() == (
+        '{"database":"d\\u00e9","format":"domainkit.audit.checkpoint/1",'
+        '"key_id":"k","kind":"prune","link":"' + "a" * 64 + '",'
+        '"made_at":"2026-02-14T12:00:00+00:00","namespace":"ns","previous":null,'
+        '"sealed_at":"2026-01-05T12:00:00+00:00","seq":5}'
+    )
 
 
 @pytest.mark.parametrize(

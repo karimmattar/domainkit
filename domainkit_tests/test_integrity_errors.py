@@ -1,7 +1,7 @@
 """Integrity errors other than duplicates, and fields named as the API names them."""
 
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -298,40 +298,33 @@ def test_field_names_follow_info_then_mapping_then_column() -> None:
     assert field_name(shelves.c.id) == "id"  # Table nobody maps.
 
 
-def test_integrity_refusals_answer_with_codes_and_fields() -> None:
-    """409 ``referenced``, 422 ``missing_value`` and ``check_violation``."""
-
-    def answer(error: IntegrityError) -> tuple[int, str, str, list[Any] | None]:
-        refusal = database_refusal(error)
-        assert refusal is not None
-        errors = (
-            None if refusal.errors is None else [e.model_dump() for e in refusal.errors]
-        )
-        return refusal.status_code, refusal.code, str(refusal.detail), errors
-
-    missing_parent = asyncpg(
-        "23503",
-        constraint_name="fk_framework_test_books_shelf_framework_test_shelves",
-        table_name="framework_test_books",
-        message='insert or update on table "framework_test_books"',
+def answer(error: IntegrityError) -> tuple[int, str, str, list[Any] | None]:
+    """The status, code, detail, and field errors a refusal of ``error`` answers."""
+    refusal = database_refusal(error)
+    assert refusal is not None
+    errors = (
+        None if refusal.errors is None else [e.model_dump() for e in refusal.errors]
     )
-    still_used = asyncpg(
-        "23503",
-        constraint_name="fk_framework_test_books_shelf_framework_test_shelves",
-        table_name="framework_test_books",
-        message='update or delete on table "framework_test_shelves"',
-    )
+    return refusal.status_code, refusal.code, str(refusal.detail), errors
+
+
+def sqlite_foreign_key() -> IntegrityError:
+    """SQLite's foreign key failure, which says neither side."""
     sqlite_key = Exception("FOREIGN KEY constraint failed")
     sqlite_key.sqlite_errorname = "SQLITE_CONSTRAINT_FOREIGNKEY"  # type: ignore[attr-defined]
-    not_null = asyncpg("23502", table_name="framework_test_books", column_name="pages")
-    check = asyncpg(
-        "23514",
-        constraint_name="ck_framework_test_books_positive_pages",
-        table_name="framework_test_books",
-    )
+    return IntegrityError("DELETE", {}, sqlite_key)
 
-    with _metadata(metadata):
-        assert answer(missing_parent) == (
+
+BOOKS_SHELF = "fk_framework_test_books_shelf_framework_test_shelves"
+REFUSALS = {
+    "a missing parent": (
+        lambda: asyncpg(
+            "23503",
+            constraint_name=BOOKS_SHELF,
+            table_name="framework_test_books",
+            message='insert or update on table "framework_test_books"',
+        ),
+        (
             409,
             "referenced",
             "A record this one refers to does not exist.",
@@ -342,22 +335,39 @@ def test_integrity_refusals_answer_with_codes_and_fields() -> None:
                     "type": "referenced",
                 }
             ],
-        )
-        assert answer(still_used)[:3] == (
+        ),
+    ),
+    "a row still referenced": (
+        lambda: asyncpg(
+            "23503",
+            constraint_name=BOOKS_SHELF,
+            table_name="framework_test_books",
+            message='update or delete on table "framework_test_shelves"',
+        ),
+        (
             409,
             "referenced",
             "Other records still refer to this one; change or remove them first.",
-        )
-        assert answer(still_used)[3] is None
-        assert answer(IntegrityError("DELETE", {}, sqlite_key))[1:] == (
+            None,
+        ),
+    ),
+    "a foreign key on SQLite": (
+        sqlite_foreign_key,
+        (
+            409,
             "referenced",
             (
                 "A reference between records would break: a record this one refers "
                 "to does not exist, or other records still refer to it."
             ),
             None,
-        )
-        assert answer(not_null) == (
+        ),
+    ),
+    "a missing value": (
+        lambda: asyncpg(
+            "23502", table_name="framework_test_books", column_name="pages"
+        ),
+        (
             422,
             "missing_value",
             "A required value is missing.",
@@ -368,8 +378,15 @@ def test_integrity_refusals_answer_with_codes_and_fields() -> None:
                     "type": "missing_value",
                 }
             ],
-        )
-        assert answer(check) == (
+        ),
+    ),
+    "a check constraint": (
+        lambda: asyncpg(
+            "23514",
+            constraint_name="ck_framework_test_books_positive_pages",
+            table_name="framework_test_books",
+        ),
+        (
             422,
             "check_violation",
             (
@@ -377,8 +394,24 @@ def test_integrity_refusals_answer_with_codes_and_fields() -> None:
                 "the database accepts."
             ),
             None,
-        )
-        assert integrity_refusal(driver("99999")) is None
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize(("make", "expected"), REFUSALS.values(), ids=REFUSALS)
+def test_integrity_refusals_answer_with_codes_and_fields(
+    make: Callable[[], IntegrityError],
+    expected: tuple[int, str, str, list[Any] | None],
+) -> None:
+    """409 ``referenced``, 422 ``missing_value`` and ``check_violation``."""
+    with _metadata(metadata):
+        assert answer(make()) == expected
+
+
+def test_other_integrity_errors_are_not_refusals() -> None:
+    """An SQLSTATE the table does not map is left to the error handler."""
+    assert integrity_refusal(driver("99999")) is None
 
 
 def test_duplicates_outside_a_unit_of_work_are_conflicts() -> None:

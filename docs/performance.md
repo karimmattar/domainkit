@@ -5,7 +5,7 @@ validation, the framework's own checks), round trips to the database, and
 the server's work around them. This page gives what each costs on the paths
 a service serves most, how to measure them with the benchmark ladder, how
 CI holds the costs down, and what makes a request cheaper. Server settings
-and limits are in [reference.md](reference.md#server-limits); event loops,
+and limits are in [reference/servers.md](reference/servers.md); event loops,
 logging and servers in [runtime.md](runtime.md).
 
 ## What a request costs
@@ -209,8 +209,8 @@ reads whose principal is kept: about three times the reads of 0.8.0
 ## Making requests cheaper
 
 - **Serve one worker per core**, on uvloop: `uvicorn config.asgi:application
-  --workers N --loop uvloop`, or Granian (reference.md has the whole
-  command and its limits).
+  --workers N --loop uvloop`, or Granian ([reference/servers.md](reference/servers.md)
+  has the whole command and its limits).
 - **Keep a route's first path segment literal** where you can
   (`/invoices/{id}`, not `/{tenant}/invoices/{id}`): the application tries
   only the routes of a request's first segment, and those that may match
@@ -376,7 +376,7 @@ fresh `MutableHeaders`. Now:
   0060): FastAPI kept each `include_router` call nested, matched a request
   twice per level, and built the route's handler again for every request.
   Everything the routers gave their routes is kept, and the OpenAPI
-  document does not change ([reference.md](reference.md#included-routers)).
+  document does not change ([reference/responses.md](reference/responses.md#included-routers)).
 - **The client address is parsed once per request**, for the
   refused-credential hold and the rate limit together
   (`scope["domainkit.address"]`), and the groups of the latest 4,096
@@ -458,7 +458,7 @@ behind 20 sibling routes (wall time; medians 85.9 and 48.3, 204.4 and
 A router whose class has its own `matches`, `handle`, or other method
 that serves requests (an IP gate, a host rule) stays included, so its own
 routes cost what nesting costs; the routers around it are still
-flattened ([reference.md](reference.md#included-routers)). Give such a
+flattened ([reference/responses.md](reference/responses.md#included-routers)). Give such a
 router only the routes it guards.
 
 What the pieces cost alone (`timeit`, best of 5, at 0.8.0):
@@ -636,7 +636,7 @@ costs 382,839 instead of 400,160.
 `domainkit.http.JSONResponse`, for a project's own bodies, first checks
 that its content is JSON's own values, so that what Starlette refused (a
 model passed by mistake, a `Decimal`, a `datetime`, an integer past
-Python's digit limit) it refuses too ([reference.md](reference.md#json-responses)).
+Python's digit limit) it refuses too ([reference/responses.md](reference/responses.md#json-responses)).
 The check is Python and costs about what pydantic's encoder saves:
 instructions per encode on FastAPI 0.143.1, with the payloads above and
 those of the security review:
@@ -720,7 +720,7 @@ the same on both.
   `jsonable_encoder`, which costs about 1 ms for 50 resources. Mind that
   `jsonable_encoder` makes a float of a bare `Decimal`, and pydantic a
   string. Where the bytes must stay as they are, give the route
-  `response_class=JSONResponse` instead ([reference.md](reference.md#json-responses)).
+  `response_class=JSONResponse` instead ([reference/responses.md](reference/responses.md#json-responses)).
 
 ### 0.9.2: work done once instead of per request
 
@@ -858,7 +858,7 @@ to 1,497 µs, `throttled` 418 to 305 µs, each the best of its timed runs.
   opened first, and still answer 503 about 25 ms after the deadline. Under
   an anyio cancel scope, and on other drivers, it is closed, as before.
 - **Pools** (PERF-14): `check` warns when a pool cannot serve the
-  requests a loop admits ([reference.md](reference.md#sizing-pools)).
+  requests a loop admits ([reference/backends.md](reference/backends.md#sizing-pools)).
   The defaults stay: requests that each hold a connection for 20 ms
   against a pool of 15, a burst of 200, are all served under a cap of
   1,000 (p50 277 ms, at most 463 ms), where a cap of 60 refuses 40; a
