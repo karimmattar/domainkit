@@ -1346,6 +1346,7 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `FrozenClock`: A clock that stands at a moment, or ticks on from it, until moved.
 - `LazyAttribute`: `LazyAttribute(lambda o: o.name.lower())`: computed from other fields.
 - `LazyFunction`: `LazyFunction(uuid4)`: the function's result, called for each object.
+- `LiveServer`: An ASGI application served by uvicorn in a thread, on a free port.
 - `Sequence`: `Sequence(lambda n: f"user-{n}")`: the object's number, from 0.
 - `SettingsOverrides`: The `settings` fixture: settings changed until the test ends.
 - `SubFactory`: `SubFactory(MoneyFactory, currency="EUR")`: another factory's object.

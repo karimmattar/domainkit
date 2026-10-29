@@ -28,6 +28,11 @@ every database the settings name, so they refuse settings whose
 ``client``, ``async_client``
     A ``TestClient`` (an ``AsyncTestClient``) for the project's application,
     lifespan included, on the ``db`` databases. Requests send no credentials.
+``live_server``
+    ``live_server.url``: the application served by uvicorn on a port of the
+    test process, for browsers and other processes, on the ``db``
+    databases, with ``127.0.0.1`` added to ``ALLOWED_HOSTS``. Started for
+    the test, lifespan included, and stopped after it.
 ``client_for``, ``async_client_for``
     ``client_for("shop.view_product", ...)``: a client of the same
     application that authenticates as a new user granted those
@@ -88,6 +93,7 @@ from . import blocking
 from .clients import AsyncTestClient, TestClient, token_for, user_token
 from .databases import IN_MEMORY, REFUSAL, DatabaseBlocker, migrated_database, worker_id
 from .factories import Factory, LazyAttribute, LazyFunction, Sequence, SubFactory
+from .live import LIVE_HOST, LiveServer
 from .queries import CapturedQueries, assert_max_queries, assert_num_queries
 
 __all__ = [
@@ -102,6 +108,7 @@ __all__ = [
     "FrozenClock",
     "LazyAttribute",
     "LazyFunction",
+    "LiveServer",
     "Sequence",
     "SettingsOverrides",
     "SubFactory",
@@ -326,6 +333,17 @@ def client(db: None) -> Iterator[TestClient]:
     """Serve the project's application on the test database."""
     with TestClient(get_asgi_application()) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def live_server(db: None) -> Iterator[LiveServer]:
+    """Serve the project's application on a port of this process, for one test."""
+    hosts = [*current_settings.ALLOWED_HOSTS, LIVE_HOST]
+    with (
+        override_settings(ALLOWED_HOSTS=hosts),
+        LiveServer(get_asgi_application()) as server,
+    ):
+        yield server
 
 
 @pytest.fixture
