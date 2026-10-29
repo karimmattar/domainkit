@@ -299,6 +299,8 @@ def test_pending_deliveries_about_an_erased_subject_are_cancelled(
     pending = next(row for row in found if row.status == "pending")
 
     assert (len(found), cancelled.body) == (2, "")
+    assert cancelled.last_error == "The people this delivery was about were erased."
+    assert cancelled.finished_at is not None  # So the purge takes it in time.
     assert json.loads(pending.body)["data"] == {"email": OTHER_EMAIL}
     assert run_async(delivery_module.erase_subject(scenario.subject)) == {
         "deliveries": 0,
