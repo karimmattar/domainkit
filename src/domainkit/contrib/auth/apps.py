@@ -2,11 +2,12 @@
 
 import dataclasses
 from collections.abc import Sequence
+from http.cookies import SimpleCookie
 from importlib import import_module
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -167,6 +168,39 @@ class AuthConfig(DomainConfig):
             issued = await get_authenticators()[0].issue(uow, user)
             await uow.commit()
         return issued.access_token
+
+    async def issue_test_session(self, user_id: Any) -> dict[str, str]:  # noqa: ANN401 - any user model's id.
+        """Headers of a browser signed in as the stored user ``user_id`` (``testing``).
+
+        The session starts as ``POST /auth/session`` starts one, without the
+        password: its cookie and the CSRF cookie go in ``Cookie``, and the
+        CSRF token in the header unsafe methods need, as a page's script
+        sends it. There is no route to it.
+
+        Raises:
+            ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``, or
+                ``AUTH.AUTHENTICATION_CLASSES`` lacks ``CookieAuthentication``.
+            NotFound: No user has the id.
+        """
+        from .cookies import cookie_names, start_session
+        from .uow import AuthUnitOfWork
+
+        _only_in_tests("issue_test_session")
+        config = auth_settings()
+        if COOKIE_AUTHENTICATION not in config.AUTHENTICATION_CLASSES:
+            raise ImproperlyConfigured(
+                f"A browser session needs {COOKIE_AUTHENTICATION} in "
+                f"AUTH.AUTHENTICATION_CLASSES."
+            )
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(user_id)
+        response = Response()
+        started = await start_session(user, response)
+        cookies: SimpleCookie = SimpleCookie()
+        for header in response.headers.getlist("set-cookie"):
+            cookies.load(header)
+        sent = "; ".join(f"{name}={cookies[name].value}" for name in cookie_names())
+        return {"Cookie": sent, config.COOKIE.CSRF_HEADER: started.csrf_token}
 
     def application_problems(self, app: FastAPI) -> list[str]:
         """Rules no middleware can answer, and what auth's own routes lack.

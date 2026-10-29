@@ -7,7 +7,8 @@ against the event class or the task signature on the way back.
 
 import math
 import re
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
@@ -251,6 +252,21 @@ def periodic(
         return func
 
     return register
+
+
+@contextmanager
+def tasks_kept() -> Iterator[None]:
+    """Put the registered tasks back as they were when the block ends.
+
+    Tasks the block registered (``@task`` in a test) are dropped, and any it
+    replaced come back: the test plugin keeps each test's to itself.
+    """
+    kept = dict(_tasks)
+    try:
+        yield
+    finally:
+        _tasks.clear()
+        _tasks.update(kept)
 
 
 def queues() -> frozenset[str]:

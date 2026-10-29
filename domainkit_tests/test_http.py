@@ -664,6 +664,7 @@ def test_cors_answers_with_every_setting(make_client: MakeClient) -> None:
     assert simple.headers["Access-Control-Expose-Headers"] == "X-Request-ID"
 
 
+@pytest.mark.usefixtures("database_access")
 def test_health_and_readiness(client: TestClient) -> None:
     """Liveness always answers; readiness hides failing names by default."""
     assert client.get("/health").json() == {"status": "ok"}
@@ -685,6 +686,7 @@ def test_readiness_details_are_opt_in(make_client: MakeClient) -> None:
     assert client.get("/ready").json()["failing"] == ["alpha", "database:default"]
 
 
+@pytest.mark.usefixtures("database_access")
 def test_readiness_results_are_cached(make_client: MakeClient) -> None:
     """Within ``READINESS_CACHE_SECONDS`` probes reuse the last result."""
     client = make_client(READINESS_CACHE_SECONDS=60)
@@ -858,6 +860,7 @@ def test_a_round_whose_checks_raise_is_kept_as_failing(
     assert str(logged.exc_info[1]) == "checks broke"
 
 
+@pytest.mark.usefixtures("database_access")
 def test_a_raising_readiness_check_answers_503(
     make_client: MakeClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -900,6 +903,7 @@ def test_a_cancelled_group_still_cancels_the_round(
     assert not hasattr(state, "readiness")
 
 
+@pytest.mark.usefixtures("database_access")
 def test_a_round_left_on_another_loop_is_not_awaited(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

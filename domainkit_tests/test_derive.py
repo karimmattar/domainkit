@@ -307,6 +307,7 @@ class Bin(AggregateRoot[BinId]):
     label: Label | None = None
 
 
+@pytest.mark.usefixtures("database_access")
 def test_makemigrations_writes_derived_tables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

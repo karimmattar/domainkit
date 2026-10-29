@@ -33,7 +33,7 @@ pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
-def auth_on_sqlite(tmp_path: Path) -> Iterator[None]:
+def auth_on_sqlite(database_access: None, tmp_path: Path) -> Iterator[None]:
     """Auth, migrated, on SQLite: production refuses PostgreSQL without TLS."""
     registry.clear()
     with override_settings(

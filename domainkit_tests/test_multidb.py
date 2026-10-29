@@ -353,6 +353,7 @@ def test_auditlog_reads_any_database(two_targets: Path) -> None:
         assert "alpha.thing_made" in run("auditlog", "--database", "reports")
 
 
+@pytest.mark.usefixtures("database_access")
 def test_the_plugin_migrates_every_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -379,6 +380,7 @@ def sqlite_tables(path: Path) -> list[str]:
         return sorted(row[0] for row in found)
 
 
+@pytest.mark.usefixtures("database_access")
 def test_the_plugin_migrates_an_in_memory_owner_url_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -12,7 +12,10 @@ both, requests see the context variables of the code that sends them: a
 as the ``client_for`` fixtures do, through the installed domain that issues
 tokens (``TokenIssuer``: ``domainkit.contrib.auth``). ``token_for`` returns
 one for a user stored already (a factory's), and the clients'
-``authenticated_as`` sign in as one.
+``authenticated_as`` sign in as one. ``browser_session_for`` and the
+clients' ``browser_session_as`` sign in with a browser session instead, its
+cookies, as Litestar's ``set_session_data`` does
+(``BrowserSessionIssuer``).
 """
 
 import asyncio
@@ -96,6 +99,16 @@ class TestClient(StarletteTestClient):
         portal = CarryingPortal(self._entered())
         token = portal.call(token_for, user)
         return self.another({"Authorization": f"Bearer {token}"})
+
+    def browser_session_as(self, user: object) -> "TestClient":
+        """Return a client with a browser session as ``user``, a stored user.
+
+        It sends the session's cookies, and the CSRF token unsafe methods
+        need, without posting to ``/auth/session``; see
+        ``browser_session_for``. Enter this client first.
+        """
+        portal = CarryingPortal(self._entered())
+        return self.another(portal.call(browser_session_for, user))
 
     def run[T](
         self,
@@ -254,6 +267,13 @@ class AsyncTestClient(httpx2.AsyncClient):
         """
         return self.another({"Authorization": f"Bearer {await token_for(user)}"})
 
+    async def browser_session_as(self, user: object) -> "AsyncTestClient":
+        """Return a client with a browser session as ``user``, a stored user.
+
+        See ``browser_session_for``; close it with ``aclose()``.
+        """
+        return self.another(await browser_session_for(user))
+
 
 class Lifespan:
     """Run an ASGI application's lifespan in the running event loop."""
@@ -339,6 +359,44 @@ class StoredUserTokenIssuer(Protocol):
     async def issue_test_token_for(self, user_id: Any) -> str:  # noqa: ANN401 - any user model's id.
         """An access token for the stored user ``user_id``."""
         ...
+
+
+@runtime_checkable
+class BrowserSessionIssuer(Protocol):
+    """An installed domain that starts browser sessions for users stored already.
+
+    ``domainkit.contrib.auth`` is one; ``browser_session_for`` and the
+    clients' ``browser_session_as`` ask it.
+    """
+
+    async def issue_test_session(self, user_id: Any) -> dict[str, str]:  # noqa: ANN401 - any user model's id.
+        """The headers a browser signed in as the stored user ``user_id`` sends."""
+        ...
+
+
+async def browser_session_for(user: object) -> dict[str, str]:
+    """Return the headers of a browser signed in as ``user``, a user stored already.
+
+    Its session cookie and CSRF cookie in ``Cookie``, and the CSRF token in
+    the header unsafe methods need, as a page's script sends it: the
+    session ``POST /auth/session`` would start, without the password.
+    ``user`` is the user, or its id. The first installed domain that starts
+    such sessions (``BrowserSessionIssuer``) makes it: with
+    ``domainkit.contrib.auth``, which needs ``CookieAuthentication`` in
+    ``AUTH.AUTHENTICATION_CLASSES``, and refuses unless
+    ``ENVIRONMENT = "test"``.
+
+    Raises:
+        ImproperlyConfigured: No installed domain starts browser sessions.
+    """
+    user_id = getattr(user, "id", user)
+    for config in registry:
+        if isinstance(config, BrowserSessionIssuer):
+            return await config.issue_test_session(user_id)
+    raise ImproperlyConfigured(
+        "browser_session_for needs an installed domain that starts browser "
+        "sessions, such as domainkit.contrib.auth."
+    )
 
 
 async def token_for(user: object) -> str:

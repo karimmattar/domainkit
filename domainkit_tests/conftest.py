@@ -23,7 +23,6 @@ from hypothesis import settings as hypothesis_settings
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from domainkit import log as domainkit_log
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.apps.hooks import (
@@ -40,11 +39,14 @@ from domainkit.conf.env import (
     project_root,
 )
 from domainkit.contrib.auth.principals import invalidate_all
-from domainkit.contrib.messaging import registry as task_registry
+from domainkit.contrib.messaging import tasks_kept
 from domainkit.ddd import event_bus
-from domainkit.http import get_asgi_application, metrics
+from domainkit.http import get_asgi_application
+from domainkit.http.metrics import refreshers_kept
+from domainkit.log import reset_throttled
 from domainkit.management import call_command
 from domainkit.reporting import flush_reports
+from domainkit.testing import DatabaseBlocker
 from domainkit_tests import engine_events  # noqa: F401 - its listeners first.
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -52,6 +54,13 @@ type MakePackage = Callable[[str, dict[str, str]], Path]
 
 POSTGRES_VARIABLE: Final = "DOMAINKIT_TEST_POSTGRES_URL"
 """A PostgreSQL server URL; when set, database tests run there (see database_url)."""
+DATABASES_REFUSED: Final = DatabaseBlocker(
+    "This test reached a database without requesting one. Request "
+    "database_url, make_database, migrated, a project fixture (auth_project, "
+    "api, identity), or database_access for the databases the settings name."
+)
+"""Refuses the databases outside the fixtures that make them, as the plugin
+refuses a project's test databases to a test that did not request ``db``."""
 
 
 @pytest.hookimpl(trylast=True)
@@ -71,6 +80,24 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     parts = sorted((items[index] for index in places), key=lambda item: item.name)
     for index, item in zip(places, parts, strict=True):
         items[index] = item
+
+
+@pytest.fixture(scope="session", autouse=True)
+def databases_refused() -> Iterator[None]:
+    """Refuse the databases to every test that requested none."""
+    with DATABASES_REFUSED.block():
+        yield
+
+
+@pytest.fixture
+def database_access() -> Iterator[None]:
+    """Let the test reach the databases its settings name.
+
+    For tests of the settings' own in-memory SQLite, of a database out of
+    reach, or of engines and pools themselves.
+    """
+    with DATABASES_REFUSED.unblock():
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -96,27 +123,22 @@ def isolated_registries() -> Iterator[None]:
     """
     caches.reset()
     invalidate_all()
-    for throttled in list(domainkit_log._throttled_logs):
-        throttled._seen.clear()
+    reset_throttled()
     with registries_kept():
         yield
 
 
 @contextmanager
 def registries_kept() -> Iterator[None]:
-    """Put the tasks, subscriptions, and metric refreshers back as they were."""
-    tasks = dict(task_registry._tasks)
-    subscriptions = {key: list(value) for key, value in event_bus._handlers.items()}
-    refreshers = list(metrics._refreshers)
+    """Put the tasks, subscriptions, and metric refreshers back as they were.
+
+    Through their public resets, as the plugin does (TEST-05).
+    """
     calls = list(AlphaConfig.calls)
     try:
-        yield
+        with tasks_kept(), event_bus.subscriptions_kept(), refreshers_kept():
+            yield
     finally:
-        task_registry._tasks.clear()
-        task_registry._tasks.update(tasks)
-        event_bus._handlers.clear()
-        event_bus._handlers.update(subscriptions)
-        metrics._refreshers[:] = refreshers
         AlphaConfig.calls[:] = calls
 
 
@@ -183,7 +205,8 @@ def make_database(tmp_path: Path) -> Iterator[MakeDatabase]:
 
     Set ``DOMAINKIT_TEST_POSTGRES_URL`` to a server (CI does) to run the
     database tests there. Each database is new, and dropped afterwards;
-    nothing else on that server is touched.
+    nothing else on that server is touched. The test may reach the
+    databases (``database_access``).
     """
     server = os.environ.get(POSTGRES_VARIABLE)
     created: list[str] = []
@@ -198,7 +221,8 @@ def make_database(tmp_path: Path) -> Iterator[MakeDatabase]:
         url = make_url(server).set(database=database)
         return url.render_as_string(hide_password=False)
 
-    yield make
+    with DATABASES_REFUSED.unblock():
+        yield make
     for database in created:
         assert server is not None
         on_server(server, f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
@@ -346,7 +370,8 @@ class Templates:
     def get(self, shape: Shape) -> _Template:
         """The shape's template, migrated on first use."""
         if (made := self._made.get(shape.name)) is None:
-            made = self._made[shape.name] = self._migrate(shape)
+            with DATABASES_REFUSED.unblock():
+                made = self._made[shape.name] = self._migrate(shape)
         return made
 
     def copy(self, shape: Shape, make_database: "MakeDatabase", target: Path) -> str:

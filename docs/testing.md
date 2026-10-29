@@ -31,24 +31,42 @@ The `.env` file is never read during tests. The test settings must say
 | Fixture | Scope | Gives |
 | --- | --- | --- |
 | `database` | session | The test databases, made and migrated (see below). Gives the default database's URL. |
-| `db` | test | Those databases put back as `migrate` left them. Request it in tests that reach the database without a client. |
+| `db` | test | Those databases put back as `migrate` left them. Request it in tests that reach the database without a client: a test that did not request it is refused them ([Database access](#database-access)). |
+| `database_blocker` | session | `with database_blocker.unblock():` lets a fixture wider than one test reach the databases, as pytest-django's `django_db_blocker`. |
 | `client` | test | A `TestClient` for the project's application, with its lifespan, on the `db` databases. It sends no credentials. |
 | `client_for` | test | `client_for("billing.view_invoice", ...)`: a client of the same application that authenticates as a new user granted those permissions. Keyword arguments set the user's fields (`is_staff=True`, `username="carol"`); the username is unique otherwise. Needs `domainkit.contrib.auth`. |
 | `admin_client` | test | A client that authenticates as a new superuser. |
+| `live_server` | test | `live_server.url`: the application served by uvicorn on a port of the test process, for browsers and other processes, on the `db` databases ([A live server](#a-live-server)). |
 | `async_client`, `async_client_for`, `async_admin_client` | test | The same, as `AsyncTestClient`s, for async tests; `await async_client_for(...)`. |
 | `freeze_time` | test | `clock = freeze_time("2026-01-01")`: the framework's clock stands still there until the test ends ([Time](#time)). |
 | `assert_num_queries`, `assert_max_queries` | test | `with assert_num_queries(3):` ([Counting queries](#counting-queries)). |
 | `settings` | test | `settings.DEBUG = True`: the setting changes, validated, until the test ends; `del settings.CACHES` puts its default back ([Settings](#settings)). |
 
-Memory caches are emptied before every test, so no test sees what another
-cached. Redis caches are left alone: give the test settings their own
-`KEY_PREFIX`. The memory backends' outboxes (`mail.outbox`, and
-`sms_outbox` and `push_outbox` of `domainkit.contrib.notifications`) are
-emptied before every test too, as Django's runner empties `mail.outbox`,
-and every [factory](#factories) numbers its objects from 0 again, so a test
-sees the same `Sequence` values in any order. What a module- or
-session-scoped fixture sends is gone by the time a test runs: send it in
-the test, or in a function-scoped fixture.
+### What each test starts from
+
+The plugin puts the process's own state back between tests, each piece
+through a public reset that a project's fixtures may call too; a
+project's conftest never needs a private name for it:
+
+| Before each test | Through |
+| --- | --- |
+| Memory caches (`memory://`) are empty. Redis caches are left alone: give the test settings their own `KEY_PREFIX`. | `caches.reset()` |
+| The memory backends' outboxes are empty, as Django's runner empties `mail.outbox`. | `mail.outbox.clear()`; `sms_outbox` and `push_outbox` of `domainkit.contrib.notifications.backends` |
+| Every [factory](#factories) numbers its objects from 0, so a test sees the same `Sequence` values in any order. | `Factory.reset_sequence()` |
+| The throttled logs (`domainkit.log.ThrottledLog`) have forgotten what they held back, so a test's first line is written. | `domainkit.log.reset_throttled()` |
+| The principal cache is empty: a user is read from the database again. | `domainkit.contrib.auth.principals.invalidate_all()` |
+| The databases are refused unless the test requested them ([Database access](#database-access)). | `database_blocker` |
+
+| After each test | Through |
+| --- | --- |
+| Once the domains are loaded, the subscriptions, tasks, and metric refreshers the test added are dropped, and those it removed come back. The test that loads the domains keeps what their `ready()` registered. | `event_bus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()` |
+| Its error reports are sent and its logs written (below). | `flush_reports()`, `flush_logs()` |
+
+What a module- or session-scoped fixture sends is gone by the time a test
+runs: send it in the test, or in a function-scoped fixture. The resets of
+an app a project does not load are passed over, never imported; each costs
+a call or two, made from one hook rather than a fixture per reset
+([ADR 0113](adr/0113-reset-module-state-through-public-resets-the-plugin-calls.md)).
 
 Error reporters (`ERROR_REPORTERS`) and the logging thread work in the
 background ([runtime.md](runtime.md#logging-and-error-reports)): what a test
@@ -121,6 +139,58 @@ triggers of their own (an append-only audit trail) have them off while this
 runs. The rows are read and restored as the schema owner. Sequences keep
 counting, so do not assert on generated ids.
 
+## Database access
+
+A test reaches the test databases only when it asks for them, as
+pytest-django's `db` mark makes it ask: by requesting `db`, or a fixture
+that does (`client`, `async_client`, `live_server`, ...). Any other test is
+refused them, whatever path it takes (a unit of work, `connections`,
+`autocommit`, a command, a factory's `create`), in every thread, the
+application's own in a `TestClient` too:
+
+```text
+domainkit.db.DatabaseAccessRefused: This test reached the database without
+requesting it, so it would see whatever earlier tests left there. Request the
+db fixture (a client fixture requests it too); in a fixture wider than one
+test, use database_blocker.unblock(). ...
+```
+
+Until 0.13 such a test saw whatever the test before it left, and when it
+ran first, before any test had made the test databases, it reached the
+databases the test settings name.
+
+- **A fixture wider than one test**, which writes rows that a module's
+  tests read, opens the databases while it works:
+
+  ```python
+  @pytest.fixture(scope="module")
+  def catalogue(database, database_blocker):
+      with database_blocker.unblock():
+          run_async(create_catalogue())
+  ```
+
+  Its tests still request `db`, which puts the rows back as `migrate` left
+  them; one that should see the module's rows unblocks too, without `db`.
+- **A project that needs time** keeps 0.12's behaviour: mark a test (or a
+  module, with `pytestmark`) `@pytest.mark.allow_database`, or set
+  `domainkit_allow_database = true` under `[tool.pytest.ini_options]` for
+  every test. A marked test reaches the test databases as the last test
+  left them; the mark makes them first, so it never reaches the ones the
+  settings name. The ini option does not, as 0.12 did not.
+- **What it stops**: engines, sessions, and owner engines of
+  `domainkit.db` raise `DatabaseAccessRefused`
+  (`ConnectionHandler.refuse`). An engine a test makes itself with
+  SQLAlchemy is its own, and so are ledgers, caches, and brokers.
+- Under pytest-xdist each worker is a process of its own, with its own
+  refusal; `--keepdb` reuses, migrates, and puts back its databases with
+  them open, as without it. A function-scoped fixture of the project that
+  reaches the databases requests `db` itself, or it runs before `db` opens
+  them.
+- It costs nothing a test can measure: a check where each engine or
+  session is handed out, and a hook, not a fixture, for the mark (3,000
+  tests take as long as with 0.12;
+  [ADR 0112](adr/0112-refuse-the-test-databases-to-a-test-that-did-not-request-them.md)).
+
 To run the same suite on PostgreSQL, point the test settings at it, for
 example from a variable:
 
@@ -179,6 +249,38 @@ Async tests run on AnyIO's pytest plugin, which comes with FastAPI, on its
 default asyncio backend: mark them with `pytest.mark.anyio`. The sync
 fixtures (`db`, `client`) work in them too.
 
+## A live server
+
+Browsers and other processes need a real socket. `live_server` serves the
+project's application with uvicorn, in a thread of the test process, on
+`127.0.0.1` and a port the system picks, on the `db` databases:
+
+```python
+import httpx2
+from playwright.sync_api import Page
+
+from domainkit.testing import LiveServer
+
+
+def test_the_home_page(live_server: LiveServer, page: Page) -> None:
+    page.goto(live_server.url)
+    assert httpx2.get(f"{live_server.url}/health").status_code == 200
+```
+
+- It starts for the test, lifespan included, and stops after it: each
+  test gets an application built with its own settings (the `settings`
+  fixture's too), and nothing it served reaches the next test. Starting
+  takes about 2 ms; stopping about 0.14 s, as uvicorn checks every 0.1 s
+  whether to stop.
+- `127.0.0.1` is added to `ALLOWED_HOSTS` while it runs.
+- Its thread starts with the test's context: request `freeze_time` (and
+  freeze the clock) before `live_server`, and the application's clock is
+  the test's, moving with `clock.tick()`.
+- Rows the test stores (`run_async(create_user(...))`) are the server's
+  to read, and the other way round: they share the databases.
+- `LiveServer(app)` serves any ASGI application the same way, in a `with`
+  block; `server.url` and `server.port` say where.
+
 ## Users and groups
 
 `domainkit.contrib.auth.testing` stores users and groups as the
@@ -229,6 +331,15 @@ def test_owners_edit(client: TestClient) -> None:
 - `client.run(function, *args, **kwargs)` awaits an async function in the
   sync client's event loop, on the application's own connections, with the
   caller's context (a frozen clock): async setup in a sync test.
+- `client.browser_session_as(user)` (sync) and `await
+  async_client.browser_session_as(user)` (async): a client signed in with
+  a browser session, as Litestar's `set_session_data` does, without
+  posting to `/auth/session`. It sends the session cookie and the CSRF
+  cookie, and the CSRF token in `X-CSRF-Token`, as a page's script sends
+  it, so unsafe methods pass the CSRF checks. `await
+  browser_session_for(user)` returns those headers. It needs
+  `CookieAuthentication` in `AUTH.AUTHENTICATION_CLASSES`, and is refused
+  unless `ENVIRONMENT = "test"`, as the tokens are: no route reaches it.
 - Object grants go through `domainkit.contrib.objectpermissions`'
   `grant_permission`, with a superuser as the actor.
 
@@ -299,6 +410,84 @@ class InvoiceFactory(Factory[Invoice]):
 - Plain defaults are copied for each object, so a list default is never
   shared. `LazyAttribute` reads the other fields in any order; fields that
   depend on each other in a circle are refused.
+
+factory_boy's other declarations work too, shaped for aggregates stored
+through a unit of work:
+
+```python
+from domainkit.testing import (
+    Factory,
+    Maybe,
+    RelatedFactory,
+    SelfAttribute,
+    SubFactory,
+    Trait,
+    post_generation,
+)
+
+
+class LineFactory(Factory[InvoiceLine]):
+    class Meta:
+        model = InvoiceLine
+        repository = "lines"
+        exclude = ("invoice",)
+
+    invoice = None
+    invoice_id = LazyAttribute(lambda line: line.invoice.id)
+    price = SubFactory(MoneyFactory, currency=SelfAttribute("..invoice.total.currency"))
+
+
+class InvoiceFactory(Factory[Invoice]):
+    class Meta:
+        model = Invoice.issue
+        repository = "invoices"
+
+    class Params:
+        currency = "EUR"
+        paid = Trait(status="paid", paid_at=datetime(2026, 1, 1, tzinfo=UTC))
+
+    status = "open"
+    paid_at = None
+    receipt = Maybe("paid_at", "sent", no="none")
+    total = SubFactory(MoneyFactory, currency=SelfAttribute("..currency"))
+    first_line = RelatedFactory(LineFactory, "invoice")
+
+    @post_generation
+    def notes(invoice, create, extracted, **options):
+        for text in extracted or ():
+            invoice.add_note(text)
+```
+
+- **`class Params`** holds fields the model does not receive, which other
+  fields read (`currency`), and **`Trait`s**: `InvoiceFactory.build(paid=True)`
+  turns their defaults on, in the order they are declared; arguments
+  given beside it still win (`paid=True, status="refunded"`), and
+  `total__amount=` keys reach a sub-factory. A trait's `total__amount`
+  and a given `total__currency` both hold, as in factory_boy; a given
+  `total=` replaces the trait's keys for it.
+- **`SelfAttribute("customer.id")`** copies another field, or its
+  attribute; each dot past the first climbs to the factory whose
+  `SubFactory` made this object (`"..currency"`). `default=` is taken when
+  the path is missing.
+- **`Maybe("paid_at", yes, no)`** takes `yes` when the field is true,
+  else `no`; the decider may be a declaration, and either branch a
+  `SubFactory`, which `create` stores as it stores any other.
+- **`post_generation`** methods run on each object once it is made:
+  `(obj, create, extracted, **options)`, with what was given under the
+  method's name and its `name__key=` arguments. **`RelatedFactory`** makes
+  another object afterwards, with this one as its field `related_name`;
+  a value given under its name makes none. With `create` both run after
+  the object is added and before the commit, through the same unit of
+  work, so what they change (and the events it records) and the objects
+  they add are committed with it, in one transaction.
+- **`stub()`** and `stub_batch()` give the fields the model would
+  receive as a `SimpleNamespace`: no model is called, sub-factories give
+  stubs, and no `post_generation` or `RelatedFactory` runs.
+- A declaration given as an argument is computed as a default would be:
+  `SubFactory(MoneyFactory, currency=SelfAttribute("..currency"))`.
+- There is no `Faker`: it would make the plugin depend on Faker.
+  `Sequence` and `LazyFunction` make the unique and varied values tests
+  need.
 
 ## Time
 
@@ -430,12 +619,14 @@ SQL unit of work in API tests.
 
 ## Compared with pytest-django, DRF, Litestar, and factory_boy
 
-What their testing tools give, and where domainkit stands as of 0.12. Rows
-marked 0.12 were added for the 0.9.0 audit's TEST-08.
+What their testing tools give, and where domainkit stands as of 0.13. Rows
+marked 0.12 and 0.13 were added for the 0.9.0 audit's TEST-08.
 
 | They give | domainkit |
 | --- | --- |
 | pytest-django's `db`, `django_db_setup`, `--reuse-db` | `db`, `database`, `--keepdb`; a database per xdist worker |
+| pytest-django's `django_db_blocker` and its `db` mark | the databases refused to a test that did not request `db`; `database_blocker`; `allow_database` and `domainkit_allow_database` to allow them as before (0.13) |
+| pytest-django's `live_server`; Django's `LiveServerTestCase` | `live_server`, `LiveServer(app)` (0.13) |
 | pytest-django's `client`, `admin_client`, `async_client` | `client`, `admin_client`, `async_client`, `async_admin_client` |
 | pytest-django's `django_assert_num_queries`, `django_assert_max_num_queries` | `assert_num_queries`, `assert_max_queries` |
 | pytest-django's `mailoutbox`; Django's emptied `mail.outbox` | `mail.outbox`, `sms_outbox`, and `push_outbox`, emptied before each test |
@@ -443,26 +634,19 @@ marked 0.12 were added for the 0.9.0 audit's TEST-08.
 | pytest-django's `settings` | `settings` (0.12) |
 | pytest-django's `admin_user`, `django_user_model`; factory_boy's model factories for users | `create_user`, `create_group` (0.12); `client_for(...)` for a new user per client |
 | DRF's `force_authenticate`, `force_login` | `authenticated_as(user)`, `token_for(user)` (0.12) |
+| Litestar's `set_session_data` | `browser_session_as(user)`, `browser_session_for(user)` (0.13) |
 | DRF's `APIClient.credentials` | `client.another(headers)` |
 | Litestar's `create_test_client`, `AsyncTestClient` | `TestClient(app)`, `AsyncTestClient(app)` for any ASGI application |
 | freezegun, time-machine | `freeze_time`, which the application, tokens, and the outbox follow |
 | factory_boy's `Factory`, `Sequence`, `LazyFunction`, `LazyAttribute`, `SubFactory`, `build_batch`, `create_batch` | the same names |
+| factory_boy's `Trait`, `post_generation`, `RelatedFactory`, `SelfAttribute`, `Maybe`, `stub()` | the same names, run through the unit of work before its commit (0.13) |
 
-Not given yet, each with what to do meanwhile:
+Not given, each with what to do instead:
 
-- **Refusing database access a test did not ask for** (pytest-django's
-  `django_db_blocker` and its `db` mark): a test that reaches the
-  database without `db` or a client sees whatever the last test left.
-  Request `db`.
-- **A live server on a port** (`live_server`): for browsers and other
-  processes. Run `uvicorn` in a fixture of your own, on the test
-  database's URL.
 - **A request factory** (Django's `RequestFactory`, DRF's
   `APIRequestFactory`): call dependencies with the objects tests build,
   or go through `client`.
-- **factory_boy's `Trait`, `post_generation`, `RelatedFactory`,
-  `SelfAttribute`, `Faker`, `Maybe`, and `stub()`**: use `LazyAttribute`
-  and `SubFactory`, or create the related objects in the test.
-- **Session data helpers** (Litestar's `set_session_data`): log in
-  through `/auth/session`, as a browser does.
+- **factory_boy's `Faker`**: it would make the plugin depend on Faker.
+  Use `Sequence` and `LazyFunction`, or call Faker from a `LazyFunction`
+  in a project that installs it.
 

@@ -124,6 +124,7 @@ def test_without_the_ini_option_the_settings_are_left_alone(
     assert f"{prefix}SETTINGS_MODULE" not in os.environ
 
 
+@pytest.mark.usefixtures("database_access")
 def test_a_named_database_keeps_its_url_and_options(tmp_path: Path) -> None:
     """Only in-memory SQLite is replaced; other options survive."""
     (tmp_path / "migrations").mkdir()
@@ -1057,6 +1058,7 @@ def test_errors_name_the_entry(tmp_path: Path) -> None:
         (True, [("migrate",)]),
     ],
 )
+@pytest.mark.usefixtures("database_access")
 def test_migrations_go_down_and_up_unless_kept(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

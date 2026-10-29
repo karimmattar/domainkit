@@ -687,6 +687,7 @@ async def test_the_process_handler_builds_memory_ledgers() -> None:
     await ledgers.close_all()
 
 
+@pytest.mark.usefixtures("database_access")
 def test_ready_checks_cover_ledgers(monkeypatch: pytest.MonkeyPatch) -> None:
     """``/ready`` fails when a ledger fails."""
     from fastapi.testclient import TestClient

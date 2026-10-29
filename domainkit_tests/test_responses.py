@@ -900,6 +900,7 @@ def test_error_bodies_keep_their_bytes() -> None:
     )
 
 
+@pytest.mark.usefixtures("database_access")
 def test_readiness_answers_render_through_the_fast_encoder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

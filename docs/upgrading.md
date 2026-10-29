@@ -27,9 +27,10 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
-Each was deprecated in 0.12, with a warning that named its replacement:
-upgrade from 0.12 with deprecations as errors first. Each says what fails,
-and what to write instead.
+Upgrade from 0.12 with deprecations as errors first: the removals below
+were each deprecated in 0.12, with a warning that named its replacement.
+Each item says what fails and what to write instead, and, where there is
+a way, how to keep the old behaviour for as long as the project needs it.
 
 - **A domain that defines a removed hook method fails `setup()`**
   (DSGN-03). `startup`, `shutdown`, `check`, `seed`, `erase_subject`,
@@ -61,6 +62,18 @@ and what to write instead.
   it on the unit of work the service changes the aggregate through:
   `with uow.expect(Order, order_id, versions):` in place of `with
   expect_version(Order, order_id, versions):`.
+- **A test that did not request the database is refused it** (TEST-08).
+  The pytest plugin raises `domainkit.db.DatabaseAccessRefused` when a
+  test reaches the test databases without requesting `db`, or a fixture
+  that does (`client`, `async_client`, `live_server`, ...); the message
+  names the fixture. 0.12 let such a test read whatever the test before
+  it left, and, run first, reach the databases the test settings name.
+  **Fix:** request `db` in the test, or in its function-scoped fixtures
+  that reach the database; a module- or session-scoped fixture opens the
+  databases with `with database_blocker.unblock():`. **To keep the old
+  behaviour:** `@pytest.mark.allow_database` on a test, or `pytestmark =
+  pytest.mark.allow_database` in a module; or, for the whole suite,
+  `domainkit_allow_database = true` under `[tool.pytest.ini_options]`.
 
 ## 0.11 to 0.12
 
