@@ -1,0 +1,23 @@
+"""Use cases: open a unit of work, change one aggregate, commit."""
+
+from {{ package }}.application.commands import Create{{ Aggregate }}, Rename{{ Aggregate }}
+from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id
+
+
+async def create_{{ aggregate }}(command: Create{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
+    """Create and store a {{ aggregate }}."""
+    {{ aggregate }} = {{ Aggregate }}.create(command.name)
+    async with uow:
+        await uow.{{ aggregates }}.add({{ aggregate }})
+        await uow.commit()
+    return {{ aggregate }}
+
+
+async def rename_{{ aggregate }}(command: Rename{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
+    """Rename a {{ aggregate }}."""
+    async with uow:
+        {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id(command.{{ aggregate }}_id))
+        {{ aggregate }}.rename(command.name)
+        await uow.commit()
+    return {{ aggregate }}

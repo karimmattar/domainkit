@@ -9,6 +9,327 @@ and a status.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-28
+
+A minor release: a domain's hooks become typed registrations, checked when
+they register, and `If-Match` is held by the unit of work that changes the
+aggregate (the old ways still work, warned, until 0.13); a process imports
+what it uses on first use, and keyed bodies spill to disk; tools for a
+project's tests; a smaller first domain, and an image and CI for new
+projects. Some changes break: `docs/upgrading.md` lists each with its fix.
+No migration is added.
+
+### Added
+
+- `domainkit.apps.hooks` declares the rest of a domain's hooks as points
+  it registers on in `ready()`, as 0.10 did for commits: `on_startup`,
+  `on_shutdown`, `on_check` (readiness), `on_seed`, `on_erase_subject`,
+  `on_export_subject`, `on_check_application`, and
+  `on_deployment_warnings`. Only the domains that registered are called:
+  a round of `/ready` checks of 22 domains, 21 without a check, takes 4
+  Python calls instead of 1,736, and the domains' lifespan 315 instead of
+  2,484. A domain's several hooks of a kind keep one label: its readiness
+  checks run in turn, its erasures are audited as one record
+  (DSGN-03; ADR 0101).
+- A hook point checks a function when it registers: a hook that cannot
+  take the point's arguments, or is a plain function where the point
+  awaits it (or the reverse), fails `setup()`, naming the domain, the
+  point, and the function, where 0.11 failed every commit or readiness
+  probe that called it. `HookPoint(name, arguments=..., awaited=...)` does
+  the same for a project's own points; `point.hooks(registry)` and
+  `point.of(label, registry)` read a `DomainRegistry` of one's own
+  (DSGN-03; ADR 0101).
+- `UnitOfWork.expect(model, id, versions)`: hold an aggregate to the
+  versions a client read, on the unit of work that changes it. Its
+  repositories check the aggregate when they first load it, and its
+  `commit` refuses before they did; it yields the `Expectation`
+  (`domainkit.ddd.preconditions`), whose `checked` says whether the block
+  loaded it. The resource routes use it: another unit of work a service
+  opens in a checked request (an audit record written first) commits as
+  it would, where 0.11 refused it until the aggregate was loaded
+  (DSGN-14; ADR 0102).
+- `ResourceRouter.batch_route(..., retry=Retry(...))` runs work that lost
+  a race again, as `command_route(retry=)` does: without `atomic`, the
+  item that lost, its reach check and `If-Match` made again; with
+  `atomic`, the whole batch, in a new transaction. Once the runs are
+  spent the item answers `503 database_busy`, as without `retry`.
+  Batches retry only when they say so; the isolation level stays the
+  unit of work's (FIN-78; ADR 0092).
+- `IDEMPOTENCY.SPOOL_BYTES` (default 1 MiB, at most 1 GiB): how much of a
+  keyed request's body, and of a response being kept, the idempotency
+  middleware holds in memory; past it, the rest goes to a temporary file,
+  unlinked from the start and closed when the request ends. With
+  `MAX_REQUEST_BODY_SIZE` and `MAX_RESPONSE_BYTES` at their defaults,
+  nothing reaches the disk (PERF-11; ADR 0105).
+- `Cache.refresh(key, factory, ttl=...)` computes a value now and stores it
+  in place of the cached one, as `get_or_set` stores it: callers are
+  served the old value until it lands, so none of them misses, in any
+  process sharing the cache. A computation already running for the key is
+  not joined (PERF-17).
+- `startdomain <name> --minimal` writes a smaller domain, in the same four
+  layers: an aggregate with a name that must not be blank, commands to
+  create and rename it, its table, its resource, fakes, and two tests. A
+  newcomer meets 18 files and 18 names from domainkit, where the full
+  domain has 21 and 36. `startaggregate`, `addcommand`, `addquery`, and
+  `addevent` grow it, starting `domain/events.py` and
+  `application/handlers.py` when the domain has none. The default stays
+  the full domain, which the tutorial builds on; the README's quick start
+  uses `--minimal` (DSGN-11; ADR 0108).
+- `init` writes a `Dockerfile` (dependencies in a build stage, the code
+  owned by root, run as uid 10001 with uvicorn and the limits of "Server
+  limits"), a `.dockerignore` that lets in only what the application
+  runs, and
+  `.github/workflows/ci.yml` (ruff, `check`, migrations checked, the
+  tests, and the image built), its actions pinned as domainkit's CI pins
+  them. CI's build job builds and runs a new project's image with the
+  wheel. `docs/deploying.md` is the checklist from a project that passes
+  to one in production; it says that probes must send a `Host` of
+  `ALLOWED_HOSTS`, or are answered 400 (INFRA-09; ADR 0108).
+- In staging and production `check` says what it cannot check: HTTPS
+  ends in front of the application, and a request's scheme comes from the
+  `PROXY_SCHEME_HEADER` of `TRUSTED_PROXIES`, or from the connection
+  alone, where every request counts as plain HTTP (`security.I001`,
+  information: it never fails `check --deploy`) (INFRA-08).
+- How-to recipes (`docs/recipes.md`), each run as written by the tests: a
+  payment that runs again when it loses a race (`uow.run`, `Retry`,
+  `SERIALIZABLE`, `get_many_for_update`), work that commits once per
+  message (`@inbox`), replacing the JSON Web Token key (`PREVIOUS_KEYS`),
+  running behind a proxy (`TRUSTED_PROXIES`, request ids), and reading
+  from a replica (DOCS-05).
+- `docs/from-django.md` maps what a Django or Django REST framework user
+  reaches for to its name here, and its page (DOCS-12, DOCS-10).
+- `domainkit.contrib.auth.testing`: `await create_user(*permissions,
+  password=None, groups=(), superuser=False, **fields)` and `await
+  create_group(*permissions, name=None)` store users and groups for tests
+  as the application does, through `AuthUnitOfWork`, so their events are
+  published (`docs/testing.md`; ADR 0107) (TEST-08).
+- `client.authenticated_as(user)` and `await
+  async_client.authenticated_as(user)` sign a test client in as a user
+  stored already (one a test made, or a factory stored), as DRF's
+  `force_authenticate` does; `await token_for(user)` returns the token.
+  Until now a test could sign in only as a new user `client_for` made.
+  Another provider of users implements the new protocol
+  `StoredUserTokenIssuer` to take part (TEST-08).
+- `TestClient.run(function, *args, **kwargs)` awaits async setup in the
+  sync client's event loop, with the caller's context (TEST-08).
+- A `settings` fixture in the pytest plugin, as pytest-django's:
+  `settings.DEBUG = True` changes a setting, validated, until the test
+  ends (TEST-08).
+- `docs/testing.md` compares the plugin with pytest-django, DRF's test
+  tools, Litestar's, and factory_boy: what each gives, what domainkit
+  gives, and what it does not yet (TEST-08).
+- `dumpdata --include-guarded` and `--operator`: a dump with guarded
+  tables is recorded as `operator.dumpdata` (its tables, their row counts,
+  and the SHA-256 of what was written), and in staging and production
+  needs a named operator (DATA-12; ADR 0100).
+- CI's `mutation (changed)` job runs, on each pull request that changes
+  code, the mutants of the functions and methods it changed, and fails
+  when one lives; not a required check (ADR 0106) (TEST-02, TEST-07).
+
+### Changed
+
+- A service that changes the aggregate an `If-Match` request names
+  through another unit of work than the one the route gave it is no
+  longer held to `If-Match`: the request still fails with the
+  `RuntimeError` it did, but that write stands, where 0.11 refused it.
+  Change aggregates through the unit of work the route passes (DSGN-14;
+  ADR 0102).
+- The mail and notification backends share one base for what they share:
+  sending a batch, `deployable`, the memory and console backends, and
+  loading the class a setting names. `BaseEmailBackend`, `SmsBackend`,
+  `PushBackend`, and their memory, console, and SMTP backends keep their
+  names, import paths, output, and errors (DSGN-10).
+- **Breaking:** a function registered on a point of `domainkit.db.hooks`
+  with the wrong arguments, or not `async`, fails `setup()`. **Fix:**
+  give it the point's arguments; `docs/upgrading.md` lists them (DSGN-03).
+- `import domainkit.http` loads 57 modules, not 679: its names, messaging's
+  worker names, and `domainkit.__version__` are imported when first read,
+  from the same paths. A served project no longer loads the ledgers, the
+  brokers, or messaging's worker and dispatcher unless it uses them: the
+  `init` project's `config.asgi` imports 806 modules, not 824 (PERF-15;
+  ADR 0104).
+- A keyed request's body is fingerprinted as it arrives when
+  `Content-Length` gives its length, and a body or kept response past
+  `IDEMPOTENCY.SPOOL_BYTES` is kept in a temporary file: an 8 MiB keyed
+  body held 16 MiB in the middleware, and holds 1.1 MiB; 32 MiB each way
+  held 96 MiB, and holds 32. Fingerprints, replays, leases and tombstones
+  are as before. A body held in memory reaches the application in one
+  message, as before; one from a file comes in 64 KiB parts, as a server
+  sends a large body. Without a writable temporary directory the body
+  stays in memory, with a warning (PERF-11; ADR 0105).
+- A change of a flag or dynamic setting replaces the flags' cache entry,
+  loaded again by the process that made it, instead of deleting it: with a
+  Redis cache, 20 replicas reading as a change lands read the database
+  once, not 20 times, and every process still sees the change at once.
+  Changes that race each other are counted in the cache
+  (`domainkit.flags.version`), so neither is lost (PERF-17; ADR 0033's
+  amendment).
+- The benchmark ladder counts the modules each rung's process holds, and
+  CI gates them (`benchmarks/budgets.toml`, within 2); its `bench` job
+  installs every extra, as `make install` does, so the budgets hold for
+  both (PERF-15; ADR 0104).
+- CI's `newest` job runs the proof of settling cut-off connections
+  (`test_db_cut_off.py`, `test_sec11b_2_cut_off_session_lock.py`) against
+  PostgreSQL on the newest asyncpg and SQLAlchemy, with settling on for
+  releases `_PROVEN` does not name yet; the suite then says whether to
+  widen `_PROVEN` (CONC-08; ADR 0048's amendment).
+- **Breaking:** `dumpdata` leaves guarded tables (users and their password
+  hashes, groups, permissions, content types, object grants, dynamic
+  settings) out of a dump of every table, and says so on standard error,
+  and refuses a guarded table named, alone or by its domain. **To keep the
+  old behaviour:** `dumpdata --include-guarded` (DATA-12).
+- A fixture holds a single-field value object's column (`ValueObjectType`:
+  a password hash, a project's `ProductName`) as its field, not as
+  `{"value": ...}`, and `loaddata` makes the object from it, so the
+  object's checks apply: a raw password in place of a hash is refused.
+  Fixtures written by 0.11 load as before. `PasswordHashType` is a
+  `ValueObjectType`, with the same constructor and repr, so migrations
+  naming it are unchanged (DATA-12).
+- A change of a flag or dynamic setting replaces the flags' cache entry,
+  loaded again by the process that made it, instead of deleting it: with a
+  Redis cache, 20 replicas reading as a change lands read the database
+  once, not 20 times, and every process still sees the change at once.
+  The entry is kept under the count of changes (`domainkit.flags.version`),
+  which a change moves only once the new entry is there, so changes that
+  race each other are both kept (PERF-17; ADR 0033's amendments).
+
+### Deprecated
+
+- Overriding a hook method of `DomainConfig`: `startup`, `shutdown`,
+  `check`, `seed`, `erase_subject`, `export_subject`,
+  `check_application`, `deployment_warnings`, and the SQL ones 0.10
+  moved (`stage`, `committed`, `stage_transaction`,
+  `transaction_committed`, `migrated`). An override is still called, and
+  loading the domain warns `DomainkitDeprecationWarning` once, at the
+  method's line, naming the domain and the point to register on
+  (`on_startup`, ...). 0.13 removes them. `databases` and `holds_table`
+  stay (DSGN-03; ADR 0101).
+- `domainkit.ddd.preconditions.expect_version`, which held every unit of
+  work and repository of the context to the expected versions. Use
+  `uow.expect(model, id, versions)`; it still works, warning
+  `DomainkitDeprecationWarning`, and 0.13 removes it (DSGN-14; ADR 0102).
+
+### Fixed
+
+- Connections a WebSocket middleware shared by loops on several threads
+  (3.14t) accepted at once took their message-counter keys from a shared
+  `itertools.count` without a lock. CPython 3.14.6t gave no duplicates in
+  1.6 million draws on 8 threads, but nothing documents that, and two
+  connections with one key would share one count; the key is taken under
+  a lock (CONC-09).
+- `migrate`, `makemigrations`, and `showmigrations` printed the driver's
+  traceback when a database could not be reached (174 lines for a refused
+  connection), naming no database. They say it on one line, and exit
+  with status 1: `Database 'default' cannot be reached at
+  postgresql+asyncpg://db/app (ConnectionRefusedError: ...)`: the
+  database's driver, host, port, and name, never its credentials, and the
+  driver's own reason (INFRA-08).
+- A user dumped by `dumpdata` could not be loaded again, even with
+  `--include-guarded`: the password hash was refused. It loads back as it
+  was (DATA-12).
+- `loaddata --replace` recorded the counts its plan read before the load's
+  transaction, so a row stored in between was recorded as added, not
+  replaced. The load holds its tables' write lock (`SHARE ROW EXCLUSIVE` on
+  PostgreSQL, `BEGIN IMMEDIATE` on SQLite) while it counts and writes, and
+  `operator.loaddata` holds what it wrote (DATA-12).
+- The weekly mutation run stopped in every shard before its first mutant:
+  four tests that read domainkit's source text or the frames of its calls
+  failed on mutmut's rewritten copy, and three generated projects started
+  under mutmut's own variable. Those tests carry the marker
+  `reads_own_source`, which mutation runs leave out, and the projects
+  start without the variable (TEST-02, TEST-07).
+- Tests that failed under load now pass at any load, each for the reason
+  it failed: the rate limiter and the middleware read different clocks
+  (`test_held_addresses_are_let_go`), a task timed out at 0.2 s while the
+  test waited (`test_stopping_waits_for_every_running_delivery`), and the
+  walkthroughs and the generated-code test held dozens of commands to one
+  test's two minutes, now each command to its own (TEST-01, TEST-02).
+- The blocking detector's nested test sessions, most of the time the
+  plugin's own tests took, sleep 0.15 s where 0.25 s was, still half again
+  what the detector reports (TEST-09).
+
+### Security
+
+- The image of a project `init` made copied in an env file kept next to
+  its `Dockerfile`, such as the `production.env` its own comment ran it
+  with, holding `SECRET_KEY` and the database and Redis passwords:
+  `.dockerignore` kept out only `.env`. It now lets in only `manage.py`,
+  `pyproject.toml`, `src/`, and `migrations/`, and keeps `.env*`, `*.env`,
+  `secrets/`, and SQLite files out even there; the comment names an env
+  file outside the project, and `.gitignore` lists them too. A project
+  made with 0.12's earlier builds copies the new `.dockerignore` and
+  `.gitignore` from a new project, and checks no image it pushed holds
+  such a file (`docker run --rm <image> find /app -name '*.env*'`)
+  (SEC-12c-2).
+- The one line of `migrate`, `makemigrations`, and `showmigrations` for a
+  database out of reach printed a password given in the URL's query
+  (`?password=`, which asyncpg uses), and the end of a password whose `@`
+  was not encoded. It names the driver, host, port, and database alone,
+  and hides a host that holds an `@`, saying to encode it as `%40`
+  (SEC-12c-1).
+- **Breaking:** the test tokens (`user_token`, `token_for`, the clients'
+  `authenticated` and `authenticated_as`, and so `client_for` and
+  `admin_client`) are refused with `ImproperlyConfigured` unless
+  `ENVIRONMENT = "test"`, as the database fixtures are. They sign a user
+  in without a password, a second factor, or a login record, and in a
+  deployed process `token_for` gave a full access token for any user id,
+  a superuser's included, to any code that called it. **Fix:** run tests
+  with test settings (`ENVIRONMENT = "test"`, which `domainkit init`'s
+  `config.settings.test` has) (SEC-12a-2).
+- **Breaking:** `loaddata` refuses a user whose password hash no hasher of
+  `AUTH.PASSWORD_HASHERS` made, or one it would make again more strongly:
+  a password kept in clear (`plaintext$...`) or a test database's
+  single-iteration hash loaded into production was a login a copy of the
+  table gives up at once. Unusable passwords load as before. **Fix:** load
+  users where the hashers that made their hashes are configured, or give
+  them unusable passwords in the fixture and reset them (SEC-12a-3).
+- **Breaking:** in staging and production, `dumpdata` of a table whose
+  model has fields marked `Personal` needs an operator named by
+  `--operator` or `DOMAINKIT_OPERATOR`, and is recorded as
+  `operator.dumpdata` with those tables (`personal_tables`), as a dump of
+  guarded tables is; no `--include-guarded` is needed. It copied every
+  person's data out with no one named and nothing recorded, where
+  `privacy export` of one person is recorded. **Fix:** set
+  `DOMAINKIT_OPERATOR` where it runs (SEC-12a-7).
+- A domain hook registered with `domain=` before the domains load (at the
+  top of an `apps` module), or for a label that is not installed, was
+  accepted and then forgotten without a word: an erasure hook registered
+  so was never called, and `privacy erase` reported success while the
+  copies stayed. Such a registration now fails with `ImproperlyConfigured`;
+  register in the domain's `ready()` (SEC-12a-1).
+- A deprecated hook method that the domain also registered
+  (`on_startup(self.startup)`) ran twice: two starts, two erasures audited
+  as twice the copies, two outbox or audit rows per commit. It runs once
+  now, and the warning says to register the function under a name of its
+  own (SEC-12a-4).
+- A subject's export kept only the last of a domain's hooks that named the
+  same kind, while erasure summed them all: the export left out copies
+  the erasure removed. A kind named twice now lists every hook's copies
+  (SEC-12a-5).
+- `If-Match` held only the first transaction of the unit of work that
+  checked it: a service that read in one block and wrote in a later one
+  wrote over a change another client stored in between. Each transaction
+  checks the aggregate again the first time it loads it, and accepts only
+  the client's versions and those the unit of work's own commits produced;
+  a stale one is `412 precondition_failed` (SEC-12a-6).
+- A flag or dynamic setting changed through the store could be served as
+  it was before the change, by every process sharing a Redis cache, for a
+  whole `FLAGS.CACHE_TTL` (30 seconds by default): a process that missed
+  the entry and read the tables just before the change stored what it
+  read after the change's reload, over it. A kill switch turned off stayed
+  on. The entry is now kept under the count of changes, which readers
+  read first and a change moves once its entry is loaded: a load that
+  read before a change stores under an earlier count, which no one reads.
+  A flag read costs two cache reads where it cost one (SEC-12b-1; ADR
+  0033's amendment).
+- A keyed response marked `Cache-Control: no-store` (new tokens, an export
+  of someone's data), which is never kept, was still held, and past
+  `IDEMPOTENCY.SPOOL_BYTES` written to a temporary file. Whether a
+  response can be kept is now decided as it starts: one marked `no-store`
+  is neither held nor written, and one that grows past
+  `MAX_RESPONSE_BYTES`, or is sent by path, is let go at once
+  (SEC-12b-2; ADR 0105's amendment).
+
 ## [0.11.2] - 2026-10-28
 
 A patch release: one fix of savepoints in the SQL unit of work. Nothing a
@@ -3667,7 +3988,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/karimmattar/domainkit/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/karimmattar/domainkit/compare/v0.10.1...v0.11.0

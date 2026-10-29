@@ -19,6 +19,12 @@ from starlette.routing import BaseRoute, Host, Mount
 
 from domainkit import deadlines
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import (
+    on_check_application,
+    on_deployment_warnings,
+    on_erase_subject,
+    on_export_subject,
+)
 from domainkit.checks import CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEPLOYED_ENVIRONMENTS
@@ -85,6 +91,10 @@ class IdempotencyConfig(DomainConfig):
         on_stage_transaction(self.hold_key_in_transaction)
         on_committed(self.note_commit)
         on_transaction_committed(self.note_transaction_commit)
+        on_check_application(self.application_problems)
+        on_deployment_warnings(self.weak_settings)
+        on_erase_subject(self.erase_copies)
+        on_export_subject(self.export_copies)
 
     async def hold_key(
         self,
@@ -178,7 +188,7 @@ class IdempotencyConfig(DomainConfig):
             ):
                 await connection.execute(MARK_COMMITTED, committed_values(operation))
 
-    def check_application(self, app: FastAPI) -> list[str]:
+    def application_problems(self, app: FastAPI) -> list[str]:
         """Keyed routes whose own ``RequestTimeout`` outlasts the keys' lease.
 
         ``ready`` keeps ``REQUEST_TIMEOUT`` below ``LEASE_SECONDS``; a route
@@ -203,7 +213,7 @@ class IdempotencyConfig(DomainConfig):
             if seconds is None or seconds >= lease
         ]
 
-    def deployment_warnings(self) -> list[str]:
+    def weak_settings(self) -> list[str]:
         """Keyed requests without a deadline, with ``REQUIRE_DEADLINE = False``.
 
         By default ``check_application`` refuses them instead.
@@ -247,12 +257,12 @@ class IdempotencyConfig(DomainConfig):
             )
         ]
 
-    async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
+    async def erase_copies(self, subject: str, reason: str) -> Mapping[str, int]:
         """Drop the kept responses about ``subject``; their keys stay, answered 409."""
         dropped = await operations.erase_subject(self.get_settings().DATABASE, subject)
         return {"responses": dropped}
 
-    async def export_subject(self, subject: str) -> Mapping[str, object]:
+    async def export_copies(self, subject: str) -> Mapping[str, object]:
         """The kept responses about ``subject``."""
         found = await operations.export_subject(self.get_settings().DATABASE, subject)
         return {"responses": found} if found else {}

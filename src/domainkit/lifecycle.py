@@ -48,13 +48,11 @@ from typing import Final, Self
 
 from domainkit import tasks
 from domainkit.apps import registry
-from domainkit.broker import brokers
 from domainkit.cache import caches
 from domainkit.conf import settings
 from domainkit.conf.global_settings import Settings
 from domainkit.db.connections import connections
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.ledger import ledgers
 from domainkit.log import aflush_logs, aflush_throttled
 from domainkit.reporting import aflush_reports
 from domainkit.utils.closing import forget_outcome
@@ -135,8 +133,8 @@ _FRAMEWORK_CLOSERS: Final[Mapping[str, _FrameworkCloser]] = MappingProxyType(
         "databases": _FrameworkCloser(
             Phase.RESOURCES, 0, lambda: connections.close_all
         ),
-        "ledgers": _FrameworkCloser(Phase.RESOURCES, 0, lambda: ledgers.close_all),
-        "brokers": _FrameworkCloser(Phase.RESOURCES, 0, lambda: brokers.close_all),
+        "ledgers": _FrameworkCloser(Phase.RESOURCES, 0, lambda: close_ledgers),
+        "brokers": _FrameworkCloser(Phase.RESOURCES, 0, lambda: close_brokers),
         # Last: the counts of lines held back, the reports, and the logs, so
         # what closing the others logged or reported is written too.
         "held-back log lines": _FrameworkCloser(
@@ -322,3 +320,25 @@ async def close_http_clients() -> None:
     client = sys.modules.get("domainkit.http.client")
     if client is not None:
         await client.close_all()
+
+
+async def close_ledgers() -> None:
+    """Close ``domainkit.ledger``'s connections, if anything imported it.
+
+    Looked up, not imported: a process that uses no ledger never loads one
+    (PERF-15).
+    """
+    ledger = sys.modules.get("domainkit.ledger")
+    if ledger is not None:
+        await ledger.ledgers.close_all()
+
+
+async def close_brokers() -> None:
+    """Close ``domainkit.broker``'s connections, if anything imported it.
+
+    Looked up, not imported: a process that publishes nothing never loads
+    a broker (PERF-15).
+    """
+    broker = sys.modules.get("domainkit.broker")
+    if broker is not None:
+        await broker.brokers.close_all()

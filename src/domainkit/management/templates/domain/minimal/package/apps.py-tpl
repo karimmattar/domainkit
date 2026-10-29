@@ -1,0 +1,13 @@
+"""Installation hooks for the {{ domain }} domain (Django's ``AppConfig``)."""
+
+from domainkit.apps import DomainConfig
+
+from {{ package }}.infrastructure.orm import start_mappers
+
+
+class {{ Domain }}Config(DomainConfig):
+    """Map the {{ domain }} tables once settings are loaded."""
+
+    def ready(self) -> None:
+        """Connect the layers."""
+        start_mappers()

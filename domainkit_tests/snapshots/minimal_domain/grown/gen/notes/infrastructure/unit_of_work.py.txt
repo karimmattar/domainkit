@@ -1,0 +1,35 @@
+"""The notes unit of work on the database, and its repositories."""
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
+from gen.notes.application.unit_of_work import NotesUnitOfWork
+from gen.notes.domain.model import (
+    Label,
+    LabelId,
+    LabelRepository,
+    Note,
+    NoteId,
+    NoteRepository,
+)
+
+
+class SqlAlchemyNoteRepository(SqlAlchemyRepository[Note, NoteId], NoteRepository):
+    """Note storage in the ``notes_notes`` table."""
+
+    model = Note
+
+
+class SqlAlchemyNotesUnitOfWork(SqlAlchemyUnitOfWork, NotesUnitOfWork):
+    """One database transaction over the notes repositories."""
+
+    def create_repositories(self, session: AsyncSession) -> None:
+        """Bind the repositories to ``session``."""
+        self.notes = SqlAlchemyNoteRepository(session)
+        self.labels = SqlAlchemyLabelRepository(session)
+
+
+class SqlAlchemyLabelRepository(SqlAlchemyRepository[Label, LabelId], LabelRepository):
+    """Label storage in the ``notes_labels`` table."""
+
+    model = Label

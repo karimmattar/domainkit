@@ -17,6 +17,7 @@ import importlib
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,15 +45,31 @@ from domainkit_tests.test_db_reads import (
     store,
 )
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("settling")]
 connections_module = importlib.import_module("domainkit.db.connections")
 """The module, which ``domainkit.db.connections`` (the handler) hides."""
+proven_check = connections_module._proven
+"""The module's own check of the installed releases, which ``settling`` may
+stand in for while a test runs."""
 asyncpg_only = pytest.mark.skipif(
     "+asyncpg" not in os.environ.get(POSTGRES_VARIABLE, ""),
     reason=f"set {POSTGRES_VARIABLE} to an asyncpg URL",
 )
 SLEEP = text("SELECT pg_sleep(5)")
 """A statement only a cancellation ends in time."""
+
+
+@pytest.fixture
+def settling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Settle cut-off connections, whatever releases are installed.
+
+    On releases of asyncpg or SQLAlchemy ``_PROVEN`` does not name yet, the
+    cases run with settling on: they prove it on the releases installed, or
+    fail on them. The ``newest`` job installs each release as it ships and
+    runs them against PostgreSQL (ADR 0048's 0.12 amendment).
+    """
+    if not connections_module._proven():
+        monkeypatch.setattr(connections_module, "_proven", lambda: True)
 
 
 @pytest.fixture
@@ -513,10 +530,22 @@ def test_the_installed_asyncpg_and_sqlalchemy_are_releases_proven() -> None:
     it began, kept even when ``BEGIN`` failed) and SQLAlchemy's adapter's
     ``_transaction``, and deactivates SQLAlchemy's transaction. It is used
     only on the releases the tests of this module proved it on
-    (``_PROVEN``); a new release fails here until they pass on it and
-    ``_PROVEN`` admits it.
+    (``_PROVEN``); a new release fails here, saying what to do, until they
+    pass on it and ``_PROVEN`` admits it.
     """
-    assert connections_module._proven()
+    unproven = [
+        f"{name} {version(name)}"
+        for name, (low, high) in connections_module._PROVEN.items()
+        if not low <= connections_module._release(name) < high
+    ]
+    assert not unproven, (
+        f"Settling a cut-off connection is not proven on {', '.join(unproven)}. "
+        "The cases of test_db_cut_off.py and test_sec11b_2_cut_off_session_lock.py "
+        "ran on them with settling on, where PostgreSQL is set (the newest job's "
+        "'Prove settling' step). If they all passed, widen _PROVEN to the release's "
+        "minor and amend ADR 0048; if one failed, leave _PROVEN: such a connection "
+        "is discarded there, as before."
+    )
     assert "_top_xact" in asyncpg.Connection.__slots__
     assert "_transaction" in AsyncAdapt_asyncpg_connection.__slots__
     assert callable(RootTransaction._deactivate_from_connection)
@@ -544,7 +573,7 @@ def test_releases_are_proven_by_major_and_minor(
     """``_PROVEN`` admits the minor releases it names, pre-releases past them not."""
     installed = {"asyncpg": asyncpg_release, "sqlalchemy": sqlalchemy_release}
     monkeypatch.setattr(connections_module, "version", installed.__getitem__)
-    assert connections_module._proven.__wrapped__() is proven
+    assert proven_check.__wrapped__() is proven
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,9 @@
 """The reference documentation names every setting and command."""
 
 import ast
+import json
 import re
+import shlex
 from datetime import timedelta
 from importlib import import_module
 from pathlib import Path
@@ -459,7 +461,7 @@ def test_every_setting_row_states_its_default_and_bounds(
 
 AUDIT_PAGE = DOCS / "audit" / "0.9.0.md"
 _AUDIT_ID = re.compile(
-    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|1[01][abc])-\d+|"
+    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|1[0-2][abc])-\d+|"
     r"(?:PERF|FIN|AUTH|CONC|WEB|DATA|TEST|INFRA|DOCS|DSGN)-\d+)\b"
 )
 
@@ -562,3 +564,30 @@ def test_the_upgrade_entries_are_read_from_their_sections() -> None:
         "## [0.10.0] - 2026-10-26\n\n### Deprecated\n\n- Old (D-2).\n\n"
         "## [0.9.0] - 2026-10-01\n\n### Deprecated\n\n- Older (D-3).\n"
     ) == ["**Breaking:** a security fix (S-1).\n", "Old (D-2).\n"]
+
+
+def test_the_projects_image_runs_uvicorn_with_the_limits_the_reference_gives() -> None:
+    """The ``Dockerfile`` ``init`` writes keeps "Server limits" (INFRA-09).
+
+    Its own processes are the image's ``WEB_CONCURRENCY``, not ``--workers``.
+    """
+    reference = (DOCS / "reference.md").read_text(encoding="utf-8")
+    block = reference.split("uvicorn, one process per core:\n\n```bash\n", 1)[1]
+    given = shlex.split(block.split("```", 1)[0].replace("\\\n", " "))
+    workers = given.index("--workers")
+    dockerfile = (
+        ROOT / "src/domainkit/management/templates/project/Dockerfile-tpl"
+    ).read_text(encoding="utf-8")
+    command = json.loads(dockerfile.split("CMD ", 1)[1].replace("\\\n", " "))
+
+    assert given[:2] == command[:2] == ["uvicorn", "config.asgi:application"]
+    assert command[2:8] == [
+        "--app-dir",
+        "src",
+        "--host",
+        "0.0.0.0",  # noqa: S104 - in the container, behind the proxy.
+        "--port",
+        "8000",
+    ]
+    assert command[8:] == given[2:workers] + given[workers + 2 :]
+    assert "WEB_CONCURRENCY" in dockerfile.split("FROM", 1)[0]  # Said up top.

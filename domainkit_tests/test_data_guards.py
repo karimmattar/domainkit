@@ -14,15 +14,16 @@ import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from sqlalchemy import Column, MetaData, Table, Uuid, insert, select
+from sqlalchemy import Column, MetaData, String, Table, Uuid, insert, select
 
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.models import PasswordHash
 from domainkit.contrib.auth.tables import (
     DEFAULT_USER_TABLES,
+    PasswordHashType,
     group_permissions,
     groups,
     mfa_devices,
@@ -33,8 +34,12 @@ from domainkit.contrib.auth.tables import (
     users,
 )
 from domainkit.contrib.contenttypes.tables import content_types
-from domainkit.db import connections
+from domainkit.db import ValueObjectType, connections
+from domainkit.db import fixtures as fixtures_module
+from domainkit.db.fixtures import FixtureError
+from domainkit.ddd import ValueObject
 from domainkit.management import CommandError, call_command
+from domainkit.management.commands.dumpdata import Command as DumpCommand
 from domainkit.management.commands.flush import Command as FlushCommand
 from domainkit.management.commands.loaddata import Command as LoadCommand
 from domainkit.management.operators import Operator, require_named
@@ -48,8 +53,15 @@ from domainkit_tests.test_data_commands import (
 )
 
 USER_ID: uuid.UUID = uuid.UUID("0b6f3c1e-8f0a-4d7b-9c55-2b1d3e4f5a6b")
-STORED_HASH = "pbkdf2_sha256$1$stored$c3RvcmVkLWhhc2g="
-FORGED_HASH = "pbkdf2_sha256$1$forged$Zm9yZ2VkLWhhc2g="
+STORED_HASH = (
+    "pbkdf2_sha256$1$storedsaltstoredsalt12$"
+    "W+srH9/Im56gLCidrwK9+XBMvaiKOVdOcogLjZpzAEg="
+)
+"""The test hasher's hash, as it makes them: a fixture may load it (SEC-12a-3)."""
+FORGED_HASH = (
+    "pbkdf2_sha256$1$forgedsaltforgedsalt12$"
+    "2xjnWtDU5PuCaZ1ILz9owjpUU+0R1aR4pzeM/E9/LSc="
+)
 user_groups, user_permissions = DEFAULT_USER_TABLES[1:]
 
 
@@ -375,6 +387,9 @@ def test_the_commands_say_what_each_option_does() -> None:
     flushing = " ".join(
         FlushCommand().create_parser("manage.py", "flush").format_help().split()
     )
+    dumping = " ".join(
+        DumpCommand().create_parser("manage.py", "dumpdata").format_help().split()
+    )
 
     for said in (
         "FIXTURE [FIXTURE ...]",
@@ -389,6 +404,25 @@ def test_the_commands_say_what_each_option_does() -> None:
     ):
         assert said in loading
     for said in (
+        "[TABLE_OR_DOMAIN ...]",
+        (
+            "TABLE_OR_DOMAIN tables or domain labels (default: every table of "
+            "the database) "
+        ),
+        "--database DATABASE the alias to read",
+        (
+            "-o, --output OUTPUT a new file to write it to (mode 0600); default: "
+            "standard output"
+        ),
+        "--indent INDENT spaces per level (default: 2)",
+        (
+            "--include-guarded dump guarded tables too: users and their password "
+            "hashes, permissions, grants, dynamic settings, ..."
+        ),
+        "--operator",
+    ):
+        assert said in dumping
+    for said in (
         "--database DATABASE the alias to empty",
         "--dry-run only say what would be deleted",
         "--force required in staging and production",
@@ -398,3 +432,273 @@ def test_the_commands_say_what_each_option_does() -> None:
         ),
     ):
         assert said in flushing
+
+
+def test_dumps_leave_guarded_tables_out(stored_user: str, tmp_path: Path) -> None:
+    """Named, a guarded table is refused; with no names, left out and said so.
+
+    At 0.11 ``dumpdata`` wrote users with their password hashes, dynamic
+    settings, and grants to anyone who could run it, and no audit row said
+    it had (DATA-12).
+    """
+    printed, said = io.StringIO(), io.StringIO()
+    call_command("dumpdata", stdout=printed, stderr=said)
+    named = [entry["table"] for entry in json.loads(printed.getvalue())["tables"]]
+
+    assert users.name not in named
+    assert not [name for name in named if name.startswith("domainkit_users")]
+    assert kinds.name in named
+    assert said.getvalue().startswith(
+        "Left out guarded tables (domainkit_content_types, "  # Parents first.
+    )
+    assert said.getvalue().endswith("); --include-guarded dumps them.\n")
+    assert users.name in said.getvalue()
+    for names in ([users.name], ["auth"], [kinds.name, user_permissions.name]):
+        with pytest.raises(CommandError) as refused:
+            run("dumpdata", *names, "-o", str(tmp_path / "out.json"))
+        assert str(refused.value).endswith(
+            "hold logins, password hashes, permissions, and secrets. Nothing was "
+            "written; repeat with --include-guarded if that is what you mean."
+        )
+    with pytest.raises(CommandError) as both:
+        run("dumpdata", users.name, user_permissions.name)
+    assert str(both.value).startswith(
+        f"Guarded tables ({users.name}, {user_permissions.name}) hold logins, "
+    )
+    assert not (tmp_path / "out.json").exists()
+    assert operator_rows() == []
+
+
+def test_guarded_dumps_are_audited(
+    stored_user: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Which tables, how many rows, and the SHA-256 of what was written.
+
+    A dump without guarded tables is not recorded: it holds nothing a load
+    of it could not write back without the option either.
+    """
+    monkeypatch.delenv("DOMAINKIT_OPERATOR", raising=False)
+    path = tmp_path / "users.json"
+
+    run("dumpdata", kinds.name, "--include-guarded")
+    printed = run("dumpdata", users.name, "--include-guarded", "--operator", "alice")
+    run("dumpdata", users.name, "--include-guarded", "-o", str(path))
+    sqlite = {"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'other.db'}"}}
+    with override_settings(DATABASES=sqlite):
+        run("migrate")
+        with (
+            override_settings(ENVIRONMENT="staging"),
+            pytest.raises(
+                CommandError,
+                match=r"^Name the operator who runs dumpdata --include-guarded in "
+                r"staging: give --operator NAME, or set DOMAINKIT_OPERATOR\.$",
+            ),
+        ):
+            run("dumpdata", users.name, "--include-guarded")
+        with override_settings(ENVIRONMENT="staging"):
+            named = run(
+                "dumpdata", users.name, "--include-guarded", "--operator", "ops"
+            )
+
+    printing, writing = operator_rows()
+    assert printed.startswith('{\n  "format": "domainkit.fixture",\n')  # --indent 2.
+    assert json.loads(named)["tables"] == [{"table": users.name, "rows": []}]
+    assert (printing["action"], printing["actor"]) == (
+        "operator.dumpdata",
+        "operator:alice",
+    )
+    assert printing["details"] == {
+        "database": "default",
+        "output": "stdout",
+        "include_guarded": True,
+        "personal_tables": [],  # Recorded only where deployed (SEC-12a-7).
+        "rows": 1,
+        "tables": {users.name: 1},
+        "sha256": hashlib.sha256(printed.encode()).hexdigest(),
+        "operator_source": "option",
+    }
+    assert writing["details"]["output"] == "users.json"
+    assert writing["details"]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert writing["details"]["operator_source"] == "system"
+
+
+def test_a_user_round_trips_through_a_fixture(stored_user: str, tmp_path: Path) -> None:
+    """Dumped with its hash as the text it is stored as, and loaded back.
+
+    At 0.11 ``dumpdata`` wrote the hash as ``{"value": ...}``, which
+    ``loaddata`` refused, even with ``--include-guarded``. Such fixtures
+    load now too; a raw password in place of a hash is still refused.
+    """
+    path = tmp_path / "users.json"
+    run("dumpdata", users.name, "--include-guarded", "-o", str(path))
+    before = stored_user_row()
+    document = json.loads(path.read_text(encoding="utf-8"))
+    run("flush", "--include-guarded")
+
+    run("loaddata", str(path), "--include-guarded")
+
+    assert document["tables"][0]["rows"][0]["password"] == STORED_HASH
+    assert stored_user_row() == before
+    (row,) = document["tables"][0]["rows"]
+    older = fixture_file(
+        tmp_path / "older.json", (users, [{**row, "password": {"value": STORED_HASH}}])
+    )
+    run("flush", "--include-guarded")
+    run("loaddata", str(older), "--include-guarded")
+    assert stored_user_row() == before
+    for refused in ("correct-horse-battery", {"value": "hunter2"}, 7):
+        raw = fixture_file(
+            tmp_path / "raw.json", (users, [{**row, "password": refused}])
+        )
+        with pytest.raises(CommandError, match=r"domainkit_users\.password holds a"):
+            run("loaddata", str(raw), "--include-guarded", "--replace")
+    assert stored_user_row() == before
+
+
+def test_the_trail_counts_what_a_load_replaced_not_what_it_planned(
+    stored_user: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row stored after the plan was counted is a replaced row in the record.
+
+    At 0.11 the record held the plan's count, made before the load's
+    transaction: here 0 replaced, of a row the load did replace.
+    """
+    path = fixture_file(tmp_path / "kinds.json", (kinds, [{"id": 5, "label": "x"}]))
+    plan = fixtures_module.plan_load
+
+    async def planned_then_stored(*args: Any) -> Any:  # noqa: ANN401 - the plan.
+        loads = await plan(*args)
+        async with connections.engine().begin() as connection:
+            await connection.execute(insert(kinds).values(id=5, label="meanwhile"))
+        await connections.close_all()
+        return loads
+
+    monkeypatch.setattr(fixtures_module, "plan_load", planned_then_stored)
+    printed = run("loaddata", str(path), "--replace", "--operator", "alice")
+
+    assert f"{path}: {kinds.name}: 1 row\n" in printed  # The plan saw none.
+    (loaded,) = operator_rows()
+    assert loaded["details"]["replaced"] == 1
+    assert loaded["details"]["tables"] == {kinds.name: {"rows": 1, "replaced": 1}}
+
+
+def test_a_load_returns_what_it_wrote_and_holds_its_tables(
+    stored_user: str,
+) -> None:
+    """Each table's rows, those it replaced, and whether it is guarded.
+
+    On PostgreSQL the load holds each table in ``SHARE ROW EXCLUSIVE``
+    mode until it commits, so no other writer changes what it counted.
+    """
+    row = {**stored_user_row(), "first_name": "Mal"}
+    tables = [(users, [row]), (kinds, [{"id": 1, "label": "again"}])]
+    seen: list[set[str]] = []
+    lock = fixtures_module._lock
+
+    async def held(connection: Any, locked: Any) -> None:  # noqa: ANN401
+        await lock(connection, locked)
+        if connection.dialect.name == "postgresql":
+            modes = await connection.exec_driver_sql(
+                "SELECT c.relname FROM pg_locks l JOIN pg_class c "
+                "ON c.oid = l.relation WHERE l.pid = pg_backend_pid() "
+                "AND l.mode = 'ShareRowExclusiveLock'"
+            )
+            seen.append({name for (name,) in modes})
+
+    async def load() -> list[Any]:
+        fixtures_module._lock = held  # type: ignore[assignment]
+        try:
+            return await fixtures_module.load("default", tables, replace=True)
+        finally:
+            fixtures_module._lock = lock
+
+    loaded = asyncio.run(load())
+
+    assert loaded == [
+        fixtures_module.TableLoad(users.name, 1, 1, guarded=True),
+        fixtures_module.TableLoad(kinds.name, 1, 1, guarded=False),
+    ]
+    assert stored_user_row()["first_name"] == "Mal"
+    if seen:  # PostgreSQL.
+        assert seen == [{users.name, kinds.name}]
+    # A fixture of no tables locks nothing and loads nothing.
+    assert asyncio.run(fixtures_module.load("default", [], replace=False)) == []
+
+
+def test_password_hash_columns_keep_their_length_and_their_nulls() -> None:
+    """``PasswordHashType(length=...)`` sizes the column; a null stays null."""
+    hashes = PasswordHashType(length=128)
+    column: Column[PasswordHash] = Column("hash", hashes)
+
+    assert cast("String", PasswordHashType().impl_instance).length == 255
+    assert cast("String", hashes.impl_instance).length == 128
+    assert repr(hashes) == "PasswordHashType(length=128)"
+    assert fixtures_module._encoded(column, None) is None
+    assert fixtures_module._encoded(column, PasswordHash(STORED_HASH)) == STORED_HASH
+
+
+@pytest.mark.parametrize(
+    ("password", "why"),
+    [
+        ("plaintext$hunter2", "no hasher of AUTH.PASSWORD_HASHERS made it"),
+        ("pbkdf2_sha256$x", "no hasher of AUTH.PASSWORD_HASHERS made it"),
+        (
+            "pbkdf2_sha256$1$short$c2hvcnQ=",
+            "AUTH.PASSWORD_HASHERS would make it again, more strongly",
+        ),
+    ],
+    ids=["unknown-algorithm", "malformed", "short-salt"],
+)
+def test_a_fixture_loads_only_hashes_the_hashers_would_make(
+    stored_user: str, tmp_path: Path, password: str, why: str
+) -> None:
+    """Each refusal says why, never the hash; an unusable password still loads.
+
+    At 0.12's first cut ``PasswordHash`` checked the text's shape only, so
+    a password in clear, or the test hasher's in production, loaded
+    (SEC-12a-3).
+    """
+    row = user_row(id=str(uuid.uuid4()), username="eve", password=password)
+    path = fixture_file(tmp_path / "users.json", (users, [row]))
+
+    with pytest.raises(CommandError) as refused:
+        run("loaddata", str(path), "--include-guarded")
+
+    assert str(refused.value) == (
+        f"{path}: domainkit_users.password holds a value that is not "
+        f"PasswordHash: {why}"
+    )
+    assert password not in str(refused.value)
+    unusable = user_row(
+        id=str(uuid.uuid4()), username="ivy", password=PasswordHash.unusable().value
+    )
+    run(
+        "loaddata",
+        str(fixture_file(tmp_path / "ivy.json", (users, [unusable]))),
+        "--include-guarded",
+    )
+    assert count(users) == 2
+
+
+class Sku(ValueObject):
+    """A project's single-field value object, which refuses lower case."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Upper case only."""
+        if not self.value.isupper():
+            raise ValueError("lower case")
+
+
+def test_a_value_object_column_loads_what_its_class_takes() -> None:
+    """By default the class decides, and a refusal does not say why or quote."""
+    column: Column[Sku] = Column("sku", ValueObjectType(Sku, String(10)))
+    Table("framework_test_skus", MetaData(), column)
+
+    assert fixtures_module._decoded(column, "AB") == Sku("AB")
+    with pytest.raises(FixtureError) as refused:
+        fixtures_module._decoded(column, "ab")
+    assert (
+        str(refused.value) == "framework_test_skus.sku holds a value that is not Sku."
+    )

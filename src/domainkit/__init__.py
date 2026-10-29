@@ -11,14 +11,30 @@ Layers, lowest first; a module may import only from its own layer or below:
 5. ``management``: the ``manage.py`` commands.
 """
 
-from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING
 
 __all__ = ["__version__", "setup"]
 
-try:
-    __version__ = version("domainkit")
-except PackageNotFoundError:  # pragma: no cover - running from a source tree
-    __version__ = "0.0.0+unknown"
+if TYPE_CHECKING:
+    __version__: str
+
+
+def __getattr__(name: str) -> str:
+    """``__version__``, read from the distribution on first use.
+
+    ``importlib.metadata`` is imported only then: ``import domainkit`` stays
+    cheap for a process that never asks (PERF-15).
+    """
+    if name != "__version__":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib.metadata import PackageNotFoundError, version
+
+    global __version__
+    try:
+        __version__ = version("domainkit")
+    except PackageNotFoundError:  # pragma: no cover - running from a source tree
+        __version__ = "0.0.0+unknown"
+    return __version__
 
 
 def setup() -> None:

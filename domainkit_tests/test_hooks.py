@@ -23,6 +23,7 @@ from domainkit.db.hooks import (
     on_transaction_committed,
 )
 from domainkit.db.migrations import run_migrated_hooks
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import ALPHA, MakePackage
 
@@ -134,7 +135,8 @@ def installed(calls: list[tuple[str, ...]], tmp_path: Path) -> Iterator[None]:
         INSTALLED_DOMAINS=[ALPHA, "quiet", "legacy", "typed"],
         DATABASES={"default": {"URL": url}},
     ):
-        setup()
+        with pytest.warns(DomainkitDeprecationWarning, match="'legacy'"):
+            setup()
         yield
     asyncio.run(connections.close_all())
 
@@ -215,10 +217,21 @@ def test_hooks_register_in_ready_or_for_a_named_domain(
 
     with override_settings(INSTALLED_DOMAINS=[ALPHA, "quiet", "typed"]):
         setup()
-        with pytest.raises(ImproperlyConfigured, match=r"Register probe hooks in"):
+        with pytest.raises(
+            ImproperlyConfigured,
+            match=r"^Register probe hooks in DomainConfig\.ready\(\); outside it, "
+            r"once the domains are loaded, name an installed domain: "
+            r"domain='label'\.$",
+        ):
             point(probe)
         assert point(probe, domain="typed") is probe
-        point(probe, domain="elsewhere")  # Not installed: never called.
+        with pytest.raises(
+            ImproperlyConfigured,
+            match=r"^probe hook .*probe names domain 'elsewhere', which is not "
+            r"loaded: register it in that domain's DomainConfig\.ready\(\), where "
+            r"it is kept as long as the domain is installed\.$",
+        ):
+            point(probe, domain="elsewhere")  # It would never be called (SEC-12a-1).
 
         assert list(point) == [Hook("typed", probe)]
         assert repr(point) == "<HookPoint probe>"
@@ -277,8 +290,8 @@ def test_hooks_worked_out_while_the_domains_change_are_not_kept(
         setup()
         collect = on_stage._collect
 
-        def changing(registry: Any) -> Any:  # noqa: ANN401 - the point's own.
-            found = list(collect(registry))
+        def changing(registry: Any, registered: Any) -> Any:  # noqa: ANN401 - the point's own.
+            found = list(collect(registry, registered))
             registry.generation += 1  # The domains changed meanwhile.
             return iter(found)
 

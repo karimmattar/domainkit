@@ -1,14 +1,15 @@
 """The registry of installed domains (``django.apps.apps``)."""
 
-import difflib
 import threading
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Final, NamedTuple, cast
 
 from pydantic import BaseModel, ValidationError
 
-from domainkit.apps.config import DomainConfig
+from domainkit.apps.config import DomainConfig, warn_replaced_hooks
+from domainkit.apps.hooks import on_check, on_shutdown, on_startup, populating
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import describe_errors, unwrap_settings
 from domainkit.exceptions import ImproperlyConfigured
@@ -52,13 +53,16 @@ class DomainRegistry:
                     f"({configs[config.label].name!r} and {name!r})."
                 )
             configs[config.label] = config
+        for config in configs.values():
+            warn_replaced_hooks(config)
         self._changed(configs)
         self._check_settings()
         self._check_requirements()
         try:
-            for config in configs.values():
-                self.readying = config
-                config.ready()
+            with populating(self):
+                for config in configs.values():
+                    self.readying = config
+                    config.ready()
         finally:
             self.readying = None
         self.ready = True
@@ -146,26 +150,45 @@ class DomainRegistry:
     ) -> AsyncIterator[None]:
         """Start domains in order and stop started ones in reverse, even on failure.
 
-        Stopping takes at most ``stop_within`` seconds (None: no limit). A
-        domain may use what is left of them, less a little kept for each
-        domain still to stop (``close_in_turn``): one whose ``shutdown``
-        hangs is cut off, and the domains started before it still stop.
-        Every domain is stopped; the first failure is raised, and later ones
-        are logged.
+        A domain starts by running its ``on_startup`` hooks, and stops by
+        running its ``on_shutdown`` hooks; it counts as started once all its
+        startup hooks ran. Domains with neither are skipped. Stopping takes
+        at most ``stop_within`` seconds (None: no limit). A domain may use
+        what is left of them, less a little kept for each domain still to
+        stop (``close_in_turn``): one whose shutdown hangs is cut off, and
+        the domains started before it still stop. Every domain is stopped;
+        the first failure is raised, and later ones are logged.
         """
         started: list[DomainConfig] = []
+        living = {
+            hook.domain for hook in (*on_startup.hooks(self), *on_shutdown.hooks(self))
+        }
         try:
             for config in self:
-                await config.startup()
+                if config.label not in living:
+                    continue
+                for hook in on_startup.of(config.label, self):
+                    await hook.call()
                 started.append(config)
             yield
         finally:
-            await close_in_turn(started[::-1], _stop, within=stop_within)
+            await close_in_turn(started[::-1], partial(_stop, self), within=stop_within)
 
     async def check(self, seconds: float) -> list[str]:
-        """Run every domain's readiness check; return the labels that failed."""
+        """Run the domains' ``on_check`` hooks; return the labels that failed.
+
+        Each domain's hooks run in turn, within ``seconds`` together; the
+        domains run at once. Only the domains that registered are checked.
+        """
+        hooks = on_check.hooks(self)
+        if not hooks:
+            return []
+        checks: dict[str, list[Callable[[], Awaitable[None]]]] = {}
+        for hook in hooks:
+            checks.setdefault(hook.domain, []).append(hook.call)
         return await failing_checks(
-            {config.label: config.check for config in self}, seconds
+            {label: partial(_check_in_turn, calls) for label, calls in checks.items()},
+            seconds,
         )
 
     def _check_settings(self) -> None:
@@ -222,13 +245,22 @@ class _ValidatedSettings(NamedTuple):
     value: BaseModel
 
 
-async def _stop(config: DomainConfig) -> None:
-    """Run the domain's own ``shutdown``."""
-    await config.shutdown()
+async def _stop(registry: DomainRegistry, config: DomainConfig) -> None:
+    """Run the domain's ``on_shutdown`` hooks, in the order it registered them."""
+    for hook in on_shutdown.of(config.label, registry):
+        await hook.call()
+
+
+async def _check_in_turn(calls: list[Callable[[], Awaitable[None]]]) -> None:
+    """Run one domain's readiness checks, one after another."""
+    for call in calls:
+        await call()
 
 
 def _describe_unknown(name: str, known: list[str]) -> str:
     """Name an unknown setting and suggest the closest known one."""
+    import difflib  # Only for a setting that fails: not on startup's path (PERF-15).
+
     matches = difflib.get_close_matches(name, known, n=1)
     return f"{name} (did you mean {matches[0]}?)" if matches else name
 

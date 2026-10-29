@@ -44,6 +44,7 @@ from sqlalchemy.types import NullType, TypeDecorator
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.apps.hooks import on_seed
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import record
 from domainkit.contrib.audit.tables import audit_log
@@ -138,6 +139,7 @@ SEEDING = """
 from sqlalchemy import insert, select
 
 from domainkit.apps import DomainConfig
+from domainkit.apps.hooks import on_seed
 from domainkit.db import connections
 from domainkit_tests.test_data_commands import kinds
 
@@ -145,7 +147,10 @@ from domainkit_tests.test_data_commands import kinds
 class KindsConfig(DomainConfig):
     label = "kinds"
 
-    async def seed(self) -> None:
+    def ready(self) -> None:
+        on_seed(self.seed_kinds)
+
+    async def seed_kinds(self) -> None:
         async with connections.engine().begin() as connection:
             if await connection.scalar(select(kinds.c.id).where(kinds.c.id == 7)):
                 return
@@ -223,8 +228,12 @@ def count(table: Table) -> int:
 
 
 def test_dumps_are_json_tables_parents_first(project: str) -> None:
-    """Every fixture table, in foreign key order, values as JSON; no state."""
-    document = json.loads(run("dumpdata"))
+    """Every fixture table, in foreign key order, values as JSON; no state.
+
+    Guarded tables included: content types come before the permissions that
+    reference them.
+    """
+    document = json.loads(run("dumpdata", "--include-guarded"))
 
     assert (document["format"], document["version"]) == ("domainkit.fixture", 1)
     names = [entry["table"] for entry in document["tables"]]
@@ -928,10 +937,10 @@ def test_seeds_and_unknown_domains_are_listed(
 ) -> None:
     """Every domain seeded, in order; every unknown label."""
 
-    async def seed(self: object) -> None:
+    async def seed() -> None:
         return None
 
-    monkeypatch.setattr(type(registry.get_domain_config("shop")), "seed", seed)
+    on_seed(seed, domain="shop")
 
     assert run("seed") == "Seeded shop, kinds.\n"
     with pytest.raises(CommandError) as refused:

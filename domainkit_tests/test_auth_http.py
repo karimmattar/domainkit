@@ -736,12 +736,15 @@ def test_authentication_exempt_paths_hold_behind_a_root_path(api: Api) -> None:
 
 
 def test_held_addresses_are_let_go(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
-    """After ``Retry-After``, and when too many others are held, first in first out."""
+    """After ``Retry-After``, and when too many others are held, first in first out.
+
+    The framework's clock is frozen, not the middleware's alone: the rate
+    limiter that decides how long to hold reads it too, and on a running
+    clock the time between the two guesses shortened the hold.
+    """
     create_user("alice")
-    clock = [1000.0]
-    monkeypatch.setattr(auth_middleware, "monotonic", lambda: clock[0])
     monkeypatch.setattr(auth_middleware, "MAX_HELD", 2)
-    with override_settings(RATE_LIMIT="1/minute"):
+    with override_settings(RATE_LIMIT="1/minute"), freeze_time() as clock:
         client = api()
         alice = bearer(login(client, "alice")["access_token"])
         guess = bearer("dkt_" + "A" * 43)
@@ -751,9 +754,9 @@ def test_held_addresses_are_let_go(api: Api, monkeypatch: pytest.MonkeyPatch) ->
             401,
             429,
         ]
-        clock[0] += 59.9
+        clock.tick(59.9)
         held = client.get("/whoami", headers=alice)
-        clock[0] += 0.2
+        clock.tick(0.2)
         served = client.get("/whoami", headers=alice)
         for number in (1, 2, 3):
             caller = TestClient(client.app, client=(f"203.0.113.{number}", 1))

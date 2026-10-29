@@ -29,12 +29,13 @@ SOURCE = ROOT / "src"
 SUMMARY = ROOT / ".github" / "scripts" / "mutation_summary.py"
 FLOORS = ROOT / ".github" / "scripts" / "floors.py"
 CHANGED = ROOT / ".github" / "scripts" / "changed.py"
+CHANGED_MUTANTS = ROOT / ".github" / "scripts" / "changed_mutants.py"
 EVENTS = ("push", "pull_request", "schedule", "workflow_dispatch")
 # GitHub Actions, the app whose checks the ruleset accepts.
 ACTIONS_APP = 15368
 # Jobs that run on pull requests but gate nothing: the newest and oldest
 # releases the ranges allow are not this change's doing.
-ADVISORY = {"newest", "oldest", "free-threaded-stress"}
+ADVISORY = {"newest", "oldest", "free-threaded-stress", "mutation-changed"}
 # GitHub stops a job after six hours.
 JOB_LIMIT_MINUTES = 360
 
@@ -320,6 +321,7 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
         "mutation",
     }
     assert running("pull_request") == every - {"mutation", "docs", "attest"}
+    assert "mutation-changed" in running("pull_request")
     assert running("pull_request", code="false") == {
         "changes",
         "docs",
@@ -331,12 +333,18 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
     }
     assert running("push") == every - {
         "mutation",
+        "mutation-changed",
         "newest",
         "oldest",
         "changes",
         "docs",
     }
-    assert running("workflow_dispatch") == every - {"changes", "docs", "attest"}
+    assert running("workflow_dispatch") == every - {
+        "changes",
+        "docs",
+        "attest",
+        "mutation-changed",
+    }
 
 
 def test_a_docs_change_skips_the_test_matrix_steps_not_the_matrix() -> None:
@@ -750,7 +758,7 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
 
     Those are the modules that join the repository's root to ``docs`` or a
     top-level Markdown file; a run with an audit hook on ``open`` found the
-    same four (October 2026).
+    same four (October 2026), and 0.12 added the recipes' (DOCS-05).
     """
     reading = re.compile(r'(?:ROOT|parents\[1\])\s*/\s*"(?:docs|[A-Za-z]+\.md)"')
     readers = {
@@ -764,7 +772,7 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
         if "pytest" in step.get("run", "")
     ]
     assert set(re.findall(r"domainkit_tests/\S+\.py", command)) == readers
-    assert len(readers) == 4
+    assert len(readers) == 5
 
 
 def test_the_suite_runs_on_every_core() -> None:
@@ -906,6 +914,26 @@ def test_a_shard_with_no_mutants_fails_its_summary(tmp_path: Path) -> None:
     assert done.returncode == 1
     assert "score n/a" in done.stdout
     assert summarise(tmp_path, "a").returncode == 2  # No pattern.
+    assert summarise(tmp_path, "a", "--lived-fails").returncode == 2
+    assert summarise(tmp_path).returncode == 2  # No shard.
+
+
+def test_a_changed_functions_summary_fails_on_a_mutant_that_lived(
+    tmp_path: Path,
+) -> None:
+    """``--lived-fails``: complete, but a mutant lived, is a failure too."""
+    root = tmp_path / "mutants" / "src" / "domainkit"
+    meta(root, {"domainkit.a.x_f__mutmut_1": 1, "domainkit.a.x_f__mutmut_2": 0})
+
+    lived = summarise(tmp_path, "changed", "--lived-fails", "domainkit.a.*")
+    weekly = summarise(tmp_path, "changed", "domainkit.a.*")
+    meta(root, {"domainkit.a.x_f__mutmut_1": 1, "domainkit.a.x_f__mutmut_2": 36})
+    caught = summarise(tmp_path, "changed", "--lived-fails", "domainkit.a.*")
+
+    assert (lived.returncode, weekly.returncode, caught.returncode) == (1, 0, 0)
+    assert "1 mutants no test caught" in lived.stdout
+    assert "domainkit.a.x_f__mutmut_2: survived" in lived.stdout
+    assert json.loads((tmp_path / "mutation-summary.json").read_text())["score"] == 100
 
 
 def floors(cwd: Path, pyproject: str) -> subprocess.CompletedProcess[str]:
@@ -1091,3 +1119,127 @@ def test_the_contributor_commands_are_cis() -> None:
     )
     remote = [repo["rev"] for repo in hooks if repo["repo"] != "local"]
     assert all(re.fullmatch(r"[0-9a-f]{40}", rev) for rev in remote), remote
+
+
+def test_a_change_mutates_only_the_functions_it_touched(tmp_path: Path) -> None:
+    """Functions and methods whose lines changed, by mutmut's names; no others.
+
+    A decorator's line counts as its function's; a class body's, a
+    constant's, or a deleted function's lines name nothing.
+    """
+    source = tmp_path / "src" / "domainkit" / "shop"
+    source.mkdir(parents=True)
+    module = source / "orders.py"
+    module.write_text(ORDERS, encoding="utf-8")
+    (source / "__init__.py").write_text("def kept():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "src" / "notes.txt").write_text("before\n", encoding="utf-8")
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-q", "-m", "base")
+    changed = (
+        ORDERS.replace("return 1", "return 2")  # total, in a function
+        .replace("    @staticmethod\n", "    @classmethod\n")  # Order.make's decorator
+        .replace('LIMIT = "a"', 'LIMIT = "b"')  # a constant
+        .replace("        self.n = n", "        self.n = n + 0")  # Order.__init__
+        .replace("def gone():\n    pass\n", "")  # deleted
+    )
+    module.write_text(changed, encoding="utf-8")
+    (tmp_path / "src" / "notes.txt").write_text("after\n", encoding="utf-8")
+    (source / "new.py").write_text("async def fresh():\n    pass\n", encoding="utf-8")
+    git(tmp_path, "add", ".")
+
+    done = subprocess.run(  # noqa: S603 - this interpreter and the script.
+        [sys.executable, str(CHANGED_MUTANTS), "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr
+    patterns = done.stdout.split()
+    assert patterns == [
+        "domainkit.shop.new.x_fresh__mutmut_*",
+        "domainkit.shop.orders.x_total__mutmut_*",
+        "domainkit.shop.orders.xǁOrderǁ__init____mutmut_*",
+        "domainkit.shop.orders.xǁOrderǁmake__mutmut_*",
+    ]
+    assert (tmp_path / "changed-mutants.txt").read_text(encoding="utf-8") == "".join(
+        f"{pattern}\n" for pattern in patterns
+    )
+    assert fnmatchcase("domainkit.shop.orders.x_total__mutmut_3", patterns[1])
+    nothing = subprocess.run(  # noqa: S603 - this interpreter and the script.
+        [sys.executable, str(CHANGED_MUTANTS), "HEAD"],
+        cwd=tmp_path / "src",  # No src/ below: nothing changed there.
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (nothing.returncode, nothing.stdout) == (0, "\n")
+    usage = subprocess.run(  # noqa: S603 - this interpreter and the script.
+        [sys.executable, str(CHANGED_MUTANTS)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert usage.returncode == 2
+    assert "Usage:" in usage.stderr
+
+
+ORDERS = '''"""Orders."""
+
+LIMIT = "a"
+
+
+def total():
+    return 1
+
+
+def gone():
+    pass
+
+
+class Order:
+    kind = "order"
+
+    def __init__(self, n):
+        self.n = n
+
+    @staticmethod
+    def make():
+        return Order(1)
+
+    def untouched(self):
+        return self.n
+'''
+
+
+def test_the_pull_request_mutates_what_it_changed_within_its_time() -> None:
+    """``mutation (changed)``: the changed functions' mutants, reported, advisory.
+
+    It runs on pull requests that change code only, compares the merge
+    commit with its base (``HEAD^1``), stops mutmut in time to report, and
+    is not a check the ruleset requires (ADR 0106).
+    """
+    job = jobs()["mutation-changed"]
+    assert job["name"] == "mutation (changed)"
+    assert "mutation-changed" in ADVISORY
+    checkout = job["steps"][0]
+    assert checkout["with"] == {"persist-credentials": False, "fetch-depth": 2}
+    steps = {step.get("name", step.get("uses", "")): step for step in job["steps"]}
+    found = steps["Find the changed functions"]["run"]
+    assert ".github/scripts/changed_mutants.py HEAD^1" in found
+    run = steps["Run their mutants"]["run"]
+    match = re.search(r"timeout --signal=INT --kill-after=(\d+)m (\d+)m ", run)
+    assert match, run
+    kill_after, budget = int(match.group(1)), int(match.group(2))
+    assert budget + kill_after + 15 <= job["timeout-minutes"]
+    summary = steps["Summarise the changed functions' mutants"]
+    assert ".github/scripts/mutation_summary.py changed" in summary["run"]
+    assert "GITHUB_STEP_SUMMARY" in summary["run"]
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]
+    assert config["mutmut"]["pytest_add_cli_args"] == ["-m", "not reads_own_source"]
+    assert any(
+        marker.startswith("reads_own_source:")
+        for marker in config["pytest"]["ini_options"]["markers"]
+    )

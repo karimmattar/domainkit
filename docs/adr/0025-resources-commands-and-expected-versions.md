@@ -1,6 +1,6 @@
 # 0025. Serve aggregates as resources; change them by commands, on the version the client read
 
-- Status: Accepted; amended 2026-10-26, twice (at the end)
+- Status: Accepted; amended 2026-10-26, twice, and 2026-10-28 (at the end) by [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md)
 - Date: 2026-10-20
 
 ## Context
@@ -153,3 +153,16 @@ subscriptions) would split each app's API between two kits for no rule
 gained. The rule stands for
 new apps: what is an aggregate with commands is registered with the
 generic admin; a router of its own needs a reason of that kind.
+
+## Amendment (2026-10-28, 0.12): the unit of work holds `If-Match`
+
+The route no longer holds the expected versions in a context variable
+every repository and unit of work honours (DSGN-14). It holds them on the
+unit of work it hands the service, `uow.expect(model, id, versions)`, and
+only that unit of work's repositories check them; only it refuses to
+commit before the aggregate is loaded
+([0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md)).
+Services still need nothing. `expect_version` works, deprecated, until
+0.13. A service that writes the aggregate through another unit of work
+than the one it was given is no longer refused that write; the request
+still fails.

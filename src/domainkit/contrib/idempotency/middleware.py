@@ -49,14 +49,23 @@ A key sent with neither is answered 400 (``ANONYMOUS = "refuse"``, the
 default); ``"per-address"`` shares it with every caller behind the address.
 List the middleware after ``RequestContextMiddleware`` and
 ``RequestBodyLimitMiddleware`` (it reads the whole body).
+
+A keyed request's body is hashed as it arrives, when ``Content-Length``
+gives its length, and kept to hand to the application, part by part: in
+memory up to ``SPOOL_BYTES``, past them in a temporary file. So is a
+response being kept, until it is stored (PERF-11, ADR 0105).
 """
 
 import asyncio
 import hashlib
 import logging
 import secrets
+import sys
+import tempfile
 import threading
-from typing import Any, Final
+from collections import deque
+from collections.abc import AsyncIterator, Iterable
+from typing import IO, Any, Final
 
 from fastapi import status
 from starlette.datastructures import Headers
@@ -112,14 +121,122 @@ EXPIRED: Final = statements.EXPIRED
 """Read with a held key's row: whether it expired, on the database's clock."""
 
 
-def _hash(*parts: str | bytes) -> str:
-    """Hash ``parts`` unambiguously."""
+SPOOL_PART: Final = 65_536
+"""Bytes read back from a spool's file at a time."""
+
+
+def _digest(*parts: str | bytes) -> "hashlib._Hash":
+    """A SHA-256 of ``parts``, each after its length, so none can run into the next."""
     digest = hashlib.sha256()
     for part in parts:
         data = part.encode() if isinstance(part, str) else part
         digest.update(len(data).to_bytes(8))  # Big-endian.
         digest.update(data)
-    return digest.hexdigest()
+    return digest
+
+
+def _hash(*parts: str | bytes) -> str:
+    """Hash ``parts`` unambiguously."""
+    return _digest(*parts).hexdigest()
+
+
+class _Spool:
+    """Bytes kept in memory up to ``limit``; past it, all of them in a file.
+
+    The file is a ``tempfile.TemporaryFile``: unlinked from the start, so
+    only this process can read it and it goes when closed. It is written
+    and read on a thread: the loop never waits on the disk.
+    """
+
+    def __init__(self, limit: int) -> None:
+        """Keep up to ``limit`` bytes in memory."""
+        self.limit = limit
+        self.size = 0
+        """Bytes written so far."""
+        self._parts: deque[bytes] = deque()
+        self._file: IO[bytes] | None = None
+
+    async def write(self, data: bytes) -> None:
+        """Keep ``data`` after what was written before."""
+        if not data:
+            return
+        self.size += len(data)
+        if self._file is None and self.size <= self.limit:
+            self._parts.append(data)
+            return
+        if self._file is None:
+            try:
+                self._file = await asyncio.to_thread(_spill, self._parts)
+            except OSError:
+                # No writable temporary directory (a read-only root): keep
+                # it in memory, as 0.11 did, rather than fail the request.
+                logger.warning(
+                    "Could not spool a keyed body to a temporary file; keeping "
+                    "it in memory",
+                    exc_info=True,
+                )
+                self.limit = sys.maxsize  # Never try again for this body.
+                self._parts.append(data)
+                return
+            self._parts = deque()
+        await asyncio.to_thread(self._file.write, data)
+
+    async def parts(self) -> AsyncIterator[bytes]:
+        """What was written, in order: as written, or from the file in pieces."""
+        if self._file is None:
+            for part in list(self._parts):
+                yield part
+            return
+        async for piece in self._pieces(self._file):
+            yield piece
+
+    async def drain(self) -> AsyncIterator[bytes]:
+        """What was written, to hand on: letting go of what memory held.
+
+        Held in memory, it comes whole, in one part, as 0.11 handed a body
+        on; from a file, in ``SPOOL_PART`` pieces.
+        """
+        if self._file is None:
+            whole = b"".join(self._parts)
+            self._parts = deque()
+            yield whole
+            return
+        async for piece in self._pieces(self._file):
+            yield piece
+
+    @staticmethod
+    async def _pieces(file: IO[bytes]) -> AsyncIterator[bytes]:
+        """``file`` from its start, in ``SPOOL_PART`` pieces, read on a thread."""
+        await asyncio.to_thread(file.seek, 0)
+        while piece := await asyncio.to_thread(file.read, SPOOL_PART):
+            yield piece
+
+    async def read(self) -> bytes:
+        """Everything written, as one value."""
+        if self._file is None:
+            return b"".join(self._parts)
+        return await asyncio.to_thread(_read_all, self._file)
+
+    def close(self) -> None:
+        """Let go of what is held; the file, if any, is deleted."""
+        self._parts = deque()
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+
+def _spill(parts: Iterable[bytes]) -> IO[bytes]:
+    """A new temporary file holding ``parts``."""
+    file = tempfile.TemporaryFile()  # noqa: SIM115 - the spool closes it.
+    for part in parts:
+        file.write(part)
+    return file
+
+
+def _read_all(file: IO[bytes]) -> bytes:
+    """All of ``file``, from its start."""
+    file.seek(0)
+    return file.read()
 
 
 class Sweeps:
@@ -180,25 +297,27 @@ class IdempotencyMiddleware:
                 code="idempotency_key_needs_caller",
             )(scope, receive, send)
             return
-        read = await _read_body(receive)
-        if read is None:
-            return  # The client left before sending its whole body: run nothing.
-        body, replay_receive = read
-        request = current_request()
-        actor = request.actor if request is not None else None
-        key_hash = _hash(_caller_of(actor, scope, config.CREDENTIAL_HEADERS), key)
-        fingerprint = _hash(
-            scope["method"], scope["path"], scope.get("query_string", b""), body
-        )
-        operation = Operation(key_hash, secrets.token_hex(16), actor=actor or None)
-        existing = await self._claim(config, operation, fingerprint)
-        if existing is not None and not (
-            _abandoned(existing, fingerprint)
-            and await self._take_over(config, operation, existing["token"])
-        ):
-            await self._answer_repeat(existing, fingerprint, scope, receive, send)
-            return
-        await self._run_and_store(config, operation, scope, replay_receive, send)
+        body = _Spool(config.SPOOL_BYTES)
+        try:
+            fingerprint = await _read_body(receive, scope, body)
+            if fingerprint is None:
+                return  # The client left before sending its whole body: run nothing.
+            request = current_request()
+            actor = request.actor if request is not None else None
+            key_hash = _hash(_caller_of(actor, scope, config.CREDENTIAL_HEADERS), key)
+            operation = Operation(key_hash, secrets.token_hex(16), actor=actor or None)
+            existing = await self._claim(config, operation, fingerprint)
+            if existing is not None and not (
+                _abandoned(existing, fingerprint)
+                and await self._take_over(config, operation, existing["token"])
+            ):
+                await self._answer_repeat(existing, fingerprint, scope, receive, send)
+                return
+            await self._run_and_store(
+                config, operation, scope, _replay(body, receive), send
+            )
+        finally:
+            body.close()
 
     async def _claim(
         self, config: IdempotencySettings, operation: Operation, fingerprint: str
@@ -368,50 +487,61 @@ class IdempotencyMiddleware:
         ``http.response.zerocopysend``) is never seen, so it is not kept.
         """
         started: dict[str, Any] = {}
-        chunks: list[bytes] = []
+        kept = _Spool(config.SPOOL_BYTES)  # The body, up to MAX_RESPONSE_BYTES.
         size = 0
         settled = False  # A settle began: never begin another while it may run.
         stored = False  # The early settle finished.
         unseen = False  # Part of the body went by path or file descriptor.
+        keepable = True  # Until something shows the response cannot be kept.
 
-        def kept_body() -> bytes | None:
+        async def kept_body() -> bytes | None:
             """The body to store, if the response is kept; None if not."""
             code = started.get("status", status.HTTP_500_INTERNAL_SERVER_ERROR)
-            kept = (
+            keep = (
                 (code < 400 or (code < 500 and operation.committed))
                 and size <= config.MAX_RESPONSE_BYTES
                 and not unseen
                 and not _no_store(started)
             )
-            return b"".join(chunks) if kept else None
+            return await kept.read() if keep else None
 
         async def capture(message: Message) -> None:
-            nonlocal size, settled, stored, unseen
+            nonlocal size, settled, stored, unseen, keepable
             if message["type"] == "http.response.start":
                 started.update(message)
+                # Never kept: a no-store response is not held, nor spooled to
+                # the disk, at all (SEC-12b-2).
+                keepable = not _no_store(started)
                 await send(message)
                 return
             unseen = unseen or message["type"] in UNSEEN_BODIES
-            size += len(message.get("body", b""))
-            if size <= config.MAX_RESPONSE_BYTES:
-                chunks.append(message.get("body", b""))
+            part = message.get("body", b"")
+            size += len(part)
+            if keepable and (unseen or size > config.MAX_RESPONSE_BYTES):
+                keepable = False  # It cannot be kept now: let go of what is held.
+                kept.close()
+            if keepable:
+                await kept.write(part)
             if not (settled or message.get("more_body", False)):
-                body = kept_body()
+                body = await kept_body()
                 if body is not None or operation.committed or operation.pinned:
                     settled = True  # Before it runs: a cancellation must not repeat it.
                     await _settle(config, operation, started, body)
                     stored = True
             await send(message)
 
-        with run_operation(operation):
-            try:
-                await self.app(scope, receive, capture)
-            except BaseException:
-                if stored or not settled:
-                    await _settle(config, operation, started, None)
-                raise
-        if not settled:
-            await _settle(config, operation, started, kept_body())
+        try:
+            with run_operation(operation):
+                try:
+                    await self.app(scope, receive, capture)
+                except BaseException:
+                    if stored or not settled:
+                        await _settle(config, operation, started, None)
+                    raise
+            if not settled:
+                await _settle(config, operation, started, await kept_body())
+        finally:
+            kept.close()
 
 
 async def _settle(
@@ -631,26 +761,72 @@ def _no_store(started: dict[str, Any]) -> bool:
     return False
 
 
-async def _read_body(receive: Receive) -> tuple[bytes, Receive] | None:
-    """Read the whole body, then return a ``receive`` that replays it.
+async def _read_body(receive: Receive, scope: Scope, body: _Spool) -> str | None:
+    """Read the whole body into ``body``; return the request's fingerprint.
 
-    None if the client disconnected first: part of a body is never replayed
-    as if it were all of it.
+    The fingerprint hashes the method, the path, the query, and the body,
+    each after its length, as 0.11 did, so keys claimed before an upgrade
+    still match. With ``Content-Length`` the body's length is known first,
+    so the body is hashed as it arrives; without it, or if the body was
+    not that long, it is hashed from ``body`` once read. None if the client
+    disconnected first: part of a body is never taken for all of it.
     """
-    chunks = []
+    start = _digest(scope["method"], scope["path"], scope.get("query_string", b""))
+    declared = _content_length(scope)
+    streaming = None
+    if declared is not None:
+        streaming = start.copy()
+        streaming.update(declared.to_bytes(8))
     while True:
         message = await receive()
         if message["type"] != "http.request":
             return None
-        chunks.append(message.get("body", b""))
+        part = message.get("body", b"")
+        await body.write(part)
+        if streaming is not None:
+            streaming.update(part)
         if not message.get("more_body"):
             break
-    body = b"".join(chunks)
-    pending: list[Message] = [
-        {"type": "http.request", "body": body, "more_body": False}
-    ]
+    if streaming is not None and body.size == declared:
+        return streaming.hexdigest()
+    start.update(body.size.to_bytes(8))
+    async for part in body.parts():
+        start.update(part)
+    return start.hexdigest()
+
+
+def _content_length(scope: Scope) -> int | None:
+    """The body's length as ``Content-Length`` gives it; None if it gives none.
+
+    ASGI header names are lower case; the first such header counts.
+    """
+    for name, value in scope["headers"]:
+        if name == b"content-length":
+            return int(value) if value.isdigit() else None
+    return None
+
+
+def _replay(body: _Spool, receive: Receive) -> Receive:
+    """A ``receive`` that hands the application ``body``, then the client's own.
+
+    A body held in memory goes in one message, as 0.11 sent it; one in a
+    file, in parts, the last saying there is no more. An empty body is one
+    empty message.
+    """
+    parts = body.drain()
+    ahead: list[bytes] = []
+    done = False
 
     async def replay() -> Message:
-        return pending.pop() if pending else await receive()
+        nonlocal done
+        if done:
+            return await receive()
+        part = ahead.pop() if ahead else await anext(parts)  # Never empty.
+        following = await anext(parts, None)
+        if following is None:
+            done = True
+        else:
+            ahead.append(following)
+        return {"type": "http.request", "body": part, "more_body": not done}
 
-    return body, replay
+    return replay

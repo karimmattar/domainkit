@@ -145,6 +145,14 @@ as the schema owner while the application keeps a role that cannot change
 the schema. In staging and production, `migrate --downgrade` also needs
 `--allow-data-loss`: roll forward with a new revision instead.
 
+When a database cannot be reached (the server is down, the host unknown,
+the login refused), `migrate`, `makemigrations`, and `showmigrations` say
+so on one line and exit with status 1: which alias, its driver, host,
+port, and database (never a user, a password, or the URL's query), and
+the driver's reason, such as `Database 'default' cannot be reached at
+postgresql+asyncpg://db:5432/app (ConnectionRefusedError: ...)`. A job that retries can wait for the
+database on that status.
+
 ## The worker
 
 `python manage.py runworker` claims the outbox's due messages and runs at

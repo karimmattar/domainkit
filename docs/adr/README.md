@@ -42,7 +42,7 @@ statuses, and the amendments they name.
 | [0022](0022-query-repositories-with-criteria.md) | Query repositories with criteria that fakes evaluate as SQL does | Accepted |
 | [0023](0023-keyset-pages-and-typed-cursors.md) | Keyset pages with versioned, typed cursors; filters declared per field | Accepted; amended in place 2026-10-20 |
 | [0024](0024-replicas-and-derived-tables.md) | Read from replicas in read-only work; derive tables from domain classes | Accepted |
-| [0025](0025-resources-commands-and-expected-versions.md) | Serve aggregates as resources; change them by commands, on the version the client read | Accepted; amended 2026-10-26, twice (at the end) |
+| [0025](0025-resources-commands-and-expected-versions.md) | Serve aggregates as resources; change them by commands, on the version the client read | Accepted; amended 2026-10-26, twice, and 2026-10-28 (at the end) by [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md) |
 | [0026](0026-object-permission-grants.md) | Grant permissions on single objects, beside the objects, within the granter's own | Accepted |
 | [0027](0027-batches-and-exports.md) | Run batches as many use cases, atomic on request; stream exports, bounded | Accepted |
 | [0028](0028-one-secret-key-signs-and-derives.md) | Sign with one `SECRET_KEY`, and derive a key per purpose from it | Accepted |
@@ -50,7 +50,7 @@ statuses, and the amendments they name.
 | [0030](0030-encrypt-totp-secrets-under-a-derived-key.md) | Encrypt TOTP secrets with AES-GCM under a key derived from `SECRET_KEY` | Accepted |
 | [0031](0031-operation-ids-from-route-names.md) | Operation ids from route names, for new projects | Accepted |
 | [0032](0032-problem-details-as-an-error-format.md) | Offer RFC 9457 problem details as an error format | Accepted |
-| [0033](0033-feature-flags-in-the-database.md) | Keep feature flags and dynamic settings in the database, cached whole | Accepted |
+| [0033](0033-feature-flags-in-the-database.md) | Keep feature flags and dynamic settings in the database, cached whole | Accepted; amended 2026-10-28 (at the end) |
 | [0034](0034-cron-schedules-by-wall-clock-time.md) | Run cron schedules by wall-clock time, queued ahead of each run | Accepted |
 | [0035](0035-task-policies-priorities-chains-in-the-outbox.md) | Keep per-task policies, priorities, chains, and rates in the outbox | Accepted |
 | [0036](0036-webhooks-through-the-outbox.md) | Send webhooks through the outbox, signed, to checked addresses only | Accepted |
@@ -65,7 +65,7 @@ statuses, and the amendments they name.
 | [0045](0045-own-background-tasks-per-loop.md) | Own background tasks per event loop, started in clean contexts | Accepted; amended 2026-10-25 (at the end) |
 | [0046](0046-one-shutdown-budget-in-phases.md) | Shut down in phases within one budget | Accepted; amended 2026-10-25 and 2026-10-26 (at the end) |
 | [0047](0047-seal-from-a-high-water-mark.md) | Seal the audit trail from a high-water mark, with a short late window | Accepted; amended 2026-10-21, 2026-10-25 and 2026-10-26 (at the end) |
-| [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted; amended 2026-10-25 and 2026-10-26 (at the end) |
+| [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted; amended 2026-10-25, 2026-10-26 and 2026-10-28 (at the end) |
 | [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted; amended 2026-10-21 and 2026-10-25 (at the end) |
 | [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted; amended 2026-10-21 (at the end) |
 | [0051](0051-logs-and-error-reports-leave-the-loop.md) | Write logs and error reports from threads, dropping what does not fit | Accepted; amended 2026-10-21 and 2026-10-26 (at the end) |
@@ -81,7 +81,7 @@ statuses, and the amendments they name.
 | [0061](0061-read-without-a-transaction-and-ping-once.md) | Read without a transaction where it is safe, and ping a connection once | Accepted; amended in place 2026-10-22 |
 | [0062](0062-claim-idempotency-keys-in-one-statement.md) | Claim idempotency keys in one statement, and commit the framework's short writes as they run | Accepted; amended in place 2026-10-22, and 2026-10-25 and 2026-10-26 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) and [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) |
 | [0063](0063-encode-json-with-pydantic-and-sample-the-access-log.md) | Encode JSON with pydantic where the bytes stay the same, and let projects sample the access log | Accepted |
-| [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted |
+| [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted; amended by [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) |
 | [0065](0065-upgrade-fastapi-sqlalchemy-asyncpg-behind-the-ladder.md) | Upgrade FastAPI, SQLAlchemy, and asyncpg behind the ladder, with FastAPI's telemetry off | Accepted; amended 2026-10-25 (at the end) |
 | [0066](0066-write-amounts-as-fixed-point-text.md) | Write amounts as fixed-point text | Accepted |
 | [0068](0068-count-failed-attempts-and-hold-back-only-guesses.md) | Count failed attempts, and hold back only what can be guessed | Accepted; amended 2026-10-25 (at the end); amended by [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) and [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) |
@@ -97,19 +97,26 @@ statuses, and the amendments they name.
 | [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted; amended 2026-10-26 (at the end) |
 | [0082](0082-signed-audit-checkpoints.md) | Prune the audit chain below signed checkpoints, in a fixed format | Accepted |
 | [0084](0084-one-exception-root-mapped-to-http-at-the-boundary.md) | Root every exception at `DomainkitError`, and map errors to HTTP at the boundary | Accepted |
-| [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) | Register commit and migration hooks by type, for the domains that have them | Accepted |
+| [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) | Register commit and migration hooks by type, for the domains that have them | Accepted; amended 2026-10-28 (at the end) by [0101](0101-register-every-domain-hook-and-check-it-when-it-registers.md) |
 | [0086](0086-secure-defaults-at-the-http-edge.md) | Make the HTTP edge's defaults the safe ones | Accepted; amended 2026-10-26 (at the end) |
 | [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted; amended 2026-10-26 (at the end) |
 | [0089](0089-build-the-docs-site-with-mkdocs-and-generate-the-api-reference-from-api-md.md) | Build the docs site with MkDocs, and generate the API reference from api.md | Accepted |
 | [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted |
-| [0092](0092-retry-units-of-work-choose-isolation-and-lock-in-order.md) | Run units of work again after a lost race, let them choose their isolation, and lock in order | Accepted |
+| [0092](0092-retry-units-of-work-choose-isolation-and-lock-in-order.md) | Run units of work again after a lost race, let them choose their isolation, and lock in order | Accepted; amended 2026-10-28 (at the end) |
 | [0094](0094-an-inbox-of-handled-messages-written-with-the-handlers-commit.md) | Keep an inbox of handled messages, written with the handler's commit | Accepted |
 | [0095](0095-fence-a-runs-commits-with-its-lease-instead-of-a-heartbeat.md) | Fence a run's commits with its lease, instead of a heartbeat | Accepted |
 | [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) | Keep committed idempotency keys as tombstones past their TTL | Accepted |
 | [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md) | Name the key of every JSON Web Token, and retire keys within a token's lifetime | Accepted |
 | [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) | Share the attempt throttles, and fail closed, where deployed | Accepted |
 | [0099](0099-take-request-ids-from-trusted-proxies-only.md) | Take request ids from trusted proxies only, and drop a caller's own | Accepted |
-| [0100](0100-guard-credentials-and-grants-from-loaddata-and-flush.md) | Guard credentials and grants from `loaddata` and `flush`, and load new rows only | Accepted |
+| [0100](0100-guard-credentials-and-grants-from-loaddata-and-flush.md) | Guard credentials and grants from `loaddata` and `flush`, and load new rows only | Accepted; amended twice on 2026-10-28 (at the end) |
+| [0101](0101-register-every-domain-hook-and-check-it-when-it-registers.md) | Register every domain hook, and check it when it registers | Accepted; amended 2026-10-28 (at the end) |
+| [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md) | Hold `If-Match` on the unit of work that changes the aggregate | Accepted; amended 2026-10-28 (at the end) |
+| [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) | Import what a process uses on first use, and gate the modules each rung loads | Accepted |
+| [0105](0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md) | Fingerprint keyed bodies as they arrive, and spool them past a threshold | Accepted; amended 2026-10-28 (at the end) |
+| [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted |
+| [0107](0107-make-test-users-through-the-domain-and-sign-in-through-a-protocol.md) | Make test users through the domain, and sign in as them through a protocol | Accepted |
+| [0108](0108-keep-the-full-domain-as-the-default-and-give-new-projects-an-image-and-ci.md) | Keep the full domain as `startdomain`'s default; give new projects an image and CI | Accepted; amended 2026-10-28 (at the end) |
 
 ### Decisions still without a record
 

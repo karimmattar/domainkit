@@ -7,6 +7,11 @@ from typing import Any, Final, cast
 from fastapi import FastAPI
 
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import (
+    on_check_application,
+    on_deployment_warnings,
+    on_startup,
+)
 from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively
 from domainkit.db.hooks import on_stage
 from domainkit.db.routing import DatabaseRouter, router
@@ -55,6 +60,9 @@ class AuditConfig(DomainConfig):
         configured_public_key()  # Refuse a key that cannot verify, now.
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+        on_check_application(self.application_problems)
+        on_deployment_warnings(self.weak_settings)
+        on_startup(self.start)
 
     async def record_operator_action(
         self, action: str, outcome: str, details: Mapping[str, object]
@@ -78,7 +86,7 @@ class AuditConfig(DomainConfig):
             **cast(dict[str, Any], details),  # Never target, personal, subject.
         )
 
-    def check_application(self, app: FastAPI) -> list[str]:
+    def application_problems(self, app: FastAPI) -> list[str]:
         """The settings a tamper-evident trail needs, refused where deployed.
 
         A ledger, a namespace on it, and a sealing schedule (``baseline``),
@@ -87,14 +95,14 @@ class AuditConfig(DomainConfig):
         """
         return settings_problems() if required() else []
 
-    def deployment_warnings(self) -> list[str]:
+    def weak_settings(self) -> list[str]:
         """The same settings, as warnings, with ``AUDIT.REQUIRE_BASELINE = False``.
 
         The application checks the ``protect()`` triggers when it starts.
         """
         return [] if required() else settings_problems()
 
-    async def startup(self) -> None:
+    async def start(self) -> None:
         """Refuse to start, where deployed, with a trail that is not tamper-evident.
 
         With ``AUDIT.REQUIRE_BASELINE = False``, warn instead.

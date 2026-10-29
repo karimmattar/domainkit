@@ -11,6 +11,7 @@ from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import on_check_application, on_deployment_warnings
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
@@ -109,6 +110,8 @@ class AuthConfig(DomainConfig):
             from .erasure import forget_credentials
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
+        on_check_application(self.application_problems)
+        on_deployment_warnings(self.weak_settings)
 
     async def stamp_changes(
         self,
@@ -131,9 +134,13 @@ class AuthConfig(DomainConfig):
         ``fields`` set the user's fields; the username is unique unless
         given. The token comes from the first ``AUTH.AUTHENTICATION_CLASSES``
         class, as a login's would.
+
+        Raises:
+            ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
         """
         from .uow import AuthUnitOfWork
 
+        _only_in_tests("issue_test_token")
         username = fields.pop(self.user_model.USERNAME_FIELD, f"user-{uuid4().hex}")
         async with AuthUnitOfWork() as uow:
             user = await uow.users.create_user(username, **fields)
@@ -142,7 +149,26 @@ class AuthConfig(DomainConfig):
             await uow.commit()
         return issued.access_token
 
-    def check_application(self, app: FastAPI) -> list[str]:
+    async def issue_test_token_for(self, user_id: Any) -> str:  # noqa: ANN401 - any user model's id.
+        """An access token for the stored user ``user_id`` (``testing``).
+
+        From the first ``AUTH.AUTHENTICATION_CLASSES`` class, as a login's
+        would be: a user made by a factory or by ``create_user``.
+
+        Raises:
+            ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
+            NotFound: No user has the id.
+        """
+        from .uow import AuthUnitOfWork
+
+        _only_in_tests("issue_test_token_for")
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(user_id)
+            issued = await get_authenticators()[0].issue(uow, user)
+            await uow.commit()
+        return issued.access_token
+
+    def application_problems(self, app: FastAPI) -> list[str]:
         """Rules no middleware can answer, and what auth's own routes lack.
 
         Routes that declare no rule are the core's to find
@@ -252,7 +278,7 @@ class AuthConfig(DomainConfig):
                 )
         return problems
 
-    def deployment_warnings(self) -> list[str]:
+    def weak_settings(self) -> list[str]:
         """Weak choices in staging and production.
 
         Login and code checks without a rate, or counted in each process
@@ -563,3 +589,21 @@ def _user_table(config: AuthSettings, model: type[AbstractBaseUser]) -> Table:
             "the installed domain that defines it."
         )
     return table
+
+
+def _only_in_tests(what: str) -> None:
+    """Refuse to sign anyone in without credentials outside the test settings.
+
+    The test tokens skip the password, the second factor, and the login's
+    audit record: in any other process they would be a bearer token for
+    anyone, a superuser included (SEC-12a-2). The database fixtures refuse
+    such settings for the same reason.
+
+    Raises:
+        ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
+    """
+    if settings.ENVIRONMENT != "test":
+        raise ImproperlyConfigured(
+            f"{what} signs users in without credentials, so it needs "
+            f'ENVIRONMENT = "test", not {settings.ENVIRONMENT!r}.'
+        )

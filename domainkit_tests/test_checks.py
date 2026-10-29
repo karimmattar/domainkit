@@ -252,9 +252,18 @@ def test_check_deploy_fails_on_warnings_a_project_has_not_silenced() -> None:
     )
     assert "    Hint: Use PostgreSQL in staging and production." in str(refused.value)
     with override_settings(**production, SILENCED_CHECKS=weak):
-        assert run("check", "--deploy") == (
-            "System check identified no issues (4 silenced). Domains: alpha.\n"
-        )
+        checked = run("check", "--deploy")
+    # The HTTPS statement is information: it never fails --deploy.
+    assert checked.splitlines()[:2] == [
+        "System check identified no issues (4 silenced). Domains: alpha.",
+        (
+            "  Info: security.I001: HTTPS is not checked: the application serves "
+            "plain HTTP, and TLS must end in front of it. It takes a request's "
+            "scheme from the connection alone (TRUSTED_PROXIES is empty), so every "
+            "request counts as plain HTTP, even one a proxy received over HTTPS."
+        ),
+    ]
+    assert len(checked.splitlines()) == 3
 
 
 def test_check_reports_every_problem_at_once_where_deployed(
@@ -286,3 +295,39 @@ def test_check_reports_every_problem_at_once_where_deployed(
         "architecture.E001",
     ]
     assert "imports sqlalchemy" in lines[2]
+
+
+@pytest.mark.parametrize(
+    ("change", "source"),
+    [
+        ({}, "from the connection alone (TRUSTED_PROXIES is empty)"),
+        (
+            {"TRUSTED_PROXIES": ["10.0.0.0/8"], "PROXY_SCHEME_HEADER": None},
+            "from the connection alone (PROXY_SCHEME_HEADER is None)",
+        ),
+        (
+            {"TRUSTED_PROXIES": ["10.0.0.0/8"], "PROXY_SCHEME_HEADER": "X-Scheme"},
+            (
+                "from the X-Scheme header of TRUSTED_PROXIES only, so the proxy "
+                "must set it, over a caller's."
+            ),
+        ),
+    ],
+)
+def test_check_says_where_https_ends_and_whose_word_the_scheme_is(
+    change: dict[str, Any], source: str
+) -> None:
+    """``check`` cannot see the TLS in front, so it says so (INFRA-08)."""
+    from domainkit.management.commands.check import https_statement
+
+    with override_settings(ENVIRONMENT="staging", **change):
+        statement = https_statement()
+        printed = run("check").splitlines()
+
+    assert (statement.id, statement.level) == ("security.I001", Level.INFO)
+    assert f"It takes a request's scheme {source}" in statement
+    assert statement.hint.startswith("Redirect plain HTTP to HTTPS at the proxy")
+    assert printed[1] == f"  Info: security.I001: {statement.message}"
+    assert printed[2] == f"    Hint: {statement.hint}"
+    with override_settings(**change):  # Locally, nothing is said of it.
+        assert "security.I001" not in run("check")

@@ -15,6 +15,12 @@
     "schedule": ["at any time"],
     "labels": ["dependencies", "security"]
   },
+  "github-actions": {
+    "description": "The CI workflow init writes into new projects pins the actions domainkit's CI does (test_init.py checks): one pull request updates both.",
+    "managerFilePatterns": [
+      "/^src/domainkit/management/templates/project/dot-github/workflows/[^/]+\\.yml-tpl$/"
+    ]
+  },
   "customManagers": [
     {
       "customType": "regex",

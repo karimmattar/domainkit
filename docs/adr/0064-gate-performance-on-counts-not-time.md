@@ -1,6 +1,6 @@
 # 0064. Gate performance in CI on counts, and report time
 
-- Status: Accepted
+- Status: Accepted; amended by [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md)
 - Date: 2026-10-21
 
 ## Context

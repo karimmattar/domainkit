@@ -69,8 +69,9 @@ jobs:
 
   # Only for a pull request that changes docs alone: the tests that read
   # them (the API reference against every __all__, links, anchors and the
-  # settings tables, the README and tutorial as written, the workflows'
-  # names in versioning.md). Any other change runs them in the test jobs.
+  # settings tables, the README, tutorial, and recipes as written, the
+  # workflows' names in versioning.md). Any other change runs them in the
+  # test jobs.
   docs:
     needs: changes
     if: needs.changes.outputs.code == 'false'
@@ -88,7 +89,8 @@ jobs:
       - run: >-
           poetry run pytest -n auto --junitxml=junit.xml
           domainkit_tests/test_api.py domainkit_tests/test_ci.py
-          domainkit_tests/test_docs.py domainkit_tests/test_walkthroughs.py
+          domainkit_tests/test_docs.py domainkit_tests/test_recipes.py
+          domainkit_tests/test_walkthroughs.py
 
   lint:
     if: github.event_name != 'schedule'
@@ -432,7 +434,9 @@ jobs:
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
-      - run: poetry sync --extras "postgres sqlite uvloop"
+      # Every extra, as make install: the modules each rung loads depend on
+      # what is installed (prometheus_client, opentelemetry), and are gated.
+      - run: poetry sync --all-extras
       - run: >-
           poetry run python -m benchmarks --strict --json ladder.json
           ${{ github.event_name == 'pull_request' && '--baseline base/src' || '' }}
@@ -492,6 +496,34 @@ jobs:
           /tmp/clean/bin/python -c "import domainkit, domainkit.broker, domainkit.cache, domainkit.contrib.messaging; print(domainkit.__version__)"
           /tmp/clean/bin/domainkit init smokeAPI /tmp/smoke
           test -f /tmp/smoke/.env && test -f /tmp/smoke/manage.py
+      # The image a new project builds, with this wheel: it leaves out an env
+      # file next to the Dockerfile, runs as a user without privileges,
+      # passes check with the production settings, and answers /health
+      # (INFRA-09, SEC-12c-2).
+      - name: Build and run a new project's image
+        run: |
+          /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres,redis,sqlite]"
+          cd /tmp/smoke
+          /tmp/clean/bin/python manage.py startdomain orders --minimal
+          /tmp/clean/bin/python manage.py makemigrations -m "create"
+          echo "SMOKE_API_SECRET_KEY=planted" > production.env
+          docker build --build-context wheels="$GITHUB_WORKSPACE/dist" -t smoke .
+          printf '%s\n' SMOKE_API_ALLOWED_HOSTS=api.example.com \
+            SMOKE_API_DATABASE_URL=postgresql+asyncpg://app@db.internal/app \
+            SMOKE_API_REDIS_URL=rediss://:s3cret@cache.internal:6380/0 \
+            SMOKE_API_TRUSTED_PROXIES=10.0.0.0/8 \
+            "SMOKE_API_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(50))')" > /tmp/smoke.env
+          test -z "$(docker run --rm smoke find /app -name '*.env*')"
+          test "$(docker run --rm smoke id -u)" = 10001
+          if docker run --rm smoke touch /app/written; then exit 1; fi
+          docker run --rm --env-file /tmp/smoke.env smoke python manage.py check
+          docker run -d --name smoke -p 8000:8000 --env-file /tmp/smoke.env smoke
+          for _ in $(seq 30); do
+            curl -sf -H "Host: api.example.com" http://127.0.0.1:8000/health && break
+            sleep 1
+          done
+          curl -sf -H "Host: api.example.com" http://127.0.0.1:8000/health
+          docker stop smoke
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
@@ -681,6 +713,19 @@ jobs:
       && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # For the proof of settling cut-off connections, below.
+    services:
+      postgres:
+        image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -705,6 +750,22 @@ jobs:
             .newest/bin/python -m pip freeze --exclude domainkit
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # Settling a connection a cancellation cut off reads state asyncpg and
+      # SQLAlchemy keep privately, so it runs on the releases _PROVEN names
+      # (ADR 0048). Its cases run here on the newest releases, against
+      # PostgreSQL, with settling on where _PROVEN does not name them yet;
+      # a skip fails. Then the suite's
+      # test_the_installed_asyncpg_and_sqlalchemy_are_releases_proven says
+      # whether to widen _PROVEN.
+      - name: Prove settling on the installed asyncpg and SQLAlchemy
+        shell: bash
+        env:
+          DOMAINKIT_TEST_POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+        run: |
+          .newest/bin/python -m pytest -n auto -rs \
+            domainkit_tests/test_db_cut_off.py \
+            domainkit_tests/test_sec11b_2_cut_off_session_lock.py | tee prove.log
+          ! grep -q "SKIPPED" prove.log
       - run: .newest/bin/python -m pytest -n auto --junitxml=junit.xml
       # What "pip install domainkit[...]" resolves today, audited: the lock
       # the audit job reads is older. Like the job, it gates nothing.
@@ -760,6 +821,78 @@ jobs:
           path: junit.xml
           retention-days: 14
 
+  # On a pull request that changes code: the mutants of the functions and
+  # methods it changed (.github/scripts/changed_mutants.py, against the base
+  # it merges into), so a change gets its mutation score before it merges,
+  # not at the next weekly run. mutmut runs the suite once for its stats,
+  # then each mutant with only the tests that reach its function. Not a
+  # check the ruleset requires (ADR 0106): it fails when a run does not
+  # finish, or when a changed function's mutant lives, and the summary
+  # lists them, for the author to kill or to explain.
+  mutation-changed:
+    name: mutation (changed)
+    needs: changes
+    if: >-
+      ${{ !cancelled() && !failure() && github.event_name == 'pull_request'
+      && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      # The merge commit and its first parent, the base branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --all-extras --with dev
+      - name: Find the changed functions
+        id: changed
+        shell: bash
+        run: |
+          set -f
+          mutants="$(poetry run python .github/scripts/changed_mutants.py HEAD^1)"
+          echo "mutants=$mutants" >> "$GITHUB_OUTPUT"
+          if [ -z "$mutants" ]; then
+            echo "### Mutation of the changed functions: none changed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # The patterns are mutant names, not files: no globbing by the shell.
+      # Interrupted (SIGINT) before the job's limit, mutmut stops and keeps
+      # what it found, so the summary still reports it, as incomplete.
+      - name: Run their mutants
+        if: steps.changed.outputs.mutants != ''
+        shell: bash
+        env:
+          MUTANTS: ${{ steps.changed.outputs.mutants }}
+        run: |
+          set -f
+          status=0
+          timeout --signal=INT --kill-after=5m 45m poetry run mutmut run $MUTANTS || status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "::error::The changed functions' mutants did not finish in 45 minutes."
+          fi
+          exit "$status"
+      - name: Summarise the changed functions' mutants
+        if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
+        shell: bash
+        env:
+          MUTANTS: ${{ steps.changed.outputs.mutants }}
+        run: |
+          set -f
+          poetry run python .github/scripts/mutation_summary.py changed --lived-fails $MUTANTS >> "$GITHUB_STEP_SUMMARY"
+      - if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutmut-results-changed
+          path: |
+            changed-mutants.txt
+            mutmut-results.txt
+            mutation-summary.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   # The whole package's mutants take longer than one job may run, so they run
   # in shards, balanced by the time their mutants' tests take: about 200
   # minutes each on four workers if every mutant ran all its tests (from
@@ -802,6 +935,7 @@ jobs:
               domainkit.contrib.auth.erasure.* domainkit.contrib.auth.exceptions.*
               domainkit.contrib.auth.mfa.* domainkit.contrib.auth.models.*
               domainkit.contrib.auth.recovery.* domainkit.contrib.auth.tables.*
+              domainkit.contrib.auth.testing.*
               domainkit.contrib.auth.throttling.* domainkit.contrib.auth.validators.*
           - name: http-1
             mutants: >-
@@ -865,7 +999,7 @@ jobs:
               domainkit.management.commands.flush.* domainkit.management.commands.init.*
               domainkit.management.commands.runserver.* domainkit.management.operators.*
               domainkit.utils.closing.* domainkit.utils.formatting.*
-              domainkit.utils.module_loading.*
+              domainkit.utils.module_loading.* domainkit.utils.delivery.*
           - name: management-4
             mutants: >-
               domainkit.apps.config.* domainkit.management.base.*

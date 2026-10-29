@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 
-from domainkit.ddd import Command, NotFound
+from domainkit.ddd import Command, NotFound, Retry
 from domainkit.ddd.query import F
 from domainkit.http.errors import APIError
 from domainkit.resources import PatchModel
@@ -319,3 +319,44 @@ async def test_lent_units_of_work_leave_the_batch_in_charge(
 
     assert entered is lent
     assert lent.gadgets is store
+
+
+class Raced(Exception):
+    """A failure a batch's ``retry`` runs again after, and no refusal."""
+
+
+@pytest.mark.parametrize("attempts", [1, 2])
+def test_an_atomic_batch_raises_what_it_kept_losing_to_if_no_refusal(
+    store: InMemoryGadgets, use_auth: UseAuth, attempts: int
+) -> None:
+    """Once the runs are spent, an error that is no refusal is raised, noted."""
+    use_auth()
+    resource = gadgets(store)
+    runs: list[UUID] = []
+
+    async def losing(command: RenameGadget, uow: FakeGadgetsUnitOfWork) -> None:
+        runs.append(command.gadget_id)
+        raise Raced("lost again")
+
+    resource.batch_route(
+        RenameGadget,
+        service=losing,
+        body=RenameIn,
+        retry=Retry(attempts=attempts, backoff=0, retry_on=(Raced,)),
+    )
+    client = client_of(resource)
+    known = ids(store)
+
+    with pytest.raises(Raced, match="lost again") as raised:
+        client.post(
+            BATCH,
+            json={
+                "items": [{"gadget_id": str(known["a"]), "name": "x"}],
+                "atomic": True,
+            },
+            headers=as_("changer"),
+        )
+
+    notes = ["The work ran 2 times; each run lost a race."] if attempts > 1 else []
+    assert getattr(raised.value, "__notes__", []) == notes
+    assert runs == [known["a"]] * attempts

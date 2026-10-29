@@ -1,8 +1,11 @@
 """``init`` and the ``domainkit`` program: a new project that works at once."""
 
 import io
+import json
 import os
+import re
 import runpy
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -12,9 +15,11 @@ from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
+import yaml
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 
+import domainkit
 from domainkit.management import (
     CommandError,
     call_command,
@@ -22,13 +27,17 @@ from domainkit.management import (
 )
 from domainkit.management.commands.init import TEMPLATE_DIR, requirement
 from domainkit.utils import formatting
+from domainkit_tests.test_sec12c_2_image_bakes_env_file import ignored
 
 CHECKED = "System check identified no issues. Domains: messaging, contenttypes, auth.\n"
 REDIS_URL = "rediss://:s3cret@cache.internal:6380/0"
 """The shared cache of the production settings: TLS, and a password."""
 PROJECT_FILES = {
+    ".dockerignore",
     ".env",
+    ".github/workflows/ci.yml",
     ".gitignore",
+    "Dockerfile",
     "manage.py",
     "pyproject.toml",
     "src/config/__init__.py",
@@ -55,11 +64,16 @@ def init(*args: str) -> str:
 def run(
     cwd: Path, *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``python *args`` in ``cwd`` as a user would: no test settings."""
+    """Run ``python *args`` in ``cwd`` as a user would: no test settings.
+
+    Nor mutmut's: under its stats run the child would look for mutmut's
+    settings in the project, and fail.
+    """
     clean = {
         name: value
         for name, value in os.environ.items()
         if not name.startswith(("DOMAINKIT_", "BILLING_API_"))
+        and name != "MUTANT_UNDER_TEST"
     }
     return subprocess.run(  # noqa: S603 - the test interpreter and generated files.
         [sys.executable, *args],
@@ -123,6 +137,8 @@ def test_generated_code_never_blocks_the_event_loop(tmp_path: Path) -> None:
         project, "manage.py", "startdomain", "invoices", "--aggregate", "Invoice"
     )
     assert started.returncode == 0, started.stderr
+    smaller = run(project, "manage.py", "startdomain", "notes", "--minimal")
+    assert smaller.returncode == 0, smaller.stderr
 
     linted = run(project, "-m", "ruff", "check", "--no-cache", ".")
     checked = run(project, "manage.py", "check")
@@ -132,7 +148,7 @@ def test_generated_code_never_blocks_the_event_loop(tmp_path: Path) -> None:
     assert linted.returncode == 0, linted.stdout + linted.stderr
     assert checked.stdout == (
         "System check identified no issues. "
-        "Domains: messaging, contenttypes, auth, invoices.\n"
+        "Domains: messaging, contenttypes, auth, invoices, notes.\n"
     )
 
 
@@ -507,3 +523,121 @@ def test_a_generated_domain_can_live_in_its_own_database(tmp_path: Path) -> None
 
 
 TABLES = "SELECT name FROM sqlite_master WHERE type = 'table'"
+
+
+ROOT = Path(__file__).parents[1]
+
+
+def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> None:
+    """Dependencies in a build stage; code owned by root; uvicorn on port 8000.
+
+    CI's build job builds the image of a new project with the wheel, and
+    runs it: id, a write refused, check, and /health (INFRA-09).
+    """
+    project = tmp_path / "billing"
+    init("billingAPI", str(project))
+    dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+    lines = [line for line in dockerfile.splitlines() if not line.startswith("#")]
+    final = lines[max(i for i, line in enumerate(lines) if line.startswith("FROM "))]
+
+    assert "{{" not in dockerfile
+    assert final == "FROM python:3.13-slim"
+    stage = lines[lines.index(final) :]
+    user = stage.index("USER 10001")
+    assert [line for line in stage if line.startswith("COPY ")] == [
+        "COPY --from=build /opt/venv /opt/venv",
+        "COPY . .",
+    ]
+    assert all(stage.index(line) < user for line in stage if line.startswith("COPY "))
+    assert "    BILLING_API_SETTINGS_MODULE=config.settings.production" in stage
+    cmd = json.loads(
+        " ".join(dockerfile.split("CMD ", 1)[1].split("\\\n")).replace("\n", " ")
+    )
+    assert cmd[:4] == ["uvicorn", "config.asgi:application", "--app-dir", "src"]
+    assert cmd[4:8] == ["--host", "0.0.0.0", "--port", "8000"]  # noqa: S104
+    patterns = (project / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    copied = [
+        "manage.py",
+        "pyproject.toml",
+        "src/config/settings/production.py",
+        "migrations/0001_ab12_create.py",
+    ]
+    left_out = [
+        ".env",
+        ".git/config",
+        ".venv/bin/python",
+        "tests/test_health.py",
+        "db.sqlite3",
+        "production.env",
+        "secrets/jwt.key",
+        "src/config/.env.production",
+        "src/config/settings/__pycache__/base.cpython-313.pyc",
+    ]
+    assert [path for path in copied if ignored(patterns, path)] == []
+    assert [path for path in left_out if not ignored(patterns, path)] == []
+    gitignored = (project / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert {".env", ".env.*", "*.env", "secrets/"} <= set(gitignored)
+
+
+def test_the_projects_workflow_passes_on_a_new_project(tmp_path: Path) -> None:
+    """Every step of its test job but the install, as CI runs them, without .env."""
+    project = tmp_path / "billing"
+    init("billingAPI", str(project))
+    assert (
+        run(project, "manage.py", "startdomain", "invoices", "--minimal").returncode
+        == 0
+    )
+    made = run(project, "manage.py", "makemigrations", "-m", "first")
+    assert made.returncode == 0, made.stderr
+    (project / ".env").unlink()  # Not committed: CI never has it.
+    workflow = yaml.safe_load(
+        (project / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    )
+    job = workflow["jobs"]["test"]
+    programs = {
+        "python": [],
+        "ruff": ["-m", "ruff"],
+        "pytest": ["-m", "pytest", "-p", "no:cacheprovider"],
+    }
+
+    ran = []
+    for step in job["steps"]:
+        if "run" not in step or step["name"] == "Install":
+            continue
+        for line in step["run"].splitlines():
+            program, *args = shlex.split(line)
+            done = run(project, *programs[program], *args, env=job["env"])
+            assert done.returncode == 0, f"{line}\n{done.stdout}{done.stderr}"
+            ran.append(line)
+
+    assert workflow["permissions"] == {"contents": "read"}
+    assert ran == [
+        "ruff check .",
+        "ruff format --check .",
+        "python manage.py check",
+        "python manage.py migrate",
+        'python manage.py makemigrations --check -m "unused"',
+        "pytest",
+    ]
+    install = next(step for step in job["steps"] if step.get("name") == "Install")
+    listing = re.search(r'(python -c ".*") > requirements.txt', install["run"])
+    assert listing is not None
+    listed = run(project, *shlex.split(listing[1])[1:])
+    assert listed.stdout.splitlines() == [requirement(domainkit.__version__)]
+
+
+def test_the_projects_workflow_pins_the_actions_domainkits_ci_does(
+    tmp_path: Path,
+) -> None:
+    """Commit SHAs, as Renovate keeps domainkit's own: one update moves both."""
+    init("billingAPI", str(tmp_path / "billing"))
+    ours = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    theirs = (tmp_path / "billing" / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    uses = re.findall(r"uses: (\S+@\S+ # \S+)", theirs)
+
+    assert len(uses) == 3
+    assert all(re.fullmatch(r"[\w/-]+@[0-9a-f]{40} # v[\d.]+", use) for use in uses)
+    assert all(f"uses: {use}" in ours for use in uses)
+    assert theirs.count("persist-credentials: false") == 2

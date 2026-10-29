@@ -149,6 +149,7 @@ PLANNED = Budgets(
             "transactions": 1,
             "checkouts": 1,
             "pings": 1,
+            "modules": 800,
         }
     },
     {"calls": 0.02},
@@ -178,6 +179,15 @@ def test_over_budget_fails_and_says_where() -> None:
     assert statements.message() == (
         "OVER BUDGET: me statements: budget 4, measured 4.01."
     )
+
+
+def test_one_module_more_fails() -> None:
+    """Modules are exact: one more than the budget fails (PERF-15)."""
+    assert budgeting.check(PLANNED, {"me": measured(modules=800)}) == []
+    (modules,) = budgeting.check(PLANNED, {"me": measured(modules=801)})
+
+    assert modules.fails
+    assert modules.message() == "OVER BUDGET: me modules: budget 800, measured 801."
 
 
 def test_gains_ask_for_a_lower_budget() -> None:

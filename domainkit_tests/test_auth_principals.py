@@ -77,6 +77,7 @@ from domainkit_tests.conftest import (
     SHOP,
     Api,
     UseAuth,
+    domain_warnings,
 )
 from domainkit_tests.engine_events import watching
 from domainkit_tests.fake_smtp import certificate
@@ -1658,7 +1659,7 @@ def test_deployments_warn_of_long_ttls_without_stamps(use_auth: UseAuth) -> None
             PASSWORD_HASHERS=hashers,
             PRINCIPAL_CACHE=cache,
         )
-        return registry.get_domain_config("auth").deployment_warnings()
+        return domain_warnings("auth")
 
     assert warnings(TTL=timedelta(seconds=30)) == [
         (

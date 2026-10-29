@@ -206,6 +206,12 @@ body's fields and, for a command on one product, its `product_id` and an
   `500`, as it would for one item.
 - `action` defaults to `change` for commands on one aggregate and `add`
   for the others; the route needs that permission once, for the batch.
+- `retry=Retry()` runs work that lost a race again, as a command route's
+  does: without `atomic`, the item that lost, with its reach check and
+  `If-Match`; with `atomic`, the whole batch, in a new transaction, since
+  the race ended the one it ran in. Once the runs are spent, the item
+  answers `503 database_busy`, as without `retry`. Batches do not retry
+  unless they say so.
 
 ## Exports
 
@@ -311,16 +317,40 @@ tags.
 - `ResourceRouter(..., require_if_match=True)` refuses writes to one
   aggregate that send no `If-Match`: `428 precondition_required`.
 
-The check needs nothing from the service. The route holds the request's
-expectation (`domainkit.ddd.preconditions.expect_version`), and the
-repository checks the aggregate when it first hands it out, inside the
-transaction that changes it: `get`, `find`, `filter`, `first`, and
-`get_for_update` all do. Optimistic locking (the `version` column) still
-refuses a change that lands after the check, with `409
-concurrent_update`. A service that never loads the aggregate through its
-repository cannot honour `If-Match`; such a request fails with a
-`RuntimeError` rather than succeed unchecked: the unit of work refuses
-to commit before the aggregate is loaded, so nothing is written.
+The check needs nothing from the service. The route hands the service a
+unit of work that holds the request's expectation
+(`uow.expect(Order, order_id, versions)`), and its repositories check the
+aggregate when they first hand it out, inside the transaction that changes
+it: `get`, `find`, `filter`, `first`, and `get_for_update` all do. A
+service that enters the unit of work again (it reads in one block, calls
+a payment provider, and writes in the next) is checked again in each new
+transaction: a change another client stored in between is refused, and
+only the version the unit of work's own commit produced is accepted. Only
+that unit of work is held to it: another one the service opens, to write
+an audit record first, say, commits as it would. A route of your own does
+the same:
+
+```python
+@router.post("/orders/{order_id}/cancel")  # With its rule, as every route.
+async def cancel(order_id: OrderId, if_match: Annotated[str, Header()]) -> None:
+    uow = OrdersUnitOfWork()
+    with uow.expect(Order, order_id, expected_versions(if_match)):
+        await services.cancel_order(CancelOrder(order_id=order_id), uow)
+```
+
+Until 0.12 the route held the expectation for the whole request
+(`domainkit.ddd.preconditions.expect_version`), and every unit of work in
+it was held to it; that still works, deprecated, until 0.13.
+
+Optimistic locking (the `version` column) still refuses a change that
+lands after the check, with `409 concurrent_update`. A service that never
+loads the aggregate through its repository cannot honour `If-Match`; such
+a request fails with a `RuntimeError` rather than succeed unchecked: the
+unit of work refuses to commit before the aggregate is loaded, so nothing
+is written. A service that writes the aggregate through another unit of
+work than the one it was given is not held to `If-Match`: the request
+still fails, but that write stands. Change aggregates through the unit of
+work the route passes.
 
 ## Who may call it
 
@@ -430,8 +460,14 @@ API.
 object, a collection of child entities, and an id-only reference; its
 filters, `PATCH`, commands, and `DELETE`; and tests at every layer. In a
 project laid out as `init` makes it, it also installs the domain and
-mounts its router. Then the generators add to it, every layer at once,
-with tests:
+mounts its router. `startdomain catalog --aggregate Product --minimal`
+writes a smaller one, in the same four layers: an aggregate with a name
+that must not be blank, commands to create and rename it, its table, its
+resource, an in-memory unit of work, and two tests; 13 files of the
+package where the full one has 15, and 15 names from domainkit where it
+has 29. Its events and their handlers' modules are left out until a
+generator needs them. Then the generators add to either, every layer at
+once, with tests:
 
 ```bash
 python manage.py startdomain catalog --aggregate Product

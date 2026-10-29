@@ -20,6 +20,14 @@ SYMBOLIC: Final = frozenset({"head", "heads", "base"})
 """Revisions that mean the same thing in every target's history."""
 
 
+def unreachable(alias: str, exc: migrations.DatabaseUnreachable) -> CommandError:
+    """The one-line error of a command that could not connect to ``alias``."""
+    return CommandError(
+        f"Database {alias!r} {exc}. Is the server running, and are its URL "
+        "(or MIGRATION_URL) and credentials right?"
+    )
+
+
 class Command(BaseCommand):
     """Upgrade to ``head`` (or a revision); ``--downgrade`` moves down instead."""
 
@@ -116,6 +124,8 @@ class Command(BaseCommand):
                     )
                 else:
                     self._migrate(alias, target, downgrade=downgrade)
+            except migrations.DatabaseUnreachable as exc:
+                raise unreachable(alias, exc) from None
             except AlembicError as exc:
                 hint = ""
                 if "Multiple head" in str(exc):

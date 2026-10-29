@@ -30,7 +30,7 @@ domainkit: a Django-style framework for domain-driven FastAPI services.
 
 Installed domains (`django.apps`): configuration classes and the registry.
 
-- `DomainConfig`: Describe one installed domain and its lifecycle hooks.
+- `DomainConfig`: Describe one installed domain: its label, settings, and what it requires.
 - `DomainRegistry`: Installed domains in `INSTALLED_DOMAINS` order.
 - `Requirement`: A domain package another needs in `INSTALLED_DOMAINS`, and why.
 - `registry`: The process-wide registry populated by `domainkit.setup()`.
@@ -41,6 +41,14 @@ Typed hooks a domain registers for what it takes part in.
 
 - `Hook`: One registered function, and the domain that registered it.
 - `HookPoint`: Functions installed domains registered for one purpose, in domain order.
+- `on_check`: Raise when the domain cannot serve traffic (`/ready`): `()`.
+- `on_check_application`: Problems with the built application: `(app)`, best as `CheckMessage`.
+- `on_deployment_warnings`: Weak but valid settings where deployed: `()`; none elsewhere.
+- `on_erase_subject`: Erase the copies kept of a person's data: `(subject, reason)`.
+- `on_export_subject`: What the domain keeps about a person outside its aggregates: `(subject)`.
+- `on_seed`: Add the rows a fresh database needs (`manage.py seed`): `()`.
+- `on_shutdown`: Release what the domain's startup hooks opened: `()`.
+- `on_startup`: Open process resources, such as clients and pools: `()`.
 
 ## `domainkit.architecture`
 
@@ -409,6 +417,13 @@ Password resets and email verification, by links sent by email.
 Signing up: anyone may ask for an account, if `AUTH.SIGNUP_ENABLED` says so.
 
 - `router`: The routes: signing up: anyone may ask for an account, if `AUTH.SIGNUP_ENABLED` says so.
+
+## `domainkit.contrib.auth.testing`
+
+Users and groups for tests, stored as the application stores them.
+
+- `create_group`: Store a group granted `permissions` (keys); `group-<hex>` unless named.
+- `create_user`: Store a user granted `permissions` (keys), in `groups` (names).
 
 ## `domainkit.contrib.auth.validators`
 
@@ -822,6 +837,7 @@ Domain-driven design building blocks ("seedwork").
 
 Expected versions: change an aggregate only if it is still as the caller saw it.
 
+- `Expectation`: The version an aggregate must have when a use case loads it.
 - `expect_version`: Expect aggregate `id_` of `model` at one of `versions` in the block.
 
 ## `domainkit.ddd.query`
@@ -1329,12 +1345,14 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `LazyAttribute`: `LazyAttribute(lambda o: o.name.lower())`: computed from other fields.
 - `LazyFunction`: `LazyFunction(uuid4)`: the function's result, called for each object.
 - `Sequence`: `Sequence(lambda n: f"user-{n}")`: the object's number, from 0.
+- `SettingsOverrides`: The `settings` fixture: settings changed until the test ends.
 - `SubFactory`: `SubFactory(MoneyFactory, currency="EUR")`: another factory's object.
 - `TestClient`: Starlette's `TestClient`; the application sees the caller's context.
 - `assert_max_queries`: Check that the `with` block runs at most `limit` SQL statements.
 - `assert_num_queries`: Check that the `with` block runs exactly `expected` SQL statements.
 - `freeze_time`: Return a clock frozen at `when` (default: now), for a `with` block.
 - `migrated_database`: Make, migrate, and later drop the test databases; yield the default's URL.
+- `token_for`: Return an access token for `user`, a user stored already.
 - `user_token`: Store a new user granted `permissions`; return an access token for them.
 
 ## `domainkit.tracing`

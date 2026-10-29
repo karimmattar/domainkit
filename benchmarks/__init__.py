@@ -6,3 +6,9 @@ docs/performance.md for the rungs, the budgets, and how to update them.
 code that measures one rung in a process of its own, and ``budgets`` the
 check against ``budgets.toml``.
 """
+
+import sys
+
+STARTUP_MODULES: frozenset[str] = frozenset(sys.modules)
+"""What the interpreter held before the harness imported anything (``site``,
+the codecs): a rung's ``modules`` counts what it imported past these."""

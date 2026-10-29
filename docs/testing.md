@@ -38,6 +38,7 @@ The `.env` file is never read during tests. The test settings must say
 | `async_client`, `async_client_for`, `async_admin_client` | test | The same, as `AsyncTestClient`s, for async tests; `await async_client_for(...)`. |
 | `freeze_time` | test | `clock = freeze_time("2026-01-01")`: the framework's clock stands still there until the test ends ([Time](#time)). |
 | `assert_num_queries`, `assert_max_queries` | test | `with assert_num_queries(3):` ([Counting queries](#counting-queries)). |
+| `settings` | test | `settings.DEBUG = True`: the setting changes, validated, until the test ends; `del settings.CACHES` puts its default back ([Settings](#settings)). |
 
 Memory caches are emptied before every test, so no test sees what another
 cached. Redis caches are left alone: give the test settings their own
@@ -178,6 +179,63 @@ Async tests run on AnyIO's pytest plugin, which comes with FastAPI, on its
 default asyncio backend: mark them with `pytest.mark.anyio`. The sync
 fixtures (`db`, `client`) work in them too.
 
+## Users and groups
+
+`domainkit.contrib.auth.testing` stores users and groups as the
+application does, through `AuthUnitOfWork`, so their events are published
+and the principal cache hears of them. The clients' `authenticated_as`
+signs in as one, as DRF's `force_authenticate` does
+([ADR 0107](adr/0107-make-test-users-through-the-domain-and-sign-in-through-a-protocol.md)):
+
+```python
+import pytest
+
+from domainkit.contrib.auth.testing import create_group, create_user
+from domainkit.testing import AsyncTestClient, TestClient
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_clerks_read(async_client: AsyncTestClient) -> None:
+    clerks = await create_group("billing.view_invoice", name="clerks")
+    ann = await create_user(groups=[clerks.name], email="ann@example.com")
+    as_ann = await async_client.authenticated_as(ann)
+    assert (await as_ann.get("/api/v1/billing/invoices")).status_code == 200
+
+
+def test_owners_edit(client: TestClient) -> None:
+    owner = client.run(create_user, "billing.change_invoice", password="s3cret-pass")
+    as_owner = client.authenticated_as(owner)
+    ...
+```
+
+- `await create_user(*permissions, password=None, groups=(), superuser=False,
+  **fields)`: a user granted the permissions (keys) and in the groups
+  (names). Without a password it gets an unusable one; with one, it is
+  hashed with `AUTH.PASSWORD_HASHERS`, so the test can log in through
+  `/auth/login`. `superuser=True` makes a superuser, and staff where the
+  model has it. Keyword arguments set the user's fields; the username is
+  unique unless given.
+- `await create_group(*permissions, name=None)`: a group granted the
+  permissions.
+- `client.authenticated_as(user)` (sync) and `await
+  async_client.authenticated_as(user)` (async): a client that sends an
+  access token for `user`, from the first `AUTH.AUTHENTICATION_CLASSES`
+  class, as a login's would. `user` is a stored user, or its id: one these
+  functions made, or a [factory](#factories) stored. `await
+  token_for(user)` returns the token itself. These tokens, as
+  `client_for`'s, skip the password and the second factor, so they are
+  refused unless `ENVIRONMENT = "test"`.
+- `client.run(function, *args, **kwargs)` awaits an async function in the
+  sync client's event loop, on the application's own connections, with the
+  caller's context (a frozen clock): async setup in a sync test.
+- Object grants go through `domainkit.contrib.objectpermissions`'
+  `grant_permission`, with a superuser as the actor.
+
+`client_for(...)` still makes a new user for each client; these are for a
+user the test needs to know: as an object's owner, a group's member, or
+the one who logs in.
+
 ## Factories
 
 Factories make aggregates with defaults each test overrides, as
@@ -284,6 +342,24 @@ def test_tokens_expire(freeze_time: FreezeTime, client_for: ClientFor) -> None:
   exactly its limit through at one frozen moment. Intervals measured across
   the start or end of a freeze are meaningless.
 
+## Settings
+
+The `settings` fixture changes settings until the test ends, as
+`override_settings` changes them for a block, and as pytest-django's
+`settings` fixture does:
+
+```python
+def test_debug_pages(settings, client: TestClient) -> None:
+    settings.DEBUG = True
+    del settings.CACHES  # Its default, for this test.
+    ...
+```
+
+Each change is validated with the whole settings, as at startup: a value
+they refuse fails the assignment with `ImproperlyConfigured`. Reading
+`settings.DEBUG` reads the current setting. Changes are undone in reverse
+order when the test ends.
+
 ## Counting queries
 
 `assert_num_queries(n)` fails unless the block runs exactly `n` SQL
@@ -351,3 +427,42 @@ test. The tests `startdomain` writes use `client`, `client_for`, and
 factories next to its in-memory fakes (`tests/<domain>/factories.py`), pass
 a fake unit of work to `create` in use-case tests, and let `create` use the
 SQL unit of work in API tests.
+
+## Compared with pytest-django, DRF, Litestar, and factory_boy
+
+What their testing tools give, and where domainkit stands as of 0.12. Rows
+marked 0.12 were added for the 0.9.0 audit's TEST-08.
+
+| They give | domainkit |
+| --- | --- |
+| pytest-django's `db`, `django_db_setup`, `--reuse-db` | `db`, `database`, `--keepdb`; a database per xdist worker |
+| pytest-django's `client`, `admin_client`, `async_client` | `client`, `admin_client`, `async_client`, `async_admin_client` |
+| pytest-django's `django_assert_num_queries`, `django_assert_max_num_queries` | `assert_num_queries`, `assert_max_queries` |
+| pytest-django's `mailoutbox`; Django's emptied `mail.outbox` | `mail.outbox`, `sms_outbox`, and `push_outbox`, emptied before each test |
+| pytest-django's `django_capture_on_commit_callbacks` | messaging's `outbox` (`assert_queued`, `run_queued`), `execute_deferred`, `captured_events` |
+| pytest-django's `settings` | `settings` (0.12) |
+| pytest-django's `admin_user`, `django_user_model`; factory_boy's model factories for users | `create_user`, `create_group` (0.12); `client_for(...)` for a new user per client |
+| DRF's `force_authenticate`, `force_login` | `authenticated_as(user)`, `token_for(user)` (0.12) |
+| DRF's `APIClient.credentials` | `client.another(headers)` |
+| Litestar's `create_test_client`, `AsyncTestClient` | `TestClient(app)`, `AsyncTestClient(app)` for any ASGI application |
+| freezegun, time-machine | `freeze_time`, which the application, tokens, and the outbox follow |
+| factory_boy's `Factory`, `Sequence`, `LazyFunction`, `LazyAttribute`, `SubFactory`, `build_batch`, `create_batch` | the same names |
+
+Not given yet, each with what to do meanwhile:
+
+- **Refusing database access a test did not ask for** (pytest-django's
+  `django_db_blocker` and its `db` mark): a test that reaches the
+  database without `db` or a client sees whatever the last test left.
+  Request `db`.
+- **A live server on a port** (`live_server`): for browsers and other
+  processes. Run `uvicorn` in a fixture of your own, on the test
+  database's URL.
+- **A request factory** (Django's `RequestFactory`, DRF's
+  `APIRequestFactory`): call dependencies with the objects tests build,
+  or go through `client`.
+- **factory_boy's `Trait`, `post_generation`, `RelatedFactory`,
+  `SelfAttribute`, `Faker`, `Maybe`, and `stub()`**: use `LazyAttribute`
+  and `SubFactory`, or create the related objects in the test.
+- **Session data helpers** (Litestar's `set_session_data`): log in
+  through `/auth/session`, as a browser does.
+

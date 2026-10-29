@@ -73,6 +73,7 @@ from domainkit_tests.conftest import (
     FAST_HASHER,
     SHOP,
     UseAuth,
+    domain_warnings,
 )
 from domainkit_tests.sample_domains.accounts.models import Account
 from domainkit_tests.sample_domains.members.models import Member
@@ -713,9 +714,9 @@ def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
     use_auth(
         settings=deployed, PASSWORD_HASHERS=hashers, LOGIN_RATE=None, MFA={"RATE": None}
     )
-    unlimited = registry.get_domain_config("auth").deployment_warnings()
+    unlimited = domain_warnings("auth")
     use_auth(settings=deployed, PASSWORD_HASHERS=hashers)
-    limited = registry.get_domain_config("auth").deployment_warnings()
+    limited = domain_warnings("auth")
 
     assert unlimited == [
         (
@@ -749,7 +750,7 @@ def test_deployments_warn_of_attempts_counted_per_process(use_auth: UseAuth) -> 
             REQUIRE_SHARED_THROTTLES=False,
             **auth,
         )
-        found: list[str] = registry.get_domain_config("auth").deployment_warnings()
+        found: list[str] = domain_warnings("auth")
         return [warning for warning in found if "RATE_LIMIT_BACKEND" in warning]
 
     assert warnings() == [
@@ -769,7 +770,7 @@ def test_deployments_warn_of_attempts_counted_per_process(use_auth: UseAuth) -> 
     assert warnings(f"{__name__}.Elsewhere") == []
     assert warnings("nowhere.Backend") == []  # Loading it says what is wrong.
     use_auth(PASSWORD_HASHERS=hashers)
-    assert registry.get_domain_config("auth").deployment_warnings() == []
+    assert domain_warnings("auth") == []
 
 
 class CountsInProcess(MemoryBackend):

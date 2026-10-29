@@ -135,7 +135,7 @@ For every aggregate holding data about the subject:
   audit trail records it, and your handlers can react, say, to purge a
   search index;
 - then every installed domain erases the copies it keeps about the
-  subject outside its aggregates (`DomainConfig.erase_subject`): webhook
+  subject outside its aggregates (its `on_erase_subject` hooks): webhook
   deliveries, kept responses, and dead outbox messages (see the table
   below). Each domain that erased something is recorded, with counts
   only (`privacy.copies_erased`);
@@ -168,19 +168,35 @@ at once; others only expire.
 | Logs, error reports, backups, replicas, exports written to files | Nothing | Your retention of each: name it in your records of processing |
 
 A domain of your own that keeps copies (a search index, a read model, a
-CSV it sends) erases and exports them the same way, on its
-`DomainConfig`:
+CSV it sends) erases and exports them the same way: it registers hooks in
+its `DomainConfig.ready()`, and only the domains that registered are
+called:
 
 ```python
-class SearchConfig(DomainConfig):
-    async def erase_subject(self, subject: str, reason: str) -> dict[str, int]:
-        removed = await index.delete_by_customer(subject)
-        return {"documents": removed}  # counts only: they are audited
+from domainkit.apps import DomainConfig
+from domainkit.apps.hooks import on_erase_subject, on_export_subject
 
-    async def export_subject(self, subject: str) -> dict[str, object]:
-        found = await index.find_by_customer(subject)
-        return {"documents": found} if found else {}
+
+async def erase_documents(subject: str, reason: str) -> dict[str, int]:
+    removed = await index.delete_by_customer(subject)
+    return {"documents": removed}  # counts only: they are audited
+
+
+async def export_documents(subject: str) -> dict[str, object]:
+    found = await index.find_by_customer(subject)
+    return {"documents": found} if found else {}
+
+
+class SearchConfig(DomainConfig):
+    def ready(self) -> None:
+        on_erase_subject(erase_documents)
+        on_export_subject(export_documents)
 ```
+
+A domain's hooks are summed into one record of what it erased, and its
+exports merged under its label. Until 0.12 these were the methods
+`erase_subject` and `export_subject` of `DomainConfig`; an override still
+works, warned of, until 0.13.
 
 Return counts by kind, lower case, whole numbers: anything else is
 refused, since it would go into the audit trail. Count copies left to

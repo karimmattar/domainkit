@@ -1,6 +1,8 @@
 """``DomainConfig``: Django's ``AppConfig`` for a bounded context."""
 
 import re
+import sys
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -10,6 +12,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import BaseModel
 
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
@@ -26,6 +29,23 @@ PACKAGE_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9
 """A dotted package name, as ``domainkit.contrib.messaging``."""
 MAX_REQUIREMENTS: Final = 32
 """The most domains one domain may require."""
+REPLACED_HOOKS: Final = {
+    "startup": "domainkit.apps.hooks.on_startup",
+    "shutdown": "domainkit.apps.hooks.on_shutdown",
+    "check": "domainkit.apps.hooks.on_check",
+    "seed": "domainkit.apps.hooks.on_seed",
+    "erase_subject": "domainkit.apps.hooks.on_erase_subject",
+    "export_subject": "domainkit.apps.hooks.on_export_subject",
+    "check_application": "domainkit.apps.hooks.on_check_application",
+    "deployment_warnings": "domainkit.apps.hooks.on_deployment_warnings",
+    "stage": "domainkit.db.hooks.on_stage",
+    "committed": "domainkit.db.hooks.on_committed",
+    "stage_transaction": "domainkit.db.hooks.on_stage_transaction",
+    "transaction_committed": "domainkit.db.hooks.on_transaction_committed",
+    "migrated": "domainkit.db.hooks.on_migrated",
+}
+"""Each deprecated hook method, and the point a domain registers on instead."""
+HOOKS_REMOVED_IN: Final = "0.13"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,18 +73,21 @@ class Requirement:
 
 
 class DomainConfig:
-    """Describe one installed domain and its lifecycle hooks.
+    """Describe one installed domain: its label, settings, and what it requires.
 
     Each domain package may define exactly one subclass in its ``apps``
-    module; a package without one gets this base class. Override only the
-    hooks the domain needs.
+    module; a package without one gets this base class. ``ready()`` wires
+    the domain, and registers the hooks it has: what it does at startup,
+    on each commit, when a person's data is erased, and the rest
+    (``domainkit.apps.hooks``, ``domainkit.db.hooks``). Only the domains
+    that registered are called.
 
-    A domain that takes part in SQL commits or migrations registers typed
-    hooks in ``ready()`` instead (``domainkit.db.hooks``: ``on_stage``,
-    ``on_committed``, ``on_migrated`` and the rest), and only domains that
-    registered are called. Overriding ``stage``, ``committed``,
-    ``stage_transaction``, ``transaction_committed``, or ``migrated`` still
-    works: the hook points call an overriding method too.
+    ``databases`` and ``holds_table`` answer where the domain's tables are;
+    override them when the defaults are wrong. The other hook methods
+    (``startup``, ``check``, ``stage``, ``erase_subject``, ...; see
+    ``REPLACED_HOOKS``) are deprecated: an override is still called, after
+    the domain's registered hooks, and warned of with
+    ``DomainkitDeprecationWarning`` when the domains load. They go in 0.13.
     """
 
     label: str = ""
@@ -165,15 +188,35 @@ class DomainConfig:
     def ready(self) -> None:
         """Wire the domain once settings are loaded: ORM mappers, event handlers."""
 
+    @warnings.deprecated(
+        "Register with domainkit.apps.hooks.on_startup in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def startup(self) -> None:
         """Open process resources such as clients and pools."""
 
+    @warnings.deprecated(
+        "Register with domainkit.apps.hooks.on_shutdown in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def shutdown(self) -> None:
         """Release resources opened by ``startup``."""
 
+    @warnings.deprecated(
+        "Register with domainkit.apps.hooks.on_check in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def check(self) -> None:
         """Raise when the domain cannot serve traffic (readiness probe)."""
 
+    @warnings.deprecated(
+        "Register with domainkit.db.hooks.on_stage in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def stage(
         self,
         uow: "UnitOfWork",
@@ -185,6 +228,11 @@ class DomainConfig:
         Prefer ``domainkit.db.hooks.on_stage``, typed on the SQL unit of work.
         """
 
+    @warnings.deprecated(
+        "Register with domainkit.db.hooks.on_committed in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def committed(self, uow: "UnitOfWork") -> None:
         """Follow up after a SQL unit of work committed (publish its messages).
 
@@ -192,6 +240,11 @@ class DomainConfig:
         and the unit of work carries on. Prefer ``domainkit.db.hooks.on_committed``.
         """
 
+    @warnings.deprecated(
+        "Register with domainkit.db.hooks.on_stage_transaction in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def stage_transaction(
         self, connection: "AsyncConnection", database: str
     ) -> None:
@@ -204,6 +257,11 @@ class DomainConfig:
         ``domainkit.db.hooks.on_stage_transaction``.
         """
 
+    @warnings.deprecated(
+        "Register with domainkit.db.hooks.on_transaction_committed in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def transaction_committed(self, database: str) -> None:
         """Follow up after such a transaction committed (see ``committed``).
 
@@ -212,6 +270,11 @@ class DomainConfig:
         ``domainkit.db.hooks.on_transaction_committed``.
         """
 
+    @warnings.deprecated(
+        "Register with domainkit.db.hooks.on_migrated in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def migrated(self, connection: "AsyncConnection", database: str) -> None:
         """Fill alias ``database`` after ``migrate`` upgraded it (``post_migrate``).
 
@@ -221,6 +284,11 @@ class DomainConfig:
         ``domainkit.db.hooks.on_migrated``, which is preferred.
         """
 
+    @warnings.deprecated(
+        "Register with domainkit.apps.hooks.on_seed in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def seed(self) -> None:
         """Add the rows a fresh database needs to be useful (``manage.py seed``).
 
@@ -231,6 +299,11 @@ class DomainConfig:
         stay as they are.
         """
 
+    @warnings.deprecated(
+        "Register with domainkit.apps.hooks.on_erase_subject in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
         """Erase what the domain keeps about ``subject`` outside its aggregates.
 
@@ -246,6 +319,11 @@ class DomainConfig:
         """
         return {}
 
+    @warnings.deprecated(
+        "Register with domainkit.apps.hooks.on_export_subject in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     async def export_subject(self, subject: str) -> Mapping[str, object]:
         """What the domain keeps about ``subject`` outside its aggregates, as JSON.
 
@@ -254,6 +332,11 @@ class DomainConfig:
         """
         return {}
 
+    @warnings.deprecated(
+        "Register with domainkit.apps.hooks.on_check_application in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     def check_application(self, app: "FastAPI") -> list[str]:
         """Problems with the built application, such as routes no rule guards.
 
@@ -262,6 +345,11 @@ class DomainConfig:
         """
         return []
 
+    @warnings.deprecated(
+        "Register with domainkit.apps.hooks.on_deployment_warnings in ready(); "
+        "removed in domainkit 0.13.",
+        category=DomainkitDeprecationWarning,
+    )
     def deployment_warnings(self) -> list[str]:
         """Weak but valid choices of this domain's settings where deployed.
 
@@ -287,6 +375,42 @@ class DomainConfig:
         hosting target; apps without tables return none.
         """
         return frozenset({router.target_for(self.label)})
+
+
+def warn_replaced_hooks(config: DomainConfig) -> None:
+    """Warn of each deprecated hook method ``config`` overrides, at its definition.
+
+    The warning names the domain, the method, and the point to register on
+    instead. It is raised at the overriding method's own line (or the top
+    of its module, for a callable that is no function), so the default
+    filter shows it once, and a project's ``filterwarnings`` for its own
+    modules matches it.
+    """
+    for method, point in REPLACED_HOOKS.items():
+        override = getattr(type(config), method)
+        if override is getattr(DomainConfig, method):
+            continue
+        owner = next(cls for cls in type(config).__mro__ if method in vars(cls))
+        message = (
+            f"Domain {config.label!r}: {owner.__qualname__}.{method} is a "
+            f"deprecated hook method; register the function with {point}(...) "
+            f"in ready(), under a name of its own. Hook methods are removed in "
+            f"domainkit {HOOKS_REMOVED_IN}."
+        )
+        module_globals = vars(sys.modules[owner.__module__])
+        # A method's own line; for another callable, the top of its module.
+        code = getattr(override, "__code__", None)
+        warnings.warn_explicit(
+            message,
+            DomainkitDeprecationWarning,
+            code.co_filename
+            if code
+            else module_globals.get("__file__", owner.__module__),
+            code.co_firstlineno if code else 1,
+            module=owner.__module__,
+            registry=module_globals.setdefault("__warningregistry__", {}),
+            module_globals=module_globals,
+        )
 
 
 def _import_domain(name: str) -> ModuleType:

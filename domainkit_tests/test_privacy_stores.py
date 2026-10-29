@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import clock, setup
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import Hook
 from domainkit.conf import override_settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.idempotency.tables import idempotency_keys
@@ -43,6 +44,7 @@ from domainkit.contrib.webhooks.tables import CANCELLED, FAILED, deliveries
 from domainkit.contrib.webhooks.uow import WebhooksUnitOfWork
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
 from domainkit.ddd import DomainEvent, Personal, event_bus
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.management import call_command
@@ -409,12 +411,9 @@ def test_erasures_of_copies_are_audited_without_the_data(scenario: Scenario) -> 
     assert not any(EMAIL in json.dumps(row.details) for row in audited)
 
 
-class Talkative(DomainConfig):
-    """A domain whose erasure hook answers with the data it erased."""
-
-    async def erase_subject(self, subject: str, reason: str) -> dict[str, Any]:
-        """Wrongly return the address."""
-        return {"email": EMAIL}
+async def talkative(subject: str, reason: str) -> dict[str, Any]:
+    """An erasure hook that wrongly answers with the data it erased."""
+    return {"email": EMAIL}
 
 
 @pytest.mark.parametrize(
@@ -425,22 +424,27 @@ def test_hooks_answer_counts_by_kind_or_are_refused(answer: dict[str, Any]) -> N
     """Anything but lower-case kinds and whole numbers could be personal data."""
     from domainkit.contrib.privacy.operations import _counts
 
-    domain = Talkative("talkative", __import__("domainkit_tests"))
+    hook = Hook("talkative", talkative)
 
-    with pytest.raises(ImproperlyConfigured, match="must return counts by kind"):
-        _counts(domain, answer)
-    assert _counts(domain, {"deliveries": 2, "pending": 0}) == {
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^talkative's erase_subject hook talkative must return counts by kind",
+    ):
+        _counts(hook, answer)
+    assert _counts(hook, {"deliveries": 2, "pending": 0}) == {
         "deliveries": 2,
         "pending": 0,
     }
 
 
 def test_domains_keep_no_copies_by_default() -> None:
-    """The base hooks erase and export nothing."""
+    """The deprecated base methods erase and export nothing."""
     domain = DomainConfig("plain", __import__("domainkit_tests"))
 
-    assert run_async(domain.erase_subject("ann", "request")) == {}
-    assert run_async(domain.export_subject("ann")) == {}
+    with pytest.warns(DomainkitDeprecationWarning, match="on_erase_subject"):
+        assert run_async(domain.erase_subject("ann", "request")) == {}
+    with pytest.warns(DomainkitDeprecationWarning, match="on_export_subject"):
+        assert run_async(domain.export_subject("ann")) == {}
 
 
 def test_subject_tags_name_each_subject_once() -> None:

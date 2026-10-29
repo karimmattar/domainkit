@@ -11,7 +11,9 @@ from typing import Any
 
 import pytest
 
+from domainkit import setup
 from domainkit.apps import registry
+from domainkit.apps.hooks import on_deployment_warnings
 from domainkit.architecture import check_domain
 from domainkit.conf import UNSET, override_settings, use_settings
 from domainkit.conf.env import project_prefix
@@ -30,6 +32,22 @@ from domainkit.utils import formatting
 from domainkit_tests.conftest import MakePackage
 from domainkit_tests.test_db import test_metadata
 
+HTTPS_DIRECT = (
+    "  Info: security.I001: HTTPS is not checked: the application serves plain "
+    "HTTP, and TLS must end in front of it. It takes a request's scheme from the "
+    "connection alone (TRUSTED_PROXIES is empty), so every request counts as "
+    "plain HTTP, even one a proxy received over HTTPS.\n"
+    "    Hint: Redirect plain HTTP to HTTPS at the proxy, and keep "
+    "SECURE_HSTS_SECONDS set (docs/security.md, 'The edge').\n"
+)
+"""What ``check`` says of HTTPS where deployed with no trusted proxy."""
+HTTPS_PROXIED = HTTPS_DIRECT.replace(
+    "from the connection alone (TRUSTED_PROXIES is empty), so every request "
+    "counts as plain HTTP, even one a proxy received over HTTPS.",
+    "from the X-Forwarded-Proto header of TRUSTED_PROXIES only, so the proxy "
+    "must set it, over a caller's.",
+)
+"""And behind trusted proxies, which say the scheme."""
 BUILTINS = {
     "addcommand",
     "addevent",
@@ -171,7 +189,8 @@ def test_check_lists_weak_deployment_choices() -> None:
         assert run("check") == (
             "System check identified no issues and 3 warnings (1 silenced). "
             "Domains: alpha.\n"
-            "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
+            + HTTPS_DIRECT
+            + "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
             "/openapi.json to anyone; set it to False unless the API is public.\n"
             "  Warning: security.W002: SECURE_HSTS_SECONDS is 0, so browsers may "
             "still use plain HTTP; set it (31536000 is a year) once HTTPS works "
@@ -196,7 +215,8 @@ def test_check_lists_weak_deployment_choices() -> None:
         assert run("check") == (
             "System check identified no issues and 1 warning (1 silenced). "
             "Domains: alpha.\n"
-            "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
+            + HTTPS_PROXIED
+            + "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
             "/openapi.json to anyone; set it to False unless the API is public.\n"
         )
     with override_settings(**{**hardened, "CACHES": {"default": {}}}):
@@ -280,21 +300,16 @@ def test_check_warns_of_pools_smaller_than_the_requests_admitted() -> None:
         assert pool_sizing_warnings() == []
 
 
-def test_check_lists_the_domains_warnings_too(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_check_lists_the_domains_warnings_too() -> None:
     """Each installed domain may add warnings of its own settings."""
-    from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
-
-    monkeypatch.setattr(
-        AlphaConfig, "deployment_warnings", lambda self: ["ALPHA is weak here."]
-    )
     with override_settings(
         ENVIRONMENT="production",
         API_DOCS=False,
         CACHES=BOUNDED_CACHES,
         SILENCED_CHECKS=["deploy.W005"],
     ):
+        setup()
+        on_deployment_warnings(lambda: ["ALPHA is weak here."], domain="alpha")
         output = run("check")
 
     assert output.startswith(
@@ -378,7 +393,11 @@ def test_reading_needs_no_migrations_directory(migration_project: Path) -> None:
 
 def test_migration_commands(migration_project: Path) -> None:
     """makemigrations, migrate, and --check work together."""
-    with pytest.raises(CommandError, match="have no migration"):
+    with pytest.raises(
+        CommandError,
+        match=r"^Model changes have no migration: default: New upgrade operations "
+        r"detected: \[\('add_table', Table\('framework_test_notes'",
+    ):
         run("makemigrations", "--check")
     assert run("makemigrations", "-m", "notes").startswith("Created ")
     with pytest.raises(CommandError, match=r"Run 'manage\.py migrate' first"):
@@ -716,3 +735,19 @@ def test_startdomain_next_steps_leave_out_what_it_did(tmp_path: Path) -> None:
             '-H "Authorization: Bearer $TOKEN"'
         ),
     ]
+
+
+def test_the_smaller_domain_asks_only_for_the_permissions_it_uses(
+    tmp_path: Path,
+) -> None:
+    """``--minimal`` deletes nothing, so its next steps grant no ``delete_``."""
+    context = startdomain.template_context("invoices", "domains", "Invoice", None)
+
+    output = startdomain._next_steps(
+        context, tmp_path / "p", tmp_path / "t", ["Installed."], minimal=True
+    )
+
+    assert (
+        "  3. Grant invoices.view_invoice (and add_, change_) to the users or "
+        "groups that need them; superusers have them."
+    ) in output.splitlines()

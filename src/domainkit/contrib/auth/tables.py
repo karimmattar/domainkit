@@ -40,7 +40,7 @@ from sqlalchemy.types import TypeDecorator
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.contrib.contenttypes.tables import start_mappers as start_content_types
-from domainkit.db import UTCDateTime, map_imperatively, metadata
+from domainkit.db import UTCDateTime, ValueObjectType, map_imperatively, metadata
 
 from .exceptions import GroupNameTaken, UsernameTaken
 from .models import (
@@ -55,23 +55,54 @@ from .models import (
 from .tokens import AuthToken
 
 
-class PasswordHashType(TypeDecorator[PasswordHash]):
-    """Store a ``PasswordHash`` as text."""
+class PasswordHashType(ValueObjectType[PasswordHash]):
+    """Store a ``PasswordHash`` as text.
 
-    impl = String(255)
+    A single-field value object's column, so fixtures write the hash as the
+    text it is stored as, and read it back through ``PasswordHash``, which
+    refuses anything that is not a hash.
+    """
+
     cache_ok = True
 
-    def process_bind_param(
-        self, value: PasswordHash | None, dialect: Dialect
-    ) -> str | None:
-        """Unwrap the value object."""
-        return None if value is None else value.value
+    def __init__(self, length: int = 255) -> None:
+        """Hold hashes of up to ``length`` characters."""
+        super().__init__(PasswordHash, String(length))
+        self.length = length
 
-    def process_result_value(
-        self, value: str | None, dialect: Dialect
-    ) -> PasswordHash | None:
-        """Wrap the stored text."""
-        return None if value is None else PasswordHash(value)
+    def __repr__(self) -> str:
+        """``PasswordHashType(length=255)``, as migrations have it."""
+        return f"PasswordHashType(length={self.length})"
+
+    def loaded(self, value: object) -> PasswordHash:
+        """A fixture's hash, if ``AUTH.PASSWORD_HASHERS`` would make it so.
+
+        A hash no configured hasher identifies (a password kept in clear,
+        ``plaintext$...``), or one it would make again more strongly (the
+        test hasher's single iteration, under production's), is refused:
+        either is a password a copy of the table gives up. An unusable
+        password is kept (SEC-12a-3).
+
+        Raises:
+            ValueError: Not a hash at all.
+            FixtureError: No configured hasher would make it.
+        """
+        from domainkit.db.fixtures import FixtureError
+
+        from .hashers import identify_hasher
+
+        hashed = PasswordHash(value)  # type: ignore[arg-type]
+        if not hashed.usable:
+            return hashed
+        try:
+            weaker = identify_hasher(hashed.value).must_update(hashed.value)
+        except ValueError:
+            raise FixtureError("no hasher of AUTH.PASSWORD_HASHERS made it") from None
+        if weaker:
+            raise FixtureError(
+                "AUTH.PASSWORD_HASHERS would make it again, more strongly"
+            )
+        return hashed
 
 
 class ScopesType(TypeDecorator[frozenset[str]]):

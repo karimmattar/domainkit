@@ -584,6 +584,14 @@ The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
 They count requests, passwords, and codes in Redis, from `REDIS_URL`.
 
+There `check` also says, as `security.I001` (information: never a
+failure, nothing to silence), what it cannot check: HTTPS. The
+application serves plain HTTP, and TLS ends in front of it, where no
+setting reaches. The line names where a request's scheme comes from: the
+`PROXY_SCHEME_HEADER` of `TRUSTED_PROXIES`, which the proxy must set over
+a caller's, or the connection alone, where every request counts as plain
+HTTP ([security.md](security.md), "The edge").
+
 ## Middleware
 
 The order matters; this is the order to keep, outermost first. The project
@@ -606,7 +614,7 @@ idempotency, or debug toolbar middleware), and `DEFAULT_MIDDLEWARE` eight
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64), worked out once per request and remembered for the latest 4,096 addresses. A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
 | `domainkit.http.websockets.WebSocketLimitsMiddleware` | Caps open WebSockets per process and per caller, queues what they send, limits their messages, closes idle and old ones, and re-checks their credentials and rules ([live.md](live.md)). After the two above, so it counts users and only handshakes the rate limit let through. |
 | `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE`, or a route's own `body_limit`, with 413 as they arrive, and bodies slower than `REQUEST_BODY_TIMEOUT` with 408; closes WebSockets with 1009 on a larger message. |
-| `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
+| `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. Holds a keyed request's body, and a response it keeps, in memory up to `IDEMPOTENCY.SPOOL_BYTES` (1 MiB), past them in a temporary file ([idempotency.md](contrib/idempotency.md)). |
 | `domainkit.debug.DebugToolbarMiddleware` | Development only: times each request's SQL, from where it is listed inwards (see [Debug toolbar](#debug-toolbar)). |
 
 The application also wraps its routes in a middleware of its own,
@@ -1041,7 +1049,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
-| `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir`, `--manual` | Generate a bounded context and its tests ([resources.md](resources.md#generators)). In a project laid out as `init` makes it, it also adds the domain to `INSTALLED_DOMAINS` and mounts its router; `--manual`, or a layout it does not recognise, prints those steps instead. Its next steps end with a login and a first `curl` of the resource, at `/api/v1/<name>/<plural>`. |
+| `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir`, `--manual`, `--minimal` | Generate a bounded context and its tests ([resources.md](resources.md#generators)); `--minimal`, a smaller one: an aggregate with a name, create and rename, a table, a resource, and two tests. In a project laid out as `init` makes it, it also adds the domain to `INSTALLED_DOMAINS` and mounts its router; `--manual`, or a layout it does not recognise, prints those steps instead. Its next steps end with a login and a first `curl` of the resource, at `/api/v1/<name>/<plural>`. |
 | `startaggregate` | `domain`, `aggregate`, `--field name:kind[:options][?]`, `--plural`, `--parent`, `--tests-dir` | Add an aggregate to a domain: model, events, commands, use cases, table, repository, resource, fakes, and tests. `--help` lists the field kinds. |
 | `addcommand` | `domain`, `aggregate`, `command`, `--field`, `--event`, `--plural`, `--parent`, `--tests-dir` | Add a task command: the aggregate's method and event, the command, its use case, its route, and tests. |
 | `addquery` | `domain`, `aggregate`, `query`, `--by`, `--path`, `--plural`, `--parent`, `--tests-dir` | Add a query that finds aggregates by fields: the message and handler (`application/queries.py`), its route, and tests. |
@@ -1055,10 +1063,10 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
-| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
+| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent`, `--include-guarded`, `--operator` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
 | `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force`, `--replace`, `--include-guarded`, `--operator` | Load fixtures, saying first what each table gets and how many of its rows are stored already. A row whose primary key is stored is refused without `--replace`; a fixture that writes a guarded table (users, permissions, grants, ...) without `--include-guarded` ([guarded tables](#data-fixtures-flush-and-seeds)). Staging and production refuse without `--force` and a named operator. Each load is audited with its tables and the fixture's SHA-256 ([operators](#operators)). |
 | `flush` | `--database`, `--dry-run`, `--force`, `--include-guarded`, `--operator` | Delete every row but the audit trail's and, without `--include-guarded`, the guarded tables', saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force` and a named operator. Audited, with its tables ([operators](#operators)). |
-| `seed` | `[LABEL ...]` | Run installed domains' `DomainConfig.seed` hooks, in `INSTALLED_DOMAINS` order. |
+| `seed` | `[LABEL ...]` | Run installed domains' `on_seed` hooks, in `INSTALLED_DOMAINS` order. |
 | `openapi` | `--output`, `--indent`, `--diff OLD` | Print or write the OpenAPI schema; `--diff` lists breaking changes since `OLD` and exits 1 if any (see [The API surface](#the-api-surface)). |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
 | `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked), or cancel a message no worker runs; retries and cancels are audited (messaging; [operators](#operators)). |
@@ -1084,6 +1092,7 @@ Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
 `auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
+`dumpdata --include-guarded`, which copies credentials out (0.12);
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
 `addcertificate`, `cleartokens`, `flags`, and `webhooks`. Their listings
@@ -1112,8 +1121,8 @@ sources are recorded as `operator_source` `system`, so the trail shows
 that nobody gave a name; and in a container that runs as `root` or `app`,
 or under a uid, they name nobody: set `DOMAINKIT_OPERATOR` from your
 access tooling, or pass `--operator`. In staging and production
-`loaddata` and `flush` need a name from one of the first two (0.11); the
-other commands keep running unattended. Prefer a staff id or handle to an
+`loaddata` and `flush` need a name from one of the first two (0.11), and
+so does `dumpdata --include-guarded` (0.12); the other commands keep running unattended. Prefer a staff id or handle to an
 email address: the trail keeps what it is given for good. The name is what
 the operator says: it attributes an action, it does not authenticate
 anyone, so keep who can run `manage.py` against production as narrow as
@@ -1149,7 +1158,14 @@ A fixture is one JSON document, its tables parents first:
 ```
 
 Numbers and text are written as they are; decimals, times, durations, ids,
-and enums as text; bytes as base64; JSON columns as JSON. `loaddata`
+and enums as text; bytes as base64; JSON columns as JSON; a single-field
+value object (a password hash, a project's `ProductName`) as its field,
+which loading makes into the object again, so the object's own checks
+refuse what it would not hold. A password hash loads only if a hasher of
+`AUTH.PASSWORD_HASHERS` made it and would not make it again more strongly:
+a password in clear, or the test hasher's single iteration under
+production's hashers, is refused. Fixtures from 0.11, which wrote such an
+object as `{"value": ...}`, load the same. `loaddata`
 converts each value back by its column's type, and refuses one that does
 not fit without quoting it. A number with a fraction reaches a decimal
 column with every digit, as written (`1234567890123456.78`), never through
@@ -1158,7 +1174,10 @@ and on PostgreSQL serial ids then continue after the highest one loaded.
 
 A load only adds rows: a row whose primary key is stored refuses the
 whole fixture, before anything is written, unless `--replace` is given,
-and then it replaces the stored row. A row that replaces another bypasses
+and then it replaces the stored row. The load holds its tables' write
+lock while it counts and writes (`SHARE ROW EXCLUSIVE` on PostgreSQL,
+`BEGIN IMMEDIATE` on SQLite), so its record (`operator.loaddata`) holds
+the rows it replaced, a row stored since the plan was printed included. A row that replaces another bypasses
 the aggregate's version, its rules, and its events: keep `--replace` for
 development data.
 
@@ -1169,7 +1188,16 @@ them), object grants, and dynamic settings (which may be secret), and any
 table with `info={"guarded": True}`. A row added there is a login or a
 privilege, so `loaddata` refuses a fixture that writes one unless
 `--include-guarded` is given, and `flush` keeps them, and every table they
-reference, unless it is given. The audit trail is never loaded or
+reference, unless it is given. `dumpdata` leaves them out of a dump of
+every table, and says so on standard error, and refuses a table or domain
+named that holds one, unless `--include-guarded` is given: a dump of
+users holds their password hashes. A dump with guarded tables is recorded
+(`operator.dumpdata`: the tables, their row counts, and the SHA-256 of
+what was written), and in staging and production needs an operator named
+by `--operator` or `DOMAINKIT_OPERATOR`. So does, in staging and
+production, a dump of a table whose model has fields marked `Personal`,
+recorded with those tables (`personal_tables`), as `privacy export` of one
+person is recorded: it copies everyone out. The audit trail is never loaded or
 flushed, guarded or not. A kept table whose rows are about other tables'
 objects names the column of their model key (`info={"about_model":
 "content_type"}`, as object grants do): `flush` deletes its rows about
@@ -1197,7 +1225,8 @@ Serial ids start again on PostgreSQL.
 Each command works on one alias (`--database`, default `default`), as the
 schema owner (`MIGRATION_URL` when set).
 
-`seed` calls each installed domain's `async DomainConfig.seed()`: sample
+`seed` runs the `async` hooks installed domains registered with
+`domainkit.apps.hooks.on_seed` in `ready()`: sample
 data for development, or defaults a deployment starts with. Write rows
 through the domain's units of work, and make a second run harmless.
 
@@ -1238,22 +1267,22 @@ revision: the test database migrates up, down, and up again.
 | A bounded context | a package with `apps.py` (`DomainConfig`) | `INSTALLED_DOMAINS` |
 | Domain settings | a Pydantic model | `DomainConfig.settings_class` |
 | Domains a domain cannot work without | `DomainConfig.requires`: package names, or `apps.Requirement(name, reason)` | (checked by `setup()` before any `ready()`; a missing one is refused by name) |
-| Startup wiring | `DomainConfig.ready()` | (called by `setup()`) |
-| Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
-| A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
-| A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems, best as `domainkit.checks.CheckMessage("<label>.E001", ...)` | (called when the app is built and by `check`; staging and production refuse to start with any) |
-| Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production), best as `CheckMessage("<label>.W001", ...)`, which `SILENCED_CHECKS` can name | (listed by `check` after the framework's own) |
+| Startup wiring, and the hooks a domain has | `DomainConfig.ready()` | (called by `setup()`; a hook is registered there, `on_<method>(function)`, and checked against the point: its arguments, and whether it is awaited; a mistake fails `setup()`, naming the domain) |
+| Process resources (clients, pools) | `async def hook()` | `domainkit.apps.hooks.on_startup(hook)` / `on_shutdown(hook)` in `ready()` (called by the app lifespan, a domain's shutdown hooks once all its startup hooks ran; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
+| A readiness check | `async def hook()`, raising when the domain cannot serve | `on_check(hook)` in `ready()` (called by `/ready`; a domain's checks in turn, within `READINESS_TIMEOUT` together) |
+| A check of the built application (routes, middleware) | `def hook(app)`, returning problems, best as `domainkit.checks.CheckMessage("<label>.E001", ...)` | `on_check_application(hook)` in `ready()` (called when the app is built and by `check`; staging and production refuse to start with any) |
+| Warnings about a domain's weak settings where deployed | `def hook()`, returning warnings (none outside staging and production), best as `CheckMessage("<label>.W001", ...)`, which `SILENCED_CHECKS` can name | `on_deployment_warnings(hook)` in `ready()` (listed by `check` after the framework's own) |
 | Work staged with each commit | `async def hook(uow, events, tasks)`, typed on `SqlAlchemyUnitOfWork` | `domainkit.db.hooks.on_stage(hook)` in `ready()` (called by the unit of work; only domains that registered are called) |
 | Work after each commit | `async def hook(uow)` | `on_committed(hook)` in `ready()` (called by the unit of work; failures are reported, never raised) |
 | The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` in `ready()` (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
 | Rows after each `migrate` (`post_migrate`) | `async def hook(connection, database)` | `on_migrated(hook)` in `ready()` (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
-| The same hooks, as methods (0.9) | `DomainConfig.stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated` | (an overriding method is still called, after the domain's registered hooks; [ADR 0085](adr/0085-register-hooks-by-type-for-the-domains-that-have-them.md)) |
-| Another hook point an app offers others | `domainkit.apps.hooks.HookPoint(name, method=...)` | (domains call it with a function in `ready()`; the app iterates it) |
+| The same hooks, as methods (deprecated, removed in 0.13) | `DomainConfig.startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated` | (an overriding method is still called, after the domain's registered hooks, and warned of with `DomainkitDeprecationWarning` when the domains load; [ADR 0101](adr/0101-register-every-domain-hook-and-check-it-when-it-registers.md)) |
+| Another hook point an app offers others | `domainkit.apps.hooks.HookPoint(name, arguments=..., awaited=...)` | (domains call it with a function in `ready()`, checked against `arguments` and `awaited` when given; the app iterates it) |
 | A scaffolding command | `management.generators.Generator` (`plan`, then `apply`), or `AggregateGenerator` for one that adds to an aggregate | a domain's `management/commands/` |
-| Sample or default data | `async DomainConfig.seed()` | (called by `seed`, in `INSTALLED_DOMAINS` order) |
+| Sample or default data | `async def hook()` | `on_seed(hook)` in `ready()` (called by `seed`, in `INSTALLED_DOMAINS` order) |
 | How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |
 | Erasing a personal field no default fits | `erase_personal_data(fields)` on the aggregate | (called by `privacy erase` and retention erasure) |
-| Erasing, and exporting, a person's data a domain keeps outside its aggregates (copies in deliveries, kept responses, queues) | `async DomainConfig.erase_subject(subject, reason)`, returning counts by kind; `async DomainConfig.export_subject(subject)`, returning JSON-ready data | (called on every installed domain by `privacy erase` and `privacy export`; the counts are audited; see [privacy.md](privacy.md#what-erasure-reaches-and-when)) |
+| Erasing, and exporting, a person's data a domain keeps outside its aggregates (copies in deliveries, kept responses, queues) | `async def erase(subject, reason)`, returning counts by kind; `async def export(subject)`, returning JSON-ready data | `on_erase_subject(erase)` / `on_export_subject(export)` in `ready()` (called by `privacy erase` and `privacy export`; the counts are audited; see [privacy.md](privacy.md#what-erasure-reaches-and-when)) |
 | How errors name a column | `info={"field": "<API name>"}` on the `Column` | (read by unique, foreign key, NOT NULL, and CHECK errors) |
 | A table fixtures or `flush` leave alone | `info={"fixtures": False}`, `{"flush": False}`, or `{"append_only": True}` on the `Table`; `{"guarded": True}` for one only `--include-guarded` reaches | (read by `dumpdata`, `loaddata`, and `flush`) |
 | A deprecated route or version | `Depends(Deprecation(...))`, `versioned_router(...)` | `domainkit.http.versioning` |

@@ -365,26 +365,31 @@ BLOCKING_TESTS = """
 
     @pytest.mark.anyio
     async def test_blocks():
-        time.sleep(0.25)
+        time.sleep(0.15)
 
     @pytest.mark.anyio
     async def test_blocks_and_fails():
-        time.sleep(0.25)
+        time.sleep(0.15)
         assert False, "its own failure"
 
     @pytest.mark.anyio
     async def test_waits():
         import asyncio
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.15)
 
     def test_sync():
-        time.sleep(0.25)
+        time.sleep(0.15)
 """
 
 
 @pytest.fixture
 def blocking_tests(pytester: pytest.Pytester) -> pytest.Pytester:
-    """Tests that hold their loop, that fail, that wait, and that are sync."""
+    """Tests that hold their loop, that fail, that wait, and that are sync.
+
+    Each takes 0.15 seconds, half again the 0.1 the detector reports: a
+    sleep only ever runs longer. At 0.25 seconds each, the nested sessions
+    were most of the plugin's tests' time (TEST-09).
+    """
     pytester.makepyfile(test_loops=BLOCKING_TESTS)
     return pytester
 

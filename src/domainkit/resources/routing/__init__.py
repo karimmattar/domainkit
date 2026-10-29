@@ -366,6 +366,7 @@ class ResourceRouter(APIRouter):
         summary: str | None = None,
         provide: Mapping[str, Callable[..., object]] | None = None,
         body_limit: int | None = None,
+        retry: Retry | None = None,
     ) -> None:
         """Add ``POST <path>``: ``command`` for each of many items, ``207``.
 
@@ -379,6 +380,15 @@ class ResourceRouter(APIRouter):
         answer ``204`` per item unless ``returns`` says otherwise.
         ``body_limit`` holds its bodies to that many bytes (default: the
         resource's for batches, else ``MAX_REQUEST_BODY_SIZE``).
+
+        ``retry`` runs work that lost a race again, as a command route's
+        does (``UnitOfWork.run``): without ``atomic``, the item that lost,
+        its reach check and ``If-Match`` made again; with ``atomic``, the
+        whole batch, in a new transaction, since the race ended the one it
+        ran in. Once the runs are spent, the item answers as without
+        ``retry`` (``503 database_busy``). Declare it as for a command
+        route: for services that change nothing outside their unit of
+        work, on one whose isolation can fail or whose locks can deadlock.
 
         Raises:
             TypeError: The path, the bound, or the body does not fit the command.
@@ -397,6 +407,7 @@ class ResourceRouter(APIRouter):
             summary=summary,
             provide=provide,
             body_limit=body_limit,
+            retry=retry,
         ).declare()
 
     def query_route(

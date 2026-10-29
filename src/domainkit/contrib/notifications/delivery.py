@@ -12,8 +12,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 from domainkit.apps import registry
 from domainkit.contrib.messaging import enqueue
-from domainkit.exceptions import ImproperlyConfigured
-from domainkit.utils.module_loading import import_string
+from domainkit.utils.delivery import load_backend
 
 from .backends import PushBackend, SmsBackend
 from .messages import PushMessage, SmsMessage
@@ -33,31 +32,15 @@ def notifications_settings() -> NotificationsSettings:
 
 def get_sms_backend() -> SmsBackend:
     """A new instance of ``NOTIFICATIONS.SMS_BACKEND``."""
-    return cast(SmsBackend, _load("SMS_BACKEND", SmsBackend))
+    path = notifications_settings().SMS_BACKEND
+    return cast(SmsBackend, load_backend("NOTIFICATIONS.SMS_BACKEND", path, SmsBackend))
 
 
 def get_push_backend() -> PushBackend:
     """A new instance of ``NOTIFICATIONS.PUSH_BACKEND``."""
-    return cast(PushBackend, _load("PUSH_BACKEND", PushBackend))
-
-
-def _load(setting: str, base: type) -> object:
-    """Instantiate the class ``NOTIFICATIONS.<setting>`` names.
-
-    Raises:
-        ImproperlyConfigured: The path names no subclass of ``base``.
-    """
-    path: str = getattr(notifications_settings(), setting)
-    try:
-        backend = import_string(path)
-    except ImportError as exc:
-        raise ImproperlyConfigured(f"NOTIFICATIONS.{setting}: {exc}") from exc
-    if not (isinstance(backend, type) and issubclass(backend, base)):
-        raise ImproperlyConfigured(
-            f"NOTIFICATIONS.{setting}: {path!r} is not a {base.__name__}."
-        )
-    instance: object = backend()
-    return instance
+    path = notifications_settings().PUSH_BACKEND
+    backend = load_backend("NOTIFICATIONS.PUSH_BACKEND", path, PushBackend)
+    return cast(PushBackend, backend)
 
 
 async def queue_sms(message: SmsMessage, uow: "UnitOfWork | None" = None) -> SmsMessage:

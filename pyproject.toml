@@ -1,6 +1,6 @@
 [project]
 name = "domainkit"
-version = "0.11.2"
+version = "0.12.0"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
 license = "MIT"
@@ -227,6 +227,9 @@ pythonpath = ["."]
 # pytester: the testing plugin is checked by running a pytest session in a test.
 addopts = "-ra --strict-markers --strict-config -p pytester"
 filterwarnings = ["error"]
+markers = [
+    "reads_own_source: reads domainkit's source text, the frames of its calls, or the modules importing it loads, which mutmut rewrites; mutation runs leave it out",
+]
 # The slowest test takes seconds; one that runs two minutes hangs. The thread
 # method stops even a hang inside C code or another thread: it prints every
 # thread's stack, the hung test's among them, and ends the run.
@@ -270,6 +273,11 @@ also_copy = [
     "mkdocs.yml",
 ]
 pytest_add_cli_args_test_selection = ["domainkit_tests/", "-p", "no:randomly"]
+# Tests that read domainkit's source, or the frames of its calls, fail on
+# mutmut's copy, which adds a trampoline to every function: before any
+# mutant, in the stats run, which stopped every shard. They run in the test
+# jobs; mutants are left to the tests of behaviour (ADR 0106).
+pytest_add_cli_args = ["-m", "not reads_own_source"]
 # Fork from a clean server: children forked after the suite ran hang on
 # database tests, which mutmut would count as killed by timeout.
 process_isolation = "forkserver"

@@ -3,7 +3,7 @@
 Each operation is recorded in the audit trail (``privacy.export``,
 ``privacy.erase``, ``privacy.purge``), attributed to the actor of the
 context it runs in (``system`` from a command). An erasure also records
-what each domain's ``erase_subject`` hook did to the copies it keeps
+what each domain's ``on_erase_subject`` hooks did to the copies it keeps
 (``privacy.copies_erased``).
 """
 
@@ -13,6 +13,8 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from itertools import groupby
+from operator import attrgetter
 from typing import Any, Final
 
 from sqlalchemy import (
@@ -29,7 +31,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import clock
-from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import Hook, on_erase_subject, on_export_subject
 from domainkit.contrib.audit import Outcome, forget, record
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
 from domainkit.exceptions import ImproperlyConfigured
@@ -61,7 +63,7 @@ _NO_MATCH: Final = object()
 _KINDS: Final = (uuid.UUID, int)
 """Column types a subject is read as; columns of other types compare it as text."""
 _COUNTED: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
-"""A kind of copy a domain's ``erase_subject`` counts: ``deliveries``."""
+"""A kind of copy a domain's ``on_erase_subject`` hook counts: ``deliveries``."""
 
 
 def check_subject(subject: str) -> str:
@@ -107,7 +109,7 @@ async def export_subject(subject: str) -> dict[str, Any]:
 
     Grouped by domain and model; each record has the aggregate's id and
     its fields about the subject. Under ``copies``, what each domain's
-    ``export_subject`` hook gives, by its label: the copies it keeps
+    ``on_export_subject`` hooks give, by its label: the copies it keeps
     outside aggregates (webhook deliveries, kept responses, queued
     arguments). The export is recorded in the audit trail, with how many
     records it holds and which domains gave copies.
@@ -138,10 +140,10 @@ async def export_subject(subject: str) -> dict[str, Any]:
     count = sum(
         len(records) for models in domains.values() for records in models.values()
     )
-    copies = {}
-    for domain in registry:
-        if kept := await domain.export_subject(subject):
-            copies[domain.label] = dict(kept)
+    copies: dict[str, dict[str, object]] = {}
+    for hook in on_export_subject:
+        if kept := await hook.call(subject):
+            _merge(copies.setdefault(hook.domain, {}), kept)
     await record("privacy.export", target=subject, records=count, copies=sorted(copies))
     return {
         "subject": subject,
@@ -168,7 +170,7 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     says (see ``models``), and committed with a ``PersonalDataErased``
     event, so its version, the audit trail, and event handlers see the
     change. Aggregates already erased are left alone, so running it again
-    is harmless. Then each installed domain's ``erase_subject`` hook erases
+    is harmless. Then each installed domain's ``on_erase_subject`` hooks erase
     the copies it keeps, and what it did is recorded
     (``privacy.copies_erased``, counts only). The subject's keys in the
     audit trail are then forgotten, and the erasure recorded.
@@ -193,13 +195,16 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
                     model, alias, model.columns[of] == value, fields, reason
                 )
                 erased += changed
-    for domain in registry:
-        done = _counts(domain, await domain.erase_subject(subject, reason))
+    for domain, hooks in groupby(on_erase_subject, key=attrgetter("domain")):
+        done: dict[str, int] = {}
+        for hook in hooks:
+            for kind, count in _counts(hook, await hook.call(subject, reason)).items():
+                done[kind] = done.get(kind, 0) + count
         if any(done.values()):
             await record(
                 "privacy.copies_erased",
                 target=subject,
-                domain=domain.label,
+                domain=domain,
                 copies=done,
                 reason=reason,
             )
@@ -207,7 +212,7 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
             logger.warning(
                 "%s keeps %d cop%s of a subject's data still to finish (queued "
                 "work); they are erased once it ends: erase the subject again then",
-                domain.label,
+                domain,
                 done["pending"],
                 "y" if done["pending"] == 1 else "ies",
             )
@@ -216,7 +221,31 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     return erased
 
 
-def _counts(domain: DomainConfig, done: Mapping[str, int]) -> dict[str, int]:
+def _merge(copies: dict[str, object], kept: Mapping[str, object]) -> None:
+    """Add what one export hook ``kept`` to its domain's ``copies``, losing nothing.
+
+    Two hooks that name the same kind both give copies of it: their values
+    are listed together (a list's items, or the value itself), as the
+    erasure of that kind sums both hooks' counts.
+    """
+    for kind, value in kept.items():
+        if kind in copies:
+            copies[kind] = [*_listed(copies[kind]), *_listed(value)]
+        else:
+            copies[kind] = value
+
+
+def _listed(value: object) -> list[object]:
+    """``value``'s items if it is a list, else ``value`` alone."""
+    return list(value) if isinstance(value, list) else [value]
+
+
+def _name(call: object) -> str:
+    """How an error names a hook's function."""
+    return getattr(call, "__qualname__", None) or repr(call)
+
+
+def _counts(hook: Hook[Any], done: Mapping[str, int]) -> dict[str, int]:
     """``done``, if it is counts by kind: what may go into the audit trail.
 
     Raises:
@@ -231,9 +260,9 @@ def _counts(domain: DomainConfig, done: Mapping[str, int]) -> dict[str, int]:
             and count >= 0
         ):
             raise ImproperlyConfigured(
-                f"{type(domain).__qualname__}.erase_subject must return counts by "
-                "kind, such as {'deliveries': 2}: lower-case names and whole "
-                "numbers, which are audited."
+                f"{hook.domain}'s erase_subject hook {_name(hook.call)} must "
+                "return counts by kind, such as {'deliveries': 2}: lower-case "
+                "names and whole numbers, which are audited."
             )
     return dict(done)
 

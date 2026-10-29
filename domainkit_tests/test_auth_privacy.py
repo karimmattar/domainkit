@@ -165,7 +165,9 @@ def test_fixtures_hold_no_secret_and_no_one_time_state(
     assert rows(recovery_codes)
     assert len(rows(pending_signups)) == 1
 
-    raw = run("dumpdata")
+    # Users are guarded since 0.12: dumped only on purpose, and even then
+    # without anyone's state.
+    raw = run("dumpdata", "--include-guarded")
 
     names = {entry["table"] for entry in json.loads(raw)["tables"]}
     assert users.name in names

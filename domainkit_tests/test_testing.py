@@ -435,7 +435,10 @@ def test_clients_for_users_share_the_clients_event_loop(
 def test_the_clock_freezes_until_the_test_ends(
     auth_project: str, prefix: str, pytester: pytest.Pytester
 ) -> None:
-    """``freeze_time`` reaches the application, then lets go after the test."""
+    """``freeze_time`` reaches the application, then lets go after the test.
+
+    So do the changes of the ``settings`` fixture.
+    """
     pytester.makepyfile(
         test_frozen="""
         from datetime import UTC, datetime, timedelta
@@ -443,10 +446,13 @@ def test_the_clock_freezes_until_the_test_ends(
         import pytest
 
         from domainkit import clock
+        from domainkit.conf import settings as current
 
         NEW_YEAR = datetime(2030, 1, 1, tzinfo=UTC)
 
-        def test_sync(freeze_time, client_for):
+        def test_sync(freeze_time, client_for, settings):
+            settings.SHUTDOWN_TIMEOUT = 3
+            assert current.SHUTDOWN_TIMEOUT == 3
             frozen = freeze_time("2030-01-01")
             viewer = client_for("shop.view_product")
             assert clock.now() == NEW_YEAR
@@ -466,6 +472,7 @@ def test_the_clock_freezes_until_the_test_ends(
 
         def test_after():
             assert clock.frozen() is None
+            assert current.SHUTDOWN_TIMEOUT == 15
 
         @pytest.mark.anyio
         async def test_after_in_a_task():

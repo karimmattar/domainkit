@@ -1,0 +1,70 @@
+"""In-memory adapters, and examples: test the domain without a database.
+
+``new_<name>()`` is a valid aggregate and ``new_<name>_request()`` a valid
+body to create one; the generators' tests start from them.
+"""
+
+from gen.notes.application.unit_of_work import NotesUnitOfWork
+from gen.notes.domain.model import (
+    Label,
+    LabelId,
+    LabelRepository,
+    Note,
+    NoteId,
+    NoteRepository,
+)
+
+from domainkit.ddd import EventBus, InMemoryRepository
+
+
+class InMemoryNoteRepository(InMemoryRepository[Note, NoteId], NoteRepository):
+    """Dictionary-backed ``NoteRepository``; it answers queries as SQL does."""
+
+
+class InMemoryLabelRepository(InMemoryRepository[Label, LabelId], LabelRepository):
+    """Dictionary-backed ``LabelRepository``; it answers queries as SQL does."""
+
+
+class FakeNotesUnitOfWork(NotesUnitOfWork):
+    """Unit of work that records commits instead of writing anywhere."""
+
+    notes: InMemoryNoteRepository
+    labels: InMemoryLabelRepository
+
+    def __init__(self, events: EventBus | None = None) -> None:
+        """Start empty; publish to ``events`` (a private bus in tests)."""
+        super().__init__(events=events or EventBus())
+        self.notes = InMemoryNoteRepository()
+        self.commits = 0
+        self.labels = InMemoryLabelRepository()
+
+    async def _commit(self) -> None:
+        """Count the commit."""
+        self.commits += 1
+
+    async def _rollback(self) -> None:
+        """Nothing to undo: the repositories are the state."""
+
+
+def new_note() -> Note:
+    """A valid note, its events taken: tests start from it."""
+    note = Note.create("First")
+    note.pull_events()
+    return note
+
+
+def new_note_request() -> dict[str, object]:
+    """A valid body of ``POST /notes``."""
+    return {"name": "First"}
+
+
+def new_label() -> Label:
+    """A valid label, its creation event taken: tests start from it."""
+    label = Label.create(title="text")
+    label.pull_events()
+    return label
+
+
+def new_label_request() -> dict[str, object]:
+    """A valid body of ``POST /labels``."""
+    return {"title": "text"}

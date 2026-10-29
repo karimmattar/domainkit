@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any, Self
 from starlette.requests import HTTPConnection
 
 from domainkit.ddd.exceptions import PermissionDenied
-from domainkit.ddd.preconditions import expect_version
 from domainkit.ddd.query import CriteriaLike, F, Selection
 from domainkit.ddd.repository import Repository
 from domainkit.ddd.uow import UnitOfWork
@@ -255,7 +254,7 @@ async def conditionally[T](
         return await change()
     id_ = context.ids[router.lookup]
     model = router.model
-    with expect_version(model, id_, expected_versions(header)) as expected:
+    with context.uow.expect(model, id_, expected_versions(header)) as expected:
         result = await change()
     if not expected.checked:
         raise RuntimeError(

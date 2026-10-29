@@ -1,0 +1,38 @@
+"""Requests to change notes, built by the API from validated input."""
+
+from datetime import datetime
+from uuid import UUID
+
+from domainkit.ddd import Command
+
+
+class CreateNote(Command):
+    """Create a note called ``name``."""
+
+    name: str
+
+
+class RenameNote(Command):
+    """Give a note another name."""
+
+    note_id: UUID
+    name: str
+
+
+class PinNote(Command):
+    """Pin a note."""
+
+    note_id: UUID
+    at: datetime
+
+
+class CreateLabel(Command):
+    """Create a label."""
+
+    title: str
+
+
+class DeleteLabel(Command):
+    """Delete a label."""
+
+    label_id: UUID

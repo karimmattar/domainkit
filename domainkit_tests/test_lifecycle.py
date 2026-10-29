@@ -11,8 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from domainkit import lifecycle
+from domainkit import lifecycle, setup
 from domainkit.apps import DomainRegistry
+from domainkit.apps.hooks import on_shutdown
 from domainkit.broker import brokers
 from domainkit.broker.handler import BrokerHandler
 from domainkit.cache import CacheHandler, DummyStore
@@ -450,8 +451,10 @@ def test_the_old_tables_are_views_of_the_one_table() -> None:
         "caches": cache_handler.close_all,
         "HTTP clients": lifecycle.close_http_clients,
         "databases": connections.close_all,
-        "ledgers": ledgers.close_all,
-        "brokers": brokers.close_all,
+        # Looked up in sys.modules, not imported: a process that uses no
+        # ledger or broker never loads one (PERF-15).
+        "ledgers": lifecycle.close_ledgers,
+        "brokers": lifecycle.close_brokers,
     }
     flushes = ["held-back log lines", "error reports", "logs"]
     assert list(lifecycle._flushes()) == flushes
@@ -480,9 +483,8 @@ def test_the_application_shuts_down_domains_first(
     """Domain hooks, then the phases of ``close_resources``."""
     closed: list[str] = []
     record_closes(monkeypatch, closed)
-    monkeypatch.setattr(
-        AlphaConfig, "shutdown", lambda self: _note(closed, "alpha shutdown")
-    )
+    setup()
+    on_shutdown(partial(_note, closed, "alpha shutdown"), domain="alpha")
 
     with TestClient(get_asgi_application()):
         pass
@@ -508,10 +510,14 @@ async def test_a_hung_domain_is_cut_off_and_the_rest_still_stop(
                 import asyncio
 
                 from domainkit.apps import DomainConfig
+                from domainkit.apps.hooks import on_shutdown
                 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
                 class HungConfig(DomainConfig):
-                    async def shutdown(self) -> None:
+                    def ready(self) -> None:
+                        on_shutdown(self.stop)
+
+                    async def stop(self) -> None:
                         AlphaConfig.calls.append("hung shutdown")
                         await asyncio.Event().wait()
             """
@@ -543,9 +549,13 @@ async def test_a_domain_that_fails_to_start_still_shuts_everything_down(
         {
             "apps.py": """
                 from domainkit.apps import DomainConfig
+                from domainkit.apps.hooks import on_startup
 
                 class BrokenConfig(DomainConfig):
-                    async def startup(self) -> None:
+                    def ready(self) -> None:
+                        on_startup(self.start)
+
+                    async def start(self) -> None:
                         raise RuntimeError("cannot start")
             """
         },
@@ -929,13 +939,17 @@ async def test_a_domain_that_ignores_cancellation_cannot_hold_shutdown(
                 import asyncio
 
                 from domainkit.apps import DomainConfig
+                from domainkit.apps.hooks import on_shutdown
                 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
                 RELEASE = asyncio.Event()
                 TASKS = []
 
                 class StubbornConfig(DomainConfig):
-                    async def shutdown(self) -> None:
+                    def ready(self) -> None:
+                        on_shutdown(self.stop)
+
+                    async def stop(self) -> None:
                         AlphaConfig.calls.append("stubborn shutdown")
                         TASKS.append(asyncio.current_task())
                         try:

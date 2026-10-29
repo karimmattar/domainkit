@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from fastapi import FastAPI
 
 from domainkit.apps import registry
+from domainkit.apps.hooks import on_deployment_warnings
 from domainkit.architecture import check_domains
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
 from domainkit.checks import CheckMessage, describe, silence
@@ -35,7 +36,8 @@ class Command(BaseCommand):
         "middleware, the dependency rules between domain layers, and the "
         "migration history; warn about route handlers and dependencies that "
         "run on the thread pool, and about weak choices in staging and "
-        "production. With --deploy, warnings fail too."
+        "production, and say how HTTPS reaches the application there. With "
+        "--deploy, warnings fail too."
     )
 
     def add_arguments(self, parser: ArgumentParser) -> None:
@@ -87,6 +89,8 @@ class Command(BaseCommand):
         if silenced := len(found) - len(warnings):
             counted += f" ({silenced} silenced)"
         self.write(f"System check identified no issues{counted}. Domains: {labels}.")
+        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+            self.write(describe(https_statement(), label="Info: "))
         for warning in warnings:
             self.write(describe(warning, label="Warning: "))
 
@@ -98,7 +102,7 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("caches.W001", cache_deployment_warnings())
     warnings += _tagged("deploy.W006", pool_sizing_warnings())
     warnings += _tagged("live.W001", websockets.deployment_warnings(app))
-    warnings += [found for config in registry for found in config.deployment_warnings()]
+    warnings += [found for hook in on_deployment_warnings for found in hook.call()]
     if deployed:
         warnings += _tagged("servers.W001", websockets.server_warnings(app))
         warnings += _tagged(
@@ -106,6 +110,38 @@ def _warnings(app: FastAPI) -> list[str]:
         )
     warnings += _tagged("blocking.W001", sync_calls(app, _project_domains()))
     return warnings
+
+
+def https_statement() -> CheckMessage:
+    """What ``check`` cannot see of HTTPS, and where the scheme comes from.
+
+    domainkit serves plain HTTP: TLS ends in front of it, where no setting
+    reaches. A request counts as HTTPS (for the origin check of cookie
+    logins, and the URLs the application builds) only when a trusted proxy
+    says so, so the statement names the header it reads, or says that
+    nothing will.
+    """
+    header = settings.PROXY_SCHEME_HEADER
+    if settings.TRUSTED_PROXIES and header is not None:
+        source = (
+            f"from the {header} header of TRUSTED_PROXIES only, so the proxy "
+            f"must set it, over a caller's"
+        )
+    else:
+        missing = "TRUSTED_PROXIES is empty"
+        if header is None:
+            missing = "PROXY_SCHEME_HEADER is None"
+        source = (
+            f"from the connection alone ({missing}), so every request counts "
+            "as plain HTTP, even one a proxy received over HTTPS"
+        )
+    return CheckMessage(
+        "security.I001",
+        "HTTPS is not checked: the application serves plain HTTP, and TLS "
+        f"must end in front of it. It takes a request's scheme {source}.",
+        "Redirect plain HTTP to HTTPS at the proxy, and keep SECURE_HSTS_SECONDS "
+        "set (docs/security.md, 'The edge').",
+    )
 
 
 def _tagged(check_id: str, messages: Iterable[str]) -> list[str]:

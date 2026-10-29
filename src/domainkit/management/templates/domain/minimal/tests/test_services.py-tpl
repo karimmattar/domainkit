@@ -1,0 +1,33 @@
+"""Use-case tests against in-memory adapters: no database, no HTTP."""
+
+import pytest
+
+from {{ package }}.application import services
+from {{ package }}.application.commands import Create{{ Aggregate }}, Rename{{ Aggregate }}
+from {{ package }}.domain.model import Invalid{{ Aggregate }}Name
+
+from .fakes import Fake{{ Domain }}UnitOfWork
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_create_and_rename_commit_once_each() -> None:
+    """The name is trimmed, and each use case commits its change."""
+    uow = Fake{{ Domain }}UnitOfWork()
+
+    {{ aggregate }} = await services.create_{{ aggregate }}(Create{{ Aggregate }}(name=" First "), uow)
+    command = Rename{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id, name="Second")
+    await services.rename_{{ aggregate }}(command, uow)
+
+    assert uow.{{ aggregates }}.items == {{{ aggregate }}.id: {{ aggregate }}}
+    assert ({{ aggregate }}.name, uow.commits) == ("Second", 2)
+
+
+async def test_a_blank_name_is_refused_before_anything_is_stored() -> None:
+    """The aggregate's rule holds in every use case."""
+    uow = Fake{{ Domain }}UnitOfWork()
+
+    with pytest.raises(Invalid{{ Aggregate }}Name):
+        await services.create_{{ aggregate }}(Create{{ Aggregate }}(name="   "), uow)
+
+    assert (uow.{{ aggregates }}.items, uow.commits) == ({}, 0)

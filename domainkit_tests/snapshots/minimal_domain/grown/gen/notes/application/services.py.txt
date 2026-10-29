@@ -1,0 +1,56 @@
+"""Use cases: open a unit of work, change one aggregate, commit."""
+
+from gen.notes.application.commands import (
+    CreateLabel,
+    CreateNote,
+    DeleteLabel,
+    PinNote,
+    RenameNote,
+)
+from gen.notes.application.unit_of_work import NotesUnitOfWork
+from gen.notes.domain.model import Label, LabelId, Note, NoteId
+
+
+async def create_note(command: CreateNote, uow: NotesUnitOfWork) -> Note:
+    """Create and store a note."""
+    note = Note.create(command.name)
+    async with uow:
+        await uow.notes.add(note)
+        await uow.commit()
+    return note
+
+
+async def rename_note(command: RenameNote, uow: NotesUnitOfWork) -> Note:
+    """Rename a note."""
+    async with uow:
+        note = await uow.notes.get(NoteId(command.note_id))
+        note.rename(command.name)
+        await uow.commit()
+    return note
+
+
+async def pin_note(command: PinNote, uow: NotesUnitOfWork) -> Note:
+    """Pin a note."""
+    async with uow:
+        note = await uow.notes.get(NoteId(command.note_id))
+        note.pin(at=command.at)
+        await uow.commit()
+    return note
+
+
+async def create_label(command: CreateLabel, uow: NotesUnitOfWork) -> Label:
+    """Create and store a label."""
+    label = Label.create(title=command.title)
+    async with uow:
+        await uow.labels.add(label)
+        await uow.commit()
+    return label
+
+
+async def delete_label(command: DeleteLabel, uow: NotesUnitOfWork) -> None:
+    """Delete a label."""
+    async with uow:
+        label = await uow.labels.get(LabelId(command.label_id))
+        label.delete()
+        await uow.labels.remove(label)
+        await uow.commit()

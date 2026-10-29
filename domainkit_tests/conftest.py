@@ -23,8 +23,14 @@ from hypothesis import settings as hypothesis_settings
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from domainkit import log as domainkit_log
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.apps.hooks import (
+    on_check_application,
+    on_deployment_warnings,
+    on_startup,
+)
 from domainkit.cache import caches
 from domainkit.conf import override_settings, use_settings
 from domainkit.conf.env import (
@@ -48,6 +54,25 @@ POSTGRES_VARIABLE: Final = "DOMAINKIT_TEST_POSTGRES_URL"
 """A PostgreSQL server URL; when set, database tests run there (see database_url)."""
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Keep the tutorial's parts in the order a reader reads them.
+
+    They share one reader's walk (``test_walkthroughs.Tutorial``), so a
+    shuffled order tests nothing more, and a late part run first plays
+    every part before it. pytest-randomly shuffles first; the parts take
+    the places it gave them, in page order.
+    """
+    places = [
+        index
+        for index, item in enumerate(items)
+        if item.nodeid.startswith("domainkit_tests/test_walkthroughs.py::test_part_")
+    ]
+    parts = sorted((items[index] for index in places), key=lambda item: item.name)
+    for index, item in zip(places, parts, strict=True):
+        items[index] = item
+
+
 @pytest.fixture(autouse=True)
 def framework_settings() -> Iterator[None]:
     """Run against ``domainkit_tests.settings`` with a fresh registry."""
@@ -65,10 +90,14 @@ def isolated_registries() -> Iterator[None]:
 
     Apps register tasks and handlers when they are installed; a test that
     installs one must not leak them into the next test. Memory caches and
-    the principal cache start empty, too.
+    the principal cache start empty, too, and so do the throttled logs: an
+    app's shutdown writes what every one of them held back, so a line held
+    by an earlier test's app, still alive, would land in this test's log.
     """
     caches.reset()
     invalidate_all()
+    for throttled in list(domainkit_log._throttled_logs):
+        throttled._seen.clear()
     with registries_kept():
         yield
 
@@ -248,6 +277,26 @@ AUTH: Final = "domainkit.contrib.auth"
 SHOP: Final = "domainkit_tests.sample_domains.shop"
 ALPHA: Final = "domainkit_tests.sample_domains.alpha"
 FAST_HASHER: Final = "domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"
+
+
+def domain_warnings(label: str) -> list[str]:
+    """What domain ``label`` registered ``on_deployment_warnings`` to find."""
+    return [found for hook in on_deployment_warnings.of(label) for found in hook.call()]
+
+
+def domain_problems(label: str, app: Any) -> list[str]:  # noqa: ANN401 - any app.
+    """What domain ``label`` registered ``on_check_application`` to find in ``app``."""
+    return [
+        found for hook in on_check_application.of(label) for found in hook.call(app)
+    ]
+
+
+async def start_domain(label: str) -> None:
+    """Run domain ``label``'s ``on_startup`` hooks."""
+    for hook in on_startup.of(label):
+        await hook.call()
+
+
 TEMPLATE_PREFIX: Final = "domainkit_template_"
 """PostgreSQL databases migrated once per run, which tests get copies of."""
 

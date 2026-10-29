@@ -68,8 +68,17 @@ All done: 0.11 removed the names and the setting that 0.10 deprecated,
 refuses `crud=True` without the fields it writes, and makes `"refuse"` the
 default of `SCOPED_CREDENTIALS` and `IDEMPOTENCY.ANONYMOUS`.
 [upgrading.md](upgrading.md#010-to-011) lists each, with its replacement
-and the setting that keeps a default's old behaviour. Nothing is
-deprecated for 0.12 yet.
+and the setting that keeps a default's old behaviour.
+
+### Deprecations planned for 0.13
+
+0.13 removes what 0.12 deprecates; [upgrading.md](upgrading.md#011-to-012)
+lists each with its replacement.
+
+| Deprecated in 0.12 | Use instead | Removed in |
+| --- | --- | --- |
+| The hook methods of `DomainConfig` (`startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated`), overridden | The points `on_<method>` of `domainkit.apps.hooks` and `domainkit.db.hooks`, registered in `ready()`; 0.13 refuses a configuration that still defines one | 0.13 |
+| `domainkit.ddd.preconditions.expect_version` | `UnitOfWork.expect(model, id, versions)` | 0.13 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:
@@ -190,7 +199,11 @@ One-time setup, before the first release:
     upstream releases is not the change's doing. Neither is `stress
     (3.14t)`, which runs the free-threading tests 30 times on 3.14t: on
     3.14.6t they crash the interpreter in some runs, inside SQLAlchemy's
-    compiled extensions, at 0.9.2 too. `domainkit_tests/test_ci.py` checks that the
+    compiled extensions, at 0.9.2 too. Nor is `mutation (changed)` (0.12),
+which runs the mutants of the functions a pull request changes, and fails
+when one lives: an equivalent mutant can live, which the author explains
+rather than kills ([ADR 0106](adr/0106-mutate-what-a-pull-request-changes.md)).
+`domainkit_tests/test_ci.py` checks that the
     list is every other job a pull request runs, and is this one.
   - `release-tags.json`: nobody, admins included, moves or deletes a `v*`
     tag.

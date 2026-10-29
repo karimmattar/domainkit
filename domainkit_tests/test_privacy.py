@@ -2,6 +2,7 @@
 
 import io
 import json
+import logging
 import os
 import re
 import stat
@@ -19,6 +20,7 @@ from sqlalchemy.types import TypeDecorator
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import record
@@ -44,7 +46,7 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
-from domainkit_tests.conftest import ALPHA, MakeDatabase
+from domainkit_tests.conftest import ALPHA, MakeDatabase, domain_problems
 from domainkit_tests.sample_domains.patients import tables
 from domainkit_tests.sample_domains.patients.apps import PatientsConfig
 from domainkit_tests.sample_domains.patients.models import Visit
@@ -224,7 +226,7 @@ def test_markers_privacy_cannot_follow_are_problems(clinic: str) -> None:
         found = problems()
         with pytest.raises(ImproperlyConfigured) as refused:
             personal_models()
-        assert registry.get_domain_config("privacy").check_application(None) == found  # type: ignore[arg-type]
+        assert domain_problems("privacy", None) == found
 
     assert str(refused.value) == "Privacy cannot be applied:\n  " + "\n  ".join(found)
     assert found == [
@@ -557,6 +559,81 @@ def test_erasing_someone_unknown_changes_nothing(clinic: str) -> None:
     assert run_async(erase()) == 0
     assert [row["target"] for row in run_async(audited("privacy.erase"))] == ["nobody"]
     assert [p["name"] for p in run_async(rows_of(tables.patients))] == ["Ann", "Bob"]
+
+
+def test_a_domains_hooks_are_audited_as_one_and_exported_merged(
+    clinic: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Counts of one domain's erasure hooks add up; its exports merge (DSGN-03)."""
+    reasons: list[str] = []
+
+    async def first(subject: str, reason: str) -> dict[str, int]:
+        reasons.append(reason)
+        return {"copies": 1, "pending": 1}
+
+    async def second(subject: str, reason: str) -> dict[str, int]:
+        reasons.append(reason)
+        return {"copies": 2, "pending": 1}
+
+    async def nothing(subject: str, reason: str) -> dict[str, int]:
+        return {"copies": 0}
+
+    async def kept(subject: str) -> dict[str, object]:
+        return {"index": [subject]}
+
+    async def more(subject: str) -> dict[str, object]:
+        return {"cache": 1}
+
+    async def empty(subject: str) -> dict[str, object]:
+        return {}
+
+    async def counted(subject: str) -> dict[str, object]:
+        return {"cache": 2, "index": ["again"]}
+
+    on_erase_subject(first, domain="alpha")
+    on_erase_subject(second, domain="alpha")
+    on_erase_subject(nothing, domain="patients")
+    on_export_subject(kept, domain="alpha")
+    on_export_subject(more, domain="alpha")
+    on_export_subject(empty, domain="patients")
+    on_export_subject(counted, domain="alpha")
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.privacy.operations"):
+        run_async(erase_subject("nobody", reason="ticket 9"))
+    exported = run_async(export_subject("nobody"))
+    erased = run_async(audited("privacy.copies_erased"))
+
+    assert reasons == ["ticket 9", "ticket 9"]
+    assert [(row["details"]["domain"], row["details"]["copies"]) for row in erased] == [
+        ("alpha", {"copies": 3, "pending": 2})
+    ]
+    assert caplog.messages == [
+        (
+            "alpha keeps 2 copies of a subject's data still to finish (queued "
+            "work); they are erased once it ends: erase the subject again then"
+        )
+    ]
+    assert exported["copies"] == {  # Nothing lost to a kind named twice.
+        "alpha": {"index": ["nobody", "again"], "cache": [1, 2]}
+    }
+
+
+def test_a_hook_that_answers_more_than_counts_is_named(clinic: str) -> None:
+    """The refusal names the domain and the function, which may be no function."""
+
+    class Talkative:
+        async def __call__(self, subject: str, reason: str) -> dict[str, object]:
+            return {"email": "ann@example.com"}
+
+    talkative = Talkative()
+    on_erase_subject(talkative, domain="alpha")  # type: ignore[arg-type]
+
+    with pytest.raises(ImproperlyConfigured) as refused:
+        run_async(erase_subject("nobody"))
+
+    assert str(refused.value) == (
+        f"alpha's erase_subject hook {talkative!r} must return counts by kind, such "
+        "as {'deliveries': 2}: lower-case names and whole numbers, which are audited."
+    )
 
 
 # Retention -------------------------------------------------------------------------

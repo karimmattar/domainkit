@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import uuid
 from collections.abc import (
     AsyncIterator,
@@ -1564,14 +1565,17 @@ async def test_the_messaging_app_closes_the_publishers_at_shutdown(
     ``close_resources``, so commands close their publishers too.
     """
     from domainkit import lifecycle
+    from domainkit.contrib.messaging import apps as messaging_apps
 
     closed: list[bool] = []
 
     async def record() -> None:
         closed.append(True)
 
+    # The app's closer, which closes the dispatcher's publishers once it is
+    # loaded, so a process that publishes nothing never loads it (PERF-15).
     assert lifecycle._registered[lifecycle.Phase.DRAIN]["publishers"] is (
-        close_publishers
+        messaging_apps.close_publishers
     )
     monkeypatch.setitem(
         lifecycle._registered[lifecycle.Phase.DRAIN], "publishers", record
@@ -1579,6 +1583,52 @@ async def test_the_messaging_app_closes_the_publishers_at_shutdown(
     await lifecycle.close_resources()
 
     assert closed == [True]
+
+
+async def test_the_publishers_closer_closes_the_dispatchers_once_it_is_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dispatcher's publishers close; without the dispatcher, nothing does."""
+    from domainkit.contrib.messaging import apps as messaging_apps
+    from domainkit.contrib.messaging import dispatch
+
+    closed: list[float | None] = []
+
+    async def record(within: float | None = None) -> None:
+        closed.append(within)
+
+    monkeypatch.setattr(dispatch, "close_publishers", record)
+    await messaging_apps.close_publishers()
+    monkeypatch.delitem(sys.modules, dispatch.__name__)
+    await messaging_apps.close_publishers()
+
+    assert closed == [None]
+
+
+async def test_a_commits_follow_up_publishes_only_what_it_is_asked_to(
+    brokered: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``publish=False`` hands nothing on, broker or not; watchers see every commit."""
+    from domainkit.contrib.messaging import dispatch
+
+    submitted: list[tuple[str, list[uuid.UUID]]] = []
+    seen: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def submit(config: object, database: str, ids: list[uuid.UUID]) -> None:
+        submitted.append((database, ids))
+
+    async def watcher(database: str, rows: list[dict[str, Any]]) -> None:
+        seen.append((database, rows))
+
+    monkeypatch.setattr(dispatch, "publish_committed", submit)
+    monkeypatch.setattr(outbox_module, "watchers", [watcher])
+    config = registry.settings(MessagingSettings)
+    row: dict[str, Any] = {"id": uuid.uuid4()}
+    await outbox_module.notify_committed(config, "other", [row], publish=False)
+    await outbox_module.notify_committed(config, "other", [row])
+
+    assert submitted == [("other", [row["id"]])]
+    assert seen == [("other", [row]), ("other", [row])]
 
 
 async def test_after_commit_failures_are_reported(
@@ -1878,26 +1928,24 @@ async def wait_at_gate(name: str) -> None:
 async def test_stopping_waits_for_every_running_delivery(
     broker_tables: MemoryBroker,
 ) -> None:
-    """Deliveries running when the worker stops all finish before it returns."""
+    """Deliveries running when the worker stops all finish before it returns.
+
+    The tasks get ``SLOW``'s timeout: under ``FAST``'s 0.2 seconds, a loaded
+    machine let "b" time out while the test waited, and the worker returned.
+    """
     gates.update(a=asyncio.Event(), b=asyncio.Event())
     await enqueue(wait_at_gate, name="a")
     await enqueue(wait_at_gate, name="b")
     stop = asyncio.Event()
-    config = registry.settings(MessagingSettings)
+    config = MessagingSettings(**{**BROKERED, **SLOW})
     running = asyncio.create_task(
-        BrokerWorkers([Worker()], ["default"], config).run(stop)
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
     )
-    for _ in range(500):
-        if {"a:started", "b:started"} <= set(ran):
-            break
-        await asyncio.sleep(0.01)
+    await until(lambda: {"a:started", "b:started"} <= set(ran))
 
     stop.set()
     gates["a"].set()
-    for _ in range(500):
-        if "a:done" in ran:
-            break
-        await asyncio.sleep(0.01)
+    await until(lambda: "a:done" in ran)
     await asyncio.sleep(0.02)
     assert not running.done()  # "b" still runs, so the worker waits.
     gates["b"].set()

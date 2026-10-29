@@ -25,6 +25,7 @@ Keep-alive pings are the server's: uvicorn sends one every 20 seconds
 
 import itertools
 import logging
+import threading
 from collections.abc import Sequence
 from contextlib import suppress
 from typing import Final
@@ -89,6 +90,8 @@ class WebSocketLimitsMiddleware:
         self.limiter = MemoryBackend()
         """Counts messages per connection: a connection lives in one process."""
         self._ids = itertools.count()
+        self._ids_lock = threading.Lock()
+        """Loops on several threads (3.14t) may accept connections at once."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve a WebSocket under its limits, if a slot is free."""
@@ -106,8 +109,15 @@ class WebSocketLimitsMiddleware:
             slots.release(caller)
 
     def key(self) -> str:
-        """A new connection's key in the message counter."""
-        return f"ws:{next(self._ids)}"
+        """A new connection's key in the message counter.
+
+        Taken under a lock: CPython 3.14t's ``itertools.count`` gives each
+        number once to threads that share it, but nothing documents that,
+        and two connections with one key would share one count (CONC-09).
+        """
+        with self._ids_lock:
+            number = next(self._ids)
+        return f"ws:{number}"
 
 
 class _Socket:

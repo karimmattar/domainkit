@@ -117,6 +117,23 @@ middleware, so the key cannot keep it: it is treated as a response the
 key does not keep, and a retry runs the request again, or gets the 409
 after a commit.
 
+The middleware reads a keyed request's whole body before it runs, since
+the key's fingerprint covers it, and keeps what a response sends until it
+is stored. Both are held in memory up to `SPOOL_BYTES` (1 MiB), past it in
+a temporary file, unlinked from the start, written and read on a thread,
+and closed when the request ends; a body is fingerprinted as it arrives
+when `Content-Length` gives its length. A body held in memory reaches the
+application in one message; one from a file, in 64 KiB parts. An 8 MiB
+keyed body held 16 MiB in 0.11, and holds about 1 MiB; a kept response is
+held once, as the value stored. Files go to the temporary directory
+(`TMPDIR`), so a body past the threshold reaches the disk unless that is
+a `tmpfs`: set `SPOOL_BYTES` at or above your limits to keep them in
+memory. Where no temporary file can be made, the body stays in memory,
+with a warning. A response that can never be kept is not held at all: one
+marked `Cache-Control: no-store` is decided as it starts, and one that
+grows past `MAX_RESPONSE_BYTES`, or sends its body by path, is let go
+then (SEC-12b-2) ([ADR 0105](../adr/0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md)).
+
 The keys' database decides when a lease or a key runs out. On PostgreSQL,
 the claim, the take-over and the purge compare and write
 `statement_timestamp()`, as the outbox does, so hosts whose clocks
@@ -216,6 +233,7 @@ each request sent, for about 1,850 fewer Python calls a keyed write.
 | `REQUIRE_DEADLINE` | `True` | Staging and production refuse to start while keyed requests have no deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`). `False` only warns, as 0.9 did. |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
+| `SPOOL_BYTES` | `1048576` | Bytes of a keyed request's body, and of a response being kept, held in memory (at most 1 GiB; `0` holds none); past them, the rest goes to a temporary file, unlinked from the start and closed when the request ends. With `MAX_REQUEST_BODY_SIZE` and `MAX_RESPONSE_BYTES` at their defaults, nothing reaches the disk (PERF-11). |
 | `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart; not once an authentication middleware found no one in the request (SEC-11a-1). |
 | `ANONYMOUS` | `"refuse"` | Keys from callers with no actor and no credential header: `"refuse"` answers them 400 `idempotency_key_needs_caller`, and nothing runs; `"per-address"` scopes them to the client address, which callers behind one NAT share, as 0.10 did by default (DATA-09). |
 | `SESSION_COOKIES` | `()` | For `ANONYMOUS = "refuse"`: the cookies that name a caller the actor does not (a session another layer reads), at most 16 names. Any other cookie names nobody (SEC-10b-7). |

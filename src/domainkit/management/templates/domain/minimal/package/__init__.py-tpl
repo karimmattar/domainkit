@@ -1,0 +1,7 @@
+"""{{ domain_title }} bounded context, started small (``startdomain --minimal``).
+
+Layers, innermost first (``python manage.py check`` enforces the direction):
+``domain`` holds the model, ``application`` its use cases, ``infrastructure``
+the table, and ``api`` the HTTP resource. ``startaggregate``, ``addcommand``,
+``addquery``, and ``addevent`` add to each layer.
+"""

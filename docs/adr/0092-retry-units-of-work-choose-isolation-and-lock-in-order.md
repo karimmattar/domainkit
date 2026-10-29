@@ -1,6 +1,6 @@
 # 0092. Run units of work again after a lost race, let them choose their isolation, and lock in order
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-28 (at the end)
 - Date: 2026-10-26
 
 ## Context
@@ -192,3 +192,25 @@ What to watch:
   deadlock a second time: the tests saw it about once in fifteen runs
   without a wait. The jittered wait makes it rare, and `attempts` bounds
   it; `get_many_for_update` avoids the deadlock altogether.
+
+## Amendment (2026-10-28, 0.12): batch routes retry by declaration too
+
+`batch_route(..., retry=Retry())` takes the policy a command route takes.
+Routes have no `isolation=`: the level belongs to the unit of work the
+resource names (`isolation` on its class), for batches as for commands.
+
+- Without `atomic`, each item is a use case of its own, so each item that
+  loses a race runs again alone, through `run`, its reach check and
+  `If-Match` made again, as a command route's service is.
+- With `atomic`, the race ended the batch's transaction, so the whole
+  batch runs again, through `run`, in a new one. An item that loses (a
+  failure `retry` names, or the database's conflict) leaves the batch
+  instead of answering for itself; a race lost at the batch's commit is
+  run again as `run` runs any. Once the runs are spent, the batch answers
+  as one that does not retry: that item `503 database_busy` and the
+  others `424 not_applied`.
+
+Before, a batch could not say it; each item that lost a race answered
+503, and an atomic batch was undone. A test that fails one item's
+transaction once answers `[200, 503]` without `retry` and `[200, 200]`
+with it, and `[424, 503]` and `[200, 200]` atomically.

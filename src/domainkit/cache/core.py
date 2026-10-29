@@ -316,6 +316,34 @@ class Cache:
             return value
         return decode(payload, type)
 
+    async def refresh(
+        self,
+        key: str,
+        factory: Callable[[], Awaitable[object]],
+        ttl: TTL = DEFAULT_TTL,
+    ) -> None:
+        """Compute ``key``'s value now and store it in place of the cached one.
+
+        For a value that changed: callers go on being served the old one
+        until the new one is stored, so none of them misses and computes it
+        too, here or in another process sharing the store. A computation of
+        ``key`` already running is not joined, since it may have read what
+        came before the change; ``get_or_set`` callers that come next share
+        this one. The value is stored as ``get_or_set`` stores it, so it is
+        still recomputed early by a caller before it expires (XFetch). A
+        store that fails is logged and skipped, as ``get_or_set`` skips it.
+
+        Raises:
+            Exception: What ``factory`` raised; the cached value is left as
+                it was.
+        """
+        full, milliseconds = self.make_key(key), self._milliseconds(ttl)
+        computation = self._start(
+            full, factory, milliseconds, write=True, borrows=False
+        )
+        await asyncio.wait([computation.task])
+        computation.task.result()
+
     async def check(self) -> None:
         """Raise if the store cannot be reached, cooldown or not."""
         await self.store.check()

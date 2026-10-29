@@ -1,0 +1,1 @@
+"""HTTP interface of the notes domain; mount ``routes.router`` in config/urls.py."""

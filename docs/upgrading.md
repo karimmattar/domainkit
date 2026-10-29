@@ -23,6 +23,80 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.11 to 0.12
+
+### Breaking changes
+
+Each changes what a project gets without changing its code. Each says how
+to keep the old behaviour, for as long as the project needs it.
+
+- **A hook registered with the wrong arguments fails `setup()`**
+  (DSGN-03). The points of `domainkit.db.hooks` (`on_stage`, ...) check a
+  function when it registers: it must take the arguments the point calls
+  it with, and be an `async` function. 0.11 accepted it and failed the
+  first commit or `migrate` that called it. **Fix:** give the hook the
+  point's arguments (`async def hook(uow, events, tasks)` for `on_stage`).
+  A `HookPoint` of a project's own checks nothing unless it is made with
+  `arguments=` or `awaited=`.
+- **`dumpdata` leaves guarded tables out** (DATA-12). A dump of every
+  table leaves out users and their password hashes, groups, permissions,
+  content types, object grants, and dynamic settings, and says so on
+  standard error; naming one, or a domain that holds one, is refused.
+  **Fix:** dump them on purpose: `dumpdata --include-guarded`, which is
+  recorded in the audit trail and, in staging and production, needs
+  `--operator` or `DOMAINKIT_OPERATOR`. **To keep the old behaviour:**
+  `--include-guarded` on every dump that should hold them.
+- **Test tokens need the test settings** (SEC-12a-2). `user_token`,
+  `token_for`, and the clients' `authenticated` and `authenticated_as`
+  (`client_for`, `admin_client`) raise `ImproperlyConfigured` unless
+  `ENVIRONMENT = "test"`: they sign users in without credentials.
+  **Fix:** run the code that uses them with the test settings, as the
+  database fixtures already require. There is no setting to keep the old
+  behaviour.
+- **Fixtures load only password hashes the configured hashers would
+  make** (SEC-12a-3). A user's hash that no hasher of
+  `AUTH.PASSWORD_HASHERS` identifies, or that it would make again more
+  strongly (fewer iterations, a shorter salt), refuses the fixture.
+  **Fix:** dump and load users between environments with the same
+  hashers, or write unusable passwords (`!...`) in the fixture and reset
+  them after loading. There is no setting to keep the old behaviour.
+- **Dumps of personal data name their operator where deployed**
+  (SEC-12a-7). In staging and production, `dumpdata` of a table whose
+  model has fields marked `Personal` needs `--operator` or
+  `DOMAINKIT_OPERATOR`, and is recorded. **Fix:** set `DOMAINKIT_OPERATOR`
+  where `dumpdata` runs. There is no setting to keep the old behaviour.
+
+### Deprecated, removed in 0.13
+
+Each still works in 0.12, with a `DomainkitDeprecationWarning` that names
+its replacement.
+
+| Deprecated | Use instead | Audit id |
+| --- | --- | --- |
+| Overriding a hook method of `DomainConfig`: `startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings` | A function registered in `ready()` on the point of the same name: `domainkit.apps.hooks.on_startup(...)`, `on_shutdown`, `on_check`, `on_seed`, `on_erase_subject`, `on_export_subject`, `on_check_application`, `on_deployment_warnings`. The warning names the domain and the point, at the method's line | DSGN-03 |
+| Overriding `stage`, `committed`, `stage_transaction`, `transaction_committed`, or `migrated` (0.10 added the points, without a warning) | `domainkit.db.hooks.on_stage(...)`, `on_committed`, `on_stage_transaction`, `on_transaction_committed`, `on_migrated` in `ready()` | DSGN-03 |
+| `with expect_version(Order, order_id, versions):` (`domainkit.ddd.preconditions`), which every unit of work of the context honoured | `with uow.expect(Order, order_id, versions):` on the unit of work the service changes the aggregate through | DSGN-14 |
+
+`DomainConfig.databases` and `holds_table` stay methods: they answer where
+a domain's tables are ([ADR 0101](adr/0101-register-every-domain-hook-and-check-it-when-it-registers.md)).
+A method moves like this:
+
+```python
+# 0.11
+class SearchConfig(DomainConfig):
+    async def startup(self) -> None:
+        await index.connect()
+
+
+# 0.12
+from domainkit.apps.hooks import on_startup
+
+
+class SearchConfig(DomainConfig):
+    def ready(self) -> None:
+        on_startup(index.connect)
+```
+
 ## 0.10 to 0.11
 
 ### Breaking changes

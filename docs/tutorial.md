@@ -26,6 +26,8 @@ fails for you, that is a bug: please report it.
 
 After the tutorial:
 
+- [deploying.md](deploying.md): from a project whose checks pass to one
+  in production, with the image and CI workflow `init` writes.
 - [operations.md](operations.md): running it in production, and
   [runbook.md](runbook.md) for when an alarm fires.
 - [security.md](security.md): the hardening checklist.

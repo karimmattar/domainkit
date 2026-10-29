@@ -1,5 +1,6 @@
 """Install ``domainkit.contrib.messaging`` to get the outbox and the worker."""
 
+import sys
 from collections.abc import Mapping, Sequence
 from importlib import import_module
 from importlib.util import find_spec
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import lifecycle
 from domainkit.apps import DomainConfig, registry
-from domainkit.broker import brokers
+from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.routing import DatabaseRouter, router
@@ -18,7 +19,6 @@ from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.lifecycle import Phase
 
 from . import runs
-from .dispatch import close_publishers
 from .outbox import notify_committed, rows_for, write
 from .settings import MessagingSettings
 
@@ -27,6 +27,17 @@ _committing: WeakKeyDictionary[AsyncSession, list[dict[str, Any]]] = WeakKeyDict
 
 By session: a commit that failed leaves its rows with its session, which
 the next ``async with`` of the unit of work replaces (``UnitOfWork.run``)."""
+
+
+async def close_publishers() -> None:
+    """Flush and stop the background publishers, if anything started one.
+
+    Looked up, not imported: a web process that hands no message to a
+    broker never loads the dispatcher, nor the worker it imports (PERF-15).
+    """
+    dispatch = sys.modules.get(f"{__package__}.dispatch")
+    if dispatch is not None:
+        await dispatch.close_publishers()
 
 
 class MessagingConfig(DomainConfig):
@@ -65,12 +76,17 @@ class MessagingConfig(DomainConfig):
         config = self.get_settings()
         router.require_standalone(config.DATABASE, "MESSAGING.DATABASE")
         if config.BROKER is not None:
+            # Imported here: without a broker, none is loaded (PERF-15).
+            from domainkit.broker import brokers
+
             brokers.config(config.BROKER)
         lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
         on_stage(self.stage_outbox)
         on_committed(self.publish_committed)
         if find_spec("prometheus_client") is not None:
             import_module(f"{self.name}.metrics")
+        on_erase_subject(self.erase_copies)
+        on_export_subject(self.export_copies)
 
     async def stage_outbox(
         self,
@@ -99,13 +115,13 @@ class MessagingConfig(DomainConfig):
         rows = _committing.pop(uow.session, [])
         await notify_committed(self.get_settings(), uow.alias, rows)
 
-    async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
+    async def erase_copies(self, subject: str, reason: str) -> Mapping[str, int]:
         """Blank dead messages about ``subject``; count pending ones (``erasure``)."""
         from .erasure import erase_subject
 
         return await erase_subject(subject)
 
-    async def export_subject(self, subject: str) -> Mapping[str, object]:
+    async def export_copies(self, subject: str) -> Mapping[str, object]:
         """The queued and dead messages about ``subject``, with their arguments."""
         from .erasure import export_subject
 

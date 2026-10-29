@@ -7,5 +7,10 @@ __pycache__/
 .coverage
 htmlcov/
 dist/
+# Settings and secrets: .env for this machine, and any env file or key a
+# deployment uses. They belong in a secret store, never in the repository.
 .env
+.env.*
+*.env
+secrets/
 *.sqlite3
