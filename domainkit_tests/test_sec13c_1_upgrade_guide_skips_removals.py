@@ -10,7 +10,7 @@ Breaking entry under ``### Security`` is skipped the same way. Either step
 could leave the guide with no test failing.
 """
 
-from domainkit_tests.test_docs import ROOT, upgrade_entries
+from domainkit_tests.test_docs import ROOT, _upgrade_entries, upgrade_entries
 
 
 def test_breaking_entries_of_removed_and_security_are_read() -> None:
@@ -30,9 +30,13 @@ def test_breaking_entries_of_removed_and_security_are_read() -> None:
 
 
 def test_this_releases_removals_are_held_to_the_guide() -> None:
-    """DSGN-03 and DSGN-14, both Breaking removals of 0.13, are checked."""
+    """DSGN-03 and DSGN-14, both Breaking removals of 0.13, are checked.
+
+    Read from 0.13.0's section: once ``[Unreleased]`` has Breaking entries
+    of its own, the guide is held to those instead.
+    """
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    entries = upgrade_entries(changelog)
+    entries = _upgrade_entries(changelog.split("\n## [0.13.0]")[1].split("\n## [")[0])
 
     assert [
         ident
