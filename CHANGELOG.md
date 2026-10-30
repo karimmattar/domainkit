@@ -132,7 +132,6 @@ and a status.
   a server's code; the audit page lists, by module, the 15 left and why,
   and the 682 not checked (TEST-07).
 
-
 ### Fixed
 
 - **Breaking:** an amount (`ExactDecimal`, money's amount column)
@@ -143,6 +142,37 @@ and a status.
   three cents is 0.003, not 0.0030000000000000004; an integer column
   divides as a real number, not by integer division. A factor has at most
   9 places: one with more is refused rather than rounded (TEST-07).
+
+### Security
+
+- A money condition through child entities is one condition on one
+  child: `F("lines.price") >= Money.of("100", "USD")` holds for an order
+  with a line priced in USD at 100 or more, in memory and in one SQL
+  `EXISTS`, `in_` and `range` too, and so does a `FilterSet` filter of
+  `lines.price` with its amounts and `<name>_currency`. Its currency and
+  its amount went through the lines each on its own, so an order of 1 USD
+  and 1000 EUR matched (SEC-14a-1).
+- The money attribute `map_imperatively` maps compares as money in
+  SQLAlchemy's own queries: `Wallet.balance < Money.of("100", "USD")` is
+  the currency equal and the amount less, `==` both columns, `!=` its
+  negation (true of no money), and `== None` a missing amount; anything
+  but money is a `TypeError`. It compared each column on its own, so `<
+  100 USD` found 10 EUR (SEC-14a-2).
+- `makemigrations` writes the both-or-neither check of a nullable money
+  field added to a table that exists (in batch mode on SQLite), and
+  `table_for` derives it when only the amount column is given
+  (`money_check`). A row holding half a pair all the same fails to load
+  with `IncompleteMoney`, not a `TypeError` (SEC-14a-3).
+- Money is immutable against a second `__init__`, as `Currency` is; a
+  `Currency` made by hand is checked against the known one of its code,
+  so `Money` and `CurrencyCode` refuse one with other units
+  (`UnknownCurrency`); an amount past 38 digits, a product's too, is a
+  `MoneyError` (422), not a `ValueError` (500); and the test plugin drops
+  the currencies a test registers before any domain is loaded. The
+  transfer `startaggregate` writes, and `docs/databases.md`, say what a
+  project adds to it: idempotency, and a rule on who may move the money.
+  The security review's notes on money (FIN-01).
+
 ## [0.13.0] - 2026-10-29
 
 A minor release. It removes what 0.12 deprecated: the hook methods of

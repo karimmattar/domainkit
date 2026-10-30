@@ -775,7 +775,12 @@ command, `POST /wallets/{wallet_id}/transfer-balance`, and their tests,
 one of them a lost race ([resources.md](resources.md#generators)). Both
 rows are locked, so the rule on each holds at `READ COMMITTED`; a rule
 across rows that are not both locked needs `SERIALIZABLE`
-([the payment recipe](recipes/payments.md)).
+([the payment recipe](recipes/payments.md)). Two things are the
+project's to add: the idempotency middleware, so a request retried with
+its `Idempotency-Key` moves the amount once
+([contrib/idempotency.md](contrib/idempotency.md)), and a rule that the
+caller may move money out of that wallet
+([resources.md](resources.md#who-may-call-it)).
 
 ## Testing
 

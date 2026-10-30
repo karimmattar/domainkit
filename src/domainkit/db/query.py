@@ -42,6 +42,7 @@ from domainkit.ddd.query import (
     Not,
     Or,
     Ordering,
+    Within,
 )
 
 __all__ = [
@@ -107,6 +108,8 @@ def compile_criteria(
         return or_(*(compile_criteria(p, model, dialect) for p in criteria.parts))
     if isinstance(criteria, Not):
         return not_(compile_criteria(criteria.part, model, dialect))
+    if isinstance(criteria, Within):
+        return _within(criteria.relation, criteria.criteria, mapper, dialect)
     compiler = _COMPILERS.get(type(criteria))
     if compiler is not None:
         return compiler(criteria, model, dialect)
@@ -152,15 +155,11 @@ def _condition(
     if (money := money_columns(mapper, head)) is not None:
         column = _money_column(money, rest)
     elif rest:
-        if head not in mapper.relationships:
-            raise UnknownField(
-                f"{mapper.class_.__name__}.{head} is not a mapped relationship."
-            )
-        relationship = mapper.relationships[head]
-        inner = _condition(rest, lookup, value, relationship.mapper, dialect)
-        attribute = getattr(mapper.class_, head)
-        exists = attribute.any(inner) if relationship.uselist else attribute.has(inner)
-        return cast("ColumnElement[bool]", exists)
+        return _through(
+            mapper,
+            head,
+            lambda child: _condition(rest, lookup, value, child, dialect),
+        )
     else:
         column = column_of(mapper, head)
     expression = _compare(column, lookup, value, dialect)
@@ -168,6 +167,45 @@ def _condition(
     if column.nullable and not total:
         return and_(column.is_not(None), expression)
     return expression
+
+
+def _within(
+    name: str, criteria: Criteria, mapper: Mapper[Any], dialect: str
+) -> ColumnElement[bool]:
+    """``criteria`` on one child entity at the relation ``name``: one ``EXISTS``."""
+    head, _, rest = name.partition(".")
+    if rest:
+        return _through(
+            mapper, head, lambda child: _within(rest, criteria, child, dialect)
+        )
+    return _through(
+        mapper,
+        head,
+        lambda child: compile_criteria(criteria, child.class_, dialect),
+    )
+
+
+def _through(
+    mapper: Mapper[Any],
+    name: str,
+    inner: Callable[[Mapper[Any]], ColumnElement[bool]],
+) -> ColumnElement[bool]:
+    """``EXISTS`` a row related through ``name`` that meets ``inner`` of its mapper.
+
+    Raises:
+        UnknownField: ``name`` is not a mapped relationship.
+    """
+    if name not in mapper.relationships:
+        raise UnknownField(
+            f"{mapper.class_.__name__}.{name} is not a mapped relationship."
+        )
+    relationship = mapper.relationships[name]
+    condition = inner(relationship.mapper)
+    attribute = getattr(mapper.class_, name)
+    exists = (
+        attribute.any(condition) if relationship.uselist else attribute.has(condition)
+    )
+    return cast("ColumnElement[bool]", exists)
 
 
 def _money_column(money: tuple[Column[Any], ...], part: str) -> Column[Any]:

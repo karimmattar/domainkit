@@ -66,6 +66,7 @@ from domainkit.ddd.query import (
     Or,
     Ordering,
     Selection,
+    Within,
     resolve,
     total_ordering,
 )
@@ -252,19 +253,22 @@ class FilterSet:
             InvalidFilter: A value does not fit its field (a value object
                 refused it, say).
         """
+        priced = {
+            each.name
+            for each, lookup, field in map(self.filters.__getitem__, self.values)
+            if field.kind is Money and lookup is not Lookup.ISNULL
+        }
+        compared = {self.currencies[name] for name in priced}
         parts: list[Criteria] = []
+        amounts: dict[Filter, list[tuple[Lookup, object]]] = {}
         for name, value in self.values.items():
             each, lookup, field = self.filters[name]
             argument = tuple(value) if lookup is Lookup.IN else value
-            target = each.field or name
             if field.kind is Money and lookup is not Lookup.ISNULL:
-                if self.currencies[each.name] not in self.values:
-                    raise InvalidFilter(
-                        f"Give {self.currencies[each.name]} with an amount of "
-                        f"{each.name}: amounts compare only within a currency."
-                    )
-                target = f"{target}.amount"
-            parts.append(F(target).lookup(lookup, argument))
+                amounts.setdefault(each, []).append((lookup, argument))
+            elif name not in compared:
+                parts.append(F(each.field or name).lookup(lookup, argument))
+        parts.extend(self._money(each, given) for each, given in amounts.items())
         parts.extend(
             Or.of(*(F(name).icontains(word) for name in self.search_fields))
             for word in self.search
@@ -281,6 +285,29 @@ class FilterSet:
         except (ValueError, TypeError) as exc:  # A value object's; it may quote one.
             raise InvalidFilter("A filter value does not fit its field.") from exc
         return criteria
+
+    def _money(self, each: Filter, amounts: list[tuple[Lookup, object]]) -> Criteria:
+        """The amounts given to the money filter ``each``, in its currency.
+
+        The currency and the amounts are those of one value: through child
+        entities, of one child (``Within``), so no amount is compared under
+        another child's currency.
+
+        Raises:
+            InvalidFilter: The currency is not given.
+        """
+        currency = self.currencies[each.name]
+        if currency not in self.values:
+            raise InvalidFilter(
+                f"Give {currency} with an amount of {each.name}: amounts compare "
+                "only within a currency."
+            )
+        relation, _, leaf = (each.field or each.name).rpartition(".")
+        criteria = And.of(
+            F(f"{leaf}.currency") == self.values[currency],
+            *(F(f"{leaf}.amount").lookup(*given) for given in amounts),
+        )
+        return Within(relation, criteria) if relation else criteria
 
     def _check_names(self, request: Request) -> None:
         """Refuse lookups this set does not offer, and filters given twice.

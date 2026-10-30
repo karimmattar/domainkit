@@ -12,6 +12,7 @@ of the row, and a currency without its amount, which loads as no money.
 
 import io
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import NewType
 from uuid import UUID
@@ -70,7 +71,10 @@ def test_an_added_money_field_keeps_amount_and_currency_together(
     (added,) = (tmp_path / "migrations").glob("*limits*.py")
 
     assert "limit_money" in added.read_text()
-    with sqlite3.connect(database) as connection, pytest.raises(sqlite3.IntegrityError):
+    with (
+        closing(sqlite3.connect(database)) as connection,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
         connection.execute(
             "INSERT INTO framework_test_sec14a_purses (id, version, balance, "
             "balance_currency, "

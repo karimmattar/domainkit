@@ -27,7 +27,7 @@ token or an internal unit, before any amount uses it.
 
 import csv
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import date
 from decimal import (
@@ -187,7 +187,10 @@ class Currency:
 
         Raises:
             ValueError: The code, numeric code, or minor units are out of bounds.
+            AttributeError: The currency is made already: it is immutable.
         """
+        if hasattr(self, "code"):
+            raise AttributeError("A currency is immutable; it is made once.")
         if not isinstance(code, str) or not _CODE.fullmatch(code):
             raise ValueError(
                 "A currency code is three to eight capital letters or digits, "
@@ -296,18 +299,24 @@ _registered: dict[str, Currency] = {}
 def currency(code: str | Currency) -> Currency:
     """The currency of ``code`` (``"KWD"``): ISO 4217's, or a registered one.
 
-    A ``Currency`` is returned as it is.
+    A ``Currency`` is checked against the known one of its code: one made
+    by hand with other units is refused, as an unknown code is.
 
     Raises:
-        UnknownCurrency: No currency has the code (codes are in capitals).
+        UnknownCurrency: No currency has the code (codes are in capitals),
+            or the ``Currency`` given is not the known one.
     """
-    if isinstance(code, Currency):
-        return code
+    given = code.code if isinstance(code, Currency) else code
     found = (
-        _iso_4217().get(code) or _registered.get(code)
-        if isinstance(code, str)
+        _iso_4217().get(given) or _registered.get(given)
+        if isinstance(given, str)
         else None
     )
+    if isinstance(code, Currency) and found != code:
+        raise UnknownCurrency(
+            f"{code!r} is not the known currency of its code: take currencies "
+            "from currency() or register_currency."
+        )
     if found is None:
         shown = repr(code) if isinstance(code, str) and len(code) <= 8 else "the code"
         raise UnknownCurrency(
@@ -362,18 +371,21 @@ def register_currency(
 
 
 @contextmanager
-def currencies_kept() -> Iterator[None]:
+def currencies_kept(unless: Callable[[], bool] | None = None) -> Iterator[None]:
     """Put the registered currencies back as they were when the block ends.
 
     What the block registered is dropped: the test plugin keeps each
-    test's to itself.
+    test's to itself. ``unless``, true when the block ends, keeps them
+    instead (the plugin's: the test loaded the domains, whose ``ready()``
+    registered them).
     """
     kept = dict(_registered)
     try:
         yield
     finally:
-        _registered.clear()
-        _registered.update(kept)
+        if unless is None or not unless():
+            _registered.clear()
+            _registered.update(kept)
 
 
 class Money:
@@ -408,7 +420,10 @@ class Money:
                 or it has more than ``MAX_DIGITS`` digits before the point.
             InexactAmount: It has more places than the currency.
             UnknownCurrency: The code names no currency.
+            AttributeError: The money is made already: it is immutable.
         """
+        if hasattr(self, "currency"):
+            raise AttributeError("Money is immutable; it is made once.")
         held = _currency(currency)
         _set(self, _quantized(_amount(amount), held, None), held)
 
@@ -733,11 +748,12 @@ def _amount(value: object) -> Decimal:
     """``value`` as an amount: a finite ``Decimal`` of at most ``MAX_DIGITS``.
 
     Raises:
-        ValueError: It has more digits before the point.
+        MoneyError: It has more digits before the point (a product of a
+            factor a request gave, say): 422, as any amount money refuses.
     """
     amount = _number(value, "amount")
     if not amount.is_zero() and amount.adjusted() >= MAX_DIGITS:
-        raise ValueError(f"An amount has at most {MAX_DIGITS} digits before the point.")
+        raise MoneyError(f"An amount has at most {MAX_DIGITS} digits before the point.")
     return amount
 
 

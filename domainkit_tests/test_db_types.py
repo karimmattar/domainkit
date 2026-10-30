@@ -241,7 +241,11 @@ async def test_factors_are_numbers_however_they_are_given(engine: AsyncEngine) -
         third = await connection.scalar(
             select(amount / quantity).where(prices.c.id == 2)
         )
+        given = await connection.scalar(
+            select(amount * Decimal("0.1")).where(prices.c.id == 2)
+        )
     assert (type(tenth), tenth) == (Decimal, Decimal("0.003"))
+    assert (type(given), given) == (Decimal, Decimal("0.003"))
     assert type(third) is Decimal
     assert abs(third - Decimal("0.01")) < Decimal("1E-15")
 

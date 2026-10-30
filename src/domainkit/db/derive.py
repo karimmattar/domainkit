@@ -53,6 +53,7 @@ from uuid import UUID
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     Double,
@@ -68,7 +69,7 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.sql.schema import SchemaItem
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
-from domainkit.db.money import PRECISION, SCALE, MoneyColumns
+from domainkit.db.money import CHECK, PRECISION, SCALE, MoneyColumns, money_check
 from domainkit.db.orm import VERSION
 from domainkit.db.orm import metadata as default_metadata
 from domainkit.db.types import CurrencyCode, ExactDecimal, UTCDateTime
@@ -210,7 +211,7 @@ def table_for(
         if field.entity is not None:
             continue
         if field.kind is Money:
-            columns.extend(_money_columns(field, given))
+            columns.extend(_money_columns(field, given, extra))
             continue
         if field.name in given:
             columns.append(given.pop(field.name))
@@ -235,12 +236,15 @@ def table_for(
     )
 
 
-def _money_columns(field: FieldInfo, given: dict[str, Column[Any]]) -> list[SchemaItem]:
+def _money_columns(
+    field: FieldInfo, given: dict[str, Column[Any]], extra: tuple[SchemaItem, ...]
+) -> list[SchemaItem]:
     """The amount and currency columns of a money field, and its check.
 
     ``Digits(precision, scale)`` sizes the amount (default: 18 digits, 4
-    places). Columns given in ``extra`` (``*MoneyColumns(...)``, which
-    bring their own check) replace the derived ones.
+    places). Columns given in ``extra`` (``*MoneyColumns(...)``) replace
+    the derived ones; a pair that may be missing gets its check, unless
+    ``extra`` brings one.
     """
     digits = field.marker(Digits) or Digits(PRECISION, SCALE)
     derived = MoneyColumns(
@@ -248,7 +252,15 @@ def _money_columns(field: FieldInfo, given: dict[str, Column[Any]]) -> list[Sche
     )
     if field.name not in given:
         return list(derived)
-    return [given.pop(field.name), given.pop(derived.currency.name, derived.currency)]
+    amount = given.pop(field.name)
+    currency = given.pop(derived.currency.name, derived.currency)
+    checked = any(
+        isinstance(item, CheckConstraint) and item.info.get(CHECK) == field.name
+        for item in extra
+    )
+    if not field.nullable or checked:
+        return [amount, currency]
+    return [amount, currency, money_check(field.name, amount, currency)]
 
 
 def column_type(field: FieldInfo) -> TypeEngine[Any]:
