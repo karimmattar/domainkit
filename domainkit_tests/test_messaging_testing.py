@@ -349,6 +349,7 @@ async def test_queued_messages_keep_their_rows_and_absent_arguments_match_nothin
         row["available_at"],
         "once",
     )
+    assert message.database == "default"
     assert str(missing.value) == (
         f"Expected one message of {message.target} with {{'absent': None}}, "
         f"found 0 among ['{message.target}']."

@@ -419,6 +419,12 @@ async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages()
     await gate.until(lambda: gate.started == ["held"])
     await budget.until_waiting(1)
 
+    def run_time() -> float:
+        labels = {"kind": "task"}
+        name = "messaging_message_duration_seconds_sum"
+        return REGISTRY.get_sample_value(name, labels) or 0.0
+
+    before = run_time()
     stop.set()
     await within(running)
 
@@ -426,6 +432,7 @@ async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages()
     assert [(row["status"], row["started_at"]) for row in await rows()] == [
         (PENDING, None)
     ]
+    assert 0 <= run_time() - before < WAIT  # The time it ran, not a clock's reading.
 
 
 @pytest.mark.usefixtures("tables")
@@ -787,6 +794,20 @@ def test_periodic_tasks_say_what_they_need() -> None:
         with pytest.raises(ImproperlyConfigured) as refused:
             periodic(**options)  # type: ignore[arg-type]
         assert str(refused.value) == message
+
+
+def test_a_function_that_is_no_task_is_named_in_the_refusal() -> None:
+    """``spec_for`` says which function, and how to make it a task."""
+
+    async def plain() -> None:
+        """Nothing."""
+
+    with pytest.raises(ImproperlyConfigured) as refused:
+        spec_for(plain)
+
+    assert str(refused.value) == (
+        f"{qualified_name(plain)} is not a task; decorate it with @task."
+    )
 
 
 def test_periodic_tasks_run_at_the_default_priority() -> None:
