@@ -62,14 +62,14 @@ optional app's are on its own page ([contrib.md](../contrib.md)).
 `check` holds every installed domain to `domainkit.architecture`'s rules
 ([ADR 0003](../adr/0003-enforced-layer-rules.md)): `api → infrastructure →
 application → domain`; the domain layer imports only the standard library,
-`domainkit.ddd`, `domainkit.clock`, and itself; the application layer uses
+`domainkit.ddd`, `domainkit.clock`, `domainkit.money`, and itself; the application layer uses
 no web or database library; another domain is reached only through its
 `application` or `domain.events`. `ARCHITECTURE` adds to these rules, and
 only adds: a rule the framework states always holds.
 
 | `ARCHITECTURE` key | Default | Meaning |
 | --- | --- | --- |
-| `DOMAIN_ALLOWED` | `()` | More packages a domain layer may import, such as a shared kernel (`"myproject.kernel"`) or a money library. Up to 64 dotted names. |
+| `DOMAIN_ALLOWED` | `()` | More packages a domain layer may import, such as a shared kernel (`"myproject.kernel"`). Up to 64 dotted names. |
 | `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 12 layers, each with up to 64 names. |
 | `EXTRA_LAYERS` | `()` | Layer packages of the project's own, such as `ports`, so the two tables here can name them. Up to 8, none a built-in layer. |
 | `FORBIDDEN_LAYERS` | `{}` | More layers of the same domain a layer must not import: `{"ports": ("infrastructure", "api")}`. Every layer named must be built in or in `EXTRA_LAYERS`, and none may forbid itself. Up to 12 layers, each forbidding up to 12. |

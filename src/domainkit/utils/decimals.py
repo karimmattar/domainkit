@@ -20,8 +20,8 @@ from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any, Final
 
-from pydantic import BaseModel
-from pydantic_core import to_jsonable_python
+from pydantic import BaseModel, TypeAdapter
+from pydantic_core import PydanticSerializationError, to_jsonable_python
 
 __all__ = [
     "decimal_text",
@@ -51,8 +51,29 @@ def decimal_text(value: Decimal) -> str:
 
 
 def jsonable(value: object) -> Any:  # noqa: ANN401 - JSON values.
-    """``to_jsonable_python(value)``, each ``Decimal`` in it as ``decimal_text``."""
-    return with_decimal_text(value, to_jsonable_python(value))
+    """``to_jsonable_python(value)``, each ``Decimal`` in it as ``decimal_text``.
+
+    A value of a class with a pydantic schema of its own (``Money``) is
+    written as that schema writes it.
+    """
+    return with_decimal_text(value, to_jsonable_python(value, fallback=_own_schema))
+
+
+def _own_schema(value: object) -> Any:  # noqa: ANN401 - JSON values.
+    """``value`` as its class's own pydantic schema writes it in JSON.
+
+    Raises:
+        PydanticSerializationError: The class has none: pydantic cannot write it.
+    """
+    kind = type(value)
+    if not hasattr(kind, "__get_pydantic_core_schema__"):
+        raise PydanticSerializationError(f"Unable to serialize unknown type: {kind}")
+    adapter = _adapters.get(kind) or _adapters.setdefault(kind, TypeAdapter(kind))
+    return adapter.dump_python(value, mode="json")
+
+
+_adapters: dict[type, TypeAdapter[Any]] = {}
+"""The adapter of each class with a schema of its own, made once."""
 
 
 def with_decimal_text(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON values.

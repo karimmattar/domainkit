@@ -28,6 +28,7 @@ from domainkit.http.metrics import refreshers_kept
 from domainkit.ledger import Ledger, MemoryLedger
 from domainkit.ledger.handler import LedgerHandler
 from domainkit.log import ThrottledLog, reset_throttled
+from domainkit.money import currencies, currencies_kept, register_currency
 from domainkit.testing import IN_MEMORY
 from domainkit_tests.conftest import MIDDLEWARE
 from domainkit_tests.test_testing import prefix, run_plugin
@@ -58,6 +59,7 @@ def test_a_test_s_subscriptions_tasks_and_refreshers_end_with_it(
         from domainkit.contrib.messaging import task
         from domainkit.ddd import DomainEvent, event_bus
         from domainkit.http import metrics
+        from domainkit.money import currencies, register_currency
 
         class Happened(DomainEvent):
             pass
@@ -74,6 +76,7 @@ def test_a_test_s_subscriptions_tasks_and_refreshers_end_with_it(
         def test_adds():
             assert registry.ready
             event_bus.subscribe(Happened, handler)
+            register_currency("PTS", minor_units=0)
 
             @task
             async def chore():
@@ -87,6 +90,7 @@ def test_a_test_s_subscriptions_tasks_and_refreshers_end_with_it(
             assert event_bus.handlers_for(Happened) == []
             assert not [s for s in tasks.all_tasks() if s.key.endswith("chore")]
             assert refresh not in metrics._refreshers
+            assert "PTS" not in [each.code for each in currencies()]
         """
     )
 
@@ -236,6 +240,10 @@ def test_each_reset_puts_back_what_the_block_changed(
         metrics.register_refresher(refresh)
         assert refresh in metrics._refreshers
     assert refresh not in metrics._refreshers
+
+    with currencies_kept():
+        register_currency("PTS", minor_units=0)
+    assert "PTS" not in [each.code for each in currencies()]
 
     throttled = ThrottledLog(logging.getLogger("shop.security"))
     throttled.warning("bad_host", "10.0.0.1", "Bad host")
