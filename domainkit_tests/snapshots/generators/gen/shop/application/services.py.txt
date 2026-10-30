@@ -4,17 +4,20 @@ Committing publishes the events the aggregate recorded. A request's
 ``If-Match`` is checked as ``get`` loads the aggregate (docs/resources.md).
 """
 
-from domainkit.ddd import Unset
+from domainkit.ddd import ConcurrentUpdate, Retry, Unset
 from gen.shop.application.commands import (
     AddProductNote,
     ArchiveProduct,
     CreateCategory,
     CreateProduct,
+    CreateWallet,
     DeleteCategory,
     DeleteProduct,
+    DeleteWallet,
     LockProduct,
     PublishProduct,
     RetitleCategory,
+    TransferWalletBalance,
     UpdateProduct,
 )
 from gen.shop.application.unit_of_work import ShopUnitOfWork
@@ -25,7 +28,12 @@ from gen.shop.domain.model import (
     Product,
     ProductId,
     ProductName,
+    Wallet,
+    WalletId,
 )
+
+RACES = Retry(attempts=5, retry_on=(ConcurrentUpdate,))
+"""Up to five runs of a transfer, each after a short random wait."""
 
 
 async def create_product(command: CreateProduct, uow: ShopUnitOfWork) -> Product:
@@ -125,3 +133,43 @@ async def lock_product(command: LockProduct, uow: ShopUnitOfWork) -> Product:
         product.lock()
         await uow.commit()
     return product
+
+
+async def create_wallet(command: CreateWallet, uow: ShopUnitOfWork) -> Wallet:
+    """Create and store a wallet."""
+    wallet = Wallet.create(balance=command.balance, owed=command.owed)
+    async with uow:
+        await uow.wallets.add(wallet)
+        await uow.commit()
+    return wallet
+
+
+async def delete_wallet(command: DeleteWallet, uow: ShopUnitOfWork) -> None:
+    """Delete a wallet."""
+    async with uow:
+        wallet = await uow.wallets.get(WalletId(command.wallet_id))
+        wallet.delete()
+        await uow.wallets.remove(wallet)
+        await uow.commit()
+
+
+async def transfer_wallet_balance(
+    command: TransferWalletBalance, uow: ShopUnitOfWork
+) -> Wallet:
+    """Move the amount from one wallet to another, whole or not at all.
+
+    Both rows are locked in one statement, by ascending id, so two transfers
+    between the same wallets take the locks in the same order and cannot
+    deadlock; the whole work runs again when its transaction loses a race.
+    """
+    source, target = WalletId(command.wallet_id), WalletId(command.to)
+
+    async def work() -> Wallet:
+        async with uow:
+            wallets = await uow.wallets.get_many_for_update([source, target])
+            wallets[source].transfer_balance(to=target, amount=command.amount)
+            wallets[target].receive_balance(amount=command.amount)
+            await uow.commit()
+        return wallets[source]
+
+    return await uow.run(work, retry=RACES)

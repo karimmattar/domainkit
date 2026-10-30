@@ -498,6 +498,17 @@ FIELD_TYPES: Final[dict[str, FieldType]] = {
         defaults=("12", "2"),
         limit=38,
     ),
+    "money": Bounded(
+        "Annotated[Money, Digits({0}, {1})]",
+        "MoneyColumns: the amount, ExactDecimal(precision, scale), and the currency",
+        plain="Money",
+        imports=(ANNOTATED, ("domainkit.money", "Money"), ("domainkit.ddd", "Digits")),
+        example='Money.of("{amount}", "USD")',
+        example_imports=(("domainkit.money", "Money"),),
+        request='{{"amount": "{amount}", "currency": "USD"}}',
+        defaults=("18", "4"),
+        limit=18,
+    ),
     "date": FieldType(
         "date",
         "Date",
@@ -616,7 +627,12 @@ class FieldSpec:
         return self.type.request.format(amount=self._amount())
 
     def _amount(self) -> str:
-        """``1.5`` at the field's scale (``1.50``), as the database gives it back."""
+        """``1.5`` at the field's scale (``1.50``), as the database gives it back.
+
+        Money's is 1.50 US dollars, or 1.00 in a column without two places.
+        """
+        if self.kind == "money":
+            return "1.50" if int(self.options[1]) >= 2 else "1.00"
         if self.kind != "decimal":
             return ""
         scale = int(self.options[1])
@@ -656,7 +672,7 @@ class FieldSpec:
         return [
             item
             for item in self.type.imports
-            if item[0] in {"decimal", "datetime", "uuid"}
+            if item[0] in {"decimal", "datetime", "uuid", "domainkit.money"}
         ]
 
     def _maybe(self, hint: str) -> str:

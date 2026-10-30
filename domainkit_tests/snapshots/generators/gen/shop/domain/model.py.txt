@@ -18,6 +18,7 @@ from domainkit.ddd import (
     Repository,
     ValueObject,
 )
+from domainkit.money import Money
 from gen.shop.domain.events import (
     CategoryCreated,
     CategoryDeleted,
@@ -29,6 +30,9 @@ from gen.shop.domain.events import (
     ProductNoteAdded,
     ProductPublished,
     ProductRenamed,
+    WalletBalanceTransferred,
+    WalletCreated,
+    WalletDeleted,
 )
 
 ProductId = NewType("ProductId", UUID)
@@ -179,3 +183,61 @@ class CategoryRepository(Repository[Category, CategoryId]):
     def not_found(self, id_: CategoryId) -> CategoryNotFound:
         """Report a missing category."""
         return CategoryNotFound(f"Category {id_} does not exist.")
+
+
+WalletId = NewType("WalletId", UUID)
+
+
+class WalletNotFound(NotFound):
+    """No wallet has the requested id."""
+
+
+class InvalidWalletTransfer(BusinessRuleViolation):
+    """A transfer moves an amount above zero to another wallet."""
+
+
+class InsufficientWalletBalance(BusinessRuleViolation):
+    """A wallet transfers at most the balance it holds."""
+
+
+class Wallet(AggregateRoot[WalletId]):
+    """Consistency boundary for one wallet; change it only through methods."""
+
+    balance: Annotated[Money, Digits(18, 4)]
+    owed: Annotated[Money, Digits(12, 2)] | None = None
+
+    @classmethod
+    def create(cls, *, balance: Money, owed: Money | None = None) -> Self:
+        """Start a new wallet and record that it was created."""
+        wallet = cls(id=WalletId(uuid4()), balance=balance, owed=owed)
+        wallet.record(WalletCreated(wallet_id=wallet.id))
+        return wallet
+
+    def delete(self) -> None:
+        """Record that the wallet goes; the repository removes it."""
+        self.record(WalletDeleted(wallet_id=self.id))
+
+    def transfer_balance(self, *, to: WalletId, amount: Money) -> None:
+        """Take ``amount`` off the balance, for the wallet ``to``."""
+        if to == self.id or amount.amount <= 0:
+            raise InvalidWalletTransfer(
+                "A transfer moves an amount above zero to another wallet."
+            )
+        if amount > self.balance:  # Of another currency, CurrencyMismatch.
+            raise InsufficientWalletBalance(
+                f"Wallet {self.id} holds less than {amount}."
+            )
+        self.balance -= amount
+        self.record(WalletBalanceTransferred(wallet_id=self.id, to=to, amount=amount))
+
+    def receive_balance(self, *, amount: Money) -> None:
+        """Add a transfer's ``amount`` to the balance."""
+        self.balance += amount
+
+
+class WalletRepository(Repository[Wallet, WalletId]):
+    """Every wallet: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: WalletId) -> WalletNotFound:
+        """Report a missing wallet."""
+        return WalletNotFound(f"Wallet {id_} does not exist.")

@@ -17,9 +17,13 @@ from gen.shop.domain.model import (
     ProductId,
     ProductName,
     ProductRepository,
+    Wallet,
+    WalletId,
+    WalletRepository,
 )
 
 from domainkit.ddd import EventBus, InMemoryRepository
+from domainkit.money import Money
 
 
 class InMemoryProductRepository(
@@ -34,11 +38,16 @@ class InMemoryCategoryRepository(
     """Dictionary-backed ``CategoryRepository``; it answers queries as SQL does."""
 
 
+class InMemoryWalletRepository(InMemoryRepository[Wallet, WalletId], WalletRepository):
+    """Dictionary-backed ``WalletRepository``; it answers queries as SQL does."""
+
+
 class FakeShopUnitOfWork(ShopUnitOfWork):
     """Unit of work that records commits instead of writing anywhere."""
 
     products: InMemoryProductRepository
     categories: InMemoryCategoryRepository
+    wallets: InMemoryWalletRepository
 
     def __init__(self, events: EventBus | None = None) -> None:
         """Start empty; publish to ``events`` (a private bus in tests)."""
@@ -46,6 +55,7 @@ class FakeShopUnitOfWork(ShopUnitOfWork):
         self.products = InMemoryProductRepository()
         self.commits = 0
         self.categories = InMemoryCategoryRepository()
+        self.wallets = InMemoryWalletRepository()
 
     async def _commit(self) -> None:
         """Count the commit."""
@@ -82,4 +92,21 @@ def new_category_request() -> dict[str, object]:
         "title": "text",
         "parent": "00000000-0000-0000-0000-000000000001",
         "price": "1.50",
+    }
+
+
+def new_wallet() -> Wallet:
+    """A valid wallet, its creation event taken: tests start from it."""
+    wallet = Wallet.create(
+        balance=Money.of("1.50", "USD"), owed=Money.of("1.50", "USD")
+    )
+    wallet.pull_events()
+    return wallet
+
+
+def new_wallet_request() -> dict[str, object]:
+    """A valid body of ``POST /wallets``."""
+    return {
+        "balance": {"amount": "1.50", "currency": "USD"},
+        "owed": {"amount": "1.50", "currency": "USD"},
     }

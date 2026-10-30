@@ -17,9 +17,18 @@ layer of a new aggregate and its tests:
 Field kinds are those of ``domainkit.management.generators.FIELD_TYPES``
 (``--help`` lists them); ``?`` lets a field be None. Every name is checked,
 and every file edited in memory, before anything is written.
+
+A money field (``--field balance:money``, or ``balance:money:12:2`` to size
+its amount) is moved between aggregates as ``docs/databases.md`` says money
+moves: ``Wallet.transfer_balance`` and ``receive_balance``, which refuse an
+overdraft and another currency; ``TransferWalletBalance`` and its use case,
+which lock both rows in one statement, by ascending id, and run the whole
+work again when it loses a race (``uow.run(..., retry=Retry(...))``);
+``POST /wallets/{wallet_id}/transfer-balance``; and their tests.
 """
 
 from argparse import ArgumentParser
+from decimal import Decimal
 
 from domainkit.management.base import CommandError
 from domainkit.management.generators import (
@@ -31,6 +40,7 @@ from domainkit.management.generators import (
     field_help,
     parse_fields,
 )
+from domainkit.utils.text import camel_case, snake_case
 
 
 class Command(AggregateGenerator):
@@ -78,6 +88,9 @@ def add_aggregate(domain: Domain, names: Names, specs: list[FieldSpec]) -> None:
     _infrastructure_layer(domain, names)
     _api_layer(domain, names)
     _tests(domain, names, specs)
+    for spec in specs:
+        if spec.kind == "money" and not spec.nullable:
+            _transfers(domain, names, spec)
 
 
 def _domain_layer(domain: Domain, names: Names, specs: list[FieldSpec]) -> None:
@@ -383,5 +396,289 @@ def test_resource(admin_client: TestClient) -> None:
     ]
     assert admin_client.delete(item).status_code == 204
     assert admin_client.get(item).status_code == 404
+''',
+    )
+
+
+def _transfers(domain: Domain, names: Names, spec: FieldSpec) -> None:
+    """Plan how the money field ``spec`` moves between two aggregates, and its tests.
+
+    The use case follows ``docs/databases.md``: both rows locked in one
+    statement, by ascending id, and the whole work run again when its
+    transaction loses a race.
+
+    Raises:
+        CommandError: A name it would define is taken.
+    """
+    A, a, many, field = names.cls, names.snake, names.plural, spec.name
+    F = camel_case(field)
+    command, event = f"Transfer{A}{F}", f"{A}{F}Transferred"
+    invalid, short = f"Invalid{A}Transfer", f"Insufficient{A}{F}"
+    service = f"transfer_{a}_{field}"
+    path = f"transfer-{field.replace('_', '-')}"
+    what = field.replace("_", " ")
+    model = domain.edit("domain/model.py")
+    events = domain.edit("domain/events.py")
+    commands = domain.edit("application/commands.py")
+    services = domain.edit("application/services.py")
+    routes = domain.edit("api/routes.py")
+    for source, name in (
+        (model, short),
+        (events, event),
+        (commands, command),
+        (services, service),
+        (routes, f"{command}In"),
+    ):
+        if source.defines(name):
+            raise CommandError(f"{source.path} already defines {name}.")
+    model.import_names("domainkit.ddd", "BusinessRuleViolation")
+    model.import_names(domain.module("domain.events"), event)
+    errors = f'''
+class {short}(BusinessRuleViolation):
+    """A {names.title} transfers at most the {what} it holds."""
+'''
+    if not model.defines(invalid):
+        errors = f'''
+class {invalid}(BusinessRuleViolation):
+    """A transfer moves an amount above zero to another {names.title}."""
+
+{errors}'''
+    model.insert_before_class(A, errors)
+    model.add_to_class(
+        A,
+        [
+            "",
+            f"def transfer_{field}(self, *, to: {A}Id, amount: Money) -> None:",
+            f'    """Take ``amount`` off the {what}, for the {names.title} ``to``."""',
+            "    if to == self.id or amount.amount <= 0:",
+            f"        raise {invalid}(",
+            (
+                '            "A transfer moves an amount above zero to another '
+                f'{names.title}."'
+            ),
+            "        )",
+            f"    if amount > self.{field}:  # Of another currency, CurrencyMismatch.",
+            f'        raise {short}(f"{A} {{self.id}} holds less than {{amount}}.")',
+            f"    self.{field} -= amount",
+            f"    self.record({event}({a}_id=self.id, to=to, amount=amount))",
+            "",
+            f"def receive_{field}(self, *, amount: Money) -> None:",
+            f'    """Add a transfer\'s ``amount`` to the {what}."""',
+            f"    self.{field} += amount",
+        ],
+    )
+    for source in (events, commands):
+        source.import_names("uuid", "UUID")
+        source.import_names("domainkit.money", "Money")
+    events.import_names("domainkit.ddd", "DomainEvent")
+    events.append(
+        f'''
+class {event}(DomainEvent):
+    """An amount of a {names.title}'s {what} went to another."""
+
+    {a}_id: UUID
+    to: UUID
+    amount: Money
+'''
+    )
+    commands.import_names("domainkit.ddd", "Command")
+    commands.append(
+        f'''
+class {command}(Command):
+    """Move an amount of {what} from one {names.title} to another."""
+
+    {a}_id: UUID
+    to: UUID
+    amount: Money
+'''
+    )
+    unit = f"{domain.camel}UnitOfWork"
+    services.import_names("domainkit.ddd", "ConcurrentUpdate", "Retry")
+    services.import_names(domain.module("application.commands"), command)
+    if not services.defines("RACES"):
+        services.insert_after_imports(
+            [
+                "",
+                "",
+                "RACES = Retry(attempts=5, retry_on=(ConcurrentUpdate,))",
+                '"""Up to five runs of a transfer, each after a short random wait."""',
+            ]
+        )
+    services.append(
+        f'''
+async def {service}(command: {command}, uow: {unit}) -> {A}:
+    """Move the amount from one {names.title} to another, whole or not at all.
+
+    Both rows are locked in one statement, by ascending id, so two transfers
+    between the same {many} take the locks in the same order and cannot
+    deadlock; the whole work runs again when its transaction loses a race.
+    """
+    source, target = {A}Id(command.{a}_id), {A}Id(command.to)
+
+    async def work() -> {A}:
+        async with uow:
+            {many} = await uow.{many}.get_many_for_update([source, target])
+            {many}[source].transfer_{field}(to=target, amount=command.amount)
+            {many}[target].receive_{field}(amount=command.amount)
+            await uow.commit()
+        return {many}[source]
+
+    return await uow.run(work, retry=RACES)
+'''
+    )
+    routes.import_names("uuid", "UUID")
+    routes.import_names("pydantic", "BaseModel")
+    routes.import_names("domainkit.money", "Money")
+    routes.import_names(domain.module("application.commands"), command)
+    routes.insert_before(
+        f"{many} = ResourceRouter(",
+        [
+            f"class {command}In(BaseModel):",
+            f'    """What ``{command}`` takes."""',
+            "",
+            "    to: UUID",
+            "    amount: Money",
+            "",
+            "",
+        ],
+    )
+    routes.insert_before(
+        f"router.include_router({many})",
+        [
+            f"{many}.command_route(",
+            f"    {command},",
+            f"    service=services.{service},",
+            f"    body={command}In,",
+            f'    path="/{path}",',
+            ")",
+        ],
+    )
+    _transfer_tests(domain, names, spec)
+
+
+def _transfer_tests(domain: Domain, names: Names, spec: FieldSpec) -> None:
+    """The tests of a money field's transfers: the rules, a lost race, the route.
+
+    The route moves 1.00 USD out of an aggregate made from
+    ``new_<name>_request()``, which holds 1.50 (1.00 in a column without
+    cents), and refuses a second.
+    """
+    A, a, many, field = names.cls, names.snake, names.plural, spec.name
+    held = Decimal("1.50") if int(spec.options[1]) >= 2 else Decimal("1.00")
+    left, received = f"{held - 1:.2f}", f"{held + 1:.2f}"
+    F = camel_case(field)
+    command, event = f"Transfer{A}{F}", f"{A}{F}Transferred"
+    invalid, short = f"Invalid{A}Transfer", f"Insufficient{A}{F}"
+    service = f"transfer_{a}_{field}"
+    path = f"transfer-{field.replace('_', '-')}"
+    fake = f"Fake{domain.camel}UnitOfWork"
+    domain.create(
+        domain.tests / f"test_{service}.py",
+        f'''"""``{command}``: the money moves whole, once, even when a race is lost."""
+
+import pytest
+from domainkit.ddd import ConcurrentUpdate, DomainEvent, EventBus
+from domainkit.money import CurrencyMismatch, Money
+from domainkit.testing import TestClient
+
+from {domain.module("application")} import services
+from {domain.module("application.commands")} import {command}
+from {domain.module("domain.events")} import {event}
+from {domain.module("domain.model")} import {A}, {short}, {invalid}
+
+from .fakes import {fake}, new_{a}, new_{a}_request
+
+URL = "/api/v1/{domain.name}/{many}"
+
+
+def usd(amount: str) -> Money:
+    """``amount`` US dollars."""
+    return Money.of(amount, "USD")
+
+
+async def funded(uow: {fake}, amount: str) -> {A}:
+    """A stored {names.title} holding ``amount`` US dollars."""
+    {a} = new_{a}()
+    {a}.{field} = usd(amount)
+    async with uow:
+        await uow.{many}.add({a})
+        await uow.commit()
+    return {a}
+
+
+def test_a_transfer_takes_at_most_the_{field}_in_its_currency() -> None:
+    """Past the {field}, nothing, to itself, or of another currency: refused."""
+    source, target = new_{a}(), new_{a}()
+    source.{field} = usd("1.00")
+
+    with pytest.raises({short}):
+        source.transfer_{field}(to=target.id, amount=usd("1.01"))
+    with pytest.raises({invalid}):
+        source.transfer_{field}(to=target.id, amount=usd("0.00"))
+    with pytest.raises({invalid}):
+        source.transfer_{field}(to=source.id, amount=usd("1.00"))
+    with pytest.raises(CurrencyMismatch):
+        source.transfer_{field}(to=target.id, amount=Money.of("1", "EUR"))
+    assert source.{field} == usd("1.00")
+    assert source.pull_events() == []
+
+
+@pytest.mark.anyio
+async def test_{service}_publishes_{snake_case(event)}() -> None:
+    """The money moves, in one commit; {event} follows."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: {event}) -> None:
+        published.append(event)
+
+    bus.subscribe({event}, collect)
+    uow = {fake}(bus)
+    source, target = await funded(uow, "10.00"), await funded(uow, "0.01")
+
+    command = {command}({a}_id=source.id, to=target.id, amount=usd("2.50"))
+    await services.{service}(command, uow)
+
+    assert (source.{field}, target.{field}) == (usd("7.50"), usd("2.51"))
+    assert uow.commits == 3
+    assert [type(each) for each in published] == [{event}]
+
+
+@pytest.mark.anyio
+async def test_a_transfer_that_loses_a_race_runs_again_whole() -> None:
+    """The first commit fails; the second run moves the money, once."""
+
+    class LosesOnce({fake}):
+        lost = False
+
+        async def _commit(self) -> None:
+            if self.commits == 2 and not self.lost:  # The transfer's first commit.
+                self.lost = True
+                raise ConcurrentUpdate("Another transfer changed the {names.title}.")
+            await super()._commit()
+
+    uow = LosesOnce()
+    source, target = await funded(uow, "10.00"), await funded(uow, "0.01")
+
+    command = {command}({a}_id=source.id, to=target.id, amount=usd("4.00"))
+    await services.{service}(command, uow)
+
+    assert (uow.lost, uow.commits) == (True, 3)
+    assert (source.{field}, target.{field}) == (usd("6.00"), usd("4.01"))
+
+
+def test_{service}_route(admin_client: TestClient) -> None:
+    """A transfer past the {field} is refused, 422, and nothing moves."""
+    ids = [admin_client.post(URL, json=new_{a}_request()).json()["id"] for _ in "ab"]
+    transfer = {{"to": ids[1], "amount": {{"amount": "1.00", "currency": "USD"}}}}
+
+    moved = admin_client.post(f"{{URL}}/{{ids[0]}}/{path}", json=transfer)
+    refused = admin_client.post(f"{{URL}}/{{ids[0]}}/{path}", json=transfer)
+
+    assert moved.status_code == 200, moved.json()
+    assert moved.json()["{field}"] == {{"amount": "{left}", "currency": "USD"}}
+    assert (refused.status_code, refused.json()["code"]) == (422, "{snake_case(short)}")
+    target = admin_client.get(f"{{URL}}/{{ids[1]}}").json()
+    assert target["{field}"] == {{"amount": "{received}", "currency": "USD"}}
 ''',
     )

@@ -391,6 +391,44 @@ def test_generators_refuse_clashes_with_what_they_made(shop: Shop) -> None:
         shop("addcommand", "Product", "HoldProduct")
 
 
+def test_startaggregate_moves_money_as_the_transfer_recipe_does(shop: Shop) -> None:
+    """A money field: transfers that lock in id order and run again on a lost race."""
+    shop("startaggregate", "Wallet", fields=["balance:money", "limit:money:12:2?"])
+
+    model = shop.read("domain/model.py")
+    assert "    balance: Annotated[Money, Digits(18, 4)]\n" in model
+    assert "    limit: Annotated[Money, Digits(12, 2)] | None = None\n" in model
+    assert "def transfer_balance(self, *, to: WalletId, amount: Money)" in model
+    assert "def receive_balance(self, *, amount: Money) -> None:" in model
+    assert "class InsufficientWalletBalance(BusinessRuleViolation):" in model
+    assert "transfer_limit" not in model  # A missing-able amount is no balance.
+    services = shop.read("application/services.py")
+    assert "RACES = Retry(attempts=5, retry_on=(ConcurrentUpdate,))" in services
+    assert "get_many_for_update([source, target])" in services
+    assert "return await uow.run(work, retry=RACES)" in services
+    assert 'path="/transfer-balance"' in shop.read("api/routes.py")
+    assert "amount: Money" in shop.read("domain/events.py")
+    tests = shop.test("test_transfer_wallet_balance.py")
+    assert '"insufficient_wallet_balance"' in tests
+    assert '"amount": "0.50"' in tests
+    assert '"balance": {"amount": "1.50", "currency": "USD"}' in shop.test("fakes.py")
+    assert check_domain("gen.shop") == []
+
+
+def test_money_transfers_refuse_names_taken(shop: Shop) -> None:
+    """A transfer's error, event, command, or route body of the name stops it."""
+    model = shop.package / "domain" / "model.py"
+    model.write_text(
+        shop.read("domain/model.py")
+        + "\n\nclass InsufficientPurseBalance(Exception):\n    pass\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CommandError, match="already defines InsufficientPurseBalance"):
+        shop("startaggregate", "Purse", fields=["balance:money"])
+    assert not (shop.tests / "test_purses.py").exists()
+
+
 def test_generators_refuse_files_changed_beyond_recognition(shop: Shop) -> None:
     """Missing files, broken ones, and renamed classes stop them."""
     apps = shop.package / "apps.py"
@@ -537,6 +575,16 @@ def test_field_specs_write_examples_and_conversions() -> None:
     assert FieldSpec.parse("n:int?").body() == (
         "int | None = Field(default=None, ge=-(2**63), lt=2**63)"
     )
+    money, whole = FieldSpec.parse("total:money"), FieldSpec.parse("total:money:12:1")
+    assert (money.annotation(), money.plain(), money.body()) == (
+        "Annotated[Money, Digits(18, 4)]",
+        "Money",
+        "Money",
+    )
+    assert money.example() == 'Money.of("1.50", "USD")'
+    assert money.request() == '{"amount": "1.50", "currency": "USD"}'
+    assert whole.example() == 'Money.of("1.00", "USD")'
+    assert money.plain_imports() == [("domainkit.money", "Money")]
 
 
 def test_names_and_words() -> None:
@@ -721,6 +769,14 @@ GENERATE = [
         *("--field", "due:date?", "--field", "at:datetime", "--field", "flag:bool"),
         *("--field", "ratio:float", "--field", "code:uuid", "--field", "body:text"),
     ],
+    [
+        "startaggregate",
+        "catalog",
+        "Wallet",
+        *("--field", "balance:money", "--field", "credit_line:money:12:0"),
+        *("--field", "limit:money:12:2?"),
+    ],
+    ["addcommand", "catalog", "Wallet", "DepositWallet", "--field", "amount:money"],
     [
         "addcommand",
         "catalog",
@@ -1136,6 +1192,7 @@ def test_generators_write_what_their_snapshots_hold(shop: Shop) -> None:
     shop("addquery", "Category", "EveryCategory", path="/every")
     shop("addquery", "Category", "CategoriesTitled", by=["title"])
     shop("addcommand", "Product", "LockProduct")
+    shop("startaggregate", "Wallet", fields=["balance:money", "owed:money:12:2?"])
     shop(
         "addevent",
         "Product",
