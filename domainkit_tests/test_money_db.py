@@ -634,3 +634,24 @@ def test_fixtures_check_every_pair_of_a_row() -> None:
         "framework_test_money_rows.total and total_currency hold no amount of "
         "money: both are needed, the amount with at most its currency's places."
     )
+
+
+@pytest.mark.parametrize(
+    ("criteria", "found"),
+    [
+        (F("balance") >= money("10", "USD"), ["a", "h"]),
+        (F("balance") < money("10", "EUR"), ["g"]),
+        (F("balance").in_([money("10", "USD"), money("10", "EUR")]), ["a", "c"]),
+        (F("balance").range(money("0", "USD"), money("10", "USD")), ["a", "b"]),
+        (F("balance").range(money("0", "EUR"), money("5", "EUR")), ["g"]),
+        (~(F("balance") > money("0", "USD")), ["c", "d", "e", "f", "g"]),
+        (F("limit") <= money("5", "EUR"), ["c"]),
+    ],
+)
+async def test_money_conditions_select_these_wallets(
+    criteria: Criteria, found: list[str]
+) -> None:
+    """What each condition on money selects, by name: its currency's amounts only."""
+    memory = InMemoryWallets(dataset())
+
+    assert names(await memory.filter(Selection(criteria, ordering=["name"]))) == found

@@ -977,3 +977,23 @@ def test_the_json_schema_word_for_word() -> None:
         "required": ["amount", "currency"],
         "additionalProperties": False,
     }
+
+
+def test_a_registered_currency_has_no_name_unless_given() -> None:
+    """And the units it was registered with stay its own."""
+    assert register_currency("PTS", minor_units=0).name == ""
+    with pytest.raises(ImproperlyConfigured) as caught:
+        register_currency("PTS", minor_units=1)
+
+    assert str(caught.value) == (
+        "PTS is registered already, as Currency('PTS', None, 0); a currency's "
+        "units cannot change while amounts use them."
+    )
+
+
+def test_a_currency_stays_a_currency_in_python_dumps() -> None:
+    """The code in JSON; the object itself in Python, as Decimal stays Decimal."""
+    adapter = TypeAdapter(Currency)
+
+    assert adapter.dump_python(USD) is USD
+    assert adapter.dump_python(USD, mode="json") == "USD"

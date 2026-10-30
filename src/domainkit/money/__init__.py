@@ -505,16 +505,17 @@ class Money:
                 with more than ``MAX_DIGITS`` digits on either side of its point.
             TypeError: A ratio is a float, a ``bool``, or not a number.
         """
+        if self.minor < 0:
+            return [-part for part in (-self).allocate(ratios)]
         weights = _weights(ratios)
         whole = sum(weights)
-        units = abs(self.minor)
+        units = self.minor
         shares = [units * weight // whole for weight in weights]
         lost = [units * weight % whole for weight in weights]
         left = units - sum(shares)
         for index in sorted(range(len(weights)), key=lambda i: -lost[i])[:left]:
             shares[index] += 1
-        sign = -1 if self.minor < 0 else 1
-        return [Money.from_minor(sign * share, self.currency) for share in shares]
+        return [Money.from_minor(share, self.currency) for share in shares]
 
     def is_zero(self) -> bool:
         """Whether the amount is zero."""
