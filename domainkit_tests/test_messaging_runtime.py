@@ -396,7 +396,9 @@ async def test_workers_of_one_process_share_one_budget() -> None:
 
 
 @pytest.mark.usefixtures("tables")
-async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages() -> None:
+async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages() -> (
+    None
+):
     """The wait for a slot ends at the stop; running ones get SHUTDOWN_TIMEOUT.
 
     Then they are given back to wait again, no longer started.
@@ -2941,6 +2943,37 @@ async def test_deliveries_are_given_back_once_consuming_stopped(
     delivery, answers = answers_recorded()
     await within(never.give_back(delivery))  # Consuming never stopped: given up.
     assert answers == []
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_an_idle_relay_waits_for_its_next_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing to relay, the relay waits for its poll: it never spins."""
+    config = registry.settings(MessagingSettings).model_copy(
+        update={"POLL_INTERVAL": 30}
+    )
+    worker = Worker(config)
+    relays: list[int] = []
+
+    async def nothing_to_relay(broker: object, limit: int) -> int:
+        relays.append(limit)
+        await asyncio.sleep(0)
+        return 0
+
+    monkeypatch.setattr(worker, "relay", nothing_to_relay)
+    stop = asyncio.Event()
+    relaying = asyncio.create_task(
+        BrokerWorkers([worker], ["default"], config)._relay_until(
+            worker, work_broker(), stop
+        )
+    )
+    for _ in range(50):
+        await asyncio.sleep(0)
+    stop.set()
+    await within(relaying)
+
+    assert relays == [config.BATCH_SIZE]
 
 
 @pytest.mark.usefixtures("broker_tables")

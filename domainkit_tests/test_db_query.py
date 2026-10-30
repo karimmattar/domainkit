@@ -491,6 +491,21 @@ async def test_bulk_deletes_remove_rows_for_good(tables: None) -> None:
         assert await uow.gadgets.count(include_deleted=True) == 0
 
 
+async def test_a_locking_read_shows_what_was_committed_since(tables: None) -> None:
+    """``get_for_update`` reads the row again: not the copy loaded before."""
+    gadget = make_gadget("g", stock=1)
+    await store(gadget)
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.get(gadget.id)
+        async with GadgetsUnitOfWork() as other:
+            await other.gadgets.update_rows(F("name") == "g", stock=5)
+            await other.commit()
+
+        locked = await uow.gadgets.get_for_update(gadget.id)
+
+    assert locked.stock == 5
+
+
 async def test_bulk_updates_leave_deleted_rows_unless_asked(tables: None) -> None:
     """update_rows sets live rows only; ``include_deleted`` reaches the others."""
     live, deleted = make_gadget("live"), make_gadget("deleted")
