@@ -772,10 +772,11 @@ async def test_every_failed_publication_is_counted() -> None:
 
 
 def test_periodic_tasks_say_what_they_need() -> None:
-    """A schedule, given once, and an interval above zero."""
+    """A schedule, given once, an interval above zero, and a zone for cron= only."""
     for options, message in [
         ({}, "Periodic tasks need either every= or cron=."),
         ({"every": timedelta(0)}, "Periodic tasks need a positive interval."),
+        ({"every": timedelta(hours=1), "tz": "Africa/Cairo"}, "tz= goes with cron=."),
     ]:
         with pytest.raises(ImproperlyConfigured) as refused:
             periodic(**options)  # type: ignore[arg-type]
