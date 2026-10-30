@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, NewType
+from typing import Annotated, Any, NewType
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,6 +17,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    bindparam,
     func,
     insert,
     select,
@@ -684,3 +685,19 @@ def test_a_money_attribute_the_mapping_names_is_left_to_it() -> None:
         "_coins_currency",
         "coins",
     }
+
+
+async def test_money_times_a_bound_rate_is_exact(tables: None) -> None:
+    """``total * rate`` in SQL: the rate is a factor, not an amount (TEST-07)."""
+    await store(wallet("a", money("9.95", "USD")))
+    rate: Any = bindparam("rate")
+
+    async with connections.engine().connect() as connection:
+        times = await connection.scalar(
+            select(wallets.c.balance * rate), {"rate": Decimal("0.1")}
+        )
+        over = await connection.scalar(
+            select(wallets.c.balance / rate), {"rate": Decimal("4")}
+        )
+
+    assert (type(times), times, over) == (Decimal, Decimal("0.995"), Decimal("2.4875"))

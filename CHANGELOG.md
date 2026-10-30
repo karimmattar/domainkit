@@ -132,6 +132,17 @@ and a status.
   a server's code; the audit page lists, by module, the 15 left and why,
   and the 682 not checked (TEST-07).
 
+
+### Fixed
+
+- **Breaking:** an amount (`ExactDecimal`, money's amount column)
+  multiplied or divided by a bound parameter was counted as an amount on
+  SQLite: `amount * bindparam("r")` with 0.1 gave 9950.0000 for 9.95, and
+  `amount / bindparam("r")` was as wrong. A bound parameter or a value is
+  now a factor, sent to SQLite as exact billionths, so `amount * 0.1` of
+  three cents is 0.003, not 0.0030000000000000004; an integer column
+  divides as a real number, not by integer division. A factor has at most
+  9 places: one with more is refused rather than rounded (TEST-07).
 ## [0.13.0] - 2026-10-29
 
 A minor release. It removes what 0.12 deprecated: the hook methods of
