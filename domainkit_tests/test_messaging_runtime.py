@@ -2162,6 +2162,9 @@ async def test_a_lost_listener_listens_again(caplog: pytest.LogCaptureFixture) -
         "polling until listening again in 0.01s"
     )
     assert back == "Listening for new messages in 'default' again after 1 failures"
+    (record,) = [each for each in caplog.records if each.levelno == logging.ERROR]
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == "The connection listening for messages was lost."
 
 
 @pytest.mark.usefixtures("tables")
