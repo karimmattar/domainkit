@@ -692,7 +692,8 @@ async def test_nowait_passes_other_database_errors_on(
             raise DBAPIError("SELECT", {}, Locked())
 
         monkeypatch.setattr(uow.session, "scalars", locked)
-        with pytest.raises(LockNotAvailable):
+        refused = r"^The data is being changed by another request; try again\.$"
+        with pytest.raises(LockNotAvailable, match=refused):
             await uow.gadgets.get_for_update(gadget.id, nowait=True)
 
 
