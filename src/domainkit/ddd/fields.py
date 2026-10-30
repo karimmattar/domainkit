@@ -16,6 +16,9 @@ A value object with a single field (``ProductName(value: str)``) counts as
 that field's value: it is compared, ordered, and searched by it, as the
 column holding it is.
 
+``Money`` (``domainkit.money``) is held in two columns, so a money field
+has two parts queries can name: ``total.amount`` and ``total.currency``.
+
 Another aggregate is referenced by its id only, never held as an object
 (each aggregate is its own consistency boundary)::
 
@@ -52,11 +55,29 @@ from uuid import UUID
 
 from domainkit.ddd.model import Entity, ValueObject
 from domainkit.exceptions import DomainkitError
+from domainkit.money import Currency, Money, MoneyError, currency
 
 COLLECTIONS: Final = frozenset({list, set, frozenset, tuple})
 """Containers that hold child entities: the "many" side of a relation."""
-ORDERED: Final = (int, float, Decimal, str, datetime, date, time, UUID, Enum)
-"""Types whose values sort (``bool`` with ``int``; enums by their values)."""
+ORDERED: Final = (
+    int,
+    float,
+    Decimal,
+    str,
+    datetime,
+    date,
+    time,
+    UUID,
+    Enum,
+    Currency,
+    Money,
+)
+"""Types whose values sort (``bool`` with ``int``; enums by their values).
+
+A currency sorts by its code, and money by its currency, then its amount.
+"""
+MONEY_PARTS: Final = ("amount", "currency")
+"""The parts of a money field a query can name: ``total.amount``, ``total.currency``."""
 
 
 class InvalidQuery(ValueError, DomainkitError):
@@ -175,10 +196,11 @@ class FieldInfo:
         """``value`` as this field holds it: checked, and wrapped if need be.
 
         An enum field takes a member or a member's value. A single-field
-        value object field takes the object or what it wraps. Other fields
-        take values of their type; an amount (``Decimal``) also takes an
-        ``int``, and ``bool`` is never taken for a number. Floats and
-        amounts must be finite, and datetimes aware.
+        value object field takes the object or what it wraps. A currency
+        field takes a ``Currency`` or its code. Other fields take values of
+        their type; an amount (``Decimal``) also takes an ``int``, and
+        ``bool`` is never taken for a number. Floats and amounts must be
+        finite, and datetimes aware.
 
         Raises:
             InvalidQuery: The value does not fit the field.
@@ -199,6 +221,11 @@ class FieldInfo:
                 raise self._refuse(kind, value) from None
         if (inner := wrapped_field(kind)) is not None:
             return cast("Callable[[object], object]", kind)(inner.coerce(value))
+        if kind is Currency and isinstance(value, str):
+            try:
+                return currency(value)
+            except MoneyError:
+                raise InvalidQuery(f"{self.name} takes a known currency.") from None
         if kind is Decimal and isinstance(value, int):
             return value
         raise self._refuse(kind, value)
@@ -318,6 +345,14 @@ def _supertype(hint: object) -> object:
     return hint
 
 
+def money_part(field: FieldInfo, name: str) -> FieldInfo | None:
+    """The part ``name`` (``amount`` or ``currency``) of a money field; else None."""
+    if field.kind is not Money or field.many or name not in MONEY_PARTS:
+        return None
+    kind = Decimal if name == "amount" else Currency
+    return FieldInfo(name, Money, kind, field.nullable, field.metadata)
+
+
 def wrapped_field(cls: type) -> FieldInfo | None:
     """The one field of a single-field value object; None for any other class."""
     if not issubclass(cls, ValueObject):
@@ -346,10 +381,15 @@ def base_type(kind: type | None) -> type | None:
 
 
 def primitive(value: object) -> object:
-    """``value`` as a column holds it: enums by value, value objects unwrapped."""
+    """``value`` as a column holds it: enums by value, value objects unwrapped.
+
+    A currency is its code.
+    """
     while True:
         if isinstance(value, Enum):
             value = value.value
+        elif isinstance(value, Currency):
+            value = value.code
         elif isinstance(value, ValueObject) and (inner := wrapped_field(type(value))):
             value = getattr(value, inner.name)
         else:

@@ -55,7 +55,7 @@
    ],
    "fields",
    "_AppendAction",
-   "name:kind[:options][?] (? may be None), repeated; kinds: bool (Boolean), date (Date), datetime (UTCDateTime), decimal (ExactDecimal(precision, scale)), float (Double), int (BigInteger), ref (Uuid, indexed), str (String(length)), text (Text), uuid (Uuid)",
+   "name:kind[:options][?] (? may be None), repeated; kinds: bool (Boolean), date (Date), datetime (UTCDateTime), decimal (ExactDecimal(precision, scale)), float (Double), int (BigInteger), money (MoneyColumns: the amount, ExactDecimal(precision, scale), and the currency), ref (Uuid, indexed), str (String(length)), text (Text), uuid (Uuid)",
    "[]"
   ],
   [

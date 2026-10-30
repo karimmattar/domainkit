@@ -14,8 +14,9 @@ The domain layer raises ``DomainError`` subclasses and never mentions HTTP;
 this module is the only place that maps them to status codes. Modules below
 the HTTP layer raise errors of their own, never an HTTP exception, and are
 mapped here too: ``ServiceBusy`` is 503 with ``Retry-After``
-(``busy_refusal``), and database refusals that are not bugs are mapped by
-``database_refusal``.
+(``busy_refusal``), database refusals that are not bugs are mapped by
+``database_refusal``, and a ``MoneyError`` (two currencies added, an amount
+with too many places) is 422 with its code and its summary.
 
 Details and validation messages are translated into the request's language
 here, as the body is built (``gettext`` and ``validation_message``, see
@@ -58,6 +59,7 @@ from domainkit.ddd.exceptions import (
 from domainkit.exceptions import DomainkitError, ServiceBusy
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
+from domainkit.money import MoneyError
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
     (PreconditionFailed, status.HTTP_412_PRECONDITION_FAILED),
@@ -263,6 +265,16 @@ def busy_refusal(error: ServiceBusy) -> APIError:
         error.message,
         code=error.code,
         headers={"Retry-After": str(error.retry_after)},
+    )
+
+
+async def money_error_handler(request: Request, exc: MoneyError) -> JSONResponse:
+    """Answer a ``MoneyError`` with 422, its code, and its summary.
+
+    Its message may name amounts and currencies; the summary names none.
+    """
+    return error_response(
+        status.HTTP_422_UNPROCESSABLE_CONTENT, exc.summary, code=exc.code
     )
 
 
@@ -474,9 +486,10 @@ def _busy() -> APIError:
 
 
 def install_exception_handlers(app: FastAPI) -> None:
-    """Register the domain, HTTP, busy, and validation error handlers on ``app``."""
+    """Register the error handlers on ``app``: domain, HTTP, busy, money, validation."""
     app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(ServiceBusy, service_busy_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(MoneyError, money_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(HTTPException, http_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(
         RequestValidationError,

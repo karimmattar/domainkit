@@ -11,6 +11,56 @@ and a status.
 
 ### Added
 
+- `domainkit.money`: `Money`, an amount with exactly its currency's
+  places and the currency, immutable and exact: `Money.of("10.5", "USD")`
+  is 10.50, more places are refused (`InexactAmount`) and never rounded,
+  and floats are refused everywhere. `+`, `-`, comparisons, and
+  `Money.sum` take one currency and raise `CurrencyMismatch` for two;
+  `from_minor` and `minor` count in minor units. `Currency` and
+  `currency("KWD")` know the 165 active ISO 4217 currencies with minor
+  units (SIX's list of 2026-09-17, kept as data in the package; JPY 0, KWD
+  and BHD 3, CLF and UYW 4); `register_currency` adds a project's own,
+  such as a token, and the test plugin drops each test's
+  (`currencies_kept()`). A domain layer may import it. Conversion between
+  currencies is left to the project, with a rate source it trusts
+  (`docs/money.md`) (FIN-01).
+- Money in tables, queries, and HTTP: a field hinted `Money` is two
+  columns, `<name>` (`ExactDecimal`, 18 digits and 4 places unless
+  `Digits` says) and `<name>_currency` (`CurrencyCode`), with a check that
+  a missing amount has no currency; `MoneyColumns` makes them for a
+  hand-written table, `map_imperatively` maps them to the one attribute,
+  and `makemigrations` writes them. Queries compare money within its
+  currency (`F("total") >= Money.of("10", "USD")`) and name its parts
+  (`F("total.currency")`, `F("total.amount")`); it orders by currency,
+  then amount, with keyset pages and `update_rows` too. JSON is
+  `{"amount": "10.50", "currency": "USD"}`, one `Money` schema in OpenAPI;
+  a write schema refuses an amount its columns cannot hold
+  (`money_digits`); a `FilterSet` filter of a money field takes its
+  amount with a `<name>_currency` parameter
+  (`?total__gte=10.00&total_currency=USD`); a `MoneyError` is a 422 with
+  its code. `MoneyFactory` in `domainkit.testing`; `dumpdata` and
+  `loaddata` write and check both columns; audit details, task arguments,
+  and exports write money as its JSON. The storage was chosen by
+  measurement over minor units in an integer
+  ([ADR 0115](docs/adr/0115-store-money-as-an-exact-amount-and-a-currency-code.md))
+  (FIN-01).
+- Named rounding: `Rounding.HALF_EVEN`, `HALF_UP`, `DOWN`, `UP`,
+  `CEILING`, `FLOOR` (the `decimal` constants). `amount.multiply(factor,
+  rounding=...)` is exact, and refuses a product that needs rounding
+  unless one is named; `Money.of(..., rounding=...)` rounds a computed
+  amount as named (FIN-02).
+- `amount.allocate(ratios)` splits an amount in proportion by largest
+  remainder: the parts always sum to it, none loses or gains more than one
+  minor unit of its share, and a ratio of 0 gets nothing; property tests
+  check it for every currency (FIN-03).
+- `startaggregate --field balance:money` (and `addcommand --field
+  amount:money`): a money field, and for one that may not be None a
+  transfer between two aggregates as `docs/databases.md` writes one:
+  `transfer_balance` and `receive_balance`, which refuse an overdraft and
+  another currency, `TransferWalletBalance`, whose use case locks both
+  rows by ascending id and runs again on a lost race (`uow.run(...,
+  retry=Retry(...))`), `POST /wallets/{wallet_id}/transfer-balance`, and
+  their tests. The payment recipe holds its amounts in `Money` (FIN-01).
 - `domainkit.contrib.accounting`: double-entry books. A chart of accounts
   (a code, a type and its normal balance, one currency, open or closed, a
   holder), journal entries whose postings must balance per currency, and

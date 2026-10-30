@@ -775,3 +775,29 @@ msgstr ""
 
 msgid "A statement has at most ACCOUNTING.MAX_STATEMENT_LINES lines."
 msgstr ""
+
+#. domainkit.money: amounts and currencies
+msgid "The amount of money is not valid."
+msgstr ""
+
+msgid "The currency is not one this service knows."
+msgstr ""
+
+msgid "The amount has more decimal places than its currency has."
+msgstr ""
+
+msgid "The amounts are in different currencies."
+msgstr ""
+
+msgid ""
+"Give money as an object of an amount and a currency, and nothing "
+"else."
+msgstr ""
+
+msgid ""
+"Give the amount as text, such as 10.50, with at most 38 digits "
+"before the point."
+msgstr ""
+
+msgid "The amount has more digits than this field holds."
+msgstr ""

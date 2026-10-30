@@ -8,7 +8,9 @@ empties tables. A fixture is one JSON document::
     ]}
 
 Values are JSON: numbers and text as they are, decimals, times, durations,
-ids, and enums as text, bytes as base64, JSON columns as JSON. Loading
+ids, and enums as text, bytes as base64, JSON columns as JSON. Money is
+its two columns, the amount as text and the currency's code
+(``{"total": "10.50", "total_currency": "USD"}``). Loading
 converts them back from each column's type, and only adds rows: one whose
 primary key is stored is refused, unless the load is told to replace
 (``loaddata --replace``). ``loaddata`` reads numbers with a fraction as
@@ -69,10 +71,12 @@ from sqlalchemy.types import TypeEngine
 from domainkit.db.connections import connections, create_owner_engine
 from domainkit.db.derive import ValueObjectType
 from domainkit.db.models import installed_models
+from domainkit.db.money import AMOUNT, MONEY
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
 from domainkit.ddd.personal import personal_fields
 from domainkit.exceptions import DomainkitError
+from domainkit.money import Money
 from domainkit.utils.decimals import jsonable
 
 FORMAT: Final = "domainkit.fixture"
@@ -540,7 +544,32 @@ def _decoded_row(table: Table, row: object) -> dict[str, Any]:
         raise FixtureError(f"A row of {table.name!r} is not an object.")
     if unknown := sorted(set(row) - set(table.c.keys())):
         raise FixtureError(f"{table.name!r} has no column {', '.join(unknown)}.")
-    return {name: _decoded(table.c[name], value) for name, value in row.items()}
+    decoded = {name: _decoded(table.c[name], value) for name, value in row.items()}
+    _check_money(table, decoded)
+    return decoded
+
+
+def _check_money(table: Table, row: Mapping[str, Any]) -> None:
+    """Refuse an amount its currency cannot hold, as the aggregate would on load.
+
+    Raises:
+        FixtureError: An amount has more places than its currency, or one
+            of a pair is missing.
+    """
+    for column in table.columns:
+        if column.info.get(MONEY, (None, None))[1] != AMOUNT:
+            continue
+        currency = f"{column.name}_currency"
+        amount, code = row.get(column.name), row.get(currency)
+        if amount is None and code is None:
+            continue
+        try:
+            Money(amount, code)  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            raise FixtureError(
+                f"{_where(column)} and {currency} hold no amount of money: both "
+                "are needed, the amount with at most its currency's places."
+            ) from None
 
 
 def _decoded(column: Column[Any], value: object) -> object:

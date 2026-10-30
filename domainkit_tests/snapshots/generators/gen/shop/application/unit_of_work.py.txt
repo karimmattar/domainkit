@@ -3,7 +3,11 @@
 from abc import ABC
 
 from domainkit.ddd import UnitOfWork
-from gen.shop.domain.model import CategoryRepository, ProductRepository
+from gen.shop.domain.model import (
+    CategoryRepository,
+    ProductRepository,
+    WalletRepository,
+)
 
 
 class ShopUnitOfWork(UnitOfWork, ABC):
@@ -11,3 +15,4 @@ class ShopUnitOfWork(UnitOfWork, ABC):
 
     products: ProductRepository
     categories: CategoryRepository
+    wallets: WalletRepository

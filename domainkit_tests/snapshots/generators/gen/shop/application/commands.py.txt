@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from domainkit.ddd import UNSET, Command, Unset
+from domainkit.money import Money
 
 
 class CreateProduct(Command):
@@ -75,3 +76,24 @@ class LockProduct(Command):
     """Lock a product."""
 
     product_id: UUID
+
+
+class CreateWallet(Command):
+    """Create a wallet."""
+
+    balance: Money
+    owed: Money | None = None
+
+
+class DeleteWallet(Command):
+    """Delete a wallet."""
+
+    wallet_id: UUID
+
+
+class TransferWalletBalance(Command):
+    """Move an amount of balance from one wallet to another."""
+
+    wallet_id: UUID
+    to: UUID
+    amount: Money

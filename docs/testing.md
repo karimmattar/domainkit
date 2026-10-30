@@ -60,7 +60,7 @@ project's conftest never needs a private name for it:
 
 | After each test | Through |
 | --- | --- |
-| The subscriptions, tasks, and metric refreshers the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped; a test whose body loads them itself keeps what it registers, as its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()` |
+| The subscriptions, tasks, metric refreshers, and currencies the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped; a test whose body loads them itself keeps what it registers, as its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()`, `domainkit.money.currencies_kept()` |
 | Its error reports are sent and its logs written (below). | `flush_reports()`, `flush_logs()` |
 
 What a module- or session-scoped fixture sends is gone by the time a test
@@ -359,21 +359,19 @@ Factories make aggregates with defaults each test overrides, as
 factory_boy does:
 
 ```python
-from decimal import Decimal
 from uuid import uuid4
 
-from domainkit.testing import Factory, LazyAttribute, LazyFunction, Sequence, SubFactory
+from domainkit.testing import (
+    Factory,
+    LazyAttribute,
+    LazyFunction,
+    MoneyFactory,
+    Sequence,
+    SubFactory,
+)
 
-from billing.domain.model import Customer, Invoice, InvoiceId, Money
+from billing.domain.model import Customer, Invoice, InvoiceId
 from billing.infrastructure.unit_of_work import SqlBillingUnitOfWork
-
-
-class MoneyFactory(Factory[Money]):
-    class Meta:
-        model = Money
-
-    amount = Decimal("10.00")
-    currency = "EUR"
 
 
 class CustomerFactory(Factory[Customer]):
@@ -394,7 +392,7 @@ class InvoiceFactory(Factory[Invoice]):
 
     id = LazyFunction(lambda: InvoiceId(uuid4()))
     number = Sequence(lambda n: f"INV-{n:05}")
-    total = SubFactory(MoneyFactory)
+    total = SubFactory(MoneyFactory, currency="EUR")
     customer = SubFactory(CustomerFactory)
     customer_id = LazyAttribute(lambda invoice: invoice.customer.id)
 ```
@@ -408,8 +406,11 @@ class InvoiceFactory(Factory[Invoice]):
   unit of work and transaction; the money, a value object, is only built.
 - It works the same with an in-memory fake unit of work (pass it) and a
   SQL one, so the same factories serve use-case tests and API tests.
-- Keyword arguments replace defaults; `total__amount=Decimal(5)` reaches
+- Keyword arguments replace defaults; `total__amount="5.00"` reaches
   the sub-factory; fields the factory does not declare pass through.
+- `MoneyFactory` makes `domainkit.money.Money` ([money.md](money.md)):
+  1, 2, 3, ... whole units, in USD or the currency given, so every
+  currency's places fit.
 - Each object takes its factory's next number, from 0, which all its
   `Sequence` fields share; `reset_sequence()` starts again, and the
   plugin does it for every factory before each test.

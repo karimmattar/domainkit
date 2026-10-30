@@ -73,6 +73,7 @@ from domainkit.ddd.query import (
 )
 from domainkit.ddd.repository import Repository
 from domainkit.http.errors import APIError
+from domainkit.money import Currency, Money
 from domainkit.utils.decimals import decimal_text
 
 CURSOR_PATTERN: Final = r"^[A-Za-z0-9_-]+$"
@@ -105,9 +106,12 @@ _SIZES: Final[dict[type | None, int]] = {
     datetime: len('"0001-01-01T00:00:00.000001+05:30:15.000001"'),
     date: len('"0001-01-01"'),
     time: len('"00:00:00.000001+05:30:15.000001"'),
+    Currency: len('"ABCDEFGH"'),
 }
 """The most bytes a value of each type takes in a cursor, as JSON."""
 _NULL: Final = len("null")
+_MONEY_DIGITS: Final = Digits(18, 4)
+"""The bounds of a money field's amount without ``Digits``: its column's."""
 
 logger = logging.getLogger(__name__)
 
@@ -286,9 +290,10 @@ def _value_size(field: FieldInfo) -> int:
                 "declare its Digits(precision, scale), as Annotated[Decimal, "
                 "Digits(precision, scale)], or do not order by it."
             )
-        whole = max(digits.precision - digits.scale, 1)
-        point = digits.scale + 1 if digits.scale else 0
-        size = 3 + whole + point  # The quotes and a sign.
+        size = _amount_size(digits)
+    elif kind is Money:  # ["10.50","USD"]: the amount, as its column bounds it.
+        digits = field.marker(Digits) or _MONEY_DIGITS
+        size = 3 + _amount_size(digits) + _SIZES[Currency]
     elif (known := _SIZES.get(kind)) is not None:
         size = known
     else:
@@ -297,6 +302,13 @@ def _value_size(field: FieldInfo) -> int:
             f"{where} holds {held}, which a cursor cannot hold: do not order by it."
         )
     return max(size, _NULL) if field.nullable else size
+
+
+def _amount_size(digits: Digits) -> int:
+    """The most bytes an amount of ``digits`` takes in a cursor, with its quotes."""
+    whole = max(digits.precision - digits.scale, 1)
+    point = digits.scale + 1 if digits.scale else 0
+    return 3 + whole + point  # The quotes and a sign.
 
 
 def _signature(ordering: Sequence[Ordering]) -> str:
@@ -330,10 +342,15 @@ def _decode(cursor: str) -> object:
 
 
 def _to_json(value: object) -> object:
-    """A position value as JSON: amounts, times, and ids as text."""
+    """A position value as JSON: amounts, times, and ids as text.
+
+    Money is its amount and its currency's code: ``["10.50", "USD"]``.
+    """
     value = primitive(value)
     if value is None or isinstance(value, bool | int | str):
         return value
+    if isinstance(value, Money):
+        return [decimal_text(value.amount), value.currency.code]
     if isinstance(value, float) and math.isfinite(value):
         return value
     if isinstance(value, Decimal):  # Plain: never 0E-8, which decoding refuses.
@@ -385,8 +402,11 @@ def _parse(kind: type | None, value: object) -> object:
         if isinstance(number, bool) or abs(number) >= _INT64:
             raise ValueError("not a 64-bit integer")
         return number
-    if kind is str:
+    if kind is str or kind is Currency:  # A currency's code, which the field checks.
         return _of(str, value)
+    if kind is Money:
+        amount, code = _of(list, value)  # Two items, or a ValueError.
+        return Money(_of(str, amount), _of(str, code))
     if kind is float:
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError("not a number")

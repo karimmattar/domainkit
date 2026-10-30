@@ -16,7 +16,7 @@ permissions, and a pytest plugin, around aggregates, commands, and events.
   running behind a proxy, reading from a replica.
 - **Building a service?** The guides: [resources](resources.md) (aggregates
   over HTTP, and the generators), [queries](queries.md),
-  [databases](databases.md), [auth](auth.md), the
+  [databases](databases.md), [money](money.md), [auth](auth.md), the
   [optional apps](contrib.md) (outbox, audit, idempotency, webhooks,
   evidence, flags), [caches](cache.md), [live connections](live.md),
   [uploads](uploads.md), [mail](mail.md), [languages](i18n.md),

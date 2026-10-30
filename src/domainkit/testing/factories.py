@@ -42,15 +42,21 @@ set of defaults on. After the object is made, ``post_generation`` methods
 run, and ``RelatedFactory`` makes objects that point back at it; with
 ``create`` both run before the commit, through the same unit of work.
 ``stub()`` gives the fields as a plain namespace, with no model called.
+
+``MoneyFactory`` makes amounts of money: 1.00 USD, then 2.00, each in the
+currency given (``SubFactory(MoneyFactory, currency="KWD")``, or
+``price__currency="EUR"``), whose places every whole amount fits.
 """
 
 import copy
 import itertools
 from collections.abc import Callable, Mapping
+from decimal import Decimal
 from types import FunctionType, SimpleNamespace
 from typing import Any, ClassVar, Final
 
 from domainkit.ddd import UnitOfWork
+from domainkit.money import Money
 
 SEPARATOR: Final = "__"
 """Joins a sub-factory's field to its own: ``price__amount``."""
@@ -648,3 +654,20 @@ def _value(default: Any, name: str, fields: Fields) -> Any:  # noqa: ANN401 - an
     if isinstance(default, Declaration):
         return default.evaluate(name, fields)
     return copy.deepcopy(default)
+
+
+class MoneyFactory(Factory[Money]):
+    """Amounts of money: 1 USD, 2 USD, ..., in the currency each test gives.
+
+    ``amount`` is the object's number plus one, whole, so it fits any
+    currency's places; give ``amount`` (text, an int, or a ``Decimal``) and
+    ``currency`` (a code or a ``Currency``) to choose them.
+    """
+
+    class Meta:
+        """Make ``Money``."""
+
+        model = Money
+
+    amount = Sequence(lambda n: Decimal(n + 1))
+    currency = "USD"

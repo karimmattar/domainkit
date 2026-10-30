@@ -409,7 +409,7 @@ def test_jwt_times_are_checked_as_pyjwt_would(use_auth: UseAuth) -> None:
 
 DOMAIN_RULE = (
     "the domain layer may import only the standard library, domainkit.ddd, "
-    "domainkit.clock, and its own domain layer"
+    "domainkit.clock, domainkit.money, and its own domain layer"
 )
 
 
