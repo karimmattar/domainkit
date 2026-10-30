@@ -808,7 +808,7 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
         if "pytest" in step.get("run", "")
     ]
     assert set(re.findall(r"domainkit_tests/\S+\.py", command)) == readers
-    assert len(readers) == 6
+    assert len(readers) == 7
 
 
 def test_the_suite_runs_on_every_core() -> None:
