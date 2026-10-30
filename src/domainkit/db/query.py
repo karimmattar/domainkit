@@ -10,6 +10,10 @@ The compiled SQL keeps the semantics the in-memory repository has:
 - A condition on a nullable column is also false where the column is NULL,
   so ``NOT`` negates exactly (two-valued logic, as in Python).
 - ``NULLS LAST`` ascending, ``NULLS FIRST`` descending, on every database.
+- A money attribute (``MoneyColumns``) is its two columns: conditions on
+  money come bound as conditions on ``total.amount`` and ``total.currency``
+  (``domainkit.ddd.query``), which name them; ``isnull`` looks at the
+  amount, and ordering sorts by currency, then amount.
 - Text lookups never use the pattern characters of the text they are given:
   on PostgreSQL they become ``LIKE`` with ``%``, ``_`` and the escape
   character escaped; on SQLite, whose ``LIKE`` ignores ASCII case, they use
@@ -26,7 +30,8 @@ from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.expression import type_coerce
 from sqlalchemy.sql.schema import Column
 
-from domainkit.ddd.fields import InvalidQuery, UnknownField
+from domainkit.db.money import money_columns
+from domainkit.ddd.fields import MONEY_PARTS, InvalidQuery, UnknownField
 from domainkit.ddd.query import (
     CASE_FOLDED,
     ORDERING_LOOKUPS,
@@ -115,11 +120,13 @@ def compile_ordering(
     mapper = mapper_of(model)
     terms = []
     for item in ordering:
-        column = column_of(mapper, item.field)
-        term = column.desc() if item.descending else column.asc()
-        if column.nullable:
-            term = term.nulls_first() if item.descending else term.nulls_last()
-        terms.append(term)
+        money = money_columns(mapper, item.field)
+        columns = reversed(money) if money else [column_of(mapper, item.field)]
+        for column in columns:  # Money: the currency, then the amount.
+            term = column.desc() if item.descending else column.asc()
+            if column.nullable:
+                term = term.nulls_first() if item.descending else term.nulls_last()
+            terms.append(term)
     return terms
 
 
@@ -142,7 +149,9 @@ def _condition(
 ) -> ColumnElement[bool]:
     """One condition; a dotted name becomes ``EXISTS`` through the relationship."""
     head, _, rest = name.partition(".")
-    if rest:
+    if (money := money_columns(mapper, head)) is not None:
+        column = _money_column(money, rest)
+    elif rest:
         if head not in mapper.relationships:
             raise UnknownField(
                 f"{mapper.class_.__name__}.{head} is not a mapped relationship."
@@ -152,12 +161,22 @@ def _condition(
         attribute = getattr(mapper.class_, head)
         exists = attribute.any(inner) if relationship.uselist else attribute.has(inner)
         return cast("ColumnElement[bool]", exists)
-    column = column_of(mapper, head)
+    else:
+        column = column_of(mapper, head)
     expression = _compare(column, lookup, value, dialect)
     total = lookup is Lookup.ISNULL or (lookup is Lookup.EXACT and value is None)
     if column.nullable and not total:
         return and_(column.is_not(None), expression)
     return expression
+
+
+def _money_column(money: tuple[Column[Any], ...], part: str) -> Column[Any]:
+    """The column of a money attribute's part: the amount, unless the currency.
+
+    Bound criteria name only ``amount`` and ``currency`` (``resolve``), or
+    no part for ``isnull``.
+    """
+    return money[1] if part == MONEY_PARTS[1] else money[0]
 
 
 def _compare(

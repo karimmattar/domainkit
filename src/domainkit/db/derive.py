@@ -25,6 +25,8 @@ Hint                           Column
 ``datetime``                   ``UTCDateTime``
 ``date``, ``time``             ``Date``, ``Time``
 ``UUID``                       ``Uuid``
+``Currency``                   ``CurrencyCode``: the code
+``Money``                      ``MoneyColumns``: ``<name>`` and ``<name>_currency``
 an ``Enum``                    ``EnumValue``: its values, as text or integers
 a single-field value object    ``ValueObjectType`` around its field's column
 a registered class             ``register_column_type(cls, column_type)``
@@ -66,10 +68,12 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.sql.schema import SchemaItem
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
+from domainkit.db.money import PRECISION, SCALE, MoneyColumns
 from domainkit.db.orm import VERSION
 from domainkit.db.orm import metadata as default_metadata
-from domainkit.db.types import ExactDecimal, UTCDateTime
+from domainkit.db.types import CurrencyCode, ExactDecimal, UTCDateTime
 from domainkit.ddd.fields import Digits, FieldInfo, MaxLength, fields_of, wrapped_field
+from domainkit.money import Currency, Money
 
 _column_types: dict[type, TypeEngine[Any] | Callable[[], TypeEngine[Any]]] = {}
 
@@ -205,6 +209,9 @@ def table_for(
     for field in fields_of(cls).values():
         if field.entity is not None:
             continue
+        if field.kind is Money:
+            columns.extend(_money_columns(field, given))
+            continue
         if field.name in given:
             columns.append(given.pop(field.name))
             continue
@@ -226,6 +233,22 @@ def table_for(
         *others,
         info={} if domain is None else {"domain": domain},
     )
+
+
+def _money_columns(field: FieldInfo, given: dict[str, Column[Any]]) -> list[SchemaItem]:
+    """The amount and currency columns of a money field, and its check.
+
+    ``Digits(precision, scale)`` sizes the amount (default: 18 digits, 4
+    places). Columns given in ``extra`` (``*MoneyColumns(...)``, which
+    bring their own check) replace the derived ones.
+    """
+    digits = field.marker(Digits) or Digits(PRECISION, SCALE)
+    derived = MoneyColumns(
+        field.name, digits.precision, digits.scale, nullable=field.nullable
+    )
+    if field.name not in given:
+        return list(derived)
+    return [given.pop(field.name), given.pop(derived.currency.name, derived.currency)]
 
 
 def column_type(field: FieldInfo) -> TypeEngine[Any]:
@@ -275,6 +298,7 @@ _SIMPLE: Final[dict[type, Callable[[], TypeEngine[Any]]]] = {
     date: Date,
     time: Time,
     UUID: Uuid,
+    Currency: CurrencyCode,
 }
 
 

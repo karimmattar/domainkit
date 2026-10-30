@@ -110,6 +110,7 @@ from .factories import (
     LazyAttribute,
     LazyFunction,
     Maybe,
+    MoneyFactory,
     RelatedFactory,
     SelfAttribute,
     Sequence,
@@ -134,6 +135,7 @@ __all__ = [
     "LazyFunction",
     "LiveServer",
     "Maybe",
+    "MoneyFactory",
     "RelatedFactory",
     "SelfAttribute",
     "Sequence",
@@ -173,6 +175,7 @@ _KEPT: Final = pytest.StashKey["Kept"]()
 KEPT: Final = (
     ("domainkit.contrib.messaging.registry", "tasks_kept"),
     ("domainkit.http.metrics", "refreshers_kept"),
+    ("domainkit.money", "currencies_kept"),
 )
 """What puts a module's registrations back after each test: (module, function)."""
 
@@ -311,7 +314,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, object, object]:
 
 
 class Kept:
-    """The subscriptions, tasks, and refreshers kept for one test's run."""
+    """The subscriptions, tasks, refreshers, and currencies kept for one test's run."""
 
     def __init__(self) -> None:
         """Keep nothing yet."""

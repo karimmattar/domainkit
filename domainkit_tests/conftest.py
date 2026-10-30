@@ -46,6 +46,7 @@ from domainkit.http import get_asgi_application
 from domainkit.http.metrics import refreshers_kept
 from domainkit.log import reset_throttled
 from domainkit.management import call_command
+from domainkit.money import currencies_kept
 from domainkit.reporting import flush_reports
 from domainkit.testing import DatabaseBlocker
 from domainkit_tests import engine_events  # noqa: F401 - its listeners first.
@@ -210,13 +211,18 @@ def isolated_registries() -> Iterator[None]:
 
 @contextmanager
 def registries_kept() -> Iterator[None]:
-    """Put the tasks, subscriptions, and metric refreshers back as they were.
+    """Put the tasks, subscriptions, metric refreshers, and currencies back.
 
     Through their public resets, as the plugin does (TEST-05).
     """
     calls = list(AlphaConfig.calls)
     try:
-        with tasks_kept(), event_bus.subscriptions_kept(), refreshers_kept():
+        with (
+            tasks_kept(),
+            event_bus.subscriptions_kept(),
+            refreshers_kept(),
+            currencies_kept(),
+        ):
             yield
     finally:
         AlphaConfig.calls[:] = calls

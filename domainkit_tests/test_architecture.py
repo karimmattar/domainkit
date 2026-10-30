@@ -174,12 +174,12 @@ def test_a_project_lets_its_domain_layers_import_a_shared_kernel(layered: str) -
     [settings] = [v for v in after if v.imported == "arch.billing.settings"]
     assert settings.rule == (
         "the domain layer may import only the standard library, domainkit.ddd, "
-        "domainkit.clock, sqlalchemy, and its own domain layer"
+        "domainkit.clock, domainkit.money, sqlalchemy, and its own domain layer"
     )
     [default] = [v for v in before if v.imported == "arch.billing.settings"]
     assert default.rule == (
         "the domain layer may import only the standard library, domainkit.ddd, "
-        "domainkit.clock, and its own domain layer"
+        "domainkit.clock, domainkit.money, and its own domain layer"
     )
 
 
@@ -264,7 +264,12 @@ def test_extending_keeps_every_default_and_adds_each_entry_once() -> None:
         public_surface=["application"],
     )
     assert rules.layers == (*architecture.LAYERS, "ports")
-    assert rules.domain_allowed == ("domainkit.ddd", "domainkit.clock", "kernel")
+    assert rules.domain_allowed == (
+        "domainkit.ddd",
+        "domainkit.clock",
+        "domainkit.money",
+        "kernel",
+    )
     assert rules.forbidden_libraries["application"] == (
         *architecture.FORBIDDEN_LIBRARIES["application"],
         "httpx",

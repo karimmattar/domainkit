@@ -7,6 +7,7 @@ from datetime import datetime
 from uuid import UUID
 
 from domainkit.ddd import DomainEvent
+from domainkit.money import Money
 
 
 class ProductCreated(DomainEvent):
@@ -75,6 +76,26 @@ class ProductLocked(DomainEvent):
     """A product was locked."""
 
     product_id: UUID
+
+
+class WalletCreated(DomainEvent):
+    """A wallet was created."""
+
+    wallet_id: UUID
+
+
+class WalletDeleted(DomainEvent):
+    """A wallet was deleted."""
+
+    wallet_id: UUID
+
+
+class WalletBalanceTransferred(DomainEvent):
+    """An amount of a wallet's balance went to another."""
+
+    wallet_id: UUID
+    to: UUID
+    amount: Money
 
 
 class ProductRestocked(DomainEvent):

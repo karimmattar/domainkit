@@ -307,6 +307,7 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `LazyFunction`: `LazyFunction(uuid4)`: the function's result, called for each object.
 - `LiveServer`: An ASGI application served by uvicorn in a thread, on a free port.
 - `Maybe`: `Maybe("paid", yes, no)`: `yes` when the field `paid` is true, else `no`.
+- `MoneyFactory`: Amounts of money: 1 USD, 2 USD, ..., in the currency each test gives.
 - `RelatedFactory`: `RelatedFactory(LineFactory, "invoice")`: an object that points at this one.
 - `SelfAttribute`: `SelfAttribute("customer.id")`: another field's value, or its attribute's.
 - `Sequence`: `Sequence(lambda n: f"user-{n}")`: the object's number, from 0.

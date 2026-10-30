@@ -18,11 +18,13 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import instance_state
 
+from domainkit.db.money import money_columns
 from domainkit.db.query import column_of, compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import AggregateRoot, Repository
 from domainkit.ddd.fields import InvalidQuery, fields_of
 from domainkit.ddd.query import ID, Criteria, CriteriaLike, Selection
 from domainkit.ddd.repository import LockNotAvailable
+from domainkit.money import Money
 
 LOCK_NOT_AVAILABLE: Final = "55P03"
 """PostgreSQL's SQLSTATE for a row lock that ``NOWAIT`` would not wait for."""
@@ -124,8 +126,18 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         for name, value in values.items():
             if name in {ID, "version"} or name not in fields:
                 raise InvalidQuery(f"update_rows cannot set {name!r}.")
-            column_of(mapper, name)
-            changes[name] = fields[name].coerce(value)
+            if (money := money_columns(mapper, name)) is None:
+                column_of(mapper, name)
+                changes[name] = fields[name].coerce(value)
+                continue
+            coerced = fields[name].coerce(value)
+            amount, code = (
+                coerced.__composite_values__()
+                if isinstance(coerced, Money)
+                else (None, None)
+            )
+            changes[mapper.get_property_by_column(money[0]).key] = amount
+            changes[mapper.get_property_by_column(money[1]).key] = code
         if not changes:
             raise InvalidQuery("update_rows needs at least one value to set.")
         version = mapper.version_id_col

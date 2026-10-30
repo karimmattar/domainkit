@@ -8,7 +8,7 @@ the foreign key, and they load, save, and go with the product.
 from sqlalchemy import Column, ForeignKey, Index
 
 from domainkit.db import children, map_imperatively, table_for
-from gen.shop.domain.model import Category, Product, ProductNote
+from gen.shop.domain.model import Category, Product, ProductNote, Wallet
 
 products = table_for(
     Product,
@@ -43,6 +43,10 @@ def start_mappers() -> None:
         },
     )
     map_imperatively(Category, categories)
+    map_imperatively(Wallet, wallets)
 
 
 categories = table_for(Category, "shop_categories", domain="shop")
+
+
+wallets = table_for(Wallet, "shop_wallets", domain="shop")

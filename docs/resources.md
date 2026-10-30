@@ -254,6 +254,8 @@ ProductOut.from_domain(product)
 | `ProductId` (a `NewType` over `UUID`), `Reference[CategoryId]` | a `UUID`; a reference is described as one |
 | a single-field value object, `ProductName(value: str)` | what it wraps, with its `MaxLength` as `maxLength` |
 | `Annotated[Decimal, Digits(12, 2)]` | an amount of 12 digits, 2 decimal, written as fixed-point text (`"1000.00"`, never `"1E+3"`) |
+| `Money`, `Annotated[Money, Digits(12, 2)]` | `{"amount": "10.50", "currency": "USD"}`, the `Money` schema; a write schema refuses an amount its columns cannot hold (`money_digits`) ([money.md](money.md)) |
+| `Currency` | its code, `"USD"` |
 | an `Enum` | its values |
 | a value object of several fields, a child entity, `list[Line]` | nested schemas (`MoneyOut`, `LineOut`) |
 | `set[str]` | a sorted list, so the representation is stable |
@@ -496,9 +498,23 @@ None:
 | `int` | `int` | `BigInteger` | 64 bits |
 | `bool`, `float` | `bool`, `float` | `Boolean`, `Double` | |
 | `decimal[:precision:scale]` (12, 2) | `Annotated[Decimal, Digits(p, s)]` | `ExactDecimal(p, s)` | those digits |
+| `money[:precision:scale]` (18, 4) | `Annotated[Money, Digits(p, s)]` | `MoneyColumns`: `<name>`, `ExactDecimal(p, s)`, and `<name>_currency` | `{"amount": "1.50", "currency": "USD"}` |
 | `date`, `datetime` | `date`, `datetime` | `Date`, `UTCDateTime` | a datetime has a time zone |
 | `uuid` | `UUID` | `Uuid` | |
 | `ref:Aggregate` | `Reference[AggregateId]` | `Uuid`, indexed | a UUID |
+
+A money field that may not be None also moves between aggregates as
+[the payment recipe](recipes/payments.md) moves it: `--field balance:money`
+on `Wallet` writes `transfer_balance(to=, amount=)` and `receive_balance`
+on the aggregate, which refuse an overdraft (`InsufficientWalletBalance`),
+nothing, a transfer to itself (`InvalidWalletTransfer`), and another
+currency (`CurrencyMismatch`); the event `WalletBalanceTransferred`; the
+command `TransferWalletBalance` and its use case, which locks both rows in
+one statement, by ascending id (`get_many_for_update`), and runs the whole
+work again when it loses a race (`uow.run(work, retry=RACES)`,
+`Retry(attempts=5, retry_on=(ConcurrentUpdate,))`);
+`POST /wallets/{wallet_id}/transfer-balance`; and
+`test_transfer_wallet_balance.py`, a lost race included.
 
 `register_field_type("email", FieldType(...))`, from
 `domainkit.management.generators`, adds a kind for code that runs the
