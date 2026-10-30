@@ -61,6 +61,38 @@ and a status.
   rows by ascending id and runs again on a lost race (`uow.run(...,
   retry=Retry(...))`), `POST /wallets/{wallet_id}/transfer-balance`, and
   their tests. The payment recipe holds its amounts in `Money` (FIN-01).
+- `domainkit.contrib.accounting`: double-entry books. A chart of accounts
+  (a code, a type and its normal balance, one currency, open or closed, a
+  holder), journal entries whose postings must balance per currency, and
+  balances moved in the posting's own transaction. A posting locks its
+  accounts by ascending id inside the unit of work and runs again when it
+  loses a race (`ACCOUNTING.RETRY_ATTEMPTS`), so 50 transfers at once
+  between overlapping pairs of accounts neither deadlock nor lose an
+  update; locked in the order of their lines, 33 to 41 of the 50
+  deadlocked. An entry is posted once per `source` and `reference`, so a
+  retried request books once, and entries posted from messages
+  (`defer_entry`) run under the inbox, so a message delivered twice books
+  once. Entries never change: corrections are reversals
+  (`reverse_entry`), and on PostgreSQL triggers that `migrate` makes
+  refuse updates, deletes, and truncation of entries and postings, checked
+  at startup in staging and production (`accounting.E001`,
+  `accounting.E002`, `ACCOUNTING.REQUIRE_PROTECTION`). Holds reserve an
+  amount (available = balance − holds) until captured into an entry,
+  released, or expired; accounting periods close, and an entry dated in a
+  closed one is refused; a period's trial balance and general ledger come
+  as CSV or stable JSON, and each nets to zero per currency.
+  `verify_ledger` checks the books. Reconciliation imports statement
+  lines through a port (`StatementSource`, with `CsvStatement`; amounts
+  exact), matches them to postings by reference, amount, currency, and a
+  date window, by rules a project extends (`ACCOUNTING.MATCHING_RULES`),
+  and records matches and breaks. `domainkit.contrib.accounting.api`
+  serves all of it as `ResourceRouter`s, each route guarded by a model
+  permission; `manage.py accounting` writes the reports, checks the books,
+  expires holds, and reconciles. See
+  [docs/contrib/accounting.md](docs/contrib/accounting.md), and ADRs
+  [0116](docs/adr/0116-keep-double-entry-books-locked-in-id-order-and-append-only.md)
+  and [0117](docs/adr/0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md).
+  (FIN-07, FIN-08, FIN-10, FIN-11)
 - Ordering keys for messaging: messages that share a key run one at a
   time, in the order their commits happened, across every worker and
   replica, while other keys run beside them. `uow.defer(...,

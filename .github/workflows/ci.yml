@@ -1163,6 +1163,9 @@ jobs:
               domainkit.contrib.idempotency.statements.*
               domainkit.contrib.idempotency.tasks.*
               domainkit.contrib.objectpermissions.* domainkit.contrib.privacy.*
+          - name: accounting
+            mutants: >-
+              domainkit.contrib.accounting.*
           - name: core
             mutants: >-
               domainkit.x* domainkit.architecture.* domainkit.clock.*

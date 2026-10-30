@@ -122,6 +122,8 @@ statuses, and the amendments they name.
 | [0113](0113-reset-module-state-through-public-resets-the-plugin-calls.md) | Reset module state through public resets the plugin calls | Accepted |
 | [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) | Split the reference and the public API into pages by area | Accepted |
 | [0115](0115-store-money-as-an-exact-amount-and-a-currency-code.md) | Store money as an exact amount and a currency code | Accepted |
+| [0116](0116-keep-double-entry-books-locked-in-id-order-and-append-only.md) | Keep double-entry books: post under locks taken in id order, and append only | Accepted |
+| [0117](0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md) | Reconcile statements through a port, match by rules in order, and record breaks | Accepted |
 | [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md) | Run a key's messages in commit order by holding the later ones in the outbox | Accepted |
 
 ### Decisions still without a record
