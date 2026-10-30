@@ -40,7 +40,12 @@ from domainkit.contrib.accounting import (
     models,
 )
 from domainkit.ddd import DomainError
-from domainkit.money import Currency, Money
+from domainkit.money import (
+    Money,
+    UnknownCurrency,
+    currencies_kept,
+    register_currency,
+)
 from domainkit_tests.test_accounting import refused
 
 NOW: Final = datetime(2026, 10, 30, 12, tzinfo=UTC)
@@ -152,15 +157,14 @@ def test_accounts_at_their_bounds_open() -> None:
     assert Account.open("1", "N", AccountType.ASSET, "CLF").currency == "CLF"
 
 
-def test_currencies_the_ledger_cannot_hold_are_refused(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_currencies_the_ledger_cannot_hold_are_refused() -> None:
     """Unknown codes, and currencies of more than four places."""
-    with refused(InvalidAmount, match="not one the ledger knows"):
+    with pytest.raises(UnknownCurrency):
         Account.open("1000", "Cash", AccountType.ASSET, "XXX")
-    monkeypatch.setattr(models, "currency", lambda code: Currency(code, 0, 5))
-    with refused(InvalidAmount, match="at most four decimal places"):
-        models.ledger_currency("XBT")
+    with currencies_kept():
+        register_currency("XBT", minor_units=8)
+        with refused(InvalidAmount, match="at most four decimal places"):
+            Account.open("1000", "Bitcoin", AccountType.ASSET, "XBT")
 
 
 def test_stored_amounts_come_back_at_their_currencys_places() -> None:

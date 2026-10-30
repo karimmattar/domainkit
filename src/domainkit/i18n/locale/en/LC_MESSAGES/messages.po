@@ -662,13 +662,7 @@ msgstr ""
 msgid "No accounting period has that id."
 msgstr ""
 
-msgid "The currency is not one the ledger knows."
-msgstr ""
-
 msgid "The ledger keeps at most four decimal places."
-msgstr ""
-
-msgid "The amount has more places than its currency."
 msgstr ""
 
 msgid "An amount is more than zero."

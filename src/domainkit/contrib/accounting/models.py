@@ -151,13 +151,10 @@ def ledger_currency(code: str) -> Currency:
     """The currency of ``code``, if the ledger can hold its amounts exactly.
 
     Raises:
-        InvalidAmount: No currency has that code, or it has more minor units
-            than the columns' ``SCALE``.
+        UnknownCurrency: No currency has that code (``domainkit.money``).
+        InvalidAmount: It has more minor units than the columns' ``SCALE``.
     """
-    try:
-        unit = currency(code)
-    except LookupError:
-        raise InvalidAmount("The currency is not one the ledger knows.") from None
+    unit = currency(code)
     if unit.minor_units > SCALE:
         raise InvalidAmount("The ledger keeps at most four decimal places.")
     return unit

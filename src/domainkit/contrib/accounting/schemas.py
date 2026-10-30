@@ -14,7 +14,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.money import Money
 
-from .exceptions import InvalidAmount
 from .models import (
     MAX_TEXT,
     Account,
@@ -55,16 +54,11 @@ class MoneyIn(BaseModel):
         """As ``Money``.
 
         Raises:
-            InvalidAmount: The currency is unknown, or the amount has more
-                places than it.
+            UnknownCurrency, InexactAmount: As ``domainkit.money`` (422,
+                ``unknown_currency`` and ``inexact_amount``).
+            InvalidAmount: The currency has more places than the ledger keeps.
         """
-        unit = ledger_currency(self.currency)
-        try:
-            return Money.of(self.amount, unit)
-        except ValueError:
-            raise InvalidAmount(
-                "The amount has more places than its currency."
-            ) from None
+        return Money.of(self.amount, ledger_currency(self.currency))
 
 
 class MoneyOut(BaseModel):
@@ -106,7 +100,7 @@ class LineIn(BaseModel):
         """As a ``Line``.
 
         Raises:
-            InvalidAmount: As ``MoneyIn.to_money``.
+            UnknownCurrency, InexactAmount, InvalidAmount: As ``MoneyIn.to_money``.
         """
         from .models import AccountId
 

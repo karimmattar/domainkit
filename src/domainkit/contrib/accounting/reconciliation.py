@@ -173,7 +173,7 @@ class CsvStatement:
             raise InvalidStatement("A statement line's date is not a date.") from None
         try:
             unit = ledger_currency(value("currency"))
-            money = Money.of(amount, unit)
+            money = Money.of(amount.removeprefix("+"), unit)
         except (InvalidAmount, ValueError):
             raise InvalidStatement(
                 "A statement line's amount does not fit its currency."

@@ -62,7 +62,9 @@ wallet = await open_account(
   debits, liabilities, equity, and income with credits. An account's
   `balance` is in that sign: a wallet's credits less its debits.
 - One **currency** per account, of at most four decimal places; a line in
-  another currency is refused.
+  another currency is refused. An unknown currency, or an amount with more
+  places than its currency, is refused as `domainkit.money` refuses it
+  (`unknown_currency`, `inexact_amount`, 422).
 - `held` is what its active holds reserve, and `available` the balance
   less that. An account that `may_go_negative=False` refuses a posting or
   a hold that would leave less than nothing available

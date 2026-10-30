@@ -347,8 +347,8 @@ def test_amounts_and_statements_that_are_not_are_refused(
     )
 
     assert [(r.status_code, r.json()["code"]) for r in refused] == [
-        (422, "invalid_amount"),
-        (422, "invalid_amount"),
+        (422, "inexact_amount"),
+        (422, "unknown_currency"),
     ]
     assert (as_json.status_code, as_json.json()["code"]) == (422, "invalid_statement")
     assert as_json.json()["detail"] == "A statement is sent as text/csv."
@@ -396,7 +396,7 @@ def test_every_refusal_of_the_ledger_is_translated() -> None:
         untranslated = sorted(
             message for message in messages if gettext(message) == message
         )
-    assert len(messages) > 40
+    assert len(messages) >= 40
     assert untranslated == []
 
 

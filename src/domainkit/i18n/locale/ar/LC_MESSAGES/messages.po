@@ -670,14 +670,8 @@ msgstr "لا يوجد حجز بهذا المعرّف."
 msgid "No accounting period has that id."
 msgstr "لا توجد فترة محاسبية بهذا المعرّف."
 
-msgid "The currency is not one the ledger knows."
-msgstr "هذه العملة لا يعرفها الدفتر."
-
 msgid "The ledger keeps at most four decimal places."
 msgstr "يحفظ الدفتر أربع خانات عشرية على الأكثر."
-
-msgid "The amount has more places than its currency."
-msgstr "في المبلغ خانات عشرية أكثر مما لعملته."
 
 msgid "An amount is more than zero."
 msgstr "يجب أن يكون المبلغ أكبر من الصفر."

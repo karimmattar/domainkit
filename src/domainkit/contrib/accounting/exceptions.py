@@ -32,7 +32,7 @@ class PeriodNotFound(NotFound):
 
 
 class InvalidAmount(BusinessRuleViolation):
-    """An amount that is not one of its currency: unknown, inexact, or not positive."""
+    """An amount the ledger cannot hold: not positive, or of more than four places."""
 
     code = "invalid_amount"
 
