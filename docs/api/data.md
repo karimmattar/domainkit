@@ -201,6 +201,17 @@ The ledger state a client trusts, kept where a restart does not lose it.
 - `registered_states`: The store an installed app registered (`use_states`); None if none.
 - `use_states`: Keep ledgers' trusted states in `store`, while these domains are installed.
 
+## `domainkit.money`
+
+Stand-in for ``domainkit.money`` until work package M1 lands (internal).
+
+- `Currency`: An ISO 4217 currency: its code, number, and minor units.
+- `CurrencyMismatch`: Arithmetic or a comparison between amounts of two currencies.
+- `InexactAmount`: An amount with more places than its currency's minor units.
+- `Money`: An exact amount of one currency, with exactly its minor units.
+- `UnknownCurrency`: No currency has that code.
+- `currency`: The currency of `code`.
+
 ## `domainkit.resources`
 
 REST resources over aggregates: routes, schemas, conditional writes, policies.
