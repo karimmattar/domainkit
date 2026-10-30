@@ -34,10 +34,12 @@ from sqlalchemy import (
     ColumnElement,
     Insert,
     ScalarSelect,
+    Select,
     case,
     delete,
     literal,
     not_,
+    or_,
     select,
     update,
 )
@@ -167,28 +169,88 @@ async def requeue(
     dead: ColumnElement[bool],
     values: Mapping[str, object],
 ) -> int:
-    """Give ``key``'s ``dead`` messages back, in their order: pending if first.
+    """Give ``key``'s ``dead`` messages back, each in its place in the key's line.
 
-    Each takes ``values`` too. A message given back keeps its sequence, so
-    it is held before the messages of its key committed after it that still
-    wait, and after the one running, if any; with none waiting, the first
-    is pending and the rest held behind it.
+    Each takes ``values`` too, and keeps its sequence. It goes before the
+    messages of its key committed after it that still wait, the pending
+    one included while no worker has started it, nor a relay handed it to
+    the broker (``passed_over``); it goes after one that has, which runs
+    first. With nothing of the key waiting, the first given back is
+    pending, and the rest are held behind it.
     """
     await take_turns(connection, dialect, {key: 0})
     order = (
-        select(messages.c.id)
+        select(messages.c.id, messages.c.sequence)
         .where(dead, messages.c.ordering_key == key)
         .order_by(messages.c.sequence)
     )
     count = 0
-    for message_id in (await connection.execute(order)).scalars():
+    for message_id, sequence in (await connection.execute(order)).all():
+        passed = await passed_over(connection, dialect, key, sequence)
         result = await connection.execute(
             update(messages)
             .where(messages.c.id == message_id, dead)
-            .values(status=first_status(key), **values)
+            .values(status=PENDING if passed else first_status(key), **values)
         )
         count += int(result.rowcount)
     return count
+
+
+async def passed_over(
+    connection: AsyncConnection, dialect: str, key: str, sequence: int
+) -> bool:
+    """Hold ``key``'s pending message again if it comes after ``sequence``.
+
+    Only one that is not under way: no worker runs it (``started_at``), and
+    no relay holds it for the broker (a live lock). Either would run it
+    whatever its status says, so it keeps its turn. The caller holds the
+    key's turn; the condition is checked again on the row, so a claim that
+    took it meanwhile wins. Return whether a message was held back.
+    """
+    now = dbclock.now(dialect)
+    result = await connection.execute(
+        update(messages)
+        .where(
+            messages.c.ordering_key == key,
+            _statuses((PENDING,)),
+            messages.c.sequence > sequence,
+            messages.c.started_at.is_(None),
+            or_(messages.c.locked_until.is_(None), messages.c.locked_until < now),
+        )
+        .values(status=HELD, locked_until=None, lock_id=None)
+    )
+    return bool(result.rowcount)
+
+
+def stalled(size: int) -> Select[tuple[str]]:
+    """Up to ``size`` keys with held messages and none pending, through the index.
+
+    No transaction leaves a key so: the one that finishes its pending
+    message makes the next pending. A process that does not know the held
+    status does, such as a 0.13 worker finishing a message 0.14 wrote
+    during a rolling deploy (SEC-14c-3); ``promote`` repairs each.
+    """
+    first = messages.alias("first")
+    pending = (
+        select(first.c.id)
+        .where(
+            first.c.ordering_key == messages.c.ordering_key,
+            first.c.status.in_([literal(PENDING, literal_execute=True)]),
+        )
+        .exists()
+    )
+    return (
+        select(messages.c.ordering_key)
+        .where(messages.c.ordering_key.is_not(None), _statuses((HELD,)), ~pending)
+        .distinct()
+        .order_by(messages.c.ordering_key)
+        .limit(literal(size, literal_execute=True))
+    )
+
+
+async def stalled_keys(connection: AsyncConnection, size: int) -> list[str]:
+    """The keys ``stalled`` finds, on ``connection``."""
+    return [str(key) for key in (await connection.execute(stalled(size))).scalars()]
 
 
 def idle_keys(dialect: str, size: int, retention: float) -> Delete:

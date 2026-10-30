@@ -34,9 +34,13 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   that holds an outbox. Workers claim through the new columns, so they
   fail until the database has them. **Fix:** run `makemigrations` and
   `migrate` in each project that installs messaging, before the new
-  version's workers start. `messages` prints a `held` line after
-  `pending`: a script that reads its lines by position reads them by name
-  instead. Nothing keeps the old schema.
+  version's workers start. Stop the 0.13 workers before any 0.14 process
+  (a web process too) writes a message with an ordering key: a 0.13
+  worker finishes such a message without making the next of its key
+  pending, and the key waits until a 0.14 worker's cleanup round, or
+  `messages --release`, releases it (SEC-14c-3). `messages` prints a
+  `held` line after `pending`: a script that reads its lines by position
+  reads them by name instead. Nothing keeps the old schema.
 
 ## 0.12 to 0.13
 

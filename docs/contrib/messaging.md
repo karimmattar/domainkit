@@ -261,13 +261,26 @@ async def send_status(event: PaymentEvent) -> None: ...
 event_bus.subscribe(PaymentEvent, send_status, durable=True)
 ```
 
-- **The key.** A string of 1 to 255 characters; another value (a UUID, a
-  number) is turned into one, and a declared key that comes out `None`
-  leaves the message without one. `ordering_key=` wins over the declared
-  key. Keys are shared by every task and handler of an outbox: a payment's
-  status webhook and its ledger posting with one key run in one line. Put
-  the target's name in the key to give it a line of its own. A chain's
-  steps carry its first step's key.
+- **The key.** A string of 1 to 255 characters without a NUL character;
+  another value (a UUID, a number) is turned into one, and a declared key
+  that comes out `None` leaves the message without one. A key given to
+  `uow.defer` or `enqueue` that breaks these rules raises `ValueError`
+  there; a derived one, at the commit. A task's key named by `@ordered`
+  must be one of the task's arguments: `@task` refuses another with
+  `ImproperlyConfigured`. `ordering_key=` wins over the declared key. A
+  chain's steps carry its first step's key.
+- **Choosing keys.** Keys are shared by every task and handler of an
+  outbox, and by every tenant whose work it holds: a payment's status
+  webhook and its ledger posting with one key run in one line, and so do
+  two tenants' messages that happen to share one. Namespace keys by what
+  they order and, with several tenants, by tenant
+  (`f"account:{account.id}"`, `f"{tenant}:invoice:{invoice.id}"`); put the
+  target's name in the key to give it a line of its own. Never take a key
+  raw from request data: a caller who chooses keys can join another's line
+  and hold it back. Keep personal data out of keys (ids, not emails):
+  `ordering_key` stays in the outbox with finished messages, and the key's
+  row in `domainkit_ordering_keys`, and neither is erased or exported with
+  a subject's data ([privacy.md](../privacy.md)).
 - **Commit order.** Two transactions that write messages of one key take
   turns on the key (each writes its row in `domainkit_ordering_keys`
   first, and holds it until it commits), so their messages take places
@@ -292,9 +305,10 @@ event_bus.subscribe(PaymentEvent, send_status, durable=True)
   (after `max_attempts`, at once for `dont_retry_on`, or its worker died
   during its last attempt), the key's next message runs, and the rest
   after it. The dead message is out of the line: `messages --retry` puts it
-  back in its place, held before the key's messages still waiting, after
-  the one running if there is one, but the messages that ran meanwhile
-  stay run. A key that must stop at a failure, a ledger's say, gives its
+  back in its place, before the key's messages still waiting, the pending
+  one included while no worker has started it and no relay has handed it
+  to the broker (that one is held again behind it); after the one under
+  way, if there is one. The messages that ran meanwhile stay run. A key that must stop at a failure, a ledger's say, gives its
   task a high `max_attempts` with a capped backoff: the message keeps
   retrying in place, holding the key, until it succeeds or a fix lets it.
   Watch for it in the logs and `messages --held`.
@@ -309,9 +323,21 @@ event_bus.subscribe(PaymentEvent, send_status, durable=True)
   two databases (shards) are two lines. Within one queue's workers too: a
   key whose messages go to a queue no worker serves waits for one.
 
+- **A stalled key is released.** A key with held messages and none
+  pending would wait for good: no worker claims held messages, and every
+  new message of the key is held behind them. 0.14 never leaves a key so,
+  but a 0.13 worker that finishes a message 0.14 wrote does (see
+  upgrading below). Each worker's cleanup round makes the first held
+  message of such a key pending, under the key's turn, and logs a warning
+  naming the message; `messages --release` does it at once.
+
 `messages` counts held messages, and `messages --held` lists them by key,
 in order. Workers delete a key's row once none of its messages waits or
-is dead and it was not used for `RETENTION_SECONDS`.
+is dead and it was not used for `RETENTION_SECONDS`. That query reads the
+whole table of keys when few are idle: 78 ms a batch at a million keys,
+once a `CLEANUP_INTERVAL`. An index on `touched_at` would make it 12 ms,
+but every write and finish of a keyed message updates that column, and
+would update the index too; the table has none.
 
 ## Queues
 
@@ -480,7 +506,11 @@ columns, a `held` status, and an index of keyed messages,
 `ix_domainkit_messages_ordering`; messaging has a new table of keys,
 `domainkit_ordering_keys`, in every database that holds an outbox. Run
 `makemigrations` and `migrate` in each project that installs messaging
-before deploying: workers claim through the new columns. Adding the
+before deploying: workers claim through the new columns. Stop the 0.13
+workers before any 0.14 process writes a message with an ordering key: a
+0.13 worker finishes such a message without making the next of its key
+pending, and the key waits until a 0.14 worker's cleanup round, or
+`messages --release`, releases it. Adding the
 columns rewrites nothing; building the index reads the outbox once, and
 adds no entry, since no existing message has a key. For an outbox too
 large to block writes that long, build it without blocking, as for the

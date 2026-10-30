@@ -337,6 +337,7 @@ Operator queries: queue depth, lag, listings, retries, and cancelling.
 - `list_messages`: List messages in `state`, most urgent (or, for dead ones, newest) first.
 - `queue_counts`: Count messages by status in alias `database` (default: the home outbox).
 - `queue_lag`: Seconds the oldest due message of each queue has waited to start.
+- `release_stalled`: Make the next message of each stalled ordering key pending; how many.
 - `retry_dead`: Return dead messages (one, or all) to the queue with fresh attempts.
 
 ## `domainkit.contrib.messaging.dbclock`
