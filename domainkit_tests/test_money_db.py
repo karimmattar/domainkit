@@ -655,3 +655,32 @@ async def test_money_conditions_select_these_wallets(
     memory = InMemoryWallets(dataset())
 
     assert names(await memory.filter(Selection(criteria, ordering=["name"]))) == found
+
+
+class Purse(AggregateRoot[int]):
+    """An aggregate whose mapping names one money attribute itself."""
+
+    cash: Decimal
+    coins: Money
+
+
+def test_a_money_attribute_the_mapping_names_is_left_to_it() -> None:
+    """Given properties win; the other pairs are mapped all the same."""
+    purses = Table(
+        "framework_test_money_purses_named",
+        MetaData(),
+        Column("id", Integer, primary_key=True),
+        Column("version", Integer, nullable=False),
+        *MoneyColumns("cash"),
+        *MoneyColumns("coins"),
+    )
+    map_imperatively(Purse, purses, properties={"cash": purses.c.cash})
+    mapper = class_mapper(Purse)
+
+    assert list(mapper.composites.keys()) == ["coins"]
+    assert mapper.get_property_by_column(purses.c.cash).key == "cash"
+    assert set(money_properties(purses, {"cash": None})) == {
+        "_coins_amount",
+        "_coins_currency",
+        "coins",
+    }
