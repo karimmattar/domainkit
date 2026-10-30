@@ -824,8 +824,8 @@ def test_currencies_take_their_bounds_and_default_to_no_name() -> None:
             lambda: currency("EUROS"),
             UnknownCurrency,
             (
-                "No currency has 'EUROS': use an ISO 4217 code, in capitals, or register "
-                "the currency with register_currency."
+                "No currency has 'EUROS': use an ISO 4217 code, in capitals, or "
+                "register the currency with register_currency."
             ),
         ),
         (

@@ -11,8 +11,8 @@ fixtures, factories, and the generators know it
 ```python
 from domainkit.money import Money, Rounding
 
-price = Money.of("10.5", "USD")      # Money('10.50', 'USD')
-price + Money.of("0.25", "USD")      # Money('10.75', 'USD')
+price = Money.of("10.5", "USD")  # Money('10.50', 'USD')
+price + Money.of("0.25", "USD")  # Money('10.75', 'USD')
 price.multiply("0.15", rounding=Rounding.HALF_UP)  # Money('1.58', 'USD')
 Money.of("100", "USD").allocate([1, 1, 1])  # 33.34, 33.33, 33.33
 ```
@@ -98,7 +98,7 @@ always sum to it: no minor unit is lost or made.
 
 ```python
 Money.of("100", "USD").allocate([1, 1, 1])  # 33.34, 33.33, 33.33
-Money.of("0.05", "USD").allocate([3, 7])     # 0.02, 0.03
+Money.of("0.05", "USD").allocate([3, 7])  # 0.02, 0.03
 Money.of("100", "USD").allocate([Decimal("0.7"), Decimal("0.3")])  # 70.00, 30.00
 ```
 
@@ -196,8 +196,8 @@ alike:
 ```python
 F("balance") >= Money.of("10", "USD")  # balances in USD of at least 10.00
 F("balance").range(Money.of("0", "EUR"), Money.of("5", "EUR"))
-F("balance.currency") == "USD"            # its parts are fields too
-F("balance.amount") > Decimal("9.995")    # of any places, compared exactly
+F("balance.currency") == "USD"  # its parts are fields too
+F("balance.amount") > Decimal("9.995")  # of any places, compared exactly
 ```
 
 A condition on money is a condition on its currency and its amount, so

@@ -736,15 +736,19 @@ def _on_money_parts(name: str, lookup: Lookup, value: Any) -> Criteria:  # noqa:
     """
     amount, code = F(f"{name}.amount"), F(f"{name}.currency")
     if lookup is Lookup.IN:
+        moneys: tuple[Money, ...] = value
         return Or.of(
-            *((code == each.currency) & (amount == each.amount) for each in value)
+            *((code == each.currency) & (amount == each.amount) for each in moneys)
         )
     if lookup is Lookup.RANGE:
+        low: Money
+        high: Money
         low, high = value
         if low.currency != high.currency:
             raise InvalidQuery(f"A range of {name} takes two amounts of one currency.")
         return (code == low.currency) & amount.range(low.amount, high.amount)
-    return (code == value.currency) & amount.lookup(lookup, value.amount)
+    money: Money = value
+    return (code == money.currency) & amount.lookup(lookup, money.amount)
 
 
 def _holds(

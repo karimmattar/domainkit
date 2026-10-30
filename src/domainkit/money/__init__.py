@@ -812,7 +812,8 @@ def _whole_units(number: Decimal, places: int) -> int:
     """``number`` times ``10 ** places``, which is whole, computed in integers."""
     _, digits, exponent = number.as_tuple()
     coefficient = int("".join(map(str, digits)))
-    return coefficient * 10 ** (int(exponent) + places)
+    scale: int = 10 ** (int(exponent) + places)  # Not negative: places is the most.
+    return coefficient * scale
 
 
 def _validated_money(value: object) -> Money:
