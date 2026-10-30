@@ -34,6 +34,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
 | `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked), or cancel a message no worker runs; retries and cancels are audited (messaging; [operators](#operators)). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
+| `accounting` | `trialbalance\|ledger PERIOD [--format csv\|json] [--output FILE]`, `verify`, `expireholds`, `import ACCOUNT FILE`, `reconcile ACCOUNT`, `unmatched ACCOUNT`, `--operator` | Write a period's trial balance or general ledger, check that every entry balances and every balance sums its postings (fails otherwise), release expired holds, import a bank statement (CSV) into an account, reconcile it, or list what is unmatched; a period by name or id, an account by code or id; imports, reconciliations, and expiries are audited (accounting; see [accounting.md](../contrib/accounting.md#from-the-command-line), [operators](#operators)). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](../contrib/audit.md#history)). |
 | `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
 | `auditverify` | `--database`, `--export FILE`, `--check-export FILE --public-key PEM` | Check the audit trail against its seals, checkpoints, and anchors; fails if anything changed. `--export` then writes signed checkpoints of every trail for a third party (`AUDIT.CHECKPOINT_KEY`, read by this and `auditprune` alone); `--check-export` checks such a file offline, with the public key alone (audit). |
@@ -58,9 +59,10 @@ application, say who runs them and leave a row in the audit trail (with
 `dumpdata --include-guarded`, which copies credentials out (0.12);
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
-`addcertificate`, `cleartokens`, `flags`, and `webhooks`. Their listings
-(`flags list`, `webhooks deliveries`, ...) take the operator too but record
-nothing; `evidence`, `auditlog`, and `auditverify` only read and take none.
+`addcertificate`, `cleartokens`, `flags`, `webhooks`, and `accounting`
+(its `import`, `reconcile`, and `expireholds`). Their listings
+(`flags list`, `webhooks deliveries`, `accounting verify`, ...) take the
+operator too but record nothing; `evidence`, `auditlog`, and `auditverify` only read and take none.
 The operator is, in this order:
 
 1. `--operator NAME` (before the action for `privacy`:
@@ -99,7 +101,8 @@ names the operator instead of `system`. An action that records nothing
 itself is recorded once it ends as `operator.<command>`
 (`operator.messages.retry`, `operator.messages.cancel`,
 `operator.auditforget`, `operator.auditprune`, `operator.loaddata`, `operator.flush`,
-`operator.partitions.prune`, `operator.webhooks.replay`), `success` or `failure` (with the error's
+`operator.partitions.prune`, `operator.webhooks.replay`, `operator.accounting.import`,
+`operator.accounting.reconcile`, `operator.accounting.expireholds`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. `operator.loaddata` names the fixture file,
 its SHA-256, and each table with its rows and how many it replaced;

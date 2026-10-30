@@ -101,6 +101,7 @@ nav:
           - contrib/idempotency.md
           - contrib/evidence.md
           - contrib/flags.md
+          - contrib/accounting.md
       - cache.md
       - live.md
       - uploads.md

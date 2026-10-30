@@ -58,7 +58,11 @@ no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
 schedule, and at startup `audit.E004` and `audit.E005`, an audited
 PostgreSQL database whose `protect()` triggers could not be checked or are
 missing, unless `AUDIT.REQUIRE_BASELINE = False`;
-[contrib.md](../contrib/audit.md#in-staging-and-production)); `setup()` refuses a domain whose `requires` is not
+[contrib.md](../contrib/audit.md#in-staging-and-production); and at
+startup `accounting.E001` and `accounting.E002`, a ledger on PostgreSQL
+whose append-only triggers are missing, disabled, or changed, or could
+not be checked, unless `ACCOUNTING.REQUIRE_PROTECTION = False`
+([accounting.md](../contrib/accounting.md#entries))); `setup()` refuses a domain whose `requires` is not
 installed (`apps.E001`), or that defines a hook method 0.13 removed
 (`apps.E002`), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
@@ -95,6 +99,7 @@ an unsafe or broken configuration, refused until it changes.
 | `auth.W004` | with `AUTH.REQUIRE_SHARED_THROTTLES = False` only: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own; what `auth.E105` refuses ([auth.md](../auth/logging-in.md#logging-in-and-out)) |
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](../auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
+| `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
 
 `idempotency.W002` (0.10: `IDEMPOTENCY.ANONYMOUS` left unset, so
