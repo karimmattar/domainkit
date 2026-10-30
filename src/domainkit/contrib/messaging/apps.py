@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import lifecycle
 from domainkit.apps import DomainConfig, registry
-from domainkit.apps.hooks import on_erase_subject, on_export_subject
+from domainkit.apps.hooks import (
+    on_deployment_warnings,
+    on_erase_subject,
+    on_export_subject,
+)
+from domainkit.checks import CheckMessage
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.routing import DatabaseRouter, router
@@ -71,7 +76,8 @@ class MessagingConfig(DomainConfig):
         alike, within the time that phase always has (``drain_time``). Each
         commit joins the run of the message a worker is processing, if any,
         writes its outbox rows (``on_stage``), and hands them to the
-        publisher once it lands (``on_committed``).
+        publisher once it lands (``on_committed``). ``check`` warns about
+        tasks written as ``def`` (``blocking.W002``).
         """
         config = self.get_settings()
         router.require_standalone(config.DATABASE, "MESSAGING.DATABASE")
@@ -87,6 +93,7 @@ class MessagingConfig(DomainConfig):
             import_module(f"{self.name}.metrics")
         on_erase_subject(self.erase_copies)
         on_export_subject(self.export_copies)
+        on_deployment_warnings(self.blocking_tasks)
 
     async def stage_outbox(
         self,
@@ -114,6 +121,23 @@ class MessagingConfig(DomainConfig):
         runs.committed(uow)
         rows = _committing.pop(uow.session, [])
         await notify_committed(self.get_settings(), uow.alias, rows)
+
+    def blocking_tasks(self) -> list[CheckMessage]:
+        """Warn about tasks written as ``def``, in every environment (``check``).
+
+        The worker awaits each run on its event loop: a ``def`` holds every
+        message of the process while it works, an ordered key's included,
+        then fails. Durable handlers are on the event bus, which ``check``
+        looks at itself.
+        """
+        from domainkit.http.blocking import awaited_sync  # Only ``check`` needs it.
+
+        from .registry import all_tasks
+
+        found = awaited_sync(
+            (f"the task {spec.key!r}", spec.function) for spec in all_tasks()
+        )
+        return [CheckMessage("blocking.W002", message) for message in found]
 
     async def erase_copies(self, subject: str, reason: str) -> Mapping[str, int]:
         """Blank dead messages about ``subject``; count pending ones (``erasure``)."""

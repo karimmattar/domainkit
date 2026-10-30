@@ -8,7 +8,8 @@ the command too.
 """
 
 from argparse import ArgumentParser
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -21,9 +22,10 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
 from domainkit.db.connections import pool_sizing_warnings
+from domainkit.ddd import event_bus
 from domainkit.http import websockets
 from domainkit.http.application import application_problems, build_application
-from domainkit.http.blocking import sync_calls
+from domainkit.http.blocking import awaited_sync, sync_calls
 from domainkit.http.servers import unix_socket_warnings
 from domainkit.management.base import BaseCommand, CommandError
 
@@ -35,7 +37,8 @@ class Command(BaseCommand):
         "Validate settings, installed domains, routes and their access rules, "
         "middleware, the dependency rules between domain layers, and the "
         "migration history; warn about route handlers and dependencies that "
-        "run on the thread pool, and about weak choices in staging and "
+        "run on the thread pool, and event handlers and tasks that would "
+        "block the event loop, and about weak choices in staging and "
         "production, and say how HTTPS reaches the application there. With "
         "--deploy, warnings fail too."
     )
@@ -109,7 +112,19 @@ def _warnings(app: FastAPI) -> list[str]:
             "servers.W002", unix_socket_warnings(settings.TRUSTED_PROXIES)
         )
     warnings += _tagged("blocking.W001", sync_calls(app, _project_domains()))
+    warnings += _tagged("blocking.W002", awaited_sync(_event_handlers()))
     return warnings
+
+
+def _event_handlers() -> list[tuple[str, Callable[..., Any]]]:
+    """Every handler on the process's event bus, with what it handles."""
+    return [
+        (
+            f"{'a durable' if durable else 'a'} handler of {event_type.__name__}",
+            handler,
+        )
+        for event_type, handler, durable in event_bus.subscriptions()
+    ]
 
 
 def https_statement() -> CheckMessage:

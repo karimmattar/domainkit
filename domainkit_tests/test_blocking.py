@@ -24,6 +24,7 @@ from domainkit.http.blocking import (
     _calls,
     _listed,
     allow_sync,
+    awaited_sync,
     sync_calls,
     watch_event_loop,
 )
@@ -358,6 +359,106 @@ def test_check_warns_about_sync_code_in_domains(make_package: MakePackage) -> No
         "thread pool for GET /report; make it async def, or mark it with "
         "domainkit.http.blocking.allow_sync.\n"
     )
+
+
+def test_defs_the_loop_awaits_are_named_with_what_runs_them() -> None:
+    """Event handlers and tasks written as def are named, once, with every role.
+
+    Async ones, classes, and those marked ``allow_sync`` pass.
+    """
+
+    def handler(event: object) -> None:
+        """Sync: it runs on the loop, then fails."""
+
+    async def async_handler(event: object) -> None:
+        """Fine."""
+
+    @allow_sync
+    def returns_a_coroutine(event: object) -> Any:  # noqa: ANN401
+        """Sync on purpose: it hands back an awaitable."""
+        return async_handler(event)
+
+    calls: list[tuple[str, Callable[..., Any]]] = [
+        ("the task 'x'", SyncCallable),  # Passed over, not the end of the list.
+        ("a handler of Paid", handler),
+        ("a durable handler of Paid", handler),
+        ("a handler of Paid", async_handler),
+        ("a handler of Paid", returns_a_coroutine),
+        ("the task 'y'", functools.partial(async_handler)),
+    ]
+
+    assert awaited_sync(calls) == [
+        (
+            f"{HERE}.test_defs_the_loop_awaits_are_named_with_what_runs_them."
+            "<locals>.handler is a def, awaited on the event loop as a handler "
+            "of Paid, a durable handler of Paid: its work holds every request "
+            "and message of the process, then it fails, as it returns nothing "
+            "to await; make it async def, and hand blocking calls to "
+            "asyncio.to_thread."
+        )
+    ]
+
+
+def test_check_warns_about_handlers_and_tasks_written_as_def(
+    make_package: MakePackage,
+) -> None:
+    """``check`` names sync event handlers (``check``'s own) and tasks (messaging's)."""
+    make_package(
+        "slowjobs",
+        {
+            "__init__.py": """
+                from domainkit.contrib.messaging import task
+                from domainkit.ddd import DomainEvent, event_bus
+
+                class Paid(DomainEvent):
+                    pass
+
+                def on_paid(event: Paid) -> None:
+                    pass
+
+                def note_paid(event: Paid) -> None:
+                    pass
+
+                async def fine(event: Paid) -> None:
+                    pass
+
+                @task(name="slowjobs.nightly")
+                def nightly() -> None:
+                    pass
+
+                event_bus.subscribe(Paid, on_paid, durable=True)
+                event_bus.subscribe(Paid, note_paid)
+                event_bus.subscribe(Paid, fine)
+            """,
+        },
+    )
+    output = io.StringIO()
+    with override_settings(
+        INSTALLED_DOMAINS=["domainkit.contrib.messaging", "slowjobs"],
+        ALPHA=UNSET,
+    ):
+        call_command("check", stdout=output)
+
+    warnings = [
+        line for line in output.getvalue().splitlines() if "blocking.W002" in line
+    ]
+    task_warning = (
+        "  Warning: blocking.W002: slowjobs.nightly is a def, awaited on the "
+        "event loop as the task 'slowjobs.nightly': its work holds every "
+        "request and message of the process, then it fails, as it returns "
+        "nothing to await; make it async def, and hand blocking calls to "
+        "asyncio.to_thread."
+    )
+    handler_warning = (
+        "  Warning: blocking.W002: slowjobs.on_paid is a def, awaited on the "
+        "event loop as a durable handler of Paid: its work holds every request "
+        "and message of the process, then it fails, as it returns nothing to "
+        "await; make it async def, and hand blocking calls to asyncio.to_thread."
+    )
+    in_process_warning = handler_warning.replace("on_paid", "note_paid").replace(
+        "a durable handler", "a handler"
+    )
+    assert warnings == [task_warning, handler_warning, in_process_warning]
 
 
 BLOCKING_TESTS = """

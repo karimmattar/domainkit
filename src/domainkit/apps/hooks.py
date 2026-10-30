@@ -24,7 +24,8 @@ those of SQL commits and migrations. Each ``DomainConfig`` hook method
 - ``on_erase_subject`` and ``on_export_subject``: the copies of a person's
   data a domain keeps outside its aggregates (``domainkit.contrib.privacy``).
 - ``on_check_application``: problems with the built application.
-- ``on_deployment_warnings``: weak but valid settings where deployed.
+- ``on_deployment_warnings``: weak but valid settings where deployed, and
+  code ``check`` warns about anywhere.
 
 A registered function is checked when it registers: it must take the
 point's arguments, and be a coroutine function where the point awaits it.
@@ -324,4 +325,5 @@ on_check_application: HookPoint[ApplicationCheck] = HookPoint(
 on_deployment_warnings: HookPoint[DeploymentCheck] = HookPoint(
     "deployment_warnings", arguments=0, awaited=False
 )
-"""Weak but valid settings where deployed: ``()``; none elsewhere."""
+"""Warnings ``check`` lists: ``()``. Weak but valid settings where deployed,
+none elsewhere; code to change (a ``def`` the loop awaits), anywhere."""

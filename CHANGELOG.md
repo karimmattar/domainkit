@@ -9,6 +9,13 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `check` warns (`blocking.W002`) about event handlers and messaging tasks
+  written as `def`: awaited on the event loop, they hold every request and
+  message of the process while they work, then fail. `EventBus.subscriptions()`
+  lists every subscription (FIN-19).
+
 ## [0.13.0] - 2026-10-29
 
 A minor release. It removes what 0.12 deprecated: the hook methods of

@@ -13,6 +13,10 @@
 
       @allow_sync
       def render_pdf(order: Order) -> bytes: ...
+
+- It warns too about event handlers and background tasks written as
+  ``def`` (``awaited_sync``): they run on the event loop itself, holding
+  everything else the process does while they work, and then fail.
 """
 
 import asyncio
@@ -113,8 +117,33 @@ def _sync_names(dependant: Dependant) -> Iterator[str]:
             yield _name(call)
 
 
+def awaited_sync(calls: Iterable[tuple[str, Callable[..., Any]]]) -> list[str]:
+    """Warn about each ``def`` among ``calls`` that domainkit awaits on the loop.
+
+    Each call comes with what runs it (``"a durable handler of Paid"``).
+    Event handlers and tasks are awaited on the event loop itself, with no
+    thread pool between: a ``def`` does all its work there, holding every
+    request and message of the process, and then fails, since it returns
+    nothing to await. Those marked ``allow_sync``, and classes, are left
+    alone: one may return an awaitable.
+    """
+    roles_of: dict[str, list[str]] = {}
+    for role, call in calls:
+        if inspect.isclass(_unwrapped(call)) or _allowed(call):
+            continue
+        if _runs_on_threads(call):
+            roles_of.setdefault(_name(call), []).append(role)
+    return [
+        f"{name} is a def, awaited on the event loop as {_listed(roles)}: its "
+        "work holds every request and message of the process, then it fails, "
+        "as it returns nothing to await; make it async def, and hand blocking "
+        "calls to asyncio.to_thread."
+        for name, roles in roles_of.items()
+    ]
+
+
 def _runs_on_threads(call: Callable[..., Any]) -> bool:
-    """Whether FastAPI calls ``call``, not a class, on its thread pool."""
+    """Whether ``call``, not a class, is sync: FastAPI calls it on its thread pool."""
     target = _unwrapped(call)
     if not inspect.isroutine(target):
         target = _unwrapped(type(target).__call__)  # A callable instance.
