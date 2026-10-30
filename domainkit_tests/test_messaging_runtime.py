@@ -67,7 +67,12 @@ from domainkit.contrib.messaging.dispatch import (
 )
 from domainkit.contrib.messaging.metrics import refresh_outbox
 from domainkit.contrib.messaging.outbox import message_row, notifies
-from domainkit.contrib.messaging.registry import periodic, qualified_name, spec_for
+from domainkit.contrib.messaging.registry import (
+    periodic,
+    periodic_tasks,
+    qualified_name,
+    spec_for,
+)
 from domainkit.contrib.messaging.retry import Backoff
 from domainkit.contrib.messaging.tables import (
     CANCELLED,
@@ -804,6 +809,28 @@ def test_periodic_tasks_keep_their_options() -> None:
 
     spec = spec_for(hourly)
     assert (spec.key, spec.backoff) == (qualified_name(hourly), backoff)
+
+
+@pytest.mark.parametrize(
+    ("module", "scheduled"),
+    [
+        ("shop.billing.tasks", True),  # A project's: imported by an installed domain.
+        ("domainkit.contrib.audit", False),  # An app's that is not installed.
+        ("domainkit.contrib.audit.tasks", False),
+    ],
+)
+def test_periodic_tasks_of_apps_not_installed_never_run(
+    module: str, scheduled: bool
+) -> None:
+    """A ``domainkit.contrib`` app's tasks run only while that app is installed."""
+
+    async def hourly() -> None:
+        """Nothing."""
+
+    hourly.__module__ = module
+    periodic(timedelta(hours=1), name=f"tests.runtime.{module}")(hourly)
+
+    assert (hourly in [spec.function for spec, _ in periodic_tasks()]) is scheduled
 
 
 @pytest.mark.usefixtures("tables")
