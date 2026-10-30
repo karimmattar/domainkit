@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Final, cast
 
 import pytest
-from sqlalchemy import insert, text, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import OperationalError
 
 from domainkit import setup
@@ -39,7 +39,7 @@ from domainkit.contrib.accounting.reconciliation import (
     import_statement,
     reconcile,
 )
-from domainkit.contrib.accounting.tables import accounts, postings
+from domainkit.contrib.accounting.tables import accounts, postings, statement_lines
 from domainkit.contrib.accounting.tasks import POST_ENTRY
 from domainkit.contrib.messaging.registry import get_task
 from domainkit.db import connections
@@ -526,7 +526,7 @@ def test_the_command_writes_reports(project: str, tmp_path: Path) -> None:
 
     balance = run("trialbalance", "2026-10")
     run("ledger", "2026-10", "--format", "json", "--output", str(target))
-    ledger_csv = run("ledger", "2026-10")
+    ledger_csv = run("ledger", "2026-10", "--format", "csv")
     as_json = run("trialbalance", "2026-10", "--format", "json")
     by_id = json.loads(as_json)["period"]["id"]
 
@@ -578,11 +578,17 @@ def test_the_command_reconciles_a_statement(
     )
 
     imported = run("import", "1000", str(statement))
+
+    async def statements() -> set[str]:
+        async with connections.engine().connect() as connection:
+            return set(await connection.scalars(select(statement_lines.c.statement)))
+
     known = run("import", "1000", str(statement))
     reconciled = run("reconcile", "1000")
     unmatched = run("unmatched", "1000")
 
     assert imported == "Imported 2 line(s); 0 known.\n"
+    assert run_async(statements()) == {"october.csv"}
     assert known == "Imported 0 line(s); 2 known.\n"
     assert reconciled == "Matched 1 by reference.\n1 unmatched.\n"
     assert unmatched == "2026-10-30  unmatched_line     1.25 USD  x\n"

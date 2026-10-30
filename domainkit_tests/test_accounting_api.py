@@ -285,6 +285,9 @@ def test_statements_are_imported_and_reconciled(
     """A CSV statement is imported once; reconciling it leaves its breaks."""
     books = open_books(client, clerk)
     client.post(f"{API}/entries", json=sale(books, "s-1", "10.50"), headers=clerk)
+    other = client.post(
+        f"{API}/entries", json=sale(books, "s-2", "7.00"), headers=clerk
+    ).json()
     account = books["cash"]["id"]
     statement = (
         "id,date,amount,currency,reference,description\n"
@@ -306,12 +309,16 @@ def test_statements_are_imported_and_reconciled(
     assert second.json() == {"imported": 0, "skipped": 2}
     assert done.json()["matched"] == {"reference": 1}
     assert [(b["kind"], b["amount"]) for b in breaks.json()] == [
-        ("unmatched_line", usd("3.00"))
+        ("unmatched_posting", usd("7.00")),
+        ("unmatched_line", usd("3.00")),
     ]
-    (left,) = breaks.json()
-    assert left["statement_line_id"] is not None
-    assert left["posting_id"] is None
-    assert done.json()["breaks"] == breaks.json()
+    posting, line = breaks.json()
+    assert (line["statement_line_id"] is not None, line["posting_id"]) == (True, None)
+    assert posting["statement_line_id"] is None
+    entry = client.get(f"{API}/entries/{other['id']}", headers=clerk).json()
+    assert entry["lines"][0]["account_id"] == account
+    assert posting["posting_id"] is not None
+    assert done.json()["breaks"] == [line, posting]  # Lines first, as found.
 
 
 def test_amounts_and_statements_that_are_not_are_refused(

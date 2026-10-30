@@ -392,6 +392,7 @@ async def test_a_capture_posts_its_entry_and_releases_the_rest() -> None:
         assert captured.entry_id is not None
         entry = await uow.entries.get(captured.entry_id)
         stored = await uow.accounts.get(wallet.id)
+    assert entry.description == "buy"
     assert (entry.source, entry.reference, entry.booked_on) == (
         CAPTURES,
         str(hold.id),
