@@ -153,6 +153,7 @@ def test_entries_are_posted_once_and_move_balances(
     listed = client.get(f"{API}/entries", headers=clerk).json()
     assert [entry["reference"] for entry in listed["items"]] == ["s-1"]
     assert posted.json()["lines"][0]["amount"] == usd("10.50")
+    assert posted.json()["period_id"] == books["period"]["id"]
 
 
 def test_refusals_are_problems_with_codes(client: TestClient, clerk: Headers) -> None:

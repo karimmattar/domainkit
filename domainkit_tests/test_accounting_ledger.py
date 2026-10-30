@@ -26,6 +26,7 @@ from domainkit.contrib.accounting import (
     ClosePeriod,
     EntryId,
     EntryNotFound,
+    HoldFinished,
     HoldId,
     HoldNotActive,
     HoldNotFound,
@@ -59,6 +60,7 @@ from domainkit.contrib.accounting import (
 )
 from domainkit.contrib.accounting.tables import entries, holds
 from domainkit.db import connections
+from domainkit.ddd import event_bus
 from domainkit.money import Money
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_accounting import (  # noqa: F401 - the fixture.
@@ -348,13 +350,14 @@ async def test_a_capture_posts_its_entry_and_releases_the_rest() -> None:
             ),
             AccountingUnitOfWork(),
         )
-        with refused(InvalidAmount, match="up to the hold"):
-            await capture_hold(
-                CaptureHold(
-                    hold_id=hold.id, counter_account_id=bank.id, amount=usd("9")
-                ),
-                AccountingUnitOfWork(),
-            )
+        for wrong in ("9", "0", "8.01"):
+            with refused(InvalidAmount, match="up to the hold"):
+                await capture_hold(
+                    CaptureHold(
+                        hold_id=hold.id, counter_account_id=bank.id, amount=usd(wrong)
+                    ),
+                    AccountingUnitOfWork(),
+                )
         with refused(InvalidAmount, match="up to the hold"):
             await capture_hold(
                 CaptureHold(
@@ -370,11 +373,21 @@ async def test_a_capture_posts_its_entry_and_releases_the_rest() -> None:
             amount=usd("5"),
             description="buy",
         )
+        finished: list[HoldFinished] = []
+
+        async def note(event: HoldFinished) -> None:
+            finished.append(event)
+
+        event_bus.subscribe(HoldFinished, note)
         captured = await capture_hold(command, AccountingUnitOfWork())
         again = await capture_hold(command, AccountingUnitOfWork())
 
     assert (captured.status, again.status) == (HoldStatus.CAPTURED, HoldStatus.CAPTURED)
     assert again.entry_id == captured.entry_id is not None
+    event_bus.unsubscribe(HoldFinished, note)
+    assert [(e.hold_id, e.status, e.entry_id) for e in finished] == [
+        (hold.id, HoldStatus.CAPTURED, captured.entry_id)
+    ]
     async with AccountingUnitOfWork(readonly=True) as uow:
         assert captured.entry_id is not None
         entry = await uow.entries.get(captured.entry_id)

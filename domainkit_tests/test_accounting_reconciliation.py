@@ -2,13 +2,15 @@
 
 import uuid
 from collections.abc import Iterable, Iterator, Sequence
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Final
+from typing import ClassVar, Final
 
 import pytest
+from sqlalchemy import select
 
 from domainkit.apps import registry
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
     AccountId,
@@ -33,6 +35,8 @@ from domainkit.contrib.accounting.reconciliation import (
     import_statement,
     reconcile,
 )
+from domainkit.contrib.accounting.tables import matches, postings, statement_lines
+from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import Money
 from domainkit_tests.test_accounting import (
@@ -298,7 +302,8 @@ async def test_a_statement_that_does_not_fit_imports_nothing(
 
 @pytest.mark.usefixtures("books")
 async def test_imports_and_reconciliations_need_an_account() -> None:
-    """An id no account has is not found."""
+    """An id no account has is not found, whatever accounts there are."""
+    await account("1000")
     nobody = AccountId(uuid.uuid4())
     with refused(AccountNotFound):
         await import_statement(nobody, CsvStatement(HEADER))
@@ -369,3 +374,161 @@ async def test_a_rule_that_pairs_twice_is_refused() -> None:
     ):
         await reconcile(bank)
     assert (await reconcile(bank)).matched == {}
+
+
+class Recording:
+    """A rule that pairs nothing, and keeps what it was shown."""
+
+    name = "recording"
+    seen: ClassVar[list[tuple[list[StatementItem], list[PostingItem], timedelta]]] = []
+
+    def match(
+        self,
+        lines: Sequence[StatementItem],
+        postings: Sequence[PostingItem],
+        window: timedelta,
+    ) -> Iterator[tuple[StatementItem, PostingItem]]:
+        """Nothing, once it noted the arguments."""
+        Recording.seen.append((list(lines), list(postings), window))
+        yield from ()
+
+
+class LongNamed(ByReference):
+    """``ByReference`` under a name longer than the column."""
+
+    name = "r" * 70
+
+
+RULES: Final = "domainkit_tests.test_accounting_reconciliation"
+
+
+async def book(reference: str, day: int, *lines: Line, minute: int = 0) -> uuid.UUID:
+    """Post ``lines`` on ``day`` of October at ``minute``; the entry's id."""
+    with freeze_time(datetime(2026, 10, 30, 12, minute, tzinfo=UTC)):
+        entry = await post_entry(
+            PostEntry(
+                source="shop",
+                reference=reference,
+                booked_on=date(2026, 10, day),
+                lines=lines,
+            ),
+            AccountingUnitOfWork(),
+        )
+    return entry.id
+
+
+@pytest.mark.usefixtures("books")
+async def test_rules_see_the_accounts_open_lines_and_postings_near_its_statements() -> (
+    None
+):
+    """Lines by date then id; postings within the window, signed, by date and time."""
+    await period()
+    bank, other = await account("1000"), await account("4000")
+    usd5, usd3, usd2 = usd("5"), usd("3"), usd("2")
+    await book("early", 9, Line.debit(bank.id, usd5), Line.credit(other.id, usd5))
+    second = await book(
+        "r2", 10, Line.credit(other.id, usd3), Line.debit(bank.id, usd3), minute=0
+    )
+    first = await book(
+        "r1", 10, Line.debit(bank.id, usd5, "m1"), Line.credit(other.id, usd5), minute=1
+    )
+    last = await book("r3", 23, Line.credit(bank.id, usd2), Line.debit(other.id, usd2))
+    await book("late", 24, Line.debit(bank.id, usd5), Line.credit(other.id, usd5))
+    await import_statement(
+        bank.id,
+        CsvStatement(
+            "id,date,amount,currency,reference,description\n"
+            "a,2026-10-20,1,USD,x,last\n"
+            "n,2026-10-15,1,USD,,second\n"
+            "z,2026-10-13,-1,USD,,first\n"
+            "m,2026-10-15,1,USD,,between\n"
+        ),
+    )
+    Recording.seen.clear()
+
+    with override_settings(ACCOUNTING={"MATCHING_RULES": [f"{RULES}.Recording"]}):
+        await reconcile(bank.id)
+
+    ((lines, postings, window),) = Recording.seen
+    assert window == timedelta(days=3)
+    assert [(i.description, i.amount, i.reference) for i in lines] == [
+        ("first", Decimal("-1.0000"), ""),
+        ("between", Decimal("1.0000"), ""),
+        ("second", Decimal("1.0000"), ""),
+        ("last", Decimal("1.0000"), "x"),
+    ]
+    assert [(p.entry_id, p.amount, p.reference, p.memo) for p in postings] == [
+        (second, Decimal("3.0000"), "r2", ""),
+        (first, Decimal("5.0000"), "r1", "m1"),
+        (last, Decimal("-2.0000"), "r3", ""),
+    ]
+    assert {p.currency for p in postings} == {"USD"}
+
+
+@pytest.mark.usefixtures("books")
+async def test_each_rule_takes_its_turn_and_breaks_name_their_rows() -> None:
+    """A rule that pairs nothing passes on; breaks name the line or the posting."""
+    await period()
+    bank, other = await account("1000"), await account("4000")
+    usd1, usd7, usd9 = usd("1"), usd("7"), usd("9")
+    await book("paid", 12, Line.debit(bank.id, usd7), Line.credit(other.id, usd7))
+    first_day = await book(
+        "p1", 10, Line.debit(bank.id, usd1), Line.credit(other.id, usd1)
+    )
+    last_day = await book(
+        "p2", 14, Line.debit(bank.id, usd9), Line.credit(other.id, usd9)
+    )
+    await book("after", 15, Line.debit(bank.id, usd9), Line.credit(other.id, usd9))
+    await import_statement(
+        bank.id,
+        CsvStatement(
+            "id,date,amount,currency,reference\n"
+            "s,2026-10-10,-4,USD,b\n"
+            "t,2026-10-10,-4,USD,a\n"
+            "u,2026-10-12,7,USD,paid\n"
+            "v,2026-10-14,-6,USD,\n"
+        ),
+    )
+    rules = [f"{RULES}.Recording", f"{RULES}.LongNamed"]
+
+    with override_settings(ACCOUNTING={"MATCHING_RULES": rules}):
+        done = await reconcile(bank.id)
+    found = await breaks_of(bank.id)
+
+    assert done.matched == {"r" * 70: 1}
+    async with connections.engine().connect() as connection:
+        stored_rule = await connection.scalar(select(matches.c.rule))
+        line_ids = dict(
+            (
+                await connection.execute(
+                    select(statement_lines.c.external_id, statement_lines.c.id)
+                )
+            ).all()
+        )
+        posting_ids = dict(
+            (
+                await connection.execute(
+                    select(postings.c.entry_id, postings.c.id).where(
+                        postings.c.account_id == bank.id
+                    )
+                )
+            ).all()
+        )
+    assert stored_rule == "r" * 64
+    assert [(b.kind, b.booked_on.day, b.reference) for b in found] == [
+        ("unmatched_line", 10, "a"),
+        ("unmatched_line", 10, "b"),
+        ("unmatched_posting", 10, "p1"),
+        ("unmatched_line", 14, ""),
+        ("unmatched_posting", 14, "p2"),
+    ]
+    assert [(b.statement_line_id, b.posting_id) for b in found] == [
+        (line_ids["t"], None),
+        (line_ids["s"], None),
+        (None, posting_ids[first_day]),
+        (line_ids["v"], None),
+        (None, posting_ids[last_day]),
+    ]
+    assert sorted(found, key=lambda b: str(b)) == sorted(
+        done.breaks, key=lambda b: str(b)
+    )

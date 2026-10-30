@@ -430,7 +430,7 @@ async def test_the_trial_balance_carries_balances_into_later_periods() -> None:
 @pytest.mark.usefixtures("books")
 async def test_verify_finds_what_does_not_add_up() -> None:
     """A balance moved behind the ledger's back, and a posting without its pair."""
-    await period()
+    october = await period()
     cash, sales = await account("1000"), await account("4000")
     entry = await post_entry(
         transfer(sales, cash, usd("2"), "r"), AccountingUnitOfWork()
@@ -454,6 +454,17 @@ async def test_verify_finds_what_does_not_add_up() -> None:
         )
 
     problems = await verify_ledger()
+    ledger = json.loads("".join([p async for p in general_ledger(october, "json")]))
+
+    assert ledger["totals"] == [
+        {
+            "currency": "USD",
+            "opening": "0.00",
+            "debits": "3.00",
+            "credits": "2.00",
+            "net": "1.00",
+        }
+    ]
 
     assert [(p.kind, p.id) for p in problems] == [
         ("unbalanced_entry", str(entry.id)),
@@ -525,6 +536,8 @@ def test_the_command_writes_reports(project: str, tmp_path: Path) -> None:
     assert run("trialbalance", by_id) == balance
     with pytest.raises(CommandError, match=r"^No period is 'nope'\.$"):
         run("ledger", "nope")
+    with pytest.raises(SystemExit):
+        run("ledgers", "2026-10")
     with pytest.raises(CommandError, match=r"^ledger needs a period or an account\.$"):
         run("ledger")
 

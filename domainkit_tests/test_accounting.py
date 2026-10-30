@@ -44,8 +44,9 @@ from domainkit.contrib.accounting import (
     trial_balance,
     verify_ledger,
 )
+from domainkit.contrib.accounting.schemas import LineIn
 from domainkit.contrib.accounting.tables import entries, postings
-from domainkit.contrib.accounting.tasks import POST_ENTRY
+from domainkit.contrib.accounting.tasks import POST_ENTRY, post_entry_message
 from domainkit.contrib.messaging import MessagingSettings, Worker
 from domainkit.contrib.messaging.tables import DONE, messages
 from domainkit.contrib.messaging.worker import Claimed
@@ -296,6 +297,35 @@ async def test_two_messages_about_one_entry_book_it_once(books: str) -> None:
 
     assert await count(entries) == 1
     assert (await balances())[cash.id] == Decimal("40.0000")
+
+
+async def test_a_message_carries_the_whole_entry(books: str) -> None:
+    """Its description, and each line's memo, come through the outbox."""
+    await period()
+    cash, sales = await account("1000"), await account("4000", type=AccountType.INCOME)
+    command = PostEntry(
+        source="orders",
+        reference="o-3",
+        booked_on=TODAY,
+        description="Order 3",
+        lines=(Line.debit(cash.id, usd("1"), "till"), Line.credit(sales.id, usd("1"))),
+    )
+    async with AccountingUnitOfWork() as uow:
+        defer_entry(uow, command)
+        await uow.commit()
+
+    await Worker(MessagingSettings(**FAST)).run_once()
+    await post_entry_message(
+        "orders", "o-4", TODAY, [LineIn.of(line) for line in command.lines]
+    )
+
+    async with AccountingUnitOfWork(readonly=True) as uow:
+        sent = await uow.entries.by_reference("orders", "o-3")
+        direct = await uow.entries.by_reference("orders", "o-4")
+    assert sent is not None
+    assert direct is not None
+    assert sent.lines() == list(command.lines)
+    assert (sent.description, direct.description) == ("Order 3", "")
 
 
 async def test_the_export_of_a_period_sums_to_zero_per_currency(books: str) -> None:
