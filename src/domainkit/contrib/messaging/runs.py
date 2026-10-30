@@ -64,7 +64,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
 from . import dbclock
-from .tables import DEAD, PENDING, messages
+from .tables import DEAD, HELD, PENDING, messages
 from .tables import inbox as inbox_table
 
 if TYPE_CHECKING:
@@ -248,11 +248,12 @@ async def was_handled(connection: AsyncConnection, run: Run) -> bool:
     return found is not None
 
 
-KEPT: Final = (PENDING, DEAD)
+KEPT: Final = (PENDING, HELD, DEAD)
 """The statuses of messages that may still run: their inbox rows stay.
 
 A pending message may be waiting, held back by its rate, on its way
-through a broker, or running; an operator may retry a dead one.
+through a broker, or running; a held one waits for an earlier message of
+its ordering key; an operator may retry a dead one.
 """
 
 

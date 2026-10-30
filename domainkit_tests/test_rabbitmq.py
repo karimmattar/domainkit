@@ -31,8 +31,9 @@ from domainkit.broker.rabbitmq import RabbitMQBroker, ssl_context
 from domainkit.conf import BrokerConfig, override_settings
 from domainkit.contrib.messaging import MessagingSettings, Worker, enqueue
 from domainkit.contrib.messaging.dispatch import BrokerWorkers
-from domainkit.contrib.messaging.tables import DONE, inbox, messages
+from domainkit.contrib.messaging.tables import DONE, inbox, messages, ordering_keys
 from domainkit.db import connections
+from domainkit_tests import test_messaging_ordering as ordering
 from domainkit_tests import test_messaging_runtime as runtime
 from domainkit_tests.fake_amqp import FakeAMQP
 from domainkit_tests.test_db import notes
@@ -481,3 +482,44 @@ async def test_a_redelivered_message_commits_its_work_once(brokered: Server) -> 
     assert await credits() == 1
     assert await inbox_rows() == [("tests.inbox.credit_task", row["id"])]
     await connections.close_all()
+
+
+async def test_keyed_messages_run_in_order_through_rabbitmq(brokered: Server) -> None:
+    """Keys interleaved, many consumers: each key in commit order, one at a time.
+
+    The outbox publishes only each key's first waiting message; the consumer
+    that finishes one publishes the key's next, so RabbitMQ may hand each to
+    any consumer and the order holds (FIN-19). The relays poll every 30
+    seconds: no key waits for them.
+    """
+    ordering.runs.clear()
+    async with connections.engine().begin() as connection:
+        for table in (messages, ordering_keys):
+            await connection.run_sync(table.create)
+    with override_settings(
+        MESSAGING={**FAST, **SLOW, "BROKER": "work", "POLL_INTERVAL": 30}
+    ):
+        config = registry.settings(MessagingSettings)
+        keys = ["k0", "k1", "k2"]
+        for number in range(4):
+            for key in keys:
+                await enqueue(
+                    ordering.step, key=key, label=f"{key}-{number}", pause=0.01
+                )
+        stop = asyncio.Event()
+        running = asyncio.create_task(
+            BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+        )
+        try:
+            await until(done)
+        finally:
+            stop.set()
+            async with asyncio.timeout(runtime.WAIT):
+                await running
+            await brokers.close_all()
+    await connections.close_all()
+
+    assert ordering.runs.overlaps == []
+    for key in keys:
+        assert ordering.runs.labels(key) == [f"{key}-{n}" for n in range(4)]
+    ordering.runs.clear()

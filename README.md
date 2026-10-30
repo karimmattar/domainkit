@@ -19,7 +19,8 @@ A Django-style framework for domain-driven FastAPI services. It provides:
 - file storage and uploads checked by their content, under names the
   storage makes
 - background work through a transactional outbox, run by polling workers or
-  through RabbitMQ, with queues for separate worker pools
+  through RabbitMQ, with queues for separate worker pools, and ordering
+  keys that run one key's messages one at a time, in commit order
 - users, groups, and permissions per content type, as in Django's
   `contrib.auth`: password hashing and rules, backends, object permissions,
   and a swappable user model; token or JWT authentication, and route rules

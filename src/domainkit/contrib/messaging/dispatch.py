@@ -8,6 +8,11 @@ current lock (or one whose lock expired), runs it as the polling worker
 would, and acknowledges it after the outcome is recorded. Retries go back
 to the outbox with their delay, and the relay publishes them when due.
 
+Messages with an ordering key are published one at a time per key: the
+outbox holds the later ones back (``ordering``), and the consumer that
+finishes one publishes the key's next at once, so the order holds whatever
+consumer RabbitMQ hands each to.
+
 Every delivery is answered, so a failure never holds a consumer's slot: it
 is requeued when its outbox cannot be reached, and acknowledged otherwise.
 A relay waits out database outages as the polling worker does. Deliveries
@@ -24,7 +29,7 @@ import json
 import logging
 import threading
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from itertools import batched
 from typing import Final
@@ -38,6 +43,7 @@ from domainkit.tasks import supervise
 
 from .breaker import Breaker, Watched
 from .budget import Budget
+from .ordering import Promoted
 from .settings import MessagingSettings
 from .worker import (
     HELPER_GRACE,
@@ -102,14 +108,28 @@ class BrokerWorkers:
         self.alias = config.BROKER
         self.budget = budget or Budget(config.CONCURRENCY)
         self._outboxes = {worker.database: worker for worker in workers}
+        for worker in self.workers:
+            worker.relay_promoted = self._relayer(worker)
 
     def outbox(self, database: str) -> Worker | None:
         """The worker of ``database``'s outbox, if it hosts domains."""
         if database not in self._outboxes and database in _hosting_aliases():
-            self._outboxes[database] = Worker(
-                self.config, database=database, budget=self.budget
-            )
+            worker = Worker(self.config, database=database, budget=self.budget)
+            worker.relay_promoted = self._relayer(worker)
+            self._outboxes[database] = worker
         return self._outboxes.get(database)
+
+    def _relayer(self, worker: Worker) -> Callable[[Promoted], Awaitable[None]]:
+        """Publish the message ``worker`` made next of its key, now.
+
+        Without it, the next message of a key would wait for a relay's
+        round: up to ``POLL_INTERVAL`` for each message of the key.
+        """
+
+        async def relay(promoted: Promoted) -> None:
+            await worker.relay_ids(brokers[self.alias], [promoted.id])
+
+        return relay
 
     async def run(self, stop: asyncio.Event) -> None:
         """Relay and consume until ``stop`` is set; then finish the running ones.

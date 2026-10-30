@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
 from typing import Any, Final, overload
+from weakref import WeakKeyDictionary
 
 from pydantic import TypeAdapter, validate_call
 
@@ -376,6 +377,97 @@ def _validated(function: Task) -> Task:
 async def call_task(function: Task, payload: Mapping[str, Any]) -> object:
     """Run ``function`` with arguments converted back from JSON; return its result."""
     return await _validated(function)(**payload)
+
+
+MAX_KEY_LENGTH: Final = 255
+"""The longest ordering key, in characters (the outbox column's size)."""
+
+type KeySource = str | Callable[..., object]
+"""How a task or handler derives its key: a name, or a function.
+
+A name is the task's argument, or the event's attribute, whose value is
+the key. A function gets the task's keyword arguments, or the event, and
+returns the key. Either way a value that is not a string is turned into
+one (a UUID, a number), and None means the message has no key.
+"""
+
+_marked: Final[WeakKeyDictionary[Callable[..., Any], KeySource]] = WeakKeyDictionary()
+"""The tasks and durable handlers marked ``ordered`` (methods by their function)."""
+
+
+def ordered[F: Callable[..., Any]](key: KeySource, /) -> Callable[[F], F]:
+    """Run a task's or durable handler's messages one at a time per key, in order.
+
+    The messages of one key run one after another, in the order their
+    commits happened, across every worker; other keys run beside them.
+    ``key`` names the task's argument, or the event's attribute, whose
+    value is the key, or is a function that takes the task's keyword
+    arguments, or the event, and returns it::
+
+        @ordered("payment_id")
+        async def send_status(event: PaymentEvent) -> None: ...
+
+        event_bus.subscribe(PaymentEvent, send_status, durable=True)
+
+        @task
+        @ordered(lambda account_id, **_: f"account:{account_id}")  # before or after
+        async def post_entry(account_id: UUID, amount: Decimal) -> None: ...
+
+    A value that is not a string is turned into one; None leaves the
+    message without a key. ``ordering_key=`` given to ``uow.defer`` or
+    ``enqueue`` wins. Keys are shared by every task and handler of an
+    outbox: messages of different targets with one key run in one line,
+    so put the target's name in the key to keep a line of its own.
+    """
+    if not (callable(key) or (isinstance(key, str) and key.isidentifier())):
+        raise ImproperlyConfigured(
+            "An ordering key is the name of an argument or attribute, or a "
+            f"function that returns the key, not {key!r}."
+        )
+
+    def mark(function: F) -> F:
+        _marked[getattr(function, "__func__", function)] = key
+        return function
+
+    return mark
+
+
+def checked_key(value: object) -> str | None:
+    """The ordering key ``value`` stands for: a string, or None for no key.
+
+    Raises:
+        ValueError: the key is empty, or longer than ``MAX_KEY_LENGTH``.
+    """
+    if value is None:
+        return None
+    key = value if isinstance(value, str) else str(value)
+    if not 0 < len(key) <= MAX_KEY_LENGTH:
+        raise ValueError(
+            f"An ordering key has 1 to {MAX_KEY_LENGTH} characters, not {len(key)}."
+        )
+    return key
+
+
+def event_key(handler: Callable[..., Any], event: object) -> str | None:
+    """The key of durable ``handler``'s message for ``event``, if it is ``ordered``."""
+    source = _marked.get(getattr(handler, "__func__", handler))
+    if source is None:
+        return None
+    if isinstance(source, str):
+        return checked_key(getattr(event, source))
+    return checked_key(source(event))
+
+
+def task_key(
+    function: Callable[..., Any], arguments: Mapping[str, object]
+) -> str | None:
+    """The key of task ``function``'s message for ``arguments``, if ``ordered``."""
+    source = _marked.get(function)  # Tasks are functions, never methods.
+    if source is None:
+        return None
+    if isinstance(source, str):
+        return checked_key(arguments.get(source))
+    return checked_key(source(**arguments))
 
 
 CHAIN: Final = "chain"

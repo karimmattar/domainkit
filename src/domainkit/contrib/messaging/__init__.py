@@ -19,6 +19,9 @@ Install it, then run ``python manage.py runworker`` next to the web process::
     @inbox                                # its database work commits once
     async def credit_account(event: PaymentReceived) -> None: ...
 
+    @ordered("payment_id")                # one at a time per key, in order
+    async def send_status(event: PaymentEvent) -> None: ...
+
     @periodic(every=timedelta(hours=1))
     async def purge_expired() -> None: ...
 
@@ -31,7 +34,7 @@ from typing import TYPE_CHECKING
 from domainkit.utils.module_loading import lazy_names
 
 from .outbox import enqueue
-from .registry import Chain, chain, periodic, task, tasks_kept
+from .registry import Chain, chain, ordered, periodic, task, tasks_kept
 from .retry import Backoff
 from .runs import AlreadyHandled, LeaseLost, inbox
 from .settings import MessagingSettings
@@ -53,6 +56,7 @@ __all__ = [
     "current_attempt",
     "enqueue",
     "inbox",
+    "ordered",
     "periodic",
     "task",
     "tasks_kept",

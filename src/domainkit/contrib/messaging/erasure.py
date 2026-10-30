@@ -24,10 +24,10 @@ from domainkit.ddd.personal import fields_about, subjects_in
 from .admin import blanked
 from .registry import get_task
 from .settings import MessagingSettings
-from .tables import BLANKED, DEAD, PENDING, messages
+from .tables import BLANKED, DEAD, HELD, PENDING, messages
 from .worker import _event_classes
 
-KEPT: Final = (PENDING, DEAD)
+KEPT: Final = (PENDING, HELD, DEAD)
 """The statuses whose messages keep their arguments."""
 
 
@@ -70,7 +70,7 @@ async def erase_subject(subject: str) -> dict[str, int]:
     for alias in outboxes():
         async with connections.engine(alias).begin() as connection:
             for row in await _about(connection, subject):
-                if row.status == PENDING:
+                if row.status in (PENDING, HELD):
                     pending += 1
                     continue
                 done = await connection.execute(

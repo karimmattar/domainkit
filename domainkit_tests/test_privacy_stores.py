@@ -342,6 +342,31 @@ def test_pending_messages_are_left_to_run_and_counted(
     ) in caplog.text
 
 
+def test_held_messages_are_left_to_run_and_counted_with_the_pending(
+    scenario: Scenario,
+) -> None:
+    """Messages of one ordering key: the first pending, the second held; both wait.
+
+    The two dead ones, written before, are blanked all the same.
+    """
+
+    async def queue_and_erase() -> dict[str, int]:
+        async with PatientsUnitOfWork() as uow:
+            for _ in range(2):
+                uow.defer(
+                    welcome,
+                    patient_id=scenario.subject,
+                    email=EMAIL,
+                    ordering_key=scenario.subject,
+                )
+            await uow.commit()
+        from domainkit.contrib.messaging.erasure import erase_subject as erase_queued
+
+        return await erase_queued(scenario.subject)
+
+    assert run_async(queue_and_erase()) == {"messages": 2, "pending": 2}
+
+
 def test_an_export_lists_every_copy_until_erased(scenario: Scenario) -> None:
     """Each store's copies are in the export, under its label; none after erasure.
 

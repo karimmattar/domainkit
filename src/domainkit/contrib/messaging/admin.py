@@ -3,7 +3,9 @@
 A pending message is *waiting* until a worker starts it, *running* while a
 worker holds it (``started_at`` and a live lock), and back to waiting if it
 fails and is retried. With a broker, a waiting message may also be
-*published*: locked by the relay while it travels to a worker.
+*published*: locked by the relay while it travels to a worker. A message
+with an ordering key is *held* while an earlier one of its key has not
+finished.
 """
 
 import uuid
@@ -17,6 +19,7 @@ from sqlalchemy import (
     false,
     func,
     not_,
+    or_,
     select,
     update,
 )
@@ -25,7 +28,7 @@ from domainkit import clock
 from domainkit.db import connections
 
 from .settings import MessagingSettings
-from .tables import BLANKED, CANCELLED, DEAD, PENDING, messages
+from .tables import BLANKED, CANCELLED, DEAD, HELD, PENDING, messages
 
 __all__ = [
     "blanked_dead_letters",
@@ -36,9 +39,9 @@ __all__ = [
     "retry_dead",
 ]
 
-type State = Literal["pending", "locked", "dead"]
-"""What ``list_messages`` lists: waiting, locked (running or published), dead."""
-STATES: Final = ("pending", "locked", "dead")
+type State = Literal["pending", "held", "locked", "dead"]
+"""What ``list_messages`` lists: waiting, held, locked (running or published), dead."""
+STATES: Final = ("pending", "held", "locked", "dead")
 
 LISTED: Final = (
     messages.c.id,
@@ -53,6 +56,7 @@ LISTED: Final = (
     messages.c.started_at,
     messages.c.finished_at,
     messages.c.last_error,
+    messages.c.ordering_key,
 )
 """The columns listings show; payloads and headers stay out."""
 
@@ -121,7 +125,9 @@ async def list_messages(
     """List messages in ``state``, most urgent (or, for dead ones, newest) first.
 
     ``pending`` lists waiting messages in the order workers take them,
-    ``locked`` running and published ones, ``dead`` dead letters.
+    ``held`` those waiting for an earlier message of their key, by key and
+    in their order, ``locked`` running and published ones, ``dead`` dead
+    letters.
     """
     now = _now()
     statement = select(*LISTED).limit(limit)
@@ -131,6 +137,10 @@ async def list_messages(
             case((messages.c.available_at <= now, 0), else_=1),  # Due ones first.
             messages.c.priority.desc(),
             messages.c.available_at,
+        )
+    elif state == "held":
+        statement = statement.where(messages.c.status == HELD).order_by(
+            messages.c.ordering_key, messages.c.sequence
         )
     elif state == "locked":
         statement = statement.where(locked(now)).order_by(messages.c.locked_until)
@@ -164,24 +174,40 @@ async def retry_dead(
     """Return dead messages (one, or all) to the queue with fresh attempts.
 
     Those whose arguments were blanked (``blanked``) stay dead: they have
-    nothing left to run with.
+    nothing left to run with. One with an ordering key goes back in its
+    place: before the messages of its key committed after it that still
+    wait, after the one running, if any (``ordering.requeue``).
     """
-    statement = (
-        update(messages)
-        .where(messages.c.status == DEAD, not_(blanked()))
-        .values(
-            status=PENDING,
-            attempts=0,
-            available_at=_now(),
-            finished_at=None,
-            started_at=None,
-        )
-    )
+    from . import ordering  # Not for the gauges, which import this (PERF-15).
+
+    dead = and_(messages.c.status == DEAD, not_(blanked()))
     if message_id is not None:
-        statement = statement.where(messages.c.id == message_id)
-    async with connections.engine(database or config.DATABASE).begin() as connection:
-        result = await connection.execute(statement)
-    return int(result.rowcount)
+        dead = and_(dead, messages.c.id == message_id)
+    fresh = {
+        "attempts": 0,
+        "available_at": _now(),
+        "finished_at": None,
+        "started_at": None,
+    }
+    engine = connections.engine(database or config.DATABASE)
+    async with engine.begin() as connection:
+        dialect = connection.dialect.name
+        keys = (
+            await connection.execute(
+                select(messages.c.ordering_key)
+                .where(dead, messages.c.ordering_key.is_not(None))
+                .distinct()
+            )
+        ).scalars()
+        result = await connection.execute(
+            update(messages)
+            .where(dead, messages.c.ordering_key.is_(None))
+            .values(status=PENDING, **fresh)
+        )
+        count = int(result.rowcount)
+        for key in sorted(keys):  # Each key's turn, in one order.
+            count += await ordering.requeue(connection, dialect, key, dead, fresh)
+    return count
 
 
 async def blanked_dead_letters(
@@ -210,11 +236,17 @@ async def cancel(
     the cancel changes nothing; a cancelled message is never claimed. A
     published one is skipped when its delivery arrives. The rest of a chain
     is never queued. Its arguments are blanked, as a done message's are.
+    A held message may be cancelled too; cancelling the first of a key
+    lets the next one run.
     """
+    from . import ordering  # Not for the gauges, which import this (PERF-15).
+
     now = _now()
     statement = (
         update(messages)
-        .where(messages.c.id == message_id, waiting(now))
+        .where(
+            messages.c.id == message_id, or_(waiting(now), messages.c.status == HELD)
+        )
         .values(
             status=CANCELLED,
             finished_at=now,
@@ -225,8 +257,16 @@ async def cancel(
         )
     )
     async with connections.engine(database or config.DATABASE).begin() as connection:
-        result = await connection.execute(statement)
-    return bool(result.rowcount)
+        dialect = connection.dialect.name
+        key = await connection.scalar(
+            select(messages.c.ordering_key).where(messages.c.id == message_id)
+        )
+        if key is not None:  # The key's turn first, as every writer of the key.
+            await ordering.take_turns(connection, dialect, {key: 0})
+        cancelled = bool((await connection.execute(statement)).rowcount)
+        if cancelled and key is not None:
+            await ordering.promote(connection, dialect, key)
+    return cancelled
 
 
 def state_of(row: Any, now: datetime) -> str:  # noqa: ANN401 - a result row.

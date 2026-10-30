@@ -84,6 +84,8 @@ class QueuedMessage:
     available_at: datetime
     dedupe_key: str | None
     headers: dict[str, Any]
+    ordering_key: str | None = None
+    """Its ordering key: messages with one run one at a time, in order."""
 
 
 class CapturedEvents:
@@ -278,6 +280,7 @@ class Outbox:
                 available_at=row["available_at"],
                 dedupe_key=row["dedupe_key"],
                 headers=dict(row["headers"]),
+                ordering_key=row.get("ordering_key"),
             )
             for row in rows
         )

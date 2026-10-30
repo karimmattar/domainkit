@@ -82,6 +82,7 @@ from domainkit.contrib.messaging.tables import (
     SENSITIVE,
     inbox,
     messages,
+    ordering_keys,
 )
 from domainkit.contrib.messaging.worker import Claimed, backoff
 from domainkit.db import connections
@@ -206,10 +207,11 @@ def messaging(database_url: str) -> Iterator[None]:
 
 @pytest.fixture
 async def tables(messaging: None) -> AsyncIterator[None]:
-    """Create the outbox, inbox, and notes tables in this loop's engine."""
+    """Create the outbox, inbox, ordering keys, and notes in this loop's engine."""
     async with connections.engine().begin() as connection:
         await connection.run_sync(messages.create)
         await connection.run_sync(inbox.create)
+        await connection.run_sync(ordering_keys.create)
         await connection.run_sync(notes.create)
     yield
     await connections.close_all()
@@ -884,7 +886,9 @@ def test_commands(
 
     # One success and three attempts of the failing task.
     assert run("runworker", "--once") == "Processed 4 message(s).\n"
-    assert run("messages") == "pending  0\ndone     1\ndead     1\ncancelled 0\n"
+    assert run("messages") == (
+        "pending  0\nheld     0\ndone     1\ndead     1\ncancelled 0\n"
+    )
     (dead_line,) = run("messages", "--dead").splitlines()
     assert "tests.always_fails  x3  RuntimeError: still broken" in dead_line
     dead_id = dead_line.split()[0]
@@ -1228,10 +1232,11 @@ def brokered(database_url: str) -> Iterator[None]:
 
 @pytest.fixture
 async def broker_tables(brokered: None) -> AsyncIterator[MemoryBroker]:
-    """The outbox, inbox, and notes tables, and this loop's in-memory broker."""
+    """The messaging and notes tables, and this loop's in-memory broker."""
     async with connections.engine().begin() as connection:
         await connection.run_sync(messages.create)
         await connection.run_sync(inbox.create)
+        await connection.run_sync(ordering_keys.create)
         await connection.run_sync(notes.create)
     broker = brokers["work"]
     assert isinstance(broker, MemoryBroker)
