@@ -48,6 +48,7 @@ from decimal import (
     Overflow,
 )
 from enum import StrEnum
+from functools import cache
 from importlib.resources import files
 from types import MappingProxyType
 from typing import Any, ClassVar, Final, Self
@@ -268,8 +269,12 @@ def _whole(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _load_iso_4217() -> Mapping[str, Currency]:
-    """The currencies of ``iso4217.csv``, by code; comment lines skipped."""
+@cache
+def _iso_4217() -> Mapping[str, Currency]:
+    """The active ISO 4217 currencies that have minor units, by code.
+
+    Read from ``iso4217.csv`` on first use, comment lines skipped.
+    """
     text = files(__name__).joinpath("iso4217.csv").read_text(encoding="utf-8")
     rows = csv.DictReader(
         line for line in text.splitlines() if not line.startswith("#")
@@ -284,8 +289,6 @@ def _load_iso_4217() -> Mapping[str, Currency]:
     )
 
 
-ISO_4217: Final = _load_iso_4217()
-"""The active ISO 4217 currencies that have minor units, by code."""
 _registered: dict[str, Currency] = {}
 """The currencies ``register_currency`` added, by code."""
 
@@ -301,7 +304,9 @@ def currency(code: str | Currency) -> Currency:
     if isinstance(code, Currency):
         return code
     found = (
-        ISO_4217.get(code) or _registered.get(code) if isinstance(code, str) else None
+        _iso_4217().get(code) or _registered.get(code)
+        if isinstance(code, str)
+        else None
     )
     if found is None:
         shown = repr(code) if isinstance(code, str) and len(code) <= 8 else "the code"
@@ -314,7 +319,7 @@ def currency(code: str | Currency) -> Currency:
 
 def currencies() -> tuple[Currency, ...]:
     """Every known currency, ISO 4217's and the registered ones, by code."""
-    known = {**ISO_4217, **_registered}
+    known = {**_iso_4217(), **_registered}
     return tuple(known[code] for code in sorted(known))
 
 
@@ -332,7 +337,7 @@ def register_currency(
         ValueError: The code, numeric code, or minor units are invalid.
     """
     made = Currency(code, numeric, minor_units, name)
-    if code in ISO_4217:
+    if code in _iso_4217():
         raise ImproperlyConfigured(
             f"{code} is an ISO 4217 currency, known already; register only "
             "currencies ISO 4217 does not list."
@@ -346,7 +351,7 @@ def register_currency(
         return known
     if numeric is not None and any(
         other.numeric == numeric
-        for other in (*ISO_4217.values(), *_registered.values())
+        for other in (*_iso_4217().values(), *_registered.values())
     ):
         raise ImproperlyConfigured(
             f"The numeric code {numeric} is another currency's; give {code} "
@@ -796,11 +801,18 @@ def _weights(ratios: Iterable[int | Decimal]) -> list[int]:
                 f"A ratio has at most {MAX_DIGITS} digits on either side of its point."
             )
         numbers.append(number)
-    places = max(0, *(-int(number.as_tuple().exponent) for number in numbers))
-    weights = [int(number.scaleb(places, context=_EXACT)) for number in numbers]
+    places = max(-int(number.as_tuple().exponent) for number in numbers)
+    weights = [_whole_units(number, places) for number in numbers]
     if not any(weights):
         raise ValueError("At least one ratio must be more than zero.")
     return weights
+
+
+def _whole_units(number: Decimal, places: int) -> int:
+    """``number`` times ``10 ** places``, which is whole, computed in integers."""
+    _, digits, exponent = number.as_tuple()
+    coefficient = int("".join(map(str, digits)))
+    return coefficient * 10 ** (int(exponent) + places)
 
 
 def _validated_money(value: object) -> Money:

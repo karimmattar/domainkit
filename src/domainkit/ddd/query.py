@@ -724,7 +724,7 @@ def _compares(lookup: Lookup, value: object) -> bool:
     return lookup is not Lookup.ISNULL and value is not None and value != ()
 
 
-def _on_money_parts(name: str, lookup: Lookup, value: object) -> Criteria:
+def _on_money_parts(name: str, lookup: Lookup, value: Any) -> Criteria:  # noqa: ANN401 - money, or a tuple of it.
     """A condition on the money field ``name``, as conditions on its parts.
 
     Money compares only with money of its currency, so each comparison is
@@ -736,17 +736,15 @@ def _on_money_parts(name: str, lookup: Lookup, value: object) -> Criteria:
     """
     amount, code = F(f"{name}.amount"), F(f"{name}.currency")
     if lookup is Lookup.IN:
-        moneys = cast("tuple[Money, ...]", value)
         return Or.of(
-            *((code == each.currency) & (amount == each.amount) for each in moneys)
+            *((code == each.currency) & (amount == each.amount) for each in value)
         )
     if lookup is Lookup.RANGE:
-        low, high = cast("tuple[Money, Money]", value)
+        low, high = value
         if low.currency != high.currency:
             raise InvalidQuery(f"A range of {name} takes two amounts of one currency.")
         return (code == low.currency) & amount.range(low.amount, high.amount)
-    money = cast("Money", value)
-    return (code == money.currency) & amount.lookup(lookup, money.amount)
+    return (code == value.currency) & amount.lookup(lookup, value.amount)
 
 
 def _holds(

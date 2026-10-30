@@ -773,3 +773,206 @@ def test_events_and_task_arguments_carry_money_as_its_json() -> None:
     assert dump_arguments({"amount": usd("2.5")}) == {
         "amount": {"amount": "2.50", "currency": "USD"}
     }
+
+
+# What each refusal says.
+
+
+def test_currencies_take_their_bounds_and_default_to_no_name() -> None:
+    """1 and 999, 0 and 18 are in bounds; the name is empty unless given."""
+    assert Currency("ABC", 1, 0).name == ""
+    assert Currency("ABCDEFGH", 999, 18).minor_units == 18
+    assert hash(currency("USD")) != hash(currency("EUR"))
+    assert hash(usd("1")) != hash(usd("2"))
+
+
+@pytest.mark.parametrize(
+    ("make", "error", "message"),
+    [
+        (
+            lambda: Currency("usd", None, 2),
+            ValueError,
+            (
+                "A currency code is three to eight capital letters or digits, starting "
+                "with a letter (ISO 4217's are three letters)."
+            ),
+        ),
+        (
+            lambda: Currency("ABC", 0, 2),
+            ValueError,
+            "ABC's numeric code is from 1 to 999, or None, not 0.",
+        ),
+        (
+            lambda: Currency("ABC", None, 19),
+            ValueError,
+            "ABC's minor units are from 0 to 18, not 19.",
+        ),
+        (
+            lambda: register_currency("USD", minor_units=2),
+            ImproperlyConfigured,
+            (
+                "USD is an ISO 4217 currency, known already; register only currencies "
+                "ISO 4217 does not list."
+            ),
+        ),
+        (
+            lambda: register_currency("XYZ", minor_units=2, numeric=840),
+            ImproperlyConfigured,
+            "The numeric code 840 is another currency's; give XYZ its own, or none.",
+        ),
+        (
+            lambda: currency("EUROS"),
+            UnknownCurrency,
+            (
+                "No currency has 'EUROS': use an ISO 4217 code, in capitals, or register "
+                "the currency with register_currency."
+            ),
+        ),
+        (
+            lambda: Money.of("1.005", "USD"),
+            InexactAmount,
+            (
+                "USD has 2 decimal places; an amount with more is refused rather than "
+                "rounded: name a Rounding."
+            ),
+        ),
+        (
+            lambda: usd("1") + Money.of("1", "EUR"),
+            CurrencyMismatch,
+            (
+                "Cannot add EUR and USD amounts: convert one first, at a rate the "
+                "project trusts."
+            ),
+        ),
+        (
+            lambda: Money.sum([Money.of("1", "EUR")], "USD"),
+            CurrencyMismatch,
+            "Cannot add EUR and USD amounts",
+        ),
+        (lambda: usd("1") - Money.of("1", "EUR"), CurrencyMismatch, "Cannot subtract"),
+        (lambda: usd("1") < Money.of("1", "EUR"), CurrencyMismatch, "Cannot compare"),
+        (
+            lambda: Money.from_minor(1.5, "USD"),  # type: ignore[arg-type]
+            TypeError,
+            "Money.from_minor takes a whole number of minor units, not float.",
+        ),
+        (
+            lambda: usd("1").multiply([2]),  # type: ignore[arg-type]
+            TypeError,
+            "A factor is a Decimal, an int, or text, not list.",
+        ),
+        (
+            lambda: usd("1").multiply("2x"),
+            ValueError,
+            (
+                "A factor as text is digits with an optional point and sign, such as "
+                "10.50, with no exponent."
+            ),
+        ),
+        (
+            lambda: usd("1").allocate([]),
+            ValueError,
+            "Allocate to at least one ratio.",
+        ),
+        (
+            lambda: usd("1").allocate(["1"]),  # type: ignore[list-item]
+            TypeError,
+            "A ratio is a Decimal or an int, not text.",
+        ),
+        (
+            lambda: usd("1").allocate([True]),
+            TypeError,
+            "A ratio is a Decimal, an int, or text, not bool.",
+        ),
+        (
+            lambda: usd("1").allocate([-1]),
+            ValueError,
+            "Ratios cannot be negative.",
+        ),
+        (
+            lambda: usd("1").allocate([0]),
+            ValueError,
+            "At least one ratio must be more than zero.",
+        ),
+        (
+            lambda: usd("1").allocate([Decimal("1E+40")]),
+            ValueError,
+            "A ratio has at most 38 digits on either side of its point.",
+        ),
+    ],
+)
+def test_each_refusal_says_why(
+    make: object, error: type[Exception], message: str
+) -> None:
+    """The messages, word for word, for developers."""
+    with pytest.raises(error) as caught:
+        make()  # type: ignore[operator]
+
+    assert str(caught.value).startswith(message)
+
+
+def test_comparisons_at_their_edges() -> None:
+    """Equal amounts are neither more nor less; each operator holds where it should."""
+    one, two = usd("1"), usd("2")
+
+    assert (two <= one, two > two, one >= two, two < two) == (False,) * 4
+    assert (one <= one, two >= two, one < two, two > one) == (True,) * 4
+
+
+def test_ratios_of_any_places_and_exponents_split_alike() -> None:
+    """Integers, decimals, and exponents: only the proportions count."""
+    whole = usd("100")
+    expected = [usd("25"), usd("75")]
+
+    assert whole.allocate([1, 3]) == expected
+    assert whole.allocate([Decimal("0.25"), Decimal("0.75")]) == expected
+    assert whole.allocate([Decimal("1E+2"), Decimal("3E+2")]) == expected
+    assert whole.allocate([Decimal("5E+1"), 150]) == expected
+    assert whole.allocate([Decimal("1" * 37), Decimal("3" * 37)]) == expected
+
+
+def test_the_validation_messages_are_the_catalogs() -> None:
+    """Fixed texts, so they translate."""
+    messages = {}
+    for total in ({"amount": "1"}, {"amount": 1.5, "currency": "USD"}):
+        with pytest.raises(ValidationError) as caught:
+            Priced.model_validate({"total": total})
+        (error,) = caught.value.errors()
+        messages[error["type"]] = error["msg"]
+
+    assert messages == {
+        "money_type": (
+            "Give money as an object of an amount and a currency, and nothing else."
+        ),
+        "money_amount": (
+            "Give the amount as text, such as 10.50, with at most 38 digits before "
+            "the point."
+        ),
+    }
+
+
+def test_the_json_schema_word_for_word() -> None:
+    """What OpenAPI shows of money."""
+    assert Priced.model_json_schema()["$defs"]["Money"] == {
+        "type": "object",
+        "title": "Money",
+        "description": (
+            "An amount of money: the amount as text, with its currency's decimal "
+            "places, and the ISO 4217 code of the currency."
+        ),
+        "properties": {
+            "amount": {
+                "type": "string",
+                "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+                "examples": ["10.50"],
+            },
+            "currency": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9]{2,7}$",
+                "description": "An ISO 4217 currency code.",
+                "examples": ["USD"],
+            },
+        },
+        "required": ["amount", "currency"],
+        "additionalProperties": False,
+    }
