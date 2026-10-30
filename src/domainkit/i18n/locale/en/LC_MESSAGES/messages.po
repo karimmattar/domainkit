@@ -648,3 +648,130 @@ msgstr ""
 #. domainkit.contrib.auth: startup checks
 msgid "AUTH settings cannot be used"
 msgstr ""
+
+#. domainkit.contrib.accounting
+msgid "No account has that id."
+msgstr ""
+
+msgid "No journal entry has that id."
+msgstr ""
+
+msgid "No hold has that id."
+msgstr ""
+
+msgid "No accounting period has that id."
+msgstr ""
+
+msgid "The currency is not one the ledger knows."
+msgstr ""
+
+msgid "The ledger keeps at most four decimal places."
+msgstr ""
+
+msgid "The amount has more places than its currency."
+msgstr ""
+
+msgid "An amount is more than zero."
+msgstr ""
+
+msgid "An amount is not in its account's currency."
+msgstr ""
+
+msgid "An account's code has up to 32 letters, digits, '.', '_', or '-'."
+msgstr ""
+
+msgid "An account's name has 1 to 200 characters."
+msgstr ""
+
+msgid "An account's holder has 1 to 255 characters."
+msgstr ""
+
+msgid "The account is closed."
+msgstr ""
+
+msgid "The account does not have enough available."
+msgstr ""
+
+msgid "Only an account with nothing on it can be closed."
+msgstr ""
+
+msgid "A source has up to 64 lower-case letters, digits, '_', '.', ':', or '-'."
+msgstr ""
+
+msgid "A reference has 1 to 128 printable characters."
+msgstr ""
+
+msgid "A description has at most 255 characters."
+msgstr ""
+
+msgid "A memo has at most 255 characters."
+msgstr ""
+
+msgid "An entry has at least two lines, and at most ACCOUNTING.MAX_LINES."
+msgstr ""
+
+msgid "The entry's debits and credits differ in a currency."
+msgstr ""
+
+msgid "Another entry was posted under this source and reference."
+msgstr ""
+
+msgid "Another hold was placed under this source and reference."
+msgstr ""
+
+msgid "No open accounting period covers the entry's date."
+msgstr ""
+
+msgid "The entry's date is in a closed period."
+msgstr ""
+
+msgid "Another period covers some of these dates."
+msgstr ""
+
+msgid "A period's name has 1 to 64 characters."
+msgstr ""
+
+msgid "A period ends on or after the day it starts."
+msgstr ""
+
+msgid "A hold expires in the future."
+msgstr ""
+
+msgid "The hold was captured, released, or has expired."
+msgstr ""
+
+msgid "The hold was captured."
+msgstr ""
+
+msgid "A capture takes more than zero, up to the hold."
+msgstr ""
+
+msgid "A statement is sent as text/csv."
+msgstr ""
+
+msgid "A statement is UTF-8 text."
+msgstr ""
+
+msgid "A statement needs the columns id, date, amount, and currency."
+msgstr ""
+
+msgid "A statement line's id has 1 to 128 characters."
+msgstr ""
+
+msgid "A statement line's amount is not an amount."
+msgstr ""
+
+msgid "A statement line's date is not a date."
+msgstr ""
+
+msgid "A statement line's amount does not fit its currency."
+msgstr ""
+
+msgid "A statement line is not in the account's currency."
+msgstr ""
+
+msgid "Two statement lines have the same id."
+msgstr ""
+
+msgid "A statement has at most ACCOUNTING.MAX_STATEMENT_LINES lines."
+msgstr ""

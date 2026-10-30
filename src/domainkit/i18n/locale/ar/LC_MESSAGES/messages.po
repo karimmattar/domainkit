@@ -656,3 +656,130 @@ msgstr "يحتاج مفتاح Idempotency-Key إلى متّصل تعرفه هذ�
 #. domainkit.contrib.auth: startup checks
 msgid "AUTH settings cannot be used"
 msgstr "لا يمكن استخدام إعدادات AUTH"
+
+#. domainkit.contrib.accounting
+msgid "No account has that id."
+msgstr "لا يوجد حساب بهذا المعرّف."
+
+msgid "No journal entry has that id."
+msgstr "لا يوجد قيد يومية بهذا المعرّف."
+
+msgid "No hold has that id."
+msgstr "لا يوجد حجز بهذا المعرّف."
+
+msgid "No accounting period has that id."
+msgstr "لا توجد فترة محاسبية بهذا المعرّف."
+
+msgid "The currency is not one the ledger knows."
+msgstr "هذه العملة لا يعرفها الدفتر."
+
+msgid "The ledger keeps at most four decimal places."
+msgstr "يحفظ الدفتر أربع خانات عشرية على الأكثر."
+
+msgid "The amount has more places than its currency."
+msgstr "في المبلغ خانات عشرية أكثر مما لعملته."
+
+msgid "An amount is more than zero."
+msgstr "يجب أن يكون المبلغ أكبر من الصفر."
+
+msgid "An amount is not in its account's currency."
+msgstr "المبلغ ليس بعملة حسابه."
+
+msgid "An account's code has up to 32 letters, digits, '.', '_', or '-'."
+msgstr "رمز الحساب يصل إلى ٣٢ حرفًا أو رقمًا أو '.' أو '_' أو '-'."
+
+msgid "An account's name has 1 to 200 characters."
+msgstr "اسم الحساب من ١ إلى ٢٠٠ حرف."
+
+msgid "An account's holder has 1 to 255 characters."
+msgstr "صاحب الحساب من ١ إلى ٢٥٥ حرفًا."
+
+msgid "The account is closed."
+msgstr "الحساب مغلق."
+
+msgid "The account does not have enough available."
+msgstr "ليس في الحساب ما يكفي من الرصيد المتاح."
+
+msgid "Only an account with nothing on it can be closed."
+msgstr "لا يُغلق إلا حساب لا رصيد عليه ولا حجز."
+
+msgid "A source has up to 64 lower-case letters, digits, '_', '.', ':', or '-'."
+msgstr "المصدر يصل إلى ٦٤ حرفًا صغيرًا أو رقمًا أو '_' أو '.' أو ':' أو '-'."
+
+msgid "A reference has 1 to 128 printable characters."
+msgstr "المرجع من ١ إلى ١٢٨ حرفًا قابلًا للطباعة."
+
+msgid "A description has at most 255 characters."
+msgstr "الوصف ٢٥٥ حرفًا على الأكثر."
+
+msgid "A memo has at most 255 characters."
+msgstr "الملاحظة ٢٥٥ حرفًا على الأكثر."
+
+msgid "An entry has at least two lines, and at most ACCOUNTING.MAX_LINES."
+msgstr "للقيد سطران على الأقل، وACCOUNTING.MAX_LINES على الأكثر."
+
+msgid "The entry's debits and credits differ in a currency."
+msgstr "يختلف مدين القيد عن دائنه في إحدى العملات."
+
+msgid "Another entry was posted under this source and reference."
+msgstr "رُحِّل قيد آخر بهذا المصدر وهذا المرجع."
+
+msgid "Another hold was placed under this source and reference."
+msgstr "وُضع حجز آخر بهذا المصدر وهذا المرجع."
+
+msgid "No open accounting period covers the entry's date."
+msgstr "لا توجد فترة محاسبية مفتوحة تشمل تاريخ القيد."
+
+msgid "The entry's date is in a closed period."
+msgstr "تاريخ القيد في فترة مغلقة."
+
+msgid "Another period covers some of these dates."
+msgstr "تشمل فترة أخرى بعض هذه التواريخ."
+
+msgid "A period's name has 1 to 64 characters."
+msgstr "اسم الفترة من ١ إلى ٦٤ حرفًا."
+
+msgid "A period ends on or after the day it starts."
+msgstr "تنتهي الفترة في يوم بدايتها أو بعده."
+
+msgid "A hold expires in the future."
+msgstr "ينتهي الحجز في المستقبل."
+
+msgid "The hold was captured, released, or has expired."
+msgstr "الحجز حُصِّل أو أُفرج عنه أو انتهى."
+
+msgid "The hold was captured."
+msgstr "الحجز حُصِّل."
+
+msgid "A capture takes more than zero, up to the hold."
+msgstr "يأخذ التحصيل أكثر من الصفر، وحتى مبلغ الحجز."
+
+msgid "A statement is sent as text/csv."
+msgstr "يُرسل الكشف بصيغة text/csv."
+
+msgid "A statement is UTF-8 text."
+msgstr "الكشف نص بترميز UTF-8."
+
+msgid "A statement needs the columns id, date, amount, and currency."
+msgstr "يحتاج الكشف إلى الأعمدة id وdate وamount وcurrency."
+
+msgid "A statement line's id has 1 to 128 characters."
+msgstr "معرّف سطر الكشف من ١ إلى ١٢٨ حرفًا."
+
+msgid "A statement line's amount is not an amount."
+msgstr "مبلغ سطر الكشف ليس مبلغًا."
+
+msgid "A statement line's date is not a date."
+msgstr "تاريخ سطر الكشف ليس تاريخًا."
+
+msgid "A statement line's amount does not fit its currency."
+msgstr "مبلغ سطر الكشف لا يناسب عملته."
+
+msgid "A statement line is not in the account's currency."
+msgstr "سطر الكشف ليس بعملة الحساب."
+
+msgid "Two statement lines have the same id."
+msgstr "لسطرين من الكشف المعرّف نفسه."
+
+msgid "A statement has at most ACCOUNTING.MAX_STATEMENT_LINES lines."
+msgstr "للكشف ACCOUNTING.MAX_STATEMENT_LINES سطرًا على الأكثر."
