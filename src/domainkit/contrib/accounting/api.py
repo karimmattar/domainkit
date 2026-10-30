@@ -100,11 +100,10 @@ MAX_STATEMENT_BYTES: Final = 10 * 1024 * 1024
 Source = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_.:-]{0,63}$")]
 Reference = Annotated[str, Field(min_length=1, max_length=128)]
 Text = Annotated[str, Field(max_length=MAX_TEXT)]
-
-
-def _rule(action: str, model: type) -> Any:  # noqa: ANN401 - a dependency.
-    """The dependency that needs ``action``'s permission on ``model``."""
-    return Depends(Require(HasModelPermission(action, model)))
+VIEW_PERIODS: Final = Depends(Require(HasModelPermission("view", Period)))
+VIEW_ACCOUNTS: Final = Depends(Require(HasModelPermission("view", Account)))
+RECONCILE: Final = Depends(Require(HasModelPermission("reconcile", Account)))
+"""The rules of the routes that are not a resource's own: its model's permissions."""
 
 
 class AccountFilters(FilterSet):
@@ -339,7 +338,7 @@ _reports = error_responses(401, 403, 404, 406)
         **_reports,
         200: {"content": {CSV: {}}, "description": "The trial balance."},
     },
-    dependencies=[_rule("view", Period)],
+    dependencies=[VIEW_PERIODS],
 )
 async def read_trial_balance(
     period_id: UUID, accept: Annotated[str | None, Header()] = None
@@ -362,7 +361,7 @@ async def read_trial_balance(
         **_reports,
         200: {"content": {CSV: {}}, "description": "The general ledger."},
     },
-    dependencies=[_rule("view", Period)],
+    dependencies=[VIEW_PERIODS],
 )
 async def read_general_ledger(
     period_id: UUID, accept: Annotated[str | None, Header()] = None
@@ -426,7 +425,7 @@ def _breaks(found: Any) -> list[BreakOut]:  # noqa: ANN401 - breaks.
     "/{account_id}/statements",
     name="accounting_import_statement",
     responses=error_responses(401, 403, 404, 413, 422),
-    dependencies=[_rule("reconcile", Account)],
+    dependencies=[RECONCILE],
     openapi_extra={
         "requestBody": {
             "required": True,
@@ -458,7 +457,7 @@ async def post_statement(
     "/{account_id}/reconcile",
     name="accounting_reconcile",
     responses=error_responses(401, 403, 404),
-    dependencies=[_rule("reconcile", Account)],
+    dependencies=[RECONCILE],
 )
 async def post_reconcile(account_id: UUID) -> ReconciledOut:
     """Match the account's statement lines to its postings; the breaks left."""
@@ -472,7 +471,7 @@ async def post_reconcile(account_id: UUID) -> ReconciledOut:
     "/{account_id}/breaks",
     name="accounting_breaks",
     responses=error_responses(401, 403, 404),
-    dependencies=[_rule("view", Account)],
+    dependencies=[VIEW_ACCOUNTS],
 )
 async def read_breaks(account_id: UUID) -> list[BreakOut]:
     """What the account's last reconciliation left unmatched."""

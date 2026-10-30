@@ -35,11 +35,12 @@ from domainkit.contrib.accounting.reconciliation import (
 )
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import Money
-from domainkit_tests.test_accounting import (  # noqa: F401 - the fixture.
+from domainkit_tests.test_accounting import (
     TODAY,
     account,
-    books,
+    books,  # noqa: F401 - the fixture.
     period,
+    refused,
     usd,
 )
 
@@ -98,7 +99,7 @@ def test_a_statement_maps_a_banks_own_columns() -> None:
 )
 def test_malformed_statements_are_refused(text: str, message: str) -> None:
     """Missing columns, and rows whose id, date, amount, or currency is not one."""
-    with pytest.raises(InvalidStatement, match=message):
+    with refused(InvalidStatement, match=message):
         list(CsvStatement(text).lines())
 
 
@@ -283,7 +284,7 @@ async def test_a_statement_that_does_not_fit_imports_nothing(
     bank = await sales()
     with (
         override_settings(ACCOUNTING={"MAX_STATEMENT_LINES": 2}),
-        pytest.raises(InvalidStatement, match=message),
+        refused(InvalidStatement, match=message),
     ):
         await import_statement(bank, CsvStatement(HEADER + text))
     assert (await import_statement(bank, CsvStatement(HEADER))).imported == 0
@@ -299,11 +300,11 @@ async def test_a_statement_that_does_not_fit_imports_nothing(
 async def test_imports_and_reconciliations_need_an_account() -> None:
     """An id no account has is not found."""
     nobody = AccountId(uuid.uuid4())
-    with pytest.raises(AccountNotFound):
+    with refused(AccountNotFound):
         await import_statement(nobody, CsvStatement(HEADER))
-    with pytest.raises(AccountNotFound):
+    with refused(AccountNotFound):
         await reconcile(nobody)
-    with pytest.raises(AccountNotFound):
+    with refused(AccountNotFound):
         await breaks_of(nobody)
 
 

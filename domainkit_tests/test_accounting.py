@@ -15,7 +15,8 @@ import logging
 import random
 import uuid
 from collections import defaultdict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final
@@ -49,6 +50,8 @@ from domainkit.contrib.messaging import MessagingSettings, Worker
 from domainkit.contrib.messaging.tables import DONE, messages
 from domainkit.contrib.messaging.worker import Claimed
 from domainkit.db import connections
+from domainkit.ddd import DomainError
+from domainkit.i18n import gettext, override
 from domainkit.money import Money
 from domainkit_tests.conftest import Migrated, Shape
 
@@ -71,6 +74,21 @@ LEDGER: Final = Shape(
 """A project with the ledger and messaging, migrated once per run."""
 TODAY: Final = date(2026, 10, 30)
 TRANSFERS: Final = 50
+
+
+@contextmanager
+def refused(
+    error: type[DomainError], match: str | None = None
+) -> Iterator[pytest.ExceptionInfo[DomainError]]:
+    """``pytest.raises(error, match=match)``, its message one the catalogs translate.
+
+    So a message changed by mistake fails here, not only in Arabic.
+    """
+    with pytest.raises(error, match=match) as raised:
+        yield raised
+    message = str(raised.value)
+    with override("ar"):
+        assert gettext(message) != message, message
 
 
 @pytest.fixture

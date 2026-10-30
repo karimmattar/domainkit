@@ -68,6 +68,7 @@ from domainkit_tests.test_accounting import (  # noqa: F401 - the fixture.
     books,
     count,
     period,
+    refused,
     transfer,
     usd,
 )
@@ -96,12 +97,12 @@ async def test_an_account_closes_only_when_empty() -> None:
     )
 
     assert closed.closed_at is not None
-    with pytest.raises(AccountNotFound):
+    with refused(AccountNotFound, match=r"^No account has that id\.$"):
         await close_account(
             CloseAccount(account_id=AccountId(uuid.UUID(int=1))),
             AccountingUnitOfWork(),
         )
-    with pytest.raises(AccountIsClosed):
+    with refused(AccountIsClosed):
         await post_entry(transfer(other, cash, usd("1"), "t"), AccountingUnitOfWork())
     assert await count(entries) == 0
 
@@ -112,7 +113,7 @@ async def test_a_reference_reused_for_another_entry_is_refused() -> None:
     cash, sales = await account("1000"), await account("4000")
     await post_entry(transfer(sales, cash, usd("1"), "r"), AccountingUnitOfWork())
 
-    with pytest.raises(ReferenceReused):
+    with refused(ReferenceReused):
         await post_entry(transfer(sales, cash, usd("2"), "r"), AccountingUnitOfWork())
 
     assert (await balances())[cash.id] == Decimal("1.0000")
@@ -124,7 +125,7 @@ async def test_lines_on_missing_accounts_book_nothing() -> None:
     cash = await account("1000")
     missing = AccountId(uuid.UUID(int=7))
 
-    with pytest.raises(AccountNotFound):
+    with refused(AccountNotFound, match=r"^No account has that id\.$"):
         await post_entry(
             PostEntry(
                 source="tests",
@@ -140,7 +141,7 @@ async def test_lines_on_missing_accounts_book_nothing() -> None:
 async def test_a_malformed_entry_is_refused_before_any_lock() -> None:
     """Unbalanced lines never reach the database."""
     cash = await account("1000")
-    with pytest.raises(InvalidEntry):
+    with refused(InvalidEntry):
         await post_entry(
             PostEntry(
                 source="tests",
@@ -157,7 +158,7 @@ async def test_entries_need_an_open_period_by_default() -> None:
     cash, sales = await account("1000"), await account("4000")
     command = transfer(sales, cash, usd("1"), "r")
 
-    with pytest.raises(NoOpenPeriod):
+    with refused(NoOpenPeriod):
         await post_entry(command, AccountingUnitOfWork())
     with override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}):
         entry = await post_entry(command, AccountingUnitOfWork())
@@ -185,12 +186,12 @@ async def test_no_entry_is_dated_in_a_closed_period() -> None:
     )
     with (
         override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}),
-        pytest.raises(PeriodIsClosed),
+        refused(PeriodIsClosed),
     ):
         await post_entry(transfer(sales, cash, usd("1"), "r-2"), AccountingUnitOfWork())
-    with pytest.raises(PeriodIsClosed):
+    with refused(PeriodIsClosed):
         await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
-    with pytest.raises(PeriodNotFound):
+    with refused(PeriodNotFound, match=r"^No accounting period has that id\.$"):
         await close_period(
             ClosePeriod(period_id=uuid.UUID(int=3)), AccountingUnitOfWork()
         )
@@ -206,7 +207,7 @@ async def test_periods_do_not_overlap() -> None:
         (date(2026, 9, 1), date(2026, 12, 1)),
         (date(2026, 10, 5), date(2026, 10, 6)),
     ]:
-        with pytest.raises(PeriodsOverlap):
+        with refused(PeriodsOverlap):
             await period("other", starts_on, ends_on)
     with pytest.raises(PeriodNameTaken):
         await period("2026-10", date(2026, 11, 1), date(2026, 11, 30))
@@ -250,7 +251,7 @@ async def test_a_reversal_undoes_an_entry_once() -> None:
     )
     assert twice.reverses == reversal.id
     assert (await balances())[cash.id] == Decimal("7.0000")
-    with pytest.raises(EntryNotFound):
+    with refused(EntryNotFound, match=r"^No journal entry has that id\.$"):
         await reverse_entry(
             ReverseEntry(entry_id=EntryId(uuid.UUID(int=5))),
             AccountingUnitOfWork(),
@@ -294,14 +295,14 @@ async def test_a_hold_is_placed_once_and_released() -> None:
 
     assert again.id == hold.id
     assert hold.expires_at == NOW + timedelta(days=7)
-    with pytest.raises(ReferenceReused):
+    with refused(ReferenceReused):
         await place_hold(
             PlaceHold(
                 account_id=wallet.id, amount=usd("5"), source="shop", reference="h"
             ),
             AccountingUnitOfWork(),
         )
-    with pytest.raises(InsufficientFunds):
+    with refused(InsufficientFunds):
         await place_hold(
             PlaceHold(
                 account_id=wallet.id, amount=usd("4.01"), source="shop", reference="x"
@@ -315,7 +316,7 @@ async def test_a_hold_is_placed_once_and_released() -> None:
     assert (released.status, still.status) == (HoldStatus.RELEASED, HoldStatus.RELEASED)
     async with AccountingUnitOfWork(readonly=True) as uow:
         assert (await uow.accounts.get(wallet.id)).held == Decimal(0)
-    with pytest.raises(HoldNotFound):
+    with refused(HoldNotFound, match=r"^No hold has that id\.$"):
         await release_hold(
             ReleaseHold(hold_id=HoldId(uuid.UUID(int=9))),
             AccountingUnitOfWork(),
@@ -347,14 +348,14 @@ async def test_a_capture_posts_its_entry_and_releases_the_rest() -> None:
             ),
             AccountingUnitOfWork(),
         )
-        with pytest.raises(InvalidAmount, match="up to the hold"):
+        with refused(InvalidAmount, match="up to the hold"):
             await capture_hold(
                 CaptureHold(
                     hold_id=hold.id, counter_account_id=bank.id, amount=usd("9")
                 ),
                 AccountingUnitOfWork(),
             )
-        with pytest.raises(InvalidAmount, match="up to the hold"):
+        with refused(InvalidAmount, match="up to the hold"):
             await capture_hold(
                 CaptureHold(
                     hold_id=hold.id,
@@ -388,7 +389,7 @@ async def test_a_capture_posts_its_entry_and_releases_the_rest() -> None:
         (bank.id, "credit", Decimal("5.0000")),
     ]
     assert (stored.balance, stored.held) == (Decimal("5.0000"), Decimal(0))
-    with pytest.raises(HoldNotActive):
+    with refused(HoldNotActive):
         await release_hold(ReleaseHold(hold_id=hold.id), AccountingUnitOfWork())
     assert await verify_ledger() == []
 
@@ -437,7 +438,7 @@ async def test_expired_holds_are_released_and_not_captured() -> None:
         ]
     later = NOW + timedelta(minutes=2)
     with freeze_time(later):
-        with pytest.raises(HoldNotActive):
+        with refused(HoldNotActive):
             await capture_hold(
                 CaptureHold(hold_id=placed[0].id, counter_account_id=sales.id),
                 AccountingUnitOfWork(),

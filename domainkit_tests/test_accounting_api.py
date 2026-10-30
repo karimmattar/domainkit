@@ -250,10 +250,32 @@ def test_holds_are_placed_captured_and_released(
 
     assert captured.status_code == 200, captured.json()
     assert captured.json()["status"] == "captured"
+    assert captured.json()["finished_at"] is not None
+    entry = client.get(f"{API}/entries/{captured.json()['entry_id']}", headers=clerk)
+    assert entry.json()["lines"][0]["amount"] == usd("20.00")
     after = client.get(f"{API}/accounts/{wallet}", headers=clerk).json()
     assert (after["balance"], after["available"]) == (usd("80.00"), usd("80.00"))
     released = client.post(f"{API}/holds/{hold.json()['id']}/release", headers=clerk)
     assert (released.status_code, released.json()["code"]) == (409, "hold_not_active")
+    whole = client.post(
+        f"{API}/holds",
+        json={
+            "account_id": wallet,
+            "amount": usd("5.00"),
+            "source": "shop",
+            "reference": "auth-2",
+        },
+        headers=clerk,
+    ).json()
+    with override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}):
+        taken = client.post(
+            f"{API}/holds/{whole['id']}/capture",
+            json={"counter_account_id": books["sales"]["id"]},
+            headers=clerk,
+        )
+    assert taken.status_code == 200, taken.json()
+    after = client.get(f"{API}/accounts/{wallet}", headers=clerk).json()
+    assert after["balance"] == usd("75.00")
 
 
 def test_statements_are_imported_and_reconciled(
@@ -285,6 +307,10 @@ def test_statements_are_imported_and_reconciled(
     assert [(b["kind"], b["amount"]) for b in breaks.json()] == [
         ("unmatched_line", usd("3.00"))
     ]
+    (left,) = breaks.json()
+    assert left["statement_line_id"] is not None
+    assert left["posting_id"] is None
+    assert done.json()["breaks"] == breaks.json()
 
 
 def test_amounts_and_statements_that_are_not_are_refused(

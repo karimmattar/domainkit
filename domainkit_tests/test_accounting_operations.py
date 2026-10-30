@@ -5,7 +5,7 @@ import json
 import logging
 import uuid
 from collections.abc import Iterator
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final, cast
@@ -18,6 +18,7 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.checks import CheckFailed
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
     AccountingUnitOfWork,
@@ -36,22 +37,24 @@ from domainkit.contrib.accounting.tasks import POST_ENTRY
 from domainkit.contrib.messaging.registry import get_task
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.management import CommandError, call_command
+from domainkit.management import CommandError, call_command, operators
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import POSTGRES_VARIABLE, Migrated
-from domainkit_tests.test_accounting import (  # noqa: F401 - the fixture.
+from domainkit_tests.test_accounting import (
     ACCOUNTING,
     ALPHA,
     LEDGER,
     TODAY,
     account,
-    books,
+    books,  # noqa: F401 - the fixture.
     period,
+    refused,
     transfer,
     usd,
 )
 
 pytestmark = pytest.mark.anyio
+NOW: Final = datetime(2026, 10, 30, 12, tzinfo=UTC)
 ON_POSTGRES: Final = bool(__import__("os").environ.get(POSTGRES_VARIABLE))
 postgres_only = pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
 TRIGGERS: Final = [
@@ -122,9 +125,11 @@ async def test_missing_triggers_refuse_the_start_and_migrate_restores_them(
         await protection.check_protection()
 
     assert problem.id == "accounting.E001"
-    assert (
-        "triggers domainkit_accounting_entries_append_only, "
-        "domainkit_accounting_postings_append_only_truncate are missing" in problem
+    assert problem == (
+        "Entries and postings in 'default' can be changed: triggers "
+        "domainkit_accounting_entries_append_only, "
+        "domainkit_accounting_postings_append_only_truncate are missing, disabled, "
+        "or changed. Run 'manage.py migrate', which makes them."
     )
     assert "REQUIRE_PROTECTION refuses to start in test" in str(refused.value)
     assert [record.getMessage() for record in caplog.records] == [
@@ -258,11 +263,45 @@ def test_without_messaging_no_task_is_registered() -> None:
 
 @pytest.mark.usefixtures("books")
 async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
-    """Export lists their accounts and postings; erasure keeps the books."""
+    """Export lists their accounts and postings, in order; erasure keeps the books."""
     await period()
-    wallet = await account("2000", type=AccountType.LIABILITY, holder="subject-1")
     bank = await account("1000")
-    await post_entry(transfer(wallet, bank, usd("5"), "top-up"), AccountingUnitOfWork())
+    with freeze_time(NOW + timedelta(hours=1)):
+        wallet = await account("2000", type=AccountType.LIABILITY, holder="subject-1")
+    with freeze_time(NOW):
+        savings = await account("2001", type=AccountType.LIABILITY, holder="subject-1")
+    for minute, (reference, day, lines) in enumerate(
+        [
+            (
+                "late",
+                20,
+                (Line.debit(bank.id, usd("5")), Line.credit(wallet.id, usd("5"), "m")),
+            ),
+            (
+                "early",
+                10,
+                (Line.credit(wallet.id, usd("2")), Line.debit(bank.id, usd("2"))),
+            ),
+            (
+                "last",
+                20,
+                (Line.credit(wallet.id, usd("1")), Line.debit(bank.id, usd("1"))),
+            ),
+        ]
+    ):
+        with freeze_time(NOW + timedelta(minutes=minute)):
+            entry = await post_entry(
+                PostEntry(
+                    source="tests",
+                    reference=reference,
+                    booked_on=date(2026, 10, day),
+                    description=f"d-{reference}",
+                    lines=lines,
+                ),
+                AccountingUnitOfWork(),
+            )
+        if reference == "early":
+            early = entry.id
     (export,) = on_export_subject.of("accounting")
     (erase,) = on_erase_subject.of("accounting")
 
@@ -271,19 +310,40 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
     erased = await erase.call("subject-1", "asked")
     again = await erase.call("subject-1", "asked")
 
-    (held,) = cast(list[dict[str, Any]], exported["accounts"])
-    assert held["code"] == "2000"
-    assert (held["balance"], held["held"], held["status"]) == ("5.00", "0.00", "open")
-    assert [(p["side"], p["amount"], p["reference"]) for p in held["postings"]] == [
-        ("credit", "5.00", "top-up")
+    first, second = cast(list[dict[str, Any]], exported["accounts"])
+    assert first == {
+        "id": str(savings.id),
+        "code": "2001",
+        "name": "Account 2001",
+        "currency": "USD",
+        "status": "open",
+        "balance": "0.00",
+        "held": "0.00",
+        "opened_at": NOW.isoformat(),
+        "postings": [],
+    }
+    assert (second["id"], second["balance"]) == (str(wallet.id), "8.00")
+    assert second["postings"][0] == {
+        "entry_id": str(early),
+        "booked_on": "2026-10-10",
+        "side": "credit",
+        "amount": "2.00",
+        "reference": "early",
+        "description": "d-early",
+        "memo": "",
+    }
+    assert [(p["reference"], p["memo"]) for p in second["postings"]] == [
+        ("early", ""),
+        ("late", "m"),
+        ("last", ""),
     ]
-    assert (nothing, erased, again) == ({}, {"accounts": 1}, {})
+    assert (nothing, erased, again) == ({}, {"accounts": 2}, {})
     async with AccountingUnitOfWork(readonly=True) as uow:
         stored = await uow.accounts.get(wallet.id)
     assert (stored.holder, stored.version, stored.balance) == (
         None,
-        3,
-        Decimal("5.0000"),
+        5,
+        Decimal("8.0000"),
     )
     assert await export.call("subject-1") == {}
 
@@ -292,9 +352,9 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
 async def test_reports_of_a_missing_period_are_not_found() -> None:
     """Both reports refuse a period no one opened."""
     nobody = uuid.uuid4()
-    with pytest.raises(PeriodNotFound):
+    with refused(PeriodNotFound):
         await trial_balance(nobody)  # type: ignore[arg-type]
-    with pytest.raises(PeriodNotFound):
+    with refused(PeriodNotFound):
         await anext(general_ledger(nobody, "json"))  # type: ignore[arg-type]
 
 
@@ -403,6 +463,23 @@ def project(migrated: Migrated) -> Iterator[str]:
         yield url
 
 
+type Action = tuple[str, str, dict[str, object]]
+
+
+@pytest.fixture
+def actions(monkeypatch: pytest.MonkeyPatch) -> list[Action]:
+    """The operator actions the command records: ``(action, outcome, details)``."""
+    found: list[Action] = []
+
+    async def record(
+        who: object, action: str, outcome: str, details: dict[str, object]
+    ) -> None:
+        found.append((action, outcome, details))
+
+    monkeypatch.setattr(operators, "_record", record)
+    return found
+
+
 def run(*args: str) -> str:
     """``accounting`` with ``args``; what it printed."""
     output = io.StringIO()
@@ -438,9 +515,9 @@ def test_the_command_writes_reports(project: str, tmp_path: Path) -> None:
     assert json.loads(target.read_text(encoding="utf-8"))["totals"][0]["net"] == "0.00"
     assert ledger_csv.splitlines()[0].startswith("booked_on,entry_id,")
     assert run("trialbalance", by_id) == balance
-    with pytest.raises(CommandError, match="No period is 'nope'"):
+    with pytest.raises(CommandError, match=r"^No period is 'nope'\.$"):
         run("ledger", "nope")
-    with pytest.raises(CommandError, match="needs a period or an account"):
+    with pytest.raises(CommandError, match=r"^ledger needs a period or an account\.$"):
         run("ledger")
 
 
@@ -455,17 +532,20 @@ def test_the_command_checks_the_books(project: str) -> None:
 
     run_async(tamper())
     output = io.StringIO()
-    with pytest.raises(CommandError, match="2 problem"):
+    with pytest.raises(CommandError, match=r"^The books have 2 problem\(s\)\.$"):
         call_command("accounting", "verify", stdout=output)
     assert output.getvalue().count("balance_differs") == 2
 
 
-def test_the_command_expires_holds(project: str) -> None:
-    """``expireholds`` releases what is due, and says how many."""
+def test_the_command_expires_holds(project: str, actions: list[Action]) -> None:
+    """``expireholds`` releases what is due, says how many, and is recorded."""
     assert run("expireholds") == "Released 0 expired hold(s).\n"
+    assert actions == [("accounting.expireholds", "success", {"holds": 0})]
 
 
-def test_the_command_reconciles_a_statement(project: str, tmp_path: Path) -> None:
+def test_the_command_reconciles_a_statement(
+    project: str, tmp_path: Path, actions: list[Action]
+) -> None:
     """Import by account code, reconcile, and list what is unmatched."""
     books_with_a_sale()
     statement = tmp_path / "october.csv"
@@ -485,9 +565,22 @@ def test_the_command_reconciles_a_statement(project: str, tmp_path: Path) -> Non
     assert known == "Imported 0 line(s); 2 known.\n"
     assert reconciled == "Matched 1 by reference.\n1 unmatched.\n"
     assert unmatched == "2026-10-30  unmatched_line     1.25 USD  x\n"
-    with pytest.raises(CommandError, match="needs the statement's file"):
+    account = json.loads(run("trialbalance", "2026-10", "--format", "json"))[
+        "accounts"
+    ][0]["account_id"]
+    file = {"account": account, "file": "october.csv"}
+    assert actions == [
+        ("accounting.import", "success", {**file, "imported": 2, "skipped": 0}),
+        ("accounting.import", "success", {**file, "imported": 0, "skipped": 2}),
+        (
+            "accounting.reconcile",
+            "success",
+            {"account": account, "matched": 1, "breaks": 1},
+        ),
+    ]
+    with pytest.raises(CommandError, match=r"^import needs the statement's file\.$"):
         run("import", "1000")
-    with pytest.raises(CommandError, match="No account is '9999'"):
+    with pytest.raises(CommandError, match=r"^No account is '9999'\.$"):
         run("reconcile", "9999")
     with pytest.raises(CommandError, match="No account is"):
         run("unmatched", str(uuid.uuid4()))

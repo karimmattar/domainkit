@@ -39,7 +39,9 @@ from domainkit.contrib.accounting import (
     UnbalancedEntry,
     models,
 )
+from domainkit.ddd import DomainError
 from domainkit.money import Currency, Money
+from domainkit_tests.test_accounting import refused
 
 NOW: Final = datetime(2026, 10, 30, 12, tzinfo=UTC)
 DAY: Final = date(2026, 10, 30)
@@ -137,7 +139,7 @@ def test_malformed_accounts_are_refused(
     code: str, name: str, holder: str | None, message: str
 ) -> None:
     """Codes, names, and holders out of bounds."""
-    with pytest.raises(InvalidEntry, match=f"account's {message}"):
+    with refused(InvalidEntry, match=f"account's {message}"):
         Account.open(code, name, AccountType.ASSET, "USD", holder=holder)
 
 
@@ -154,10 +156,10 @@ def test_currencies_the_ledger_cannot_hold_are_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unknown codes, and currencies of more than four places."""
-    with pytest.raises(InvalidAmount, match="not one the ledger knows"):
+    with refused(InvalidAmount, match="not one the ledger knows"):
         Account.open("1000", "Cash", AccountType.ASSET, "XXX")
     monkeypatch.setattr(models, "currency", lambda code: Currency(code, 0, 5))
-    with pytest.raises(InvalidAmount, match="at most four decimal places"):
+    with refused(InvalidAmount, match="at most four decimal places"):
         models.ledger_currency("XBT")
 
 
@@ -185,14 +187,14 @@ def test_postings_move_the_balance_by_side() -> None:
 def test_postings_are_refused_on_closed_accounts_and_in_other_currencies() -> None:
     """A closed account takes nothing; an account takes its own currency only."""
     account = an_account()
-    with pytest.raises(InvalidEntry, match="not in its account's currency"):
+    with refused(InvalidEntry, match="not in its account's currency"):
         account.post(Side.DEBIT, Money.of("1", "EUR"))
-    with pytest.raises(InvalidEntry, match="not in its account's currency"):
+    with refused(InvalidEntry, match="not in its account's currency"):
         account.reserve(Money.of("1", "EUR"))
     account.close()
-    with pytest.raises(AccountIsClosed, match="account is closed"):
+    with refused(AccountIsClosed, match="account is closed"):
         account.post(Side.DEBIT, usd("1"))
-    with pytest.raises(AccountIsClosed):
+    with refused(AccountIsClosed):
         account.reserve(usd("1"))
 
 
@@ -202,9 +204,9 @@ def test_an_account_that_may_not_go_negative_keeps_something_available() -> None
     wallet.post(Side.CREDIT, usd("10"))
     wallet.reserve(usd("4"))
 
-    with pytest.raises(InsufficientFunds):
+    with refused(InsufficientFunds):
         wallet.post(Side.DEBIT, usd("6.01"))
-    with pytest.raises(InsufficientFunds):
+    with refused(InsufficientFunds):
         wallet.reserve(usd("6.01"))
     wallet.post(Side.DEBIT, usd("6"))
 
@@ -230,11 +232,11 @@ def test_only_an_empty_open_account_closes() -> None:
     """A balance or a hold keeps it open; once closed, it stays so."""
     account = an_account()
     account.post(Side.DEBIT, usd("1"))
-    with pytest.raises(AccountNotEmpty):
+    with refused(AccountNotEmpty):
         account.close()
     account.post(Side.CREDIT, usd("1"))
     account.reserve(usd("1"))
-    with pytest.raises(AccountNotEmpty):
+    with refused(AccountNotEmpty):
         account.close()
     account.unreserve(Decimal("1.00"))
 
@@ -245,7 +247,7 @@ def test_only_an_empty_open_account_closes() -> None:
     (event,) = account.pull_events()
     assert isinstance(event, AccountClosed)
     assert event.account_id == account.id
-    with pytest.raises(AccountIsClosed):
+    with refused(AccountIsClosed):
         account.close()
 
 
@@ -299,7 +301,7 @@ def test_an_entry_balances_per_currency() -> None:
 def test_an_unbalanced_entry_is_refused(lines: list[tuple[str, str, str]]) -> None:
     """Debits and credits that differ in any currency."""
     account = AccountId(uuid.uuid4())
-    with pytest.raises(UnbalancedEntry, match="differ in a currency"):
+    with refused(UnbalancedEntry, match="differ in a currency"):
         draft([Line(account, Side(s), Money.of(a, c)) for s, a, c in lines])
 
 
@@ -321,7 +323,7 @@ def test_malformed_entries_are_refused(
 ) -> None:
     """Sources, references, descriptions, and line counts out of bounds."""
     cash, sales = ids()
-    with pytest.raises(InvalidEntry, match=message):
+    with refused(InvalidEntry, match=message):
         draft([Line.debit(cash, usd("1")), Line.credit(sales, usd("1"))], **options)
 
 
@@ -338,9 +340,9 @@ def test_entries_at_their_bounds_are_drafted() -> None:
     )
     assert len(longest.postings) == 2
     three = [Line.debit(cash, usd("2")), *[Line.credit(sales, usd("1"))] * 2]
-    with pytest.raises(InvalidEntry, match="two lines"):
+    with refused(InvalidEntry, match="two lines"):
         draft(three, max_lines=2)
-    with pytest.raises(InvalidEntry, match="two lines"):
+    with refused(InvalidEntry, match="two lines"):
         draft(lines[:1])
     assert len(draft(three, max_lines=3).postings) == 3
     assert draft(lines, source="a0_.:-z").source == "a0_.:-z"
@@ -350,9 +352,9 @@ def test_lines_are_positive_with_short_memos() -> None:
     """Zero and negative amounts, and long memos, are refused."""
     cash, sales = ids()
     for amount in ("0", "-1"):
-        with pytest.raises(InvalidAmount, match="more than zero"):
+        with refused(InvalidAmount, match="more than zero"):
             draft([Line.debit(cash, usd(amount)), Line.credit(sales, usd(amount))])
-    with pytest.raises(InvalidEntry, match="memo"):
+    with refused(InvalidEntry, match="memo"):
         draft([Line.debit(cash, usd("1"), "m" * 256), Line.credit(sales, usd("1"))])
 
 
@@ -421,7 +423,7 @@ def test_a_hold_reserves_until_it_finishes() -> None:
     (finished,) = hold.pull_events()
     assert isinstance(finished, HoldFinished)
     assert (finished.status, finished.entry_id) == (HoldStatus.RELEASED, None)
-    with pytest.raises(HoldNotActive):
+    with refused(HoldNotActive):
         hold.finish(account, HoldStatus.EXPIRED)
 
 
@@ -431,7 +433,7 @@ def test_an_expired_hold_is_not_captured_but_is_released() -> None:
     with freeze_time(NOW):
         hold = Hold.place(account, usd("4"), "shop", "h-1", NOW + timedelta(hours=1))
     with freeze_time(NOW + timedelta(hours=1)):
-        with pytest.raises(HoldNotActive):
+        with refused(HoldNotActive):
             hold.finish(account, HoldStatus.CAPTURED)
         hold.finish(account, HoldStatus.EXPIRED)
     assert hold.status is HoldStatus.EXPIRED
@@ -462,12 +464,12 @@ def test_malformed_holds_are_refused(
     reference: str,
     amount: str,
     expires: int,
-    error: type[Exception],
+    error: type[DomainError],
     message: str,
 ) -> None:
     """Sources, references, amounts, and expiries out of bounds."""
     account = an_account()
-    with freeze_time(NOW), pytest.raises(error, match=message):
+    with freeze_time(NOW), refused(error, match=message):
         Hold.place(
             account, usd(amount), source, reference, NOW + timedelta(seconds=expires)
         )
@@ -492,9 +494,9 @@ def test_a_period_opens_and_closes_once() -> None:
     (closed,) = period.pull_events()
     assert isinstance(closed, PeriodClosed)
     assert closed.period_id == period.id
-    with pytest.raises(PeriodIsClosed, match="closed period"):
+    with refused(PeriodIsClosed, match="closed period"):
         period.takes()
-    with pytest.raises(PeriodIsClosed):
+    with refused(PeriodIsClosed):
         period.close()
 
 
@@ -503,7 +505,7 @@ def test_malformed_periods_are_refused() -> None:
     one_day = Period.open("p" * 64, DAY, DAY)
     assert one_day.starts_on == one_day.ends_on
     for name in ("", "p" * 65):
-        with pytest.raises(InvalidEntry, match="period's name"):
+        with refused(InvalidEntry, match="period's name"):
             Period.open(name, DAY, DAY)
-    with pytest.raises(PeriodsOverlap, match="ends on or after"):
+    with refused(PeriodsOverlap, match="ends on or after"):
         Period.open("p", DAY, DAY - timedelta(days=1))
