@@ -1074,6 +1074,7 @@ def test_retries_and_cancels_are_audited_with_their_operator(
         run("messages", "--cancel", str(waiting), "--operator", "alice")
         with pytest.raises(CommandError) as refused:
             run("messages", "--cancel", str(waiting))
+        assert run("messages", "--release") == "Released 0 stalled key(s).\n"
         run("messages", "--dead")  # Reading is not recorded.
         rows = [
             row
@@ -1091,8 +1092,14 @@ def test_retries_and_cancels_are_audited_with_their_operator(
         ("operator.messages.retry", "operator:ops-1"),
         ("operator.messages.cancel", "operator:alice"),
         ("operator.messages.cancel", "operator:ops-1"),
+        ("operator.messages.release", "operator:ops-1"),
     ]
-    one, every, cancelled, missed = (row["details"] for row in rows)
+    one, every, cancelled, missed, released = (row["details"] for row in rows)
+    assert released == {
+        "database": "default",
+        "released": 0,
+        "operator_source": "environment",
+    }
     assert one == {
         "message": str(dead),
         "database": "default",

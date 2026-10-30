@@ -84,6 +84,12 @@ async def test_stalled_keys_are_released_in_batches_and_logged(
     await finished_unpromoted("a")
     await finished_unpromoted("b")
     worker = Worker(config(CLEANUP_BATCH_SIZE=1))
+    relayed: list[uuid.UUID] = []
+
+    async def relay(promoted: ordering.Promoted) -> None:
+        relayed.append(promoted.id)
+
+    worker.relay_promoted = relay
     stopped = asyncio.Event()
     stopped.set()
     assert await worker._release_stalled(stopped) == 0
@@ -100,6 +106,7 @@ async def test_stalled_keys_are_released_in_batches_and_logged(
         "and none pending (a worker before 0.14 finished the one before?)"
         for label in ("a1", "b1")
     ]
+    assert relayed == [found["a1"], found["b1"]]  # Started at once, as promoted.
     assert await worker.release_stalled() == 0
     await worker.run_once()
     assert runs.labels("a") == ["a1"]
@@ -182,7 +189,24 @@ async def test_admin_releases_stalled_keys_of_an_outbox() -> None:
 
 
 async def dead_then_next(*, lock: timedelta | None, started: bool) -> None:
-    """``a1`` dies; ``a2``, pending, gets the lock and start given."""
+    """``a1`` dies; ``a2``, pending, gets the lock and start given.
+
+    Key ``z`` has a pending message, not started, later in its own line
+    than ``a1`` in ``a``'s: giving ``a1`` back never touches it.
+    """
+    for label in ("z0", "z1"):
+        await enqueue(step, key="z", label=label)
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(messages)
+            .where(messages.c.sequence == 1, messages.c.ordering_key == "z")
+            .values(status=DONE)
+        )
+        await connection.execute(
+            update(messages)
+            .where(messages.c.ordering_key == "z", messages.c.status == HELD)
+            .values(status=PENDING, available_at=datetime.now(UTC) + timedelta(1))
+        )
     runs.broken.add("a1")
     await enqueue(doomed, key="a", label="a1")
     await enqueue(step, key="a", label="a2")
@@ -196,7 +220,7 @@ async def dead_then_next(*, lock: timedelta | None, started: bool) -> None:
         async with connections.engine().begin() as connection:
             await connection.execute(
                 update(messages)
-                .where(messages.c.status == PENDING)
+                .where(messages.c.status == PENDING, messages.c.ordering_key == "a")
                 .values(
                     locked_until=None if lock is None else now + lock,
                     lock_id=uuid.uuid4(),
@@ -223,6 +247,7 @@ async def test_a_dead_letter_goes_before_a_message_whose_lock_ran_out() -> None:
     found = {row["payload"]["label"]: row for row in await rows()}
     assert (found["a1"]["status"], found["a2"]["status"]) == (PENDING, HELD)
     assert (found["a2"]["locked_until"], found["a2"]["lock_id"]) == (None, None)
+    assert await statuses("z") == [DONE, PENDING]  # Another key: untouched.
     await Worker(config()).run_once()
     assert runs.labels("a") == ["a1", "a2"]
 
@@ -269,7 +294,13 @@ async def test_only_the_older_dead_letter_passes_the_pending_message() -> None:
 
 def test_a_task_key_must_name_one_of_its_arguments() -> None:
     """Refused before or after ``@task``; ``**kwargs`` takes any name."""
-    with pytest.raises(ImproperlyConfigured, match=r"by 'acount', which is not one"):
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=(
+            r"^Task 'tests.repairs.typo_after' is ordered by 'acount', which is "
+            r"not one of its arguments: its messages would have no key\.$"
+        ),
+    ):
 
         @ordered("acount")
         @task(name="tests.repairs.typo_after")
@@ -310,7 +341,7 @@ async def test_a_key_no_outbox_can_store_is_refused_where_it_is_given() -> None:
     async with NotesUnitOfWork() as uow:
         with pytest.raises(ValueError, match="1 to 255 characters, not 256"):
             uow.defer(plain, label="x", ordering_key="k" * 256)
-        with pytest.raises(ValueError, match="cannot hold a NUL character"):
+        with pytest.raises(ValueError, match=r"^An ordering key cannot hold a NUL"):
             uow.defer(plain, label="x", ordering_key="a\x00b")
         with pytest.raises(ValueError, match="is a string, not int"):
             uow.defer(plain, label="x", ordering_key=42)  # type: ignore[arg-type]
