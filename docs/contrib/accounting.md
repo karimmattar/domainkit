@@ -17,7 +17,7 @@ amounts are `domainkit.money.Money` (ADR 0115).
 INSTALLED_DOMAINS = [
     "domainkit.contrib.messaging",  # optional: entries from messages, hold expiry
     "domainkit.contrib.accounting",
-    ...
+    ...,
 ]
 ```
 
@@ -179,7 +179,12 @@ the same on demand. Until then an expired hold still counts against
 ## Periods
 
 ```python
-from domainkit.contrib.accounting import ClosePeriod, OpenPeriod, close_period, open_period
+from domainkit.contrib.accounting import (
+    ClosePeriod,
+    OpenPeriod,
+    close_period,
+    open_period,
+)
 
 october = await open_period(
     OpenPeriod(name="2026-10", starts_on=date(2026, 10, 1), ends_on=date(2026, 10, 31)),
@@ -203,7 +208,7 @@ reversals.
 from domainkit.contrib.accounting import general_ledger, trial_balance
 
 report = await trial_balance(october.id)
-report.balanced            # every currency nets to zero
+report.balanced  # every currency nets to zero
 report.to_csv(), report.to_json()
 
 async for piece in general_ledger(october.id, "csv"):  # or "json", streamed
@@ -237,8 +242,8 @@ from domainkit.contrib.accounting.reconciliation import (
 )
 
 await import_statement(bank.id, CsvStatement(text, name="october.csv"))
-done = await reconcile(bank.id)    # matches by rule, and the breaks left
-await breaks_of(bank.id)           # what is still unmatched
+done = await reconcile(bank.id)  # matches by rule, and the breaks left
+await breaks_of(bank.id)  # what is still unmatched
 ```
 
 - Statements come in through the port `StatementSource`; `CsvStatement`

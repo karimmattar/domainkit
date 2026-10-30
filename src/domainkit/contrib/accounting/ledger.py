@@ -146,8 +146,8 @@ async def book(
 ) -> None:
     """Add ``entry`` to the open ``uow``, moving the ``accounts`` it posts to.
 
-    The accounts are locked already; the period the entry's date falls in
-    is locked for share first. Call it after any lock on holds.
+    The accounts are locked already (after any hold); the period the
+    entry's date falls in is locked last, for share.
 
     Raises:
         NoOpenPeriod: No period covers the date, and ``REQUIRE_PERIOD``.

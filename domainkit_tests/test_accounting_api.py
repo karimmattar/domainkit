@@ -4,8 +4,8 @@ import ast
 import csv
 import io
 import json
-from pathlib import Path
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, Final
 
 import pytest
@@ -14,9 +14,9 @@ from fastapi.testclient import TestClient
 from domainkit.conf import override_settings
 from domainkit.contrib import accounting
 from domainkit.ddd import DomainError
-from domainkit.i18n import gettext, override
 from domainkit.http import get_asgi_application
 from domainkit.http.access import open_routes
+from domainkit.i18n import gettext, override
 from domainkit_tests.conftest import (
     ALPHA,
     AUTH,
@@ -356,7 +356,7 @@ def test_every_refusal_of_the_ledger_is_translated() -> None:
                 and node.args
             ):
                 last = node.args[-1]
-                if isinstance(last, ast.Constant):  # Else _text's own argument.
+                if isinstance(last, ast.Constant) and isinstance(last.value, str):
                     messages.add(last.value)
     with override("ar"):
         untranslated = sorted(
@@ -364,3 +364,34 @@ def test_every_refusal_of_the_ledger_is_translated() -> None:
         )
     assert len(messages) > 40
     assert untranslated == []
+
+
+def test_entries_are_reversed_and_periods_and_accounts_closed(
+    client: TestClient, clerk: Headers
+) -> None:
+    """A reversal is an entry; an empty account closes; a closed period refuses."""
+    books = open_books(client, clerk)
+    posted = client.post(
+        f"{API}/entries", json=sale(books, "s-1", "2.00"), headers=clerk
+    )
+    entry = posted.json()["id"]
+
+    reversal = client.post(
+        f"{API}/entries/{entry}/reverse",
+        json={"booked_on": "2026-10-16", "description": "refund"},
+        headers=clerk,
+    )
+    closed_account = client.post(
+        f"{API}/accounts/{books['cash']['id']}/close", headers=clerk
+    )
+    period = books["period"]["id"]
+    closed = client.post(f"{API}/periods/{period}/close", headers=clerk)
+    refused = client.post(
+        f"{API}/entries", json=sale(books, "s-2", "1.00"), headers=clerk
+    )
+
+    assert reversal.status_code == 201, reversal.json()
+    assert (reversal.json()["reverses"], reversal.json()["reference"]) == (entry, entry)
+    assert closed_account.json()["status"] == "closed"
+    assert closed.json()["status"] == "closed"
+    assert (refused.status_code, refused.json()["code"]) == (422, "period_closed")

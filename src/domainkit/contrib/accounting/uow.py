@@ -1,10 +1,10 @@
 """The unit of work over the ledger, and its repositories.
 
-Every change to the books takes its locks in one order, so two changes
-never wait for each other: the name of what it posts (``lock``), the
-period its date falls in (shared), holds, then accounts by ascending id
-(``get_many_for_update``). On SQLite the first lock takes the database's
-write lock, so changes run one at a time there.
+Every change to the books takes its locks in one order, so no two wait
+for each other: the name of what it posts (``lock``), then a hold, then
+accounts by ascending id (``get_many_for_update``), then, last and
+shared, the period its date falls in. On SQLite the first lock takes the
+database's write lock, so changes run one at a time there.
 """
 
 from datetime import date
