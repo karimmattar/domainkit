@@ -78,7 +78,9 @@ compiles it, with these rules on both:
   "USD")` holds for totals in USD of at least 10.00, and for none in
   another currency; `~` of it includes those. Its two parts are fields:
   `F("total.currency") == "USD"`, `F("total.amount") > Decimal("9.995")`.
-  It sorts by currency code, then amount ([money.md](money.md#in-queries)).
+  Through child entities (`F("lines.price")`) the amount and its currency
+  are of one child. It sorts by currency code, then amount
+  ([money.md](money.md#in-queries)).
 - **Missing values never match** a condition, and `~` negates exactly:
   `~(F("stock") > 5)` includes the rows without stock. A condition through
   a child entity that is not there is false.

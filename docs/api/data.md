@@ -91,7 +91,9 @@ Installed models: the mapped classes of installed domains, and their `Meta`.
 
 Money in tables: an amount column and a currency column, one attribute.
 
+- `IncompleteMoney`: A row holds an amount without its currency, or a currency without its amount.
 - `MoneyColumns`: The two columns of a money field: `<name>` and `<name>_currency`.
+- `money_check`: The check that the money field `name`'s two columns are both set or neither.
 
 ## `domainkit.db.partitioning`
 

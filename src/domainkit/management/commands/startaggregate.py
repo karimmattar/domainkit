@@ -512,6 +512,11 @@ async def {service}(command: {command}, uow: {unit}) -> {A}:
     Both rows are locked in one statement, by ascending id, so two transfers
     between the same {many} take the locks in the same order and cannot
     deadlock; the whole work runs again when its transaction loses a race.
+
+    Add what a project decides: the idempotency middleware, so a request
+    retried with its ``Idempotency-Key`` moves the amount once, and a rule
+    that the caller may move money out of this {names.title}
+    (``has_object_permission``).
     """
     source, target = {A}Id(command.{a}_id), {A}Id(command.to)
 

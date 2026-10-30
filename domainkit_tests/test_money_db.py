@@ -2,21 +2,23 @@
 
 import io
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, NewType
+from typing import Annotated, Any, NewType
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     Index,
     Integer,
     MetaData,
     String,
     Table,
+    bindparam,
     func,
     insert,
     select,
@@ -41,7 +43,7 @@ from domainkit.db import (
 )
 from domainkit.db import migrations as migrations_module
 from domainkit.db.fixtures import FixtureError, _decoded_row
-from domainkit.db.money import money_properties
+from domainkit.db.money import IncompleteMoney, money_properties
 from domainkit.db.orm import NAMING_CONVENTION
 from domainkit.db.query import compile_ordering
 from domainkit.ddd import (
@@ -547,7 +549,9 @@ def test_makemigrations_writes_money_columns_that_apply(
         call_command("makemigrations", "-m", "purses", stdout=io.StringIO())
         (revision,) = (tmp_path / "migrations").glob("*.py")
         call_command("migrate", stdout=io.StringIO())
+        pending = migrations_module.pending_changes()
     registry.clear()
+    assert pending is None  # The check of a pair made with its table is no change.
     text = revision.read_text()
     upgrade = text.split("def upgrade", 1)[1]
     for column in (
@@ -683,4 +687,105 @@ def test_a_money_attribute_the_mapping_names_is_left_to_it() -> None:
         "_coins_amount",
         "_coins_currency",
         "coins",
+    }
+
+
+async def test_money_times_a_bound_rate_is_exact(tables: None) -> None:
+    """``total * rate`` in SQL: the rate is a factor, not an amount (TEST-07)."""
+    await store(wallet("a", money("9.95", "USD")))
+    rate: Any = bindparam("rate")
+
+    async with connections.engine().connect() as connection:
+        times = await connection.scalar(
+            select(wallets.c.balance * rate), {"rate": Decimal("0.1")}
+        )
+        over = await connection.scalar(
+            select(wallets.c.balance / rate), {"rate": Decimal("4")}
+        )
+
+    assert (type(times), times, over) == (Decimal, Decimal("0.995"), Decimal("2.4875"))
+
+
+@pytest.mark.parametrize(
+    ("condition", "found"),
+    [
+        (lambda: Wallet.balance == money("10", "USD"), ["a"]),
+        (lambda: Wallet.balance != money("10", "USD"), list("bcdefgh")),
+        (lambda: Wallet.balance < money("10", "USD"), ["b", "d"]),
+        (lambda: Wallet.balance <= money("10", "EUR"), ["c", "g"]),
+        (lambda: Wallet.balance > money("1", "KWD"), ["e"]),
+        (lambda: Wallet.balance >= money("1000", "JPY"), ["f"]),
+        (lambda: Wallet.limit == None, ["b", "f", "h"]),  # noqa: E711 - IS NULL.
+        (lambda: Wallet.limit != None, list("acdeg")),  # noqa: E711 - IS NOT NULL.
+        (lambda: Wallet.limit != money("100", "USD"), list("bcdefh")),
+    ],
+)
+async def test_the_money_attribute_compares_as_money(
+    tables: None, condition: Callable[[], Any], found: list[str]
+) -> None:
+    """``Wallet.balance < m`` selects in m's currency, as Money compares (SEC-14a-2).
+
+    Each condition is built in the test, not when the module loads.
+    """
+    await store(*dataset())
+
+    async with WalletsUnitOfWork() as uow:
+        rows = await uow.session.scalars(select(Wallet).where(condition()))
+        assert sorted(each.name for each in rows) == found
+
+
+def test_the_money_attribute_compares_only_with_money() -> None:
+    """A number, or None in an ordering, is refused while the query is built."""
+    with pytest.raises(TypeError, match="not int"):
+        Wallet.balance < 10  # noqa: B015 - it raises.
+    with pytest.raises(TypeError, match="not NoneType"):
+        Wallet.limit < None  # type: ignore[operator]  # noqa: B015 - it raises.
+
+
+def test_half_a_pair_loads_as_a_clear_error() -> None:
+    """An amount without its currency, or the reverse, is no money, nor None."""
+    load = class_mapper(Wallet).composites["limit"].composite_class
+
+    assert load(None, None) is None
+    assert load(Decimal("1.50"), currency("USD")) == money("1.50", "USD")
+    with pytest.raises(IncompleteMoney, match=r"^A row holds an amount without its"):
+        load(Decimal("1.50"), None)
+    with pytest.raises(IncompleteMoney, match="money_check"):
+        load(None, currency("USD"))
+
+
+def test_a_given_amount_column_gets_the_pair_check() -> None:
+    """An amount column given alone keeps the pair's check; one given is kept once."""
+    amount: Column[Decimal] = Column(
+        "limit", ExactDecimal(8, 2), nullable=True, info={"money": ("limit", "amount")}
+    )
+    table = table_for(
+        Wallet, "framework_test_money_amount", amount, metadata=MetaData()
+    )
+    checks = [each for each in table.constraints if "money" in str(each.name)]
+    given = MoneyColumns("limit", nullable=True)
+    kept = table_for(
+        Wallet, "framework_test_money_amount_checked", *given, metadata=MetaData()
+    )
+    (mine,) = given.constraints
+    other = CheckConstraint("version >= 0", name="version_counts")
+    sized = table_for(
+        Wallet,
+        "framework_test_money_amount_other",
+        Column(
+            "limit",
+            ExactDecimal(8, 2),
+            nullable=True,
+            info={"money": ("limit", "amount")},
+        ),
+        other,
+        metadata=MetaData(),
+    )
+
+    assert [each.name for each in checks] == ["limit_money"]
+    assert "limit_currency IS NULL" in str(checks[0].sqltext)  # type: ignore[attr-defined]
+    assert [each for each in kept.constraints if "money" in str(each.name)] == [mine]
+    assert {str(each.name) for each in sized.constraints} >= {
+        "version_counts",
+        "limit_money",
     }

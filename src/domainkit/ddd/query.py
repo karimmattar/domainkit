@@ -190,12 +190,17 @@ class Condition(Criteria):
         """Resolve the field and check, and coerce, the value.
 
         A condition on money with a value becomes conditions on its parts:
-        the currency, and the amount.
+        the currency, and the amount. Through child entities, both parts
+        are of one child (``Within``): ``lines.price >= 100 USD`` is some
+        line priced in USD at 100 or more, never the currency of one line
+        and the amount of another.
         """
         path = resolve(model, self.field)
         value = _bound_value(path[-1], self.lookup, self.value)
         if path[-1].kind is Money and _compares(self.lookup, value):
-            return _on_money_parts(self.field, self.lookup, value).bind(model)
+            prefix, _, leaf = self.field.rpartition(".")
+            parts = _on_money_parts(leaf, self.lookup, value)
+            return (Within(prefix, parts) if prefix else parts).bind(model)
         return Condition(self.field, self.lookup, value, path)
 
     def evaluate(self, candidate: object) -> bool:
@@ -282,6 +287,84 @@ class Not(Criteria):
     def conditions(self) -> Iterator[Condition]:
         """The part's conditions."""
         return self.part.conditions()
+
+
+@dataclass(frozen=True, slots=True)
+class Within(Criteria):
+    """Criteria on one child entity: some child at ``relation`` meets them all.
+
+    ``Within("lines", (F("price.currency") == "USD") & (F("price.amount")
+    >= 100))`` holds when one line meets both, where ``F("lines.price.currency")
+    == "USD"`` and ``F("lines.price.amount") >= 100`` would each look at
+    every line on its own. Money through child entities binds to it; in
+    SQL it is one ``EXISTS``.
+    """
+
+    relation: str
+    """The (dotted) name of the child entities, from the model."""
+    criteria: Criteria
+    """The criteria, on the child entity's fields."""
+    path: tuple[FieldInfo, ...] = dataclasses.field(
+        default=(), compare=False, repr=False
+    )
+    """The relations the name resolved to, once bound."""
+
+    def bind(self, model: type) -> "Within":
+        """Resolve the relation, and bind the criteria to its entity.
+
+        Raises:
+            UnknownField: A part of the relation names no field.
+            InvalidQuery: A part of the relation is not a child entity.
+        """
+        path = _relations(model, self.relation)
+        entity = cast("type", path[-1].entity)
+        return Within(self.relation, self.criteria.bind(entity), path)
+
+    def evaluate(self, candidate: object) -> bool:
+        """Some child at the relation meets the criteria."""
+        if not self.path:
+            raise InvalidQuery("Bind the criteria to a class before evaluating them.")
+        return any(
+            self.criteria.evaluate(child) for child in _reached(candidate, self.path)
+        )
+
+    def conditions(self) -> Iterator[Condition]:
+        """The criteria's conditions, named from the model."""
+        for each in self.criteria.conditions():
+            yield Condition(f"{self.relation}.{each.field}", each.lookup, each.value)
+
+
+def _relations(model: type, name: str) -> tuple[FieldInfo, ...]:
+    """The child entity fields a (dotted) name passes through, from ``model``.
+
+    Raises:
+        UnknownField: A part names no field.
+        InvalidQuery: A part is not a child entity.
+    """
+    path: list[FieldInfo] = []
+    owner = model
+    for part in name.split("."):
+        try:
+            info = fields_of(owner)[part]
+        except KeyError:
+            raise UnknownField(f"{owner.__name__} has no field {part!r}.") from None
+        if info.entity is None:
+            raise InvalidQuery(f"{name!r}: {part} holds no child entities.")
+        path.append(info)
+        owner = info.entity
+    return tuple(path)
+
+
+def _reached(candidate: object, path: tuple[FieldInfo, ...]) -> Iterator[object]:
+    """The child entities at the end of ``path`` from ``candidate``."""
+    head, rest = path[0], path[1:]
+    current = getattr(candidate, head.name)
+    children = current if head.many else () if current is None else (current,)
+    for child in children:
+        if rest:
+            yield from _reached(child, rest)
+        else:
+            yield child
 
 
 def _parts(criteria: Criteria, kind: type[And | Or]) -> tuple[Criteria, ...]:

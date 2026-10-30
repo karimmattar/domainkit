@@ -571,9 +571,15 @@ PostgreSQL would store differently.
 - **Queries give the same results on both databases**: comparisons,
   `ORDER BY`, `in_`, `between`, `+` and `-`, `sum`, `min`, `max`, and
   multiplying or dividing by a number (`price * 2`, `price * Decimal("1.1")`,
-  `price * quantity` for an integer column, `price / 4`). On SQLite, a
-  product with a fraction and a quotient are computed in floating point
-  before they come back as `Decimal`.
+  `price * bindparam("rate")`, `price * quantity` for an integer column,
+  `price / 4`, `price / quantity`). A number, given as a value or as an
+  untyped bound parameter, is a factor, never an amount, with at most 9
+  places (more is refused, not rounded). On SQLite the amount (minor
+  units) and the factor (billionths) are multiplied as exact integers and
+  divided back as a real number, so a result of 15 significant digits or
+  fewer comes back exactly, as a `Decimal`; a quotient is computed in
+  floating point. Put the amount first: `bindparam("rate") * price` is
+  not typed, and SQLite refuses its `Decimal`.
 - **Amounts of different scales, and integer columns,** are added,
   subtracted, and compared in the same units (`price + fee`,
   `price > rate`, `price > quantity`): on SQLite the side with fewer places
@@ -769,7 +775,12 @@ command, `POST /wallets/{wallet_id}/transfer-balance`, and their tests,
 one of them a lost race ([resources.md](resources.md#generators)). Both
 rows are locked, so the rule on each holds at `READ COMMITTED`; a rule
 across rows that are not both locked needs `SERIALIZABLE`
-([the payment recipe](recipes/payments.md)).
+([the payment recipe](recipes/payments.md)). Two things are the
+project's to add: the idempotency middleware, so a request retried with
+its `Idempotency-Key` moves the amount once
+([contrib/idempotency.md](contrib/idempotency.md)), and a rule that the
+caller may move money out of that wallet
+([resources.md](resources.md#who-may-call-it)).
 
 ## Testing
 

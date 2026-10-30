@@ -41,6 +41,12 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   `messages --release`, releases it (SEC-14c-3). `messages` prints a
   `held` line after `pending`: a script that reads its lines by position
   reads them by name instead. Nothing keeps the old schema.
+- **A factor of an amount in SQL has at most 9 places** (TEST-07).
+  `amount * factor` and `amount / factor`, with `factor` a value or a
+  bound parameter, refuse a factor of more places (`ValueError`), where
+  they used to compute with it (and on SQLite counted a bound one as an
+  amount). **Fix:** round the factor to 9 places with the rule the domain
+  needs, or compute the product in Python with `Money.multiply`.
 
 ## 0.12 to 0.13
 

@@ -116,6 +116,12 @@ def test_an_unknown_code_is_quoted_only_when_short() -> None:
     assert "XXXX" not in str(caught.value)
     with pytest.raises(UnknownCurrency, match="the code"):
         currency(840)  # type: ignore[arg-type]
+    with pytest.raises(UnknownCurrency, match="the code"):
+        currency(["USD"])  # type: ignore[arg-type]
+    with pytest.raises(UnknownCurrency, match="'ABCDEFGH'"):
+        currency("ABCDEFGH")
+    with pytest.raises(UnknownCurrency, match="the code"):
+        currency("ABCDEFGHI")
 
 
 def test_a_project_registers_its_own_currencies() -> None:
@@ -201,8 +207,25 @@ def test_currencies_are_values() -> None:
     assert (repr(kwd), str(kwd)) == ("Currency('KWD', 414, 3)", "KWD")
     with pytest.raises(AttributeError, match="immutable"):
         kwd.minor_units = 2
+    with pytest.raises(AttributeError, match="immutable"):
+        kwd.__init__("KWD", 414, 2)  # type: ignore[misc]
+    assert kwd.minor_units == 3
     assert pickle.loads(pickle.dumps(kwd)) == kwd  # noqa: S301 - our own bytes.
     assert copy.deepcopy(kwd).name == kwd.name == "Kuwaiti Dinar"
+
+
+def test_a_currency_made_by_hand_is_checked_against_the_known_one() -> None:
+    """Its code with other units is refused: amounts would be held at those."""
+    three = Currency("USD", 840, 3)
+
+    with pytest.raises(UnknownCurrency, match="not the known currency"):
+        currency(three)
+    with pytest.raises(UnknownCurrency):
+        Money("1.005", three)
+    with pytest.raises(UnknownCurrency):
+        Money.of("1", Currency("XYZ", None, 2))
+    known = currency(Currency("USD", 840, 2, "Dollars"))
+    assert (known, known.name) == (USD, "US Dollar")
 
 
 # Amounts.
@@ -321,9 +344,15 @@ def test_amounts_are_finite(amount: Decimal) -> None:
 
 
 def test_amounts_have_at_most_max_digits_before_the_point() -> None:
-    """Past NUMERIC(38) is no amount, nor a cost to compute; zero of any exponent is."""
-    with pytest.raises(ValueError, match="38 digits"):
+    """Past NUMERIC(38) is no amount, nor a cost to compute; zero of any exponent is.
+
+    Refused as money refuses any amount (``MoneyError``, a 422), also when
+    a product grows past it.
+    """
+    with pytest.raises(MoneyError, match="38 digits"):
         Money(10**MAX_DIGITS, "JPY")
+    with pytest.raises(MoneyError, match="38 digits"):
+        Money.of("9" * MAX_DIGITS, "JPY").multiply(10)
     with pytest.raises(ValueError, match="38 digits"):
         Money(Decimal("1E+999999999"), "USD")
     with pytest.raises(ValueError, match="38 digits"):
@@ -459,6 +488,9 @@ def test_immutable() -> None:
         price.amount = Decimal(2)
     with pytest.raises(AttributeError, match="immutable"):
         del price.currency
+    with pytest.raises(AttributeError, match="immutable"):
+        price.__init__("2", "EUR")  # type: ignore[misc]
+    assert price == usd("1")
     assert copy.copy(price) == price
     assert copy.deepcopy(price) == price
     assert pickle.loads(pickle.dumps(price)) == price  # noqa: S301 - our own bytes.
@@ -583,7 +615,7 @@ def test_allocation_never_loses_or_creates_a_minor_unit(
     for part, ratio in zip(parts, ratios, strict=True):
         exact = Decimal(minor) * Decimal(ratio) / total
         assert abs(part.minor - exact) < 1
-        assert part.currency is unit
+        assert part.currency == unit  # The known currency: the same, once cached.
         if ratio == 0:
             assert part.is_zero()
 

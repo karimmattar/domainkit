@@ -146,6 +146,13 @@ orders, and sums the amount, and the code reads as one:
 | `balance: Annotated[Money, Digits(12, 2)]` | `balance` `ExactDecimal(12, 2)`, and the code |
 | `limit: Money \| None` | both nullable, and a check that both are missing or neither is |
 
+The check comes with the pair: `makemigrations` writes it when it creates
+the table, and when it adds a nullable money field to a table that exists
+(in batch mode on SQLite), and `table_for` derives it when only the amount
+column is given. A row that holds half a pair all the same (one written
+around the check) is refused when it loads: `IncompleteMoney`, which
+names no amount.
+
 The amount column's scale must hold the places of every currency it
 stores: the default 4 holds every ISO 4217 currency, and 14 digits before
 the point; `Digits(12, 2)` holds dollars and euros, not dinars of three
@@ -202,10 +209,16 @@ F("balance.amount") > Decimal("9.995")  # of any places, compared exactly
 
 A condition on money is a condition on its currency and its amount, so
 `~(F("balance") > Money.of("0", "USD"))` holds for every balance in another
-currency. A range of two currencies is `InvalidQuery`. Money orders by
+currency. Through child entities both are of one child:
+`F("lines.price") >= Money.of("100", "USD")` holds for an order with a
+line priced in USD at 100 or more, never for the amount of one line in the
+currency of another (one `EXISTS`). A range of two currencies is `InvalidQuery`. Money orders by
 currency code, then amount (`ordering=["-balance"]`), and keyset pages
 follow that order. `update_rows(criteria, balance=Money.of("1", "EUR"))`
-sets both columns.
+sets both columns. The mapped attribute compares as money in SQLAlchemy's
+own queries too: `select(Wallet).where(Wallet.balance < Money.of("100",
+"USD"))` is the balances in USD under 100, `!=` holds of no money, and
+`Wallet.limit == None` is a missing limit.
 
 ## Over HTTP
 
@@ -230,7 +243,9 @@ A `FilterSet` filter of a money field compares amounts within one
 currency, so it brings a `<name>_currency` parameter:
 `?balance__gte=10.00&balance_currency=USD`. An amount without the currency
 is a 422 `invalid_filter`; the currency alone filters by currency
-([queries.md](queries.md#filters-over-http)). Cursors of a money ordering
+([queries.md](queries.md#filters-over-http)). Through child entities
+(`Filter("gte", "lte", field="lines.price")`) the amounts and the currency
+are of one line. Cursors of a money ordering
 hold its amount and code. A CSV export writes money as its JSON in one
 cell; the admin lists, filters, and describes it as any field.
 

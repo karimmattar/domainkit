@@ -24,16 +24,20 @@ from collections.abc import Iterator, Mapping
 from decimal import Decimal
 from typing import Any, Final, cast
 
-from sqlalchemy import CheckConstraint, Column, Table, and_, or_
-from sqlalchemy.orm import Mapper, composite
+from sqlalchemy import CheckConstraint, Column, ColumnElement, Table, and_, not_, or_
+from sqlalchemy.orm import Composite, Mapper, composite
+from sqlalchemy.sql import operators
+from sqlalchemy.sql.operators import OperatorType
 from sqlalchemy.sql.schema import SchemaItem
 
 from domainkit.db.types import CurrencyCode, ExactDecimal
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.money import Currency, Money
 
 __all__ = [
+    "IncompleteMoney",
     "MoneyColumns",
+    "money_check",
 ]
 
 MONEY: Final = "money"
@@ -44,6 +48,33 @@ PRECISION: Final = 18
 """The digits of an amount column by default: as many as ``ExactDecimal`` holds."""
 SCALE: Final = 4
 """The places of an amount column by default: the most an ISO 4217 currency has."""
+CHECK: Final = "money_check"
+"""The ``info`` key of a pair's both-or-neither check: the field's name."""
+_EQUALITY: Final = frozenset({operators.eq, operators.ne})
+
+
+class IncompleteMoney(ValueError, DomainkitError):
+    """A row holds an amount without its currency, or a currency without its amount.
+
+    The pair's check keeps that from being stored (``money_check``); a row
+    written before the check, or around it, is refused when read.
+    """
+
+
+def money_check(
+    name: str, amount: Column[Any], currency: Column[Any]
+) -> CheckConstraint:
+    """The check that the money field ``name``'s two columns are both set or neither.
+
+    ``MoneyColumns`` and ``table_for`` add it to a pair that may be missing,
+    and ``makemigrations`` writes it when it adds such a pair to a table
+    that exists.
+    """
+    both = or_(
+        and_(amount.is_(None), currency.is_(None)),
+        and_(amount.is_not(None), currency.is_not(None)),
+    )
+    return CheckConstraint(both, name=f"{name}_money", info={CHECK: name})
 
 
 class MoneyColumns:
@@ -84,11 +115,7 @@ class MoneyColumns:
         )
         self.constraints: tuple[CheckConstraint, ...] = ()
         if nullable:
-            both = or_(
-                and_(self.amount.is_(None), self.currency.is_(None)),
-                and_(self.amount.is_not(None), self.currency.is_not(None)),
-            )
-            self.constraints = (CheckConstraint(both, name=f"{name}_money"),)
+            self.constraints = (money_check(name, self.amount, self.currency),)
 
     def __iter__(self) -> Iterator[SchemaItem]:
         """The amount column, the currency column, and the check if nullable."""
@@ -123,16 +150,65 @@ def money_properties(table: Table, given: Mapping[str, Any]) -> dict[str, Any]:
             )
         properties[f"_{name}_{AMOUNT}"] = columns[AMOUNT]
         properties[f"_{name}_{CURRENCY}"] = columns[CURRENCY]
-        properties[name] = composite(_money, columns[AMOUNT], columns[CURRENCY])
+        properties[name] = composite(
+            _money,
+            columns[AMOUNT],
+            columns[CURRENCY],
+            comparator_factory=MoneyComparator,
+        )
     return properties
 
 
-def _money(amount: Decimal | None, currency: Currency | None) -> Money | None:
-    """The money two columns hold; None where the amount is missing.
+class MoneyComparator(Composite.Comparator[Money]):
+    """Compare a mapped money attribute as money: within its currency.
 
-    A check keeps a currency from being stored without its amount.
+    ``Wallet.balance == m`` is both columns equal, ``!=`` its negation
+    (true of no money), ``Wallet.balance < m`` the currency equal and the
+    amount less, as ``domainkit.ddd.query`` and ``Money`` compare;
+    ``== None`` is a missing amount. Without it, SQLAlchemy would compare
+    each column on its own: ``balance < 100 AND balance_currency < 'USD'``
+    (SEC-14a-2).
     """
-    return None if amount is None else Money(amount, currency)  # type: ignore[arg-type]
+
+    def _compare(
+        self,
+        operator: OperatorType,
+        other: Any,  # noqa: ANN401 - money, or None.
+    ) -> ColumnElement[bool]:
+        """The comparison of both columns with ``other``.
+
+        Raises:
+            TypeError: ``other`` is not money (None only with ``==`` and ``!=``).
+        """
+        amount, code = self._comparable_elements
+        if other is None and operator in _EQUALITY:
+            missing = amount.is_(None)
+            return missing if operator is operators.eq else not_(missing)
+        if not isinstance(other, Money):
+            raise TypeError(f"Money compares with Money, not {type(other).__name__}.")
+        same = code == other.currency
+        equal = and_(same, amount == other.amount)
+        if operator is operators.eq:
+            return equal
+        if operator is operators.ne:  # As in Python: no money is other money.
+            return or_(amount.is_(None), not_(equal))
+        return and_(same, operator(amount, other.amount))
+
+
+def _money(amount: Decimal | None, currency: Currency | None) -> Money | None:
+    """The money two columns hold; None where both are missing.
+
+    Raises:
+        IncompleteMoney: One of the two is missing.
+    """
+    if amount is None and currency is None:
+        return None
+    if amount is None or currency is None:
+        raise IncompleteMoney(
+            "A row holds an amount without its currency, or a currency without "
+            "its amount; add the pair's check (money_check) and repair the row."
+        )
+    return Money(amount, currency)
 
 
 def money_columns(mapper: Mapper[Any], name: str) -> tuple[Column[Any], ...] | None:

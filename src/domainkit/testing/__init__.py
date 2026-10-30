@@ -94,6 +94,7 @@ from domainkit.ddd import event_bus
 from domainkit.http import get_asgi_application
 from domainkit.log import flush_logs, reset_throttled
 from domainkit.management.base import run_async
+from domainkit.money import currencies_kept
 from domainkit.reporting import flush_reports
 
 from . import blocking
@@ -278,6 +279,7 @@ def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object
     they hold. Once the domains are loaded (``registry.ready``), the
     subscriptions, tasks, and refreshers the test adds are dropped after
     it; the test that loads them keeps what their ``ready()`` registered.
+    Currencies a test registers before then are dropped after it too.
     A test marked ``allow_database`` reaches the databases from its first
     fixture to its last teardown, as 0.12 let it; they are not put back
     first. A hook, not autouse fixtures: each of those costs every test.
@@ -294,6 +296,8 @@ def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object
         stack.callback(kept.stack.close)
         if registry.ready:
             kept.keep()
+        else:  # Currencies registered by hand; the domains' ready() keeps its own.
+            stack.enter_context(currencies_kept(unless=lambda: registry.ready))
         if item.get_closest_marker(ALLOW_DATABASE_MARK) is not None:
             stack.enter_context(DatabaseBlocker().unblock())
         return (yield)

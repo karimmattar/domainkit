@@ -97,6 +97,27 @@ def test_a_test_s_subscriptions_tasks_and_refreshers_end_with_it(
     run_plugin(pytester).assert_outcomes(passed=3)
 
 
+def test_a_currency_registered_before_the_domains_load_ends_with_its_test(
+    prefix: str, pytester: pytest.Pytester
+) -> None:
+    """A test that never loads the domains leaves no currency to the next."""
+    pytester.makepyfile(
+        test_currency="""
+        from domainkit.apps import registry
+        from domainkit.money import currencies, register_currency
+
+        def test_registers():
+            assert not registry.ready
+            register_currency("PTS", minor_units=0)
+
+        def test_sees_none():
+            assert "PTS" not in [each.code for each in currencies()]
+        """
+    )
+
+    run_plugin(pytester).assert_outcomes(passed=2)
+
+
 def test_registrations_made_by_the_first_setup_stay(
     prefix: str, pytester: pytest.Pytester
 ) -> None:

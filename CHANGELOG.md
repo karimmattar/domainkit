@@ -136,39 +136,44 @@ and a status.
 
 - `messages --dead` lists a dead letter without a recorded error, where it
   raised `IndexError` (TEST-07).
+- **Breaking:** an amount (`ExactDecimal`, money's amount column)
+  multiplied or divided by a bound parameter was counted as an amount on
+  SQLite: `amount * bindparam("r")` with 0.1 gave 9950.0000 for 9.95, and
+  `amount / bindparam("r")` was as wrong. A bound parameter or a value is
+  now a factor, sent to SQLite as exact billionths, so `amount * 0.1` of
+  three cents is 0.003, not 0.0030000000000000004; an integer column
+  divides as a real number, not by integer division. A factor has at most
+  9 places: one with more is refused rather than rounded (TEST-07).
 
 ### Security
 
-- A key left with held messages and none pending is released. Only the
-  transaction that finishes a key's message made the next one pending, so
-  a 0.13 worker that finished a message 0.14 wrote during a rolling deploy
-  left the rest of its key, and every later message of it, waiting for
-  good. Each cleanup round (`prune_keys`) now makes the first held message
-  of such a key pending, under the key's turn, through the ordering index,
-  and logs it; `messages --release` (`admin.release_stalled`) does it at
-  once. The upgrade guide says to stop 0.13 workers before 0.14 processes
-  write keyed messages (SEC-14c-3).
-- `messages --retry` puts a dead letter of a key back where the docs said:
-  before the key's pending message too, while no worker has started it and
-  no relay holds it for the broker, which is held again behind it. It
-  went after any pending message, so a message promoted when the older
-  one died ran first (SEC-14c-1).
-- `@ordered("name")` on a task must name one of the task's arguments (or
-  the task takes `**kwargs`): `@task` and `@periodic` refuse it with
-  `ImproperlyConfigured`, before or after `@ordered`. A misspelt name left
-  every message without a key, unordered, and nothing said so
-  (SEC-14c-2).
-- `messages --cancel`, the listings and the lag judge a lease by the
-  earlier of the process's clock and, on PostgreSQL, the database's, which
-  locks it: a host whose clock ran ahead could cancel a running message
-  and start the next of its key beside it. `--retry` makes messages due by
-  the database's clock (SEC-14c-4).
-- An ordering key no outbox can store, longer than 255 characters or
-  holding a NUL character, is refused with `ValueError` where it is given
-  (`uow.defer`, `enqueue`, `DeferredTask`), not by the database at commit;
-  the docs say to namespace keys, never to take them raw from a request,
-  and to keep personal data out of them, as erasure and export do not
-  reach them (SEC-14c-2).
+- A money condition through child entities is one condition on one
+  child: `F("lines.price") >= Money.of("100", "USD")` holds for an order
+  with a line priced in USD at 100 or more, in memory and in one SQL
+  `EXISTS`, `in_` and `range` too, and so does a `FilterSet` filter of
+  `lines.price` with its amounts and `<name>_currency`. Its currency and
+  its amount went through the lines each on its own, so an order of 1 USD
+  and 1000 EUR matched (SEC-14a-1).
+- The money attribute `map_imperatively` maps compares as money in
+  SQLAlchemy's own queries: `Wallet.balance < Money.of("100", "USD")` is
+  the currency equal and the amount less, `==` both columns, `!=` its
+  negation (true of no money), and `== None` a missing amount; anything
+  but money is a `TypeError`. It compared each column on its own, so `<
+  100 USD` found 10 EUR (SEC-14a-2).
+- `makemigrations` writes the both-or-neither check of a nullable money
+  field added to a table that exists (in batch mode on SQLite), and
+  `table_for` derives it when only the amount column is given
+  (`money_check`). A row holding half a pair all the same fails to load
+  with `IncompleteMoney`, not a `TypeError` (SEC-14a-3).
+- Money is immutable against a second `__init__`, as `Currency` is; a
+  `Currency` made by hand is checked against the known one of its code,
+  so `Money` and `CurrencyCode` refuse one with other units
+  (`UnknownCurrency`); an amount past 38 digits, a product's too, is a
+  `MoneyError` (422), not a `ValueError` (500); and the test plugin drops
+  the currencies a test registers before any domain is loaded. The
+  transfer `startaggregate` writes, and `docs/databases.md`, say what a
+  project adds to it: idempotency, and a rule on who may move the money.
+  The security review's notes on money (FIN-01).
 - `contrib.accounting`: the sources that start with `accounting.` are the
   ledger's own, and `post_entry` (`POST /entries`, `defer_entry`) refuses
   them (`invalid_entry`). A caller who could post entries could take a
@@ -206,7 +211,36 @@ and a status.
   code): the example takes an opaque code, with the person in `holder`
   alone. `docs/privacy.md` says what erasure keeps: codes, names,
   references, descriptions, and memos as written (SEC-14b-5).
-
+- A key left with held messages and none pending is released. Only the
+  transaction that finishes a key's message made the next one pending, so
+  a 0.13 worker that finished a message 0.14 wrote during a rolling deploy
+  left the rest of its key, and every later message of it, waiting for
+  good. Each cleanup round (`prune_keys`) now makes the first held message
+  of such a key pending, under the key's turn, through the ordering index,
+  and logs it; `messages --release` (`admin.release_stalled`) does it at
+  once. The upgrade guide says to stop 0.13 workers before 0.14 processes
+  write keyed messages (SEC-14c-3).
+- `messages --retry` puts a dead letter of a key back where the docs said:
+  before the key's pending message too, while no worker has started it and
+  no relay holds it for the broker, which is held again behind it. It
+  went after any pending message, so a message promoted when the older
+  one died ran first (SEC-14c-1).
+- `@ordered("name")` on a task must name one of the task's arguments (or
+  the task takes `**kwargs`): `@task` and `@periodic` refuse it with
+  `ImproperlyConfigured`, before or after `@ordered`. A misspelt name left
+  every message without a key, unordered, and nothing said so
+  (SEC-14c-2).
+- `messages --cancel`, the listings and the lag judge a lease by the
+  earlier of the process's clock and, on PostgreSQL, the database's, which
+  locks it: a host whose clock ran ahead could cancel a running message
+  and start the next of its key beside it. `--retry` makes messages due by
+  the database's clock (SEC-14c-4).
+- An ordering key no outbox can store, longer than 255 characters or
+  holding a NUL character, is refused with `ValueError` where it is given
+  (`uow.defer`, `enqueue`, `DeferredTask`), not by the database at commit;
+  the docs say to namespace keys, never to take them raw from a request,
+  and to keep personal data out of them, as erasure and export do not
+  reach them (SEC-14c-2).
 
 ## [0.13.0] - 2026-10-29
 
