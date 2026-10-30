@@ -12,6 +12,7 @@ import json
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, Final
 from uuid import UUID
@@ -28,6 +29,7 @@ from domainkit.apps import DomainConfig, registry
 from domainkit.apps.hooks import Hook, on_erase_subject, on_export_subject
 from domainkit.conf import override_settings
 from domainkit.contrib.audit.tables import audit_log
+from domainkit.contrib.idempotency.operations import Operation, run_operation
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.contrib.messaging import task
 from domainkit.contrib.messaging.admin import retry_dead
@@ -595,3 +597,37 @@ def test_a_body_picked_by_the_project_is_withheld(scenario: Scenario) -> None:
     (delivery,) = exported["copies"]["webhooks"]["deliveries"]
     assert (delivery["body"]["data"], delivery["withheld"]) == (None, True)
     assert DOCTOR_PHONE not in json.dumps(exported)
+
+
+def test_a_keyed_commit_notes_everyone_its_events_are_about(
+    scenario: Scenario,
+) -> None:
+    """Two registrations in one keyed request: both people are noted, not the last."""
+    operation = Operation("k" * 64, "t" * 32)
+
+    async def register_two() -> None:
+        now = clock.now()
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                insert(idempotency_keys).values(
+                    key_hash=operation.key_hash,
+                    fingerprint="f" * 64,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=1),
+                    token=operation.token,
+                    locked_until=now + timedelta(minutes=1),
+                )
+            )
+        patients = [
+            Patient(id=uuid.uuid4(), name=name, registered_at=now)
+            for name in ("Ann", "Bob")
+        ]
+        for patient, email in zip(patients, (EMAIL, OTHER_EMAIL), strict=True):
+            patient.record(PatientRegistered(patient_id=patient.id, email=email))
+        with run_operation(operation):
+            async with PatientsUnitOfWork() as uow:
+                await uow.patients.add_all(patients)
+                await uow.commit()
+        assert operation.subjects == {str(patient.id) for patient in patients}
+
+    run_async(register_two())

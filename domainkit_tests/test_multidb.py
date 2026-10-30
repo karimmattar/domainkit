@@ -21,6 +21,7 @@ from domainkit.conf import UNSET, override_settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.messaging import Worker, periodic
 from domainkit.contrib.messaging.tables import messages
+from domainkit.contrib.messaging.testing import Drained, drain
 from domainkit.db import connections, create_engine
 from domainkit.db import migrations as migrations_module
 from domainkit.db.orm import NAMING_CONVENTION
@@ -288,7 +289,7 @@ async def test_only_the_home_outbox_schedules_periodic_tasks(sharded: Path) -> N
 
 
 def test_runworker_and_messages_cover_every_outbox(sharded: Path) -> None:
-    """Runworker runs every hosting database; messages reads one by alias."""
+    """Runworker runs every hosting database, or the one named; messages reads one."""
     create_tables("default", "shard_a", "shard_b", tables=(messages,))
 
     async def queue(alias: str) -> None:
@@ -316,7 +317,11 @@ def test_runworker_and_messages_cover_every_outbox(sharded: Path) -> None:
     asyncio.run(queue("shard_b"))
 
     assert run("messages", "--database", "shard_a").splitlines()[0] == "pending  1"
-    assert run("runworker", "--once") == "Processed 2 message(s).\n"
+    assert (
+        run("runworker", "--once", "--database", "shard_a")
+        == "Processed 1 message(s).\n"
+    )
+    assert run("runworker", "--once") == "Processed 1 message(s).\n"
     dead = run("messages", "--database", "shard_b", "--dead").splitlines()
     assert len(dead) == 1
     assert "tests.nothing_here" in dead[0]
@@ -324,6 +329,39 @@ def test_runworker_and_messages_cover_every_outbox(sharded: Path) -> None:
         run("runworker", "--once", "--database", "tenants")
         == "Processed 0 message(s).\n"
     )
+
+
+def test_drain_runs_every_outbox(sharded: Path) -> None:
+    """The test plugin's ``drain`` runs each shard's messages, and counts them all."""
+    create_tables("default", "shard_a", "shard_b", tables=(messages,))
+
+    async def queue_and_drain() -> Drained:
+        for alias in ("shard_a", "shard_b"):
+            async with connections.engine(alias).begin() as connection:
+                await connection.execute(
+                    insert(messages).values(
+                        id=uuid.uuid4(),
+                        kind="task",
+                        target="tests.nothing_here",
+                        payload={},
+                        headers={},
+                        status="pending",
+                        attempts=0,
+                        max_attempts=1,
+                        available_at=datetime.now(UTC),
+                        created_at=datetime.now(UTC),
+                    )
+                )
+        try:
+            return await drain()
+        finally:
+            await connections.close_all()
+
+    drained = asyncio.run(queue_and_drain())
+
+    unknown = "UnknownTarget: No task 'tests.nothing_here'."
+    assert drained.ran == 2
+    assert drained.failures == [f"task tests.nothing_here (dead): {unknown}"] * 2
 
 
 @pytest.mark.parametrize(

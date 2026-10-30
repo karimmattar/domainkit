@@ -125,6 +125,12 @@ and a status.
   in the outbox, as it always did, not if one "was ever queued": finished
   messages are deleted after `RETENTION_SECONDS`, and their keys with them
   (FIN-18).
+- The modules money touches (`db.types`, `ddd`, `contrib.idempotency`,
+  `contrib.messaging`, `db.uow`, `db.repository`) were mutated whole on
+  0.13.0: 209 of the mutants that lived are killed by tests of behaviour
+  none pinned, 75 die on PostgreSQL, 176 are equivalent and 84 reach only
+  a server's code; the audit page lists, by module, the 15 left and why,
+  and the 682 not checked (TEST-07).
 
 ## [0.13.0] - 2026-10-29
 

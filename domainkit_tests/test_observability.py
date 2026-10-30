@@ -179,6 +179,7 @@ def test_commits_and_messages_are_traced(database: None) -> None:
 
     spans = EXPORTER.get_finished_spans()
     assert [span.name for span in spans] == ["uow.commit", "message.process"]
+    assert dict(spans[0].attributes or {}) == {"database": "default"}
     assert dict(spans[-1].attributes or {}) == {
         "kind": "task",
         "target": qualified_name(remember),

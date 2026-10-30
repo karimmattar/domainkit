@@ -1,6 +1,7 @@
 """The pytest fixtures for events and queued work (``messaging.testing``)."""
 
 import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from domainkit import clock
+from domainkit.conf import override_settings
 from domainkit.contrib.messaging import chain, enqueue, task
 from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import testing as kit
@@ -17,6 +19,7 @@ from domainkit.ddd import DomainEvent, event_bus
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
+    FAST,
     always_fails,
     durable_handler,
     fails_once,
@@ -300,3 +303,189 @@ async def test_delayed_work_runs_at_the_frozen_time(seen: kit.Outbox) -> None:
         assert seen.run_queued(delayed=True) == 1
     (_, last) = await outbox()
     assert last["finished_at"] == datetime(2030, 1, 1, 2, tzinfo=UTC)
+
+
+@task(name="tests.queues_the_next")
+async def queues_the_next() -> None:
+    """Queue ``after_it``, then note that it ran."""
+    await enqueue(after_it)
+    ran.append("first")
+
+
+@task(name="tests.after_it")
+async def after_it() -> None:
+    """Note that it ran."""
+    ran.append("second")
+
+
+def test_a_field_an_event_lacks_never_matches_none() -> None:
+    """``name=None`` asks for the field to be None, not for it to be missing."""
+    captured = kit.CapturedEvents()
+    asyncio.run(captured.record(GreetingSent(to="ann")))
+
+    with pytest.raises(AssertionError) as missing:
+        captured.assert_published(GreetingSent, nonexistent=None)
+
+    assert str(missing.value) == (
+        "Expected one GreetingSent with {'nonexistent': None}, found 0 among "
+        "['GreetingSent']."
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_queued_messages_keep_their_rows_and_absent_arguments_match_nothing(
+    seen: kit.Outbox,
+) -> None:
+    """A message shows its row's id, time and key; ``name=None`` needs the name."""
+    await enqueue(remember, value=uuid.uuid4(), dedupe_key="once")
+    (row,) = await outbox()
+
+    (message,) = seen.queued()
+    with pytest.raises(AssertionError) as missing:
+        seen.assert_queued(remember, absent=None)
+
+    assert (message.id, message.available_at, message.dedupe_key) == (
+        row["id"],
+        row["available_at"],
+        "once",
+    )
+    assert message.database == "default"
+    assert str(missing.value) == (
+        f"Expected one message of {message.target} with {{'absent': None}}, "
+        f"found 0 among ['{message.target}']."
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_the_sync_form_takes_the_same_options(seen: kit.Outbox) -> None:
+    """Delayed work waits and failures raise, unless asked; rounds are bounded."""
+    await enqueue(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
+    assert seen.run_queued() == 0
+    await enqueue(always_fails)
+    with pytest.raises(kit.QueuedWorkFailed):
+        seen.run_queued()
+    await enqueue(always_fails)
+    assert seen.run_queued(raise_errors=False) == 3
+    await enqueue(again_and_again)
+    with pytest.raises(kit.QueuedWorkFailed) as endless:
+        seen.run_queued(max_rounds=2)
+    assert str(endless.value) == (
+        "Queued work kept coming after 2 rounds (2 runs): does a task queue itself?"
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_work_queued_by_deferred_work_runs_after_it(
+    eager: kit.DeferredExecutor,
+) -> None:
+    """A message committed while one runs waits for it, then runs in the same go."""
+    await enqueue(queues_the_next)
+
+    assert ran == ["first", "second"]
+    assert eager.ran == 2
+
+
+class Hopeless(Exception):
+    """A failure no retry mends."""
+
+
+@task(name="tests.testing.hopeless", max_attempts=5, dont_retry_on=(Hopeless,))
+async def hopeless() -> None:
+    """Fail for good."""
+    raise Hopeless("no point")
+
+
+@task(name="tests.testing.secret", max_attempts=1, sensitive=True)
+async def secret(code: str) -> None:
+    """Fail, holding a secret."""
+    raise RuntimeError("gateway down")
+
+
+@task(name="tests.testing.first")
+async def first_then_urgent() -> None:
+    """Queue an urgent task, then note that it ran."""
+    await enqueue(urgent)
+    ran.append("first")
+
+
+@task(name="tests.testing.second")
+async def second() -> None:
+    """Note that it ran."""
+    ran.append("second")
+
+
+@task(name="tests.testing.urgent", priority=50)
+async def urgent() -> None:
+    """Note that it ran."""
+    ran.append("urgent")
+
+
+@pytest.mark.usefixtures("tables")
+async def test_drain_leaves_delayed_work_unless_asked() -> None:
+    """Without ``delayed``, a message waiting for its time waits."""
+    await enqueue(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
+
+    assert (await kit.drain()).ran == 0
+
+
+@pytest.mark.usefixtures("tables")
+async def test_drain_fails_runs_as_a_worker_does() -> None:
+    """A failure no retry mends dies at once, its error kept, noted once."""
+    await enqueue(hopeless)
+
+    drained = await kit.drain(delayed=True)
+
+    (row,) = await outbox()
+    assert drained.failures == [
+        "task tests.testing.hopeless (dead): Hopeless: no point"
+    ]
+    assert (row["status"], row["attempts"], row["last_error"]) == (
+        DEAD,
+        1,
+        "Hopeless: no point",
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_drain_blanks_a_sensitive_task_that_dies() -> None:
+    """Its arguments are gone from the dead letter, as a worker leaves them."""
+    await enqueue(secret, code="123456")
+
+    await kit.drain()
+
+    (row,) = await outbox()
+    assert (row["status"], row["payload"]) == (DEAD, {})
+
+
+@pytest.mark.usefixtures("tables")
+async def test_drain_runs_rounds_of_a_batch_by_priority() -> None:
+    """Each round claims ``BATCH_SIZE`` by priority: what a run queues may go first."""
+    await enqueue(first_then_urgent)
+    await enqueue(second)
+
+    with override_settings(MESSAGING={**FAST, "BATCH_SIZE": 1}):
+        assert (await kit.drain()).ran == 3
+
+    assert ran == ["first", "urgent", "second"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_chains_next_step_is_seen_in_its_outbox(
+    seen: kit.Outbox, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A step's follow-up is committed, and seen, where the step ran; done, no lock.
+
+    The last step has no follow-up: nothing more is seen, and nothing fails.
+    """
+    await enqueue(chain(add_one, add_one), number=1)
+    drained = await kit.drain()
+
+    assert (drained.ran, drained.failures) == (2, [])
+    assert [each for each in caplog.records if each.levelno >= logging.ERROR] == []
+    first, following = seen.queued()
+    rows = {row["id"]: row for row in await outbox()}
+    assert (first.database, following.database) == ("default", "default")
+    assert following.arguments == {"number": 2}
+    assert {(row["status"], row["locked_until"]) for row in rows.values()} == {
+        (DONE, None)
+    }
