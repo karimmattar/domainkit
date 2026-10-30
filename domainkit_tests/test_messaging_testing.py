@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from domainkit import clock
+from domainkit.conf import override_settings
 from domainkit.contrib.messaging import chain, enqueue, task
 from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import testing as kit
@@ -17,6 +18,7 @@ from domainkit.ddd import DomainEvent, event_bus
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
+    FAST,
     always_fails,
     durable_handler,
     fails_once,
@@ -363,8 +365,11 @@ async def test_the_sync_form_takes_the_same_options(seen: kit.Outbox) -> None:
     await enqueue(always_fails)
     assert seen.run_queued(raise_errors=False) == 3
     await enqueue(again_and_again)
-    with pytest.raises(kit.QueuedWorkFailed, match="kept coming after 2 rounds"):
+    with pytest.raises(kit.QueuedWorkFailed) as endless:
         seen.run_queued(max_rounds=2)
+    assert str(endless.value) == (
+        "Queued work kept coming after 2 rounds (2 runs): does a task queue itself?"
+    )
 
 
 @pytest.mark.usefixtures("tables")
@@ -376,3 +381,87 @@ async def test_work_queued_by_deferred_work_runs_after_it(
 
     assert ran == ["first", "second"]
     assert eager.ran == 2
+
+
+class Hopeless(Exception):
+    """A failure no retry mends."""
+
+
+@task(name="tests.testing.hopeless", max_attempts=5, dont_retry_on=(Hopeless,))
+async def hopeless() -> None:
+    """Fail for good."""
+    raise Hopeless("no point")
+
+
+@task(name="tests.testing.secret", max_attempts=1, sensitive=True)
+async def secret(code: str) -> None:
+    """Fail, holding a secret."""
+    raise RuntimeError("gateway down")
+
+
+@task(name="tests.testing.first")
+async def first_then_urgent() -> None:
+    """Queue an urgent task, then note that it ran."""
+    await enqueue(urgent)
+    ran.append("first")
+
+
+@task(name="tests.testing.second")
+async def second() -> None:
+    """Note that it ran."""
+    ran.append("second")
+
+
+@task(name="tests.testing.urgent", priority=50)
+async def urgent() -> None:
+    """Note that it ran."""
+    ran.append("urgent")
+
+
+@pytest.mark.usefixtures("tables")
+async def test_drain_leaves_delayed_work_unless_asked() -> None:
+    """Without ``delayed``, a message waiting for its time waits."""
+    await enqueue(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
+
+    assert (await kit.drain()).ran == 0
+
+
+@pytest.mark.usefixtures("tables")
+async def test_drain_fails_runs_as_a_worker_does() -> None:
+    """A failure no retry mends dies at once, its error kept, noted once."""
+    await enqueue(hopeless)
+
+    drained = await kit.drain(delayed=True)
+
+    (row,) = await outbox()
+    assert drained.failures == [
+        "task tests.testing.hopeless (dead): Hopeless: no point"
+    ]
+    assert (row["status"], row["attempts"], row["last_error"]) == (
+        DEAD,
+        1,
+        "Hopeless: no point",
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_drain_blanks_a_sensitive_task_that_dies() -> None:
+    """Its arguments are gone from the dead letter, as a worker leaves them."""
+    await enqueue(secret, code="123456")
+
+    await kit.drain()
+
+    (row,) = await outbox()
+    assert (row["status"], row["payload"]) == (DEAD, {})
+
+
+@pytest.mark.usefixtures("tables")
+async def test_drain_runs_rounds_of_a_batch_by_priority() -> None:
+    """Each round claims ``BATCH_SIZE`` by priority: what a run queues may go first."""
+    await enqueue(first_then_urgent)
+    await enqueue(second)
+
+    with override_settings(MESSAGING={**FAST, "BATCH_SIZE": 1}):
+        assert (await kit.drain()).ran == 3
+
+    assert ran == ["first", "urgent", "second"]

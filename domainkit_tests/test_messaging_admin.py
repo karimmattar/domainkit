@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Annotated, Any, Final
+from uuid import UUID
 
 import pytest
 from sqlalchemy import insert
@@ -17,6 +18,7 @@ from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.messaging import MessagingSettings, task
 from domainkit.contrib.messaging import admin as outbox_admin
+from domainkit.contrib.messaging.erasure import erase_subject as erase_queued
 from domainkit.contrib.messaging.erasure import export_subject as export_queued
 from domainkit.contrib.messaging.management.commands.messages import (
     Command as MessagesCommand,
@@ -357,3 +359,44 @@ async def test_an_export_reads_every_outbox(installed: None) -> None:
         ("archive", arguments),
         ("default", arguments),
     ]
+
+
+async def test_an_export_lists_the_oldest_first_then_by_id(installed: None) -> None:
+    """Messages made at one moment come in the order of their ids."""
+    arguments = {"patient_id": "p1", "email": "ann@example.com"}
+    hour, two_hours = NOW - timedelta(hours=1), NOW - timedelta(hours=2)
+    await store(
+        row("tests.admin.greet", payload=arguments, id=UUID(int=3), created_at=hour),
+        row(
+            "tests.admin.greet", payload=arguments, id=UUID(int=4), created_at=two_hours
+        ),
+        row("tests.admin.greet", payload=arguments, id=UUID(int=1), created_at=hour),
+    )
+
+    exported = await export_queued("p1")
+
+    assert [each["id"] for each in exported] == [str(UUID(int=n)) for n in (4, 1, 3)]
+
+
+async def test_an_erasure_blanks_dead_letters_and_counts_every_pending_one(
+    installed: None,
+) -> None:
+    """Pending messages are counted, all of them; a dead one after them is blanked."""
+    arguments = {"patient_id": "p1", "email": "ann@example.com"}
+    await store(
+        row(
+            "tests.admin.greet", payload=arguments, created_at=NOW - timedelta(hours=3)
+        ),
+        row(
+            "tests.admin.greet", payload=arguments, created_at=NOW - timedelta(hours=2)
+        ),
+        row(
+            "tests.admin.greet",
+            payload=arguments,
+            status=DEAD,
+            finished_at=NOW,
+            created_at=NOW - timedelta(hours=1),
+        ),
+    )
+
+    assert await erase_queued("p1") == {"messages": 1, "pending": 2}

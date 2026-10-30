@@ -397,7 +397,10 @@ async def test_workers_of_one_process_share_one_budget() -> None:
 
 @pytest.mark.usefixtures("tables")
 async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages() -> None:
-    """The wait for a slot ends at the stop; running ones get SHUTDOWN_TIMEOUT."""
+    """The wait for a slot ends at the stop; running ones get SHUTDOWN_TIMEOUT.
+
+    Then they are given back to wait again, no longer started.
+    """
     await enqueue(at_gate, name="held")
     budget = WatchedBudget(1)
     config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
@@ -410,7 +413,9 @@ async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages()
     await within(running)
 
     assert gate.finished == []
-    assert [row["status"] for row in await rows()] == [PENDING]
+    assert [(row["status"], row["started_at"]) for row in await rows()] == [
+        (PENDING, None)
+    ]
 
 
 @pytest.mark.usefixtures("tables")
