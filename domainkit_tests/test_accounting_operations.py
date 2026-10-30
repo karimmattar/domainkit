@@ -337,7 +337,17 @@ def test_holds_that_nothing_expires_are_warned_of_where_deployed(
     registry.clear()
     assert [getattr(each, "id", None) for each in found] == warned
     if found:
-        assert "expireholds" in found[0].hint  # type: ignore[attr-defined]
+        assert found[0] == (
+            "Expired holds are not released on a schedule: "
+            "domainkit.contrib.messaging is not installed, so no worker runs the "
+            "expiry, and an expired hold keeps counting against what its account "
+            "has available."
+        )
+        assert found[0].hint == (  # type: ignore[attr-defined]
+            "Install domainkit.contrib.messaging, or run 'manage.py accounting "
+            "expireholds' from a scheduler and list accounting.W003 in "
+            "SILENCED_CHECKS."
+        )
 
 
 @pytest.mark.usefixtures("books")
@@ -754,7 +764,7 @@ async def _tables(alias: str) -> list[str]:
 async def test_verify_finds_a_held_amount_its_holds_do_not_add_up_to() -> None:
     """Each account's ``held`` is the sum of its active holds."""
     await period()
-    card, other = await account("1000"), await account("1001")
+    other, card = await account("1001"), await account("1000")  # Not in order.
     await place_hold(
         PlaceHold(account_id=card.id, amount=usd("3"), source="s", reference="a"),
         AccountingUnitOfWork(),

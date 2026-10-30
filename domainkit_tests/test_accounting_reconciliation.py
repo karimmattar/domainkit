@@ -648,21 +648,31 @@ async def test_a_line_changed_since_its_import_is_refused(changed: str) -> None:
     assert stored == [("b-0", Decimal(5), ""), ("b-1", Decimal(1), "r")]
 
 
+@pytest.mark.parametrize("changed", [0, 4])
 @pytest.mark.usefixtures("books")
-async def test_lines_are_compared_in_batches() -> None:
-    """More lines than one read back holds are each compared."""
+async def test_lines_are_compared_in_batches(changed: int) -> None:
+    """More lines than one read back holds: the first and the last are compared."""
     bank = await account("1000")
-    rows = "".join(f"b-{n},2026-10-15,1,USD,,\n" for n in range(3))
-    await import_statement(bank.id, CsvStatement(HEADER + rows))
+    rows = [f"b-{n},2026-10-15,1,USD,,\n" for n in range(5)]
+    await import_statement(bank.id, CsvStatement(HEADER + "".join(rows)))
+    rows[changed] = f"b-{changed},2026-10-15,2,USD,,\n"
     with (
         pytest.MonkeyPatch.context() as patch,
         refused(InvalidStatement, match="differs"),
     ):
         patch.setattr("domainkit.contrib.accounting.reconciliation.CHECK_BATCH", 2)
-        await import_statement(
-            bank.id,
-            CsvStatement(HEADER + rows.replace("b-2,2026-10-15,1", "b-2,2026-10-15,2")),
-        )
+        await import_statement(bank.id, CsvStatement(HEADER + "".join(rows)))
+
+
+@pytest.mark.usefixtures("books")
+async def test_another_accounts_line_of_the_same_id_is_not_compared() -> None:
+    """Ids are a statement's own: each account's lines are its own."""
+    bank, card = await account("1000"), await account("1001")
+    await import_statement(card.id, CsvStatement(HEADER + "b-1,2026-10-15,9,USD,,\n"))
+    done = await import_statement(
+        bank.id, CsvStatement(HEADER + "b-1,2026-10-15,1,USD,,\n")
+    )
+    assert (done.imported, done.skipped) == (1, 0)
 
 
 class Foreign:
