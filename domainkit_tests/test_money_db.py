@@ -24,7 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import composite
+from sqlalchemy.orm import class_mapper, composite
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -40,6 +40,7 @@ from domainkit.db import (
     table_for,
 )
 from domainkit.db import migrations as migrations_module
+from domainkit.db.fixtures import FixtureError, _decoded_row
 from domainkit.db.money import money_properties
 from domainkit.db.orm import NAMING_CONVENTION
 from domainkit.db.query import compile_ordering
@@ -580,4 +581,56 @@ def test_money_columns_name_their_parts_and_check_the_pair() -> None:
     assert str(check.sqltext.compile(compile_kwargs={"literal_binds": True})) == (
         "tip IS NULL AND tip_currency IS NULL OR "
         "tip IS NOT NULL AND tip_currency IS NOT NULL"
+    )
+
+
+class Till(AggregateRoot[int]):
+    """An aggregate mapped while a test runs, so its mapping can be checked."""
+
+    cash: Money
+    change: Money | None = None
+
+
+async def test_money_is_mapped_when_the_class_is(database: str) -> None:
+    """Each pair is one attribute, its columns under private names."""
+    schema = MetaData()
+    tills = table_for(Till, "framework_test_money_tills", metadata=schema)
+    map_imperatively(Till, tills)
+    mapper = class_mapper(Till)
+
+    assert list(mapper.composites.keys()) == ["cash", "change"]
+    assert mapper.get_property_by_column(tills.c.cash).key == "_cash_amount"
+    assert mapper.get_property_by_column(tills.c.change_currency).key == (
+        "_change_currency"
+    )
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(schema.create_all)
+    async with connections.session() as session:
+        session.add(Till(id=1, cash=money("1.234", "KWD")))
+        await session.commit()
+    async with connections.session() as session:
+        till = await session.get(Till, 1)
+    await connections.close_all()
+
+    assert till is not None
+    assert (till.cash, till.change) == (money("1.234", "KWD"), None)
+
+
+def test_fixtures_check_every_pair_of_a_row() -> None:
+    """A pair left out does not stop the check of the next."""
+    table = Table(
+        "framework_test_money_rows",
+        MetaData(),
+        Column("id", Integer, primary_key=True),
+        *MoneyColumns("tip", nullable=True),
+        *MoneyColumns("total"),
+    )
+    row = {"id": 1, "tip": None, "total": "1.2345", "total_currency": "USD"}
+
+    with pytest.raises(FixtureError) as caught:
+        _decoded_row(table, row)
+
+    assert str(caught.value) == (
+        "framework_test_money_rows.total and total_currency hold no amount of "
+        "money: both are needed, the amount with at most its currency's places."
     )

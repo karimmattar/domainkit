@@ -128,10 +128,11 @@ def money_properties(table: Table, given: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _money(amount: Decimal | None, currency: Currency | None) -> Money | None:
-    """The money two columns hold; None where both are missing."""
-    if amount is None and currency is None:
-        return None
-    return Money(amount, currency)  # type: ignore[arg-type]  # Refuses one missing.
+    """The money two columns hold; None where the amount is missing.
+
+    A check keeps a currency from being stored without its amount.
+    """
+    return None if amount is None else Money(amount, currency)  # type: ignore[arg-type]
 
 
 def money_columns(mapper: Mapper[Any], name: str) -> tuple[Column[Any], ...] | None:

@@ -400,7 +400,8 @@ def test_cursors_of_money_are_bounded_by_its_digits() -> None:
     by_balance = cursor_length((Ordering("balance"),), Wallet)
     by_limit = cursor_length((Ordering("limit"),), Wallet)
 
-    assert by_balance > by_limit  # 18 digits against 12.
+    # ["-12345678901234.5678","ABCDEFGH"] is 35 bytes; 11 more for 18 digits.
+    assert (by_balance, by_limit) == (122, 111)
 
 
 def test_read_schemas_take_money_as_it_is() -> None:

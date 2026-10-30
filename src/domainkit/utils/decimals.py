@@ -18,6 +18,7 @@ infinities.
 import dataclasses
 from collections.abc import Mapping
 from decimal import Decimal
+from functools import cache
 from typing import Any, Final
 
 from pydantic import BaseModel, TypeAdapter
@@ -65,15 +66,16 @@ def _own_schema(value: object) -> Any:  # noqa: ANN401 - JSON values.
     Raises:
         PydanticSerializationError: The class has none: pydantic cannot write it.
     """
-    kind = type(value)
+    kind: Any = type(value)
     if not hasattr(kind, "__get_pydantic_core_schema__"):
         raise PydanticSerializationError(f"Unable to serialize unknown type: {kind}")
-    adapter = _adapters.get(kind) or _adapters.setdefault(kind, TypeAdapter(kind))
-    return adapter.dump_python(value, mode="json")
+    return _adapter(kind).dump_python(value, mode="json")
 
 
-_adapters: dict[type, TypeAdapter[Any]] = {}
-"""The adapter of each class with a schema of its own, made once."""
+@cache
+def _adapter(kind: Any) -> TypeAdapter[Any]:  # noqa: ANN401 - any class.
+    """The adapter of a class with a schema of its own, made once."""
+    return TypeAdapter(kind)
 
 
 def with_decimal_text(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON values.

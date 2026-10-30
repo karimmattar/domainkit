@@ -641,6 +641,7 @@ def test_money_validates_from_and_serialises_to_amount_text_and_currency() -> No
         '{"total":{"amount":"10.500","currency":"KWD"},"fee":null,"unit":"EUR"}'
     )
     assert priced.model_dump()["total"] == priced.total
+    assert priced.model_dump()["unit"] is currency("EUR")
     assert Priced(total=usd("1"), fee={"amount": 2, "currency": "USD"}).fee == usd("2")
     assert Priced.model_validate({"total": usd("3")}).total == usd("3")
     assert TypeAdapter(Money).dump_python(usd("1"), mode="json") == {
