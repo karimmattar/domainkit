@@ -207,6 +207,7 @@ Transactional outbox, durable event handlers, and background tasks.
 - `current_attempt`: The run of the message being processed, or None outside the worker.
 - `enqueue`: Queue `function(**kwargs)` now, in its own transaction.
 - `inbox`: Commit a handler's or task's database work once per message.
+- `ordered`: Run a task's or durable handler's messages one at a time per key, in order.
 - `periodic`: Register an argument-free task that runs on a schedule, cluster-wide.
 - `task`: Register an async function as a background task (`uow.defer(task)`).
 - `tasks_kept`: Put the registered tasks back as they were when the block ends.

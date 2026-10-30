@@ -8,7 +8,9 @@ marked ``inbox`` commits its database work once per message (``runs``).
 Failures are retried with exponential backoff and jitter;
 after ``max_attempts`` the message is dead-lettered and reported. Messages
 are claimed with ``FOR UPDATE SKIP LOCKED`` on PostgreSQL, so any number of
-workers can share one outbox. There is no ordering guarantee between messages.
+workers can share one outbox. Messages with an ordering key run one at a
+time, in the order of their key's commits (``ordering``); there is no order
+between other messages.
 
 A worker outlives database outages: it logs each failure, waits longer each
 time (up to ``OUTAGE_MAX_PAUSE``), and carries on. A message whose outcome
@@ -74,7 +76,7 @@ from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
 from domainkit.utils.module_loading import import_string
 
-from . import dbclock
+from . import dbclock, ordering
 from .budget import Budget
 from .outbox import CHANNEL, message_row, notifies, notify_committed, write
 from .registry import (
@@ -111,6 +113,7 @@ from .tables import (
     FINISHED,
     PENDING,
     SENSITIVE,
+    WAITING,
     messages,
 )
 
@@ -247,6 +250,8 @@ class Claimed:
     attempts: int
     max_attempts: int
     lock_id: uuid.UUID
+    ordering_key: str | None = None
+    """Its key: the next message of the key waits until this one finishes."""
 
 
 _CLAIMED: Final = (
@@ -257,6 +262,7 @@ _CLAIMED: Final = (
     messages.c.headers,
     messages.c.attempts,
     messages.c.max_attempts,
+    messages.c.ordering_key,
 )
 """The columns a claim returns (``Claimed`` without its lock)."""
 
@@ -459,9 +465,16 @@ class Worker:
         self._last_cleanup = float("-inf")
         self._cleanup_batch = self.config.CLEANUP_BATCH_SIZE
         self._prune_batch = self.config.CLEANUP_BATCH_SIZE
+        self._keys_batch = self.config.CLEANUP_BATCH_SIZE
         self._declared: WeakKeyDictionary[Broker, set[str]] = WeakKeyDictionary()
         self._limiter: Backend | None = None
         self._rate_slots: dict[str, float] = {}
+        self._wake: asyncio.Event | None = None
+        self.relay_promoted: Callable[[ordering.Promoted], Awaitable[None]] | None = (
+            None
+        )
+        """Called with each message made pending because the one before it
+        in its key finished here (``BrokerWorkers`` publishes it at once)."""
         for spec in all_tasks():
             if (
                 spec.timeout is not None
@@ -500,7 +513,7 @@ class Worker:
         messages are cleaned up meanwhile, and on PostgreSQL commits wake
         the worker between polls.
         """
-        wake = Wake()
+        wake = self._wake = Wake()
         polls = IdlePolls(self.config)
         running: set[asyncio.Task[None]] = set()
         outage = self.outage()
@@ -956,6 +969,7 @@ class Worker:
             queue=spec.queue if spec else DEFAULT_QUEUE,
             priority=spec.priority if spec else 0,
             dedupe_key=f"chain:{message.id}",
+            ordering_key=message.ordering_key,
         )
 
     def _superseded(self, message: Claimed) -> str:
@@ -976,28 +990,75 @@ class Worker:
         carried, such as a reset link in a mail. Return whether this run
         still held it; if another worker took it over, nothing changes.
         """
+        return await self._finish(
+            message,
+            {"status": DONE, "finished_at": dbclock.now(self.dialect), "payload": {}},
+            follow_up,
+        )
+
+    async def _finish(
+        self,
+        message: Claimed,
+        values: dict[str, object],
+        follow_up: dict[str, Any] | None = None,
+    ) -> bool:
+        """Unlock ``message`` with ``values``, unless another worker reclaimed it.
+
+        With it, in one transaction: the chain's next step, and, when the
+        message leaves its key's line (done or dead), the key's next message
+        made pending (``ordering.promote``), whose workers are woken.
+        Return whether this run still held it.
+        """
+        dialect = self.dialect
         statement = (
             update(messages)
             .where(messages.c.id == message.id, messages.c.lock_id == message.lock_id)
-            .values(
-                locked_until=None,
-                lock_id=None,
-                status=DONE,
-                finished_at=dbclock.now(self.dialect),
-                payload={},
-            )
+            .values(locked_until=None, lock_id=None, **values)
         )
+        leaves = values.get("status") not in WAITING
+        promoted: ordering.Promoted | None = None
         async with self.engine.begin() as connection:
             released = (await connection.execute(statement)).rowcount
             if follow_up is not None and released:
-                await write(connection, connection.dialect.name, [follow_up])
+                await write(connection, dialect, [follow_up])
+            if leaves and released and message.ordering_key is not None:
+                promoted = await ordering.promote(
+                    connection, dialect, message.ordering_key
+                )
+                if (
+                    promoted is not None
+                    and dialect == "postgresql"
+                    and notifies(self.config)
+                ):
+                    await connection.execute(
+                        select(func.pg_notify(CHANNEL, promoted.queue))
+                    )
         if follow_up is not None and released:
             # The relay publishes it, on its next poll or sooner where commits
             # notify (``outbox.notifies``); worker processes run no publisher.
             await notify_committed(
                 self.config, self.database, [follow_up], publish=False
             )
+        if promoted is not None:
+            await self._promoted(promoted)
         return bool(released)
+
+    async def _promoted(self, promoted: ordering.Promoted) -> None:
+        """Start ``promoted`` soon: wake this worker's loop, or publish it.
+
+        A failure only delays it: the relay's next round, or the next poll,
+        finds it pending.
+        """
+        if self._wake is not None:
+            self._wake.set()
+        if self.relay_promoted is not None:
+            try:
+                await self.relay_promoted(promoted)
+            except Exception:  # The relay publishes it later.
+                logger.exception(
+                    "Could not publish message %s, next of its key; the relay will",
+                    promoted.id,
+                )
 
     async def _execute(self, message: Claimed, run: Run) -> object:
         """Call the handler or task ``message`` names; return a task's result.
@@ -1128,14 +1189,11 @@ class Worker:
             )
 
     async def _release(self, message: Claimed, **values: object) -> None:
-        """Update ``message`` unless another worker reclaimed it meanwhile."""
-        statement = (
-            update(messages)
-            .where(messages.c.id == message.id, messages.c.lock_id == message.lock_id)
-            .values(locked_until=None, lock_id=None, **values)
-        )
-        async with self.engine.begin() as connection:
-            await connection.execute(statement)
+        """Update ``message`` unless another worker reclaimed it meanwhile.
+
+        A message dead-lettered lets the next message of its key run.
+        """
+        await self._finish(message, values)
 
     async def schedule_periodic(self) -> None:
         """Queue each periodic task once per interval or cron time, across workers.
@@ -1237,6 +1295,23 @@ class Worker:
             pruned += await self._prune_for(outbox, stop)
         return pruned
 
+    async def prune_keys(self) -> int:
+        """Delete the ordering keys no message needs any more; return how many.
+
+        A key's row goes once no message of the key waits or is dead, and it
+        was not written for ``RETENTION_SECONDS``; in batches, as
+        ``cleanup`` deletes messages. A key used again gets a new row.
+        """
+        return await self._prune_keys(None)
+
+    async def _prune_keys(self, stop: asyncio.Event | None) -> int:
+        """Run ``prune_keys``, stopping between batches once ``stop`` is set."""
+        return await self._in_batches(stop, self.keys_statement, "_keys_batch")
+
+    def keys_statement(self, dialect: str, size: int) -> Delete:
+        """The ``DELETE`` of up to ``size`` ordering keys no message needs."""
+        return ordering.idle_keys(dialect, size, self.config.RETENTION_SECONDS)
+
     def inbox_statement(self, dialect: str, size: int) -> Delete:
         """The ``DELETE`` of up to ``size`` inbox rows of finished messages here."""
         return prune_statement(self.database, size)
@@ -1335,18 +1410,19 @@ class Worker:
         return delete(messages).where(messages.c.id.in_(old.scalar_subquery()))
 
     async def run_cleanup_when_due(self) -> None:
-        """Run ``cleanup`` and ``prune_inbox`` every ``CLEANUP_INTERVAL`` seconds.
+        """Run the cleanups every ``CLEANUP_INTERVAL`` seconds.
 
-        ``clean_until`` does this on a schedule of its own; this is for loops
-        of your own.
+        ``cleanup``, ``prune_inbox``, and ``prune_keys``. ``clean_until``
+        does this on a schedule of its own; this is for loops of your own.
         """
         if clock.monotonic() - self._last_cleanup >= self.config.CLEANUP_INTERVAL:
             self._last_cleanup = clock.monotonic()
             await self.cleanup()
             await self.prune_inbox()
+            await self.prune_keys()
 
     async def clean_until(self, stop: asyncio.Event) -> None:
-        """Run ``cleanup`` and ``prune_inbox`` soon, then often, until ``stop``.
+        """Run ``cleanup``, ``prune_inbox``, and ``prune_keys`` until ``stop``.
 
         Each run comes ``CLEANUP_INTERVAL`` after the last; the first comes
         after ``CLEANUP_START`` (or ``CLEANUP_INTERVAL``, if shorter) times a
@@ -1372,6 +1448,7 @@ class Worker:
             try:
                 deleted = await self._clean(stop)
                 pruned = await self._prune(stop)
+                keys = await self._prune_keys(stop)
             except Exception as exc:  # noqa: BLE001 - logged; it runs again.
                 await failures.failed(exc, stop)
                 continue
@@ -1387,6 +1464,10 @@ class Worker:
                     "Deleted %d handled message id(s) from the inbox of %r",
                     pruned,
                     self.database,
+                )
+            if keys:
+                logger.info(
+                    "Deleted %d idle ordering key(s) from %r", keys, self.database
                 )
             with suppress(TimeoutError):
                 async with asyncio.timeout(self.config.CLEANUP_INTERVAL):

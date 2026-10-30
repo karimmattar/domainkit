@@ -9,6 +9,41 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- Ordering keys for messaging: messages that share a key run one at a
+  time, in the order their commits happened, across every worker and
+  replica, while other keys run beside them. `uow.defer(...,
+  ordering_key=...)` and `enqueue(..., ordering_key=...)` give one;
+  `@ordered("name")` or `@ordered(function)` declares how a task or a
+  durable handler derives it from its arguments or its event. A failing
+  message holds its key while it is retried, as does a worker that died
+  until its lease ends; a dead-lettered one lets the key go on, and
+  `messages --retry` puts it back in its place. The outbox holds a key's
+  later messages back (`held`), so the claim and its index are unchanged
+  (0.12 ms where a check in the claim took 515 ms behind 50,000 waiting
+  messages of one key), and through RabbitMQ only each key's first is
+  published, the next by the consumer that finished it. Writers of a key
+  take turns on its row in `domainkit_ordering_keys`; under `REPEATABLE
+  READ` a stale snapshot fails and `run` retries it. `messages --held`
+  lists the held messages (`docs/contrib/messaging.md`, ADR 0118) (FIN-19).
+- `check` warns (`blocking.W002`) about event handlers and messaging tasks
+  written as `def`: awaited on the event loop, they hold every request and
+  message of the process while they work, then fail. `EventBus.subscriptions()`
+  lists every subscription (FIN-19).
+
+### Changed
+
+- **Breaking:** messaging's outbox has two new columns, `ordering_key` and
+  `sequence`, a `held` status, and an index, and messaging a new table,
+  `domainkit_ordering_keys`: run `makemigrations` and `migrate` before
+  deploying, as workers claim through the new columns. `messages` counts
+  `held` messages on a line of its own (FIN-19).
+- `uow.defer`'s `dedupe_key` drops a task while a message with that key is
+  in the outbox, as it always did, not if one "was ever queued": finished
+  messages are deleted after `RETENTION_SECONDS`, and their keys with them
+  (FIN-18).
+
 ## [0.13.0] - 2026-10-29
 
 A minor release. It removes what 0.12 deprecated: the hook methods of

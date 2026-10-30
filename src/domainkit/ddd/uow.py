@@ -94,6 +94,8 @@ class DeferredTask:
     kwargs: Mapping[str, object] = field(default_factory=dict)
     delay: timedelta | None = None
     dedupe_key: str | None = None
+    ordering_key: str | None = None
+    """Messages with one key run one at a time, in the order of their commits."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,13 +218,20 @@ class UnitOfWork(ABC):
         *,
         delay: timedelta | None = None,
         dedupe_key: str | None = None,
+        ordering_key: str | None = None,
         **kwargs: object,
     ) -> None:
         """Run ``function(**kwargs)`` in the background once this work commits.
 
-        ``dedupe_key`` drops the task if one with the same key was ever queued.
+        ``dedupe_key`` drops the task if a message with the same key is still
+        in the outbox (finished ones are deleted after
+        ``MESSAGING.RETENTION_SECONDS``). Messages with the same
+        ``ordering_key`` run one at a time, in the order of their commits
+        (it wins over the key the task declares, ``ordered``).
         """
-        self._deferred.append(DeferredTask(function, kwargs, delay, dedupe_key))
+        self._deferred.append(
+            DeferredTask(function, kwargs, delay, dedupe_key, ordering_key)
+        )
 
     async def __aenter__(self) -> Self:
         """Begin the unit of work: its repositories hold to what it expects.

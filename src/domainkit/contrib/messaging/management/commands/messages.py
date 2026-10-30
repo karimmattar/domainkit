@@ -33,6 +33,7 @@ class Command(BaseCommand):
         listing = parser.add_mutually_exclusive_group()
         for state, text in (
             ("pending", "list waiting messages, in the order workers take them"),
+            ("held", "list messages waiting for an earlier one of their key"),
             ("locked", "list running and published messages"),
             ("dead", "list dead letters"),
         ):
@@ -154,6 +155,11 @@ def _line(row: Any, state: State, now: datetime) -> str:  # noqa: ANN401 - a row
     if state == "dead":
         error = (row.last_error or "").splitlines()[0][:120]
         return f"{row.id}  {row.kind} {row.target}  x{row.attempts}  {error}"
+    if state == "held":
+        return (
+            f"{row.id}  {row.kind} {row.target}  queue={row.queue} "
+            f"key={row.ordering_key}  x{row.attempts}/{row.max_attempts}"
+        )
     when = row.locked_until if state == "locked" else row.available_at
     return (
         f"{row.id}  {row.kind} {row.target}  queue={row.queue} "

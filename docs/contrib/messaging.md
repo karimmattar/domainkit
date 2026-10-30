@@ -43,7 +43,8 @@ locked for `VISIBILITY_TIMEOUT`. If its worker dies, another claims it again.
 Handlers and tasks must therefore be idempotent, or mark themselves
 `@inbox` so their database work commits once
 ([below](#once-in-the-database-the-inbox)). Order between messages is
-not guaranteed.
+not guaranteed, unless they share an ordering key
+([below](#one-at-a-time-per-key-ordering-keys)).
 
 **Failures** are retried with exponential backoff and jitter, up to
 `max_attempts`. Then the message is dead-lettered and sent to
@@ -233,6 +234,85 @@ message runs it. A run without a commit that finishes after losing its
 lease changes nothing either. On another database there is no lease row
 to check: mark such a handler `@inbox`. Let `LeaseLost` propagate.
 
+## One at a time per key: ordering keys
+
+Messages that share an ordering key run one at a time, in the order their
+commits happened, across every worker and replica of the outbox. Messages
+of other keys, and messages without one, run beside them as before. Give
+a key when queueing, or declare how a task or durable handler derives it:
+
+```python
+from domainkit.contrib.messaging import ordered, task
+
+
+uow.defer(post_entry, account_id=account.id, ordering_key=f"account:{account.id}")
+await enqueue(push_status, payment_id=payment.id, ordering_key=str(payment.id))
+
+
+@task
+@ordered("account_id")  # the argument's value is the key; before or after @task
+async def post_entry(account_id: UUID, amount: Decimal) -> None: ...
+
+
+@ordered(lambda event: f"payment:{event.payment_id}")  # or "payment_id"
+async def send_status(event: PaymentEvent) -> None: ...
+
+
+event_bus.subscribe(PaymentEvent, send_status, durable=True)
+```
+
+- **The key.** A string of 1 to 255 characters; another value (a UUID, a
+  number) is turned into one, and a declared key that comes out `None`
+  leaves the message without one. `ordering_key=` wins over the declared
+  key. Keys are shared by every task and handler of an outbox: a payment's
+  status webhook and its ledger posting with one key run in one line. Put
+  the target's name in the key to give it a line of its own. A chain's
+  steps carry its first step's key.
+- **Commit order.** Two transactions that write messages of one key take
+  turns on the key (each writes its row in `domainkit_ordering_keys`
+  first, and holds it until it commits), so their messages take places
+  in the order of the commits, whatever the clocks say. A `REPEATABLE
+  READ` or `SERIALIZABLE` unit of work whose snapshot is older than the
+  key's last turn fails with a serialization failure instead of deciding
+  on what it saw; `uow.run` runs it again.
+- **Only the first waits to run.** The first unfinished message of a key is
+  `pending`, and the ones after it are `held`: no worker claims them and
+  no relay publishes them. When the first finishes, the worker that
+  recorded it makes the next `pending` in the same transaction, and starts
+  it (its own loop, `NOTIFY` on PostgreSQL, or, with a broker, by
+  publishing it at once). The claim reads the same index as before, so
+  a key with thousands of held messages costs it nothing (ADR 0118).
+- **A failure holds the key.** A message that fails stays first of its
+  key while it is retried, with its backoff: the key's later messages wait
+  until it succeeds. So do a message over its `rate`, a delayed one (until
+  its time), and the message of a worker that died, until its lease
+  (`VISIBILITY_TIMEOUT`) ends: then it runs again first, and the rest of
+  the key after it, in order.
+- **A dead letter lets the key go on.** Once a message is dead-lettered
+  (after `max_attempts`, at once for `dont_retry_on`, or its worker died
+  during its last attempt), the key's next message runs, and the rest
+  after it. The dead message is out of the line: `messages --retry` puts it
+  back in its place, held before the key's messages still waiting, after
+  the one running if there is one, but the messages that ran meanwhile
+  stay run. A key that must stop at a failure, a ledger's say, gives its
+  task a high `max_attempts` with a capped backoff: the message keeps
+  retrying in place, holding the key, until it succeeds or a fix lets it.
+  Watch for it in the logs and `messages --held`.
+- **Cancelling.** `messages --cancel ID` cancels a held message too;
+  cancelling a key's first message lets the next one run.
+- **What it costs.** A key runs one message at a time, a round trip
+  between each: spread work over keys (per account, per payment), not one
+  key for a whole kind of work. A keyed message costs its commit an upsert
+  of its key's row, and its finish an upsert and an update; messages
+  without a key cost nothing more.
+- **Where it holds.** Within one outbox: messages of one key written to
+  two databases (shards) are two lines. Within one queue's workers too: a
+  key whose messages go to a queue no worker serves waits for one.
+
+`messages` counts held messages, and `messages --held` lists them by key,
+in order. Workers delete a key's row once none of its messages waits or
+is dead and it was not used for `RETENTION_SECONDS`.
+
 ## Queues
 
 Every message belongs to a queue: `default`, or the one its task names
@@ -311,6 +391,10 @@ aio-pika). Then `runworker` works like this:
 - **Losses** cost time, never messages. A worker that dies mid-message
   leaves it to come back after `VISIBILITY_TIMEOUT`; a message RabbitMQ
   lost is published again after `REPUBLISH_AFTER`.
+- **Ordering keys** need nothing of RabbitMQ: the outbox holds a key's
+  later messages back, so only its first is ever published, and the
+  consumer that finishes it publishes the key's next at once. Any consumer
+  may take any of them; the order holds.
 
 On RabbitMQ, the worker uses one durable direct exchange, `<PREFIX>.work`,
 and a quorum queue per queue, `<PREFIX>.<queue>`, bound by the queue's name.
@@ -390,6 +474,18 @@ again.
 `makemigrations` and `migrate` in each project that installs messaging
 before deploying: until then, workers' cleanup logs a failure each round,
 and `@inbox` handlers fail.
+
+**Upgrading to 0.14.** The outbox gained `ordering_key` and `sequence`
+columns, a `held` status, and an index of keyed messages,
+`ix_domainkit_messages_ordering`; messaging has a new table of keys,
+`domainkit_ordering_keys`, in every database that holds an outbox. Run
+`makemigrations` and `migrate` in each project that installs messaging
+before deploying: workers claim through the new columns. Adding the
+columns rewrites nothing; building the index reads the outbox once, and
+adds no entry, since no existing message has a key. For an outbox too
+large to block writes that long, build it without blocking, as for the
+cleanup index above (`postgresql_concurrently=True` in an
+`autocommit_block()`).
 
 ## Task options
 
@@ -529,6 +625,8 @@ options list messages without their arguments:
 
 - `--pending`: messages waiting, in the order workers take them (`due` or
   `scheduled`);
+- `--held`: messages waiting for an earlier one of their ordering key, by
+  key and in order;
 - `--locked`: messages a worker is running (`running`) or a relay has
   handed to the broker (`published`);
 - `--dead`: dead letters; `--retry ID` (or `all`) queues them again, except
@@ -537,7 +635,8 @@ options list messages without their arguments:
 - `--queue NAME` and `--limit N` narrow a listing.
 
 `messages --cancel ID` cancels a message no worker is running: a waiting
-one, or one on its way through the broker (its delivery is then skipped).
+or held one, or one on its way through the broker (its delivery is then
+skipped).
 A running message is refused. A cancelled message never runs, nor does the
 rest of its chain; it is kept as `cancelled`, without its arguments, and
 deleted after `RETENTION_SECONDS`. Retries and cancels are recorded in the
@@ -574,7 +673,7 @@ Its fixtures work in sync and async tests:
 | Fixture | Gives |
 | --- | --- |
 | `captured_events` | The domain events published after commits: `captured_events.of_type(UserCreated)`, `.assert_published(UserCreated, username="ann")`, `.assert_not_published(...)`. |
-| `outbox` | The messages committed during the test: `outbox.queued(send_welcome)`, `.assert_queued(send_welcome, user_id=user.id)`, `.assert_not_queued(...)`. `outbox.run_queued()`, or `await outbox.arun_queued()`, runs the due ones here as a worker would, chained steps included, until none is left; `delayed=True` runs delayed messages and retries too. A failed run raises `QueuedWorkFailed`. |
+| `outbox` | The messages committed during the test, each with its `ordering_key`: `outbox.queued(send_welcome)`, `.assert_queued(send_welcome, user_id=user.id)`, `.assert_not_queued(...)`. `outbox.run_queued()`, or `await outbox.arun_queued()`, runs the due ones here as a worker would, chained steps included, until none is left; `delayed=True` runs delayed messages and retries too. A failed run raises `QueuedWorkFailed`. |
 | `execute_deferred` | Each commit's messages run right after it commits, before `commit()` returns. Failures are kept in `execute_deferred.failures` and fail the test at its end unless the test clears them. |
 
 ```python

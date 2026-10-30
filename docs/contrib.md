@@ -6,7 +6,7 @@ configured by one setting, a dictionary whose keys are all optional.
 
 | App | Setting | Tables |
 | --- | --- | --- |
-| `domainkit.contrib.messaging` | `MESSAGING` | `domainkit_messages`, `domainkit_inbox` |
+| `domainkit.contrib.messaging` | `MESSAGING` | `domainkit_messages`, `domainkit_inbox`, `domainkit_ordering_keys` |
 | `domainkit.contrib.webhooks` | `WEBHOOKS` | `domainkit_webhook_subscriptions`, `_deliveries`, `_attempts` |
 | `domainkit.contrib.audit` | `AUDIT` | `domainkit_audit_log` |
 | `domainkit.contrib.idempotency` | `IDEMPOTENCY` | `domainkit_idempotency_keys` |
@@ -18,7 +18,7 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.objectpermissions` | none | `domainkit_object_permissions`, in every database that hosts a domain; see [auth.md](auth/users.md#grants-on-single-objects) |
 
 With several databases ([databases.md](databases.md)), the outbox, its
-inbox, and the audit trail commit with business data, so their tables are
+inbox and ordering keys, and the audit trail commit with business data, so their tables are
 created in every database that hosts a domain. The idempotency table stays in its own
 `DATABASE`.
 
