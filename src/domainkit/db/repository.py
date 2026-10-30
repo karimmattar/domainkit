@@ -24,6 +24,7 @@ from domainkit.ddd import AggregateRoot, Repository
 from domainkit.ddd.fields import InvalidQuery, fields_of
 from domainkit.ddd.query import ID, Criteria, CriteriaLike, Selection
 from domainkit.ddd.repository import LockNotAvailable
+from domainkit.money import Money
 
 LOCK_NOT_AVAILABLE: Final = "55P03"
 """PostgreSQL's SQLSTATE for a row lock that ``NOWAIT`` would not wait for."""
@@ -131,8 +132,10 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
                 continue
             coerced = fields[name].coerce(value)
             amount, code = (
-                (None, None) if coerced is None else coerced.__composite_values__()
-            )  # type: ignore[attr-defined]
+                coerced.__composite_values__()
+                if isinstance(coerced, Money)
+                else (None, None)
+            )
             changes[mapper.get_property_by_column(money[0]).key] = amount
             changes[mapper.get_property_by_column(money[1]).key] = code
         if not changes:
