@@ -468,7 +468,7 @@ async def test_bulk_updates_check_what_they_set(tables: None) -> None:
         ({"id": uuid4()}, "cannot set 'id'"),
         ({"version": 3}, "cannot set 'version'"),
         ({"nope": 3}, "cannot set 'nope'"),
-        ({}, "at least one value"),
+        ({}, r"^update_rows needs at least one value to set\.$"),
         ({"stock": "many"}, "holds int, not str"),
         ({"parts": []}, "is not a mapped column"),
     ]
@@ -476,6 +476,17 @@ async def test_bulk_updates_check_what_they_set(tables: None) -> None:
         for values, message in cases:
             with pytest.raises(InvalidQuery, match=message):
                 await uow.gadgets.update_rows(None, **values)
+
+
+async def test_bulk_updates_leave_soft_deleted_rows_unless_asked(tables: None) -> None:
+    """update_rows sets live rows; soft-deleted ones too with include_deleted."""
+    live, gone = make_gadget("live"), make_gadget("gone")
+    gone.mark_deleted()
+    await store(live, gone)
+    async with GadgetsUnitOfWork() as uow:
+        assert await uow.gadgets.update_rows(None, stock=1) == 1
+        assert await uow.gadgets.update_rows(None, include_deleted=True, stock=2) == 2
+        await uow.commit()
 
 
 async def test_bulk_deletes_remove_rows_for_good(tables: None) -> None:

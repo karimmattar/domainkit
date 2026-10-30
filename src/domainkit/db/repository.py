@@ -130,9 +130,11 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
                 changes[name] = fields[name].coerce(value)
                 continue
             coerced = fields[name].coerce(value)
-            parts = (None, None) if coerced is None else coerced.__composite_values__()  # type: ignore[attr-defined]
-            for column, part in zip(money, parts, strict=True):
-                changes[mapper.get_property_by_column(column).key] = part
+            amount, code = (
+                (None, None) if coerced is None else coerced.__composite_values__()
+            )  # type: ignore[attr-defined]
+            changes[mapper.get_property_by_column(money[0]).key] = amount
+            changes[mapper.get_property_by_column(money[1]).key] = code
         if not changes:
             raise InvalidQuery("update_rows needs at least one value to set.")
         version = mapper.version_id_col

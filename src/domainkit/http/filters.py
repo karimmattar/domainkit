@@ -316,10 +316,12 @@ def _currency_parameters(
     """
     currencies: dict[str, str] = {}
     filters = dict(cls.filters)
-    for each in declared:
-        field = filters[each.parameter(each.lookups[0])][2]
-        if field.kind is not Money:
-            continue
+    money = [
+        each
+        for each in declared
+        if filters[each.parameter(each.lookups[0])][2].kind is Money
+    ]
+    for each in money:
         name = f"{each.name}{CURRENCY}"
         if name in filters:
             raise TypeError(
@@ -327,9 +329,8 @@ def _currency_parameters(
                 f"{each.name}; name the other filter otherwise."
             )
         path = f"{each.field}.currency"
-        currency = Filter(field=path, max_length=8)
-        currency.name = name
-        filters[name] = (currency, Lookup.EXACT, resolve(cls.model, path)[-1])
+        *_, part = resolve(cls.model, path)
+        filters[name] = (Filter(field=path, max_length=8), Lookup.EXACT, part)
         currencies[each.name] = name
     cls.filters = filters
     return currencies

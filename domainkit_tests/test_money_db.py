@@ -559,3 +559,25 @@ def test_makemigrations_writes_money_columns_that_apply(
         assert f"sa.Column({column})" in upgrade
     assert "ck_framework_test_money_purses_limit_money" in text
     assert "domainkit" not in upgrade  # Revisions never import domain code.
+
+
+def test_money_columns_name_their_parts_and_check_the_pair() -> None:
+    """Made as a test runs: the names, the parts, nullability, and the check."""
+    required = MoneyColumns("total")
+    missing = MoneyColumns("tip", 12, 2, nullable=True)
+
+    assert required.name == "total"
+    assert (required.amount.name, required.currency.name) == ("total", "total_currency")
+    assert required.amount.info == {"money": ("total", "amount")}
+    assert required.currency.info == {"money": ("total", "currency")}
+    assert (required.amount.nullable, required.currency.nullable) == (False, False)
+    assert required.constraints == ()
+    assert list(required) == [required.amount, required.currency]
+    assert (missing.amount.nullable, missing.currency.nullable) == (True, True)
+    assert missing.amount.type.scale == 2  # type: ignore[attr-defined]
+    (check,) = missing.constraints
+    assert check.name == "tip_money"
+    assert str(check.sqltext.compile(compile_kwargs={"literal_binds": True})) == (
+        "tip IS NULL AND tip_currency IS NULL OR "
+        "tip IS NOT NULL AND tip_currency IS NOT NULL"
+    )

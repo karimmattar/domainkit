@@ -16,7 +16,7 @@ from domainkit.http.access import Public
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet
 from domainkit.http.pagination import Pagination, cursor_length
-from domainkit.money import Money
+from domainkit.money import Currency, Money
 from domainkit.resources import ALL_FIELDS, ResourceRouter, schema_for
 from domainkit.testing import AsyncTestClient
 from domainkit_tests.conftest import UseAuth
@@ -179,6 +179,27 @@ async def test_money_a_column_cannot_hold_is_refused_before_the_database(
 
     assert response.status_code == 422, response.json()
     assert [error["type"] for error in response.json()["errors"]] == [kind]
+    if kind == "money_digits":
+        assert response.json()["errors"][0]["msg"] == (
+            "The amount has more digits than this field holds."
+        )
+
+
+async def test_the_most_digits_a_column_holds_are_taken(
+    client: AsyncTestClient,
+) -> None:
+    """14 digits before the point of the default column, 10 of Digits(12, 2)."""
+    created = await client.post(
+        "/wallets",
+        json={
+            "name": "full",
+            "balance": {"amount": "9" * 14 + ".99", "currency": "USD"},
+            "limit": {"amount": "9" * 10 + ".99", "currency": "USD"},
+        },
+    )
+
+    assert created.status_code == 201, created.json()
+    assert created.json()["balance"]["amount"] == "9" * 14 + ".99"
 
 
 async def test_a_limit_of_more_places_than_its_column_fits_when_they_are_zeros(
@@ -337,6 +358,29 @@ async def test_openapi_names_one_money_schema_and_the_currency_parameters(
     assert "balance__gte" in parameters
     assert "limit_currency" in parameters
     assert "unit_currency" not in parameters
+
+
+def test_money_filters_after_other_filters_have_their_currency() -> None:
+    """Each money filter of a set brings its currency, wherever it is declared."""
+
+    class Later(FilterSet):
+        model = Wallet
+        name = Filter()
+        unit = Filter()
+        limit = Filter("lte")
+        balance = Filter("gte")
+
+    assert Later.currencies == {
+        "limit": "limit_currency",
+        "balance": "balance_currency",
+    }
+    currency, lookup, part = Later.filters["balance_currency"]
+    assert (currency.field, lookup, part.name, part.kind) == (
+        "balance.currency",
+        "exact",
+        "currency",
+        Currency,
+    )
 
 
 def test_a_currency_filter_name_cannot_be_taken() -> None:

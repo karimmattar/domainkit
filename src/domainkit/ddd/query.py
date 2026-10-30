@@ -859,23 +859,23 @@ def _beyond(
 ) -> Criteria | None:
     """Criteria for values that sort after ``value``; None if nothing does."""
     if descending:
-        return name.isnull(value=False) if value is None else _past(name, value, -1)
+        return name.isnull(value=False) if value is None else _past(name, value, True)
     if value is None:
         return None
-    after = _past(name, value, 1)
+    after = _past(name, value, False)
     return after | name.isnull() if nullable else after
 
 
-def _past(name: F, value: object, direction: int) -> Criteria:
-    """Present values past ``value``: greater (``direction`` 1) or less (-1).
+def _past(name: F, value: object, descending: bool) -> Criteria:
+    """Present values past ``value``: greater, or less if ``descending``.
 
     Money sorts by currency, then amount: past 10 USD are the amounts in
     USD above 10, and every amount in a currency whose code sorts after.
     """
     if not isinstance(value, Money):
-        return name > value if direction > 0 else name < value
+        return name < value if descending else name > value
     code, amount = F(f"{name.name}.currency"), F(f"{name.name}.amount")
-    if direction > 0:
+    if not descending:
         return (code > value.currency) | (
             (code == value.currency) & (amount > value.amount)
         )
