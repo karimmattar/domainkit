@@ -10,7 +10,9 @@ builds pydantic models, so a field is declared once, in the domain::
     ProductOut.from_domain(product)
 
 Single-field value objects become what they wrap, with their limits
-(``MaxLength`` is ``maxLength``, ``Digits`` the digits of an amount); ids
+(``MaxLength`` is ``maxLength``, ``Digits`` the digits of an amount);
+money is ``{"amount": "10.50", "currency": "USD"}``, and a write schema
+refuses an amount its columns cannot hold; ids
 (``NewType`` over ``UUID``) and ``Reference[XId]`` become their id type;
 enums keep their values; other value objects and child entities nest. A
 read schema lists every field, required, and gets ``from_domain``; a write
@@ -43,6 +45,7 @@ from typing import (
 )
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -50,6 +53,7 @@ from pydantic import (
     PlainSerializer,
     create_model,
 )
+from pydantic_core import PydanticCustomError
 
 from domainkit.ddd.fields import (
     Digits,
@@ -65,6 +69,7 @@ from domainkit.ddd.fields import (
 from domainkit.ddd.messages import UNSET, Unset
 from domainkit.ddd.model import ValueObject
 from domainkit.ddd.repository import DELETED_AT
+from domainkit.money import Money
 from domainkit.utils.decimals import decimal_text
 
 GENERATED: Final = frozenset({"id", "version", DELETED_AT})
@@ -272,11 +277,33 @@ def _scalar(field: FieldInfo, kind: type, hint: object, *, write: bool) -> Any: 
             Field(max_digits=digits.precision, decimal_places=digits.scale),
             FIXED_POINT,
         ]
+    if write and kind is Money:
+        digits = field.marker(Digits) or Digits(18, 4)  # MoneyColumns' default.
+        return Annotated[Money, AfterValidator(_held_in(digits))]
     if write and kind is int:
         return Annotated[int, Field(ge=-INT64, lt=INT64)]
     if write and kind is datetime:
         return AwareDatetime
     return hint if kind in {list, tuple, dict} else kind
+
+
+def _held_in(digits: Digits) -> Callable[[Money], Money]:
+    """A check that an amount fits ``digits``, as its column holds it."""
+    whole = digits.precision - digits.scale
+    places = Decimal(1).scaleb(-digits.scale)
+
+    def held(money: Money) -> Money:
+        amount = money.amount
+        if (not amount.is_zero() and amount.adjusted() >= whole) or (
+            amount.quantize(places) != amount  # Past the whole digits, it fits.
+        ):
+            raise PydanticCustomError(
+                "money_digits",
+                "The amount has more digits than this field holds.",
+            )
+        return money
+
+    return held
 
 
 def _as_list(hint: object) -> Any:  # noqa: ANN401 - a type.
