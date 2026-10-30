@@ -444,9 +444,11 @@ async def test_update_rows_sets_money(tables: None) -> None:
     await store(*items)
 
     async with WalletsUnitOfWork() as uow:
+        held = await uow.wallets.get(items[0].id)
         changed = await uow.wallets.update_rows(
             F("balance.currency") == "USD", balance=money("1.00", "EUR"), limit=None
         )
+        assert (held.balance, held.limit) == (money("1.00", "EUR"), None)
         await uow.commit()
     async with WalletsUnitOfWork() as uow:
         euros = await uow.wallets.filter(
