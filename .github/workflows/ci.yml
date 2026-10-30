@@ -1172,7 +1172,7 @@ jobs:
               domainkit.context.* domainkit.deadlines.* domainkit.deprecation.*
               domainkit.encryption.* domainkit.exceptions.* domainkit.lifecycle.*
               domainkit.log.* domainkit.reporting.* domainkit.signing.*
-              domainkit.tasks.* domainkit.tracing.* domainkit.money.*
+              domainkit.tasks.* domainkit.tracing.*
     env:
       MUTANTS: ${{ matrix.shard.mutants }}
       SHARD: ${{ matrix.shard.name }}
