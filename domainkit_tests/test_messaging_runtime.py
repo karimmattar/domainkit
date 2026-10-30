@@ -421,6 +421,24 @@ async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages()
 
 
 @pytest.mark.usefixtures("tables")
+async def test_a_running_message_may_finish_within_a_short_shutdown_timeout() -> None:
+    """A SHUTDOWN_TIMEOUT under a second is waited for: what ends in it is done."""
+    await enqueue(at_gate, name="ending")
+    config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.9})
+    stop = asyncio.Event()
+    running = asyncio.create_task(Worker(config).run(stop))
+    await gate.until(lambda: gate.started == ["ending"])
+
+    stop.set()
+    await asyncio.sleep(0.1)  # The worker is waiting for it to finish.
+    gate.open()
+    await within(running)
+
+    assert gate.finished == ["ending"]
+    assert [row["status"] for row in await rows()] == [DONE]
+
+
+@pytest.mark.usefixtures("tables")
 async def test_a_failed_schedule_is_logged_with_its_error(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -2943,6 +2961,47 @@ async def test_deliveries_are_given_back_once_consuming_stopped(
     delivery, answers = answers_recorded()
     await within(never.give_back(delivery))  # Consuming never stopped: given up.
     assert answers == []
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_delivery_takes_over_its_own_message_at_its_moment() -> None:
+    """Due this very moment, it runs; a lock ending this very moment still holds.
+
+    Taking one message over starts it under a lock of its own, and leaves the
+    other messages as the relay published them.
+    """
+    worker = Worker()
+    with clock.freeze_time("2040-01-01T00:00:00Z"):
+        now = clock.now()
+        for _ in range(2):
+            await enqueue(remember, value=uuid.uuid4())
+        await worker.relay(MemoryBroker(), 10)
+        first, second = await rows()
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(messages)
+                .where(messages.c.id == first["id"])
+                .values(locked_until=now)
+            )
+
+        stale = await worker.take_over(first["id"], uuid.uuid4())
+        claimed = await worker.take_over(first["id"], first["lock_id"])
+
+    assert stale is None
+    assert claimed is not None
+    after = {row["id"]: row for row in await rows()}
+    taken, other = after[first["id"]], after[second["id"]]
+    assert (taken["lock_id"], taken["started_at"], taken["attempts"]) == (
+        claimed.lock_id,
+        now,
+        1,
+    )
+    assert claimed.lock_id is not None
+    assert (other["lock_id"], other["started_at"], other["attempts"]) == (
+        second["lock_id"],
+        None,
+        0,
+    )
 
 
 @pytest.mark.usefixtures("broker_tables")
