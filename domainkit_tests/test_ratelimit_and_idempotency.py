@@ -1528,7 +1528,7 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
     assert getattr(refused, "id", None) == "idempotency.E002"
     assert getattr(refused, "hint", "") == (
         "Set REQUEST_TIMEOUT below IDEMPOTENCY.LEASE_SECONDS and list "
-        f"{idempotency_apps.DEADLINE_MIDDLEWARE} in MIDDLEWARE; or set "
+        f"{DEADLINE_MIDDLEWARE} in MIDDLEWARE; or set "
         "IDEMPOTENCY.REQUIRE_DEADLINE = False to only warn, as 0.9 did."
     )
     assert (relaxed, only_warned) == ([], message)

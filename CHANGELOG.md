@@ -9,6 +9,15 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- The modules money touches (`db.types`, `ddd`, `contrib.idempotency`,
+  `contrib.messaging`, `db.uow`, `db.repository`) were mutated whole on
+  0.13.0: 209 of the mutants that lived are killed by tests of behaviour
+  none pinned, 75 die on PostgreSQL, 176 are equivalent and 84 reach only
+  a server's code; the audit page lists, by module, the 15 left and why,
+  and the 682 not checked (TEST-07).
+
 ## [0.13.0] - 2026-10-29
 
 A minor release. It removes what 0.12 deprecated: the hook methods of
