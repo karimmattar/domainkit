@@ -439,6 +439,29 @@ async def test_a_running_message_may_finish_within_a_short_shutdown_timeout() ->
 
 
 @pytest.mark.usefixtures("tables")
+async def test_a_failed_cleanup_is_logged_with_its_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log record of a failed cleanup carries the error."""
+    monkeypatch.setattr(worker_module, "CLEANUP_START", 0)
+    worker = Worker(MessagingSettings(**FAST))
+    stop = asyncio.Event()
+    failure = ConnectionError("database down")
+
+    async def broken(stop_cleaning: asyncio.Event) -> int:
+        stop.set()
+        raise failure
+
+    monkeypatch.setattr(worker, "_clean", broken)
+    with caplog.at_level(logging.ERROR, logger=worker_module.__name__):
+        await within(worker.clean_until(stop))
+
+    (record,) = [each for each in caplog.records if each.levelno == logging.ERROR]
+    assert record.exc_info is not None
+    assert record.exc_info[1] is failure
+
+
+@pytest.mark.usefixtures("tables")
 async def test_a_failed_schedule_is_logged_with_its_error(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
