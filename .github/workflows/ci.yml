@@ -1086,14 +1086,14 @@ jobs:
               domainkit.db.dbclock.* domainkit.db.derive.* domainkit.db.drivers.*
               domainkit.db.fixtures.* domainkit.db.migrations.* domainkit.db.orm.*
               domainkit.db.query.* domainkit.db.repository.* domainkit.db.uow.*
-              domainkit.ledger.*
+              domainkit.ledger.* domainkit.db.money.*
               domainkit.db.models.*
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*
               domainkit.db.partitioning.* domainkit.db.routing.*
               domainkit.db.snapshots.* domainkit.db.squashing.* domainkit.db.types.*
-              domainkit.storage.*
+              domainkit.storage.* domainkit.money.*
           - name: messaging
             mutants: >-
               domainkit.contrib.messaging.* domainkit.broker.*

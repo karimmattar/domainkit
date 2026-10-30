@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import DateTime, Integer, Numeric
+from sqlalchemy import DateTime, Integer, Numeric, String
 from sqlalchemy.engine import Dialect
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql import operators
@@ -14,6 +14,8 @@ from sqlalchemy.sql.operators import OperatorType
 from sqlalchemy.sql.selectable import FromClause
 from sqlalchemy.sql.visitors import InternalTraversal
 from sqlalchemy.types import TypeDecorator, TypeEngine
+
+from domainkit.money import Currency, currency
 
 MAX_DIGITS: Final = 18
 """The most digits an ``ExactDecimal`` holds: any 18 fit SQLite's 64-bit integers."""
@@ -352,3 +354,33 @@ class _Factor(TypeDecorator[Decimal]):
         if value is None or dialect.name != "sqlite":
             return value
         return float(value)
+
+
+class CurrencyCode(TypeDecorator[Currency]):
+    """A currency, stored as its code (``"USD"``) and read back as the ``Currency``.
+
+    Values are a ``Currency`` or a code; a code no currency has is refused
+    (``UnknownCurrency``), on the way in and on the way out, so a
+    registered currency must be registered before its rows are read.
+    Comparisons and ``ORDER BY`` compare the codes.
+    """
+
+    impl = String(8)  # The longest code: three letters for ISO 4217, eight registered.
+    cache_ok = True
+
+    @property
+    def python_type(self) -> type[Currency]:
+        """``Currency``."""
+        return Currency
+
+    def process_bind_param(
+        self, value: Currency | str | None, dialect: Dialect
+    ) -> str | None:
+        """The code of a known currency."""
+        return None if value is None else currency(value).code
+
+    def process_result_value(
+        self, value: str | None, dialect: Dialect
+    ) -> Currency | None:
+        """The currency of the stored code."""
+        return None if value is None else currency(value)
