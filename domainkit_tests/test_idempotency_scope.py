@@ -271,6 +271,19 @@ def test_refuse_keeps_keys_of_known_callers(database_url: str) -> None:
     assert len(keys) == 5
 
 
+@pytest.mark.parametrize("cookie", ["consent=yes;session=s", "session=c2Vzc2lvbg=="])
+def test_a_session_cookie_names_its_caller_however_it_is_written(
+    database_url: str, cookie: str
+) -> None:
+    """Cookies apart without a space, and a value holding ``=``, still name one."""
+    with keyed_app(
+        database_url, ANONYMOUS="refuse", SESSION_COOKIES=("session",)
+    ) as client:
+        response = post(client, {"n": 1}, Cookie=cookie)
+
+    assert response.status_code == 201
+
+
 @pytest.mark.parametrize(
     "cookie", ["consent=yes", "consent=yes; locale=en", "sessions=s", "x=session"]
 )

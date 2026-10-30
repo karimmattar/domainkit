@@ -288,7 +288,7 @@ async def test_only_the_home_outbox_schedules_periodic_tasks(sharded: Path) -> N
 
 
 def test_runworker_and_messages_cover_every_outbox(sharded: Path) -> None:
-    """Runworker runs every hosting database; messages reads one by alias."""
+    """Runworker runs every hosting database, or the one named; messages reads one."""
     create_tables("default", "shard_a", "shard_b", tables=(messages,))
 
     async def queue(alias: str) -> None:
@@ -316,7 +316,11 @@ def test_runworker_and_messages_cover_every_outbox(sharded: Path) -> None:
     asyncio.run(queue("shard_b"))
 
     assert run("messages", "--database", "shard_a").splitlines()[0] == "pending  1"
-    assert run("runworker", "--once") == "Processed 2 message(s).\n"
+    assert (
+        run("runworker", "--once", "--database", "shard_a")
+        == "Processed 1 message(s).\n"
+    )
+    assert run("runworker", "--once") == "Processed 1 message(s).\n"
     dead = run("messages", "--database", "shard_b", "--dead").splitlines()
     assert len(dead) == 1
     assert "tests.nothing_here" in dead[0]

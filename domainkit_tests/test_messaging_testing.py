@@ -300,3 +300,79 @@ async def test_delayed_work_runs_at_the_frozen_time(seen: kit.Outbox) -> None:
         assert seen.run_queued(delayed=True) == 1
     (_, last) = await outbox()
     assert last["finished_at"] == datetime(2030, 1, 1, 2, tzinfo=UTC)
+
+
+@task(name="tests.queues_the_next")
+async def queues_the_next() -> None:
+    """Queue ``after_it``, then note that it ran."""
+    await enqueue(after_it)
+    ran.append("first")
+
+
+@task(name="tests.after_it")
+async def after_it() -> None:
+    """Note that it ran."""
+    ran.append("second")
+
+
+def test_a_field_an_event_lacks_never_matches_none() -> None:
+    """``name=None`` asks for the field to be None, not for it to be missing."""
+    captured = kit.CapturedEvents()
+    asyncio.run(captured.record(GreetingSent(to="ann")))
+
+    with pytest.raises(AssertionError) as missing:
+        captured.assert_published(GreetingSent, nonexistent=None)
+
+    assert str(missing.value) == (
+        "Expected one GreetingSent with {'nonexistent': None}, found 0 among "
+        "['GreetingSent']."
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_queued_messages_keep_their_rows_and_absent_arguments_match_nothing(
+    seen: kit.Outbox,
+) -> None:
+    """A message shows its row's id, time and key; ``name=None`` needs the name."""
+    await enqueue(remember, value=uuid.uuid4(), dedupe_key="once")
+    (row,) = await outbox()
+
+    (message,) = seen.queued()
+    with pytest.raises(AssertionError) as missing:
+        seen.assert_queued(remember, absent=None)
+
+    assert (message.id, message.available_at, message.dedupe_key) == (
+        row["id"],
+        row["available_at"],
+        "once",
+    )
+    assert str(missing.value) == (
+        f"Expected one message of {message.target} with {{'absent': None}}, "
+        f"found 0 among ['{message.target}']."
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_the_sync_form_takes_the_same_options(seen: kit.Outbox) -> None:
+    """Delayed work waits and failures raise, unless asked; rounds are bounded."""
+    await enqueue(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
+    assert seen.run_queued() == 0
+    await enqueue(always_fails)
+    with pytest.raises(kit.QueuedWorkFailed):
+        seen.run_queued()
+    await enqueue(always_fails)
+    assert seen.run_queued(raise_errors=False) == 3
+    await enqueue(again_and_again)
+    with pytest.raises(kit.QueuedWorkFailed, match="kept coming after 2 rounds"):
+        seen.run_queued(max_rounds=2)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_work_queued_by_deferred_work_runs_after_it(
+    eager: kit.DeferredExecutor,
+) -> None:
+    """A message committed while one runs waits for it, then runs in the same go."""
+    await enqueue(queues_the_next)
+
+    assert ran == ["first", "second"]
+    assert eager.ran == 2

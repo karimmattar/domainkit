@@ -196,6 +196,17 @@ async def test_fractional_products_come_back_in_their_shortest_form(
     assert tuple(found) == (Decimal("2.331"), Decimal("2.331"))
 
 
+async def test_a_missing_factor_gives_a_missing_amount(engine: AsyncEngine) -> None:
+    """``amount * None`` and ``amount / None`` are NULL, as in SQL."""
+    await stored(engine, {"id": 1, "amount": Decimal("9.95")})
+    amount = prices.c.amount
+
+    found = await scalars(engine, select(amount * None))
+    divided = await scalars(engine, select(amount / None))
+
+    assert (found, divided) == ([None], [None])
+
+
 async def test_updates_go_through_the_type(engine: AsyncEngine) -> None:
     """Adding an amount and multiplying by a whole number stay exact."""
     await stored(engine, {"id": 1, "amount": Decimal("10.05")})
