@@ -1,6 +1,7 @@
 """The pytest fixtures for events and queued work (``messaging.testing``)."""
 
 import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
@@ -465,3 +466,25 @@ async def test_drain_runs_rounds_of_a_batch_by_priority() -> None:
         assert (await kit.drain()).ran == 3
 
     assert ran == ["first", "urgent", "second"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_chains_next_step_is_seen_in_its_outbox(
+    seen: kit.Outbox, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A step's follow-up is committed, and seen, where the step ran; done, no lock.
+
+    The last step has no follow-up: nothing more is seen, and nothing fails.
+    """
+    await enqueue(chain(add_one, add_one), number=1)
+    drained = await kit.drain()
+
+    assert (drained.ran, drained.failures) == (2, [])
+    assert [each for each in caplog.records if each.levelno >= logging.ERROR] == []
+    first, following = seen.queued()
+    rows = {row["id"]: row for row in await outbox()}
+    assert (first.database, following.database) == ("default", "default")
+    assert following.arguments == {"number": 2}
+    assert {(row["status"], row["locked_until"]) for row in rows.values()} == {
+        (DONE, None)
+    }

@@ -312,7 +312,7 @@ async def test_a_budget_refuses_impossible_counts() -> None:
     with pytest.raises(ValueError, match=r"^A budget needs at least one slot\.$"):
         Budget(0)
     budget = Budget(1)
-    with pytest.raises(ValueError, match="Acquire at least one slot"):
+    with pytest.raises(ValueError, match=r"^Acquire at least one slot\.$"):
         await budget.acquire(0)
     with pytest.raises(ValueError, match="Cannot give back 1 of 0 slots"):
         budget.release()
