@@ -67,6 +67,7 @@ from domainkit.contrib.messaging.dispatch import (
 )
 from domainkit.contrib.messaging.metrics import refresh_outbox
 from domainkit.contrib.messaging.outbox import message_row, notifies
+from domainkit.contrib.messaging.registry import periodic, spec_for
 from domainkit.contrib.messaging.tables import (
     CANCELLED,
     DEAD,
@@ -78,6 +79,7 @@ from domainkit.contrib.messaging.tables import (
 from domainkit.contrib.messaging.worker import LEASE_MARGIN, Claimed
 from domainkit.db import connections
 from domainkit.db.routing import router
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.lifecycle import Budget as ShutdownBudget
 from domainkit.lifecycle import close_resources
 from domainkit.management import call_command
@@ -747,6 +749,47 @@ async def test_each_failed_publication_is_logged_for_debugging(
         assert await Worker().relay(Refusing(), 10) == 0
 
     assert f"Could not publish {row['id']} to 'default': down" in caplog.messages
+
+
+@pytest.mark.usefixtures("tables")
+async def test_every_failed_publication_is_counted() -> None:
+    """The relay's failed count goes up by each message, not by each round."""
+    for _ in range(2):
+        await enqueue(remember, value=uuid.uuid4())
+
+    class Refusing(MemoryBroker):
+        async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+            raise BrokerUnavailable("down")
+
+    def failed() -> float:
+        labels = {"outcome": "failed"}
+        return REGISTRY.get_sample_value("messaging_relayed_total", labels) or 0.0
+
+    before = failed()
+    assert await Worker().relay(Refusing(), 10) == 0
+
+    assert failed() - before == 2
+
+
+def test_periodic_tasks_say_what_they_need() -> None:
+    """A schedule, given once, and an interval above zero."""
+    for options, message in [
+        ({}, "Periodic tasks need either every= or cron=."),
+        ({"every": timedelta(0)}, "Periodic tasks need a positive interval."),
+    ]:
+        with pytest.raises(ImproperlyConfigured) as refused:
+            periodic(**options)  # type: ignore[arg-type]
+        assert str(refused.value) == message
+
+
+def test_periodic_tasks_run_at_the_default_priority() -> None:
+    """Unless told, a periodic task's messages have priority 0, as tasks' do."""
+
+    @periodic(timedelta(hours=1), name="tests.runtime.hourly")
+    async def hourly() -> None:
+        """Nothing."""
+
+    assert spec_for(hourly).priority == 0
 
 
 @pytest.mark.usefixtures("tables")
