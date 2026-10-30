@@ -461,6 +461,7 @@ def test_a_hold_captured_before_its_expiry_names_its_entry() -> None:
         ("shop", "", "1", 1, InvalidEntry, "reference"),
         ("shop", "h", "0", 1, InvalidAmount, "more than zero"),
         ("shop", "h", "1", 0, InvalidEntry, "expires in the future"),
+        ("shop", "h", "1", 366 * 86400 + 1, InvalidEntry, "within 366 days"),
     ],
 )
 def test_malformed_holds_are_refused(
@@ -478,6 +479,17 @@ def test_malformed_holds_are_refused(
             account, usd(amount), source, reference, NOW + timedelta(seconds=expires)
         )
     assert account.held == Decimal(0)
+
+
+def test_a_hold_lasts_366_days_at_most_and_its_expiry_has_a_time_zone() -> None:
+    """The longest hold is placed; a naive expiry is refused, no crash (SEC-14b-3)."""
+    account = an_account()
+    with freeze_time(NOW):
+        longest = Hold.place(account, usd("1"), "shop", "h", NOW + timedelta(days=366))
+        with refused(InvalidEntry, match="needs a time zone"):
+            Hold.place(account, usd("1"), "shop", "n", datetime(2027, 1, 1))  # noqa: DTZ001
+    assert longest.expires_at == NOW + timedelta(days=366)
+    assert account.held == Decimal(1)
 
 
 def test_a_period_opens_and_closes_once() -> None:

@@ -736,8 +736,8 @@ msgstr "اسم الفترة من ١ إلى ٦٤ حرفًا."
 msgid "A period ends on or after the day it starts."
 msgstr "تنتهي الفترة في يوم بدايتها أو بعده."
 
-msgid "A hold expires in the future."
-msgstr "ينتهي الحجز في المستقبل."
+msgid "A hold expires in the future, within 366 days."
+msgstr "ينتهي الحجز في المستقبل، خلال ٣٦٦ يومًا."
 
 msgid "The hold was captured, released, or has expired."
 msgstr "الحجز حُصِّل أو أُفرج عنه أو انتهى."
@@ -777,6 +777,28 @@ msgstr "لسطرين من الكشف المعرّف نفسه."
 
 msgid "A statement has at most ACCOUNTING.MAX_STATEMENT_LINES lines."
 msgstr "للكشف ACCOUNTING.MAX_STATEMENT_LINES سطرًا على الأكثر."
+
+msgid "The sources that start with 'accounting.' are the ledger's own."
+msgstr "المصادر التي تبدأ بـ 'accounting.' خاصة بدفتر الحسابات نفسه."
+
+msgid "A hold's expiry needs a time zone."
+msgstr "يحتاج موعد انتهاء الحجز إلى منطقة زمنية."
+
+msgid "A statement cannot be read as CSV."
+msgstr "لا يمكن قراءة الكشف بصيغة CSV."
+
+msgid ""
+"A statement line's reference has up to 128 characters, and "
+"its description up to 255."
+msgstr "مرجع سطر الكشف حتى ١٢٨ حرفًا، ووصفه حتى ٢٥٥ حرفًا."
+
+msgid ""
+"A statement line's reference and description have no control "
+"characters."
+msgstr "لا يحوي مرجع سطر الكشف ولا وصفه محارف تحكم."
+
+msgid "A statement line differs from the line imported before under its id."
+msgstr "يختلف سطر الكشف عن السطر المستورد من قبل بمعرّفه نفسه."
 
 #. domainkit.money: amounts and currencies
 msgid "The amount of money is not valid."

@@ -20,7 +20,7 @@ from domainkit.ddd import Command
 from domainkit.money import Money
 
 from .exceptions import HoldNotActive, InvalidAmount, ReferenceReused
-from .ledger import book, config, lock_accounts, run
+from .ledger import book, claim, config, lock_accounts, run
 from .models import (
     ZERO,
     AccountId,
@@ -112,6 +112,8 @@ async def capture_hold(command: CaptureHold, uow: AccountingUnitOfWork) -> Hold:
         HoldNotActive: It was released or has expired.
         InvalidAmount: ``amount`` is more than the hold, or not more than zero.
         NoOpenPeriod, PeriodIsClosed: The date is in no open period.
+        ReferenceReused: An entry was posted under the hold's capture
+            reference (only before ``post_entry`` refused the source).
     """
     hold_id = HoldId(command.hold_id)
     counter = AccountId(command.counter_account_id)
@@ -129,6 +131,9 @@ async def capture_hold(command: CaptureHold, uow: AccountingUnitOfWork) -> Hold:
                 ZERO < amount.amount <= hold.amount
             ):
                 raise InvalidAmount("A capture takes more than zero, up to the hold.")
+            # As ``post``: the entry's lock, then whether one was posted. The
+            # hold is active, so no capture of it was.
+            await claim(uow, CAPTURES, str(hold_id), same=lambda posted: False)
             accounts = await lock_accounts(uow, (hold.account_id, counter))
             held = accounts[hold.account_id]
             entry = Entry.draft(

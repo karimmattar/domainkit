@@ -728,7 +728,7 @@ msgstr ""
 msgid "A period ends on or after the day it starts."
 msgstr ""
 
-msgid "A hold expires in the future."
+msgid "A hold expires in the future, within 366 days."
 msgstr ""
 
 msgid "The hold was captured, released, or has expired."
@@ -768,6 +768,28 @@ msgid "Two statement lines have the same id."
 msgstr ""
 
 msgid "A statement has at most ACCOUNTING.MAX_STATEMENT_LINES lines."
+msgstr ""
+
+msgid "The sources that start with 'accounting.' are the ledger's own."
+msgstr ""
+
+msgid "A hold's expiry needs a time zone."
+msgstr ""
+
+msgid "A statement cannot be read as CSV."
+msgstr ""
+
+msgid ""
+"A statement line's reference has up to 128 characters, and "
+"its description up to 255."
+msgstr ""
+
+msgid ""
+"A statement line's reference and description have no control "
+"characters."
+msgstr ""
+
+msgid "A statement line differs from the line imported before under its id."
 msgstr ""
 
 #. domainkit.money: amounts and currencies

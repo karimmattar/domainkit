@@ -9,6 +9,7 @@ from typing import Final
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
@@ -524,29 +525,58 @@ async def test_a_hold_captured_while_the_sweep_ran_stays_captured() -> None:
 async def test_a_close_waits_for_the_postings_dated_in_its_period() -> None:
     """A posting holds its period shared: the close waits, then later ones see it."""
     october = await period()
-    async with AccountingUnitOfWork() as posting:
+    async with (
+        connections.engine().connect() as watcher,
+        AccountingUnitOfWork() as posting,
+    ):
         assert (await posting.periods.covering(TODAY)) is not None
+        holder = await posting.session.scalar(text("SELECT pg_backend_pid()"))
         closing = asyncio.create_task(
             close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
         )
-        await _until_a_lock_is_awaited()
+        await _until_blocked_by(holder, closing, watcher)
         assert not closing.done()
     closed = await asyncio.wait_for(closing, 30)
     assert closed.status is PeriodStatus.CLOSED
 
 
-async def _until_a_lock_is_awaited() -> None:
-    """Return once a session of the test's database waits for a lock (30 s at most).
+async def _until_blocked_by(
+    holder: int, waiting: asyncio.Task[object], watcher: AsyncConnection
+) -> None:
+    """Return once a session waits for a lock that session ``holder`` holds.
 
-    PostgreSQL tells of the wait only when asked, so it is asked until it does.
+    PostgreSQL tells of the wait only when asked, so ``watcher``, connected
+    before ``waiting`` started, asks until it does, each time in a
+    transaction of its own. Only a session ``holder`` blocks counts, so no
+    other test's database or session can stand in for it. If ``waiting``
+    ends first (refused, or never connected), what ended it is raised; past
+    30 seconds, the failure lists what the database's sessions were doing.
     """
-    waiting = text(
-        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-        "AND wait_event_type = 'Lock'"
+    blocked = text(
+        "SELECT count(*) FROM pg_stat_activity "
+        "WHERE CAST(:holder AS integer) = ANY(pg_blocking_pids(pid))"
     )
-    async with asyncio.timeout(30), connections.engine().connect() as connection:
-        while not await connection.scalar(waiting):  # noqa: ASYNC110 - polls the server.
-            await asyncio.sleep(0.01)
+    deadline = asyncio.get_running_loop().time() + 30
+    while True:
+        found = await watcher.scalar(blocked, {"holder": holder})
+        await watcher.rollback()
+        if found:
+            return
+        if waiting.done():
+            waiting.result()  # What ended it, raised.
+            pytest.fail("The close ended without waiting for the posting.")
+        if asyncio.get_running_loop().time() > deadline:
+            sessions = (
+                await watcher.execute(
+                    text(
+                        "SELECT pid, state, wait_event_type, wait_event, "
+                        "left(query, 60) FROM pg_stat_activity "
+                        "WHERE datname = current_database()"
+                    )
+                )
+            ).all()
+            pytest.fail(f"Nothing waited for session {holder} in 30 s: {sessions}")
+        await asyncio.sleep(0.01)
 
 
 async def test_holds_are_keyed_by_source_and_reference_together() -> None:

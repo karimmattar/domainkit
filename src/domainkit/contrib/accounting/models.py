@@ -46,6 +46,7 @@ from .exceptions import (
     PeriodsOverlap,
     UnbalancedEntry,
 )
+from .settings import LONGEST_HOLD
 
 AccountId = NewType("AccountId", UUID)
 EntryId = NewType("EntryId", UUID)
@@ -582,7 +583,8 @@ class Hold(AggregateRoot[HoldId]):
 
         Raises:
             InvalidEntry: The source or reference is malformed, or
-                ``expires_at`` has passed.
+                ``expires_at`` has no time zone, has passed, or is more than
+                ``LONGEST_HOLD`` (366 days) away.
             InvalidAmount: The amount is not more than zero.
             AccountIsClosed, InsufficientFunds: As ``Account.reserve``.
         """
@@ -595,8 +597,11 @@ class Hold(AggregateRoot[HoldId]):
             raise InvalidEntry("A reference has 1 to 128 printable characters.")
         if amount.amount <= ZERO:
             raise InvalidAmount("An amount is more than zero.")
-        if expires_at <= _now():
-            raise InvalidEntry("A hold expires in the future.")
+        if expires_at.utcoffset() is None:
+            raise InvalidEntry("A hold's expiry needs a time zone.")
+        now = _now()
+        if not now < expires_at <= now + LONGEST_HOLD:
+            raise InvalidEntry("A hold expires in the future, within 366 days.")
         account.reserve(amount)
         hold = cls(
             id=HoldId(uuid4()),
