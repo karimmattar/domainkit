@@ -547,3 +547,18 @@ async def _until_a_lock_is_awaited() -> None:
     async with asyncio.timeout(30), connections.engine().connect() as connection:
         while not await connection.scalar(waiting):  # noqa: ASYNC110 - polls the server.
             await asyncio.sleep(0.01)
+
+
+async def test_holds_are_keyed_by_source_and_reference_together() -> None:
+    """Two sources may use one reference: each places a hold of its own."""
+    card = await account("1000")
+    shop = await place_hold(
+        PlaceHold(account_id=card.id, amount=usd("1"), source="shop", reference="h"),
+        AccountingUnitOfWork(),
+    )
+    cards = await place_hold(
+        PlaceHold(account_id=card.id, amount=usd("2"), source="cards", reference="h"),
+        AccountingUnitOfWork(),
+    )
+    assert shop.id != cards.id
+    assert (await balances())[card.id] == Decimal(0)
