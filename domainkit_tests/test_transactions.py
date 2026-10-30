@@ -889,6 +889,19 @@ async def test_conflicts_are_postgresqls_serialization_failures_and_deadlocks(
     assert not uow._conflicted(Lost())
 
 
+async def test_work_at_an_isolation_level_returns_what_it_committed(
+    tables: None,
+) -> None:
+    """After the commit, the aggregates read as committed, without a database trip."""
+    gadget = make_gadget("kept", stock=3)
+
+    async with GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as uow:
+        await uow.gadgets.add(gadget)
+        await uow.commit()
+
+    assert (gadget.name, gadget.stock) == ("kept", 3)
+
+
 async def test_errors_without_a_sqlstate_are_raised_after_one_run(
     database: str, waits: list[float]
 ) -> None:
