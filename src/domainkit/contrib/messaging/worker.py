@@ -1274,6 +1274,42 @@ class Worker:
         """Run ``cleanup``, stopping between batches once ``stop`` is set."""
         return await self._in_batches(stop, self.cleanup_statement, "_cleanup_batch")
 
+    async def release_stalled(self) -> int:
+        """Make the next message of each stalled key pending; return how many.
+
+        A key is stalled when it has held messages and none pending: no
+        claim would ever take them, and every later message of the key
+        would be held behind them. 0.14 never leaves a key so; a worker of
+        0.13, which does not know held messages, does, when it finishes a
+        message 0.14 wrote (SEC-14c-3). Each key is repaired under its
+        turn, as a worker that finishes would, and logged.
+        """
+        return await self._release_stalled(None)
+
+    async def _release_stalled(self, stop: asyncio.Event | None) -> int:
+        """Run ``release_stalled``, stopping between batches once ``stop`` is set."""
+        size = self.config.CLEANUP_BATCH_SIZE
+        released = 0
+        while stop is None or not stop.is_set():
+            async with self.engine.connect() as connection:
+                keys = await ordering.stalled_keys(connection, size)
+            before = released
+            for key in keys:
+                async with self.engine.begin() as connection:
+                    promoted = await ordering.promote(connection, self.dialect, key)
+                if promoted is not None:
+                    released += 1
+                    logger.warning(
+                        "Made message %s pending: its ordering key had held "
+                        "messages and none pending (a worker before 0.14 "
+                        "finished the one before?)",
+                        promoted.id,
+                    )
+                    await self._promoted(promoted)
+            if len(keys) < size or released == before:
+                break
+        return released
+
     async def prune_inbox(self) -> int:
         """Delete the inbox rows of messages that finished; return how many.
 
@@ -1301,11 +1337,15 @@ class Worker:
         A key's row goes once no message of the key waits or is dead, and it
         was not written for ``RETENTION_SECONDS``; in batches, as
         ``cleanup`` deletes messages. A key used again gets a new row.
+
+        First, each key left with held messages and none pending gets its
+        next message made pending (``release_stalled``).
         """
         return await self._prune_keys(None)
 
     async def _prune_keys(self, stop: asyncio.Event | None) -> int:
         """Run ``prune_keys``, stopping between batches once ``stop`` is set."""
+        await self._release_stalled(stop)
         return await self._in_batches(stop, self.keys_statement, "_keys_batch")
 
     def keys_statement(self, dialect: str, size: int) -> Delete:

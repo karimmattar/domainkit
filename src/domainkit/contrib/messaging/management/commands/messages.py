@@ -1,4 +1,8 @@
-"""``messages``: inspect the outbox, retry dead letters, cancel waiting work."""
+"""``messages``: inspect the outbox, retry dead letters, cancel waiting work.
+
+``--release`` repairs ordering keys left with held messages and none
+pending, as each worker's cleanup does.
+"""
 
 import uuid
 from argparse import ArgumentParser
@@ -14,6 +18,7 @@ from domainkit.contrib.messaging.admin import (
     list_messages,
     queue_counts,
     queue_lag,
+    release_stalled,
     retry_dead,
     state_of,
 )
@@ -53,6 +58,14 @@ class Command(BaseCommand):
             "--cancel", metavar="ID", help="cancel a message no worker is running"
         )
         parser.add_argument(
+            "--release",
+            action="store_true",
+            help=(
+                "run the next message of each ordering key left with held "
+                "messages and none pending"
+            ),
+        )
+        parser.add_argument(
             "--database",
             help="the outbox's alias (default: MESSAGING.DATABASE)",
         )
@@ -66,10 +79,18 @@ class Command(BaseCommand):
         retry: str | None,
         cancel: str | None,
         database: str | None,
+        release: bool = False,
         **options: object,
     ) -> None:
         """Print what was asked for."""
         config = registry.settings(MessagingSettings)
+        if release:
+            async with self.recorded(
+                "messages.release", database=database or config.DATABASE
+            ) as action:
+                action["released"] = released = await release_stalled(config, database)
+            self.write(f"Released {released} stalled key(s).")
+            return
         if retry is not None:
             message_id = None if retry == "all" else _message_id(retry, "or 'all'")
             await self._retry(config, message_id, database)
@@ -153,7 +174,7 @@ def _message_id(text: str, alternative: str = "") -> uuid.UUID:
 def _line(row: Any, state: State, now: datetime) -> str:  # noqa: ANN401 - a row.
     """One listed message, without its arguments."""
     if state == "dead":
-        error = (row.last_error or "").splitlines()[0][:120]
+        error = next(iter((row.last_error or "").splitlines()), "")[:120]
         return f"{row.id}  {row.kind} {row.target}  x{row.attempts}  {error}"
     if state == "held":
         return (

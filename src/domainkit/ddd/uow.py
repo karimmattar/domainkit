@@ -86,6 +86,27 @@ class ReadOnlyError(RuntimeError, DomainkitError):
     """A read-only unit of work was asked to commit."""
 
 
+MAX_ORDERING_KEY: Final = 255
+"""The longest ordering key, in characters (``domainkit.contrib.messaging``)."""
+
+
+def checked_ordering_key(key: str) -> str:
+    """``key``, if it can be an ordering key: 1 to 255 characters, no NUL.
+
+    Raises:
+        ValueError: it cannot; the message says why, without the key.
+    """
+    if not isinstance(key, str):
+        raise ValueError(f"An ordering key is a string, not {type(key).__name__}.")
+    if not 0 < len(key) <= MAX_ORDERING_KEY:
+        raise ValueError(
+            f"An ordering key has 1 to {MAX_ORDERING_KEY} characters, not {len(key)}."
+        )
+    if "\x00" in key:
+        raise ValueError("An ordering key cannot hold a NUL character.")
+    return key
+
+
 @dataclass(frozen=True, slots=True)
 class DeferredTask:
     """Background work queued by ``UnitOfWork.defer``."""
@@ -96,6 +117,15 @@ class DeferredTask:
     dedupe_key: str | None = None
     ordering_key: str | None = None
     """Messages with one key run one at a time, in the order of their commits."""
+
+    def __post_init__(self) -> None:
+        """Refuse an ordering key no outbox can store, where it is given.
+
+        Raises:
+            ValueError: ``ordering_key`` is empty, too long, or holds NUL.
+        """
+        if self.ordering_key is not None:
+            checked_ordering_key(self.ordering_key)
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +258,10 @@ class UnitOfWork(ABC):
         ``MESSAGING.RETENTION_SECONDS``). Messages with the same
         ``ordering_key`` run one at a time, in the order of their commits
         (it wins over the key the task declares, ``ordered``).
+
+        Raises:
+            ValueError: ``ordering_key`` is empty, longer than 255
+                characters, or holds a NUL character.
         """
         self._deferred.append(
             DeferredTask(function, kwargs, delay, dedupe_key, ordering_key)

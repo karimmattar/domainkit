@@ -1,6 +1,6 @@
 # 0118. Run a key's messages in commit order by holding the later ones in the outbox
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-30 (at the end)
 - Date: 2026-10-30
 - Amends: [0005](0005-transactional-outbox.md)
 
@@ -139,3 +139,49 @@ when the next waited for the relay's poll (`POLL_INTERVAL`, 1 s).
 - `check` warns (`blocking.W002`) about event handlers and tasks written as
   `def`, which hold the event loop, and so every key the process runs,
   then fail.
+
+## Amendment (2026-10-30): after the security review of 0.14
+
+The review (SEC-14c) found four gaps; each is closed as follows.
+
+- **A key can stall (SEC-14c-3).** Only the transaction that finishes a
+  key's message made the next one pending. A process that does not know
+  the `held` status finishes a message without that: a 0.13 worker during
+  the rolling deploy this release's upgrade asks for, or an operator's own
+  `UPDATE`. The key's held messages then wait for good, and every later
+  message of the key is held behind them. Each worker's cleanup round
+  (`prune_keys`) now finds keys with held messages and none pending,
+  through the ordering index, and promotes each one's first under the
+  key's turn, logging the message; `messages --release` does the same
+  at once. The upgrade guide asks to stop 0.13 workers before 0.14
+  processes write keyed messages; the repair covers what slips through.
+- **Where a retried dead letter goes (SEC-14c-1).** The decision said it
+  goes "before the key's messages still waiting", but the code held it
+  behind any pending message, so a message promoted when the older one
+  died, and not yet started, ran first. Under the key's turn, a pending
+  message of the key that comes after the dead one, that no worker has
+  started (`started_at`) and no relay holds for the broker (a live lock),
+  is held again, its expired lock cleared, and the dead one becomes
+  pending. One a relay holds keeps its turn: its pointer may be in a
+  queue, and a consumer would run it whatever its status; holding it
+  back would leave a stale pointer the consumer skips, and the message
+  locked until `REPUBLISH_AFTER`. So a retried dead letter goes after
+  the message under way (running, or handed to the broker), as before.
+- **A misnamed key (SEC-14c-2).** `@ordered("name")` on a task whose
+  arguments do not include `name` (nor `**kwargs`) is refused when the
+  task registers, or when it is marked if it registered first. Keys no
+  outbox can store (over 255 characters, or holding NUL) are refused where
+  they are given.
+- **Two clocks (SEC-14c-4).** Operator queries (`cancel`, the listings,
+  the lag) judged leases by the process's clock, while workers lock by the
+  database's on PostgreSQL. `dbclock.now` alone does not settle it: it
+  follows a frozen clock in tests, and a host's clock is not the
+  database's. A lease now counts as alive while either clock says so (the
+  earlier of the two, `admin.lease_now`): an operator's host whose clock
+  runs ahead never cancels a running message.
+
+An index on the keys' `touched_at`, for the cleanup of idle keys, was
+measured and left out: at a million keys the cleanup's batch takes 78 ms
+without it and 12 ms with it, once a `CLEANUP_INTERVAL`, while every write
+and finish of a keyed message updates `touched_at`, which the index would
+make a non-HOT update with an index entry of its own.

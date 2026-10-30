@@ -5,6 +5,7 @@ from the database. Events and task arguments travel as JSON, validated
 against the event class or the task signature on the way back.
 """
 
+import inspect
 import math
 import re
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
@@ -20,6 +21,7 @@ from pydantic import TypeAdapter, validate_call
 from domainkit.apps import registry
 from domainkit.conf.global_settings import NAME_PATTERN
 from domainkit.ddd import DomainEvent, EventBus
+from domainkit.ddd.uow import MAX_ORDERING_KEY, checked_ordering_key
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.decimals import jsonable, with_decimal_text
 from domainkit.utils.rates import parse_rate
@@ -87,11 +89,43 @@ def checked_queue(queue: str | None) -> str:
 
 
 def _register(spec: TaskSpec) -> None:
-    """Add ``spec``, refusing two different functions under one key."""
+    """Add ``spec``, refusing two different functions under one key.
+
+    A key the task declares by name (``ordered``) must name one of its
+    arguments (SEC-14c-2).
+    """
     existing = _tasks.get(spec.key)
     if existing is not None and existing.function is not spec.function:
         raise ImproperlyConfigured(f"Two tasks are registered as {spec.key!r}.")
+    _check_key_argument(spec.function, spec.key)
     _tasks[spec.key] = spec
+
+
+def _check_key_argument(function: Task, name: str) -> None:
+    """Refuse a task whose ``ordered`` key names none of its arguments.
+
+    Such a key would be None for every message, which leaves them without
+    a key: they would run in parallel, in any order, and nothing would say
+    so. A task that takes ``**kwargs`` may be given any argument.
+    """
+    source = _marked.get(function)
+    if not isinstance(source, str):
+        return
+    parameters = inspect.signature(function).parameters.values()
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (parameter.name == source and parameter.kind is not _POSITIONAL)
+        for parameter in parameters
+    ):
+        return
+    raise ImproperlyConfigured(
+        f"Task {name!r} is ordered by {source!r}, which is not one of its "
+        "arguments: its messages would have no key."
+    )
+
+
+_POSITIONAL: Final = inspect.Parameter.POSITIONAL_ONLY
+"""Tasks are called with keyword arguments: a positional-only one is no key."""
 
 
 def _options(
@@ -379,7 +413,7 @@ async def call_task(function: Task, payload: Mapping[str, Any]) -> object:
     return await _validated(function)(**payload)
 
 
-MAX_KEY_LENGTH: Final = 255
+MAX_KEY_LENGTH: Final = MAX_ORDERING_KEY
 """The longest ordering key, in characters (the outbox column's size)."""
 
 type KeySource = str | Callable[..., object]
@@ -427,6 +461,9 @@ def ordered[F: Callable[..., Any]](key: KeySource, /) -> Callable[[F], F]:
 
     def mark(function: F) -> F:
         _marked[getattr(function, "__func__", function)] = key
+        for spec in _tasks.values():  # Marked after @task: check it now.
+            if spec.function is function:
+                _check_key_argument(function, spec.key)
         return function
 
     return mark
@@ -436,16 +473,12 @@ def checked_key(value: object) -> str | None:
     """The ordering key ``value`` stands for: a string, or None for no key.
 
     Raises:
-        ValueError: the key is empty, or longer than ``MAX_KEY_LENGTH``.
+        ValueError: the key is empty, longer than ``MAX_KEY_LENGTH``, or
+            holds a NUL character, which no database column stores.
     """
     if value is None:
         return None
-    key = value if isinstance(value, str) else str(value)
-    if not 0 < len(key) <= MAX_KEY_LENGTH:
-        raise ValueError(
-            f"An ordering key has 1 to {MAX_KEY_LENGTH} characters, not {len(key)}."
-        )
-    return key
+    return checked_ordering_key(value if isinstance(value, str) else str(value))
 
 
 def event_key(handler: Callable[..., Any], event: object) -> str | None:

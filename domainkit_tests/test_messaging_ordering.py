@@ -983,7 +983,11 @@ async def generic_plan(statement: Any) -> str:  # noqa: ANN401 - any statement.
         await connection.exec_driver_sql(f"PREPARE probe AS {compiled}")
         plan = "\n".join(
             (
-                await connection.exec_driver_sql(f"EXPLAIN EXECUTE probe({values})")
+                await connection.exec_driver_sql(
+                    f"EXPLAIN EXECUTE probe({values})"
+                    if values
+                    else "EXPLAIN EXECUTE probe"
+                )
             ).scalars()
         )
         await connection.exec_driver_sql("DEALLOCATE probe")
@@ -1021,10 +1025,11 @@ async def test_the_claim_and_the_key_statements_read_their_indexes() -> None:
     busy_plan = await generic_plan(select(ordering_module.busy("hot")))
     held = ordering_module._first("hot", (HELD,), messages.c.id)
     next_plan = await generic_plan(select(held))
+    stalled_plan = await generic_plan(ordering_module.stalled(50))
 
     assert "ix_domainkit_messages_priority" in claim_plan
     assert "ordering" not in claim_plan
-    for plan in (busy_plan, next_plan):
+    for plan in (busy_plan, next_plan, stalled_plan):
         assert "ix_domainkit_messages_ordering" in plan
         assert "Seq Scan" not in plan
 
