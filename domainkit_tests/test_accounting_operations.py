@@ -23,13 +23,19 @@ from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
     AccountingUnitOfWork,
     AccountType,
+    InsufficientFunds,
     Line,
     PeriodNotFound,
+    PlaceHold,
     PostEntry,
+    ReferenceReused,
+    ReleaseHold,
     expire_holds,
     general_ledger,
+    place_hold,
     post_entry,
     protection,
+    release_hold,
     trial_balance,
     verify_ledger,
 )
@@ -42,11 +48,19 @@ from domainkit.contrib.accounting.reconciliation import (
 from domainkit.contrib.accounting.tables import accounts, postings, statement_lines
 from domainkit.contrib.accounting.tasks import POST_ENTRY
 from domainkit.contrib.messaging.registry import get_task
+from domainkit.contrib.messaging.retry import retryable
 from domainkit.db import connections
+from domainkit.ddd import ConcurrentUpdate
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command, operators
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import POSTGRES_VARIABLE, MakeDatabase, Migrated
+from domainkit.money import UnknownCurrency
+from domainkit_tests.conftest import (
+    POSTGRES_VARIABLE,
+    MakeDatabase,
+    Migrated,
+    domain_warnings,
+)
 from domainkit_tests.test_accounting import (
     ACCOUNTING,
     ALPHA,
@@ -267,6 +281,63 @@ def test_without_messaging_no_task_is_registered() -> None:
         setup()
         assert get_task(POST_ENTRY) is None
     registry.clear()
+
+
+def test_a_posting_that_lost_its_races_is_retried_by_the_worker() -> None:
+    """A refusal dead-letters the message at once; ``ConcurrentUpdate`` is retried.
+
+    Posting is idempotent by source and reference, so a later run books
+    the entry once.
+    """
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING, ACCOUNTING, ALPHA],
+        DATABASES={"default": {"URL": "sqlite+aiosqlite://"}},
+    ):
+        setup()
+        spec = get_task(POST_ENTRY)
+        assert spec is not None
+        assert retryable(ConcurrentUpdate("lost"), spec.retry_on, spec.dont_retry_on)
+        for refusal in (
+            InsufficientFunds("short"),
+            ReferenceReused("taken"),
+            UnknownCurrency("XXX"),
+        ):
+            assert not retryable(refusal, spec.retry_on, spec.dont_retry_on)
+    registry.clear()
+
+
+@pytest.mark.parametrize(
+    ("domains", "deployed", "warned"),
+    [
+        ([ACCOUNTING, ALPHA], True, ["accounting.W003"]),
+        ([MESSAGING, ACCOUNTING, ALPHA], True, []),
+        ([ACCOUNTING, ALPHA], False, []),
+    ],
+)
+def test_holds_that_nothing_expires_are_warned_of_where_deployed(
+    monkeypatch: pytest.MonkeyPatch,
+    domains: list[str],
+    deployed: bool,
+    warned: list[str],
+) -> None:
+    """Without messaging no worker releases expired holds: ``accounting.W003``."""
+    if deployed:
+        monkeypatch.setattr(
+            "domainkit.contrib.accounting.apps.DEPLOYED_ENVIRONMENTS",
+            frozenset({"test"}),
+        )
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=domains,
+        DATABASES={"default": {"URL": "sqlite+aiosqlite://"}},
+    ):
+        setup()
+        found = domain_warnings("accounting")
+    registry.clear()
+    assert [getattr(each, "id", None) for each in found] == warned
+    if found:
+        assert "expireholds" in found[0].hint  # type: ignore[attr-defined]
 
 
 @pytest.mark.usefixtures("books")
@@ -677,3 +748,38 @@ async def _tables(alias: str) -> list[str]:
         return await connection.run_sync(
             lambda sync: sorted(sync.dialect.get_table_names(sync))
         )
+
+
+@pytest.mark.usefixtures("books")
+async def test_verify_finds_a_held_amount_its_holds_do_not_add_up_to() -> None:
+    """Each account's ``held`` is the sum of its active holds."""
+    await period()
+    card, other = await account("1000"), await account("1001")
+    await place_hold(
+        PlaceHold(account_id=card.id, amount=usd("3"), source="s", reference="a"),
+        AccountingUnitOfWork(),
+    )
+    await place_hold(
+        PlaceHold(account_id=card.id, amount=usd("2"), source="s", reference="b"),
+        AccountingUnitOfWork(),
+    )
+    released = await place_hold(
+        PlaceHold(account_id=card.id, amount=usd("7"), source="s", reference="c"),
+        AccountingUnitOfWork(),
+    )
+    await release_hold(ReleaseHold(hold_id=released.id), AccountingUnitOfWork())
+    assert await verify_ledger() == []
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(accounts).where(accounts.c.id == card.id).values(held=Decimal(1))
+        )
+        await connection.execute(
+            update(accounts).where(accounts.c.id == other.id).values(held=Decimal(4))
+        )
+
+    problems = await verify_ledger()
+
+    assert [(p.kind, p.id, p.detail) for p in problems] == [
+        ("held_differs", str(card.id), "1000: held 1.0000, active holds 5.0000"),
+        ("held_differs", str(other.id), "1001: held 4.0000, active holds 0"),
+    ]

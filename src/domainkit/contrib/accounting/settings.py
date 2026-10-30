@@ -1,8 +1,12 @@
 """Settings of ``domainkit.contrib.accounting``: ``ACCOUNTING = {...}``."""
 
 from datetime import timedelta
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
+
+LONGEST_HOLD: Final = timedelta(days=366)
+"""The longest a hold may last, whether by ``HOLD_TTL`` or its ``expires_at``."""
 
 DEFAULT_RULES = (
     "domainkit.contrib.accounting.reconciliation.ByReference",
@@ -25,7 +29,7 @@ class AccountingSettings(BaseModel):
     """Runs of a posting, the first included, when its transaction lost a
     race (a deadlock or a serialization failure; ``UnitOfWork.run``)."""
     HOLD_TTL: timedelta = Field(
-        default=timedelta(days=7), gt=timedelta(0), le=timedelta(days=366)
+        default=timedelta(days=7), gt=timedelta(0), le=LONGEST_HOLD
     )
     """How long a hold lasts when it is placed without ``expires_at``."""
     EXPIRE_HOLDS_EVERY: timedelta = Field(

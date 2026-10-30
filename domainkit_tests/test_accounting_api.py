@@ -429,3 +429,49 @@ def test_entries_are_reversed_and_periods_and_accounts_closed(
     assert closed_account.json()["status"] == "closed"
     assert closed.json()["status"] == "closed"
     assert (refused.status_code, refused.json()["code"]) == (422, "period_closed")
+
+
+def test_what_the_security_review_found_is_refused_not_crashed(
+    client: TestClient, clerk: Headers
+) -> None:
+    """The ledger's own source, a naive expiry, an unreadable statement: 422 each.
+
+    SEC-14b-1 and SEC-14b-3: none is booked, and none answers 500.
+    """
+    books = open_books(client, clerk)
+    account = books["cash"]["id"]
+    reserved = {**sale(books, "s-1", "1.00"), "source": "accounting.reversal"}
+    hold = {
+        "account_id": account,
+        "amount": usd("1.00"),
+        "source": "shop",
+        "reference": "h-1",
+    }
+
+    posted = client.post(f"{API}/entries", json=reserved, headers=clerk)
+    naive = client.post(
+        f"{API}/holds",
+        json={**hold, "expires_at": "2027-01-01T00:00:00"},
+        headers=clerk,
+    )
+    too_far = client.post(
+        f"{API}/holds",
+        json={**hold, "expires_at": "2099-01-01T00:00:00Z"},
+        headers=clerk,
+    )
+    unreadable = client.post(
+        f"{API}/accounts/{account}/statements",
+        content="id,date,amount,currency,description\n"
+        f"b,2026-10-15,1,USD,{'x' * 200_000}\n",
+        headers={**clerk, "Content-Type": "text/csv"},
+    )
+
+    assert (posted.status_code, posted.json()["code"]) == (422, "invalid_entry")
+    assert naive.status_code == 422
+    assert "expires_at" in json.dumps(naive.json())
+    assert (too_far.status_code, too_far.json()["code"]) == (422, "invalid_entry")
+    assert (unreadable.status_code, unreadable.json()["code"]) == (
+        422,
+        "invalid_statement",
+    )
+    assert unreadable.json()["detail"] == "A statement cannot be read as CSV."

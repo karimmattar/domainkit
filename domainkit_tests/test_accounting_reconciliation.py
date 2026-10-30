@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import ClassVar, Final
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from domainkit.apps import registry
 from domainkit.clock import freeze_time
@@ -532,3 +532,180 @@ async def test_each_rule_takes_its_turn_and_breaks_name_their_rows() -> None:
     assert sorted(found, key=lambda b: str(b)) == sorted(
         done.breaks, key=lambda b: str(b)
     )
+
+
+# SEC-14b: what a statement may carry, and what a rule may pair ----------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"id,date,amount,currency,{'h' * 200_000}\n",
+        HEADER + f"b-1,2026-10-15,1,USD,,{'d' * 200_000}\n",
+    ],
+)
+def test_a_statement_that_is_not_csv_is_refused(text: str) -> None:
+    """A field over ``csv.field_size_limit()``, in the header or a row (SEC-14b-3)."""
+    with refused(InvalidStatement, match="cannot be read as CSV"):
+        list(CsvStatement(text).lines())
+
+
+@pytest.mark.parametrize(
+    ("reference", "description"),
+    [
+        ("\x1b]0;owned\x07", ""),
+        ("", "\x1b[2J"),
+        ("a\x9bb", ""),
+        ("", "paid\x7f"),
+        ("", "two\tcolumns"),
+        ("", "next\x85line"),
+    ],
+)
+@pytest.mark.usefixtures("books")
+async def test_control_characters_in_a_line_are_refused(
+    reference: str, description: str
+) -> None:
+    """C0, DEL, and C1 in a reference or description: nothing stored (SEC-14b-4)."""
+    bank = await account("1000")
+    text = HEADER + f'b-1,2026-10-15,1,USD,"{reference}","{description}"\n'
+    with refused(InvalidStatement, match="no control characters"):
+        await import_statement(bank.id, CsvStatement(text))
+    assert (await import_statement(bank.id, CsvStatement(HEADER))).imported == 0
+    with refused(InvalidStatement, match="id has"):
+        lines("b\x9b1,2026-10-15,1,USD,,\n")
+
+
+class Given:
+    """A statement source that yields the lines it was made with."""
+
+    name = "api"
+
+    def __init__(self, *lines: StatementLine) -> None:
+        """Keep ``lines``."""
+        self.given = lines
+
+    def lines(self) -> Iterator[StatementLine]:
+        """The lines, unchecked: ``import_statement`` checks them."""
+        yield from self.given
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        (StatementLine("", TODAY, usd("1")), "id has"),
+        (StatementLine("b\x1b", TODAY, usd("1")), "id has"),
+        (StatementLine("b", TODAY, usd("1"), "r" * 129), "up to 128 characters"),
+        (StatementLine("b", TODAY, usd("1"), "", "d" * 256), "up to 255"),
+        (StatementLine("b", TODAY, usd("1"), "\x1b"), "no control characters"),
+    ],
+)
+@pytest.mark.usefixtures("books")
+async def test_every_sources_lines_are_checked(
+    line: StatementLine, message: str
+) -> None:
+    """A port other than ``CsvStatement`` is held to the same limits."""
+    bank = await account("1000")
+    with refused(InvalidStatement, match=message):
+        await import_statement(bank.id, Given(line))
+    longest = StatementLine("b" * 128, TODAY, usd("1"), "r" * 128, "d" * 255)
+    assert (await import_statement(bank.id, Given(longest))).imported == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "b-1,2026-10-16,1,USD,r,d\n",
+        "b-1,2026-10-15,1.01,USD,r,d\n",
+        "b-1,2026-10-15,1,USD,s,d\n",
+        "b-1,2026-10-15,1,USD,r,e\n",
+    ],
+)
+@pytest.mark.usefixtures("books")
+async def test_a_line_changed_since_its_import_is_refused(changed: str) -> None:
+    """Its date, amount, reference, or description: refused, never skipped."""
+    bank = await account("1000")
+    first = HEADER + "b-0,2026-10-14,5,USD,,\nb-1,2026-10-15,1,USD,r,d\n"
+    assert (await import_statement(bank.id, CsvStatement(first))).imported == 2
+    again = await import_statement(bank.id, CsvStatement(first, name="again.csv"))
+    assert (again.imported, again.skipped) == (0, 2)
+
+    with refused(InvalidStatement, match="differs from the line imported before"):
+        await import_statement(
+            bank.id, CsvStatement(HEADER + "b-2,2026-10-16,2,USD,,\n" + changed)
+        )
+    async with connections.engine().connect() as connection:
+        stored = (
+            await connection.execute(
+                select(
+                    statement_lines.c.external_id,
+                    statement_lines.c.amount,
+                    statement_lines.c.reference,
+                )
+                .where(statement_lines.c.account_id == bank.id)
+                .order_by(statement_lines.c.external_id)
+            )
+        ).all()
+    assert stored == [("b-0", Decimal(5), ""), ("b-1", Decimal(1), "r")]
+
+
+@pytest.mark.usefixtures("books")
+async def test_lines_are_compared_in_batches() -> None:
+    """More lines than one read back holds are each compared."""
+    bank = await account("1000")
+    rows = "".join(f"b-{n},2026-10-15,1,USD,,\n" for n in range(3))
+    await import_statement(bank.id, CsvStatement(HEADER + rows))
+    with (
+        pytest.MonkeyPatch.context() as patch,
+        refused(InvalidStatement, match="differs"),
+    ):
+        patch.setattr("domainkit.contrib.accounting.reconciliation.CHECK_BATCH", 2)
+        await import_statement(
+            bank.id,
+            CsvStatement(HEADER + rows.replace("b-2,2026-10-15,1", "b-2,2026-10-15,2")),
+        )
+
+
+class Foreign:
+    """A rule that pairs a posting it was not given: a bug in a project's rule."""
+
+    name = "foreign"
+
+    def match(
+        self,
+        lines: Sequence[StatementItem],
+        postings: Sequence[PostingItem],
+        window: timedelta,
+    ) -> Iterator[tuple[StatementItem, PostingItem]]:
+        """Pair the first line with a posting of no one's."""
+        yield lines[0], posting("1.00", 30)
+
+
+class Stale:
+    """A rule that pairs a line it was not given."""
+
+    name = "stale"
+
+    def match(
+        self,
+        lines: Sequence[StatementItem],
+        postings: Sequence[PostingItem],
+        window: timedelta,
+    ) -> Iterator[tuple[StatementItem, PostingItem]]:
+        """Pair a line of no one's with the first posting."""
+        yield item("1.00", 30), postings[0]
+
+
+@pytest.mark.parametrize("rule", ["Foreign", "Stale"])
+@pytest.mark.usefixtures("books")
+async def test_a_rule_that_pairs_what_it_was_not_given_is_refused(rule: str) -> None:
+    """Another account's posting, or a line matched already: nothing is recorded."""
+    bank = await sales(("s-1", "1.00", TODAY))
+    await import_statement(bank, CsvStatement(HEADER + "b-1,2026-10-30,1,USD,,\n"))
+    with (
+        override_settings(ACCOUNTING={"MATCHING_RULES": [f"{RULES}.{rule}"]}),
+        pytest.raises(ImproperlyConfigured, match="it was not given"),
+    ):
+        await reconcile(bank)
+    async with connections.engine().connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(matches)) == 0
+    assert (await reconcile(bank)).matched == {"amount_and_date": 1}

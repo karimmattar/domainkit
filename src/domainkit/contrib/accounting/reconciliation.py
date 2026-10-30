@@ -72,7 +72,11 @@ __all__ = [
 
 AMOUNT: Final = re.compile(r"[+-]?\d{1,14}(\.\d{1,4})?")
 """A statement's amount: digits, a point, and up to four places; no exponent."""
-EXTERNAL_ID: Final = re.compile(r"[^\x00-\x1f\x7f]{1,128}")
+EXTERNAL_ID: Final = re.compile(r"[^\x00-\x1f\x7f-\x9f]{1,128}")
+CONTROL: Final = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+"""What a line's reference and description may not have: control characters."""
+CHECK_BATCH: Final = 500
+"""Stored lines ``import_statement`` reads back at a time."""
 UNMATCHED_LINE: Final = "unmatched_line"
 UNMATCHED_POSTING: Final = "unmatched_posting"
 DEFAULT_COLUMNS: Final = {
@@ -142,18 +146,24 @@ class CsvStatement:
         """Each row as a line, checked.
 
         Raises:
-            InvalidStatement: A required column is missing, or a row's
-                date, amount, or currency is not one.
+            InvalidStatement: The text is not CSV (a field over
+                ``csv.field_size_limit()``), a required column is missing,
+                or a row's date, amount, or currency is not one.
         """
         reader = csv.DictReader(io.StringIO(self.text), delimiter=self.delimiter)
-        names = set(reader.fieldnames or ())
-        required = [self.columns[key] for key in ("id", "date", "amount", "currency")]
-        if not set(required) <= names:
-            raise InvalidStatement(
-                "A statement needs the columns id, date, amount, and currency."
-            )
-        for row in reader:
-            yield self._line(row)
+        try:
+            names = set(reader.fieldnames or ())
+            required = [
+                self.columns[key] for key in ("id", "date", "amount", "currency")
+            ]
+            if not set(required) <= names:
+                raise InvalidStatement(
+                    "A statement needs the columns id, date, amount, and currency."
+                )
+            for row in reader:
+                yield self._line(row)
+        except csv.Error:
+            raise InvalidStatement("A statement cannot be read as CSV.") from None
 
     def _line(self, row: Mapping[str, str | None]) -> StatementLine:
         """One row as a line."""
@@ -213,12 +223,14 @@ async def import_statement(account_id: AccountId, source: StatementSource) -> Im
     """Store ``source``'s lines for an account; a line stored before is skipped.
 
     Every line is read and checked before any is stored, in one
-    transaction.
+    transaction. A line stored before must be the same (its date, amount,
+    reference, and description); one that changed is refused, not skipped.
 
     Raises:
         AccountNotFound: No account has that id.
-        InvalidStatement: A line cannot be read, is in another currency
-            than the account's, appears twice, or there are more than
+        InvalidStatement: A line cannot be read, has control characters, is
+            in another currency than the account's, appears twice, differs
+            from the line stored under its id, or there are more than
             ``ACCOUNTING.MAX_STATEMENT_LINES``.
     """
     limit = _config().MAX_STATEMENT_LINES
@@ -233,6 +245,7 @@ async def import_statement(account_id: AccountId, source: StatementSource) -> Im
             )
         if line.amount.currency.code != account.currency:
             raise InvalidStatement("A statement line is not in the account's currency.")
+        _check(line)
         if line.external_id in rows:
             raise InvalidStatement("Two statement lines have the same id.")
         rows[line.external_id] = {
@@ -254,7 +267,53 @@ async def import_statement(account_id: AccountId, source: StatementSource) -> Im
         before = await _count_lines(connection, account_id)
         await connection.execute(_insert_new(connection), list(rows.values()))
         stored = await _count_lines(connection, account_id) - before
+        # Read back after the insert: a line another import stored meanwhile
+        # is checked too. Raising rolls the whole statement back.
+        if await _changed(connection, account_id, rows):
+            raise InvalidStatement(
+                "A statement line differs from the line imported before under its id."
+            )
     return Imported(stored, len(rows) - stored)
+
+
+def _check(line: StatementLine) -> None:
+    """Refuse a line too long, or with control characters a terminal would run."""
+    if not EXTERNAL_ID.fullmatch(line.external_id):
+        raise InvalidStatement("A statement line's id has 1 to 128 characters.")
+    if len(line.reference) > 128 or len(line.description) > 255:
+        raise InvalidStatement(
+            "A statement line's reference has up to 128 characters, "
+            "and its description up to 255."
+        )
+    if CONTROL.search(line.reference) or CONTROL.search(line.description):
+        raise InvalidStatement(
+            "A statement line's reference and description have no control characters."
+        )
+
+
+async def _changed(
+    connection: AsyncConnection,
+    account_id: AccountId,
+    rows: Mapping[str, Mapping[str, object]],
+) -> bool:
+    """Whether a line stored under one of ``rows``' ids differs from its row."""
+    fields = ("booked_on", "amount", "reference", "description")
+    ids = list(rows)
+    for start in range(0, len(ids), CHECK_BATCH):
+        stored = await connection.execute(
+            select(
+                statement_lines.c.external_id,
+                *(statement_lines.c[name] for name in fields),
+            ).where(
+                statement_lines.c.account_id == account_id,
+                statement_lines.c.external_id.in_(ids[start : start + CHECK_BATCH]),
+            )
+        )
+        for found in stored.mappings():
+            row = rows[found["external_id"]]
+            if any(found[name] != row[name] for name in fields):
+                return True
+    return False
 
 
 async def _count_lines(connection: AsyncConnection, account_id: AccountId) -> int:
@@ -521,6 +580,8 @@ async def reconcile(account_id: AccountId) -> Reconciled:
 
     Raises:
         AccountNotFound: No account has that id.
+        ImproperlyConfigured: A rule paired a line or a posting twice, or
+            one it was not given.
     """
     rules = configured_rules()
     window = timedelta(days=_config().MATCH_WINDOW_DAYS)
@@ -541,6 +602,13 @@ async def reconcile(account_id: AccountId) -> Reconciled:
             if len(used_lines) != len(paired) or len(used_postings) != len(paired):
                 raise ImproperlyConfigured(
                     f"Matching rule {rule.name!r} paired a line or a posting twice."
+                )
+            if not used_lines <= {line.id for line in lines} or not (
+                used_postings <= {item.id for item in items}
+            ):
+                raise ImproperlyConfigured(
+                    f"Matching rule {rule.name!r} paired a line or a posting it "
+                    "was not given (another account's, or one matched already)."
                 )
             await connection.execute(
                 insert(matches),

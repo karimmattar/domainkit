@@ -28,7 +28,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.ddd import Command, Retry
 
-from .exceptions import NoOpenPeriod, PeriodsOverlap, ReferenceReused
+from .exceptions import InvalidEntry, NoOpenPeriod, PeriodsOverlap, ReferenceReused
 from .models import (
     Account,
     AccountId,
@@ -42,6 +42,8 @@ from .models import (
 from .settings import AccountingSettings
 from .uow import AccountingUnitOfWork
 
+RESERVED = "accounting."
+"""The prefix of the ledger's own sources, which ``post_entry`` refuses."""
 REVERSALS = "accounting.reversal"
 """The source of reversing entries; each one's reference is the reversed entry's id."""
 
@@ -165,6 +167,29 @@ async def book(
     await uow.entries.add(entry)
 
 
+async def claim(
+    uow: AccountingUnitOfWork,
+    source: str,
+    reference: str,
+    *,
+    same: Callable[[Entry], bool],
+) -> Entry | None:
+    """Lock ``source`` and ``reference`` in the open ``uow``; the entry under them.
+
+    None when nothing was; the entry if ``same`` says it books the same.
+
+    Raises:
+        ReferenceReused: Another entry was posted under that reference.
+    """
+    await uow.lock(f"accounting.entry:{source}:{reference}")
+    posted = await uow.entries.by_reference(source, reference)
+    if posted is not None and not same(posted):
+        raise ReferenceReused(
+            "Another entry was posted under this source and reference."
+        )
+    return posted
+
+
 async def post(
     uow: AccountingUnitOfWork,
     source: str,
@@ -177,20 +202,15 @@ async def post(
 
     Under a lock of the two, in a transaction of ``uow``: an entry posted
     under them already is returned if ``same`` says it books the same, and
-    refused otherwise. ``draft`` runs in the transaction, so it may read;
-    then the entry's accounts are locked, in the order of their ids.
+    refused otherwise (``claim``). ``draft`` runs in the transaction, so it
+    may read; then the entry's accounts are locked, in the order of their ids.
 
     Raises:
         ReferenceReused: Another entry was posted under that reference.
     """
     async with uow:
-        await uow.lock(f"accounting.entry:{source}:{reference}")
-        posted = await uow.entries.by_reference(source, reference)
+        posted = await claim(uow, source, reference, same=same)
         if posted is not None:
-            if not same(posted):
-                raise ReferenceReused(
-                    "Another entry was posted under this source and reference."
-                )
             return posted
         entry = await draft()
         accounts = await lock_accounts(
@@ -204,8 +224,12 @@ async def post(
 async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
     """Post a balanced entry, or return the one posted under its reference before.
 
+    The sources that start with ``RESERVED`` (``accounting.``) are the
+    ledger's own: ``reverse_entry`` and ``capture_hold`` post under them.
+
     Raises:
-        InvalidEntry, InvalidAmount, UnbalancedEntry: As ``Entry.draft``.
+        InvalidEntry, InvalidAmount, UnbalancedEntry: As ``Entry.draft``, or
+            the source is one of the ledger's own.
         ReferenceReused: Another entry was posted under that reference.
         AccountNotFound: A line names no account.
         NoOpenPeriod, PeriodIsClosed: The date is in no open period.
@@ -228,6 +252,10 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
         return entry()
 
     checked = entry()  # Refuse a malformed entry before taking any lock.
+    if checked.source.startswith(RESERVED):
+        raise InvalidEntry(
+            "The sources that start with 'accounting.' are the ledger's own."
+        )
     return await run(
         uow,
         lambda: post(
@@ -248,6 +276,8 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
 
     Raises:
         EntryNotFound: No entry has that id.
+        ReferenceReused: An entry that does not reverse it was posted under
+            its reference (only before ``post_entry`` refused the source).
         NoOpenPeriod, PeriodIsClosed: The date is in no open period.
         AccountIsClosed, InsufficientFunds: As ``Account.post``.
     """
@@ -269,7 +299,13 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
 
     return await run(
         uow,
-        lambda: post(uow, REVERSALS, str(entry_id), draft, same=lambda posted: True),
+        lambda: post(
+            uow,
+            REVERSALS,
+            str(entry_id),
+            draft,
+            same=lambda posted: posted.reverses == entry_id,
+        ),
     )
 
 

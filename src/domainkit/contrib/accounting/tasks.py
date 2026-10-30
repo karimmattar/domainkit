@@ -12,8 +12,17 @@ from datetime import date
 from typing import Final
 
 from domainkit.contrib.messaging import inbox, periodic, task
-from domainkit.ddd import DomainError, UnitOfWork
+from domainkit.ddd import (
+    BusinessRuleViolation,
+    DuplicateValue,
+    NotFound,
+    PermissionDenied,
+    PreconditionFailed,
+    UnitOfWork,
+)
+from domainkit.money import MoneyError
 
+from .exceptions import ReferenceReused
 from .holds import expire_holds
 from .ledger import PostEntry, post_entry
 from .schemas import LineIn
@@ -23,6 +32,17 @@ from .uow import AccountingUnitOfWork
 POST_ENTRY: Final = "domainkit.accounting.post_entry"
 """The task that posts an entry from a message."""
 EXPIRE_HOLDS: Final = "domainkit.accounting.expire_holds"
+REFUSALS: Final = (
+    BusinessRuleViolation,
+    NotFound,
+    ReferenceReused,
+    DuplicateValue,
+    PreconditionFailed,
+    PermissionDenied,
+    MoneyError,
+)
+"""What dead-letters a posting at once: every refusal of the ledger's but
+``ConcurrentUpdate``, which the worker retries."""
 
 
 async def post_entry_message(
@@ -65,9 +85,13 @@ async def expire_due_holds() -> None:
 def register(config: AccountingSettings) -> None:
     """Register the posting task, under the inbox, and the expiry of holds.
 
-    A refused entry is dead-lettered at once: running it again would be
-    refused again, until someone changes the books (``messages --retry``).
+    A refused entry is dead-lettered at once (``REFUSALS``): running it
+    again would be refused again, until someone changes the books
+    (``messages --retry``). A posting that lost its race
+    ``ACCOUNTING.RETRY_ATTEMPTS`` times (``ConcurrentUpdate``) is retried
+    by the worker, with its backoff: posting is idempotent by source and
+    reference, so a retry books the entry once.
     """
     inbox(post_entry_message)
-    task(name=POST_ENTRY, dont_retry_on=(DomainError,))(post_entry_message)
+    task(name=POST_ENTRY, dont_retry_on=REFUSALS)(post_entry_message)
     periodic(config.EXPIRE_HOLDS_EVERY, name=EXPIRE_HOLDS)(expire_due_holds)

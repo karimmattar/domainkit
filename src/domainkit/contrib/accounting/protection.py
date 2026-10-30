@@ -3,11 +3,13 @@
 Triggers refuse every ``UPDATE``, ``DELETE``, and ``TRUNCATE`` of the two
 tables, for every role, the owner's included, as ``contrib.audit``'s
 ``protect()`` does for the audit trail. Here they need no revision of the
-project's: after each ``migrate``, ``protect`` creates those missing (and
-those disabled), on the schema owner's connection. A correction is a
-reversing entry. In staging and production the application checks at
-startup that they are there (``accounting.E001``). On other databases
-nothing is created: SQLite has no roles to keep out.
+project's: after each ``migrate``, ``protect`` makes them and their
+functions afresh, on the schema owner's connection, whatever was there.
+A correction is a reversing entry. In staging and production the
+application checks at startup that they are there as ``protect`` makes
+them: enabled, of the right type, with no ``WHEN`` or column list,
+running the function with the right body (``accounting.E001``). On
+other databases nothing is created: SQLite has no roles to keep out.
 """
 
 import logging
@@ -38,12 +40,20 @@ logger = logging.getLogger(__name__)
 
 _TRIGGERS: Final = text(
     """
-    SELECT c.relname, t.tgname, t.tgtype
-    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+    SELECT c.relname, t.tgname, t.tgtype, p.proname, l.lanname, p.prosrc
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_proc p ON p.oid = t.tgfoid AND p.pronamespace = c.relnamespace
+    JOIN pg_language l ON l.oid = p.prolang
     WHERE NOT t.tgisinternal AND pg_table_is_visible(c.oid)
-      AND t.tgenabled IN ('O', 'A') AND c.relname IN (:entries, :postings)
+      AND t.tgenabled IN ('O', 'A') AND t.tgqual IS NULL
+      AND cardinality(t.tgattr::int2[]) = 0
+      AND c.relname IN (:entries, :postings)
     """
 )
+"""The enabled triggers of the two tables that fire for every row (no
+``WHEN``, no ``UPDATE OF``), with the function each runs, from the
+tables' schema."""
 
 
 def triggers(table: Table) -> dict[str, int]:
@@ -66,38 +76,63 @@ def statements(table: Table, name: str) -> tuple[str, ...]:
     )
 
 
-def function_statement(table: Table) -> str:
-    """The statement that makes the triggers' function for ``table``."""
+def body(table: Table) -> str:
+    """The body of the triggers' function for ``table``: refuse, whatever the change."""
     return f"""
-    CREATE OR REPLACE FUNCTION {table.name}_append_only() RETURNS trigger
-    LANGUAGE plpgsql AS $$
     BEGIN
         RAISE EXCEPTION '{table.name} is append-only'
             USING ERRCODE = 'insufficient_privilege';
     END
-    $$
     """
 
 
+def function_statement(table: Table) -> str:
+    """The statement that makes the triggers' function for ``table``."""
+    return f"""
+    CREATE OR REPLACE FUNCTION {table.name}_append_only() RETURNS trigger
+    LANGUAGE plpgsql AS $${body(table)}$$
+    """
+
+
+def _words(source: str) -> list[str]:
+    """``source`` without its layout, to compare a function's body."""
+    return source.split()
+
+
 async def missing(connection: AsyncConnection) -> list[str]:
-    """The protecting triggers the database lacks, has disabled, or made otherwise."""
+    """The protecting triggers the database lacks, has disabled, or made otherwise.
+
+    A trigger counts when it is enabled, of its type, fires for every row
+    (no ``WHEN``, no column list), and runs the table's function, in
+    PL/pgSQL, with the body ``protect`` gives it.
+    """
     found = await connection.execute(
         _TRIGGERS, {"entries": entries.name, "postings": postings.name}
     )
-    present = {(row.relname, row.tgname, row.tgtype) for row in found}
+    present = {
+        (row.relname, row.tgname, row.tgtype, row.proname, row.lanname): row.prosrc
+        for row in found
+    }
     return sorted(
         name
         for table in PROTECTED
         for name, kind in triggers(table).items()
-        if (table.name, name, kind) not in present
+        if _words(
+            present.get(
+                (table.name, name, kind, f"{table.name}_append_only", "plpgsql"), ""
+            )
+        )
+        != _words(body(table))
     )
 
 
 async def protect(connection: AsyncConnection, database: str) -> None:
-    """After ``migrate``: make the triggers the ledger's database lacks.
+    """After ``migrate``: make the triggers and their functions afresh.
 
-    Only on PostgreSQL, in the database that holds the ledger, once its
-    tables exist (``makemigrations`` may not have written them yet).
+    Each is dropped and made again, so a trigger changed in place (a
+    ``WHEN``, another function) is put back. Only on PostgreSQL, in the
+    database that holds the ledger, once its tables exist
+    (``makemigrations`` may not have written them yet).
     """
     if connection.dialect.name != "postgresql" or database != accounting_alias():
         return
@@ -107,13 +142,11 @@ async def protect(connection: AsyncConnection, database: str) -> None:
     )
     if not exists:
         return
-    lacking = set(await missing(connection))
     for table in PROTECTED:
         await connection.exec_driver_sql(function_statement(table))
         for name in triggers(table):
-            if name in lacking:
-                for statement in statements(table, name):
-                    await connection.exec_driver_sql(statement)
+            for statement in statements(table, name):
+                await connection.exec_driver_sql(statement)
 
 
 async def check_protection() -> None:

@@ -76,7 +76,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `release_hold`: Release a hold; one released or expired already is returned as it is.
 - `reverse_entry`: Post the reversal of an entry: each of its postings on the other side.
 - `trial_balance`: The trial balance of a period: every account with a balance or movements.
-- `verify_ledger`: Check the books: each entry balances, each balance sums its postings.
+- `verify_ledger`: Check the books: entries balance, balances and held amounts add up.
 
 ## `domainkit.contrib.accounting.api`
 
@@ -120,7 +120,7 @@ Reports of a period: the trial balance and the general ledger, as CSV and JSON.
 - `TrialBalanceRow`: One account's line: its balance before the period, its movements, and after.
 - `general_ledger`: The postings dated in a period, streamed as CSV or JSON, with totals.
 - `trial_balance`: The trial balance of a period: every account with a balance or movements.
-- `verify_ledger`: Check the books: each entry balances, each balance sums its postings.
+- `verify_ledger`: Check the books: entries balance, balances and held amounts add up.
 ## `domainkit.contrib.admin`
 
 A generic admin over REST: Django's `admin.site.register`, without HTML.

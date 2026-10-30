@@ -32,12 +32,13 @@ from .models import (
     ZERO,
     AccountId,
     AccountType,
+    HoldStatus,
     PeriodId,
     PeriodStatus,
     Side,
     amount_text,
 )
-from .tables import accounts, entries, periods, postings
+from .tables import accounts, entries, holds, periods, postings
 from .uow import accounting_alias
 
 __all__ = [
@@ -408,18 +409,21 @@ async def general_ledger(period_id: PeriodId, format: Format) -> AsyncIterator[s
 class LedgerProblem:
     """Something ``verify_ledger`` found wrong with the books."""
 
-    kind: Literal["unbalanced_entry", "balance_differs"]
-    """An entry whose debits and credits differ in a currency, or an
-    account whose stored balance is not the sum of its postings."""
+    kind: Literal["unbalanced_entry", "balance_differs", "held_differs"]
+    """An entry whose debits and credits differ in a currency, an account
+    whose stored balance is not the sum of its postings, or one whose held
+    amount is not the sum of its active holds."""
     id: str
     """The entry's id, or the account's."""
     detail: str
 
 
 async def verify_ledger() -> list[LedgerProblem]:
-    """Check the books: each entry balances, each balance sums its postings.
+    """Check the books: entries balance, balances and held amounts add up.
 
-    Both are read in one statement each; run it while nothing posts, or
+    Each entry's debits equal its credits per currency; each account's
+    balance is the sum of its postings, and its held amount the sum of its
+    active holds. Each is read in one statement; run it while nothing posts, or
     accept that an entry committed between them shows as a difference.
     """
     signed = case(
@@ -476,4 +480,26 @@ async def verify_ledger() -> list[LedgerProblem]:
                         f"{each.code}: balance {each.balance}, postings {expected}",
                     )
                 )
+        active = (
+            select(holds.c.account_id, func.sum(holds.c.amount).label("total"))
+            .where(holds.c.status == HoldStatus.ACTIVE)
+            .group_by(holds.c.account_id)
+            .subquery()
+        )
+        held = await connection.execute(
+            select(accounts.c.id, accounts.c.code, accounts.c.held, active.c.total)
+            .select_from(
+                accounts.outerjoin(active, active.c.account_id == accounts.c.id)
+            )
+            .order_by(accounts.c.code)
+        )
+        problems.extend(
+            LedgerProblem(
+                "held_differs",
+                str(each.id),
+                f"{each.code}: held {each.held}, active holds {each.total or ZERO}",
+            )
+            for each in held
+            if (each.total or ZERO) != each.held
+        )
     return problems

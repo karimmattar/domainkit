@@ -23,13 +23,13 @@ as problem details where the project asks for them. Amounts are
 """
 
 import dataclasses
-from datetime import date, datetime
+from datetime import date
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from domainkit.http import Filter, FilterSet, Pagination, error_responses
 from domainkit.http.access import Require
@@ -172,6 +172,8 @@ class EntryIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: Source
+    """Not one of the ledger's own, ``accounting.*``: ``post_entry`` refuses
+    them (``invalid_entry``)."""
     reference: Reference
     booked_on: date
     lines: Annotated[list[LineIn], Field(min_length=2, max_length=1000)]
@@ -196,7 +198,7 @@ class HoldIn(BaseModel):
     amount: MoneyIn
     source: Source
     reference: Reference
-    expires_at: datetime | None = None
+    expires_at: AwareDatetime | None = None
 
 
 class CaptureIn(BaseModel):

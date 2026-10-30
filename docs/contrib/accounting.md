@@ -45,7 +45,7 @@ cash = await open_account(
 )
 wallet = await open_account(
     OpenAccount(
-        code=f"2100-{user.id}",
+        code=f"2100-{wallet_number:06d}",  # The project's own number, not the user's.
         name="Wallet",
         type=AccountType.LIABILITY,
         currency="EGP",
@@ -72,8 +72,12 @@ wallet = await open_account(
 - `holder` names the person the account is kept for: `privacy export`
   lists their accounts and postings; `privacy erase` keeps the books (the
   law asks for them, and they are append-only) and unlinks the person
-  from them. Nothing else in the ledger may name a person: keep
-  descriptions and memos free of personal data.
+  from them, clearing `holder`. It is the only field erasure clears:
+  codes, names, descriptions, memos, references, and statement lines are
+  kept as written, and a code is shown by every report and by the audit
+  trail's `AccountOpened`. Keep personal data out of all of them, as the
+  example does: an opaque code (`2100-000042`, from the project's own
+  sequence), never the person's id or name.
 - `close_account(CloseAccount(account_id=...))` closes an account with
   nothing on it (`account_not_empty` otherwise); a closed one takes no
   postings or holds (`account_closed`).
@@ -106,7 +110,9 @@ entry = await post_entry(
   printable characters) name the entry where it came from. Posted again
   under them, the same entry is returned and nothing more is booked: a
   retried request, a message delivered twice. A different entry under
-  them is refused (`reference_reused`, 409).
+  them is refused (`reference_reused`, 409). The sources that start with
+  `accounting.` are the ledger's own (reversals and captures post under
+  them): `post_entry` refuses them (`invalid_entry`, 422).
 - **Concurrency.** A posting locks the name of its source and reference,
   then its accounts by ascending id, so two entries that share accounts
   wait for each other in one order and never deadlock; their balances
@@ -117,10 +123,13 @@ entry = await post_entry(
 - **Never changed.** `reverse_entry(ReverseEntry(entry_id=...))` posts the
   entry that undoes another, each posting on the other side, dated today
   unless `booked_on` says; an entry is reversed once (its source is
-  `accounting.reversal`, its reference the entry's id). On PostgreSQL,
-  triggers that `migrate` makes refuse every update, delete, and
-  truncation of entries and postings, the table owner's too; in staging
-  and production the application refuses to start without them
+  `accounting.reversal`, its reference the entry's id), and reversing it
+  again returns that reversal. On PostgreSQL,
+  triggers that `migrate` makes afresh each time refuse every update,
+  delete, and truncation of entries and postings, the table owner's too;
+  in staging and production the application refuses to start without
+  them as `migrate` makes them: enabled, firing for every row (no `WHEN`,
+  no column list), running their own function with its body
   (`accounting.E001`). `flush`, `dumpdata`, and `loaddata` leave the
   ledger's tables alone.
 - `EntryPosted`, like every event of the app, is recorded by
@@ -144,7 +153,10 @@ The worker posts it with the task `domainkit.accounting.post_entry`,
 under the inbox (ADR 0094): a message run again after its entry
 committed is skipped, and a second message about the same entry returns
 the first one's. A refused entry (a closed period, say) is dead-lettered
-at once; `messages --retry` runs it again once the books allow it.
+at once; `messages --retry` runs it again once the books allow it. A
+posting that lost its race `RETRY_ATTEMPTS` times (`ConcurrentUpdate`)
+is not refused: the worker runs it again after its backoff, and the
+source and reference book it once.
 
 ## Holds
 
@@ -167,7 +179,10 @@ await capture_hold(
 ```
 
 A hold reserves an amount on an account until it is captured, released,
-or expires (`expires_at`, or `HOLD_TTL` from now). It moves no balance:
+or expires (`expires_at`, or `HOLD_TTL` from now). `expires_at` is a
+time with its zone, in the future and at most 366 days away
+(`invalid_entry` otherwise; over HTTP, a time without a zone is a
+validation error, 422). It moves no balance:
 it lowers `available`. It is placed once per source and reference, as an
 entry is. A capture posts an entry out of the account (the side that
 lowers its balance) and into `counter_account_id`, of the whole hold or
@@ -176,7 +191,9 @@ less, and releases the rest; capturing again returns the captured hold.
 (`hold_not_active`); with messaging, the worker releases expired holds
 every `EXPIRE_HOLDS_EVERY`, and `manage.py accounting expireholds` does
 the same on demand. Until then an expired hold still counts against
-`available`.
+`available`. Without messaging, `check` warns in staging and production
+(`accounting.W003`): run `expireholds` from the project's scheduler, and
+silence it.
 
 ## Periods
 
@@ -231,7 +248,7 @@ async for piece in general_ledger(october.id, "csv"):  # or "json", streamed
   apostrophe.
 - `verify_ledger()` (and `manage.py accounting verify`) checks the books
   themselves: every entry balances, every balance is the sum of its
-  postings.
+  postings, and every account's `held` the sum of its active holds.
 
 ## Reconciliation
 
@@ -257,8 +274,15 @@ await breaks_of(bank.id)  # what is still unmatched
   amount is signed as the account sees it: positive is a debit, money in
   for a bank account kept as an asset.
 - Lines are stored once per account by their id: importing a file again
-  imports nothing more. Every line is checked first, and at most
-  `MAX_STATEMENT_LINES` of them.
+  imports nothing more. A line imported before under an id with another
+  date, amount, reference, or description is refused, with the whole
+  statement (`invalid_statement`), never skipped. Every line is checked
+  first, whatever its source, and at most `MAX_STATEMENT_LINES` of them:
+  an id of up to 128 characters, a reference of up to 128 and a
+  description of up to 255 (`CsvStatement` cuts longer ones), none with
+  control characters, which `manage.py accounting unmatched` would write
+  to a terminal. A file that is not CSV (a field over 128 KiB, say) is
+  refused the same way.
 - `reconcile` tries the rules of `MATCHING_RULES` in order, each on what
   the ones before left: `ByReference` pairs a line with the nearest
   posting whose entry has its reference, amount, and currency, within
@@ -271,6 +295,9 @@ await breaks_of(bank.id)  # what is still unmatched
 - A project's own rule is a class with a `name` and `match(lines,
   postings, window)` returning pairs (`MatchingRule`), added by path:
   `ACCOUNTING = {"MATCHING_RULES": [..., "payments.reconciliation.BySettlementId"]}`.
+  A rule that pairs a line or a posting twice, or one it was not given
+  (another account's, or one matched already), fails the reconciliation
+  (`ImproperlyConfigured`) and nothing is recorded.
 
 ## Over HTTP
 
@@ -306,6 +333,14 @@ where `ERROR_FORMAT = "problem+json"`. Amounts are `{"amount": "10.50",
 | `POST /periods` | `accounting.add_period` | Open a period. |
 | `POST /periods/{id}/close` | `accounting.close_period` | Close it. |
 | `GET /periods/{id}/trial-balance`, `/general-ledger` | `accounting.view_period` | The reports, as JSON or CSV by `Accept`. |
+
+The permissions are per model, not per holder: whoever may
+`view_account` sees every account, its `holder` among them, and whoever
+may `view_entry` every entry. `view_period` reads the reports too, which
+list every account's balance and every posting of the period, so grant
+it as you would `view_account` and `view_entry` together. A project that
+shows people their own accounts serves them from routes of its own,
+filtered by `holder`.
 
 ## From the command line
 

@@ -132,6 +132,46 @@ and a status.
   a server's code; the audit page lists, by module, the 15 left and why,
   and the 682 not checked (TEST-07).
 
+### Security
+
+- `contrib.accounting`: the sources that start with `accounting.` are the
+  ledger's own, and `post_entry` (`POST /entries`, `defer_entry`) refuses
+  them (`invalid_entry`). A caller who could post entries could take a
+  reversal's or a capture's source and reference first: `reverse_entry`
+  then returned that entry as the reversal, and the hold could never be
+  captured (a unique violation, 500 on SQLite). A reversal is now only an
+  entry that reverses the one asked, and a capture takes the entry's lock
+  and looks first, as every posting does; an entry already there is
+  refused (`reference_reused`). A posting from a message that lost its
+  race `RETRY_ATTEMPTS` times is retried by the worker, not dead-lettered
+  (SEC-14b-1).
+- `contrib.accounting`: `accounting.E001` counts an append-only trigger
+  only as `migrate` makes it: enabled, of its type, with no `WHEN` and no
+  column list, running the table's own function with its body. A trigger
+  that never fired, or that ran another function, passed the check and
+  let entries and postings change. `migrate` makes the triggers and their
+  functions afresh each time (SEC-14b-2).
+- `contrib.accounting`: a statement with a field over 128 KiB is refused
+  (`invalid_statement`), and a hold's `expires_at` must have a time zone
+  and be at most 366 days away (`invalid_entry`; a time without a zone is
+  a 422 over HTTP); both answered 500. `verify_ledger` also checks that
+  each account's `held` is the sum of its active holds, and `check` warns
+  where deployed without messaging, as no worker then releases expired
+  holds (`accounting.W003`) (SEC-14b-3).
+- `contrib.accounting`: a statement line's id, reference, and description
+  with control characters are refused (`invalid_statement`), as an
+  entry's reference is, whatever the `StatementSource`: `manage.py
+  accounting unmatched` wrote them to the operator's terminal. A line
+  imported again under its id with another date, amount, reference, or
+  description is refused, where it was skipped, and a matching rule that
+  pairs a line or posting it was not given (another account's) fails the
+  reconciliation (SEC-14b-4).
+- The accounting guide opened a wallet under `code=f"2100-{user.id}"`,
+  which erasure leaves in place (and which a UUID makes too long for a
+  code): the example takes an opaque code, with the person in `holder`
+  alone. `docs/privacy.md` says what erasure keeps: codes, names,
+  references, descriptions, and memos as written (SEC-14b-5).
+
 ## [0.13.0] - 2026-10-29
 
 A minor release. It removes what 0.12 deprecated: the hook methods of
