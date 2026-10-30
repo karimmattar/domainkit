@@ -67,7 +67,8 @@ from domainkit.contrib.messaging.dispatch import (
 )
 from domainkit.contrib.messaging.metrics import refresh_outbox
 from domainkit.contrib.messaging.outbox import message_row, notifies
-from domainkit.contrib.messaging.registry import periodic, spec_for
+from domainkit.contrib.messaging.registry import periodic, qualified_name, spec_for
+from domainkit.contrib.messaging.retry import Backoff
 from domainkit.contrib.messaging.tables import (
     CANCELLED,
     DEAD,
@@ -791,6 +792,44 @@ def test_periodic_tasks_run_at_the_default_priority() -> None:
         """Nothing."""
 
     assert spec_for(hourly).priority == 0
+
+
+def test_periodic_tasks_keep_their_options() -> None:
+    """Named after the function unless named; a backoff of their own."""
+    backoff = Backoff.fixed(60)
+
+    @periodic(timedelta(hours=1), backoff=backoff)
+    async def hourly() -> None:
+        """Nothing."""
+
+    spec = spec_for(hourly)
+    assert (spec.key, spec.backoff) == (qualified_name(hourly), backoff)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_cron_task_queued_ahead_holds_back_no_other() -> None:
+    """A daily run in the outbox already does not keep a minutely one from its next."""
+
+    @periodic(cron="0 0 * * *", name="tests.runtime.daily")
+    async def daily() -> None:
+        """Nothing."""
+
+    @periodic(cron="* * * * *", name="tests.runtime.minutely")
+    async def minutely() -> None:
+        """Nothing."""
+
+    worker = Worker()
+    with clock.freeze_time("2040-01-01T12:00:30Z") as frozen:
+        await worker.schedule_periodic()
+        frozen.tick(timedelta(minutes=1))
+        await worker.schedule_periodic()
+
+    mine = {"tests.runtime.daily", "tests.runtime.minutely"}
+    assert sorted(row["target"] for row in await rows() if row["target"] in mine) == [
+        "tests.runtime.daily",
+        "tests.runtime.minutely",
+        "tests.runtime.minutely",
+    ]
 
 
 @pytest.mark.usefixtures("tables")
