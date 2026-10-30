@@ -732,6 +732,24 @@ async def test_a_failed_declaration_names_every_new_queue(
 
 
 @pytest.mark.usefixtures("tables")
+async def test_each_failed_publication_is_logged_for_debugging(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """At DEBUG, the message, its queue, and the broker's error."""
+    await enqueue(remember, value=uuid.uuid4())
+    (row,) = await rows()
+
+    class Refusing(MemoryBroker):
+        async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+            raise BrokerUnavailable("down")
+
+    with caplog.at_level(logging.DEBUG, worker_module.__name__):
+        assert await Worker().relay(Refusing(), 10) == 0
+
+    assert f"Could not publish {row['id']} to 'default': down" in caplog.messages
+
+
+@pytest.mark.usefixtures("tables")
 async def test_confirmed_publications_are_locked_for_republish_after() -> None:
     """The lease becomes REPUBLISH_AFTER once the broker confirms."""
     await enqueue(remember, value=uuid.uuid4())
