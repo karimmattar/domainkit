@@ -1,7 +1,8 @@
 # Public API: domains, data, and resources
 
-The domain building blocks (`domainkit.ddd`), the database layer
-(`domainkit.db`), resources, ledgers, caches, storages, and brokers. Part
+The domain building blocks (`domainkit.ddd`), money (`domainkit.money`),
+the database layer (`domainkit.db`), resources, ledgers, caches,
+storages, and brokers. Part
 of the [public API](../api.md), under its compatibility policy.
 
 ## `domainkit.broker`
@@ -43,10 +44,12 @@ Caches: in process memory, or in Redis or Valkey shared by every replica.
 SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 
 - `ConnectionHandler`: Lazily created engines and session factories per alias and event loop.
+- `CurrencyCode`: A currency, stored as its code (`"USD"`) and read back as the `Currency`.
 - `DatabaseAccessRefused`: The databases were reached while `ConnectionHandler.refuse` refuses them.
 - `EnumValue`: An `Enum` stored by its members' values, so order follows them.
 - `ExactDecimal`: Fixed-point amounts that come back exactly as stored, also on SQLite.
 - `Isolation`: The isolation level of a unit of work's transaction (`isolation=`).
+- `MoneyColumns`: The two columns of a money field: `<name>` and `<name>_currency`.
 - `Reads`: How a read-only session reads (`SqlAlchemyUnitOfWork(reads=...)`).
 - `SqlAlchemyRepository`: Store one imperatively mapped aggregate type; set `model` in subclasses.
 - `SqlAlchemyUnitOfWork`: Open a session on enter, commit on `commit()`, close on exit.
@@ -83,6 +86,12 @@ Installed models: the mapped classes of installed domains, and their `Meta`.
 - `installed_models`: Every class mapped onto a table that an installed domain holds now.
 - `model_key`: The `(domain, model)` of a mapped class.
 - `model_options`: Read `cls.Meta`: `verbose_name`, `default_permissions`, `permissions`.
+
+## `domainkit.db.money`
+
+Money in tables: an amount column and a currency column, one attribute.
+
+- `MoneyColumns`: The two columns of a money field: `<name>` and `<name>_currency`.
 
 ## `domainkit.db.partitioning`
 
@@ -200,6 +209,24 @@ The ledger state a client trusts, kept where a restart does not lose it.
 - `TrustedState`: A ledger state a client verified: where the ledger was, and its digest.
 - `registered_states`: The store an installed app registered (`use_states`); None if none.
 - `use_states`: Keep ledgers' trusted states in `store`, while these domains are installed.
+
+## `domainkit.money`
+
+Money: an amount in a currency, exact, with named rounding and allocation.
+
+- `ISO_4217_PUBLISHED`: The date of the ISO 4217 list the known currencies come from (`iso4217.csv`).
+- `MAX_DIGITS`: The most digits an amount has before its point, as `NUMERIC(38)` holds.
+- `Currency`: A currency: its code, its ISO 4217 numeric code, and its minor units.
+- `CurrencyMismatch`: Amounts of two currencies were added, subtracted, or compared.
+- `InexactAmount`: An amount with more places than its currency has; nothing is rounded.
+- `Money`: An amount of money in one currency; immutable, and exact.
+- `MoneyError`: An amount or a currency that money cannot hold; the HTTP layer answers 422.
+- `Rounding`: How an amount that does not fit its currency's places is rounded.
+- `UnknownCurrency`: A code that is neither an ISO 4217 currency nor a registered one.
+- `currencies`: Every known currency, ISO 4217's and the registered ones, by code.
+- `currencies_kept`: Put the registered currencies back as they were when the block ends.
+- `currency`: The currency of `code` (`"KWD"`): ISO 4217's, or a registered one.
+- `register_currency`: Make `code` a currency, such as a token or a unit of the project's own.
 
 ## `domainkit.resources`
 

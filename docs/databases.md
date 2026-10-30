@@ -378,9 +378,11 @@ def start_mappers() -> None:
 | `Decimal` | `ExactDecimal(p, s)`; it needs `Digits(p, s)` |
 | `datetime`, `date`, `time` | `UTCDateTime`, `Date`, `Time` |
 | `UUID` (or a `NewType` of one) | `Uuid` |
+| `Money`, `Annotated[Money, Digits(p, s)]` | two columns, `<name>` (`ExactDecimal(p, s)`, default 18 and 4) and `<name>_currency` ([money.md](money.md#in-tables)) |
+| `Currency` | `CurrencyCode`: the code |
 | an `Enum` | `EnumValue`: the members' values, text or integers |
 | a value object of one field | `ValueObjectType`: that field's column type |
-| a class you registered | `register_column_type(Money, MoneyType())` |
+| a class you registered | `register_column_type(Point, PointType())` |
 | `X \| None` | the same, nullable; anything else is `NOT NULL` |
 
 - `id` is the primary key. A `version` field (every aggregate has one)
@@ -519,8 +521,10 @@ fail; to make them wait their turn instead, load the aggregate with
 
 ## Exact amounts
 
-Store money, and any amount that must not drift, in `ExactDecimal(precision,
-scale)` columns rather than `Numeric`:
+Hold money in the domain as `Money` ([money.md](money.md)): an exact
+amount and its currency, stored in an `ExactDecimal` column and a code
+column beside it. Store any other amount that must not drift in
+`ExactDecimal(precision, scale)` columns rather than `Numeric`:
 
 ```python
 from domainkit.db import ExactDecimal
@@ -728,6 +732,44 @@ say so.
   SQLite it is the database's write lock (`BEGIN IMMEDIATE`, unless the
   transaction wrote already). In memory, names are locked for the whole
   process. Take a lock before reading what it guards.
+
+### A transfer of money
+
+Both together, with `Money` ([money.md](money.md)) as the amount: lock the
+two rows in one statement, by ascending id, change both, and let `run` do
+it all again when the transaction loses a race. A balance of another
+currency refuses the amount (`CurrencyMismatch`, 422):
+
+```python
+from domainkit.ddd import ConcurrentUpdate, Retry
+
+RACES = Retry(attempts=5, retry_on=(ConcurrentUpdate,))
+
+
+async def transfer_wallet_balance(
+    command: TransferWalletBalance, uow: WalletsUnitOfWork
+) -> Wallet:
+    """Move the amount from one wallet to another, whole or not at all."""
+    source, target = WalletId(command.wallet_id), WalletId(command.to)
+
+    async def work() -> Wallet:
+        async with uow:
+            wallets = await uow.wallets.get_many_for_update([source, target])
+            wallets[source].transfer_balance(to=target, amount=command.amount)
+            wallets[target].receive_balance(amount=command.amount)
+            await uow.commit()
+        return wallets[source]
+
+    return await uow.run(work, retry=RACES)
+```
+
+`startaggregate wallets Wallet --field balance:money` writes this use
+case, the two methods (`transfer_balance` refuses an overdraft), the
+command, `POST /wallets/{wallet_id}/transfer-balance`, and their tests,
+one of them a lost race ([resources.md](resources.md#generators)). Both
+rows are locked, so the rule on each holds at `READ COMMITTED`; a rule
+across rows that are not both locked needs `SERIALIZABLE`
+([the payment recipe](recipes/payments.md)).
 
 ## Testing
 
