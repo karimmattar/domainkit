@@ -88,7 +88,10 @@ def test_the_list_is_iso_4217s_active_one_without_units_that_have_no_minor_units
     assert len(ISO) == 165
     assert date(2026, 9, 17) == ISO_4217_PUBLISHED
     assert "Published 2026-09-17" in text
-    assert "six-group.com" in text
+    assert text.splitlines()[2] == (
+        "# https://www.six-group.com/dam/download/financial-information/"
+        "data-center/iso-currrency/lists/list-one.xml"
+    )
     assert {each.minor_units for each in ISO} == {0, 2, 3, 4}
     for code in ("XAU", "XDR", "XXX", "XTS", "ANG", "HRK", "SLL"):
         with pytest.raises(UnknownCurrency):
