@@ -396,6 +396,46 @@ async def test_workers_of_one_process_share_one_budget() -> None:
 
 
 @pytest.mark.usefixtures("tables")
+async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages() -> None:
+    """The wait for a slot ends at the stop; running ones get SHUTDOWN_TIMEOUT."""
+    await enqueue(at_gate, name="held")
+    budget = WatchedBudget(1)
+    config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
+    stop = asyncio.Event()
+    running = asyncio.create_task(Worker(config, budget=budget).run(stop))
+    await gate.until(lambda: gate.started == ["held"])
+    await budget.until_waiting(1)
+
+    stop.set()
+    await within(running)
+
+    assert gate.finished == []
+    assert [row["status"] for row in await rows()] == [PENDING]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_failed_schedule_is_logged_with_its_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log record of a failed run of the periodic schedule carries the error."""
+    worker = Worker(MessagingSettings(**FAST))
+    stop = asyncio.Event()
+    failure = ConnectionError("database down")
+
+    async def broken() -> None:
+        stop.set()
+        raise failure
+
+    monkeypatch.setattr(worker, "schedule_periodic", broken)
+    with caplog.at_level(logging.ERROR, logger=worker_module.__name__):
+        await within(worker.run(stop))
+
+    (record,) = [each for each in caplog.records if each.levelno == logging.ERROR]
+    assert record.exc_info is not None
+    assert record.exc_info[1] is failure
+
+
+@pytest.mark.usefixtures("tables")
 async def test_run_once_stays_within_the_shared_budget() -> None:
     """``runworker --once`` across outboxes runs no more than the budget."""
     await enqueue(at_gate, name="d1")

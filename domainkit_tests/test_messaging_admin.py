@@ -1,19 +1,23 @@
 """What operators see of the outbox: listings, states, lag, dead letters, commands."""
 
+import io
 import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any, Final
+from typing import Annotated, Any, Final
 
 import pytest
 from sqlalchemy import insert
 
+from domainkit import setup
+from domainkit.apps import registry
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
-from domainkit.contrib.messaging import MessagingSettings
+from domainkit.contrib.messaging import MessagingSettings, task
 from domainkit.contrib.messaging import admin as outbox_admin
+from domainkit.contrib.messaging.erasure import export_subject as export_queued
 from domainkit.contrib.messaging.management.commands.messages import (
     Command as MessagesCommand,
 )
@@ -25,8 +29,9 @@ from domainkit.contrib.messaging.management.commands.runworker import (
 )
 from domainkit.contrib.messaging.tables import DEAD, DONE, PENDING, messages
 from domainkit.db import connections
+from domainkit.ddd import Personal
 from domainkit.management import BaseCommand, CommandError
-from domainkit_tests.conftest import MakeDatabase
+from domainkit_tests.conftest import ALPHA, MakeDatabase
 
 pytestmark = pytest.mark.anyio
 NOW: Final = datetime(2026, 10, 30, 12, tzinfo=UTC)
@@ -70,6 +75,26 @@ async def outbox(make_database: MakeDatabase) -> AsyncIterator[None]:
                 await connection.run_sync(messages.create)
         yield
         await connections.close_all()
+
+
+@task(name="tests.admin.greet", max_attempts=1)
+async def greet(
+    patient_id: str, email: Annotated[str, Personal(of="patient_id")]
+) -> None:
+    """A task holding a patient's address."""
+
+
+@pytest.fixture
+def installed(outbox: None) -> Iterator[None]:
+    """Messaging installed, its home outbox in ``archive``, the domains' in default."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=["domainkit.contrib.messaging", ALPHA],
+        MESSAGING={"DATABASE": "archive"},
+    ):
+        setup()
+        yield
+    registry.clear()
 
 
 async def store(*rows: dict[str, Any], database: str = "default") -> None:
@@ -163,6 +188,32 @@ async def test_lag_counts_a_message_due_this_very_moment(outbox: None) -> None:
         lag = await outbox_admin.queue_lag(CONFIG)
 
     assert lag == {"emails": 0.0}
+
+
+async def test_lag_counts_messages_whose_worker_stopped(outbox: None) -> None:
+    """A running message waits on no one; one whose lock ran out waits again."""
+    await store(
+        row("running", queue="busy", locked_until=NOW + timedelta(minutes=1)),
+        row("stopped", queue="stalled", locked_until=NOW - timedelta(seconds=1)),
+    )
+    async with connections.engine().begin() as connection:
+        await connection.execute(messages.update().values(started_at=NOW))
+
+    with freeze_time(NOW):
+        lag = await outbox_admin.queue_lag(CONFIG)
+
+    assert lag == {"stalled": 3600.0}
+
+
+async def test_a_retried_dead_letter_is_due_now_and_unfinished(outbox: None) -> None:
+    """It waits from the retry, not from when it first came, and is not finished."""
+    await store(row("dead", status=DEAD, finished_at=NOW - timedelta(minutes=5)))
+
+    with freeze_time(NOW):
+        assert await outbox_admin.retry_dead(CONFIG, None) == 1
+        (listed,) = await outbox_admin.list_messages(CONFIG, "pending", 10)
+
+    assert (listed.available_at, listed.finished_at) == (NOW, None)
 
 
 # The commands ---------------------------------------------------------------------
@@ -263,3 +314,46 @@ async def test_metrics_need_the_metrics_extra(monkeypatch: pytest.MonkeyPatch) -
         )
 
     assert str(refused.value) == "--metrics-port needs domainkit[metrics]."
+
+
+async def test_messages_refuses_a_limit_below_one(installed: None) -> None:
+    """``--limit 0`` is refused, saying what it takes."""
+    with pytest.raises(CommandError) as refused:
+        await MessagesCommand(stdout=io.StringIO()).handle(
+            state="dead", limit=0, queue=None, retry=None, cancel=None, database=None
+        )
+
+    assert str(refused.value) == "--limit must be 1 or more."
+
+
+async def test_messages_shows_the_lag_of_the_outbox_named(installed: None) -> None:
+    """``--database`` picks the outbox its counts and its lag come from."""
+    await store(row("archived", queue="archive"), database="archive")
+    await store(row("here", queue="default"))
+    printed = io.StringIO()
+
+    with freeze_time(NOW):
+        await MessagesCommand(stdout=printed).handle(
+            state=None,
+            limit=20,
+            queue=None,
+            retry=None,
+            cancel=None,
+            database="archive",
+        )
+
+    assert printed.getvalue().splitlines()[-1] == "lag archive: 3600.0s"
+
+
+async def test_an_export_reads_every_outbox(installed: None) -> None:
+    """The home outbox's messages about the subject, then each host's."""
+    arguments = {"patient_id": "p1", "email": "ann@example.com"}
+    await store(row("tests.admin.greet", payload=arguments), database="archive")
+    await store(row("tests.admin.greet", payload=arguments))
+
+    exported = await export_queued("p1")
+
+    assert [(each["database"], each["arguments"]) for each in exported] == [
+        ("archive", arguments),
+        ("default", arguments),
+    ]
