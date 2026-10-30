@@ -696,6 +696,42 @@ async def test_a_round_never_unlocks_a_message_a_consumer_took_over() -> None:
 
 
 @pytest.mark.usefixtures("tables")
+async def test_a_confirmed_message_a_consumer_took_over_keeps_its_lease() -> None:
+    """The relay's REPUBLISH_AFTER lock goes only on messages it still holds."""
+    await enqueue(remember, value=uuid.uuid4())
+    worker = Worker()
+    taken: list[Claimed | None] = []
+
+    class Confirming(MemoryBroker):
+        async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+            pointer = json.loads(body)
+            message, lock = uuid.UUID(pointer["id"]), uuid.UUID(pointer["lock"])
+            taken.append(await worker.take_over(message, lock))  # A fast consumer.
+            await super().publish(queue, body, message_id=message_id)
+
+    assert await within(worker.relay(Confirming(), 10)) == 1
+
+    (claimed,) = taken
+    assert claimed is not None
+    (row,) = await rows()
+    assert row["lock_id"] == claimed.lock_id
+    assert seconds_left(row) <= worker.config.VISIBILITY_TIMEOUT
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_failed_declaration_names_every_new_queue(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The queues the relay could not declare are listed, apart."""
+    await enqueue(remember, value=uuid.uuid4())
+    await enqueue(at_gate_emails, name="e")
+    with caplog.at_level(logging.WARNING, worker_module.__name__):
+        assert await Worker().relay(Down(), 10) == 0
+
+    assert "(declaring 'default', 'emails': down)" in caplog.messages[0]
+
+
+@pytest.mark.usefixtures("tables")
 async def test_confirmed_publications_are_locked_for_republish_after() -> None:
     """The lease becomes REPUBLISH_AFTER once the broker confirms."""
     await enqueue(remember, value=uuid.uuid4())
