@@ -26,11 +26,18 @@ from domainkit.contrib.accounting import (
     Line,
     PeriodNotFound,
     PostEntry,
+    expire_holds,
     general_ledger,
     post_entry,
     protection,
     trial_balance,
     verify_ledger,
+)
+from domainkit.contrib.accounting.reconciliation import (
+    CsvStatement,
+    breaks_of,
+    import_statement,
+    reconcile,
 )
 from domainkit.contrib.accounting.tables import accounts, postings
 from domainkit.contrib.accounting.tasks import POST_ENTRY
@@ -39,11 +46,12 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command, operators
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import POSTGRES_VARIABLE, Migrated
+from domainkit_tests.conftest import POSTGRES_VARIABLE, MakeDatabase, Migrated
 from domainkit_tests.test_accounting import (
     ACCOUNTING,
     ALPHA,
     LEDGER,
+    MESSAGING,
     TODAY,
     account,
     books,  # noqa: F401 - the fixture.
@@ -584,3 +592,69 @@ def test_the_command_reconciles_a_statement(
         run("reconcile", "9999")
     with pytest.raises(CommandError, match="No account is"):
         run("unmatched", str(uuid.uuid4()))
+
+
+def test_the_ledger_works_in_a_database_of_its_own(
+    make_database: MakeDatabase, tmp_path: Path
+) -> None:
+    """Routed to another alias, every part of it reads and writes there."""
+    registry.clear()
+    urls = {"default": make_database("main"), "books": make_database("books")}
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING, ACCOUNTING, ALPHA],
+        DATABASES={alias: {"URL": url} for alias, url in urls.items()},
+        DATABASE_ROUTING={"accounting": "books"},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+    ):
+        setup()
+        call_command("makemigrations", "-m", "books", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+
+        async def scenario() -> dict[str, object]:
+            october = await period()
+            wallet = await account("2000", type=AccountType.LIABILITY, holder="s-1")
+            bank = await account("1000")
+            await post_entry(
+                transfer(wallet, bank, usd("5"), "s-1"), AccountingUnitOfWork()
+            )
+            await import_statement(
+                bank.id,
+                CsvStatement(
+                    "id,date,amount,currency,reference\nb,2026-10-30,5,USD,s-1\n"
+                ),
+            )
+            async with connections.engine("books").connect() as connection:
+                postgres = connection.dialect.name == "postgresql"
+                missing = await protection.missing(connection) if postgres else []
+            (export,) = on_export_subject.of("accounting")
+            return {
+                "balance": (await trial_balance(october)).balanced,
+                "ledger": "".join([p async for p in general_ledger(october, "csv")]),
+                "verify": await verify_ledger(),
+                "matched": (await reconcile(bank.id)).matched,
+                "breaks": await breaks_of(bank.id),
+                "expired": await expire_holds(),
+                "export": await export.call("s-1"),
+                "problems": await protection.protection_problems(),
+                "missing": missing,
+                "elsewhere": await _tables("default"),
+            }
+
+        found = run_async(scenario())
+    registry.clear()
+
+    assert found["balance"] is True
+    assert "s-1" in str(found["ledger"])
+    assert (found["verify"], found["breaks"], found["expired"]) == ([], [], 0)
+    assert found["matched"] == {"reference": 1}
+    assert found["export"] != {}
+    assert (found["problems"], found["missing"]) == ([], [])
+    assert not [name for name in found["elsewhere"] if "accounting" in name]  # type: ignore[attr-defined]
+
+
+async def _tables(alias: str) -> list[str]:
+    """The tables of ``alias``'s database."""
+    async with connections.engine(alias).connect() as connection:
+        return await connection.run_sync(
+            lambda sync: sorted(sync.dialect.get_table_names(sync))
+        )
