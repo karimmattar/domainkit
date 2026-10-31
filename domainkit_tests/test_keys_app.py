@@ -167,6 +167,7 @@ def test_each_provider_is_made_from_its_settings() -> None:
     )
     assert isinstance(aws, AwsKmsKeyProvider)
     assert (aws.key_id, aws.endpoint) == ("alias/k", "https://kms.test")
+    assert (aws.region, aws.client.timeout) == ("eu-west-1", 5.0)
     vault = provider_for(
         KeysSettings(
             PROVIDER="vault",
@@ -175,12 +176,15 @@ def test_each_provider_is_made_from_its_settings() -> None:
                 "KEY": "k",
                 "TOKEN": "t",
                 "NAMESPACE": "n",
+                "MOUNT": "keys/transit",
             },
             DATA_KEYS={"a": "vault:v1:x"},
+            TIMEOUT=2.5,
         )
     )
     assert isinstance(vault, VaultTransitKeyProvider)
-    assert (vault.key, vault.mount, vault.namespace) == ("k", "transit", "n")
+    assert (vault.key, vault.mount, vault.namespace) == ("k", "keys/transit", "n")
+    assert (vault.url, vault.client.timeout) == ("https://vault.test", 2.5)
     assert isinstance(provider_for(KeysSettings()), LocalKeyProvider)
 
 
@@ -189,6 +193,9 @@ def test_without_data_keys_the_ring_has_a_development_key() -> None:
     first, second = ring_for(KeysSettings()), ring_for(KeysSettings())
     assert first.ids == ("dev",)
     assert first.data_key("dev") == second.data_key("dev")
+    assert first.data_key("dev") == derive_key(
+        "keys.development-data-key", key=SECRET_KEY
+    )
     assert ring_for(KeysSettings(DATA_KEYS={"a": FIRST})).ids == ("a",)
 
 
@@ -404,7 +411,12 @@ def test_rotating_the_data_key_and_reencrypting(
                 Payment(
                     id=uuid.UUID(int=1), holder_id=ANN, pan=CardNumber(PAN), note="n"
                 ),
-                Payment(id=uuid.UUID(int=2), holder_id=BOB, pan=CardNumber("5500")),
+                Payment(
+                    id=uuid.UUID(int=2),
+                    holder_id=BOB,
+                    pan=CardNumber("5500"),
+                    note="m",
+                ),
             )
         )
         assert "retired: none" in command("status", "--check")
@@ -420,18 +432,21 @@ def test_rotating_the_data_key_and_reencrypting(
             "default cards_cardholders.card_number: b: 0, a: 0; subjects' keys: 1; "
             "indexes to remake: 1" in status
         )
-        assert "default subjects' keys wrapped under a: 1" in status
-        with pytest.raises(CommandError, match=r"keys\.W001: 7 value"):
+        assert "default subjects' keys wrapped under a: 2" in status
+        with pytest.raises(CommandError, match=r"keys\.W001: 8 value"):
             command("status", "--check")
         with pytest.raises(CommandError, match="at least 1"):
             command("reencrypt", "--batch-size", "0")
         printed = command("reencrypt", "--batch-size", "1")
         assert printed.strip() == (
-            "Sealed 3 value(s) again, remade 3 blind index(es), and wrapped 1 subject "
+            "Sealed 3 value(s) again, remade 3 blind index(es), and wrapped 2 subject "
             "key(s) under b."
         )
         assert "retired: a." in command("status", "--check")
-        assert command("reencrypt").startswith("Sealed 0 value(s)")
+        assert command("reencrypt").strip() == (
+            "Sealed 0 value(s) again, remade 0 blind index(es), and wrapped 0 subject "
+            "key(s) under b."
+        )
         recorded = run_async(
             rows(
                 "SELECT details FROM domainkit_audit_log "
@@ -443,7 +458,7 @@ def test_rotating_the_data_key_and_reencrypting(
         assert {
             key: first[key]
             for key in ("current", "values", "indexes", "subject_keys", "failed")
-        } == {"current": "b", "values": 3, "indexes": 3, "subject_keys": 1, "failed": 0}
+        } == {"current": "b", "values": 3, "indexes": 3, "subject_keys": 2, "failed": 0}
     with project(database_url, tmp_path, AUDIT, DATA_KEYS={"b": SECOND}):
         holders, payments = run_async(read_all())
         assert [holder.card_number for holder in holders] == [PAN, None]
@@ -706,3 +721,32 @@ def test_two_writers_of_a_subjects_first_key_both_keep_the_first(
         made, kept = run_async(store_both())
     assert made is first
     assert (kept.id, kept.wrapped) == (first.id, first.wrapped)
+
+
+def test_an_action_is_required(database_url: str, tmp_path: Path) -> None:
+    """``keys`` alone does nothing, and says so."""
+    with project(database_url, tmp_path), pytest.raises((CommandError, SystemExit)):
+        command()
+
+
+def test_key_ids_are_matched_as_written_not_as_patterns(
+    database_url: str, tmp_path: Path
+) -> None:
+    """``_`` in an id is no wildcard: ``x21``'s values are not ``x_1``'s."""
+    with project(database_url, tmp_path, DATA_KEYS={"x21": FIRST}):
+        run_async(
+            save(Cardholder(id=ANN, name="Ann", card_number=PAN, api_secret=b"s"))
+        )
+    keys = {"DATA_KEYS": {"x_1": SECOND, "x21": FIRST}, "CURRENT_KEY": "x_1"}
+    with project(database_url, tmp_path, **keys):
+        status = command("status")
+        assert "cards_cardholders.api_secret: x_1: 0, x21: 1;" in status
+        assert "cards_cardholders.card_number: x_1: 0, x21: 0; subjects' keys: 1; " in (
+            status
+        )
+        assert "indexes to remake: 1" in status
+    keys = {"DATA_KEYS": {"x_1": SECOND, "x21": FIRST}, "CURRENT_KEY": "x21"}
+    with project(database_url, tmp_path, **keys):
+        assert "cards_cardholders.card_number: x21: 0, x_1: 0; subjects' keys: 1\n" in (
+            command("status")
+        )

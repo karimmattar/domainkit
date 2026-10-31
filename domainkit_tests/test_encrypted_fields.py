@@ -234,6 +234,18 @@ async def test_a_sealed_value_set_on_purpose_is_written_as_it_is(bank: str) -> N
         payment.note = Ciphertext(sealed)
         await uow.commit()
     assert (await raw("SELECT note FROM cards_payments"))[0]["note"] == sealed
+    pan = (await raw("SELECT pan FROM cards_payments"))[0]["pan"]
+    async with CardsUnitOfWork() as uow:
+        payment = await uow.payments.get(uuid.UUID(int=1))
+        payment.pan = Ciphertext(pan)
+        payment.note = "later fields are still sealed"
+        await uow.commit()
+    async with CardsUnitOfWork() as uow:
+        payment = await uow.payments.get(uuid.UUID(int=1))
+    assert (payment.pan, payment.note) == (
+        CardNumber(PAN),
+        "later fields are still sealed",
+    )
 
 
 @pytest.mark.anyio
@@ -422,8 +434,11 @@ def test_dumpdata_writes_ciphertext_unless_asked_to_decrypt(
         (tmp_path / name).write_text(text_)
         call_command("loaddata", str(tmp_path / name), stdout=io.StringIO())
         ann, payment, found = run_async(read_back())
-        stored = run_async(raw("SELECT note FROM cards_payments"))[0]["note"]
-        assert stored.startswith("dk1:s.")  # Sealed for its holder, as loaded.
+        stored = run_async(raw("SELECT pan, note FROM cards_payments"))[0]
+        assert stored["note"].startswith("dk1:s.")  # Sealed for its holder.
+        assert stored["pan"].startswith("dk1:k.")  # No subject: the data key.
+        subjects = run_async(raw("SELECT subject FROM domainkit_keys_subject_keys"))
+        assert {row["subject"] for row in subjects} == {str(ANN)}
         assert (ann.card_number, ann.api_secret) == (PAN, b"\x00\xff")
         assert (payment.pan, payment.note) == (CardNumber(PAN), "gift")
         assert [each.id for each in found] == [uuid.UUID(int=1)]
@@ -637,6 +652,15 @@ def test_an_encrypted_value_object_may_be_sensitive() -> None:
 
 def test_an_encrypted_column_takes_its_kind_only() -> None:
     """``to_bytes`` refuses another kind; text keeps lone surrogates."""
+
+    class Wrapped(ValueObject):
+        """A card number inside another value object."""
+
+        value: CardNumber
+
+    nested = EncryptedType(Wrapped)
+    assert nested.from_bytes(b"41") == Wrapped(CardNumber("41"))
+    assert nested.to_bytes(Wrapped(CardNumber("41"))) == b"41"
     numbers = EncryptedType(CardNumber)
     assert numbers.to_bytes(PAN) == numbers.to_bytes(CardNumber(PAN)) == PAN.encode()
     type_ = EncryptedType(str)

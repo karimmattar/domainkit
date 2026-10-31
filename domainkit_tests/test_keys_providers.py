@@ -886,3 +886,28 @@ async def test_a_role_without_its_token_file_is_no_web_identity(
     monkeypatch.setenv("AWS_ROLE_ARN", "arn:role")
     with pytest.raises(KeyProviderError, match="unset"):
         await default_credentials("eu-west-1")()
+
+
+def test_sigv4_dates_are_utc_whatever_the_local_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In Tokyo, a moment still signs as its UTC time."""
+    import time
+
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        signed = sign(
+            "GET",
+            "https://iam.amazonaws.com/",
+            {},
+            b"",
+            CREDENTIALS,
+            region="us-east-1",
+            service="iam",
+            now=datetime(2015, 8, 30, 12, 36, tzinfo=UTC),
+        )
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    assert signed["X-Amz-Date"] == "20150830T123600Z"
