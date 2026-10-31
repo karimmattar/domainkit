@@ -127,8 +127,20 @@ class ExactDecimal(TypeDecorator[Decimal]):
             A number an amount is multiplied or divided by, given as a value
             or as a bound parameter, is a factor, never an amount: on SQLite
             it must not be counted in minor units.
+
+            Raises:
+                TypeError: The operand of a product or a quotient is an
+                    amount too (``ExactDecimal``): the result means nothing
+                    for money, and on SQLite both would count in minor units.
             """
             if op in _SCALING and other:
+                if _is_amount(other[0]):
+                    raise TypeError(
+                        "An amount (ExactDecimal) is multiplied or divided by a "
+                        "number, not by another amount: give the factor as a "
+                        "plain Decimal or an untyped bindparam, or an integer or "
+                        "numeric column."
+                    )
                 factor = _factor(op, other[0])
                 if factor is not None:
                     return _Scaling(self.expr, factor, op, self.type)
@@ -247,6 +259,13 @@ def _decimal(value: object) -> Decimal:
     if not amount.is_finite():
         raise ValueError(f"ExactDecimal cannot hold {amount}.")
     return amount
+
+
+def _is_amount(operand: object) -> bool:
+    """Whether ``operand`` is an expression of an amount: typed ``ExactDecimal``."""
+    return isinstance(operand, ColumnElement) and isinstance(
+        operand.type, ExactDecimal
+    )
 
 
 def _factor(op: OperatorType, operand: object) -> ColumnElement[Any] | None:

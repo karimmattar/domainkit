@@ -159,6 +159,13 @@ and a status.
   none pinned, 75 die on PostgreSQL, 176 are equivalent and 84 reach only
   a server's code; the audit page lists, by module, the 15 left and why,
   and the 682 not checked (TEST-07).
+- **Breaking:** an amount (`ExactDecimal`, money's amount column)
+  multiplied or divided by another amount (`price * cost`, or a parameter
+  or literal typed as an amount) raises `TypeError` as the expression is
+  built, on both databases. On SQLite both sides counted in minor units,
+  so 9.95 times a typed 2 was 1990.00, where PostgreSQL gave 19.90. Give
+  the factor as a plain `Decimal`, an untyped `bindparam`, or an integer
+  or numeric column; `+` and `-` between amounts are unchanged (TEST-11).
 
 ### Fixed
 

@@ -587,8 +587,10 @@ PostgreSQL would store differently.
   starts from the integer column, and SQLite would add a count to cents.
 - **In Python instead:**
   - floor division (`price // 2` is refused);
-  - arithmetic between two amount columns other than `+` and `-` (on SQLite
-    `price * cost` multiplies cents by cents);
+  - products and quotients of two amounts: `price * cost`, or `price *
+    bindparam("x", type_=price.type)`, raise `TypeError` as they are
+    built (on SQLite they multiplied cents by cents); give the factor as a
+    number instead;
   - new amounts with more places than the column, such as
     `update(...).values(price=prices.c.price * Decimal("1.1"))`.
     PostgreSQL rounds them to the column's scale, and SQLite keeps the
