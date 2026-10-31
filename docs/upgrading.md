@@ -27,6 +27,15 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **Auth has three new tables** (FIN-29, FIN-30, FIN-42):
+  `domainkit_step_ups`, `domainkit_sca_challenges`, and
+  `domainkit_password_history`. No default changed, and only `StepUp`,
+  the step-up and transaction routes, `PASSWORD_HISTORY`, and
+  `PASSWORD_CHANGE_ON_FIRST_USE` read and write them; but deleting or
+  erasing a user deletes the user's rows there, and the hourly purge of
+  tokens and `cleartokens` clear old ones, so each fails until the
+  database has them. **Fix:** run `makemigrations` and `migrate` in each
+  project that installs auth, before the new version serves.
 - **Messaging's outbox gained columns, a status, and a table** (FIN-19).
   The outbox has `ordering_key` and `sequence` columns, a `held` status,
   and an index, `ix_domainkit_messages_ordering`, and messaging has a

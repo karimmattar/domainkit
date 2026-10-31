@@ -37,6 +37,9 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `ModelBackend`: Passwords from the user table; permissions of users and their groups.
 - `PasswordHash`: A stored password: a hasher's `<algorithm>$...`, or unusable (`!...`).
 - `Permission`: Permission to do something to one content type: `<domain>.<codename>`.
+- `Proof`: A step-up: when the user authenticated again, and with what.
+- `StepUp`: Users who authenticated again, with a second factor, within `max_age`.
+- `StepUpRequired`: The rule needs a step-up the credentials do not hold (401).
 - `TokenAuthentication`: Opaque tokens: `Authorization: Bearer <AUTH.TOKEN_PREFIX>...`.
 - `TokenKind`: What a token may be used for.
 - `UnknownGroup`: No group has that name.
@@ -83,6 +86,7 @@ How requests prove who sent them (Django REST framework's authentication).
 - `BaseAuthentication`: Recognizes no credentials and issues no tokens; override what you need.
 - `Credentials`: Who sent a request, and with what (`request.auth`).
 - `JWTAuthentication`: Signed access tokens (JSON Web Tokens) and opaque refresh tokens.
+- `Proof`: A step-up: when the user authenticated again, and with what.
 - `TokenAuthentication`: Opaque tokens: `Authorization: Bearer <AUTH.TOKEN_PREFIX>...`.
 - `active_user`: The active user `user_id`, loaded with groups and permissions.
 
@@ -181,11 +185,28 @@ Password resets and email verification, by links sent by email.
 
 - `router`: The routes: password resets and email verification, by links sent by email.
 
+## `domainkit.contrib.auth.sca`
+
+Transactions authorized for one amount and one payee (PSD2's dynamic linking).
+
+- `InvalidTransaction`: The amount, payee, or purpose cannot be authorized as given.
+- `ScaChallenge`: A transaction waiting for its user's authorization, or holding it.
+- `TransactionNotAuthorized`: No authorization holds for this transaction: get one, then try again (403).
+- `consume_authorization`: Spend `authorization` on this transaction, once; return what it was for.
+- `request_authorization`: Store a transaction for `user_id` to confirm, for `AUTH.SCA.TTL`.
+- `router`: The routes: transactions authorized for one amount and one payee (PSD2's dynamic linking).
+
 ## `domainkit.contrib.auth.signup`
 
 Signing up: anyone may ask for an account, if `AUTH.SIGNUP_ENABLED` says so.
 
 - `router`: The routes: signing up: anyone may ask for an account, if `AUTH.SIGNUP_ENABLED` says so.
+
+## `domainkit.contrib.auth.stepup`
+
+Stepping up: authenticating again, with a second factor, for one act.
+
+- `router`: The routes: stepping up: authenticating again, with a second factor, for one act.
 
 ## `domainkit.contrib.auth.testing`
 
@@ -199,6 +220,7 @@ Users and groups for tests, stored as the application stores them.
 Rules for new passwords (Django's `password_validation`).
 
 - `CommonPasswordValidator`: Not on a list of common passwords (default: Django's 20,000).
+- `LettersAndDigitsValidator`: At least one letter and one digit, as PCI DSS v4.0 asks (8.3.6).
 - `MinimumLengthValidator`: At least `min_length` characters (default 8).
 - `NumericPasswordValidator`: Not only digits.
 - `UserAttributeSimilarityValidator`: Not too much like the user's username, names, or email.
