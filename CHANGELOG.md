@@ -412,6 +412,22 @@ and a status.
   the docs say to namespace keys, never to take them raw from a request,
   and to keep personal data out of them, as erasure and export do not
   reach them (SEC-14c-2).
+- The ledger refuses to reverse a reversal (`ReversalNotReversible`, 422
+  `reversal_not_reversible`). Reversing one booked the entry it undid
+  again, as a reversal, which limits do not count and approvals do not
+  guard: a payment reversed, then its reversal reversed, left the account
+  again with nothing counted, as often as it held money, and an approved
+  large entry was booked again without approval. Post the entry again
+  instead (SEC-15b-3).
+- Limits count every movement, whether a window bounds its subject or
+  not: a limit set partway through its window, a limit that gains a
+  window, and an exemption lifted count what moved earlier in the window,
+  where they missed it (a daily 1,000 set at 11:00 let another 900
+  through after 900 at 10:00). A posting costs two statements more
+  without limits, one more with them (ADR 0123's amendment). A holder or
+  actor that is not a valid subject (a control character, more than 255
+  characters) is counted under its `sha256:` digest, where it refused
+  every posting to its accounts (SEC-15b-5).
 
 ## [0.13.0] - 2026-10-29
 

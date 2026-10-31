@@ -15,10 +15,13 @@ commits with the movement, or rolls back with it::
 
 ``consume`` refuses a movement over a limit (``LimitExceeded``,
 ``TransactionLimitExceeded``) and counts one within them. Two movements
-of one subject are counted one after the other: each locks the subject's
-row (``subjects``), then sums its usage in each window, on the database's
-clock. Locks are taken in the order of the subjects' keys; take them after
-the rows of the use case's own. ``check`` says whether a movement would
+of one subject that a window bounds are counted one after the other:
+each locks the subject's row (``subjects``), then sums its usage in each
+window, on the database's clock. Locks are taken in the order of the
+subjects' keys; take them after the rows of the use case's own. Every
+movement is counted, a subject no window bounds too, without a lock: so
+a limit set, or an exemption lifted, partway through a window counts
+what moved earlier in it (SEC-15b-5). ``check`` says whether a movement would
 pass, counting nothing; ``release`` gives back what was counted under a
 key (a refund, a reversal). See ADR 0123.
 """
@@ -35,6 +38,7 @@ from sqlalchemy import (
     ColumnElement,
     Row,
     and_,
+    bindparam,
     delete,
     exists,
     func,
@@ -408,6 +412,82 @@ async def _lock(session: AsyncSession, key: SubjectKey) -> tuple[UUID, datetime]
     return row.id, row.touched_at
 
 
+async def _ensure(session: AsyncSession, keys: list[SubjectKey]) -> None:
+    """Make the rows of the subjects of ``keys`` that have none, locking none.
+
+    One statement; a row that is there stays as it is, unlocked: no window
+    bounds these subjects, so their movements need not wait for each other.
+    """
+    if not keys:
+        return
+    dialect = session.get_bind().dialect.name
+    now = dbclock.now(dialect)
+    statement = _upsert(dialect)(subjects).values(
+        [
+            {
+                "id": uuid4(),
+                "kind": kind,
+                "direction": direction,
+                "currency": currency,
+                "subject": subject,
+                "touched_at": now,
+            }
+            for kind, direction, currency, subject in keys
+        ]
+    )
+    await session.execute(
+        statement.on_conflict_do_nothing(
+            index_elements=[
+                subjects.c.kind,
+                subjects.c.direction,
+                subjects.c.currency,
+                subjects.c.subject,
+            ]
+        )
+    )
+
+
+async def _record(
+    session: AsyncSession, tallies: dict[SubjectKey, list[Decimal]], key: str | None
+) -> None:
+    """Count each movement of each subject, under ``key``, at now: one statement.
+
+    Each row finds its subject's id by the subject's key, in the statement.
+    """
+    owner = (
+        select(subjects.c.id)
+        .where(
+            subjects.c.kind == bindparam("s_kind"),
+            subjects.c.direction == bindparam("s_direction"),
+            subjects.c.currency == bindparam("s_currency"),
+            subjects.c.subject == bindparam("s_subject"),
+        )
+        .scalar_subquery()
+    )
+    statement = insert(usage).values(
+        id=bindparam("u_id"),
+        subject_id=owner,
+        amount=bindparam("u_amount"),
+        at=dbclock.now(session.get_bind().dialect.name),
+        key=key,
+    )
+    await session.execute(
+        statement,
+        [
+            {
+                "u_id": uuid4(),
+                "s_kind": kind,
+                "s_direction": direction,
+                "s_currency": currency,
+                "s_subject": subject,
+                "u_amount": amount,
+            }
+            for (kind, direction, currency, subject), amounts in tallies.items()
+            for amount in amounts
+        ],
+    )
+
+
 async def consume(
     uow: SqlAlchemyUnitOfWork, *movements: Movement, key: str | None = None
 ) -> None:
@@ -416,7 +496,8 @@ async def consume(
     Call it inside ``uow``, on the limits' database, before its commit: the
     count commits with the use case's changes, or rolls back with them. A
     movement within every limit is counted under ``key``, which ``release``
-    gives back.
+    gives back; every movement is counted, whether a window bounds its
+    subject now or not.
 
     Raises:
         TransactionLimitExceeded: A movement is more than one may be.
@@ -432,25 +513,16 @@ async def consume(
         await uow.lock(LOCK)
     rules = await _rules(session, tallies)
     _transactions(tallies, rules)
-    rows: list[dict[str, object]] = []
+    unbounded: list[SubjectKey] = []
     for subject_key, amounts in tallies.items():
         windowed = _windowed(subject_key, rules)
         if not windowed:
+            unbounded.append(subject_key)
             continue
         subject_id, now = await _lock(session, subject_key)
         _judge(windowed, await _used(session, subject_id, now, windowed), amounts)
-        rows.extend(
-            {
-                "id": uuid4(),
-                "subject_id": subject_id,
-                "amount": amount,
-                "at": now,
-                "key": key,
-            }
-            for amount in amounts
-        )
-    if rows:
-        await session.execute(insert(usage), rows)
+    await _ensure(session, unbounded)
+    await _record(session, tallies, key)
 
 
 async def check(uow: SqlAlchemyUnitOfWork, *movements: Movement) -> None:
