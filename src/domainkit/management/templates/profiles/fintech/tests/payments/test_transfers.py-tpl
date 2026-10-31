@@ -1,0 +1,112 @@
+"""A transfer is confirmed for its amount and card, counted, and approved."""
+
+from decimal import Decimal
+
+from domainkit.contrib.limits import LimitsUnitOfWork, SetLimit, set_limit
+from domainkit.contrib.messaging.testing import Outbox
+from domainkit.money import Money
+from domainkit.testing import TestClient
+
+from tests.people import URL, Person, usd
+
+
+def test_a_small_transfer_is_made_once_however_often_it_is_sent(maker: Person) -> None:
+    """Confirmed with a code, made, and a retry with its key replays it."""
+    card = maker.register_card()
+    authorization = maker.authorize(card, usd("250.00"))
+
+    made = maker.transfer(card, usd("250.00"), authorization)
+    retried = maker.transfer(card, usd("250.00"), authorization)
+
+    assert made.status_code == 201, made.json()
+    assert made.json()["amount"] == usd("250.00")
+    assert (retried.json(), retried.headers["Idempotent-Replayed"]) == (
+        made.json(),
+        "true",
+    )
+    shown = maker.api.get(f"{URL}/transfers/{made.json()['id']}")
+    assert shown.json() == made.json()
+
+
+def test_a_transfer_needs_an_idempotency_key(maker: Person) -> None:
+    """Refused before anything moves: a retry could not be told apart."""
+    card = maker.register_card()
+    authorization = maker.authorize(card, usd("10.00"))
+
+    refused = maker.transfer(card, usd("10.00"), authorization, key=None)
+
+    assert (refused.status_code, refused.json()["code"]) == (
+        400,
+        "idempotency_key_required",
+    )
+
+
+def test_an_authorization_holds_for_its_amount_and_card_only(maker: Person) -> None:
+    """Another amount is refused, and the authorization is spent for good."""
+    card = maker.register_card()
+    authorization = maker.authorize(card, usd("100.00"))
+
+    changed = maker.transfer(card, usd("900.00"), authorization)
+    then = maker.transfer(card, usd("100.00"), authorization, key="transfer-2")
+
+    for refused in (changed, then):
+        assert (refused.status_code, refused.json()["code"]) == (
+            403,
+            "transaction_not_authorized",
+        )
+
+
+def test_a_transfer_over_the_customers_limit_moves_nothing(
+    client: TestClient, maker: Person
+) -> None:
+    """The limit counts in the transfer's own transaction: refused, 422."""
+    limit = SetLimit(
+        code="payments.customer",
+        kind="holder",
+        currency="USD",
+        subject=maker.id,
+        per_transaction=Money.of("100.00", "USD"),
+    )
+    client.run(set_limit, limit, LimitsUnitOfWork())
+    card = maker.register_card()
+    authorization = maker.authorize(card, usd("150.00"))
+
+    refused = maker.transfer(card, usd("150.00"), authorization)
+
+    assert (refused.status_code, refused.json()["code"]) == (
+        422,
+        "transaction_limit_exceeded",
+    )
+    usage = maker.api.get("/api/limits/usage", params={"kind": "holder"})
+    assert usage.status_code == 403  # The customer reads no one's usage.
+
+
+def test_a_large_transfer_runs_once_another_person_approves_it(
+    maker: Person, approver: Person, outbox: Outbox
+) -> None:
+    """Over the threshold: 202, then an approver who stepped up approves it."""
+    card = maker.register_card()
+    authorization = maker.authorize(card, usd("5000.00"))
+
+    pending = maker.transfer(card, usd("5000.00"), authorization)
+    assert pending.status_code == 202, pending.json()
+    request_url = f"/api/approvals/requests/{pending.json()['approval_request']}"
+    request = approver.api.get(request_url).json()
+    approve = {"fingerprint": request["fingerprint"]}
+    by_the_maker = maker.api.post(f"{request_url}/approve", json=approve)
+    not_stepped_up = approver.api.post(f"{request_url}/approve", json=approve)
+    approver.step_up()
+    approved = approver.api.post(f"{request_url}/approve", json=approve)
+    outbox.run_queued()
+
+    assert request["arguments"]["amount"] == usd("5000.00")
+    assert by_the_maker.status_code == 403
+    assert (not_stepped_up.status_code, not_stepped_up.json()["code"]) == (
+        401,
+        "step_up_required",
+    )
+    assert approved.status_code == 200, approved.json()
+    made = maker.api.get(f"{URL}/transfers/{pending.json()['transfer_id']}")
+    assert made.status_code == 200, made.json()
+    assert Decimal(made.json()["amount"]["amount"]) == Decimal(5000)
+    assert approver.api.get(request_url).json()["status"] == "executed"

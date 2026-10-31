@@ -1,0 +1,22 @@
+"""Transaction boundary of the payments use cases (a port)."""
+
+from abc import ABC, abstractmethod
+
+from domainkit.ddd import UnitOfWork
+from domainkit.money import Money
+
+from domains.payments.domain.model import CardRepository, TransferRepository
+
+
+class PaymentsUnitOfWork(UnitOfWork, ABC):
+    """Repositories the payments use cases may touch in one transaction."""
+
+    cards: CardRepository
+    transfers: TransferRepository
+
+    @abstractmethod
+    async def count_movement(self, amount: Money, *, holder: str, key: str) -> None:
+        """Count ``amount`` leaving ``holder`` against their limits, or refuse it.
+
+        The count commits with this unit of work, or rolls back with it.
+        """

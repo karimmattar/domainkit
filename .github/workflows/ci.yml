@@ -491,6 +491,7 @@ jobs:
       - run: |
           python -m zipfile -l dist/*.whl | grep -q "management/templates/domain"
           python -m zipfile -l dist/*.whl | grep -q "management/templates/project/dot-env-tpl"
+          python -m zipfile -l dist/*.whl | grep -q "management/templates/profiles/fintech/dot-github/workflows/ci.yml-tpl"
           python -m zipfile -l dist/*.whl | grep -q "contrib/auth/common-passwords.txt.gz"
       - run: |
           python -m venv /tmp/clean

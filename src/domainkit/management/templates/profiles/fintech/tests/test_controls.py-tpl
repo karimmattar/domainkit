@@ -1,0 +1,66 @@
+"""The controls every route and command goes through, across domains."""
+
+import io
+
+from domainkit.contrib.auth import InvalidPassword, validate_password
+from domainkit.http import get_asgi_application
+from domainkit.http.access import open_routes
+from domainkit.management import call_command
+from domainkit.testing import TestClient
+from fastapi import FastAPI
+
+from tests.people import Person, usd
+
+
+def test_every_route_says_who_may_call_it(db: None) -> None:
+    """Deny by default: no route is left without an access rule."""
+    app = get_asgi_application()
+
+    assert isinstance(app, FastAPI)
+    assert open_routes(app) == []
+
+
+def test_passwords_follow_pci_dss(db: None) -> None:
+    """12 characters at least, with letters and digits (the PCI preset)."""
+    for weak in ("short1", "onlyletterslong", "123456789012345"):
+        try:
+            validate_password(weak)
+        except InvalidPassword:
+            continue
+        raise AssertionError(f"{weak!r} was accepted.")
+
+
+def test_the_trail_names_who_moved_money_and_verifies(maker: Person) -> None:
+    """The transfer's event is audited with its maker; sealed, the chain holds."""
+    card = maker.register_card()
+    maker.transfer(card, usd("20.00"), maker.authorize(card, usd("20.00")))
+    trail, verified = io.StringIO(), io.StringIO()
+
+    call_command("auditlog", "--action", "payments.transfer_made", stdout=trail)
+    call_command("auditseal")
+    call_command("auditverify", stdout=verified)
+
+    assert maker.id in trail.getvalue()
+    assert "intact" in verified.getvalue()
+
+
+def test_operators_changes_name_the_operator(client: TestClient) -> None:
+    """A limit set from the command line is audited as the operator's."""
+    trail = io.StringIO()
+
+    call_command(
+        "limits",
+        "--operator",
+        "ops-alice",
+        "set",
+        "payments.customer",
+        "--kind",
+        "holder",
+        "--currency",
+        "USD",
+        "--per-transaction",
+        "500.00",
+    )
+    call_command("auditlog", "--actor", "operator:ops-alice", stdout=trail)
+
+    assert "limits.limit_set" in trail.getvalue()

@@ -1,0 +1,24 @@
+"""Fixtures: a clock for the codes, a customer, and an approver."""
+
+import pytest
+from domainkit.testing import FreezeTime, FrozenClock, TestClient
+
+from tests.people import APPROVER, MAKER, Person
+
+
+@pytest.fixture
+def clock(freeze_time: FreezeTime) -> FrozenClock:
+    """One clock for codes, step-ups, authorizations, and limits."""
+    return freeze_time("2027-01-04T10:00:00Z")
+
+
+@pytest.fixture
+def maker(client: TestClient, clock: FrozenClock) -> Person:
+    """A customer who registers cards and sends money to them."""
+    return Person(client, clock, *MAKER)
+
+
+@pytest.fixture
+def approver(client: TestClient, clock: FrozenClock) -> Person:
+    """Another person, who may approve large transfers."""
+    return Person(client, clock, *APPROVER)
