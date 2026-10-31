@@ -566,3 +566,47 @@ def test_the_change_on_first_use_alone_keeps_one_password(identity: Api) -> None
     change(client, headers, STRONG[1], STRONG[0])
 
     assert [row["temporary"] for row in history_rows()] == [False]
+
+
+def test_each_contradiction_names_its_requirement_and_its_fix() -> None:
+    """Every one at once, in words an operator can act on."""
+    config = AuthSettings(
+        **PCI,
+        PASSWORD_VALIDATORS=(),
+        PASSWORD_HISTORY=0,
+        PASSWORD_CHANGE_ON_FIRST_USE=False,
+        LOGIN_RATE=None,
+        IDLE_TIMEOUT=None,
+    )
+
+    assert preset_contradictions(config) == [
+        (
+            "PASSWORD_VALIDATORS take passwords under 12 characters (8.3.6): give "
+            'MinimumLengthValidator {"min_length": 12} or more'
+        ),
+        (
+            "PASSWORD_VALIDATORS take passwords without both letters and digits "
+            "(8.3.6): add LettersAndDigitsValidator"
+        ),
+        "PASSWORD_HISTORY is 0, under 4 (8.3.7)",
+        (
+            "PASSWORD_CHANGE_ON_FIRST_USE is off: passwords staff set are not "
+            "changed at their first use (8.3.5)"
+        ),
+        (
+            "LOGIN_RATE None allows more than 10 wrong passwords, or more than 10 "
+            "every 30 minutes (8.3.4)"
+        ),
+        (
+            "IDLE_TIMEOUT None ends idle logins more than 15 minutes after their "
+            "last use (8.2.8): a login ends up to a tenth after it, so 13 minutes "
+            "at most"
+        ),
+    ]
+
+
+def test_an_idle_timeout_that_ends_logins_at_15_minutes_holds() -> None:
+    """Its tenth more lands on 15 minutes exactly: within 8.2.8."""
+    config = AuthSettings(**PCI, IDLE_TIMEOUT=timedelta(microseconds=818_181_818))
+
+    assert preset_contradictions(config) == []
