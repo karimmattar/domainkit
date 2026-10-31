@@ -5,6 +5,7 @@ caller commits (see ``AuthUnitOfWork``).
 """
 
 import dataclasses
+import logging
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -44,6 +45,7 @@ from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
 from domainkit.ddd import F, Page, RowLock, SoftDeletable
 from domainkit.ddd.query import Selection
+from domainkit.log import SECURITY_LOGGER
 from domainkit.money import Money
 from domainkit.signing import derive_keys
 
@@ -55,7 +57,7 @@ from .exceptions import (
     UnknownPermission,
     UsernameTaken,
 )
-from .hashers import acheck_password, amake_password
+from .hashers import acheck_password, amake_password, identify_hasher
 from .models import (
     ERASED_USERNAME_PURPOSE,
     UNUSABLE_PASSWORD_PREFIX,
@@ -110,6 +112,8 @@ from .tokens import (
     utc_now,
 )
 from .users import get_user_model, get_user_table
+
+security_logger = logging.getLogger(SECURITY_LOGGER)
 
 
 class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
@@ -1371,7 +1375,10 @@ class PasswordHistoryStore:
     ) -> None:
         """Refuse ``password`` if it is one of the user's last ``PASSWORD_HISTORY``.
 
-        The current password counts among them, kept or not.
+        The current password counts among them, kept or not. A hash no
+        hasher of ``AUTH.PASSWORD_HASHERS`` reads (one removed since) cannot
+        be compared: it is skipped, with a security log line, rather than
+        refusing every password.
 
         Raises:
             InvalidPassword: It is.
@@ -1384,6 +1391,18 @@ class PasswordHistoryStore:
         if current is not None and current.usable:
             hashes.add(current.value)
         for hashed in sorted(hashes):
+            try:
+                identify_hasher(hashed)
+            except ValueError:
+                # Refusing it as a match would refuse every new password,
+                # and keep a user who must change one out for good.
+                security_logger.warning(
+                    "A kept password hash of user %s was made by a hasher no "
+                    "longer in AUTH.PASSWORD_HASHERS: reuse of that password is "
+                    "not checked",
+                    user_id,
+                )
+                continue
             if await acheck_password(password, hashed, priority=priority):
                 reused = f"This password is one of your last {count}; choose one "
                 raise InvalidPassword([reused + "you have not used."])

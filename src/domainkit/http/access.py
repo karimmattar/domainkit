@@ -329,8 +329,12 @@ class AllOf(BasePermission):
     async def refusal(
         self, request: HTTPConnection, user: Principal
     ) -> Exception | None:
-        """The refusal of the first rule that refuses the request, if it names one."""
-        rule = await _first_refusal(self.rules, request, user)
+        """The refusal of the rule that decides the request's, if it names one.
+
+        A plain refusal (403) of any rule wins over one a rule names
+        (``_deciding_refusal``): a step-up never hides a denial.
+        """
+        rule = await _deciding_refusal(self.rules, request, user)
         return None if rule is None else await rule.refusal(request, user)
 
 
@@ -553,7 +557,7 @@ class Require:
         if _scoped(request.scope):
             await check_scopes_bounded(request)
         user = current_user(request)
-        refusal = await _first_refusal(self.rules, request, user)
+        refusal = await _deciding_refusal(self.rules, request, user)
         if refusal is not None:
             raise await _denied(request, user, refusal)
         record_check(request, self.allows)
@@ -577,7 +581,7 @@ async def check_object_permissions(
         PermissionDenied: A principal who proved who they are was refused.
     """
     user = current_user(request)
-    refusal = await _first_refusal(
+    refusal = await _deciding_refusal(
         tuple(_rule(rule) for rule in rules), request, user, obj
     )
     if refusal is not None:
@@ -1025,6 +1029,36 @@ async def _first_refusal(
         if not allowed:
             return rule
     return None
+
+
+async def _deciding_refusal(
+    rules: Sequence[BasePermission],
+    request: HTTPConnection,
+    user: Principal,
+    *obj: object,
+) -> BasePermission | None:
+    """The rule whose refusal answers the request (or ``obj``), if any refuses.
+
+    The first rule that refuses plainly, with a 403 (its ``refusal`` names
+    none). A rule that names its own refusal (``StepUp``: authenticate
+    again) answers only when no other refuses: the rules after it are still
+    asked, so ``StepUp(...) & HasPermissions(...)`` answers a user who
+    lacks the permission with the 403, recorded, never a step-up that
+    could not help.
+    """
+    named = None
+    for rule in rules:
+        allowed = (
+            await rule.has_object_permission(request, user, obj[0])
+            if obj
+            else await rule.has_permission(request, user)
+        )
+        if allowed:
+            continue
+        if await rule.refusal(request, user) is None:
+            return rule
+        named = named or rule
+    return named
 
 
 async def _denied(

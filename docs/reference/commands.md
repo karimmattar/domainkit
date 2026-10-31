@@ -46,7 +46,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
 | `keys` | `generate [--id ID]`, `rewrap`, `status [--check]`, `reencrypt [--batch-size N]`, `--operator` | Print a new data key wrapped by `KEYS.PROVIDER`, or `KEYS.DATA_KEYS` wrapped under the KEK's newest version; count what each data key seals (`--check` fails while a retired one still does, `keys.W001`); or seal everything under a retired key again under `CURRENT_KEY`, in batches, audited (keys; see [keys.md](../contrib/keys.md#rotating), [operators](#operators)). |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](../auth.md)). |
-| `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
+| `changepassword` | `[username] [--temporary/--no-temporary]` | Set a user's password, asked twice and validated; the user's tokens end (auth). With `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, the password of a user named is to change at the first login, unless `--no-temporary`; `--temporary` asks it for any. |
 | `createtoken` | `username`, `--name`, `--days`, `--no-expiry`, `--scope` | Print a new token for a user's scripts, shown once, limited to the `--scope` permissions if given (auth). |
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |

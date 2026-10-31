@@ -244,7 +244,10 @@ def preset_contradictions(config: AuthSettings) -> list[str]:
     fewer than 4 (8.3.7); staff-set passwords not changed at their first
     use (8.3.5); more than 10 wrong passwords, or more than 10 every 30
     minutes, per account (8.3.4); and logins idle for more than 15 minutes
-    (8.2.8, ``IDLE_TIMEOUT`` and the tenth by which an ending lags it).
+    (8.2.8, ``IDLE_TIMEOUT`` and the tenth by which an ending lags it; a
+    JSON Web Token's ``ACCESS_TOKEN_TTL`` and ``LEEWAY``, for which an
+    access token works unrefreshed); and password checks of signed-in users
+    counted apart from logins (8.3.4, ``PASSWORD_CHECKS_COUNT_AS_LOGINS``).
     """
     if config.PASSWORD_PRESET != PCI_DSS_4:
         return []
@@ -287,7 +290,37 @@ def preset_contradictions(config: AuthSettings) -> list[str]:
             f"{int(PCI_IDLE.total_seconds()) // 60} minutes after their last use "
             "(8.2.8): a login ends up to a tenth after it, so 13 minutes at most"
         )
+    jwt = config.JWT
+    if _signs_jwts(config) and jwt.ACCESS_TOKEN_TTL + jwt.LEEWAY > PCI_IDLE:
+        found.append(
+            f"JWT.ACCESS_TOKEN_TTL {jwt.ACCESS_TOKEN_TTL} and LEEWAY {jwt.LEEWAY} "
+            "let a JSON Web Token login idle that long, unrefreshed (8.2.8): "
+            f"{int(PCI_IDLE.total_seconds()) // 60} minutes together at most"
+        )
+    if not config.PASSWORD_CHECKS_COUNT_AS_LOGINS:
+        found.append(
+            "PASSWORD_CHECKS_COUNT_AS_LOGINS is off: password checks of "
+            "signed-in users guess on a count of their own, besides the "
+            "login's (8.3.4)"
+        )
     return found
+
+
+def _signs_jwts(config: AuthSettings) -> bool:
+    """Whether a class of ``AUTHENTICATION_CLASSES`` is ``JWTAuthentication``'s.
+
+    A path that does not import is ``auth``'s own startup error to report.
+    """
+    from .authentication import JWTAuthentication  # Imports this module.
+
+    for path in config.AUTHENTICATION_CLASSES:
+        try:
+            found = import_string(path)
+        except ImportError:
+            continue
+        if isinstance(found, type) and issubclass(found, JWTAuthentication):
+            return True
+    return False
 
 
 def _over(rate: str) -> bool:

@@ -51,9 +51,6 @@ from .tokens import utc_now
 
 PROOF: Final = "domainkit.auth.proof"
 """Where a request keeps its credentials' step-up, once read."""
-STEPPED_UP: Final = "domainkit.auth.stepped_up"
-"""Where a request keeps the ``StepUp`` rules it passed (an open connection's
-re-checks pass them)."""
 INSUFFICIENT: Final = "insufficient_user_authentication"
 """The ``WWW-Authenticate`` error that asks for a step-up (RFC 9470)."""
 
@@ -149,8 +146,10 @@ class StepUp(access.BasePermission):
     ``methods``): a code of the authenticator app, and the password too
     if they say so. A login is not a step-up, with a second factor or
     without. A refusal answers ``401 step_up_required``
-    (``StepUpRequired``). An open WebSocket or event stream keeps what its
-    start proved: its re-checks pass this rule.
+    (``StepUpRequired``). It is asked about an object too
+    (``check_object_permissions``). An open WebSocket or event stream is
+    asked again on each re-check (``LIVE_REAUTH_INTERVAL``), so it closes
+    once its step-up is older than ``max_age``.
     """
 
     message: ClassVar[str] = "Confirm it is you: authenticate again to do this."
@@ -182,22 +181,29 @@ class StepUp(access.BasePermission):
             return self.methods
         return frozenset(auth_settings().STEP_UP.METHODS)
 
+    def unprovable(self) -> frozenset[str]:
+        """What it asks for that no step-up proves (beyond ``STEP_UP.METHODS``).
+
+        Not empty, the rule refuses everyone: ``auth.E106`` names it.
+        """
+        return self.required() - frozenset(auth_settings().STEP_UP.METHODS)
+
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
         """The credentials stepped up within ``max_age``, proving ``required()``."""
         if not user.is_authenticated:
             return False
-        passed: set[StepUp] = request.scope.setdefault(STEPPED_UP, set())
-        if self in passed:
-            return True
         proof = await proof_of(request)
-        if (
-            proof is None
-            or not self.required() <= proof.methods
-            or utc_now() - proof.auth_time > self.max_age
-        ):
-            return False
-        passed.add(self)
-        return True
+        return (
+            proof is not None
+            and self.required() <= proof.methods
+            and utc_now() - proof.auth_time <= self.max_age
+        )
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: AnyUser, obj: object
+    ) -> bool:
+        """As ``has_permission``: given only to ``check_object_permissions``, too."""
+        return await self.has_permission(request, user)
 
     async def refusal(self, request: HTTPConnection, user: AnyUser) -> StepUpRequired:
         """``401 step_up_required``, naming the age and the methods."""

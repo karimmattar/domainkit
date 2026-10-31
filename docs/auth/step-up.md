@@ -82,15 +82,25 @@ as OpenID Connect's `amr` claim has them.
   A user without a second factor gets `409 no_second_factor`.
 - **Counts and the trail.** Wrong codes count against `AUTH.MFA.RATE` for
   the user with every other code check, and wrong passwords against
-  `AUTH.LOGIN_RATE` with the user's other password checks, so stepping up
+  `AUTH.LOGIN_RATE` with the user's other password checks (and with the
+  account's wrong logins, with `AUTH.PASSWORD_CHECKS_COUNT_AS_LOGINS`), so stepping up
   is no way around either; a code is spent once. Each step-up is recorded
   (`auth.stepped_up`, with the methods), and each refusal (`auth.step_up`,
   `invalid_code` or `wrong_password`), when `domainkit.contrib.audit` is
   installed.
-- **WebSockets and event streams.** The handshake is checked; an open
-  connection keeps what its start proved, and its re-checks
-  (`LIVE_REAUTH_INTERVAL`) pass the rule. The credentials themselves are
-  still checked again, so a revoked login closes it.
+- **WebSockets and event streams.** The handshake is checked, and so is
+  each re-check of an open connection (`LIVE_REAUTH_INTERVAL`), with the
+  step-up read afresh: it closes once its step-up is older than
+  `max_age`, as when its login is revoked or idles out.
+- **With other rules.** A plain refusal answers first: `StepUp(...) &
+  HasPermissions("bank.add_payee")` answers a user without the
+  permission with `403`, recorded as a denial, and only a user who has it
+  with `401 step_up_required`, whatever the order of the rules. Given to
+  `check_object_permissions`, it is asked about the object as about the
+  request.
+- **Methods no step-up proves.** `StepUp(methods=("pwd", "otp"))` with
+  `AUTH.STEP_UP.METHODS = ["otp"]` would refuse everyone: `check` names
+  the route (`auth.E106`), and staging and production refuse to start.
 - **Keeping.** `max_age` is a day at most; the hourly purge
   (`domainkit.contrib.messaging`) and `cleartokens` delete step-ups older
   than that. Deleting or erasing a user deletes theirs.

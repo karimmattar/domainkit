@@ -153,16 +153,11 @@ async def add_payee(request: Request, user: AuthenticatedUser) -> dict[str, Any]
 @router.post(
     "/payees/strict",
     dependencies=[
-        Depends(
-            Require(
-                HasPermissions(VIEW_PRODUCT)
-                & StepUp(max_age=FIVE_MINUTES, methods=("pwd", "otp"))
-            )
-        )
+        Depends(Require(StepUp(max_age=FIVE_MINUTES) & HasPermissions(VIEW_PRODUCT)))
     ],
 )
 async def add_payee_strictly() -> dict[str, bool]:
-    """Users who may view products, and stepped up with the password too."""
+    """Users who stepped up and may view products: the denial answers first."""
     return {"ok": True}
 
 

@@ -18,11 +18,11 @@ from starlette.requests import HTTPConnection
 from domainkit.clock import freeze_time
 from domainkit.contrib.accounting import AccountingUnitOfWork
 from domainkit.contrib.approvals import Policy, guard
-from domainkit.contrib.approvals.rules import MayApprove
+from domainkit.contrib.approvals.rules import REFUSED_BY, MayApprove
 from domainkit.contrib.auth import AuthUnitOfWork, StepUp
 from domainkit.contrib.messaging.testing import drain
 from domainkit.http import get_asgi_application
-from domainkit.http.access import AnonymousPrincipal, open_routes
+from domainkit.http.access import AnonymousPrincipal, BasePermission, open_routes
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     ALPHA,
@@ -487,3 +487,20 @@ def test_a_grant_runs_only_while_its_maker_is_a_superuser(client: TestClient) ->
             MakerNotAllowed, match=r"^Only a superuser may make a superuser\.$"
         ):
             run_async(granted_as(maker))
+
+
+@pytest.mark.anyio
+async def test_an_approval_refused_by_a_rule_passes_on_its_refusal() -> None:
+    """The rule that refused is asked, with the request and the principal."""
+
+    class Named(BasePermission):
+        async def refusal(self, request: HTTPConnection, user: Any) -> Exception:  # noqa: ANN401
+            return LookupError(request, user)
+
+    request = HTTPConnection({"type": "http", "headers": [], REFUSED_BY: Named()})
+    principal = AnonymousPrincipal()
+
+    refusal = await MayApprove().refusal(request, principal)
+
+    assert isinstance(refusal, LookupError)
+    assert refusal.args == (request, principal)

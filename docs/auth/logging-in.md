@@ -162,7 +162,11 @@ a known device in. With six valid proofs and no ceiling they checked
   to 30 days), a login token or a browser session that authenticated
   nothing that long is refused (`401`, "Session ended after inactivity";
   a cookie leaves the request anonymous), and a JSON Web Token login not
-  refreshed that long cannot refresh. Last uses are then written every
+  refreshed that long cannot refresh, nor can an access token issued
+  longer ago than the timeout authenticate, whatever its lifetime. An open
+  WebSocket or event stream does not use its login: its re-checks
+  (`LIVE_REAUTH_INTERVAL`) write no last use, so it closes once its login
+  idles out (since 0.15). Last uses are then written every
   tenth of the timeout, so a login ends no sooner than the timeout and
   within a tenth of it after, at one more `UPDATE` per active login per
   tenth (40 an hour for 15 minutes, 12 by default). A kept principal that

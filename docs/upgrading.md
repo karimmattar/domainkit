@@ -27,6 +27,19 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **An open live connection no longer keeps its login alive**
+  (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
+  WebSocket or event stream wrote the login's last use, so a page left
+  open kept its login for good; they write none now, and the connection
+  closes once its login idles out. Nothing changes without
+  `IDLE_TIMEOUT`. **Fix:** a page that should stay open sends a request
+  now and then, or the project raises `IDLE_TIMEOUT`.
+- **A JSON Web Token issued longer ago than `AUTH.IDLE_TIMEOUT` is
+  refused** (SEC-15c-1), whatever its `ACCESS_TOKEN_TTL`: a JSON Web Token
+  login's use is its refreshes. Nothing changes without `IDLE_TIMEOUT`, or
+  with an access token that lives no longer than it (the default, 5
+  minutes, is shorter than the 5-minute floor plus its tenth). **Fix:**
+  refresh before the timeout, or raise it.
 - **Auth has three new tables** (FIN-29, FIN-30, FIN-42):
   `domainkit_step_ups`, `domainkit_sca_challenges`, and
   `domainkit_password_history`. No default changed, and only `StepUp`,

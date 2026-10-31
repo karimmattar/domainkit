@@ -26,10 +26,18 @@ from domainkit.contrib.auth import (
     StepUp,
     StepUpRequired,
 )
-from domainkit.contrib.auth.access import STEPPED_UP, proof_of
-from domainkit.contrib.auth.authentication import _proof_claims
+from domainkit.contrib.auth.access import PROOF, proof_of
+from domainkit.contrib.auth.apps import unprovable_step_ups
+from domainkit.contrib.auth.authentication import (
+    RECHECK,
+    JWTAuthentication,
+    _proof_claims,
+    get_authenticators,
+)
+from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.auth.tables import step_ups
 from domainkit.db import connections
+from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import (
     AllOf,
@@ -37,7 +45,9 @@ from domainkit.http.access import (
     BasePermission,
     HasPermissions,
     Require,
+    check_object_permissions,
 )
+from domainkit.http.application import application_problems
 from domainkit.http.errors import install_exception_handlers
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -53,6 +63,7 @@ from domainkit_tests.test_auth_http import (
     login,
 )
 from domainkit_tests.test_auth_mfa import code_at, secret_of
+from domainkit_tests.test_auth_principals import scope as principal_scope
 from domainkit_tests.test_resources import (
     LOCATION,
     RenameGadget,
@@ -318,22 +329,72 @@ def test_wrong_passwords_count_against_the_login_rate(
     assert changing.status_code == 429  # The user's own count of password checks.
 
 
-def test_a_route_may_ask_for_more_than_the_setting(
+def test_a_plain_denial_answers_before_a_step_up(
     identity: Api, frozen: FrozenClock
 ) -> None:
-    """``StepUp(methods=...)`` in ``&``: each rule refuses as its own."""
+    """``StepUp(...) & HasPermissions(...)``: lacking the permission is a 403.
+
+    Recorded as a denial, never a step-up that could not help (SEC-15c).
+    """
     create_user("alice")
     client = identity()
     headers = bearer(login(client, "alice")["access_token"])
     secret = enrol(client, headers, frozen)
-    step_up(client, headers, now_code(secret, frozen))
 
     lacking = client.post("/payees/strict", headers=headers)
     grant("alice", "shop.view_product")
-    otp_only = client.post("/payees/strict", headers=headers)
+    not_stepped_up = client.post("/payees/strict", headers=headers)
+    step_up(client, headers, now_code(secret, frozen))
+    allowed = client.post("/payees/strict", headers=headers)
 
     assert (lacking.status_code, lacking.json()["code"]) == (403, "permission_denied")
-    assert (otp_only.status_code, otp_only.json()["code"]) == (401, "step_up_required")
+    assert [row["details"]["rule"] for row in audited("auth.access")] == ["AllOf"]
+    assert (not_stepped_up.status_code, not_stepped_up.json()["code"]) == (
+        401,
+        "step_up_required",
+    )
+    assert allowed.json() == {"ok": True}
+
+
+def test_step_ups_that_no_step_up_proves_are_found(use_auth: UseAuth) -> None:
+    """``auth.E106``: methods beyond ``STEP_UP.METHODS``, in ``&``, ``|``, ``~``."""
+    use_auth()
+    app = FastAPI()
+    beyond = StepUp(max_age=timedelta(minutes=5), methods=("pwd", "otp"))
+
+    @app.get("/plain", dependencies=[Depends(Require(StepUp(max_age=timedelta(1))))])
+    async def plain() -> None: ...
+
+    @app.get("/both", dependencies=[Depends(Require(HasPermissions("a.b") & beyond))])
+    async def both() -> None: ...
+
+    @app.get(
+        "/either", dependencies=[Depends(Require(~beyond | HasPermissions("a.b")))]
+    )
+    async def either() -> None: ...
+
+    @app.get(
+        "/twice",
+        dependencies=[Depends(Require(beyond, StepUp(max_age=timedelta(minutes=1))))],
+    )
+    async def twice() -> None: ...
+
+    problems = [
+        problem
+        for problem in application_problems(app)
+        if getattr(problem, "id", None) == "auth.E106"
+    ]
+
+    assert unprovable_step_ups(app) == [
+        ("GET /both", frozenset({"pwd"})),
+        ("GET /either", frozenset({"pwd"})),
+        ("GET /twice", frozenset({"pwd"})),
+    ]
+    assert len(problems) == 3
+    assert str(problems[0]).startswith(
+        "GET /both asks StepUp for pwd, which no step-up proves "
+        "(AUTH.STEP_UP.METHODS is ['otp']): it refuses everyone."
+    )
 
 
 # Browser sessions and JSON Web Tokens -----------------------------------------------
@@ -515,10 +576,10 @@ KNOWN: Any = Known()
 
 
 @pytest.mark.anyio
-async def test_an_open_connection_keeps_what_its_start_proved(
+async def test_an_open_connection_closes_once_its_step_up_is_too_old(
     use_auth: UseAuth, frozen: FrozenClock
 ) -> None:
-    """Re-checks of the same scope pass; a new request asks again."""
+    """Each re-check asks again: past ``max_age``, the rule refuses (SEC-15c)."""
     use_auth()
     rule = StepUp(max_age=timedelta(minutes=5))
     credentials = Credentials(
@@ -530,10 +591,11 @@ async def test_an_open_connection_keeps_what_its_start_proved(
     request = connection(credentials)
 
     assert await rule.has_permission(request, KNOWN) is True
-    assert request.scope[STEPPED_UP] == {rule}
-    frozen.tick(timedelta(minutes=10))
-    assert await rule.has_permission(request, KNOWN) is True
-    assert await rule.has_permission(connection(credentials), KNOWN) is False
+    assert await rule.has_object_permission(request, KNOWN, object()) is True
+    assert request.scope[PROOF] == Proof(credentials.auth_time, credentials.amr)  # type: ignore[arg-type]
+    frozen.tick(timedelta(minutes=5, seconds=1))
+    assert await rule.has_permission(request, KNOWN) is False
+    assert await rule.has_object_permission(request, KNOWN, object()) is False
 
 
 @pytest.mark.anyio
@@ -843,3 +905,148 @@ def test_concurrent_step_ups_of_one_login_keep_the_latest(identity: Api) -> None
 
     assert kept == (start + timedelta(seconds=9), frozenset({"otp", "pwd"}))
     assert len(step_up_rows()) == 1
+
+
+@pytest.mark.anyio
+async def test_a_live_recheck_closes_once_the_step_up_is_too_old(
+    use_auth: UseAuth, frozen: FrozenClock
+) -> None:
+    """``Require(...).allows`` re-asks the rule: it closes past ``max_age``."""
+    use_auth()
+    required = Require(StepUp(max_age=timedelta(minutes=5)))
+    open_socket = connection(
+        Credentials(
+            KNOWN, scheme="jwt", auth_time=frozen.tick(0), amr=frozenset({"otp"})
+        ),
+        user=KNOWN,
+    )
+
+    assert await required.allows(open_socket) is True
+    frozen.tick(timedelta(minutes=5, seconds=1))
+    assert await required.allows(open_socket) is False
+
+
+def test_a_browser_session_open_live_idles_out_and_closes(identity: Api) -> None:
+    """Re-checks of an open connection write no last use (SEC-15c-2)."""
+    with freeze_time("2027-01-04T10:00:00Z") as clock:
+        client = identity(IDLE_TIMEOUT=timedelta(minutes=10))
+        create_user("alice")
+        browser = TestClient(client.app, base_url=SITE)
+        browser.post(
+            "/auth/session",
+            json={"username": "alice", "password": PASSWORD},
+            headers=TRUSTED,
+        )
+        cookie = "; ".join(f"{name}={value}" for name, value in browser.cookies.items())
+        socket = {
+            **principal_scope({"Cookie": cookie, "Origin": SITE}),
+            "type": "websocket",
+        }
+        middleware = AuthenticationMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+        assert run_async(middleware.reauthenticate(socket)) is False  # No auth yet.
+        socket["auth"] = run_async(_credentials_of(socket))
+        socket[PROOF] = None  # A step-up read before: read afresh after.
+        held = []
+        for _ in range(4):
+            clock.tick(timedelta(minutes=4))
+            held.append(run_async(middleware.reauthenticate(socket)))
+            if held == [True]:
+                assert PROOF not in socket
+
+        idle = browser.get("/whoami")
+
+    assert held == [True, True, False, False]
+    assert RECHECK not in socket
+    assert idle.json() == {"user": "", "scheme": None}
+
+
+async def _credentials_of(socket: dict[str, Any]) -> Any:  # noqa: ANN401
+    """What the configured classes make of ``socket``."""
+    for authenticator in get_authenticators():
+        found = await authenticator.authenticate(HTTPConnection(socket))
+        if found is not None:
+            return found
+    return None
+
+
+def test_a_jwt_issued_longer_ago_than_the_idle_timeout_is_refused(
+    identity: Api,
+) -> None:
+    """A JSON Web Token login's use is its refreshes (SEC-15c-1)."""
+    with freeze_time("2027-01-04T10:00:00Z") as clock:
+        long_lived = {**JWT["JWT"], "ACCESS_TOKEN_TTL": timedelta(hours=1)}
+        client = identity(
+            **{**JWT, "JWT": long_lived}, IDLE_TIMEOUT=timedelta(minutes=10)
+        )
+        create_user("alice")
+        issued = login(client, "alice")
+        clock.tick(timedelta(minutes=10, seconds=59))
+        fresh = client.get("/whoami", headers=bearer(issued["access_token"]))
+        clock.tick(timedelta(seconds=2))
+        idle = client.get("/whoami", headers=bearer(issued["access_token"]))
+        refreshed = client.post(
+            "/auth/refresh", json={"refresh_token": issued["refresh_token"]}
+        )
+
+    assert fresh.json()["user"] == "alice"
+    assert (idle.status_code, idle.json()["detail"]) == (
+        401,
+        "Session ended after inactivity; log in again.",
+    )
+    assert refreshed.status_code == 401
+
+
+def test_a_jwt_issued_at_no_date_is_refused(identity: Api) -> None:
+    """Signed by the key, with an ``iat`` no date holds: invalid, never a 500."""
+    client = identity(**JWT, IDLE_TIMEOUT=timedelta(minutes=10))
+    create_user("alice")
+    login(client, "alice")
+    signer = next(
+        each for each in get_authenticators() if isinstance(each, JWTAuthentication)
+    )
+    claims = jwt.decode(
+        login(client, "alice")["access_token"], options={"verify_signature": False}
+    )
+    forged = signer.jwt.encode(
+        {**claims, "iat": -(10**20)},
+        signer.signing_key,
+        algorithm=signer.config.ALGORITHM,
+        headers={"kid": signer.key_id},
+    )
+
+    refused = client.get("/whoami", headers=bearer(forged))
+
+    assert (refused.status_code, refused.json()["detail"]) == (401, "Invalid token.")
+
+
+class NoObject(BasePermission):
+    """Refuses every object plainly."""
+
+    async def has_object_permission(
+        self,
+        request: HTTPConnection,
+        user: Any,  # noqa: ANN401
+        obj: object,
+    ) -> bool:
+        """Never."""
+        return False
+
+
+@pytest.mark.anyio
+async def test_a_plain_refusal_wins_wherever_rules_are_checked(
+    use_auth: UseAuth,
+) -> None:
+    """``&``, ``Require``'s rules, and objects: a step-up answers only alone."""
+    use_auth()
+    stepped = StepUp(max_age=timedelta(minutes=5))
+    request = connection(None, user=KNOWN)
+
+    combined = await AllOf(stepped, HasPermissions("a.b")).refusal(request, KNOWN)
+    alone = await AllOf(stepped, BasePermission()).refusal(request, KNOWN)
+    with pytest.raises(PermissionDenied):
+        await check_object_permissions(request, object(), stepped, NoObject())
+    with pytest.raises(StepUpRequired):
+        await check_object_permissions(request, object(), stepped, BasePermission())
+
+    assert combined is None
+    assert isinstance(alone, StepUpRequired)

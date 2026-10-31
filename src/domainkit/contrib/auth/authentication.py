@@ -154,6 +154,9 @@ class IssuedTokens:
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+RECHECK: Final = "domainkit.auth.recheck"
+"""Set in an open connection's scope while its credentials are checked again
+(``AuthenticationMiddleware.reauthenticate``): the check writes no last use."""
 STEPPING_SCHEMES: Final = frozenset({"token", "cookie"})
 """Schemes whose credentials keep their step-ups in the table, by digest."""
 IDLE: Final = "Session ended after inactivity; log in again."
@@ -285,7 +288,9 @@ class TokenAuthentication(BaseAuthentication):
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
-        await accept(entry, config.PRINCIPAL_CACHE, every=every)
+        await accept(
+            entry, config.PRINCIPAL_CACHE, touch=not rechecking(connection), every=every
+        )
         return Credentials(
             user, scheme=TOKEN_SCHEME, token_id=token.id, scopes=token.scopes
         )
@@ -340,12 +345,18 @@ class JWTAuthentication(BaseAuthentication):
         """The user of a valid access token whose login has not ended.
 
         The login and the user are kept as opaque tokens' are, by login
-        and user; the signature and the times are checked every time.
+        and user; the signature and the times are checked every time. With
+        ``AUTH.IDLE_TIMEOUT``, a token issued longer ago than it is refused:
+        its login was not refreshed for that long, whatever its lifetime.
         """
         raw = bearer_token(connection)
         if raw is None or raw.count(".") != 2:  # Not a JWT: header.payload.signature.
             return None
         claims = self.decode(raw)
+        if auth_settings().IDLE_TIMEOUT is not None and idle_since(
+            _issued(claims), utc_now()
+        ):
+            raise AuthenticationFailed(IDLE)
         session = _uuid(claims["sid"])
         config = auth_settings().PRINCIPAL_CACHE
         entry = await login_principal(session, _uuid(claims["sub"]), config)
@@ -544,6 +555,16 @@ def load_authenticators(config: AuthSettings) -> tuple[BaseAuthentication, ...]:
 def get_authenticators() -> tuple[BaseAuthentication, ...]:
     """The configured authentication classes, in order."""
     return load_authenticators(auth_settings())
+
+
+def rechecking(connection: HTTPConnection) -> bool:
+    """Whether ``connection`` is an open one whose credentials are checked again.
+
+    Such a check is no use of the login: it writes no last use, so an open
+    WebSocket or event stream nobody uses lets its login idle out
+    (``AUTH.IDLE_TIMEOUT``), and then closes.
+    """
+    return connection.scope.get(RECHECK) is True
 
 
 def bearer_token(connection: HTTPConnection) -> str | None:
@@ -879,6 +900,21 @@ def _proof_claims(claims: dict[str, Any]) -> tuple[datetime | None, frozenset[st
     except (OverflowError, OSError, ValueError):
         return None, frozenset()
     return moment, frozenset(methods)
+
+
+def _issued(claims: dict[str, Any]) -> datetime:
+    """When a token was issued (``iat``, which ``_check_times`` read already).
+
+    A JSON Web Token login's use is its refreshes: an access token issued
+    longer ago than ``AUTH.IDLE_TIMEOUT`` is one of a login idle that long.
+
+    Raises:
+        AuthenticationFailed: No date holds it.
+    """
+    try:
+        return datetime.fromtimestamp(int(claims["iat"]), UTC)
+    except (OverflowError, OSError, ValueError):
+        raise AuthenticationFailed("Invalid token.") from None
 
 
 def _uuid(value: object) -> UUID:
