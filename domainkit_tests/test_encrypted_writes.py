@@ -99,3 +99,25 @@ def test_an_entity_shows_encrypted_values_masked() -> None:
         repr(Later(id=ANN))
         == f"{Later.__qualname__}(id={ANN!r}, version=0, secret=None)"
     )
+
+
+@pytest.mark.anyio
+async def test_an_unloaded_value_whose_key_is_gone_stays_gone(
+    bank: str,  # noqa: F811
+) -> None:
+    """Shredded, then moved to another holder unloaded: still None, nothing raised."""
+    from domainkit.contrib.keys import shred_subject
+
+    await save(pay(1, note="gift"))
+    await shred_subject(str(ANN))
+    shredded = (await raw("SELECT note FROM cards_payments"))[0]["note"]
+    async with CardsUnitOfWork() as uow:
+        model = cast(Any, Payment)
+        query = select(Payment).options(load_only(model.holder_id))
+        payment = (await uow.session.scalars(query)).one()
+        payment.holder_id = BOB
+        await uow.commit()
+    async with CardsUnitOfWork() as uow:
+        assert (await uow.payments.get(uuid.UUID(int=1))).note is None
+    # The ciphertext stays as shredded: nothing opens it.
+    assert (await raw("SELECT note FROM cards_payments"))[0]["note"] == shredded

@@ -864,3 +864,28 @@ def test_a_deployment_refuses_vault_over_plain_http(
             "every data key it unwraps, would cross the network in clear."
         )
         assert problems[0].hint == "Serve Vault over TLS and give an https:// URL."  # type: ignore[attr-defined]
+
+
+@pytest.mark.anyio
+async def test_tombstones_are_kept_a_day(database_url: str, tmp_path: Path) -> None:
+    """An erasure leaves its own, and forgets those older than a day."""
+    from datetime import UTC, datetime, timedelta
+
+    from domainkit.contrib.keys.tables import erasures
+
+    now = datetime(2026, 10, 31, 12, tzinfo=UTC)
+    with project(database_url, tmp_path):
+        async with connections.engine("default").begin() as connection:
+            await connection.execute(
+                erasures.insert(),
+                [
+                    {"subject": "old", "erased_at": now - timedelta(days=1, seconds=1)},
+                    {"subject": "recent", "erased_at": now - timedelta(hours=23)},
+                ],
+            )
+        with freeze_time(now):
+            await shred_subject("ann")
+        left = await rows(
+            "SELECT subject FROM domainkit_keys_erasures ORDER BY subject"
+        )
+    assert [row["subject"] for row in left] == ["ann", "recent"]

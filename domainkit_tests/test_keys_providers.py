@@ -936,8 +936,9 @@ async def test_a_full_container_uri_may_use_https_or_reach_the_agent(
         with pytest.raises(KeyProviderError, match="must use https"):
             _container_url(None, refused)
     assert _container_url("/v2/x", None) == "http://169.254.170.2/v2/x"
-    with pytest.raises(KeyProviderError, match="must be a path"):
-        _container_url("v2/x", None)
+    for relative in ("v2/x", "?x", "#x"):
+        with pytest.raises(KeyProviderError, match="must be a path"):
+            _container_url(relative, None)
 
 
 def test_a_kms_endpoint_with_a_trailing_slash_signs_the_root() -> None:
