@@ -9,7 +9,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
-    false,
+    text,
 )
 
 from domainkit.db import UTCDateTime, metadata
@@ -27,9 +27,9 @@ idempotency_keys = Table(
     Column("committed_at", UTCDateTime),
     Column("token", String(32), nullable=False),
     Column("locked_until", UTCDateTime, nullable=False),
-    Column("pinned", Boolean, nullable=False, server_default=false()),
+    Column("pinned", Boolean, nullable=False, server_default=text("false")),
     Column("subjects", Text),
-    Column("tombstone", Boolean, nullable=False, server_default=false()),
+    Column("tombstone", Boolean, nullable=False, server_default=text("false")),
     info={"domain": "idempotency"},
 )
 """A row without ``status_code`` is a request still in progress.

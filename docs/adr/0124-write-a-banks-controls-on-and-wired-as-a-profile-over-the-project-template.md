@@ -1,6 +1,6 @@
 # 0124. Write a bank's controls on and wired, as a profile over the project template
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-31 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -40,7 +40,7 @@ change: the image, its `.dockerignore`, `manage.py`, the ASGI module.
 
   | Setting | domainkit's default | The profile's | Why |
   | --- | --- | --- | --- |
-  | `INSTALLED_DOMAINS` | messaging, contenttypes, auth | also audit, evidence, idempotency, keys, privacy, accounting, approvals, limits, and the project's `controls` and `payments` | every control of the list on |
+  | `INSTALLED_DOMAINS` | messaging, contenttypes, auth | also audit, evidence, idempotency, keys, privacy, accounting, approvals, limits, and the project's `payments` | every control of the list on |
   | `MIDDLEWARE` | the project's | `IdempotencyMiddleware` last | retried requests run once; it reads whole bodies, which the body limit has bounded |
   | `AUTH.PASSWORD_PRESET` | none | `"pci-dss-4"` | PCI DSS v4.0's requirement 8, refused at startup when contradicted |
   | `APPROVALS.APPROVE_RULE` | none | `StepUp(max_age=5 minutes)` | an approval is an act that asks for a fresh second factor |
@@ -53,13 +53,11 @@ change: the image, its `.dockerignore`, `manage.py`, the ASGI module.
   | `AUTH.PRINCIPAL_CACHE.STAMPS` in production | none | `"shared"` | a revoked login is refused by every replica at once |
   | the project's `[tool.mypy]`, CI | none | `strict = true`; CI runs `mypy` | the sample's types are checked as domainkit's are |
 
-- Two controls are the project's code, on public names, rather than new
-  library settings, so the security review of 0.15 reads no new library
-  surface for them: the transfer route refuses a request without an
-  `Idempotency-Key` (`400 idempotency_key_required`), and
-  `domains.controls` runs `protect()` on the trail's two tables after each
-  `migrate` (an `on_migrated` hook), so the project's revisions need no
-  edit for `audit.E001` to pass.
+- One control is the project's code, on public names, rather than a new
+  library setting: the transfer route refuses a request without an
+  `Idempotency-Key` (`400 idempotency_key_required`). The trail's
+  triggers are the library's: `migrate` makes them afresh each time
+  (amended below).
 - The sample transfer goes through each control: a card registered after
   a step-up, its number `Encrypted(subject="owner_id", blind_index=True)`;
   an amount in `Money`; an authorization the maker confirms for the amount
@@ -85,6 +83,18 @@ change: the image, its `.dockerignore`, `manage.py`, the ASGI module.
   settings are read side by side in review.
 - The thresholds, limits, and approvers are examples a bank replaces; the
   profile says so where they are set.
-- Migrations written on SQLite do not apply on PostgreSQL (a boolean
-  column's default is written `0`): the page says to make them against
-  the engine that is deployed, as the PostgreSQL test does.
+
+## Amendment (2026-10-31): the library makes the trail's triggers, and portable defaults
+
+The profile first carried a project domain, `domains.controls`, that ran
+`protect()` after each `migrate`, and the page told projects to write
+their revisions against PostgreSQL: `audit.E001` refused a trail without
+triggers unless a revision was edited, and a boolean's default,
+`false()`, was written `sa.text('0')` on SQLite, which PostgreSQL
+refuses. Both are fixed at the root: `domainkit.contrib.audit` registers
+`protect_migrated` on `on_migrated`, which makes the trail's and the
+seals' triggers afresh after every `migrate` (and `protect()` replaces
+what is there, so a revision that calls it too still applies), and every
+contrib boolean's default is `text("false")`, which both engines accept.
+`domains.controls` is gone; `test_init_fintech.py` writes the revisions on
+SQLite and migrates PostgreSQL with them.

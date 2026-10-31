@@ -130,7 +130,7 @@ statuses, and the amendments they name.
 | [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md) | Hold guarded commands as sealed requests, and count approvals under the request's lock | Accepted; amended 2026-10-31 (at the end) |
 | [0122](0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md) | Step up in a rule, and bind authorizations with a stored row and a code | Accepted |
 | [0123](0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md) | Count movements against limits under the subject's row, in the movement's transaction | Accepted; amended 2026-10-31 (at the end) |
-| [0124](0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md) | Write a bank's controls on and wired, as a profile over the project template | Accepted |
+| [0124](0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md) | Write a bank's controls on and wired, as a profile over the project template | Accepted; amended 2026-10-31 (at the end) |
 
 ### Decisions still without a record
 

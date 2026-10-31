@@ -271,6 +271,7 @@ Ledger states kept in `AUDIT.DATABASE`, for every process and host to start from
 Make the audit trail append-only in the database itself (PostgreSQL).
 
 - `protect`: Refuse UPDATE, DELETE, and TRUNCATE on `table` (the audit trail).
+- `protect_migrated`: After `migrate`: protect the trail and its seals afresh (`on_migrated`).
 - `unprotect`: Remove the protection (downgrades, retention jobs run as the owner).
 
 ## `domainkit.contrib.audit.pruning`
