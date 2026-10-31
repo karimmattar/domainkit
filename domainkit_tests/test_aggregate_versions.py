@@ -7,7 +7,7 @@ unless the mapping opts out with ``versioned=False``.
 """
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from decimal import Decimal
 from typing import Annotated, NewType
 from uuid import UUID, uuid4
@@ -26,6 +26,8 @@ from sqlalchemy import (
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domainkit import setup
+from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.db import (
     ExactDecimal,
@@ -34,9 +36,11 @@ from domainkit.db import (
     connections,
     map_imperatively,
 )
+from domainkit.db.hooks import on_stage
 from domainkit.db.query import mapper_of
-from domainkit.ddd import AggregateRoot, ConcurrentUpdate, Digits, Entity
+from domainkit.ddd import AggregateRoot, ConcurrentUpdate, Digits, Entity, Retry
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit_tests.conftest import ALPHA
 
 pytestmark = pytest.mark.anyio
 
@@ -291,3 +295,135 @@ async def test_an_unversioned_mapping_lets_the_last_writer_win() -> None:
 
     assert await _balance(tallies, id_) == START - AMOUNT
     await connections.close_all()
+
+
+async def _race(
+    id_: AccountId, uow: BankUnitOfWork, *, then: Callable[[], Awaitable[object]]
+) -> None:
+    """Withdraw from ``id_`` in ``uow`` after another unit of work did; ``then``.
+
+    The other one commits between this one's read and its write, so this
+    one's write matches no row of its version, wherever it is flushed.
+    """
+    account = await uow.accounts.get(id_)
+    async with BankUnitOfWork() as other:
+        (await other.accounts.get(id_)).withdraw(AMOUNT)
+        await other.commit()
+    account.withdraw(AMOUNT)
+    await then()
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_race_lost_at_a_flush_is_a_concurrent_update() -> None:
+    """A stale write flushed in the block (a query, an explicit flush) is refused.
+
+    As ``ConcurrentUpdate``, naming the model, never as SQLAlchemy's
+    ``StaleDataError``, so ``Retry(retry_on=...)`` and the HTTP boundary
+    see it.
+    """
+    id_ = await _open(AccountId(uuid4()), versioned=True)
+    for flush in ("query", "flush"):
+        with pytest.raises(ConcurrentUpdate) as caught:
+            async with BankUnitOfWork() as uow:
+                await _race(
+                    id_,
+                    uow,
+                    then=uow.accounts.filter if flush == "query" else uow.session.flush,
+                )
+        assert caught.value.model == f"{Account.__module__}.Account"
+        assert caught.value.code == "concurrent_update"
+    assert await _balance(accounts, id_) == START - 2 * AMOUNT
+    await connections.close_all()
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_race_lost_while_a_commit_is_staged_is_a_concurrent_update() -> None:
+    """A domain's ``on_stage`` hook flushes the stale write: refused the same way."""
+    flushed: list[str] = []
+
+    async def stage(uow: object, events: object, tasks: object) -> None:
+        assert isinstance(uow, SqlAlchemyUnitOfWork)
+        flushed.append("stage")
+        await uow.session.flush()
+
+    registry.clear()
+    with override_settings(INSTALLED_DOMAINS=[ALPHA]):
+        setup()
+        on_stage(stage, domain="alpha")
+        id_ = await _open(AccountId(uuid4()), versioned=True)
+        flushed.clear()
+        with pytest.raises(ConcurrentUpdate) as caught:
+            async with BankUnitOfWork() as uow:
+                await _race(id_, uow, then=uow.commit)
+        assert caught.value.model == f"{Account.__module__}.Account"
+        assert flushed == ["stage", "stage"]  # The other's commit, then this one's.
+    registry.clear()
+    await connections.close_all()
+
+
+@pytest.mark.usefixtures("tables")
+async def test_run_retries_a_race_lost_at_a_flush() -> None:
+    """``uow.run`` runs the work again, whole, and the second run commits."""
+    id_ = await _open(AccountId(uuid4()), versioned=True)
+    uow = BankUnitOfWork()
+    runs = 0
+
+    async def work() -> None:
+        nonlocal runs
+        runs += 1
+        async with uow:
+            if runs == 1:
+                await _race(id_, uow, then=uow.session.flush)
+            else:
+                (await uow.accounts.get(id_)).withdraw(AMOUNT)
+            await uow.commit()
+
+    await uow.run(work, retry=Retry(attempts=2, retry_on=(ConcurrentUpdate,)))
+
+    assert runs == 2
+    assert await _balance(accounts, id_) == START - 2 * AMOUNT
+    await connections.close_all()
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_race_lost_in_a_savepoint_is_a_concurrent_update() -> None:
+    """The savepoint is undone, and the block sees ``ConcurrentUpdate``."""
+    id_ = await _open(AccountId(uuid4()), versioned=True)
+    async with BankUnitOfWork() as uow:
+        account = await uow.accounts.get(id_)
+        async with BankUnitOfWork() as other:
+            (await other.accounts.get(id_)).withdraw(AMOUNT)
+            await other.commit()
+        with pytest.raises(ConcurrentUpdate) as caught:
+            async with uow.savepoint():
+                account.withdraw(AMOUNT)
+    assert caught.value.model == f"{Account.__module__}.Account"
+    assert await _balance(accounts, id_) == START - AMOUNT
+    await connections.close_all()
+
+
+def test_a_race_on_a_table_no_model_maps_names_no_model() -> None:
+    """The model is named only where the ORM's message names a mapped table."""
+    from sqlalchemy.orm.exc import StaleDataError
+
+    from domainkit.db.uow import concurrent_update
+
+    for message in (
+        (
+            "UPDATE statement on table 'framework_test_nowhere' expected to update "
+            "1 row(s); 0 were matched."
+        ),
+        "Something else went stale.",
+    ):
+        error = concurrent_update(StaleDataError(message))
+        assert (error.model, error.code) == (None, "concurrent_update")
+    deleted = concurrent_update(
+        StaleDataError(
+            "DELETE statement on table 'framework_test_accounts' expected to "
+            "delete 1 row(s); Only 0 were matched."
+        )
+    )
+    assert deleted.model == f"{Account.__module__}.Account"
+    assert str(deleted) == (
+        "The data changed while this request was running; reload it and try again."
+    )

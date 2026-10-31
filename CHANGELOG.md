@@ -158,6 +158,13 @@ and a status.
 
 ### Fixed
 
+- A lost optimistic race flushed before the commit (by a query, an
+  explicit `flush()`, a savepoint, or an `on_stage` hook such as the
+  audit trail's) raised SQLAlchemy's `StaleDataError`, so
+  `uow.run(retry=Retry(retry_on=(ConcurrentUpdate,)))` did not run it
+  again and the HTTP boundary answered 500. The SQL unit of work raises
+  `ConcurrentUpdate` (409) wherever the race surfaces, and its new
+  `model` names the aggregate's class (ADR 0092's amendment) (FIN-78).
 - `messages --dead` lists a dead letter without a recorded error, where it
   raised `IndexError` (TEST-07).
 - **Breaking:** an amount (`ExactDecimal`, money's amount column)
