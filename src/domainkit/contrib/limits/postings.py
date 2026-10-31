@@ -1,7 +1,7 @@
 """The ledger's postings, counted against limits (with ``contrib.accounting``).
 
 ``ready()`` registers ``enforce`` on the ledger's posting path
-(``on_posting``), so every entry the ledger books is counted in the
+(``on_booking``), so every entry the ledger books is counted in the
 posting's own transaction, after its accounts are locked: refused, the
 entry is not booked. A posting that lowers its account's balance moves
 money out (``Direction.OUT``), one that raises it, in. Each entry is one

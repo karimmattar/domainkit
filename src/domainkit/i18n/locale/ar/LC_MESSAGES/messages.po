@@ -828,6 +828,110 @@ msgstr ""
 msgid "The amount has more digits than this field holds."
 msgstr "في المبلغ أرقام أكثر مما يتسع له هذا الحقل."
 
+msgid "This command needs approval: submit it for approval."
+msgstr "يحتاج هذا الأمر إلى موافقة: قدّمه طلبًا للموافقة."
+
+msgid "This command needs approval: it was submitted for approval."
+msgstr "يحتاج هذا الأمر إلى موافقة: قُدّم طلبًا للموافقة."
+
+msgid "No approval request has that id."
+msgstr "لا يوجد طلب موافقة بهذا المعرّف."
+
+msgid "No guarded command has that name."
+msgstr "لا يوجد أمر محميّ بهذا الاسم."
+
+msgid "The arguments do not make the command."
+msgstr "المعطيات لا تكوّن الأمر."
+
+msgid "The command is larger than APPROVALS allows."
+msgstr "الأمر أكبر مما يسمح به APPROVALS."
+
+msgid "The command is not the one this action takes."
+msgstr "هذا الأمر ليس الأمر الذي يأخذه هذا الإجراء."
+
+msgid "The command reads otherwise now than when it was approved."
+msgstr "يُقرأ الأمر الآن على غير ما كان عليه حين الموافقة عليه."
+
+msgid "This command needs no approval: run it directly."
+msgstr "لا يحتاج هذا الأمر إلى موافقة: نفّذه مباشرة."
+
+msgid "A maker's id has 1 to 255 characters."
+msgstr "معرّف مقدّم الطلب من حرف واحد إلى ٢٥٥ حرفًا."
+
+msgid "An approver's id has 1 to 255 characters."
+msgstr "معرّف الموافِق من حرف واحد إلى ٢٥٥ حرفًا."
+
+msgid "A reason has at most 500 characters."
+msgstr "السبب ٥٠٠ حرف على الأكثر."
+
+msgid "The request is no longer waiting for a decision."
+msgstr "لم يعد الطلب في انتظار قرار."
+
+msgid "The request has expired."
+msgstr "انتهت مدة الطلب."
+
+msgid "Whoever submitted a request cannot decide it."
+msgstr "لا يحق لمن قدّم الطلب أن يبتّ فيه."
+
+msgid "You have decided this request already."
+msgstr "سبق أن بتَتّ في هذا الطلب."
+
+msgid "The request holds another command than the one decided on."
+msgstr "يحمل الطلب أمرًا غير الذي بُتّ فيه."
+
+msgid "Only whoever submitted a request can cancel it."
+msgstr "لا يلغي الطلب إلا من قدّمه."
+
+msgid "The request holds another command than the one approved."
+msgstr "يحمل الطلب أمرًا غير الذي وُوفق عليه."
+
+msgid "The request is not waiting to run."
+msgstr "الطلب ليس في انتظار التنفيذ."
+
+msgid "You may not submit this command."
+msgstr "لا يحق لك تقديم هذا الأمر."
+
+msgid "You are not one of the approvers of this request."
+msgstr "لست من الموافقين على هذا الطلب."
+
+msgid "You cannot approve this request now."
+msgstr "لا يمكنك الموافقة على هذا الطلب الآن."
+
+#. domainkit.contrib.auth: step-ups, transactions' authorizations, first use
+msgid "Confirm it is you: authenticate again to do this."
+msgstr "تحقّق من هويتك: أعِد المصادقة لتقوم بهذا."
+
+msgid "Turn on a second factor first: confirming it is you needs one."
+msgstr "فعّل عامل تحقق ثانيًا أولًا: التحقق من هويتك يحتاج إليه."
+
+msgid "These credentials cannot step up: log in, then step up."
+msgstr "لا يمكن تعزيز التحقق ببيانات الاعتماد هذه: سجّل الدخول، ثم عزّز التحقق."
+
+msgid "Enter your password as well."
+msgstr "أدخل كلمة المرور أيضًا."
+
+msgid "This transaction is not authorized: confirm its amount and payee, then try again."
+msgstr "هذه المعاملة غير مُصرَّح بها: أكّد مبلغها والمستفيد منها، ثم أعد المحاولة."
+
+msgid "This transaction was confirmed already."
+msgstr "أُكِّدت هذه المعاملة من قبل."
+
+msgid "This transaction can no longer be confirmed; start it again."
+msgstr "لم يعد ممكنًا تأكيد هذه المعاملة؛ ابدأها من جديد."
+
+msgid "No such transaction."
+msgstr "لا توجد معاملة كهذه."
+
+msgid "This password was set for you: choose a new one to log in."
+msgstr "عُيّنت كلمة المرور هذه لك: اختر كلمة مرور جديدة لتسجيل الدخول."
+
+msgid "A transaction's amount must be more than zero."
+msgstr "يجب أن يكون مبلغ المعاملة أكبر من صفر."
+
+msgid "A purpose is a lower-case name, such as transfer or payments.payout."
+msgstr "الغرض اسم بأحرف صغيرة، مثل transfer أو payments.payout."
+
+#. domainkit.money: where amounts are kept
 msgid "The amount is larger, or has more decimal places, than can be stored."
 msgstr "المبلغ أكبر مما يمكن حفظه، أو فيه منازل عشرية أكثر مما يمكن حفظه."
 

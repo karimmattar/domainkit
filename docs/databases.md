@@ -472,7 +472,10 @@ def start_mappers() -> None:
 An aggregate's table has a `version` column. `map_imperatively` makes every
 `UPDATE` and `DELETE` of the aggregate check and bump it, so a copy loaded
 before someone else's change fails with `ConcurrentUpdate` (409
-`concurrent_update`) instead of overwriting that change. Without it, ten
+`concurrent_update`) instead of overwriting that change, wherever the
+stale write is flushed: at the commit, by a query or a `flush()` before
+it, in a savepoint, or by a domain's `on_stage` hook. Its `model` names
+the aggregate's class, for logs. Without it, ten
 requests that each read a balance of 1000.00, take 10.00 off, and commit
 all succeed and leave 990.00.
 

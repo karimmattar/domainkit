@@ -44,6 +44,44 @@ MAX_PRINCIPAL_TTL: Final = timedelta(minutes=5)
 """The longest ``PRINCIPAL_CACHE.TTL`` may be: a JWT's default lifetime."""
 ROUTE_RULES: Final = "REQUIRE_ROUTE_RULES"
 """``AUTH.REQUIRE_ROUTE_RULES``: the core's since 0.10, refused here since 0.11."""
+PCI_DSS_4: Final = "pci-dss-4"
+"""``AUTH.PASSWORD_PRESET`` for PCI DSS v4.0 (requirements 8.2.8 and 8.3)."""
+PCI_MIN_LENGTH: Final = 12
+"""The fewest characters PCI DSS v4.0 takes in a password (8.3.6)."""
+PCI_HISTORY: Final = 4
+"""The passwords PCI DSS v4.0 forbids using again: the last four (8.3.7)."""
+PCI_ATTEMPTS: Final = 10
+"""The most wrong passwords PCI DSS v4.0 lets through before refusing (8.3.4)."""
+PCI_LOCKOUT: Final = timedelta(minutes=30)
+"""The shortest refusal PCI DSS v4.0 asks after them (8.3.4)."""
+PCI_IDLE: Final = timedelta(minutes=15)
+"""How long PCI DSS v4.0 lets a session idle before it asks for a login (8.2.8)."""
+PCI_PRESET: Final[Mapping[str, object]] = {
+    "PASSWORD_VALIDATORS": (
+        {"NAME": f"{VALIDATORS}.UserAttributeSimilarityValidator"},
+        {
+            "NAME": f"{VALIDATORS}.MinimumLengthValidator",
+            "OPTIONS": {"min_length": PCI_MIN_LENGTH},
+        },
+        {"NAME": f"{VALIDATORS}.CommonPasswordValidator"},
+        {"NAME": f"{VALIDATORS}.LettersAndDigitsValidator"},
+    ),
+    "PASSWORD_HISTORY": PCI_HISTORY,
+    "PASSWORD_CHANGE_ON_FIRST_USE": True,
+    "LOGIN_RATE": "10/hour",
+    # A login ends between IDLE_TIMEOUT and a tenth more after its last use
+    # (tokens.idle_since): 13 minutes ends it by 14.3, within 8.2.8's 15.
+    "IDLE_TIMEOUT": timedelta(minutes=13),
+}
+"""What ``AUTH.PASSWORD_PRESET = "pci-dss-4"`` sets, for each key left unset."""
+PRESETS: Final[Mapping[str, Mapping[str, object]]] = {PCI_DSS_4: PCI_PRESET}
+"""Each ``AUTH.PASSWORD_PRESET``, and the settings it sets."""
+MAX_STEP_UP_AGE: Final = timedelta(days=1)
+"""The longest ``StepUp(max_age=...)`` may be; older step-ups are deleted."""
+
+type Factor = Literal["pwd", "otp"]
+"""What a step-up or a transaction authorization asks for (RFC 8176's names):
+the password (``pwd``), or a code of the authenticator app (``otp``)."""
 
 
 class PasswordValidatorConfig(BaseModel):
@@ -199,6 +237,45 @@ class MfaSettings(BaseModel):
         return value
 
 
+def with_a_factor(value: tuple[Factor, ...]) -> tuple[Factor, ...]:
+    """Refuse a list of methods without the second factor, or with repeats."""
+    if "otp" not in value:
+        raise ValueError(
+            'METHODS must hold "otp": a password alone is no second factor'
+        )
+    if len(set(value)) != len(value):
+        raise ValueError("METHODS lists each method once")
+    return value
+
+
+class StepUpSettings(BaseModel):
+    """``AUTH["STEP_UP"]``: authenticating again for one act (``auth.stepup``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    METHODS: tuple[Factor, ...] = ("otp",)
+    """What a step-up proves: a code of the authenticator app (``otp``), or
+    the password with it (``("pwd", "otp")``). ``StepUp`` asks for them all."""
+
+    _check_methods = field_validator("METHODS")(with_a_factor)
+
+
+class ScaSettings(BaseModel):
+    """``AUTH["SCA"]``: transactions authorized for one amount and payee."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    METHODS: tuple[Factor, ...] = ("otp",)
+    """What confirming a transaction proves, as ``STEP_UP.METHODS``."""
+    TTL: timedelta = Field(
+        default=timedelta(minutes=5), gt=timedelta(0), le=timedelta(minutes=30)
+    )
+    """How long a transaction's authorization request works, from when it
+    is made, confirming and using it included; 30 minutes at most."""
+
+    _check_methods = field_validator("METHODS")(with_a_factor)
+
+
 class ClientCertSettings(BaseModel):
     """``AUTH["CLIENT_CERT"]``: mutual TLS (``ClientCertificateAuthentication``)."""
 
@@ -255,8 +332,11 @@ class AuthSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _refuse_removed(cls, data: object) -> object:
-        """Name the setting that replaced ``REQUIRE_ROUTE_RULES`` (DSGN-02)."""
-        return _removed_keys_refused(data)
+        """Name the setting that replaced ``REQUIRE_ROUTE_RULES`` (DSGN-02).
+
+        A ``PASSWORD_PRESET`` then sets each key of its own left unset.
+        """
+        return _with_preset(_removed_keys_refused(data))
 
     USER_MODEL: str = "domainkit.contrib.auth.models.User"
     """Dotted path to the user class (``AUTH_USER_MODEL``)."""
@@ -293,6 +373,19 @@ class AuthSettings(BaseModel):
         PasswordValidatorConfig(NAME=f"{VALIDATORS}.NumericPasswordValidator"),
     )
     """Rules new passwords must follow; ``()`` checks nothing."""
+    PASSWORD_PRESET: Literal["pci-dss-4"] | None = None
+    """A set of settings a standard asks for: ``"pci-dss-4"`` sets
+    ``PASSWORD_VALIDATORS``, ``PASSWORD_HISTORY``,
+    ``PASSWORD_CHANGE_ON_FIRST_USE``, ``LOGIN_RATE``, and ``IDLE_TIMEOUT``
+    where they are left unset, and refuses to start where one set
+    contradicts it (``auth.E010``). None: no preset."""
+    PASSWORD_HISTORY: int = Field(default=0, ge=0, le=24)
+    """Passwords of a user's own, the current one among them, that a new one
+    may not repeat. 0: none is kept."""
+    PASSWORD_CHANGE_ON_FIRST_USE: bool = False
+    """A password set by staff (the admin API) logs in only once it is
+    changed: ``/login`` and ``/session`` answer ``403
+    password_change_required`` until the login sends ``new_password``."""
     BACKENDS: tuple[str, ...] = Field(
         default=("domainkit.contrib.auth.backends.ModelBackend",), min_length=1
     )
@@ -382,6 +475,10 @@ class AuthSettings(BaseModel):
     """Browser sessions in cookies (``CookieAuthentication``)."""
     MFA: MfaSettings = MfaSettings()
     """Second factors: authenticator apps and recovery codes."""
+    STEP_UP: StepUpSettings = StepUpSettings()
+    """Authenticating again for one act (``StepUp``)."""
+    SCA: ScaSettings = ScaSettings()
+    """Transactions authorized for one amount and payee (``auth.sca``)."""
     CLIENT_CERT: ClientCertSettings = ClientCertSettings()
     """Client certificates (mutual TLS)."""
     PRINCIPAL_CACHE: PrincipalCacheSettings = PrincipalCacheSettings()
@@ -431,6 +528,14 @@ def _removed_keys_refused(data: object) -> object:
             "a setting of its own, outside AUTH"
         )
     return data
+
+
+def _with_preset(data: object) -> object:
+    """``AUTH``'s raw ``data``, with its preset's keys where it leaves them unset."""
+    if not isinstance(data, Mapping):
+        return data
+    preset = PRESETS.get(str(data.get("PASSWORD_PRESET")), {})
+    return {**preset, **data}
 
 
 def auth_settings() -> AuthSettings:

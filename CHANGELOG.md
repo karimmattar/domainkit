@@ -113,6 +113,70 @@ and a status.
   written as `def`: awaited on the event loop, they hold every request and
   message of the process while they work, then fail. `EventBus.subscriptions()`
   lists every subscription (FIN-19).
+- `StepUp(max_age=...)`, an access rule of `domainkit.contrib.auth`: it
+  allows credentials that authenticated again, with a code of the user's
+  authenticator (and the password, with `AUTH.STEP_UP.METHODS = ["pwd",
+  "otp"]`), within `max_age` (a day at most), on routes, `ResourceRouter`
+  actions, WebSockets, and wherever another app takes a rule. Refused, it
+  answers `401 step_up_required` with RFC 9470's `WWW-Authenticate`
+  (`error="insufficient_user_authentication"`, `max_age`). `POST
+  /step-up` (`auth.stepup.router`) steps up: a login token or a browser
+  session keeps its last step-up in `domainkit_step_ups`, read only on
+  the routes that ask; a JSON Web Token login gets a new access token
+  with the `auth_time` and `amr` claims. A login is not a step-up, nor is
+  a recovery code; wrong codes and passwords count against `MFA.RATE` and
+  `LOGIN_RATE` with the user's other checks, and step-ups and refusals
+  go to the audit trail. The core's `BasePermission` gains `refusal()`,
+  so a rule may answer with an error a client can act on in place of the
+  `403` ([ADR 0122](docs/adr/0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md))
+  (FIN-30).
+- Transactions authorized for one amount and one payee, as PSD2's
+  dynamic linking asks (`domainkit.contrib.auth.sca`):
+  `request_authorization(user_id, amount, payee, purpose=...)` stores the
+  transaction, `GET /sca/{id}` shows it, `POST /sca/{id}/confirm` takes a
+  code and returns the authorization, and `consume_authorization(...)`
+  spends it on the transaction its use case is about to make. It holds
+  for that user, the exact amount and currency (`Money`), payee, and
+  purpose, once, within `AUTH.SCA.TTL` (5 minutes); anything else is
+  `403 transaction_not_authorized`, and a substituted amount or payee
+  voids it. The binding is a stored row and an HMAC over a canonical
+  encoding of its values, chosen by a proof of concept where a signed
+  token alone was replayed and a row alone was spent on an edited amount
+  (ADR 0122) (FIN-29).
+- `AUTH.PASSWORD_PRESET = "pci-dss-4"`: PCI DSS v4.0's passwords, opt-in.
+  It sets the validators (12 characters, and the new
+  `LettersAndDigitsValidator`), `PASSWORD_HISTORY` (new: the user's last
+  passwords a new one may not repeat; 4), `PASSWORD_CHANGE_ON_FIRST_USE`
+  (new: a password staff set logs in only with `new_password`, which
+  replaces it; `403 password_change_required` otherwise), `LOGIN_RATE`
+  `"10/hour"`, and `IDLE_TIMEOUT` 13 minutes, where `AUTH` leaves them
+  unset, and refuses to start where a setting contradicts it
+  (`auth.E010`). `docs/auth/pci-dss.md` maps each requirement to its
+  setting, 8.3.4's lockout to device proofs (ADR 0087) (FIN-42).
+- `domainkit.contrib.approvals`: maker-checker. A use case decorated
+  `@requires_approval(action)` and registered with `guard(...)` in
+  `ready()` refuses a direct call whose command a `Policy` applies to
+  (`approval_required`), or submits it (`submit=True`). A maker submits it
+  as a request holding the command read back as JSON, its fingerprint,
+  and seals (HMACs under `SECRET_KEY`); approvers named by a permission or
+  a group, never the maker and each person once (unique in the database,
+  across sessions and tokens), approve that fingerprint, within
+  `APPROVALS.EXPIRES_AFTER`, or reject it with a reason, or the maker
+  cancels it. The approval that completes it queues the command through
+  the outbox, and the worker runs it once, under the inbox, after checking
+  the seals, the fingerprint, and that the arguments still make the
+  command; on the requests' database the request is marked executed in
+  the use case's own commit. Each change takes the request's lock: twenty
+  approvals at once count exactly, and run the command once (ADR 0121).
+  Postings over `ENTRY_THRESHOLDS` (per currency, through the ledger's new
+  `accounting.hooks.on_posting`) and making superusers in the auth admin
+  API (`SUPERUSER_APPROVALS`) are guarded on request. The approve route
+  takes any access rule (`APPROVE_RULE`, or a policy's `approve_rule`),
+  such as `StepUp(max_age=...)`, whose refusal it answers with (`401
+  step_up_required`) rather than its own 403. `api.router` (submit, list, approve, reject,
+  cancel), `manage.py approvals`, audit events for every change, privacy
+  export and erasure, and Arabic messages (`docs/contrib/approvals.md`)
+  (FIN-36).
 - `domainkit.contrib.limits`: limits on money movements. A limit bounds
   one kind of subject (`account`, `holder`, `actor`, or a kind of the
   project's) in one currency and direction: the most one movement may be
@@ -134,16 +198,24 @@ and a status.
   subject over HTTP (`GET /usage`); a periodic purge with messaging, and
   `limits.W001` without it; `limits.E001` and `limits.E002` in `setup()`;
   privacy export and erasure (`docs/contrib/limits.md`) (FIN-47).
-- `contrib.accounting.on_posting`: a hook point other apps register on in
-  `ready()`, called for every entry the ledger books (posted, reversed, or
-  captured) in its transaction, after its accounts are locked and their
-  balances moved; raising refuses the entry. With `contrib.limits`
+- `contrib.accounting.on_booking`: a hook point other apps register on in
+  `ready()`, called for every entry as the ledger books it (posted,
+  reversed, or captured) in its transaction, after its accounts are locked
+  and their balances moved; raising refuses the entry. It is apart from
+  `accounting.hooks.on_posting`, which checks a command before
+  `post_entry` takes any lock. With `contrib.limits`
   installed, every entry is counted against the limits of its accounts,
   their holders, and the actor, and a reversal gives back what its entry
   counted (FIN-47).
 
 ### Changed
 
+- **Breaking:** auth has three new tables, `domainkit_step_ups`,
+  `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
+  new features use them, but deleting or erasing a user deletes the
+  user's rows there, and the hourly purge and `cleartokens` clear old
+  ones: run `makemigrations` and `migrate` before deploying (FIN-29,
+  FIN-30, FIN-42).
 - **Breaking:** messaging's outbox has two new columns, `ordering_key` and
   `sequence`, a `held` status, and an index, and messaging a new table,
   `domainkit_ordering_keys`: run `makemigrations` and `migrate` before
@@ -169,6 +241,13 @@ and a status.
 
 ### Fixed
 
+- A lost optimistic race flushed before the commit (by a query, an
+  explicit `flush()`, a savepoint, or an `on_stage` hook such as the
+  audit trail's) raised SQLAlchemy's `StaleDataError`, so
+  `uow.run(retry=Retry(retry_on=(ConcurrentUpdate,)))` did not run it
+  again and the HTTP boundary answered 500. The SQL unit of work raises
+  `ConcurrentUpdate` (409) wherever the race surfaces, and its new
+  `model` names the aggregate's class (ADR 0092's amendment) (FIN-78).
 - `messages --dead` lists a dead letter without a recorded error, where it
   raised `IndexError` (TEST-07).
 - **Breaking:** an amount (`ExactDecimal`, money's amount column)

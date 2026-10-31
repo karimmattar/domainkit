@@ -34,7 +34,7 @@ class LimitsConfig(DomainConfig):
         """Check the routing and the defaults; map the table; register the hooks.
 
         With the ledger installed, its postings are counted against limits
-        (``on_posting``): the limits live in the ledger's database, or
+        (``on_booking``): the limits live in the ledger's database, or
         ``setup()`` fails (``limits.E001``). A default of ``LIMITS.DEFAULTS``
         that is not a limit fails it too (``limits.E002``). With messaging,
         old usage is purged on a schedule (``tasks``).
@@ -64,11 +64,11 @@ class LimitsConfig(DomainConfig):
         on_export_subject(self.export_person)
         on_deployment_warnings(self.weak_settings)
         if registry.is_installed(ACCOUNTING):
-            from domainkit.contrib.accounting import on_posting
+            from domainkit.contrib.accounting import on_booking
 
             from .postings import enforce
 
-            on_posting(enforce)
+            on_booking(enforce)
         if registry.is_installed(MESSAGING):
             from .tasks import register
 

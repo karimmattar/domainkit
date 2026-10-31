@@ -102,7 +102,7 @@ statuses, and the amendments they name.
 | [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted; amended 2026-10-26 (at the end) |
 | [0089](0089-build-the-docs-site-with-mkdocs-and-generate-the-api-reference-from-api-md.md) | Build the docs site with MkDocs, and generate the API reference from api.md | Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) |
 | [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted |
-| [0092](0092-retry-units-of-work-choose-isolation-and-lock-in-order.md) | Run units of work again after a lost race, let them choose their isolation, and lock in order | Accepted; amended 2026-10-28 and 2026-10-29 (at the end) |
+| [0092](0092-retry-units-of-work-choose-isolation-and-lock-in-order.md) | Run units of work again after a lost race, let them choose their isolation, and lock in order | Accepted; amended 2026-10-28, 2026-10-29, and 2026-10-31 (at the end) |
 | [0094](0094-an-inbox-of-handled-messages-written-with-the-handlers-commit.md) | Keep an inbox of handled messages, written with the handler's commit | Accepted |
 | [0095](0095-fence-a-runs-commits-with-its-lease-instead-of-a-heartbeat.md) | Fence a run's commits with its lease, instead of a heartbeat | Accepted |
 | [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) | Keep committed idempotency keys as tombstones past their TTL | Accepted |
@@ -125,6 +125,8 @@ statuses, and the amendments they name.
 | [0116](0116-keep-double-entry-books-locked-in-id-order-and-append-only.md) | Keep double-entry books: post under locks taken in id order, and append only | Accepted |
 | [0117](0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md) | Reconcile statements through a port, match by rules in order, and record breaks | Accepted |
 | [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md) | Run a key's messages in commit order by holding the later ones in the outbox | Accepted; amended 2026-10-30 (at the end) |
+| [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md) | Hold guarded commands as sealed requests, and count approvals under the request's lock | Accepted |
+| [0122](0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md) | Step up in a rule, and bind authorizations with a stored row and a code | Accepted |
 | [0123](0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md) | Count movements against limits under the subject's row, in the movement's transaction | Accepted |
 
 ### Decisions still without a record

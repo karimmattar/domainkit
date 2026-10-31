@@ -157,7 +157,7 @@ async with PaymentsUnitOfWork() as uow:
 ## On the ledger
 
 With `domainkit.contrib.accounting` installed, limits registers on its
-posting path (`on_posting`), so every entry the ledger books (posted,
+posting path (`on_booking`), so every entry the ledger books (posted,
 reversed, or a hold's capture) is counted in the posting's transaction,
 after its accounts are locked; a refused entry is not booked, and its
 balances do not move. Each entry is a movement:

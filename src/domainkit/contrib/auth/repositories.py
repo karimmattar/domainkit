@@ -33,6 +33,7 @@ from sqlalchemy import (
     union_all,
     update,
 )
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 from sqlalchemy.orm.attributes import set_committed_value
@@ -43,11 +44,18 @@ from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
 from domainkit.ddd import F, Page, RowLock, SoftDeletable
 from domainkit.ddd.query import Selection
+from domainkit.money import Money
 from domainkit.signing import derive_keys
 
 from .events import UserLoggedIn
-from .exceptions import GroupNameTaken, UnknownGroup, UnknownPermission, UsernameTaken
-from .hashers import amake_password
+from .exceptions import (
+    GroupNameTaken,
+    InvalidPassword,
+    UnknownGroup,
+    UnknownPermission,
+    UsernameTaken,
+)
+from .hashers import acheck_password, amake_password
 from .models import (
     ERASED_USERNAME_PURPOSE,
     UNUSABLE_PASSWORD_PREFIX,
@@ -83,9 +91,12 @@ from .tables import (
     group_permissions,
     groups,
     mfa_devices,
+    password_history,
     pending_signups,
     permissions,
     recovery_codes,
+    sca_challenges,
+    step_ups,
     tokens,
     user_link_tables,
 )
@@ -174,12 +185,16 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         """Delete every token and the second factor of ``user_id``.
 
         Its sessions, personal tokens, refresh tokens, and client
-        certificates, and its authenticator's secret and recovery codes:
-        secrets of an account nobody may use. Every principal of the user
+        certificates, its authenticator's secret and recovery codes, its
+        step-ups, its transactions' authorizations, and the hashes of its
+        last passwords: secrets of an account nobody may use. Every
+        principal of the user
         is read again after the commit. The caller commits.
         """
         await TokenStore(self.session).revoke_user(user_id)
         await MfaStore(self.session).remove(user_id)
+        for table in (step_ups, sca_challenges, password_history):
+            await self.session.execute(delete(table).where(table.c.user_id == user_id))
 
     async def _add(self, aggregate: AbstractBaseUser) -> None:
         """Store a new user, unless privacy erased its username from another.
@@ -247,6 +262,8 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             password=hashed, **{**fields, self.model.USERNAME_FIELD: username}
         )
         await self.add(user)
+        if password is not None:
+            await PasswordHistoryStore(self.session).record(user.id, hashed)
         return user
 
     async def create_superuser(
@@ -262,18 +279,34 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         return await self.create_user(username, password, **fields)
 
     async def set_password(
-        self, user: AbstractBaseUser, password: str | None, *, priority: bool = False
+        self,
+        user: AbstractBaseUser,
+        password: str | None,
+        *,
+        priority: bool = False,
+        temporary: bool = False,
     ) -> None:
         """Hash and store a new password; None makes it unusable.
 
         ``priority`` hashes in the places ``AUTH.HASHING_RESERVED`` keeps,
-        for signed-in users changing a password.
+        for signed-in users changing a password. With
+        ``AUTH.PASSWORD_HISTORY``, a password among the user's last ones
+        (the current one included) is refused; with it or
+        ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``, the new one is kept in the
+        history, ``temporary`` (set by staff, to change at the next login)
+        or not.
+
+        Raises:
+            InvalidPassword: The password is one of the user's last ones.
         """
         if password is None:
             user.set_unusable_password()
-        else:
-            hashed = await amake_password(password, priority=priority)
-            user.set_password(PasswordHash(hashed))
+            return
+        history = PasswordHistoryStore(self.session)
+        await history.refuse_reuse(user.id, password, priority=priority)
+        hashed = PasswordHash(await amake_password(password, priority=priority))
+        user.set_password(hashed)
+        await history.record(user.id, hashed, temporary=temporary)
 
     def listing(self, search: str | None = None) -> Selection:
         """Users by username; ``search`` keeps those whose name contains it."""
@@ -1156,6 +1189,275 @@ class SignupStore:
             )
         )
         return _count(result)
+
+
+class StepUpStore:
+    """The last step-up of each login token and browser session, by digest."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Work in ``session``."""
+        self.session = session
+
+    async def record(
+        self, digest: str, user_id: UUID, when: datetime, methods: Iterable[str]
+    ) -> None:
+        """Keep that the credential ``digest`` of ``user_id`` stepped up at ``when``.
+
+        One statement: concurrent step-ups of one credential each write, and
+        the latest proof stays; an older one, written after, changes nothing.
+        """
+        dialect = self.session.get_bind().dialect.name
+        statement = (postgresql if dialect == "postgresql" else sqlite).insert(step_ups)
+        proof = {"auth_time": when, "amr": " ".join(sorted(set(methods)))}
+        await self.session.execute(
+            statement.values(id=digest, user_id=user_id, **proof).on_conflict_do_update(
+                index_elements=[step_ups.c.id],
+                set_=proof,
+                where=step_ups.c.auth_time <= when,
+            )
+        )
+
+    async def last(
+        self, digest: str, user_id: UUID
+    ) -> tuple[datetime, frozenset[str]] | None:
+        """When credential ``digest`` of ``user_id`` last stepped up, and with what."""
+        row = (
+            await self.session.execute(
+                select(step_ups.c.auth_time, step_ups.c.amr).where(
+                    step_ups.c.id == digest, step_ups.c.user_id == user_id
+                )
+            )
+        ).first()
+        return None if row is None else (row.auth_time, frozenset(row.amr.split()))
+
+    async def clear_older(self, before: datetime) -> int:
+        """Delete step-ups from before ``before``: no rule takes them; how many."""
+        result = await self.session.execute(
+            delete(step_ups).where(step_ups.c.auth_time < before)
+        )
+        return _count(result)
+
+
+@dataclass(frozen=True, slots=True)
+class ScaChallenge:
+    """A transaction waiting for its user's authorization, or holding it.
+
+    Its ``repr`` names its id and state alone: the payee may be personal data.
+    """
+
+    id: UUID
+    user_id: UUID
+    amount: Money = dataclasses.field(repr=False)
+    payee: str = dataclasses.field(repr=False)
+    purpose: str
+    created_at: datetime
+    expires_at: datetime
+    confirmed_at: datetime | None = None
+    amr: str | None = None
+    """What confirmed it, RFC 8176's names separated by spaces."""
+    consumed_at: datetime | None = None
+
+    def expired(self, now: datetime | None = None) -> bool:
+        """Whether it no longer works."""
+        return self.expires_at <= (now or utc_now())
+
+
+class ScaStore:
+    """Transactions' authorizations, by id (``auth.sca``)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Work in ``session``."""
+        self.session = session
+
+    async def add(
+        self,
+        user_id: UUID,
+        amount: Money,
+        payee: str,
+        purpose: str,
+        *,
+        ttl: timedelta,
+        now: datetime | None = None,
+    ) -> ScaChallenge:
+        """Store a transaction for ``user_id`` to authorize within ``ttl``."""
+        moment = now or utc_now()
+        challenge = ScaChallenge(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            amount=amount,
+            payee=payee,
+            purpose=purpose,
+            created_at=moment,
+            expires_at=moment + ttl,
+        )
+        await self.session.execute(
+            insert(sca_challenges).values(
+                id=challenge.id,
+                user_id=user_id,
+                amount=amount.amount,
+                amount_currency=amount.currency.code,
+                payee=payee,
+                purpose=purpose,
+                created_at=moment,
+                expires_at=challenge.expires_at,
+            )
+        )
+        return challenge
+
+    async def get(self, challenge_id: UUID) -> ScaChallenge | None:
+        """The transaction ``challenge_id``, in any state."""
+        row = (
+            await self.session.execute(
+                select(sca_challenges).where(sca_challenges.c.id == challenge_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        values = dict(row._mapping)
+        amount = Money(values.pop("amount"), values.pop("amount_currency"))
+        return ScaChallenge(amount=amount, **values)
+
+    async def confirm(
+        self, challenge_id: UUID, when: datetime, methods: Iterable[str]
+    ) -> bool:
+        """Mark it confirmed at ``when``, if it is unconfirmed, unused, and live."""
+        result = await self.session.execute(
+            update(sca_challenges)
+            .where(
+                sca_challenges.c.id == challenge_id,
+                sca_challenges.c.confirmed_at.is_(None),
+                sca_challenges.c.consumed_at.is_(None),
+                sca_challenges.c.expires_at > when,
+            )
+            .values(confirmed_at=when, amr=" ".join(sorted(set(methods))))
+        )
+        return _count(result) == 1
+
+    async def consume(self, challenge_id: UUID, when: datetime) -> bool:
+        """Mark it used at ``when``, if it is unused; one caller wins."""
+        result = await self.session.execute(
+            update(sca_challenges)
+            .where(
+                sca_challenges.c.id == challenge_id,
+                sca_challenges.c.consumed_at.is_(None),
+            )
+            .values(consumed_at=when)
+        )
+        return _count(result) == 1
+
+    async def clear_expired(self, now: datetime | None = None) -> int:
+        """Delete transactions whose authorization no longer works; how many."""
+        result = await self.session.execute(
+            delete(sca_challenges).where(
+                sca_challenges.c.expires_at <= (now or utc_now())
+            )
+        )
+        return _count(result)
+
+
+class PasswordHistoryStore:
+    """Each user's last password hashes (``AUTH.PASSWORD_HISTORY``).
+
+    Kept only while ``PASSWORD_HISTORY`` or ``PASSWORD_CHANGE_ON_FIRST_USE``
+    is set: without them nothing is written, read, or checked.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Work in ``session``."""
+        self.session = session
+
+    async def refuse_reuse(
+        self, user_id: UUID, password: str, *, priority: bool = False
+    ) -> None:
+        """Refuse ``password`` if it is one of the user's last ``PASSWORD_HISTORY``.
+
+        The current password counts among them, kept or not.
+
+        Raises:
+            InvalidPassword: It is.
+        """
+        count = auth_settings().PASSWORD_HISTORY
+        if not count:
+            return
+        hashes = {each.value for each in await self._newest(user_id, count)}
+        current = await UserRepository(self.session).password_hash(user_id)
+        if current is not None and current.usable:
+            hashes.add(current.value)
+        for hashed in sorted(hashes):
+            if await acheck_password(password, hashed, priority=priority):
+                reused = f"This password is one of your last {count}; choose one "
+                raise InvalidPassword([reused + "you have not used."])
+
+    async def record(
+        self, user_id: UUID, hashed: PasswordHash, *, temporary: bool = False
+    ) -> None:
+        """Keep ``hashed`` as the user's newest password, dropping the oldest."""
+        config = auth_settings()
+        keep = config.PASSWORD_HISTORY
+        if not (keep or config.PASSWORD_CHANGE_ON_FIRST_USE):
+            return
+        await self.session.execute(
+            insert(password_history).values(
+                user_id=user_id,
+                password=hashed,
+                created_at=utc_now(),
+                temporary=temporary,
+            )
+        )
+        newest = (
+            select(password_history.c.id)
+            .where(password_history.c.user_id == user_id)
+            .order_by(password_history.c.id.desc())
+            .limit(max(keep, 1))
+        )
+        await self.session.execute(
+            delete(password_history).where(
+                password_history.c.user_id == user_id,
+                password_history.c.id.not_in(newest.scalar_subquery()),
+            )
+        )
+
+    async def must_change(self, user_id: UUID) -> bool:
+        """Whether the user's current password was set by staff, to change."""
+        newest = (
+            await self.session.execute(
+                select(password_history.c.temporary)
+                .where(password_history.c.user_id == user_id)
+                .order_by(password_history.c.id.desc())
+                .limit(1)
+            )
+        ).scalar()
+        return newest is True
+
+    async def require_change(self, user_id: UUID) -> None:
+        """Mark the user's current password as set by staff, to change.
+
+        Only with ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``: nothing otherwise.
+        """
+        if not auth_settings().PASSWORD_CHANGE_ON_FIRST_USE:
+            return
+        newest = (
+            select(password_history.c.id)
+            .where(password_history.c.user_id == user_id)
+            .order_by(password_history.c.id.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        await self.session.execute(
+            update(password_history)
+            .where(password_history.c.id == newest)
+            .values(temporary=True)
+        )
+
+    async def _newest(self, user_id: UUID, count: int) -> list[PasswordHash]:
+        """The user's ``count`` newest kept hashes."""
+        rows = await self.session.scalars(
+            select(password_history.c.password)
+            .where(password_history.c.user_id == user_id)
+            .order_by(password_history.c.id.desc())
+            .limit(count)
+        )
+        return list(rows)
 
 
 def _count(result: Any) -> int:  # noqa: ANN401 - a CursorResult.

@@ -134,8 +134,15 @@ entry = await post_entry(
   ledger's tables alone.
 - `EntryPosted`, like every event of the app, is recorded by
   `contrib.audit` when it is installed.
-- **Other apps** see every entry before it is booked: a function
-  registered in their `ready()` with `on_posting(hook)` is awaited as
+- **Checks before posting.** An app may refuse an entry before
+  `post_entry` takes any lock: it registers `async def hook(command)` on
+  `domainkit.contrib.accounting.hooks.on_posting` in `ready()`, and
+  raises. `domainkit.contrib.approvals` refuses there the entries over
+  `APPROVALS.ENTRY_THRESHOLDS` that no approved request posts
+  (`approval_required`, 403; [approvals.md](approvals.md#large-postings)).
+- **Checks as entries are booked.** An app sees every entry as it is
+  booked: a function registered in its `ready()` with
+  `on_booking(hook)` (from `domainkit.contrib.accounting`) is awaited as
   `hook(uow, entry, accounts)` in the posting's transaction, after its
   accounts and period are locked and their balances moved, for entries
   posted, reversals, and captures. Raising refuses the entry; rows it

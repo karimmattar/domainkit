@@ -28,8 +28,8 @@ Requests: ``AuthenticationMiddleware`` finds the user from a token
 (``authentication``), and ``api`` has the endpoints to log in and out. What
 routes allow is the core's ``domainkit.http.access``, for any
 authentication (ADR 0080); ``access`` adds the rules about this app's users
-(``IsAdminUser``, ``IsSuperuser``, ``AuthenticatedUser``, and ``CurrentUser``
-typed as this app's users).
+(``IsAdminUser``, ``IsSuperuser``, ``StepUp``, ``AuthenticatedUser``, and
+``CurrentUser`` typed as this app's users).
 """
 
 from .access import (
@@ -37,6 +37,8 @@ from .access import (
     CurrentUser,
     IsAdminUser,
     IsSuperuser,
+    StepUp,
+    StepUpRequired,
     acurrent_user,
     current_user,
 )
@@ -46,6 +48,7 @@ from .authentication import (
     Credentials,
     IssuedTokens,
     JWTAuthentication,
+    Proof,
     TokenAuthentication,
 )
 from .backends import (
@@ -127,6 +130,9 @@ __all__ = [
     "ModelBackend",
     "PasswordHash",
     "Permission",
+    "Proof",
+    "StepUp",
+    "StepUpRequired",
     "TokenAuthentication",
     "TokenKind",
     "UnknownGroup",

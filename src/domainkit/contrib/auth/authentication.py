@@ -24,7 +24,7 @@ import hmac
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import cache
 from typing import Any, ClassVar, Final, cast
 from uuid import UUID, uuid4
@@ -77,11 +77,21 @@ __all__ = [
     "BaseAuthentication",
     "Credentials",
     "JWTAuthentication",
+    "Proof",
     "TokenAuthentication",
     "active_user",
 ]
 
 security_logger = logging.getLogger(SECURITY_LOGGER)
+
+
+@dataclass(frozen=True, slots=True)
+class Proof:
+    """A step-up: when the user authenticated again, and with what."""
+
+    auth_time: datetime
+    methods: frozenset[str]
+    """RFC 8176's names: ``otp`` for an authenticator's code, ``pwd``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,10 +107,30 @@ class Credentials:
     """The login a JWT descends from, whose refresh tokens logging out revokes."""
     scopes: frozenset[str] | None = None
     """The permission keys the credentials are limited to; None: no limit."""
+    auth_time: datetime | None = None
+    """When a JSON Web Token's user last authenticated again (its
+    ``auth_time`` claim): a step-up. Opaque tokens and sessions keep theirs
+    in the table of step-ups (``proof``)."""
+    amr: frozenset[str] = frozenset()
+    """What that step-up proved (its ``amr`` claim): ``otp``, ``pwd``."""
 
     def allows(self, *perms: str) -> bool:
         """Whether the credentials' scopes cover every one of ``perms``."""
         return self.scopes is None or self.scopes.issuperset(perms)
+
+    async def proof(self) -> Proof | None:
+        """When these credentials last stepped up, and with what; None: never.
+
+        A JSON Web Token carries it (``auth_time``, ``amr``); a login token
+        or browser session is looked up, in a query of its own, each time.
+        """
+        if self.auth_time is not None:
+            return Proof(self.auth_time, self.amr)
+        if self.scheme not in STEPPING_SCHEMES or self.token_id is None:
+            return None
+        async with AuthUnitOfWork() as uow:
+            found = await uow.step_ups.last(self.token_id, self.user.id)
+        return None if found is None else Proof(*found)
 
     def __repr__(self) -> str:
         """The user's id, the scheme, and the scopes: no personal data, no digest."""
@@ -124,6 +154,8 @@ class IssuedTokens:
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+STEPPING_SCHEMES: Final = frozenset({"token", "cookie"})
+"""Schemes whose credentials keep their step-ups in the table, by digest."""
 IDLE: Final = "Session ended after inactivity; log in again."
 """Why a login unused for ``AUTH.IDLE_TIMEOUT`` is refused."""
 """``request.auth.scheme`` of requests an opaque token authenticates."""
@@ -323,7 +355,10 @@ class JWTAuthentication(BaseAuthentication):
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
         remember(entry, config)
-        return Credentials(user, scheme=JWT_SCHEME, session=session)
+        auth_time, amr = _proof_claims(claims)
+        return Credentials(
+            user, scheme=JWT_SCHEME, session=session, auth_time=auth_time, amr=amr
+        )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
         """An access token and a refresh token that starts a new family."""
@@ -377,8 +412,14 @@ class JWTAuthentication(BaseAuthentication):
         )
         return self._pair(user, token.family, refresh)
 
-    def encode(self, user: AbstractBaseUser, session: UUID) -> str:
-        """A signed access token for ``user`` in the login ``session``."""
+    def encode(
+        self, user: AbstractBaseUser, session: UUID, proof: Proof | None = None
+    ) -> str:
+        """A signed access token for ``user`` in the login ``session``.
+
+        With ``proof``, a step-up, it says so in ``auth_time`` and ``amr``
+        (OpenID Connect's claims). A refresh issues tokens without them.
+        """
         now = utc_now()
         claims: dict[str, Any] = {
             "sub": str(user.id),
@@ -387,6 +428,9 @@ class JWTAuthentication(BaseAuthentication):
             "jti": uuid4().hex,
             "sid": str(session),
         }
+        if proof is not None:
+            claims["auth_time"] = int(proof.auth_time.timestamp())
+            claims["amr"] = sorted(proof.methods)
         if self.config.ISSUER is not None:
             claims["iss"] = self.config.ISSUER
         if self.config.AUDIENCE is not None:
@@ -816,6 +860,25 @@ def _check_times(claims: dict[str, Any], leeway: timedelta) -> None:
         raise AuthenticationFailed("Invalid token.")
     if expires <= now - slack:
         raise AuthenticationFailed("Token expired.")
+
+
+def _proof_claims(claims: dict[str, Any]) -> tuple[datetime | None, frozenset[str]]:
+    """A token's ``auth_time`` and ``amr``, if it has both, well formed.
+
+    Our own key signed them; anything else reads as no step-up.
+    """
+    when, methods = claims.get("auth_time"), claims.get("amr")
+    if (
+        type(when) is not int
+        or not isinstance(methods, list)
+        or not all(isinstance(each, str) for each in methods)
+    ):
+        return None, frozenset()
+    try:
+        moment = datetime.fromtimestamp(when, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None, frozenset()
+    return moment, frozenset(methods)
 
 
 def _uuid(value: object) -> UUID:

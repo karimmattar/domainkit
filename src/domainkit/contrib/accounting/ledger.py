@@ -29,7 +29,7 @@ from domainkit.apps import registry
 from domainkit.ddd import Command, Retry
 
 from .exceptions import InvalidEntry, NoOpenPeriod, PeriodsOverlap, ReferenceReused
-from .hooks import on_posting
+from .hooks import on_booking, on_posting
 from .models import (
     Account,
     AccountId,
@@ -151,13 +151,13 @@ async def book(
 
     The accounts are locked already (after any hold); the period the
     entry's date falls in is locked last, for share. Then the apps that
-    registered ``on_posting`` see the entry, and may refuse it.
+    registered ``on_booking`` see the entry, and may refuse it.
 
     Raises:
         NoOpenPeriod: No period covers the date, and ``REQUIRE_PERIOD``.
         PeriodIsClosed: The period that covers it is closed.
         AccountIsClosed, InvalidEntry, InsufficientFunds: As ``Account.post``.
-        DomainError: An ``on_posting`` hook refused the entry.
+        DomainError: An ``on_booking`` hook refused the entry.
     """
     period = await uow.periods.covering(entry.booked_on)
     if period is not None:
@@ -167,7 +167,7 @@ async def book(
         raise NoOpenPeriod("No open accounting period covers the entry's date.")
     for posting in entry.postings:
         accounts[posting.account_id].post(posting.side, posting.money)
-    for hook in on_posting.hooks():
+    for hook in on_booking.hooks():
         await hook.call(uow, entry, accounts)
     await uow.entries.add(entry)
 
@@ -239,6 +239,7 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
         AccountNotFound: A line names no account.
         NoOpenPeriod, PeriodIsClosed: The date is in no open period.
         AccountIsClosed, InsufficientFunds: As ``Account.post``.
+        DomainError: An ``on_posting`` hook refused it (``approval_required``).
     """
     lines = tuple(command.lines)
     max_lines = config().MAX_LINES
@@ -261,6 +262,8 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
         raise InvalidEntry(
             "The sources that start with 'accounting.' are the ledger's own."
         )
+    for hook in on_posting.hooks():
+        await hook.call(command)
     return await run(
         uow,
         lambda: post(

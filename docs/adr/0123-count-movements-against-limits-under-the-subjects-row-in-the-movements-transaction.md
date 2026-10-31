@@ -18,7 +18,7 @@ back.
 
 Three designs were measured on PostgreSQL 16 (asyncpg, `READ COMMITTED`),
 each enforcing a holder's daily limit of 1,000.00 from inside the
-ledger's posting (`on_posting`, below): 50 payments started at once,
+ledger's posting (`on_booking`, below): 50 payments started at once,
 three runs each, all of 25.00 (exactly 40 fit), then of 50 mixed amounts
 from 1.00 to 60.00. The holder's payments came from one wallet, then from
 five wallets, each paying into a till of its own, so that the ledger's
@@ -84,7 +84,7 @@ what a key counted as released, so it counts in no window; the ledger
 calls it for the entry a reversal undoes.
 
 **The ledger.** `contrib.accounting` gains one hook point,
-`on_posting(uow, entry, accounts)`, called in `book()` after the balances
+`on_booking(uow, entry, accounts)`, called in `book()` after the balances
 moved and before the entry is added, for every entry posted, reversed, or
 captured; limits registers on it in `ready()` (ADR 0101), so the ledger
 does not import limits. Each entry is a movement per account and per
@@ -115,7 +115,7 @@ it.
 - A breach is `LimitExceeded` (422 `limit_exceeded`) or
   `TransactionLimitExceeded` (422 `transaction_limit_exceeded`), naming
   the limit and window on the error.
-- The ledger calls `on_posting` for every entry it books; limits counts
+- The ledger calls `on_booking` for every entry it books; limits counts
   each entry there, and releases what a reversed entry counted.
 - Usage older than `LIMITS.KEEP_USAGE` (35 days, more than any window) is
   purged by a periodic task with messaging, or `manage.py limits purge`;

@@ -1,6 +1,6 @@
 # 0092. Run units of work again after a lost race, let them choose their isolation, and lock in order
 
-- Status: Accepted; amended 2026-10-28 and 2026-10-29 (at the end)
+- Status: Accepted; amended 2026-10-28, 2026-10-29, and 2026-10-31 (at the end)
 - Date: 2026-10-26
 
 ## Context
@@ -265,3 +265,19 @@ refused with "database is locked" at its first write, at once, whatever
 its busy timeout. Now it waits for the first. Readers are not held up.
 `SERIALIZABLE` work, begun with `BEGIN IMMEDIATE` already, gets nothing
 more, and `assert_num_queries` still skips the `INTERNAL` statement.
+
+## Amendment (2026-10-31): a race lost at any flush is `ConcurrentUpdate`
+
+The recipe for optimistic races is `Retry(retry_on=(ConcurrentUpdate,))`.
+It held only when the stale write reached the database at the commit
+itself: the unit of work translated SQLAlchemy's `StaleDataError` in
+`session.commit()` alone. Flushed earlier, by a query that flushes first,
+an explicit `flush()`, a savepoint's release, or a domain's `on_stage`
+hook (the audit trail's, the outbox's), it surfaced as `StaleDataError`:
+`run` raised it at once, and the HTTP boundary answered 500, not 409
+(found by ADR 0121's proof of concept). The SQL unit of work now
+translates it wherever it leaves: `commit()`, the block's exit, and a
+savepoint, into `ConcurrentUpdate`, whose `model` names the class mapped
+to the table SQLAlchemy names, for logs. `test_aggregate_versions.py`
+loses a race at each of them, on SQLite and PostgreSQL, and `run`
+retries one.
