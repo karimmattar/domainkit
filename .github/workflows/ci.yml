@@ -150,7 +150,7 @@ jobs:
           poetry run pytest -n auto --dist worksteal --cov --cov-report=term
           --cov-report=xml --junitxml=junit.xml
       - if: ${{ always() && needs.changes.outputs.code != 'false' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ matrix.python }}
           path: |
@@ -158,7 +158,7 @@ jobs:
             junit.xml
           retention-days: 14
       - if: needs.changes.outputs.code != 'false'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-test-${{ matrix.python }}
           path: .coverage.test-${{ matrix.python }}
@@ -362,7 +362,7 @@ jobs:
           docker run -d --name rabbitmq -p 5672:5672 -p 5671:5671 -p 15672:15672 \
             -e RABBITMQ_DEFAULT_USER=domainkit -e RABBITMQ_DEFAULT_PASS=domainkit \
             -v "$PWD:/certs:ro" -v "$PWD/20-tls.conf:/etc/rabbitmq/conf.d/20-tls.conf:ro" \
-            rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+            rabbitmq:4.3.6-management-alpine@sha256:3505b6096cdbc083bcc363e74366f575ecd0c1a55be4dadcbc60fa08e34647e1
           # Wait on the log, not "docker exec rabbitmq-diagnostics": an early
           # exec runs as root and writes the Erlang cookie the server (another
           # user) must create, so RabbitMQ fails to start.
@@ -383,14 +383,14 @@ jobs:
       # Kept when the suite fails too: which tests failed, and the log (with
       # the stacks pytest-timeout prints for a hung test).
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-integration
           path: |
             junit.xml
             pytest.log
           retention-days: 14
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-integration
           path: .coverage.integration
@@ -443,7 +443,7 @@ jobs:
           poetry run python -m benchmarks --strict --json ladder.json
           ${{ github.event_name == 'pull_request' && '--baseline base/src' || '' }}
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchmark-ladder
           path: ladder.json
@@ -465,7 +465,7 @@ jobs:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-*
           merge-multiple: true
@@ -526,7 +526,7 @@ jobs:
           done
           curl -sf -H "Host: api.example.com" http://127.0.0.1:8000/health
           docker stop smoke
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
@@ -578,7 +578,7 @@ jobs:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: pipx install "cyclonedx-bom==${CYCLONEDX_BOM_VERSION}"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist/
@@ -598,7 +598,7 @@ jobs:
           cyclonedx-py environment --pyproject sbom-pyproject.toml \
             --mc-type library --of JSON \
             -o sbom.cdx.json .venv
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: sbom.cdx.json
@@ -623,11 +623,11 @@ jobs:
       id-token: write # A Sigstore certificate naming this workflow run.
       attestations: write # Keeps the attestations with the repository.
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist/
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sbom
           path: sbom/
@@ -697,7 +697,7 @@ jobs:
       - run: poetry run mkdocs build --strict --site-dir site
         env:
           NO_MKDOCS_2_WARNING: "1"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docs-site
           path: site/
@@ -775,7 +775,7 @@ jobs:
           .newest/bin/python -m pip_audit --progress-spinner off
           --ignore-vuln PYSEC-2026-1325
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-newest
           path: junit.xml
@@ -817,7 +817,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - run: .oldest/bin/python -m pytest -n auto --junitxml=junit.xml
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-oldest
           path: junit.xml
@@ -911,7 +911,7 @@ jobs:
             poetry run python .github/scripts/mutation_summary.py changed --lived-fails $MUTANTS >> "$GITHUB_STEP_SUMMARY"
           fi
       - if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutmut-results-changed
           path: |
@@ -922,7 +922,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - if: steps.plan.outputs.shards != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-changed-plan
           path: |
@@ -955,7 +955,7 @@ jobs:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mutation-changed-plan
       - name: Run the shard's mutants
@@ -974,7 +974,7 @@ jobs:
           fi
           exit "$status"
       - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-changed-shard-${{ matrix.shard }}
           path: mutants/**/*.meta
@@ -999,11 +999,11 @@ jobs:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --only dev --no-root
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mutmut-results-changed
       # Each shard's files in a directory of its own, below mutants/.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: mutation-changed-shard-*
           path: mutants/shards
@@ -1013,7 +1013,7 @@ jobs:
           set -f
           poetry run python .github/scripts/mutation_summary.py changed --lived-fails $(cat changed-mutants.txt) >> "$GITHUB_STEP_SUMMARY"
       - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutmut-results-changed-summary
           path: |
@@ -1212,7 +1212,7 @@ jobs:
           set -f
           poetry run python .github/scripts/mutation_summary.py "$SHARD" $MUTANTS >> "$GITHUB_STEP_SUMMARY"
       - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutmut-results-${{ matrix.shard.name }}
           path: |

@@ -16,7 +16,7 @@ name: domainkit
 services:
   certs:
     # Any image with openssl; RabbitMQ's is pulled anyway.
-    image: rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+    image: rabbitmq:4.3.6-management-alpine@sha256:3505b6096cdbc083bcc363e74366f575ecd0c1a55be4dadcbc60fa08e34647e1
     user: "0"
     entrypoint: ["sh", "-ec"]
     command:
@@ -113,7 +113,7 @@ services:
       retries: 30
 
   rabbitmq:
-    image: rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+    image: rabbitmq:4.3.6-management-alpine@sha256:3505b6096cdbc083bcc363e74366f575ecd0c1a55be4dadcbc60fa08e34647e1
     environment:
       RABBITMQ_DEFAULT_USER: domainkit
       RABBITMQ_DEFAULT_PASS: domainkit
