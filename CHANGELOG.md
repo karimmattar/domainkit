@@ -132,9 +132,9 @@ and a status.
   a server's code; the audit page lists, by module, the 15 left and why,
   and the 682 not checked (TEST-07).
 - The 499 mutants 0.14's changed functions left (476 alive, 23 that no
-  test reached) are settled: 218 are killed by new tests (20 of
+  test reached) are settled: 219 are killed by new tests (20 of
   them on PostgreSQL, where the triggers, `NOTIFY` and the database's
-  clock run), 156 die on PostgreSQL already, 107 are equivalent, and
+  clock run), 156 die on PostgreSQL already, 106 are equivalent, and
   12 run only at import; the audit page lists, by module, the 6 left
   and why (TEST-11).
 
