@@ -62,6 +62,7 @@ from .holds import (
     place_hold,
     release_hold,
 )
+from .hooks import on_posting
 from .ledger import (
     REVERSALS,
     CloseAccount,
@@ -169,6 +170,7 @@ __all__ = [
     "defer_entry",
     "expire_holds",
     "general_ledger",
+    "on_posting",
     "open_account",
     "open_period",
     "place_hold",

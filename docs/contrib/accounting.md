@@ -134,6 +134,13 @@ entry = await post_entry(
   ledger's tables alone.
 - `EntryPosted`, like every event of the app, is recorded by
   `contrib.audit` when it is installed.
+- **Other apps** see every entry before it is booked: a function
+  registered in their `ready()` with `on_posting(hook)` is awaited as
+  `hook(uow, entry, accounts)` in the posting's transaction, after its
+  accounts and period are locked and their balances moved, for entries
+  posted, reversals, and captures. Raising refuses the entry; rows it
+  locks come after the accounts, in an order of its own.
+  [Limits](limits.md#on-the-ledger) count each entry this way.
 
 ### From messages
 
