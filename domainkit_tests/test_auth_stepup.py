@@ -141,6 +141,9 @@ def test_a_login_token_steps_up_for_max_age(identity: Api, frozen: FrozenClock) 
         409,
         "no_second_factor",
     )
+    assert unenrolled.json()["detail"] == (
+        "Turn on a second factor first: confirming it is you needs one."
+    )
     assert (refused.status_code, refused.json()["code"]) == (401, "step_up_required")
     assert refused.json()["detail"] == (
         "Confirm it is you: authenticate again to do this."
@@ -281,8 +284,12 @@ def test_the_password_too_where_the_project_asks(
     both = step_up(client, headers, code, password=PASSWORD)
 
     assert (missing.status_code, missing.json()["code"]) == (400, "password_required")
+    assert missing.json()["detail"] == "Enter your password as well."
     assert (wrong.status_code, wrong.json()["code"]) == (400, "wrong_password")
+    assert wrong.json()["detail"] == "Your password was entered incorrectly."
     assert both.json()["amr"] == ["otp", "pwd"]
+    grant("alice", "shop.view_product")
+    assert client.post("/payees/strict", headers=headers).status_code == 200
     assert [row["details"]["reason"] for row in audited("auth.step_up")] == [
         "wrong_password"
     ]
@@ -300,8 +307,14 @@ def test_wrong_passwords_count_against_the_login_rate(
     for _ in range(2):
         step_up(client, headers, "000000", password="nope")
     held = step_up(client, headers, now_code(secret, frozen), password=PASSWORD)
+    changing = client.post(
+        "/auth/password",
+        json={"old_password": PASSWORD, "new_password": "Kq7-zv93-Lmw2"},
+        headers=headers,
+    )
 
     assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert changing.status_code == 429  # The user's own count of password checks.
 
 
 def test_a_route_may_ask_for_more_than_the_setting(
@@ -449,8 +462,8 @@ def test_the_rule_takes_ages_up_to_a_day(use_auth: UseAuth) -> None:
         assert str(refused.value) == (
             "StepUp(max_age=...) must be more than 0 and a day at most."
         )
-    refused: list[Any] = [("pwd",), ("otp", "otp"), ()]
-    for methods in refused:
+    wrong: list[Any] = [("pwd",), ("otp", "otp"), ()]
+    for methods in wrong:
         with pytest.raises(ImproperlyConfigured, match=r"StepUp\(methods=\.\.\.\)"):
             StepUp(max_age=timedelta(minutes=1), methods=methods)
 
@@ -758,3 +771,48 @@ async def test_only_tokens_and_sessions_look_their_step_up_up() -> None:
         Credentials(KNOWN, scheme="jwt", session=uuid4()),
     ):
         assert await credentials.proof() is None
+
+
+class Told(BasePermission):
+    """Refuses, naming the request and the principal it refused."""
+
+    async def has_permission(self, request: HTTPConnection, user: Any) -> bool:  # noqa: ANN401
+        """Never."""
+        return False
+
+    async def refusal(self, request: HTTPConnection, user: Any) -> Exception:  # noqa: ANN401
+        """An error that carries both."""
+        return LookupError(request, user)
+
+
+@pytest.mark.anyio
+async def test_all_of_passes_on_the_request_and_the_principal() -> None:
+    """The inner rule's refusal sees what the outer one was asked about."""
+    request = connection(None)
+
+    refusal = await AllOf(Told()).refusal(request, KNOWN)
+
+    assert isinstance(refusal, LookupError)
+    assert refusal.args == (request, KNOWN)
+
+
+def test_a_step_up_is_kept_for_its_own_user(identity: Api) -> None:
+    """Looked up by the credential and its user, both."""
+    alice = create_user("alice")
+    bob = create_user("bob")
+
+    async def check() -> tuple[object, object]:
+        async with AuthUnitOfWork() as uow:
+            await uow.step_ups.record("d" * 64, alice, clock.now(), ["otp", "pwd"])
+            await uow.commit()
+        async with AuthUnitOfWork() as uow:
+            return (
+                await uow.step_ups.last("d" * 64, alice),
+                await uow.step_ups.last("d" * 64, bob),
+            )
+
+    mine, theirs = run_async(check())
+
+    assert mine is not None
+    assert mine[1] == {"otp", "pwd"}  # type: ignore[index]
+    assert theirs is None
