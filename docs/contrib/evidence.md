@@ -83,9 +83,28 @@ EVIDENCE = {"SUBJECT_KEY": env.str("EVIDENCE_SUBJECT_KEY")}
 
 `env.str` reads `<PREFIX>EVIDENCE_SUBJECT_KEY`, or a mounted secret file
 named by `<PREFIX>EVIDENCE_SUBJECT_KEY_FILE`. Back the key up with the
-ledger's credentials, and never change it: `for_subject` finds records only
-under the key they were written with, though the keys kept with their
-receipts always work.
+ledger's credentials. `for_subject` finds records only under a key of the
+ring they were written with, though the keys kept with their receipts
+always work.
+
+**Rotating the subject key.** The subject keys are a ring: add a new key
+under an id in `SUBJECT_KEYS` and name it in `SUBJECT_KEY_ID`, keeping the
+old one (`SUBJECT_KEY` has the id `default`):
+
+```python
+EVIDENCE = {
+    "SUBJECT_KEY": env.str("EVIDENCE_SUBJECT_KEY"),  # the old key: "default"
+    "SUBJECT_KEYS": {"2027": env.str("EVIDENCE_SUBJECT_KEY_2027")},
+    "SUBJECT_KEY_ID": "2027",
+}
+```
+
+New records' keys use the current key; `for_subject` scans the subject's
+prefix under each key of the ring, the current one first. A record is
+never rewritten, so its key keeps the digest it was made with: `get` and
+`verify` read keys without checking the digest, so every receipt keeps
+proving its record. Drop an old key only when listing a subject's older
+records by subject no longer matters.
 
 | `EVIDENCE` key | Default | Meaning |
 | --- | --- | --- |
@@ -93,5 +112,7 @@ receipts always work.
 | `NAMESPACE` | `"evidence"` | Key prefix, so projects or environments can share one ledger. |
 | `PREVIOUS_NAMESPACES` | `()` | Namespaces used before `NAMESPACE`, whose records `get` and `verify` still read; at most 8, each a namespace as `NAMESPACE` is. |
 | `MAX_BYTES` | `262144` | Largest record, in bytes (1,024 to 4,000,000); keep documents elsewhere and record their digests. |
-| `SUBJECT_KEY` | `None` | Secret for the subject digests in keys, 32 characters or more. Required in staging and production; elsewhere a public development key is used. Keep it for as long as the evidence: a new key hides earlier records from `for_subject`, though the keys in their receipts still work. |
+| `SUBJECT_KEY` | `None` | Secret for the subject digests in keys, 32 characters or more; in the ring of subject keys its id is `default`. Required in staging and production (or `SUBJECT_KEYS`); elsewhere a public development key is used. Keep it for as long as the evidence, or in the ring: a key dropped hides the records it keyed from `for_subject`, though the keys in their receipts still work. |
+| `SUBJECT_KEYS` | `{}` | More subject keys by id (1 to 32 letters, digits, `_`, `-`; not `default`), each 32 characters or more; at most 8. The current one keys new records; the others still find theirs. |
+| `SUBJECT_KEY_ID` | `None` | The id of the current subject key: required when the ring holds more than one key. |
 
