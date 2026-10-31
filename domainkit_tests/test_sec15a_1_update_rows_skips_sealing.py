@@ -84,7 +84,7 @@ async def test_a_subject_change_reseals_a_value_that_was_not_loaded(
 
     await save(pay(1, note="Bob's gift", holder=ANN))
     async with CardsUnitOfWork() as uow:
-        query = select(Payment).options(load_only(Payment.holder_id))
+        query = select(Payment).options(load_only(Payment.holder_id))  # type: ignore[arg-type]
         payment = (await uow.session.scalars(query)).one()
         payment.holder_id = BOB
         await uow.commit()

@@ -750,7 +750,11 @@ def test_the_context_binds_table_column_and_key() -> None:
 
     column = tables.payments.c.pan
     assert context(column, [Id(ANN)]) == context(column, [ANN])
-    assert context(column, [ANN]) == f"cards_payments\x00pan\x00{ANN}".encode()
+    assert context(column, [ANN]) == f'["cards_payments","pan",["{ANN}"]]'.encode()
+    assert context(column, ["a\x1fb", "c"]) != context(column, ["a", "b\x1fc"])
+    assert context(column, ["\ud800"]) == '["cards_payments","pan",["\ud800"]]'.encode(
+        "utf-8", "surrogatepass"
+    )
 
 
 # The admin API ----------------------------------------------------------------------
