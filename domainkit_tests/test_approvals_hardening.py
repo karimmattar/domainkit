@@ -310,3 +310,52 @@ async def test_the_approved_command_runs_as_its_maker() -> None:
     done: ApprovalRequest = await approve(request, "ann")
     await execute_request(done.id, done.run_token)
     assert seen == ["mia"]
+
+
+async def test_expiry_goes_on_past_requests_it_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In one round: one decided since, one tampered with, then one to expire."""
+    from domainkit.contrib.approvals.uow import RequestRepository
+
+    guard_acts()
+    decided, tampered, due = [
+        await submit_command("tests.act", Act(kind=kind), maker="maker")
+        for kind in ("decided", "tampered", "due")
+    ]
+    await cancel_request(
+        CancelRequest(request_id=decided.id, maker="maker"), ApprovalsUnitOfWork()
+    )
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(requests).where(requests.c.id == tampered.id).values(required=5)
+        )
+    rounds = iter([[decided.id, tampered.id, due.id], []])
+
+    async def found(self: RequestRepository, now: Any, limit: int) -> list[Any]:  # noqa: ANN401
+        return next(rounds)
+
+    monkeypatch.setattr(RequestRepository, "due", found)
+    with clock.freeze_time(clock.now() + timedelta(days=4)):
+        assert await expire_requests() == 1
+    assert (await stored(due.id)).status is RequestStatus.EXPIRED
+
+
+async def test_a_tampered_approved_request_fails_and_says_which(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Run with its token after its row was changed: failed, and logged."""
+    from domainkit.contrib.approvals import services
+
+    guard_acts()
+    request = await approved_act("t")
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(requests).where(requests.c.id == request.id).values(required=5)
+        )
+    with caplog.at_level(logging.WARNING, services.__name__):
+        await execute_request(request.id, request.run_token)
+    assert await status_of(request) == (RequestStatus.FAILED, "request_tampered")
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Approval request {request.id} is tampered with"
+    ]
