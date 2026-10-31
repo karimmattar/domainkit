@@ -249,9 +249,10 @@ async def test_a_reversal_undoes_an_entry_once() -> None:
     )
     assert (reversal.booked_on, reversal.description) == (NOW.date(), "refund")
     assert set((await balances()).values()) == {Decimal(0)}
-    twice = await reverse_entry(
-        ReverseEntry(entry_id=reversal.id), AccountingUnitOfWork()
-    )
+    with freeze_time(NOW):
+        twice = await reverse_entry(
+            ReverseEntry(entry_id=reversal.id), AccountingUnitOfWork()
+        )
     assert twice.reverses == reversal.id
     assert (await balances())[cash.id] == Decimal("7.0000")
     with refused(EntryNotFound, match=r"^No journal entry has that id\.$"):
