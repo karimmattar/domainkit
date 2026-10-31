@@ -739,3 +739,15 @@ def test_resource_actions_take_the_rule(use_auth: UseAuth, frozen: FrozenClock) 
     assert (never.status_code, never.json()["code"]) == (401, "step_up_required")
     assert stale.status_code == 401
     assert fresh.status_code == 200, fresh.json()
+
+
+@pytest.mark.anyio
+async def test_only_tokens_and_sessions_look_their_step_up_up() -> None:
+    """Other schemes, and credentials without a token, read nothing."""
+    for credentials in (
+        Credentials(KNOWN, scheme="certificate", token_id="digest"),
+        Credentials(KNOWN, scheme="token"),
+        Credentials(KNOWN, scheme="cookie"),
+        Credentials(KNOWN, scheme="jwt", session=uuid4()),
+    ):
+        assert await credentials.proof() is None

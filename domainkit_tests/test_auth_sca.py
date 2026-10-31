@@ -30,6 +30,7 @@ from domainkit.management.base import run_async
 from domainkit.money import Money, register_currency
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import PASSWORD, audited, bearer, create_user, login
+from domainkit_tests.test_auth_mfa import code_at
 from domainkit_tests.test_auth_stepup import enrol, hourly_purge, now_code
 
 START = "2027-01-04T10:00:00Z"
@@ -465,3 +466,41 @@ def test_transactions_go_with_the_users_credentials(alice: Alice) -> None:
     run_async(forget())
 
     assert rows() == []
+
+
+def test_an_authorization_ends_at_its_expiry_exactly(alice: Alice) -> None:
+    """At ``expires_at`` it is over: confirming and spending alike; purged then."""
+    late = alice.ask()
+    authorization = alice.authorized()
+    expires = run_async(_stored(UUID(late))).expires_at
+    alice.clock.move_to(expires - timedelta(seconds=1))
+    run_async(hourly_purge())
+    kept = len(rows())
+    alice.clock.move_to(expires)
+
+    confirmed = alice.confirm(late, code_at(alice.secret, expires.timestamp() + 60))
+
+    assert kept == 2
+    assert confirmed.json()["code"] == "transaction_expired"
+    assert refused(alice.transfer(authorization))  # Asked at once: as old.
+    run_async(hourly_purge())
+    assert rows() == []
+
+
+@pytest.mark.parametrize(
+    ("amount", "payee", "purpose"),
+    [
+        (Money.of("0.0001", "CLF"), IBAN, "transfer"),
+        (Money.of("0.01", "EUR"), "x" * 255, "transfer"),
+        (Money.of("1", "EUR"), "x", "a" * 100),
+        (Money.of("1", "EUR"), "محمد", "payments.payout:v2_x-y"),
+    ],
+)
+def test_what_can_be_authorized_at_the_bounds(
+    alice: Alice, amount: Money, payee: str, purpose: str
+) -> None:
+    """Four places, 255 characters of payee, 100 of purpose."""
+    made = run_async(request_authorization(uuid4(), amount, payee, purpose=purpose))
+
+    assert (made.amount, made.payee, made.purpose) == (amount, payee, purpose)
+    assert len(rows()) == 1

@@ -1315,13 +1315,17 @@ class ScaStore:
         self, challenge_id: UUID, when: datetime, methods: Iterable[str]
     ) -> bool:
         """Mark it confirmed at ``when``, if it is unconfirmed, unused, and live."""
-        return await self._set(
-            challenge_id,
-            when,
-            confirmed_at=when,
-            amr=" ".join(sorted(set(methods))),
-            unconfirmed=True,
+        result = await self.session.execute(
+            update(sca_challenges)
+            .where(
+                sca_challenges.c.id == challenge_id,
+                sca_challenges.c.confirmed_at.is_(None),
+                sca_challenges.c.consumed_at.is_(None),
+                sca_challenges.c.expires_at > when,
+            )
+            .values(confirmed_at=when, amr=" ".join(sorted(set(methods))))
         )
+        return _count(result) == 1
 
     async def consume(self, challenge_id: UUID, when: datetime) -> bool:
         """Mark it used at ``when``, if it is unused; one caller wins."""
@@ -1343,27 +1347,6 @@ class ScaStore:
             )
         )
         return _count(result)
-
-    async def _set(
-        self,
-        challenge_id: UUID,
-        when: datetime,
-        *,
-        unconfirmed: bool,
-        **values: object,
-    ) -> bool:
-        """Set ``values`` on an unused, live transaction; whether one was."""
-        condition = (
-            (sca_challenges.c.id == challenge_id)
-            & sca_challenges.c.consumed_at.is_(None)
-            & (sca_challenges.c.expires_at > when)
-        )
-        if unconfirmed:
-            condition &= sca_challenges.c.confirmed_at.is_(None)
-        result = await self.session.execute(
-            update(sca_challenges).where(condition).values(**values)
-        )
-        return _count(result) == 1
 
 
 class PasswordHistoryStore:

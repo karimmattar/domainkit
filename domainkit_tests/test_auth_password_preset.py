@@ -439,3 +439,15 @@ def test_changepassword_asks_again_for_a_reused_password(
         "This password is one of your last 4; choose one you have not used.\n"
     )
     assert len(history_rows()) == 2
+
+
+def test_the_change_on_first_use_alone_keeps_one_password(identity: Api) -> None:
+    """Without a history, the newest says whether it is to change; no more."""
+    client = identity(PASSWORD_CHANGE_ON_FIRST_USE=True)
+    create_user("alice", STRONG[0])
+    headers = bearer(log_in(client, STRONG[0]).json()["access_token"])
+
+    change(client, headers, STRONG[0], STRONG[1])
+    change(client, headers, STRONG[1], STRONG[0])
+
+    assert [row["temporary"] for row in history_rows()] == [False]
