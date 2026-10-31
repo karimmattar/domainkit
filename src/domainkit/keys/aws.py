@@ -28,6 +28,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -59,6 +60,8 @@ CONTEXT: Final = {"domainkit": "data-key"}
 REFRESH_BEFORE: Final = timedelta(minutes=5)
 """How long before temporary credentials expire they are fetched again."""
 ECS_HOST: Final = "http://169.254.170.2"
+CONTAINER_AGENTS: Final = frozenset({"169.254.170.2", "169.254.170.23", "fd00:ec2::23"})
+"""The ECS and EKS Pod Identity agents' addresses, which plain HTTP may reach."""
 """Where ``AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`` points (ECS's agent)."""
 UNWRAP_REFUSALS: Final = frozenset(
     {"InvalidCiphertextException", "IncorrectKeyException"}
@@ -317,9 +320,52 @@ def default_credentials(region: str) -> CredentialSource:
     relative = os.environ.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
     full = os.environ.get("AWS_CONTAINER_CREDENTIALS_FULL_URI")
     if relative or full:
-        url = f"{ECS_HOST}{relative}" if relative else str(full)
+        url = _container_url(relative, full)
         return container_credentials(url, authorization=_container_token())
     return environment_credentials()  # Says what is missing, at the first call.
+
+
+def _container_url(relative: str | None, full: str | None) -> str:
+    """The container endpoint's URL, if it is one the AWS SDKs would call.
+
+    A relative URI is a path on ECS's agent, ``169.254.170.2``. A full URI
+    may use HTTPS to any host, but plain HTTP only to a loopback address
+    or an agent's (``169.254.170.2``, ``169.254.170.23``, ``fd00:ec2::23``),
+    as the AWS SDKs' container credential provider allows: the pod's
+    token goes nowhere else, nor are credentials taken from anywhere else
+    (SEC-15a-3).
+
+    Raises:
+        KeyProviderError: It is not.
+    """
+    if relative:
+        url = f"{ECS_HOST}{relative}"
+        if not relative.startswith("/") or urlsplit(url).hostname != ECS_HOST[7:]:
+            raise KeyProviderError(
+                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI must be a path, such as "
+                "/v2/credentials/<id>."
+            )
+        return url
+    url = str(full)
+    parts = urlsplit(url)
+    if parts.scheme == "https" or (
+        parts.scheme == "http" and _local_agent(parts.hostname or "")
+    ):
+        return url
+    raise KeyProviderError(
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI must use https, or http to a loopback "
+        "address or the container agent's (169.254.170.2, 169.254.170.23)."
+    )
+
+
+def _local_agent(host: str) -> bool:
+    """Whether ``host`` is loopback, or a container credentials agent's address."""
+    if host in CONTAINER_AGENTS or host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _container_token() -> str | None:
@@ -370,7 +416,7 @@ class AwsKmsKeyProvider(KeyProvider):
 
         self.key_id = key_id
         self.region = region
-        self.endpoint = endpoint or f"https://kms.{region}.amazonaws.com"
+        self.endpoint = (endpoint or f"https://kms.{region}.amazonaws.com").rstrip("/")
         self.credentials = credentials or default_credentials(region)
         self.client = HttpClient(
             base_url=self.endpoint, timeout=timeout, propagate=False
