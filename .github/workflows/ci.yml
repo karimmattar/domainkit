@@ -1167,6 +1167,9 @@ jobs:
           - name: accounting
             mutants: >-
               domainkit.contrib.accounting.*
+          - name: limits
+            mutants: >-
+              domainkit.contrib.limits.*
           - name: core
             mutants: >-
               domainkit.x* domainkit.architecture.* domainkit.clock.*

@@ -40,4 +40,6 @@
 | A rate-limit store other than memory or Redis | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |
 | A way to match statement lines to postings | `accounting.reconciliation.MatchingRule`: a `name` and `match(lines, postings, window)` | `ACCOUNTING.MATCHING_RULES` ([accounting.md](../contrib/accounting.md#reconciliation)) |
 | Statements from a bank's file format or API | `accounting.reconciliation.StatementSource`: a `name` and `lines()` | `import_statement(account_id, source)` |
+| Something to check or count on every entry the ledger books (limits do) | `async def hook(uow, entry, accounts)`, raising a `DomainError` to refuse the entry | `contrib.accounting.on_posting(hook)` in `ready()` (called in the posting's transaction, after its accounts are locked and their balances moved; [limits.md](../contrib/limits.md#on-the-ledger)) |
+| Subjects of the project's own that limits bound (a merchant, a card) | a kind of subject: `Movement(amount, {"merchant": merchant_id})` | `contrib.limits.consume(uow, ...)` in the use case ([limits.md](../contrib/limits.md#counting-movements)) |
 | A command | `BaseCommand` | `management/commands/<name>.py` |

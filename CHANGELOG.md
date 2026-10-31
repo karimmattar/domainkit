@@ -113,6 +113,34 @@ and a status.
   written as `def`: awaited on the event loop, they hold every request and
   message of the process while they work, then fail. `EventBus.subscriptions()`
   lists every subscription (FIN-19).
+- `domainkit.contrib.limits`: limits on money movements. A limit bounds
+  one kind of subject (`account`, `holder`, `actor`, or a kind of the
+  project's) in one currency and direction: the most one movement may be
+  (`per_transaction`), and the sum and number of movements in a calendar
+  day or month, in its time zone, or the last 24 hours or 30 days, by the
+  database's clock. A limit for one subject replaces the one for every
+  subject; `LIMITS.DEFAULTS` gives limits in the settings, which stored
+  ones replace. A use case counts what it moves in its own unit of work
+  (`consume(uow, Movement(amount, {"holder": ...}), key=...)`), under a
+  lock of the subject's row: of fifty payments at once against a limit
+  that forty fit, exactly forty pass on PostgreSQL, where summing the
+  postings under the ledger's account locks let up to 14% more through
+  ([ADR 0123](docs/adr/0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md)).
+  A breach is 422 `limit_exceeded` or `transaction_limit_exceeded`;
+  `check` counts nothing, `release(uow, key)` gives a refund's usage back.
+  Limits are rows, changed through a `ResourceRouter` by model
+  permission (`limits.api.router`) or `manage.py limits set`, each change
+  audited; `manage.py limits list`, `usage`, and `purge`; the usage of a
+  subject over HTTP (`GET /usage`); a periodic purge with messaging, and
+  `limits.W001` without it; `limits.E001` and `limits.E002` in `setup()`;
+  privacy export and erasure (`docs/contrib/limits.md`) (FIN-47).
+- `contrib.accounting.on_posting`: a hook point other apps register on in
+  `ready()`, called for every entry the ledger books (posted, reversed, or
+  captured) in its transaction, after its accounts are locked and their
+  balances moved; raising refuses the entry. With `contrib.limits`
+  installed, every entry is counted against the limits of its accounts,
+  their holders, and the actor, and a reversal gives back what its entry
+  counted (FIN-47).
 
 ### Changed
 
@@ -144,6 +172,16 @@ and a status.
   three cents is 0.003, not 0.0030000000000000004; an integer column
   divides as a real number, not by integer division. A factor has at most
   9 places: one with more is refused rather than rounded (TEST-07).
+- Money added to past what its column holds was a 500 when the session
+  flushed it: a mapped money attribute now refuses an amount its amount
+  column cannot hold (more digits before the point, or more places) as it
+  is set, `AmountOutOfRange`, a 422 `amount_out_of_range`, and keeps its
+  value (FIN-01).
+- `cursor_length` counted a money field's amount at its column's places,
+  while a cursor holds it at its currency's, which may be more (1.500 KWD
+  in a column of two places): such a cursor was a few characters over the
+  bound `FilterSet` checks. The bound now counts the most places a
+  currency has (FIN-01).
 
 ### Security
 

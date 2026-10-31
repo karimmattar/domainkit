@@ -35,6 +35,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `messages` | `--pending\|--held\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--release`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them (`--held`: those waiting for an earlier message of their ordering key), requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked; one with an ordering key goes back in its place), cancel a message no worker runs, or release ordering keys left with held messages and none pending; retries, cancels and releases are audited (messaging; [operators](#operators)). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `accounting` | `trialbalance\|ledger PERIOD [--format csv\|json] [--output FILE]`, `verify`, `expireholds`, `import ACCOUNT FILE`, `reconcile ACCOUNT`, `unmatched ACCOUNT`, `--operator` | Write a period's trial balance or general ledger, check that every entry balances and every balance sums its postings (fails otherwise), release expired holds, import a bank statement (CSV) into an account, reconcile it, or list what is unmatched; a period by name or id, an account by code or id; imports, reconciliations, and expiries are audited (accounting; see [accounting.md](../contrib/accounting.md#from-the-command-line), [operators](#operators)). |
+| `limits` | `list [--kind K]`, `usage KIND SUBJECT [--currency C]`, `set CODE --kind K --currency C [--subject S] [--direction in\|out] [--per-transaction A] [--window W] [--max-amount A] [--max-count N] [--time-zone Z] [--note T] [--enable\|--disable]`, `purge`, `--operator` | List the limits, stored and from `LIMITS.DEFAULTS`, show a subject's usage of each window, make a limit or change the bounds given (`none` clears one), or delete usage older than `LIMITS.KEEP_USAGE`; changes are audited as the operator's, and so is `purge` (limits; see [limits.md](../contrib/limits.md#from-the-command-line), [operators](#operators)). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](../contrib/audit.md#history)). |
 | `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
 | `auditverify` | `--database`, `--export FILE`, `--check-export FILE --public-key PEM` | Check the audit trail against its seals, checkpoints, and anchors; fails if anything changed. `--export` then writes signed checkpoints of every trail for a third party (`AUDIT.CHECKPOINT_KEY`, read by this and `auditprune` alone); `--check-export` checks such a file offline, with the public key alone (audit). |
@@ -59,8 +60,9 @@ application, say who runs them and leave a row in the audit trail (with
 `dumpdata --include-guarded`, which copies credentials out (0.12);
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
-`addcertificate`, `cleartokens`, `flags`, `webhooks`, and `accounting`
-(its `import`, `reconcile`, and `expireholds`). Their listings
+`addcertificate`, `cleartokens`, `flags`, `webhooks`, `accounting`
+(its `import`, `reconcile`, and `expireholds`), and `limits` (its `set`
+and `purge`). Their listings
 (`flags list`, `webhooks deliveries`, `accounting verify`, ...) take the
 operator too but record nothing; `evidence`, `auditlog`, and `auditverify` only read and take none.
 The operator is, in this order:
@@ -96,13 +98,13 @@ who can reach its database.
 The command runs as the actor `operator:<name>`, so what it records itself
 (`privacy.erase`, `privacy.purge`, `auth.mfa_disabled`,
 `auth.token_created`, `auth.password_changed`, `auth.user_created`,
-`auth.user_logged_out`, `flags.flag_changed`, `flags.setting_changed`)
+`auth.user_logged_out`, `flags.flag_changed`, `flags.setting_changed`, `limits.limit_set`)
 names the operator instead of `system`. An action that records nothing
 itself is recorded once it ends as `operator.<command>`
 (`operator.messages.retry`, `operator.messages.cancel`, `operator.messages.release`,
 `operator.auditforget`, `operator.auditprune`, `operator.loaddata`, `operator.flush`,
 `operator.partitions.prune`, `operator.webhooks.replay`, `operator.accounting.import`,
-`operator.accounting.reconcile`, `operator.accounting.expireholds`), `success` or `failure` (with the error's
+`operator.accounting.reconcile`, `operator.accounting.expireholds`, `operator.limits.purge`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. `operator.loaddata` names the fixture file,
 its SHA-256, and each table with its rows and how many it replaced;

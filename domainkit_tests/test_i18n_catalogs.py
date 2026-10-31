@@ -28,7 +28,13 @@ from domainkit.i18n.catalogs import (
 from domainkit.i18n.translation import LOCALE_DIR
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
-from domainkit.money import CurrencyMismatch, InexactAmount, MoneyError, UnknownCurrency
+from domainkit.money import (
+    AmountOutOfRange,
+    CurrencyMismatch,
+    InexactAmount,
+    MoneyError,
+    UnknownCurrency,
+)
 from domainkit_tests.conftest import ALPHA, MakePackage
 
 SRC: Final = Path(__file__).parents[1] / "src" / "domainkit"
@@ -342,6 +348,7 @@ EXTRA_MESSAGES: Final = {
     UnknownCurrency.summary,
     InexactAmount.summary,
     CurrencyMismatch.summary,
+    AmountOutOfRange.summary,
     "Give money as an object of an amount and a currency, and nothing else.",
     "Give the amount as text, such as 10.50, with at most 38 digits before the point.",
     "The amount has more digits than this field holds.",  # resources.schemas

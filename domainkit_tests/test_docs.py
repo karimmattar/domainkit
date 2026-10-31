@@ -41,6 +41,7 @@ from domainkit.contrib.auth.settings import (
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.flags.settings import FlagsSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
+from domainkit.contrib.limits import LimitsSettings
 from domainkit.contrib.mail.settings import MailSettings, SmtpSettings
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.notifications.settings import NotificationsSettings
@@ -98,6 +99,7 @@ def documented(pages: str) -> set[str]:
         (FlagsSettings, "contrib/flags.md"),
         (WebhookSettings, "contrib/webhooks.md"),
         (AccountingSettings, "contrib/accounting.md"),
+        (LimitsSettings, "contrib/limits.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (PreviousJWTKey, "auth.md"),
@@ -408,6 +410,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
     (WebhookSettings, "contrib/webhooks.md", "WEBHOOKS"),
     (AccountingSettings, "contrib/accounting.md", "ACCOUNTING"),
+    (LimitsSettings, "contrib/limits.md", "LIMITS"),
     (AuditSettings, "contrib/audit.md", "AUDIT"),
     (IdempotencySettings, "contrib/idempotency.md", "IDEMPOTENCY"),
     (EvidenceSettings, "contrib/evidence.md", "EVIDENCE"),

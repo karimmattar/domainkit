@@ -817,3 +817,58 @@ msgstr ""
 
 msgid "The amount has more digits than this field holds."
 msgstr ""
+
+msgid "The amount is larger, or has more decimal places, than can be stored."
+msgstr ""
+
+#. domainkit.contrib.limits
+msgid "No limit has that id."
+msgstr ""
+
+msgid "Limits keep amounts of at most four decimal places."
+msgstr ""
+
+msgid "A kind of subject has up to 32 lower-case letters, digits, or '_', starting with a letter."
+msgstr ""
+
+msgid "A subject has 1 to 255 printable characters."
+msgstr ""
+
+msgid "The time zone is not one, such as 'Africa/Cairo'."
+msgstr ""
+
+msgid "A limit's code has up to 64 lower-case letters, digits, '_', '.', ':', or '-'."
+msgstr ""
+
+msgid "A limit's count is at least one."
+msgstr ""
+
+msgid "A window needs a maximum amount or count, and they need a window."
+msgstr ""
+
+msgid "A limit sets an amount per transaction, or a maximum over a window."
+msgstr ""
+
+msgid "A limit's note has at most 255 characters."
+msgstr ""
+
+msgid "A limit's amounts are in its currency."
+msgstr ""
+
+msgid "A limit's amounts are more than zero."
+msgstr ""
+
+msgid "A movement's amount is more than zero."
+msgstr ""
+
+msgid "A movement names at least one subject."
+msgstr ""
+
+msgid "The amount is more than one movement may be."
+msgstr ""
+
+msgid "The amount is more than a limit allows in its period."
+msgstr ""
+
+msgid "There have been as many of these as a limit allows in its period."
+msgstr ""
