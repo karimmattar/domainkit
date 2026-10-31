@@ -315,3 +315,35 @@ def test_the_process_ring_is_set_up_by_the_keys_app(no_ring: None) -> None:
     keys = ring()
     use_keyring(keys)
     assert keyring() is keys
+
+
+def test_alternates_open_and_index_but_never_seal() -> None:
+    """An older key of an id opens its values and subjects' keys, and is matched."""
+    older = Keyring(
+        LocalKeyProvider([KEK]),
+        {},
+        "dev",
+        known={"dev": b"o" * 32},
+        subject_keys=MemoryStore(),
+    )
+    store = cast(MemoryStore, older.subject_keys)
+    sealed = older.seal(b"v", CONTEXT)
+    by_subject = older.seal(b"w", CONTEXT, connection=connection(), subject="ann")
+    index = older.blind_index(b"v", b"t\x00c")
+    newer = Keyring(
+        LocalKeyProvider([KEK]),
+        {},
+        "dev",
+        known={"dev": b"n" * 32},
+        alternates={"dev": [b"x" * 32, b"o" * 32]},
+        subject_keys=store,
+    )
+    assert newer.open(sealed, CONTEXT) == b"v"
+    assert newer.open(by_subject, CONTEXT, connection=connection()) == b"w"
+    assert index in newer.blind_indexes(b"v", b"t\x00c")
+    assert newer.blind_index(b"v", b"t\x00c") != index
+    assert newer.seal(b"v", CONTEXT) != sealed
+    with pytest.raises(DecryptionFailed):
+        Keyring(LocalKeyProvider([KEK]), {}, "dev", known={"dev": b"n" * 32}).open(
+            sealed, CONTEXT
+        )

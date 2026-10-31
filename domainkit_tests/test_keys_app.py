@@ -76,6 +76,8 @@ def project(url: str, tmp_path: Path, *domains: str, **keys: Any) -> Iterator[No
     """The cards domain, the key app with ``KEYS = keys``, migrated once."""
     registry.clear()
     migrations = tmp_path / "migrations"
+    if keys.get("DATA_KEYS"):  # These tests have no dev values to keep.
+        keys.setdefault("KEEP_DEVELOPMENT_KEY", False)
     with override_settings(
         INSTALLED_DOMAINS=[*domains, KEYS, CARDS, ALPHA],
         DATABASES={"default": {"URL": url}},
@@ -149,7 +151,16 @@ def test_the_current_key_and_the_retired_ones() -> None:
     several = KeysSettings(
         DATA_KEYS={"a": FIRST, "c": SECOND, "b": FIRST}, CURRENT_KEY="c"
     )
-    assert (several.current, several.retired) == ("c", ("a", "b"))
+    assert (several.current, several.retired) == ("c", ("a", "b", "dev"))
+    dropped = KeysSettings(DATA_KEYS={"a": FIRST}, KEEP_DEVELOPMENT_KEY=False)
+    assert (dropped.retired, dropped.development_key) == ((), False)
+    kms = {
+        "PROVIDER": "vault",
+        "VAULT": {"URL": "https://v.test", "KEY": "k", "TOKEN": "t"},
+        "DATA_KEYS": {"a": "vault:v1:x"},
+    }
+    assert KeysSettings(**kms).retired == ()
+    assert KeysSettings(**kms, KEEP_DEVELOPMENT_KEY=True).retired == ("dev",)
 
 
 def test_each_provider_is_made_from_its_settings() -> None:
@@ -196,7 +207,9 @@ def test_without_data_keys_the_ring_has_a_development_key() -> None:
     assert first.data_key("dev") == derive_key(
         "keys.development-data-key", key=SECRET_KEY
     )
-    assert ring_for(KeysSettings(DATA_KEYS={"a": FIRST})).ids == ("a",)
+    assert ring_for(KeysSettings(DATA_KEYS={"a": FIRST})).ids == ("a", "dev")
+    kept = KeysSettings(DATA_KEYS={"a": FIRST}, KEEP_DEVELOPMENT_KEY=False)
+    assert ring_for(kept).ids == ("a",)
 
 
 @pytest.mark.parametrize(
@@ -287,13 +300,18 @@ def test_retired_keys_are_warned_about() -> None:
     """``keys.W001`` names them, and says how to move what they seal."""
     registry.clear()
     with override_settings(
-        INSTALLED_DOMAINS=[KEYS, ALPHA], KEYS={"DATA_KEYS": {"a": FIRST}}
+        INSTALLED_DOMAINS=[KEYS, ALPHA],
+        KEYS={"DATA_KEYS": {"a": FIRST}, "KEEP_DEVELOPMENT_KEY": False},
     ):
         setup()
         assert domain_warnings("keys") == []
     with override_settings(
         INSTALLED_DOMAINS=[KEYS, ALPHA],
-        KEYS={"DATA_KEYS": {"a": FIRST, "b": SECOND}, "CURRENT_KEY": "b"},
+        KEYS={
+            "DATA_KEYS": {"a": FIRST, "b": SECOND},
+            "CURRENT_KEY": "b",
+            "KEEP_DEVELOPMENT_KEY": False,
+        },
     ):
         setup()
         [warning] = domain_warnings("keys")
@@ -306,7 +324,8 @@ def test_retired_keys_are_warned_about() -> None:
     )
     assert warning.hint == (
         "Run 'manage.py keys reencrypt', then 'manage.py keys status --check'; "
-        "remove the keys once nothing uses them."
+        "remove the keys once nothing uses them (for dev, set "
+        "KEYS.KEEP_DEVELOPMENT_KEY = False)."
     )
 
 
@@ -773,3 +792,75 @@ def test_a_decrypted_dump_is_recorded_with_its_tables(
         for row in recorded
     ]
     assert details["decrypted_tables"] == ["cards_cardholders", "cards_payments"]
+
+
+def test_values_under_the_development_key_move_to_a_data_key(
+    database_url: str, tmp_path: Path
+) -> None:
+    """``dev`` stays retired beside ``DATA_KEYS``, through a SECRET_KEY rotation too."""
+    old = SECRET_KEY
+    new = "rotated-" + "r" * 50
+    with project(database_url, tmp_path):
+        run_async(
+            save(
+                Cardholder(id=ANN, name="Ann", card_number=PAN, api_secret=b"s"),
+            )
+        )
+    keys = {"DATA_KEYS": {"a": FIRST}, "KEEP_DEVELOPMENT_KEY": None}
+    with override_settings(SECRET_KEY=new, SECRET_KEY_FALLBACKS=[old]):
+        with project(database_url, tmp_path, **keys):
+            assert "Current key: a; retired: dev." in command("status")
+            [warning] = domain_warnings("keys")
+            assert "retired keys (dev)" in warning
+            found = run_async(read_ann())
+            assert (found.card_number, found.api_secret) == (PAN, b"s")
+            printed = command("reencrypt")
+            assert printed.startswith("Sealed 1 value(s) again, remade 1 blind")
+            assert printed.strip().endswith("wrapped 1 subject key(s) under a.")
+        dropped = {"DATA_KEYS": {"a": FIRST}, "KEEP_DEVELOPMENT_KEY": False}
+        with project(database_url, tmp_path, **dropped):
+            assert "retired: none" in command("status", "--check")
+            found = run_async(read_ann())
+            assert (found.card_number, found.api_secret) == (PAN, b"s")
+
+
+async def read_ann() -> Cardholder:
+    """Ann, found by her card number."""
+    async with CardsUnitOfWork() as uow:
+        from domainkit.ddd import F
+
+        [ann] = await uow.cardholders.filter(F("card_number") == PAN)
+    return ann
+
+
+@pytest.mark.parametrize(
+    ("url", "environment", "found"),
+    [
+        ("http://vault.internal:8200", "production", ["keys.E002"]),
+        ("http://vault.internal", "staging", ["keys.E002"]),
+        ("https://vault.internal:8200", "production", []),
+        ("http://127.0.0.1:8200", "local", []),
+    ],
+)
+def test_a_deployment_refuses_vault_over_plain_http(
+    url: str, environment: str, found: list[str]
+) -> None:
+    """``keys.E002``: the token and the data keys would cross in clear."""
+    registry.clear()
+    keys = {
+        "PROVIDER": "vault",
+        "VAULT": {"URL": url, "KEY": "k", "TOKEN": "t"},
+        "DATA_KEYS": {"a": "vault:v1:x"},
+    }
+    with override_settings(INSTALLED_DOMAINS=[KEYS, ALPHA], KEYS=keys):
+        setup()
+        with override_settings(ENVIRONMENT=environment):
+            problems = domain_problems("keys", None)
+    registry.clear()
+    assert [problem.id for problem in problems] == found  # type: ignore[attr-defined]
+    if found:
+        assert problems[0] == (
+            f"KEYS.VAULT.URL is plain HTTP in {environment}: Vault's token, and "
+            "every data key it unwraps, would cross the network in clear."
+        )
+        assert problems[0].hint == "Serve Vault over TLS and give an https:// URL."  # type: ignore[attr-defined]

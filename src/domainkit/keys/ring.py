@@ -30,7 +30,7 @@ import hmac
 import secrets
 import threading
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Protocol
 from weakref import WeakKeyDictionary
@@ -141,14 +141,17 @@ class Keyring:
         current: str,
         *,
         known: Mapping[str, bytes] | None = None,
+        alternates: Mapping[str, Sequence[bytes]] | None = None,
         subject_keys: SubjectKeyStore | None = None,
     ) -> None:
         """Seal under ``current``; open under any key of ``data_keys`` or ``known``.
 
         ``data_keys`` maps ids to keys wrapped by ``provider``; ``known``
         maps ids to keys already unwrapped (a development key).
-        ``subject_keys`` keeps subjects' keys; without it, sealing for a
-        subject is refused.
+        ``alternates`` gives older keys of the same ids, which open what they
+        sealed but never seal: the development key under each of
+        ``SECRET_KEY_FALLBACKS`` (SEC-15a-4). ``subject_keys`` keeps
+        subjects' keys; without it, sealing for a subject is refused.
 
         Raises:
             ImproperlyConfigured: ``current`` is not one of the keys.
@@ -158,6 +161,9 @@ class Keyring:
         self.current = current
         self.subject_keys = subject_keys
         self._known = dict(known or {})
+        self._alternates = {
+            key: tuple(keys) for key, keys in (alternates or {}).items()
+        }
         self._keys: dict[str, bytes] | None = None
         ids = {*self.data_keys, *self._known}
         if current not in ids:
@@ -273,27 +279,28 @@ class Keyring:
             raise DecryptionFailed("The value is not one the key ring sealed.")
         kind, key_id = found
         if kind == DATA:
-            key: bytes | None = self.data_key(key_id)
+            keys = self._every(key_id)
         else:
-            key = self._subject_key_by_id(self._connection(connection), key_id)
-            if key is None:
+            subject_key = self._subject_key_by_id(self._connection(connection), key_id)
+            if subject_key is None:
                 return None
+            keys = (subject_key,)
         reference, payload = text.split(":", 2)[1:]
-        aead = _aesgcm()(key)
-        from cryptography.exceptions import InvalidTag
-
         try:
             data = _unb64(payload)
-            return bytes(
-                aead.decrypt(
-                    data[:NONCE_BYTES], data[NONCE_BYTES:], _aad(reference, context)
-                )
-            )
-        except (ValueError, InvalidTag):
+        except ValueError:
+            data = b""
+        opened = _decrypt(keys, data, _aad(reference, context))
+        if opened is None:
             raise DecryptionFailed(
                 "The value does not open here: it was sealed for another row or "
                 "column, or changed."
-            ) from None
+            )
+        return opened
+
+    def _every(self, key_id: str) -> tuple[bytes, ...]:
+        """The data key ``key_id``, then its alternates."""
+        return (self.data_key(key_id), *self._alternates.get(key_id, ()))
 
     def blind_index(self, plaintext: bytes, context: bytes) -> str:
         """``plaintext``'s blind index under the current key: ``<id>:<hex>``."""
@@ -301,11 +308,21 @@ class Keyring:
 
     def blind_indexes(self, plaintext: bytes, context: bytes) -> tuple[str, ...]:
         """``plaintext``'s blind index under each data key: what a lookup matches."""
-        return tuple(self._index(key_id, plaintext, context) for key_id in self.ids)
+        return tuple(
+            self._index(key_id, plaintext, context, data_key)
+            for key_id in self.ids
+            for data_key in self._every(key_id)
+        )
 
-    def _index(self, key_id: str, plaintext: bytes, context: bytes) -> str:
+    def _index(
+        self,
+        key_id: str,
+        plaintext: bytes,
+        context: bytes,
+        data_key: bytes | None = None,
+    ) -> str:
         """HMAC-SHA256 under a key derived from data key ``key_id``, cut to 128 bits."""
-        key = hkdf(self.data_key(key_id), info=_INDEX_INFO)
+        key = hkdf(data_key or self.data_key(key_id), info=_INDEX_INFO)
         digest = hmac.new(
             key, _INDEX_AAD + context + b"\x00" + plaintext, hashlib.sha256
         )
@@ -357,21 +374,14 @@ class Keyring:
         Raises:
             DecryptionFailed: It was changed, or its data key is not held.
         """
-        from cryptography.exceptions import InvalidTag
-
-        aead = _aesgcm()(self.data_key(stored.wrapping_key))
-        try:
-            return bytes(
-                aead.decrypt(
-                    stored.wrapped[:NONCE_BYTES],
-                    stored.wrapped[NONCE_BYTES:],
-                    _subject_aad(stored.id, stored.subject),
-                )
-            )
-        except InvalidTag:
-            raise DecryptionFailed(
-                f"The key of subject key {stored.id} was changed."
-            ) from None
+        key = _decrypt(
+            self._every(stored.wrapping_key),
+            stored.wrapped,
+            _subject_aad(stored.id, stored.subject),
+        )
+        if key is None:
+            raise DecryptionFailed(f"The key of subject key {stored.id} was changed.")
+        return key
 
     def _store(self) -> SubjectKeyStore:
         """The subject key store.
@@ -463,6 +473,20 @@ def _checked(key_id: str, key: bytes) -> bytes:
             f"KEYS.DATA_KEYS[{key_id!r}] unwraps to {len(key)} bytes, not 32."
         )
     return key
+
+
+def _decrypt(keys: Sequence[bytes], data: bytes, aad: bytes) -> bytes | None:
+    """``data`` (nonce, then ciphertext) opened by the first of ``keys`` that can."""
+    from cryptography.exceptions import InvalidTag
+
+    for key in keys:
+        try:
+            return bytes(
+                _aesgcm()(key).decrypt(data[:NONCE_BYTES], data[NONCE_BYTES:], aad)
+            )
+        except (InvalidTag, ValueError):
+            continue
+    return None
 
 
 def _aad(reference: str, context: bytes) -> bytes:

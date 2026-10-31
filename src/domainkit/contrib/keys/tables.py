@@ -11,6 +11,7 @@ from sqlalchemy import Column, Index, LargeBinary, String, Table
 from domainkit.db import UTCDateTime, metadata
 
 __all__ = [
+    "erasures",
     "subject_keys",
 ]
 
@@ -26,3 +27,16 @@ subject_keys = Table(
     info={"domain": "keys", "flush": False, "fixtures": False},
 )
 """Subjects' keys: the 32-byte key under ``wrapping_key``, nonce first (60 bytes)."""
+
+erasures = Table(
+    "domainkit_keys_erasures",
+    metadata,
+    Column("subject", String(255), primary_key=True),
+    Column("erased_at", UTCDateTime, nullable=False),
+    info={"domain": "keys", "flush": False, "fixtures": False},
+)
+"""When each subject's keys were last destroyed, kept a day (``ERASURE_MEMORY``).
+
+A transaction that made a subject's first key before that moment, and
+commits after it, finds the row and destroys its key (SEC-15a-2).
+"""
