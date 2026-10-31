@@ -252,9 +252,13 @@ async def reject_request(
     """Reject a request for a reason; one rejection ends it.
 
     Raises:
-        RequestNotFound, RequestTampered, PolicyGone, RequestNotPending,
-            MakerCannotDecide, InterestedParty, AlreadyDecided: As
-            ``approve_request``.
+        RequestNotFound: As for ``approve_request``.
+        RequestTampered: As for ``approve_request``.
+        PolicyGone: As for ``approve_request``.
+        RequestNotPending: As for ``approve_request``.
+        MakerCannotDecide: As for ``approve_request``.
+        InterestedParty: As for ``approve_request``.
+        AlreadyDecided: As for ``approve_request``.
         InvalidArguments: The reason is longer than 500 characters.
     """
     approver = _person(command.approver, APPROVER)

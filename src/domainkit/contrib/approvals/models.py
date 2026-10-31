@@ -382,9 +382,12 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         which gives it a new ``run_token``.
 
         Raises:
-            RequestTampered, RequestNotPending, MakerCannotDecide,
-                InterestedParty, AlreadyDecided, FingerprintMismatch: As a
-                decision is refused.
+            RequestTampered: The decision is refused.
+            RequestNotPending: The decision is refused.
+            MakerCannotDecide: The decision is refused.
+            InterestedParty: The decision is refused.
+            AlreadyDecided: The decision is refused.
+            FingerprintMismatch: The decision is refused.
         """
         now = self._decide(approver, Verdict.APPROVE, digest, parties)
         self.approvals = approvals = self.approvals + 1
@@ -409,8 +412,11 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         """Reject it for ``reason``; records ``RequestRejected``.
 
         Raises:
-            RequestTampered, RequestNotPending, MakerCannotDecide,
-                InterestedParty, AlreadyDecided: As a decision is refused.
+            RequestTampered: The decision is refused.
+            RequestNotPending: The decision is refused.
+            MakerCannotDecide: The decision is refused.
+            InterestedParty: The decision is refused.
+            AlreadyDecided: The decision is refused.
         """
         self.decided_at = self._decide(
             approver, Verdict.REJECT, self.fingerprint, parties
