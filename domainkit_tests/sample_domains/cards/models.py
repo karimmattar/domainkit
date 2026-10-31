@@ -16,9 +16,9 @@ class Cardholder(AggregateRoot[UUID]):
     """A person with a card: the subject of their own data."""
 
     name: Annotated[str, Personal(of="id")]
-    card_number: Annotated[str | None, Encrypted(subject="id", blind_index=True)] = None
     passport: Annotated[str | None, Personal(of="id"), Encrypted()] = None
     """Sealed for the holder too: its ``Personal`` marker names them."""
+    card_number: Annotated[str | None, Encrypted(subject="id", blind_index=True)] = None
     api_secret: Annotated[bytes | None, Encrypted()] = None
     """Sealed under the data key: no person's."""
 

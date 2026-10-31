@@ -454,6 +454,8 @@ async def test_web_identity_credentials_assume_the_role_and_are_kept(
     assert asked[0].url == "https://sts.eu-west-1.amazonaws.com/"
     form = dict(item.split("=", 1) for item in asked[0].content.decode().split("&"))
     assert form["Action"] == "AssumeRoleWithWebIdentity"
+    assert form["Version"] == "2011-06-15"
+    assert form["RoleArn"] == "arn%3Aaws%3Aiam%3A%3A1%3Arole%2Fapp"
     assert form["WebIdentityToken"] == "jwt-1"
     assert form["RoleSessionName"] == "domainkit"
 
@@ -519,7 +521,8 @@ async def test_container_credentials_send_the_authorization(tmp_path: Path) -> N
         found = await container_credentials(
             "http://169.254.170.23/v1/credentials", authorization="pod-token"
         )()
-    assert (found.access_key_id, found.session_token) == ("ASIA2", "t2")
+    assert (found.access_key_id, found.secret_access_key) == ("ASIA2", "s2")
+    assert found.session_token == "t2"
     assert found.expires_at == NOW + timedelta(hours=1)
     assert asked[0].headers["authorization"] == "pod-token"
     with (
@@ -547,14 +550,16 @@ async def test_default_credentials_take_the_first_source_set_up(
             json={
                 "AccessKeyId": "ASIA3",
                 "SecretAccessKey": "s3",
-                "Expiration": "2026-10-31T13:00:00Z",
+                "Expiration": "2026-10-31T15:00:00+02:00",
             },
         )
 
     monkeypatch.setenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/v2/credentials/1")
     monkeypatch.setenv("AWS_CONTAINER_AUTHORIZATION_TOKEN", "plain")
     with stub(anywhere), freeze_time(NOW):
-        assert (await default_credentials("eu-west-1")()).access_key_id == "ASIA3"
+        found = await default_credentials("eu-west-1")()
+        assert found.access_key_id == "ASIA3"
+        assert found.expires_at == NOW + timedelta(hours=1)
         assert str(asked[-1].url) == "http://169.254.170.2/v2/credentials/1"
         assert asked[-1].headers["authorization"] == "plain"
         monkeypatch.delenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
@@ -570,6 +575,7 @@ async def test_default_credentials_take_the_first_source_set_up(
         monkeypatch.setenv("AWS_ROLE_ARN", "arn:role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", str(identity))
         assert (await default_credentials("eu-west-1")()).access_key_id == "ASIA1"
+        assert asked[-1].url == "https://sts.eu-west-1.amazonaws.com/"
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKID")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s")
         assert (await default_credentials("eu-west-1")()).access_key_id == "AKID"
@@ -696,3 +702,187 @@ def test_vault_needs_a_key_and_a_mount() -> None:
         VaultTransitKeyProvider("https://v", "", token="t")
     with pytest.raises(ValueError, match="key name and a mount"):
         VaultTransitKeyProvider("https://v", "k", token="t", mount="")
+
+
+# What the calls carry ---------------------------------------------------------------
+
+
+@pytest.fixture
+def no_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retries go at once."""
+    from domainkit.http import client as client_module
+
+    async def go(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(client_module, "_sleep", go)
+
+
+def test_sigv4_signs_in_utc_and_omits_the_schemes_port() -> None:
+    """A time in another zone signs as its UTC; ``:443`` on https is the same host."""
+    from datetime import timezone
+
+    from domainkit.keys.aws import _canonical_query
+
+    local = datetime(2015, 8, 30, 14, 36, tzinfo=timezone(timedelta(hours=2)))
+    base = sign(
+        "GET",
+        "https://iam.amazonaws.com/",
+        {},
+        b"",
+        CREDENTIALS,
+        region="us-east-1",
+        service="iam",
+        now=local,
+    )
+    assert base["X-Amz-Date"] == "20150830T123600Z"
+    for url in ("https://iam.amazonaws.com:443/", "https://iam.amazonaws.com"):
+        again = sign(
+            "GET",
+            url,
+            {},
+            b"",
+            CREDENTIALS,
+            region="us-east-1",
+            service="iam",
+            now=local,
+        )
+        assert again["Authorization"] == base["Authorization"]
+    other = sign(
+        "GET",
+        "https://iam.amazonaws.com:8443/",
+        {},
+        b"",
+        CREDENTIALS,
+        region="us-east-1",
+        service="iam",
+        now=local,
+    )
+    assert other["Authorization"] != base["Authorization"]
+    plain = sign(
+        "GET",
+        "http://iam.amazonaws.com:80/",
+        {},
+        b"",
+        CREDENTIALS,
+        region="us-east-1",
+        service="iam",
+        now=local,
+    )
+    assert (
+        plain["Authorization"]
+        == sign(
+            "GET",
+            "http://iam.amazonaws.com/",
+            {},
+            b"",
+            CREDENTIALS,
+            region="us-east-1",
+            service="iam",
+            now=local,
+        )["Authorization"]
+    )
+    assert _canonical_query("b=1=2&a=x y~/") == "a=x%20y~%2F&b=1%3D2"
+
+
+@pytest.mark.anyio
+async def test_kms_calls_name_the_service_and_carry_the_session_token(
+    kms: FakeKms,
+) -> None:
+    """The scope is ``kms``; a temporary credential's token is sent and signed."""
+    seen: list[httpx2.Request] = []
+
+    def recording(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return kms(request)
+
+    async def temporary() -> AwsCredentials:
+        return AwsCredentials(ACCESS_KEY, SECRETS[ACCESS_KEY], "session-token")
+
+    provider = AwsKmsKeyProvider(
+        KEY_ARN, region="eu-west-1", credentials=temporary, timeout=3.0
+    )
+    assert provider.client.timeout == 3.0
+    with stub(recording):
+        await provider.generate_data_key()
+    assert "/eu-west-1/kms/aws4_request" in seen[0].headers["authorization"]
+    assert seen[0].headers["x-amz-security-token"] == "session-token"
+
+
+@pytest.mark.anyio
+async def test_key_service_calls_send_no_request_id(
+    kms: FakeKms, vault: FakeVault
+) -> None:
+    """Inside a request, KMS and Vault get neither its id nor its trace."""
+    from domainkit.context import RequestContext, bind_request
+
+    seen: list[httpx2.Request] = []
+
+    def recording(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return vault(request) if request.url.host == "vault.test" else kms(request)
+
+    context = RequestContext(
+        request_id="r-1", client_ip=None, method="GET", path="/", actor=None
+    )
+    with stub(recording), bind_request(context):
+        await aws().generate_data_key()
+        await transit().generate_data_key()
+    assert [request.headers.get("x-request-id") for request in seen] == [None, None]
+
+
+@pytest.mark.anyio
+async def test_key_service_calls_are_retried(
+    no_waits: None, kms: FakeKms, vault: FakeVault
+) -> None:
+    """A 503 before the answer is retried, though the calls are POSTs."""
+    failed: set[str] = set()
+
+    def flaky(request: httpx2.Request) -> httpx2.Response:
+        host = request.url.host
+        if host not in failed:
+            failed.add(host)
+            return httpx2.Response(503)
+        return vault(request) if host == "vault.test" else kms(request)
+
+    with override_settings(HTTP_CLIENT={"RETRIES": 1}), stub(flaky):
+        await aws().generate_data_key()
+        await transit().generate_data_key()
+    assert failed == {"kms.eu-west-1.amazonaws.com", "vault.test"}
+
+
+@pytest.mark.anyio
+async def test_kms_refuses_blobs_that_are_not_strict_base64(kms: FakeKms) -> None:
+    """Characters base64 would skip are refused, in a key and in an answer."""
+    with pytest.raises(UnknownKey, match="changed, or cut short"):
+        await aws().unwrap("aws-kms:QUJD!")
+    answer = httpx2.Response(200, json={"Plaintext": "QUJD!", "CiphertextBlob": "QUJD"})
+    with (
+        stub(lambda request: answer),
+        pytest.raises(KeyProviderError, match="Plaintext"),
+    ):
+        await aws().generate_data_key()
+    nameless = httpx2.Response(400, json={})
+    with (
+        stub(lambda request: nameless),
+        pytest.raises(KeyProviderError, match=r"an error \(400\)"),
+    ):
+        await aws().generate_data_key()
+
+
+@pytest.mark.anyio
+async def test_vault_refuses_to_rewrap_what_it_cannot_decrypt(vault: FakeVault) -> None:
+    """A ciphertext of no version the key has is an unknown key."""
+    with pytest.raises(UnknownKey, match="cannot unwrap"):
+        await transit().rewrap("vault:v9:QUJD")
+    assert transit(timeout=2.0).client.timeout == 2.0
+
+
+@pytest.mark.anyio
+async def test_a_role_without_its_token_file_is_no_web_identity(
+    no_aws: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both variables are needed; one alone falls through to what is missing."""
+    monkeypatch.setenv("AWS_ROLE_ARN", "arn:role")
+    with pytest.raises(KeyProviderError, match="unset"):
+        await default_credentials("eu-west-1")()

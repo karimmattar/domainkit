@@ -8,10 +8,20 @@ from pathlib import Path
 from typing import Annotated, Any, Final, cast
 
 import pytest
-from sqlalchemy import Column, Integer, MetaData, Table, Uuid, select, text, update
-from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import (
+    Column,
+    Connection,
+    Integer,
+    MetaData,
+    Table,
+    Uuid,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.exc import StatementError
+from sqlalchemy.orm import class_mapper
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -23,6 +33,7 @@ from domainkit.db.encrypted import (
     Plaintext,
     _fields,
     context,
+    index_properties,
     lookup,
     open_row,
     seal_row,
@@ -40,6 +51,7 @@ from domainkit.ddd import (
 from domainkit.ddd.query import Condition, Lookup, Ordering, Selection
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.keys.ring import _kept
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit.resources import schema_for
@@ -331,7 +343,12 @@ async def test_a_shredded_subjects_values_read_as_none(bank: str) -> None:
         pay(1, note="gift"),
     )
     before = {row["id"]: row for row in await raw("SELECT * FROM cards_cardholders")}
+    holding = Holding()
+    held = _kept(cast(Connection, holding))
+    held[str(ANN)] = held["#x"] = (str(ANN), "x", b"k" * 32)
+    held[str(BOB)] = (str(BOB), "y", b"k" * 32)
     assert await shred_subject(str(ANN)) == 1
+    assert list(held) == [str(BOB)]  # Open transactions drop what they held.
     assert await shred_subject(str(ANN)) == 0
     after = {row["id"]: row for row in await raw("SELECT * FROM cards_cardholders")}
     ann_row = next(
@@ -356,6 +373,22 @@ async def test_a_shredded_subjects_values_read_as_none(bank: str) -> None:
         await uow.commit()
     async with CardsUnitOfWork() as uow:
         assert (await uow.cardholders.get(ANN)).card_number == PAN
+
+
+class Transaction:
+    """Stands for an open transaction."""
+
+
+class Holding:
+    """A connection in a transaction of its own, which holds subjects' keys."""
+
+    def __init__(self) -> None:
+        """Open the transaction."""
+        self.transaction = Transaction()
+
+    def get_transaction(self) -> object:
+        """The transaction."""
+        return self.transaction
 
 
 # Fixtures ---------------------------------------------------------------------------
@@ -389,6 +422,8 @@ def test_dumpdata_writes_ciphertext_unless_asked_to_decrypt(
         (tmp_path / name).write_text(text_)
         call_command("loaddata", str(tmp_path / name), stdout=io.StringIO())
         ann, payment, found = run_async(read_back())
+        stored = run_async(raw("SELECT note FROM cards_payments"))[0]["note"]
+        assert stored.startswith("dk1:s.")  # Sealed for its holder, as loaded.
         assert (ann.card_number, ann.api_secret) == (PAN, b"\x00\xff")
         assert (payment.pan, payment.note) == (CardNumber(PAN), "gift")
         assert [each.id for each in found] == [uuid.UUID(int=1)]
@@ -521,7 +556,7 @@ def test_derived_columns_follow_the_marker() -> None:
     assert holders.c.card_number_index.info == {"blind_index": "card_number"}
     assert not tables.payments.c.pan.nullable
     start_mappers()
-    assert [field.key for field in _fields(sa_inspect(Payment))] == ["pan", "note"]
+    assert [field.key for field in _fields(class_mapper(Payment))] == ["pan", "note"]
     assert [type(item).__name__ for item in EncryptedColumns("plain")] == ["Column"]
 
 
@@ -567,6 +602,19 @@ def test_given_columns_replace_the_derived_ones() -> None:
     table = table_for(Holder, "holders", columns.value, metadata=metadata)
     assert table.c.number is columns.value
     assert "number_index" in table.c
+    full = EncryptedColumns("code", subject="holder_id", blind_index=True)
+    assert full.value.nullable
+    assert repr(full.value.type) == (
+        "EncryptedType(str, subject='holder_id', blind_index='code_index')"
+    )
+    assert full.index is not None
+    assert repr(full.index.type) == "String(length=72)"
+    assert full.index.info == {"blind_index": "code"}
+    [_, _, made] = list(full)
+    assert list(made.expressions) == [full.index]  # type: ignore[attr-defined]
+    assert not EncryptedColumns("code", nullable=False).value.nullable
+    assert index_properties(table, {}) == {"_number_index": table.c.number_index}
+    assert index_properties(table, {"_number_index": None}) == {}
     index = Column("number_index", Uuid)
     other = table_for(Holder, "holders2", index, metadata=metadata)
     assert other.c.number_index is index
@@ -593,6 +641,7 @@ def test_an_encrypted_column_takes_its_kind_only() -> None:
     assert numbers.to_bytes(PAN) == numbers.to_bytes(CardNumber(PAN)) == PAN.encode()
     type_ = EncryptedType(str)
     assert type_.from_bytes(type_.to_bytes("\ud800")) == "\ud800"
+    assert type_.from_json(type_.to_json("\ud800")) == "\ud800"
     with pytest.raises(TypeError, match="takes str, not bytes"):
         type_.to_bytes(b"x")
     with pytest.raises(TypeError, match="takes bytes, not str"):
@@ -620,7 +669,7 @@ def test_a_subject_or_index_column_must_be_mapped() -> None:
     )
     map_imperatively(Orphan, table, exclude_properties=["owner"])
     with pytest.raises(ImproperlyConfigured, match="which Orphan does not map"):
-        _fields(sa_inspect(Orphan))
+        _fields(class_mapper(Orphan))
 
     class Lonely(AggregateRoot[int]):
         value: str | None = None
@@ -634,7 +683,7 @@ def test_a_subject_or_index_column_must_be_mapped() -> None:
     )
     map_imperatively(Lonely, other)
     with pytest.raises(ImproperlyConfigured, match="which lonely does not have"):
-        _fields(sa_inspect(Lonely))
+        _fields(class_mapper(Lonely))
 
 
 def test_lookup_needs_a_blind_index() -> None:
@@ -681,7 +730,8 @@ def test_the_admin_api_reads_and_finds_encrypted_fields(staffed_bank: str) -> No
     from domainkit.contrib.admin import AdminSite
     from domainkit.http import FilterSet
     from domainkit.http.filters import Filter
-    from domainkit_tests.test_admin import as_, client_of
+    from domainkit_tests.test_admin import client_of
+    from domainkit_tests.test_resources import as_
 
     class PaymentFilters(FilterSet):
         """Payments by card number."""

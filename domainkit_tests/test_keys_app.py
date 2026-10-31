@@ -265,7 +265,15 @@ def test_a_deployment_on_the_local_kek_must_opt_in(
         problem.id for problem in problems if isinstance(problem, CheckMessage)
     ] == found
     if found:
-        assert "ALLOW_LOCAL_KEK" in problems[0].hint  # type: ignore[attr-defined]
+        assert problems[0] == (
+            f"KEYS.PROVIDER is 'local' in {environment}: the key that wraps the "
+            "data keys derives from SECRET_KEY, so anyone who reads the settings "
+            "can open every encrypted field."
+        )
+        assert problems[0].hint == (  # type: ignore[attr-defined]
+            'Set KEYS.PROVIDER to "aws-kms" or "vault", or KEYS.ALLOW_LOCAL_KEK '
+            "= True to accept it."
+        )
 
 
 def test_retired_keys_are_warned_about() -> None:
@@ -285,8 +293,14 @@ def test_retired_keys_are_warned_about() -> None:
     registry.clear()
     assert isinstance(warning, CheckMessage)
     assert warning.id == "keys.W001"
-    assert "retired keys (a)" in warning
-    assert "keys reencrypt" in warning.hint
+    assert warning == (
+        "KEYS.DATA_KEYS keeps retired keys (a): values and subjects' keys may "
+        "still be sealed under them."
+    )
+    assert warning.hint == (
+        "Run 'manage.py keys reencrypt', then 'manage.py keys status --check'; "
+        "remove the keys once nothing uses them."
+    )
 
 
 @pytest.mark.anyio
@@ -344,6 +358,7 @@ def test_rewrap_prints_the_same_keys_under_the_newest_kek(
     """Each data key unwraps to what it did."""
     with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
         printed = command("rewrap")
+    assert printed.startswith('{\n  "a": "local:')
     again = json.loads(printed.rsplit("}", 1)[0] + "}")
     provider = LocalKeyProvider.from_secret_key()
     assert provider.unwrap_now(again["a"]) == provider.unwrap_now(FIRST)
@@ -381,7 +396,7 @@ def test_rotating_the_data_key_and_reencrypting(
     database_url: str, tmp_path: Path
 ) -> None:
     """Status counts what each key seals; reencrypt moves it all; the old key goes."""
-    with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
+    with project(database_url, tmp_path, AUDIT, DATA_KEYS={"a": FIRST}):
         run_async(
             save(
                 Cardholder(id=ANN, name="Ann", card_number=PAN, api_secret=b"x"),
@@ -394,7 +409,7 @@ def test_rotating_the_data_key_and_reencrypting(
         )
         assert "retired: none" in command("status", "--check")
     rotated = {"DATA_KEYS": {"a": FIRST, "b": SECOND}, "CURRENT_KEY": "b"}
-    with project(database_url, tmp_path, **rotated):
+    with project(database_url, tmp_path, AUDIT, **rotated):
         status = command("status")
         assert "Current key: b; retired: a." in status
         assert (
@@ -417,7 +432,19 @@ def test_rotating_the_data_key_and_reencrypting(
         )
         assert "retired: a." in command("status", "--check")
         assert command("reencrypt").startswith("Sealed 0 value(s)")
-    with project(database_url, tmp_path, DATA_KEYS={"b": SECOND}):
+        recorded = run_async(
+            rows(
+                "SELECT details FROM domainkit_audit_log "
+                "WHERE action = 'operator.keys_reencrypt'"
+            )
+        )
+        first = recorded[0]["details"]
+        first = json.loads(first) if isinstance(first, str) else first
+        assert {
+            key: first[key]
+            for key in ("current", "values", "indexes", "subject_keys", "failed")
+        } == {"current": "b", "values": 3, "indexes": 3, "subject_keys": 1, "failed": 0}
+    with project(database_url, tmp_path, AUDIT, DATA_KEYS={"b": SECOND}):
         holders, payments = run_async(read_all())
         assert [holder.card_number for holder in holders] == [PAN, None]
         assert [payment.pan for payment in payments] == [
@@ -452,18 +479,20 @@ def test_reencrypt_leaves_and_counts_what_does_not_open(
                 Payment(
                     id=uuid.UUID(int=2), holder_id=BOB, pan=CardNumber(PAN), note="x"
                 ),
+                Payment(id=uuid.UUID(int=3), holder_id=BOB, pan=CardNumber(PAN)),
             )
         )
         run_async(tamper())
     with project(
         database_url, tmp_path, DATA_KEYS={"a": FIRST, "b": SECOND}, CURRENT_KEY="b"
     ):
-        with pytest.raises(CommandError, match="1 value"):
+        with pytest.raises(CommandError, match=r"^2 value"):
             command("reencrypt")
         status = run_async(key_status(keyring()))
-        # The tampered value and its index, and the two broken subjects' keys.
-        assert status.on_retired == 4
-        assert status.subject_keys == {"default": {"a": 2}}
+        # The tampered values and their indexes, and Carol's broken key; Bob's,
+        # after hers, moved.
+        assert status.on_retired == 5
+        assert status.subject_keys == {"default": {"a": 1, "b": 1}}
 
 
 def test_a_row_changed_while_it_is_sealed_again_is_left_for_the_next_run(
@@ -511,8 +540,32 @@ async def rewrite(stale: list[tuple[uuid.UUID, str]], done: Any) -> None:  # noq
         )
 
 
+def test_a_value_whose_subject_key_is_gone_loses_its_index_when_moved(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Reencrypt clears the stale index of a value nobody can open any more."""
+    with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
+        run_async(save(Cardholder(id=ANN, name="Ann", card_number=PAN)))
+        run_async(drop_subject_keys())
+    with project(
+        database_url, tmp_path, DATA_KEYS={"a": FIRST, "b": SECOND}, CURRENT_KEY="b"
+    ):
+        assert command("reencrypt").startswith("Sealed 0 value(s) again, remade 1")
+        row = run_async(
+            rows("SELECT card_number, card_number_index FROM cards_cardholders")
+        )[0]
+        assert row["card_number"].startswith("dk1:s.")
+        assert row["card_number_index"] is None
+
+
+async def drop_subject_keys() -> None:
+    """Delete every subject's key, as a lost table would."""
+    async with connections.engine("default").begin() as connection:
+        await connection.execute(subject_keys.delete())
+
+
 async def tamper() -> None:
-    """Copy payment 1's number into payment 2, and break one subject's key."""
+    """Copy payment 1's number into payments 2 and 3; add a broken subject key."""
     async with connections.engine("default").begin() as connection:
         first = (
             await connection.execute(
@@ -523,13 +576,12 @@ async def tamper() -> None:
         ).scalar_one()
         await connection.execute(
             update(tables.payments)
-            .where(tables.payments.c.id == uuid.UUID(int=2))
+            .where(tables.payments.c.id != uuid.UUID(int=1))
             .values(pan=Ciphertext(first))
         )
-        await connection.execute(update(subject_keys).values(key=b"\x00" * 60))
         await connection.execute(
             subject_keys.insert().values(
-                id="f" * 32,
+                id="0" * 32,
                 subject="carol",
                 wrapping_key="a",
                 key=b"\x00" * 60,
@@ -548,7 +600,11 @@ def test_status_counts_values_under_no_key_held(
         )
     with project(database_url, tmp_path, DATA_KEYS={"b": SECOND}):
         status = command("status")
-        assert "under no key held: 1" in status
+        assert (
+            "default cards_payments.pan: b: 0; subjects' keys: 0; under no key "
+            "held: 1; indexes to remake: 1\n" in status
+        )
+        assert "default subjects' keys wrapped under none\n" in status
         assert run_async(key_status(keyring())).unreadable == 1
 
 
