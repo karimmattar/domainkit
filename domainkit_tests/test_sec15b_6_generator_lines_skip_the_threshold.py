@@ -16,6 +16,8 @@ The test asserts the safe behaviour (``approval_required``, nothing
 booked) and fails on ``d23a2ec``.
 """
 
+import contextlib
+
 import pytest
 
 from domainkit.contrib.accounting import (
@@ -47,10 +49,8 @@ async def test_lines_from_a_generator_are_guarded_as_a_tuple_is() -> None:
         booked_on=TODAY,
         lines=(line for line in lines),  # type: ignore[arg-type]
     )
-    try:
+    with contextlib.suppress(ApprovalRequired):  # Refused: the safe behaviour.
         await post_entry(large, AccountingUnitOfWork())
-    except ApprovalRequired:
-        pass  # The safe behaviour.
     assert await count(entries, entries.c.reference == "g-1") == 0, (
         "a 5,000 entry over the 1,000 threshold was posted without approval"
     )

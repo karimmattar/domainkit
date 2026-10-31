@@ -4,6 +4,7 @@ No database: a guard is registered and checked against what it says, and
 a guarded service refuses a command that needs approval before it runs.
 """
 
+import uuid
 from collections.abc import Iterator
 from datetime import timedelta
 from decimal import Decimal
@@ -17,8 +18,10 @@ from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.approvals import (
     ApprovalRequired,
+    GrantSuperuser,
     Guard,
     Policy,
+    PolicyGone,
     Threshold,
     UnknownAction,
     approved,
@@ -103,11 +106,16 @@ def register(**options: Any) -> Guard:  # noqa: ANN401 - guard()'s options.
         (
             {"permission": None},
             (
-                r"^Policy 'tests\.p' names its approvers by a permission or by a "
-                r"group: one of the two\.$"
+                r"^Policy 'tests\.p' names its approvers by a permission, a group, "
+                r"or an access rule: one of the three\.$"
             ),
         ),
-        ({"group": "treasurers"}, "one of the two"),
+        ({"group": "treasurers"}, "one of the three"),
+        ({"approver_rule": IsAuthenticated()}, "one of the three"),
+        (
+            {"permission": None, "approver_rule": "superusers"},
+            r"^Policy 'tests\.p' names a rule that is not an access rule\.$",
+        ),
         ({"expires_after": timedelta(0)}, "at most 90 days"),
         ({"expires_after": timedelta(days=91)}, "at most 90 days"),
         ({"approve_rule": "step-up"}, "not an access rule"),
@@ -602,12 +610,14 @@ async def test_approvers_by_group_and_the_rule_asked_of_them(installed: None) ->
         ("request", connection, member),
         ("object", connection, member),
     ]
-    assert await MayApprove().has_object_permission(
-        connection, member, request(action="tests.gone")
-    )
-    assert await MayApprove().has_object_permission(
-        connection, member, request(policy="tests.gone")
-    )
+    for gone in (request(action="tests.gone"), request(policy="tests.gone")):
+        for asked in (MayApprove(), IsApprover()):
+            with pytest.raises(
+                PolicyGone,
+                match=r"^The request's guard or policy no longer exists; it is "
+                r"neither decided nor run\.$",
+            ):
+                await asked.has_object_permission(connection, member, gone)
     assert len(seen.asked) == 2
 
 
@@ -637,8 +647,9 @@ def test_the_guards_approvals_brings_follow_their_settings() -> None:
         ):
             setup()
             found = guards()
-            entries, superusers = (
+            entries, captures, superusers = (
                 found["accounting.post_entry"],
+                found["accounting.capture_hold"],
                 found["auth.grant_superuser"],
             )
             assert entries.permission == "accounting.add_entry"
@@ -646,7 +657,18 @@ def test_the_guards_approvals_brings_follow_their_settings() -> None:
                 (each.name, each.approvals, each.permission, each.group)
                 for each in entries.policies
             ] == [("accounting.large_entry", 3, "accounting.approve_large", None)]
-            assert superusers.permission == "auth.approve_superuser"
+            assert captures.permission == "accounting.capture_hold"
+            assert [
+                (each.name, each.approvals, each.permission, each.when)
+                for each in captures.policies
+            ] == [("accounting.large_capture", 3, "accounting.approve_large", None)]
+            assert superusers.permission is None
+            assert type(superusers.maker_rule).__name__ == "IsSuperuser"
+            promoted = uuid.uuid4()
+            assert superusers.parties_of(GrantSuperuser(user_id=promoted)) == {
+                str(promoted)
+            }
+            assert entries.parties_of(None) == frozenset()
             assert [
                 (each.name, each.approvals, each.permission, each.group)
                 for each in superusers.policies
@@ -684,11 +706,8 @@ def test_the_worker_runs_approved_commands_and_expires_requests(
 ) -> None:
     """The run task under its name, dead-lettering a request gone; the expiry."""
     from domainkit.contrib.approvals import RequestNotFound, execute_request
-    from domainkit.contrib.approvals.tasks import (
-        EXECUTE,
-        EXPIRE,
-        expire_due_requests,
-    )
+    from domainkit.contrib.approvals.services import EXECUTE
+    from domainkit.contrib.approvals.tasks import EXPIRE, expire_due_requests
     from domainkit.contrib.messaging.registry import get_task, periodic_tasks
 
     spec = get_task(EXECUTE)

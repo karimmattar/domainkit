@@ -10,11 +10,9 @@ from typing import Final
 from domainkit.contrib.messaging import inbox, periodic, task
 
 from .exceptions import RequestNotFound
-from .services import execute_request, expire_requests
+from .services import EXECUTE, execute_request, expire_requests
 from .settings import ApprovalsSettings
 
-EXECUTE: Final = "domainkit.approvals.execute"
-"""The task that runs an approved request's command."""
 EXPIRE: Final = "domainkit.approvals.expire"
 """The periodic task that expires the requests whose time is up."""
 

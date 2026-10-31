@@ -986,3 +986,15 @@ msgstr "المبلغ أكبر مما يسمح به حدّ خلال فترته."
 
 msgid "There have been as many of these as a limit allows in its period."
 msgstr "بلغ عدد هذه الحركات ما يسمح به حدّ خلال فترته."
+
+msgid "Whoever the command is about cannot decide it."
+msgstr "لا يحق لمن يخصّه الأمر أن يبتّ فيه."
+
+msgid "Only a superuser may make a superuser."
+msgstr "لا يجعل مستخدمًا مستخدمًا خارقًا إلا مستخدم خارق."
+
+msgid "The request was changed outside the application; it is neither decided nor run."
+msgstr "عُدّل الطلب خارج التطبيق؛ فلا يُبتّ فيه ولا يُنفّذ."
+
+msgid "The request's guard or policy no longer exists; it is neither decided nor run."
+msgstr "لم تعد حماية الطلب أو سياسته موجودة؛ فلا يُبتّ فيه ولا يُنفّذ."

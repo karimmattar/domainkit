@@ -13,6 +13,7 @@ The test asserts the safe behaviour (the capture is refused as
 ``d23a2ec``.
 """
 
+import contextlib
 from datetime import timedelta
 
 import pytest
@@ -53,22 +54,24 @@ async def test_a_capture_over_the_threshold_needs_approval() -> None:
         ),
         AccountingUnitOfWork(),
     )
-    try:
+    with contextlib.suppress(ApprovalRequired):  # Refused: the safe behaviour.
         await capture_hold(
             CaptureHold(hold_id=hold.id, counter_account_id=sales.id, booked_on=TODAY),
             AccountingUnitOfWork(),
         )
-    except ApprovalRequired:
-        pass  # The safe behaviour.
 
     async with connections.engine().connect() as connection:
         moved = (
-            await connection.execute(
-                select(postings.c.amount)
-                .join(entries, entries.c.id == postings.c.entry_id)
-                .where(entries.c.source == CAPTURES, postings.c.side == "debit")
+            (
+                await connection.execute(
+                    select(postings.c.amount)
+                    .join(entries, entries.c.id == postings.c.entry_id)
+                    .where(entries.c.source == CAPTURES, postings.c.side == "debit")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert moved == [], (
         f"a capture posted {moved} dollars over the 1,000 threshold, unapproved"
     )

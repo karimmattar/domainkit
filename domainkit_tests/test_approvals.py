@@ -243,7 +243,7 @@ async def test_a_large_entry_runs_once_two_others_approve_it(project: str) -> No
     assert second.status is RequestStatus.APPROVED
 
     await drain()
-    await execute_request(request.id)  # Delivered again: nothing more.
+    await execute_request(request.id, second.run_token)  # Delivered again: nothing.
 
     done = await stored(request.id)
     assert done.status is RequestStatus.EXECUTED
@@ -254,7 +254,7 @@ async def test_a_large_entry_runs_once_two_others_approve_it(project: str) -> No
         ("approvals.approval_given", "ann"),
         ("approvals.approval_given", "bob"),
         ("approvals.request_approved", "bob"),
-        ("approvals.request_executed", "bob"),
+        ("approvals.request_executed", "maker"),  # It ran as its maker.
     ]
 
 
@@ -449,7 +449,7 @@ async def test_what_runs_is_what_was_approved(project: str) -> None:
     failed = await stored(request.id)
     assert (failed.status, failed.reason) == (
         RequestStatus.FAILED,
-        "fingerprint_mismatch",
+        "request_tampered",
     )
     assert await count(entries) == 0
 
@@ -554,7 +554,9 @@ async def act(command: Act, uow: AccountingUnitOfWork) -> None:
                 )
         case "raced":
             request_id = _running_request()
-            await _finish(request_id)  # Another run marked it meanwhile.
+            found = await stored(request_id)
+            assert found.run_token is not None
+            await _finish(request_id, found.run_token)  # Another run marked it.
             await open_account(
                 OpenAccount(
                     code="r-1", name="R", type=AccountType.ASSET, currency="USD"
@@ -625,11 +627,11 @@ async def test_a_refused_command_fails_its_request_with_the_refusals_code(
     race = await approved_act("race")
     handled = await approved_act("handled")
     with pytest.raises(ConcurrentUpdate):
-        await execute_request(race.id)
+        await execute_request(race.id, race.run_token)
     with pytest.raises(AlreadyHandled):
-        await execute_request(handled.id)
-    await execute_request(taken.id)
-    await execute_request(money.id)
+        await execute_request(handled.id, handled.run_token)
+    await execute_request(taken.id, taken.run_token)
+    await execute_request(money.id, money.run_token)
 
     assert await status_of(taken) == (RequestStatus.FAILED, "account_code_taken")
     assert await status_of(money) == (RequestStatus.FAILED, "unknown_currency")
@@ -656,7 +658,7 @@ async def test_the_request_is_marked_with_the_use_cases_first_commit(
     nothing = await approved_act("nothing")
     raced = await approved_act("raced")
     for request in (twice, nothing, raced):
-        await execute_request(request.id)
+        await execute_request(request.id, request.run_token)
         assert await status_of(request) == (RequestStatus.EXECUTED, "")
     async with AccountingUnitOfWork() as uow:
         codes = sorted(each.code for each in await uow.accounts.filter())
@@ -665,7 +667,7 @@ async def test_the_request_is_marked_with_the_use_cases_first_commit(
 
     from domainkit.contrib.approvals.services import _marking
 
-    assert _marking(object(), uuid.uuid4()) is None
+    assert _marking(object(), uuid.uuid4(), "t") is None
     from domainkit import setup
     from domainkit.apps import registry
 
@@ -673,7 +675,7 @@ async def test_the_request_is_marked_with_the_use_cases_first_commit(
     setup()
     guard_acts(unit_of_work=lambda: None)  # Not a SQL unit of work: marked after.
     elsewhere = await approved_act("nothing")
-    await execute_request(elsewhere.id)
+    await execute_request(elsewhere.id, elsewhere.run_token)
     assert await status_of(elsewhere) == (RequestStatus.EXECUTED, "")
 
 
@@ -691,8 +693,8 @@ async def test_a_command_that_no_longer_reads_as_approved_never_runs(
 
     registry.clear()
     setup()
-    await execute_request(gone.id)
-    assert await status_of(gone) == (RequestStatus.FAILED, "unknown_action")
+    await execute_request(gone.id, gone.run_token)
+    assert await status_of(gone) == (RequestStatus.FAILED, "policy_not_found")
 
     class Wider(Command):
         """The command, with a field it did not have."""
@@ -701,7 +703,7 @@ async def test_a_command_that_no_longer_reads_as_approved_never_runs(
         memo: str = ""
 
     guard_acts(command=Wider)
-    await execute_request(changed.id)
+    await execute_request(changed.id, changed.run_token)
     assert await status_of(changed) == (RequestStatus.FAILED, "invalid_arguments")
 
     class Other(Command):
@@ -712,7 +714,7 @@ async def test_a_command_that_no_longer_reads_as_approved_never_runs(
     registry.clear()
     setup()
     guard_acts(command=Other)
-    await execute_request(renamed.id)
+    await execute_request(renamed.id, renamed.run_token)
     assert await status_of(renamed) == (RequestStatus.FAILED, "invalid_arguments")
     async with AccountingUnitOfWork() as uow:
         assert await uow.accounts.filter() == []
@@ -722,7 +724,7 @@ async def test_only_approved_requests_run(project: str) -> None:
     """A pending request's message, sent by hand, runs nothing; a gone one fails."""
     guard_acts()
     pending = await submit_command("tests.act", Act(kind="p"), maker="maker")
-    await execute_request(pending.id)
+    await execute_request(pending.id, pending.run_token)
     assert await status_of(pending) == (RequestStatus.PENDING, "")
     with refused(RequestNotFound):
         await execute_request(uuid.uuid4())
@@ -852,7 +854,7 @@ async def test_seals_stop_rows_written_around_the_application(project: str) -> N
         await execute_request(request.id)
         assert await status_of(request) == (
             RequestStatus.FAILED,
-            "fingerprint_mismatch",
+            "request_tampered",
         )
     async with AccountingUnitOfWork() as uow:
         assert await uow.accounts.filter() == []
@@ -907,7 +909,7 @@ async def test_the_executed_event_names_the_request(
     try:
         guard_acts()
         request = await approved_act("ran")
-        await execute_request(request.id)
+        await execute_request(request.id, request.run_token)
     finally:
         event_bus.unsubscribe(RequestExecuted, keep)
     assert [(event.request_id, event.action) for event in seen] == [

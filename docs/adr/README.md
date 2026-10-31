@@ -127,7 +127,7 @@ statuses, and the amendments they name.
 | [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md) | Run a key's messages in commit order by holding the later ones in the outbox | Accepted; amended 2026-10-30 (at the end) |
 | [0119](0119-wrap-data-keys-under-a-kms-key-through-a-port-and-name-the-key-in-every-sealed-value.md) | Wrap data keys under a KMS key through a port, and name the key in every sealed value | Accepted |
 | [0120](0120-seal-encrypted-fields-in-the-orm-bound-to-their-row-and-shred-a-person-by-destroying-their-key.md) | Seal encrypted fields in the ORM, bound to their row, and shred a person by destroying their key | Accepted |
-| [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md) | Hold guarded commands as sealed requests, and count approvals under the request's lock | Accepted |
+| [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md) | Hold guarded commands as sealed requests, and count approvals under the request's lock | Accepted; amended 2026-10-31 (at the end) |
 | [0122](0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md) | Step up in a rule, and bind authorizations with a stored row and a code | Accepted |
 | [0123](0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md) | Count movements against limits under the subject's row, in the movement's transaction | Accepted |
 

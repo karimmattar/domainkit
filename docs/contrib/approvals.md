@@ -84,6 +84,11 @@ class PaymentsConfig(DomainConfig):
 - Only the run of an approved request passes the guard, and only with the
   command it approved: a guarded service called from inside it with
   another command is refused like any other.
+- `maker_rule=` is an access rule a maker must pass to submit over HTTP,
+  besides `permission` (`IsSuperuser()` for making superusers);
+  `parties=` names, for a command, the people it is about (the payee of
+  a payment, the user a grant promotes): they may not approve or reject
+  it (`interested_party`, 403), and their approvals never count.
 
 ### Policies
 
@@ -98,8 +103,9 @@ Policy(
 )
 ```
 
-- **Approvers** are the holders of a permission, or the members of a
-  group: one of the two. A group needs a principal with `groups` (as
+- **Approvers** are the holders of a permission, the members of a group,
+  or whoever an access rule allows (`approver_rule=IsSuperuser()`): one
+  of the three. A group needs a principal with `groups` (as
   `domainkit.contrib.auth`'s users have) and credentials not limited to
   scopes; a permission is checked as `HasPermissions` checks it, scopes
   included.
@@ -111,6 +117,12 @@ Policy(
   another session, device, or token is the same person, refused with
   `already_decided` (409), even from two requests at once.
 - A request needs `approvals` approvals, and one rejection ends it.
+- **A policy that is gone stays gone.** A request is decided and run
+  only under the guard and the policy it was submitted under. Once a
+  deploy renames or removes either, its pending requests are neither
+  approved nor rejected (`policy_not_found`, 409), never under
+  `APPROVE_RULE` or no rule instead, and an approved one fails with that
+  code; the maker cancels it, or it expires.
 - **Content.** `when` reads the command, so a policy may apply only to
   some of them. `Threshold` reads amounts per currency:
   `Threshold({"USD": "10000", "EGP": "500000"}).exceeded_by(amounts)`
@@ -154,7 +166,19 @@ await approve_request(
 - A request is `pending`, then `approved` (its command queued),
   `executed` or `failed`, or `rejected`, `cancelled`, or `expired`.
 
-### What runs, and when
+### What maker-checker does not stop
+
+- **Accounts.** One person is one principal id. Whoever may create users
+  and grant them the approvers' permission (or put them in the group)
+  can make a second account and approve their own requests with it. Give
+  approver rights only to people who cannot create users or change
+  grants, and watch the audit trail for both (`auth.user_created`,
+  `auth.user_permission_granted`, `auth.user_joined_group`).
+- **Splitting.** A threshold judges one command. Ten postings of 999
+  dollars under a 1,000-dollar threshold need no approval, nor does an
+  amount moved through a currency without one. Bound what an actor may
+  move in a window with `domainkit.contrib.limits`, which counts every
+  entry booked; approved ones count against their maker.
 
 The approval that completes a request queues its command through the
 outbox, in the same transaction ([messaging](messaging.md)): it is
@@ -170,17 +194,26 @@ message is delivered, after checking that it is what was approved:
 
 - the request's **seal** and each decision's hold: an HMAC, under a key
   derived from `SECRET_KEY`, of the request's id, action, fingerprint,
-  maker, and approvals needed, and of each decision's request, person,
-  verdict, and fingerprint. A row changed or added in the database by
-  someone without the key runs nothing;
+  maker, policy, approvals needed, approvers (permission or group),
+  expiry, status, and run token, made again with each change of its
+  state, and of each decision's request, person, verdict, and
+  fingerprint. A row changed or added in the database by someone without
+  the key is neither decided (`request_tampered`, 409) nor run (it fails
+  with that code);
+- the message carries the request's **run token**: a one-time key made
+  when it was approved, sealed with it, and spent by the run. A message
+  queued again after the run, or one without the token, runs nothing,
+  and so does a status set back to `approved`, whose seal no longer
+  holds;
 - the fingerprint is that of the arguments, and enough people other than
-  the maker approved it, each once;
+  the maker and the command's parties approved it, each once;
 - the arguments still make the command (the guard's command may have
   changed in a deploy since), and read back the same.
 
 A request that fails a check is `failed`, with the refusal's code as its
-`reason` (`fingerprint_mismatch`, `invalid_arguments`, `unknown_action`
-if the guard is gone), and runs nothing. So does one whose use case
+`reason` (`request_tampered`, `fingerprint_mismatch`,
+`invalid_arguments`, `policy_not_found` if the guard or its policy is
+gone), and runs nothing. So does one whose use case
 refuses it (a `DomainError`, such as `insufficient_funds`): the maker may
 submit it again. A use case that lost a race (`ConcurrentUpdate`) or
 failed otherwise is retried by the worker with its backoff.
@@ -194,8 +227,22 @@ message run again after that commit marks it then (the inbox refuses the
 use case's second commit). Keep a guarded use case to one commit: one
 that commits twice is marked with the first.
 
+The command **runs as its maker**: the request context's actor is the
+maker's id while it runs, so its own events, and whatever is charged to
+the actor (`domainkit.contrib.limits`' actor limits), are the maker's;
+`RequestExecuted` lists the approvers, whose `approval_given` rows name
+each of them.
+
 `SECRET_KEY_FALLBACKS` verify seals as they verify signatures, so keep
 an old key there while requests sealed under it may still run.
+
+Seals find a row changed or forged by someone without the key; they
+cannot tell a whole row put back as it was earlier (a restored backup,
+an earlier copy of the row with its seal and token, and its outbox
+message) from the original. Keep the database's own writers to the
+application's role, and the audit trail append-only and sealed
+([audit](audit.md#tamper-evidence)): its `approvals.request_executed`
+row stays, whatever a row of requests says.
 
 ## Large postings
 
@@ -215,10 +262,24 @@ themselves. `post_entry` refuses it otherwise (`approval_required`),
 whether called over HTTP, from code, or from a message (`defer_entry`
 dead-letters it). Its makers submit it as the action `accounting.post_entry`
 (`ENTRIES`), with the body `POST /entries` takes, and need
-`accounting.add_entry` to. A currency without an amount is not guarded,
-and `capture_hold` and `reverse_entry` are not either: they post what an
-earlier hold or entry already allowed. Approvals reaches the ledger
-through its `on_posting` hook only; the ledger's own semantics are
+`accounting.add_entry` to.
+
+A hold's capture is guarded the same way, as `accounting.capture_hold`
+(`CAPTURES`, policy `accounting.large_capture`): a hold reserves any
+amount, unapproved, and its capture is what moves it, into an account
+the capture names. Captures over the threshold are refused
+(`approval_required`); submit `{"hold_id": ..., "counter_account_id":
+..., "amount": ...}`, and the makers need `accounting.capture_hold`.
+
+Both are checked twice: before `post_entry` takes a lock (`on_posting`),
+and as every entry is booked (`on_booking`), from the entry itself, so a
+path around the command (a capture, lines a hook could not read) books
+nothing over the threshold unapproved. A booked entry passes only as the
+approved request being run: the posting with its source and reference,
+or the capture of its hold. `PostEntry` keeps its `lines` as a tuple,
+however they are given. Reversals are not guarded: a reversal moves back
+what an entry moved; `domainkit.contrib.limits` counts it. A currency
+without an amount is not guarded. The ledger's own semantics are
 unchanged.
 
 ## Making superusers
@@ -227,9 +288,13 @@ With `SUPERUSER_APPROVALS` above 0 and `domainkit.contrib.auth`
 installed, the auth admin API refuses to make a user a superuser, on
 create or change (`approval_required`); unmaking one is not guarded. A
 superuser submits `auth.grant_superuser` (`SUPERUSERS`) with
-`{"user_id": ...}` instead, and `SUPERUSER_APPROVALS` holders of
-`SUPERUSER_APPROVERS` (superusers hold every permission) approve it.
-`manage.py createsuperuser` stays the operator's way to make the first.
+`{"user_id": ...}` instead: only a superuser may submit one, as only a
+superuser makes one without approvals. `SUPERUSER_APPROVALS` other
+superusers approve it (or, with `SUPERUSER_APPROVERS` set, holders of
+that permission), never the user it promotes. The run checks that its
+maker is still an active superuser, and fails it otherwise
+(`maker_not_allowed`). `manage.py createsuperuser` stays the operator's
+way to make the first.
 
 ## Who may approve: step-up
 
@@ -300,8 +365,9 @@ router.include_router(approvals, prefix="/api/approvals")
 
 The maker and the approvers are the principal's id, whatever
 authenticates requests. Refusals answer with their codes:
-`maker_cannot_decide` and `not_the_maker` (403), `already_decided`,
-`fingerprint_mismatch`, and `request_not_pending` (409),
+`maker_cannot_decide`, `interested_party`, and `not_the_maker` (403),
+`already_decided`, `fingerprint_mismatch`, `request_not_pending`,
+`request_tampered`, and `policy_not_found` (409),
 `invalid_arguments` and `approval_not_needed` (422), `unknown_action`
 and `approval_request_not_found` (404).
 
@@ -319,9 +385,10 @@ Every change is an event the audit trail records with the actor who
 made it ([audit](audit.md)): `approvals.request_submitted`,
 `approval_given`, `request_approved`, `request_rejected`,
 `request_cancelled`, `request_expired`, `request_executed`, and
-`request_failed`. The approved command's own events are recorded with
-the actor whose approval queued it, as work a request queues keeps its
-actor. Reasons are kept on the request, not in the trail.
+`request_failed`. The approved command's own events, and
+`request_executed`, are recorded with its maker as the actor; the
+approvers are the actors of `approval_given`, and listed in
+`request_executed`. Reasons are kept on the request, not in the trail.
 
 `privacy export` lists the requests a person made, with their commands,
 and the decisions they took. `privacy erase` keeps the record that a
@@ -345,4 +412,4 @@ than runs.
 | `ENTRY_APPROVALS` | `2` | Approvals a posting over its threshold needs (at most 10). |
 | `ENTRY_APPROVERS` | `"accounting.add_entry"` | The permission whoever approves a posting holds. |
 | `SUPERUSER_APPROVALS` | `0` | Approvals making a superuser needs (at most 10); 0: it is not guarded. |
-| `SUPERUSER_APPROVERS` | `"auth.change_user"` | The permission whoever approves making a superuser holds. |
+| `SUPERUSER_APPROVERS` | `None` | The permission whoever approves making a superuser holds; `None`: superusers approve, and only they. |

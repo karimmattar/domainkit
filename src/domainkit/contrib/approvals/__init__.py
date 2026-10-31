@@ -31,18 +31,22 @@ cancelled by their maker; every change is a domain event the audit trail
 records with its actor. See ``docs/contrib/approvals.md`` and ADR 0121.
 """
 
-from .builtin import ENTRIES, SUPERUSERS, GrantSuperuser, refuse_if_guarded
+from .builtin import CAPTURES, ENTRIES, SUPERUSERS, GrantSuperuser, refuse_if_guarded
 from .exceptions import (
     AlreadyDecided,
     ApprovalNotNeeded,
     ApprovalPending,
     ApprovalRequired,
     FingerprintMismatch,
+    InterestedParty,
     InvalidArguments,
     MakerCannotDecide,
+    MakerNotAllowed,
     NotTheMaker,
+    PolicyGone,
     RequestNotFound,
     RequestNotPending,
+    RequestTampered,
     UnknownAction,
 )
 from .guards import (
@@ -88,6 +92,7 @@ from .settings import ApprovalsSettings
 from .uow import ApprovalsUnitOfWork
 
 __all__ = [
+    "CAPTURES",
     "ENTRIES",
     "SUPERUSERS",
     "AlreadyDecided",
@@ -104,10 +109,13 @@ __all__ = [
     "FingerprintMismatch",
     "GrantSuperuser",
     "Guard",
+    "InterestedParty",
     "InvalidArguments",
     "MakerCannotDecide",
+    "MakerNotAllowed",
     "NotTheMaker",
     "Policy",
+    "PolicyGone",
     "RejectRequest",
     "RequestApproved",
     "RequestCancelled",
@@ -120,6 +128,7 @@ __all__ = [
     "RequestRejected",
     "RequestStatus",
     "RequestSubmitted",
+    "RequestTampered",
     "SubmitRequest",
     "Threshold",
     "UnknownAction",

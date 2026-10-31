@@ -976,3 +976,15 @@ msgstr ""
 
 msgid "There have been as many of these as a limit allows in its period."
 msgstr ""
+
+msgid "Whoever the command is about cannot decide it."
+msgstr ""
+
+msgid "Only a superuser may make a superuser."
+msgstr ""
+
+msgid "The request was changed outside the application; it is neither decided nor run."
+msgstr ""
+
+msgid "The request's guard or policy no longer exists; it is neither decided nor run."
+msgstr ""

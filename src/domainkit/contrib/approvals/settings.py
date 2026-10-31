@@ -42,5 +42,6 @@ class ApprovalsSettings(BaseModel):
     """The permission whoever approves a posting holds."""
     SUPERUSER_APPROVALS: int = Field(default=0, ge=0, le=MAX_APPROVALS)
     """Approvals making a superuser needs; 0: it is not guarded."""
-    SUPERUSER_APPROVERS: Permission = "auth.change_user"
-    """The permission whoever approves making a superuser holds."""
+    SUPERUSER_APPROVERS: Permission | None = None
+    """The permission whoever approves making a superuser holds; None:
+    superusers approve, and only they."""

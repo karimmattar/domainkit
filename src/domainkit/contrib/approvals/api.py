@@ -35,7 +35,7 @@ from domainkit.resources import HasModelPermission, ResourceRouter
 
 from .guards import guard_for
 from .models import MAX_REASON, ApprovalRequest, RequestStatus, Verdict
-from .rules import RequestActions
+from .rules import RequestActions, _instance
 from .services import (
     ApproveRequest,
     CancelRequest,
@@ -225,13 +225,17 @@ async def submit(
 ) -> RequestOut:
     """Submit a guarded command; it runs once its policy's approvers approve it.
 
-    The maker needs the permission the guard names for its makers too.
+    The maker needs the permission the guard names for its makers too, and
+    to pass its ``maker_rule`` (a superuser, to make superusers).
     """
     guard = guard_for(body.action)
-    if guard.permission is not None and not await HasPermissions(
-        guard.permission
-    ).has_permission(request, user):
-        raise PermissionDenied("You may not submit this command.")
+    rules = [
+        HasPermissions(guard.permission) if guard.permission else None,
+        _instance(guard.maker_rule),
+    ]
+    for rule in rules:
+        if rule is not None and not await rule.has_permission(request, user):
+            raise PermissionDenied("You may not submit this command.")
     made = await submit_request(
         SubmitRequest(action=body.action, arguments=body.arguments, maker=str(user.id)),
         ApprovalsUnitOfWork(),

@@ -147,7 +147,11 @@ entry = await post_entry(
   accounts and period are locked and their balances moved, for entries
   posted, reversals, and captures. Raising refuses the entry; rows it
   locks come after the accounts, in an order of its own.
-  [Limits](limits.md#on-the-ledger) count each entry this way.
+  [Limits](limits.md#on-the-ledger) count each entry this way, and
+  approvals refuses there the postings and captures over its thresholds
+  that no approved request books.
+- `PostEntry` keeps its `lines` as a tuple, however they are given (a
+  generator, a list), so every hook and the ledger read the same lines.
 
 ### From messages
 

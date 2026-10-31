@@ -29,7 +29,7 @@ from domainkit.http.access import (
 from domainkit.resources import HasModelPermission
 from domainkit.utils.module_loading import import_string
 
-from .guards import guards
+from .guards import policy_of
 from .models import ApprovalRequest
 from .settings import ApprovalsSettings
 
@@ -82,12 +82,25 @@ class IsApprover(BasePermission):
     async def has_object_permission(
         self, request: HTTPConnection, user: Principal, obj: object
     ) -> bool:
-        """The principal is one the request's policy names."""
+        """The principal is one the request's policy names.
+
+        Raises:
+            PolicyGone: The request's guard or policy no longer exists.
+        """
         assert isinstance(obj, ApprovalRequest)  # noqa: S101 - the resource's model.
+        _, policy = policy_of(obj)
         if obj.permission is not None:
             return await HasPermissions(obj.permission).has_permission(request, user)
-        names = {getattr(group, "name", group) for group in getattr(user, "groups", ())}
-        return scopes_of(request) is None and user.is_active and obj.group in names
+        if obj.group is not None:
+            names = {
+                getattr(group, "name", group) for group in getattr(user, "groups", ())
+            }
+            return scopes_of(request) is None and user.is_active and obj.group in names
+        rule = _instance(policy.approver_rule)
+        return rule is not None and (
+            await rule.has_permission(request, user)
+            and await rule.has_object_permission(request, user, obj)
+        )
 
 
 class MayApprove(BasePermission):
@@ -132,12 +145,18 @@ class MayApprove(BasePermission):
 
 
 def _rule_of(request: ApprovalRequest) -> BasePermission | None:
-    """The approve rule of the request's policy, or the configured one."""
-    registered = guards().get(request.action)
-    policy = None if registered is None else registered.policy_named(request.policy)
-    rule = None if policy is None else policy.approve_rule
-    if rule is None:
-        return configured_rule()
+    """The approve rule of the request's policy, or the configured one.
+
+    Raises:
+        PolicyGone: The policy no longer exists: no fallback to rules the
+            request was not submitted under.
+    """
+    _, policy = policy_of(request)
+    return _instance(policy.approve_rule) or configured_rule()
+
+
+def _instance(rule: Rule | None) -> BasePermission | None:
+    """``rule``, made from its class if it is one."""
     return rule() if isinstance(rule, type) else rule
 
 
