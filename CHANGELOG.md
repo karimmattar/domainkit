@@ -176,7 +176,8 @@ and a status.
   flushed it: a mapped money attribute now refuses an amount its amount
   column cannot hold (more digits before the point, or more places) as it
   is set, `AmountOutOfRange`, a 422 `amount_out_of_range`, and keeps its
-  value (FIN-01).
+  value. The transfer tests `startaggregate` writes for a money field of
+  fewer than two places move amounts its column holds (FIN-01).
 - `cursor_length` counted a money field's amount at its column's places,
   while a cursor holds it at its currency's, which may be more (1.500 KWD
   in a column of two places): such a cursor was a few characters over the
