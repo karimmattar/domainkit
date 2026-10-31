@@ -25,7 +25,7 @@ from domainkit.contrib.auth import (
     StepUp,
     StepUpRequired,
 )
-from domainkit.contrib.auth.access import proof_of
+from domainkit.contrib.auth.access import STEPPED_UP, proof_of
 from domainkit.contrib.auth.authentication import _proof_claims
 from domainkit.contrib.auth.tables import step_ups
 from domainkit.db import connections
@@ -142,6 +142,9 @@ def test_a_login_token_steps_up_for_max_age(identity: Api, frozen: FrozenClock) 
         "no_second_factor",
     )
     assert (refused.status_code, refused.json()["code"]) == (401, "step_up_required")
+    assert refused.json()["detail"] == (
+        "Confirm it is you: authenticate again to do this."
+    )
     assert refused.headers["WWW-Authenticate"] == STEP_UP_REQUIRED
     assert (wrong.status_code, wrong.json()["code"]) == (401, "invalid_code")
     assert stepped.status_code == 200, stepped.json()
@@ -441,8 +444,11 @@ def test_the_rule_takes_ages_up_to_a_day(use_auth: UseAuth) -> None:
     """And methods with the second factor, each once."""
     use_auth()
     for age in (timedelta(0), timedelta(seconds=-1), timedelta(days=1, seconds=1)):
-        with pytest.raises(ImproperlyConfigured, match="a day at most"):
+        with pytest.raises(ImproperlyConfigured) as refused:
             StepUp(max_age=age)
+        assert str(refused.value) == (
+            "StepUp(max_age=...) must be more than 0 and a day at most."
+        )
     refused: list[Any] = [("pwd",), ("otp", "otp"), ()]
     for methods in refused:
         with pytest.raises(ImproperlyConfigured, match=r"StepUp\(methods=\.\.\.\)"):
@@ -510,6 +516,7 @@ async def test_an_open_connection_keeps_what_its_start_proved(
     request = connection(credentials)
 
     assert await rule.has_permission(request, KNOWN) is True
+    assert request.scope[STEPPED_UP] == {rule}
     frozen.tick(timedelta(minutes=10))
     assert await rule.has_permission(request, KNOWN) is True
     assert await rule.has_permission(connection(credentials), KNOWN) is False
