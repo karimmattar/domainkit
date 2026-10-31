@@ -33,6 +33,7 @@ from sqlalchemy import (
     union_all,
     update,
 )
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 from sqlalchemy.orm.attributes import set_committed_value
@@ -1200,14 +1201,19 @@ class StepUpStore:
     async def record(
         self, digest: str, user_id: UUID, when: datetime, methods: Iterable[str]
     ) -> None:
-        """Keep that the credential ``digest`` of ``user_id`` stepped up at ``when``."""
-        await self.session.execute(delete(step_ups).where(step_ups.c.id == digest))
+        """Keep that the credential ``digest`` of ``user_id`` stepped up at ``when``.
+
+        One statement: concurrent step-ups of one credential each write, and
+        the latest proof stays; an older one, written after, changes nothing.
+        """
+        dialect = self.session.get_bind().dialect.name
+        statement = (postgresql if dialect == "postgresql" else sqlite).insert(step_ups)
+        proof = {"auth_time": when, "amr": " ".join(sorted(set(methods)))}
         await self.session.execute(
-            insert(step_ups).values(
-                id=digest,
-                user_id=user_id,
-                auth_time=when,
-                amr=" ".join(sorted(set(methods))),
+            statement.values(id=digest, user_id=user_id, **proof).on_conflict_do_update(
+                index_elements=[step_ups.c.id],
+                set_=proof,
+                where=step_ups.c.auth_time <= when,
             )
         )
 
