@@ -896,3 +896,37 @@ msgstr "لست من الموافقين على هذا الطلب."
 
 msgid "You cannot approve this request now."
 msgstr "لا يمكنك الموافقة على هذا الطلب الآن."
+
+#. domainkit.contrib.auth: step-ups, transactions' authorizations, first use
+msgid "Confirm it is you: authenticate again to do this."
+msgstr "تحقّق من هويتك: أعِد المصادقة لتقوم بهذا."
+
+msgid "Turn on a second factor first: confirming it is you needs one."
+msgstr "فعّل عامل تحقق ثانيًا أولًا: التحقق من هويتك يحتاج إليه."
+
+msgid "These credentials cannot step up: log in, then step up."
+msgstr "لا يمكن تعزيز التحقق ببيانات الاعتماد هذه: سجّل الدخول، ثم عزّز التحقق."
+
+msgid "Enter your password as well."
+msgstr "أدخل كلمة المرور أيضًا."
+
+msgid "This transaction is not authorized: confirm its amount and payee, then try again."
+msgstr "هذه المعاملة غير مُصرَّح بها: أكّد مبلغها والمستفيد منها، ثم أعد المحاولة."
+
+msgid "This transaction was confirmed already."
+msgstr "أُكِّدت هذه المعاملة من قبل."
+
+msgid "This transaction can no longer be confirmed; start it again."
+msgstr "لم يعد ممكنًا تأكيد هذه المعاملة؛ ابدأها من جديد."
+
+msgid "No such transaction."
+msgstr "لا توجد معاملة كهذه."
+
+msgid "This password was set for you: choose a new one to log in."
+msgstr "عُيّنت كلمة المرور هذه لك: اختر كلمة مرور جديدة لتسجيل الدخول."
+
+msgid "A transaction's amount must be more than zero."
+msgstr "يجب أن يكون مبلغ المعاملة أكبر من صفر."
+
+msgid "A purpose is a lower-case name, such as transfer or payments.payout."
+msgstr "الغرض اسم بأحرف صغيرة، مثل transfer أو payments.payout."

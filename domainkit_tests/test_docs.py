@@ -38,6 +38,8 @@ from domainkit.contrib.auth.settings import (
     PasswordValidatorConfig,
     PreviousJWTKey,
     PrincipalCacheSettings,
+    ScaSettings,
+    StepUpSettings,
 )
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.flags.settings import FlagsSettings
@@ -105,6 +107,8 @@ def documented(pages: str) -> set[str]:
         (PreviousJWTKey, "auth.md"),
         (CookieSettings, "auth.md"),
         (MfaSettings, "auth.md"),
+        (StepUpSettings, "auth.md"),
+        (ScaSettings, "auth.md"),
         (ClientCertSettings, "auth.md"),
         (PrincipalCacheSettings, "auth.md"),
         (MailSettings, "mail.md"),
@@ -418,6 +422,8 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (AuthSettings, "auth.md", "AUTH"),
     (CookieSettings, "auth.md", 'AUTH["COOKIE"]'),
     (MfaSettings, "auth.md", 'AUTH["MFA"]'),
+    (StepUpSettings, "auth.md", 'AUTH["STEP_UP"]'),
+    (ScaSettings, "auth.md", 'AUTH["SCA"]'),
     (ClientCertSettings, "auth.md", 'AUTH["CLIENT_CERT"]'),
     (PrincipalCacheSettings, "auth.md", 'AUTH["PRINCIPAL_CACHE"]'),
     (JWTSettings, "auth.md", 'AUTH["JWT"]'),
@@ -437,7 +443,7 @@ PROSE_DEFAULTS = {
     "CacheConfig": {"KEY_PREFIX", "TLS_CA"},
     "BrokerConfig": {"URL", "PREFIX", "TLS_CA"},
     "AuthSettings": {"USER_TABLE", "PASSWORD_HASHERS", "PASSWORD_VALIDATORS"}
-    | {"JWT", "COOKIE", "MFA", "CLIENT_CERT", "PRINCIPAL_CACHE"},
+    | {"JWT", "COOKIE", "MFA", "STEP_UP", "SCA", "CLIENT_CERT", "PRINCIPAL_CACHE"},
     "CookieSettings": {"NAME", "CSRF_NAME"},
     "JWTSettings": {"SIGNING_KEY"},
     "PreviousJWTKey": {"KEY", "RETIRED_AT"},

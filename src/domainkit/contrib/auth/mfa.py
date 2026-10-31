@@ -249,11 +249,13 @@ async def verify_challenge(request: Request, token: str, code: str) -> AbstractB
 
 
 async def spend_code(
-    uow: AuthUnitOfWork, user: AbstractBaseUser, code: str
+    uow: AuthUnitOfWork, user: AbstractBaseUser, code: str, *, recovery: bool = True
 ) -> Method | None:
     """Spend ``code`` of ``user``: a TOTP code, or a recovery code; None if wrong.
 
-    The caller commits. A recovery code records ``RecoveryCodeUsed``.
+    The caller commits. A recovery code records ``RecoveryCodeUsed``;
+    without ``recovery`` it is not taken (nor spent): a step-up and a
+    transaction's authorization take the authenticator's codes alone.
     """
     device = await uow.mfa.device(user.id)
     if device is None or not device.confirmed:
@@ -261,7 +263,11 @@ async def spend_code(
     entered = _normalize(code)
     if entered.isdigit():
         return "totp" if await _spend_totp(uow, user, device, entered) else None
-    if len(entered) != RECOVERY_LENGTH or not set(entered) <= set(RECOVERY_ALPHABET):
+    if (
+        not recovery
+        or len(entered) != RECOVERY_LENGTH
+        or not set(entered) <= set(RECOVERY_ALPHABET)
+    ):
         return None
     if not await uow.mfa.use_code(user.id, recovery_digest(user.id, entered)):
         return None

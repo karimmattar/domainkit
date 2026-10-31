@@ -94,6 +94,8 @@ nav:
           - auth/authentication.md
           - auth/logging-in.md
           - auth/routes.md
+          - auth/step-up.md
+          - auth/pci-dss.md
       - Optional apps:
           - contrib.md
           - contrib/messaging.md
