@@ -412,6 +412,35 @@ and a status.
   the docs say to namespace keys, never to take them raw from a request,
   and to keep personal data out of them, as erasure and export do not
   reach them (SEC-14c-2).
+- Encrypted fields stay sealed for their row and subject however they are
+  written: `update_rows` that sets an encrypted field, or the field naming
+  its subject, writes through the ORM, so a value moved to another person
+  is sealed under their key and a value set to None loses its blind index;
+  an ORM `update()` that sets them is refused (`InvalidQuery`); and a
+  value not loaded (`load_only`) is read from its row and sealed again when
+  its subject changes. An entity's `repr` shows `<encrypted>` for them
+  (SEC-15a-1).
+- A person's first key, made by a transaction still open while they are
+  erased, no longer survives the erasure: `shred_subject` leaves a
+  tombstone (`domainkit_keys_erasures`, kept a day) under the subject's
+  lock, and the transaction destroys the key, and the blind indexes it
+  wrote for them, as it commits (SEC-15a-2).
+- AWS container credentials are taken only from the endpoints the AWS
+  SDKs allow: `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` must be a path on
+  ECS's agent, and `AWS_CONTAINER_CREDENTIALS_FULL_URI` must use https, or
+  http to a loopback address or an agent's, so the pod's token goes
+  nowhere else (SEC-15a-3).
+- The development data key `dev` is derived from `SECRET_KEY` and each of
+  `SECRET_KEY_FALLBACKS`, so rotating `SECRET_KEY` no longer makes what it
+  sealed unreadable; once `KEYS.DATA_KEYS` is set it stays in the ring,
+  retired (`KEYS.KEEP_DEVELOPMENT_KEY`), so `keys.W001` warns and
+  `keys reencrypt` moves its values (SEC-15a-4).
+- A sealed value's associated data encodes the primary key's parts as a
+  JSON array, so two rows of a composite key whose parts hold `\x1f` no
+  longer share it (SEC-15a-5).
+- Staging and production refuse `KEYS.VAULT.URL` over plain HTTP
+  (`keys.E002`); `AWS_KMS.ENDPOINT` given with a trailing `/` signs the
+  path `/` (SEC-15a-6).
 
 ## [0.13.0] - 2026-10-29
 

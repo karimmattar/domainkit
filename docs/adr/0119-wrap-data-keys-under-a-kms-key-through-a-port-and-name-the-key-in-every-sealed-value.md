@@ -1,6 +1,6 @@
 # 0119. Wrap data keys under a KMS key through a port, and name the key in every sealed value
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-31 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -110,3 +110,24 @@ How the adapters reach their service was chosen by measurement:
   stay under `SECRET_KEY`. Moving them onto the ring is a later change.
 - A data key unwrapped lives in the process's memory for its lifetime,
   like `SECRET_KEY`; a memory dump of a running process reveals it.
+
+## Amendment (2026-10-31): the security review of 0.15
+
+The review before release (SEC-15a) found three things here; each is
+fixed, and nothing had been released under the old behaviour.
+
+- **Container credentials** (SEC-15a-3) are taken only from the endpoints
+  the AWS SDKs' container credential provider allows:
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` is a path on `169.254.170.2`,
+  and `AWS_CONTAINER_CREDENTIALS_FULL_URI` uses https to any host, or
+  http only to a loopback address or an agent's (`169.254.170.2`,
+  `169.254.170.23`, `fd00:ec2::23`). Host names are not resolved:
+  `localhost` and literal loopback addresses only.
+- **The development key** (SEC-15a-4): `dev` is derived from `SECRET_KEY`
+  and each of `SECRET_KEY_FALLBACKS`; a ring tries a key's *alternates*
+  (older keys of one id, which open but never seal) after it. Beside
+  `DATA_KEYS` it stays, retired, while `KEYS.KEEP_DEVELOPMENT_KEY` says
+  (with the local provider, by default), so `keys.W001` warns and
+  `keys reencrypt` moves what it sealed.
+- **Vault over plain HTTP** is refused where deployed (`keys.E002`,
+  SEC-15a-6), as the local KEK is (`keys.E001`).
