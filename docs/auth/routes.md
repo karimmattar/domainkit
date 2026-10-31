@@ -41,6 +41,7 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | `HasScope(*keys)` | Users whose credentials' scopes cover every key; credentials without scopes cover all. |
 | `IsUnscoped` | Users whose credentials carry no scopes (a login, not a scoped token). |
 | `AllowScoped` | Users who logged in, scoped tokens too, on purpose ([Scopes on every route](authentication.md#scopes-on-every-route)). |
+| `StepUp(max_age=...)` | Users whose credentials authenticated again, with a second factor, within `max_age` (a day at most); refused, `401 step_up_required` ([Stepping up](step-up.md)). |
 
 A refused user (`403`) is recorded in the audit trail when
 `domainkit.contrib.audit` is installed: `auth.access`, outcome `denied`,
@@ -57,7 +58,10 @@ Combine rule instances with `&`, `|`, and `~`:
 `Require(IsAdminUser() | HasPermissions("billing.view_invoice"))`. A rule of
 your own subclasses `BasePermission`, overrides `has_permission(request,
 user)` or `has_object_permission(request, user, obj)` (both async), and may
-set `message`. `user` is the request's `Principal`; annotate it as the
+set `message`. A rule whose refusal should tell the client what to do
+returns its own error from `refusal(request, user)` (as `StepUp` does);
+it answers in place of the `403`, unrecorded, and `&` passes on that of
+its first refusing rule. `user` is the request's `Principal`; annotate it as the
 users your rule is written for, such as `AnyUser`. Where a route loads one
 object, check it:
 
