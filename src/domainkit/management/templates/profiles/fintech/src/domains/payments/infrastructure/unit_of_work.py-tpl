@@ -1,0 +1,43 @@
+"""The payments unit of work on the database, and its repositories."""
+
+from domainkit.contrib.limits import Movement, consume
+from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
+from domainkit.money import Money
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from domains.payments.application.unit_of_work import PaymentsUnitOfWork
+from domains.payments.domain.model import (
+    Card,
+    CardId,
+    CardRepository,
+    Transfer,
+    TransferId,
+    TransferRepository,
+)
+
+
+class SqlAlchemyCardRepository(SqlAlchemyRepository[Card, CardId], CardRepository):
+    """Cards in the ``payments_cards`` table."""
+
+    model = Card
+
+
+class SqlAlchemyTransferRepository(
+    SqlAlchemyRepository[Transfer, TransferId], TransferRepository
+):
+    """Transfers in the ``payments_transfers`` table."""
+
+    model = Transfer
+
+
+class SqlAlchemyPaymentsUnitOfWork(SqlAlchemyUnitOfWork, PaymentsUnitOfWork):
+    """One database transaction over the payments repositories, and the limits."""
+
+    def create_repositories(self, session: AsyncSession) -> None:
+        """Bind the repositories to ``session``."""
+        self.cards = SqlAlchemyCardRepository(session)
+        self.transfers = SqlAlchemyTransferRepository(session)
+
+    async def count_movement(self, amount: Money, *, holder: str, key: str) -> None:
+        """Count it under the holder's row lock (``domainkit.contrib.limits``)."""
+        await consume(self, Movement(amount, {"holder": holder}), key=key)

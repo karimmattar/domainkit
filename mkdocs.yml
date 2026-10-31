@@ -123,6 +123,7 @@ nav:
       - runbook.md
       - security.md
       - threat-model.md
+      - fintech.md
       - upgrading.md
   - Reference:
       - reference.md

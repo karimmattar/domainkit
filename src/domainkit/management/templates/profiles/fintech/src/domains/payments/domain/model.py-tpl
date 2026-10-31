@@ -1,0 +1,148 @@
+"""Cards and transfers: their values, their rules, their storage ports."""
+
+from typing import Annotated, Final, NewType, Self
+from uuid import UUID, uuid4
+
+from domainkit.ddd import (
+    AggregateRoot,
+    BusinessRuleViolation,
+    Digits,
+    DomainEvent,
+    Encrypted,
+    MaxLength,
+    NotFound,
+    Repository,
+)
+from domainkit.money import Money
+
+CardId = NewType("CardId", UUID)
+TransferId = NewType("TransferId", UUID)
+SHORTEST_NUMBER: Final = 12
+LONGEST_NUMBER: Final = 19
+
+
+class CardNotFound(NotFound):
+    """No card of the caller's has the requested id."""
+
+
+class TransferNotFound(NotFound):
+    """No transfer has the requested id."""
+
+
+class InvalidCardNumber(BusinessRuleViolation):
+    """A card number is 12 to 19 digits, and its check digit holds."""
+
+
+class InvalidAmount(BusinessRuleViolation):
+    """Amounts are more than zero."""
+
+
+class CardRegistered(DomainEvent):
+    """A card was registered. Never its number: events are audited as they are."""
+
+    card_id: UUID
+    last_four: str
+
+
+class TransferMade(DomainEvent):
+    """Money was sent to a card."""
+
+    transfer_id: UUID
+    card_id: UUID
+    amount: Money
+
+
+class Card(AggregateRoot[CardId]):
+    """A card its owner sends money to.
+
+    The number is sealed under the owner's own key, so erasing the owner
+    makes it unreadable in every copy; its blind index finds it by value.
+    """
+
+    owner_id: UUID
+    number: Annotated[str | None, Encrypted(subject="owner_id", blind_index=True)]
+    last_four: Annotated[str, MaxLength(4)]
+
+    class Meta:
+        """Permissions, as Django's ``Meta``."""
+
+        default_permissions = ("add", "view")
+
+    @classmethod
+    def register(cls, owner_id: UUID, number: str) -> Self:
+        """A new card of ``owner_id``'s, its number checked."""
+        digits = card_number(number)
+        card = cls(
+            id=CardId(uuid4()), owner_id=owner_id, number=digits, last_four=digits[-4:]
+        )
+        card.record(CardRegistered(card_id=card.id, last_four=card.last_four))
+        return card
+
+
+class Transfer(AggregateRoot[TransferId]):
+    """An amount sent from its maker to one of the maker's cards."""
+
+    maker_id: UUID
+    card_id: UUID
+    amount: Annotated[Money, Digits(14, 2)]
+
+    class Meta:
+        """Permissions, as Django's ``Meta``: approving large transfers too."""
+
+        default_permissions = ("add", "view")
+        permissions = (("approve_transfer", "Can approve transfer"),)
+
+    @classmethod
+    def make(cls, transfer_id: TransferId, card: Card, amount: Money) -> Self:
+        """Send ``amount`` to ``card``, for its owner."""
+        if amount.amount <= 0:
+            raise InvalidAmount("An amount must be more than zero.")
+        transfer = cls(
+            id=transfer_id, maker_id=card.owner_id, card_id=card.id, amount=amount
+        )
+        transfer.record(
+            TransferMade(transfer_id=transfer.id, card_id=card.id, amount=amount)
+        )
+        return transfer
+
+
+class CardRepository(Repository[Card, CardId]):
+    """Every card (a port)."""
+
+    def not_found(self, id_: CardId) -> CardNotFound:
+        """Report a missing card."""
+        return CardNotFound(f"Card {id_} does not exist.")
+
+
+class TransferRepository(Repository[Transfer, TransferId]):
+    """Every transfer (a port)."""
+
+    def not_found(self, id_: TransferId) -> TransferNotFound:
+        """Report a missing transfer."""
+        return TransferNotFound(f"Transfer {id_} does not exist.")
+
+
+def card_number(number: str) -> str:
+    """``number`` without spaces, if it is a card number whose check digit holds.
+
+    Raises:
+        InvalidCardNumber: It is not. The message never repeats it.
+    """
+    digits = number.replace(" ", "")
+    if not (
+        digits.isascii()
+        and digits.isdigit()
+        and SHORTEST_NUMBER <= len(digits) <= LONGEST_NUMBER
+        and _luhn(digits)
+    ):
+        raise InvalidCardNumber("This is not a card number.")
+    return digits
+
+
+def _luhn(digits: str) -> bool:
+    """Whether the Luhn check digit of ``digits`` holds."""
+    total = 0
+    for place, digit in enumerate(int(each) for each in reversed(digits)):
+        doubled = digit * 2 if place % 2 else digit
+        total += doubled - 9 if doubled > 9 else doubled
+    return total % 10 == 0

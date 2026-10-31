@@ -247,6 +247,32 @@ and a status.
   installed, every entry is counted against the limits of its accounts,
   their holders, and the actor, and a reversal gives back what its entry
   counted (FIN-47).
+- `domainkit init NAME --profile fintech`: a project with a bank's
+  controls on and wired. Every control app installed and configured: auth
+  with `PASSWORD_PRESET = "pci-dss-4"`, second factors, step-up, and SCA
+  routes; the audit trail, sealed by the worker and anchored on immudb
+  where deployed, made append-only in PostgreSQL after each `migrate`;
+  evidence; idempotency, last in the middleware, with the key required
+  where money moves; messaging; keys, local in development and tests and
+  `aws-kms` or `vault` in production (`keys.E001` refuses the local KEK
+  there); accounting, with postings over 10,000.00 approved by two;
+  approvals, with `StepUp` as the approve rule and superusers made by
+  two; limits per customer; privacy. A sample `payments` domain registers
+  a card after a step-up, its number encrypted with a blind index, and
+  makes a transfer in `Money` that its maker confirms for its amount and
+  card, that counts against the maker's limit in its own transaction, and
+  that waits, over 1,000.00, for another person's approval; with its
+  tests. The project passes its tests, ruff, and `mypy --strict` (its CI
+  runs all three), and its production settings pass `check --deploy`
+  once the secrets they list are set. `docs/fintech.md` answers a bank's
+  first-review list (threat model, provenance, KMS, maker-checker with
+  step-up, verifiable audit with operator identity, written idempotency
+  semantics, a card-number column unreadable in a dump) and the fintech
+  audit's other items, each with its page, setting or command, and the
+  test that proves it; a test checks that each test it names exists. The
+  threat model gains a section on moving money
+  ([ADR 0124](docs/adr/0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md))
+  (FIN-74).
 
 ### Changed
 

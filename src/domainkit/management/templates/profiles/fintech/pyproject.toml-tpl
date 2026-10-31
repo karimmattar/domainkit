@@ -1,0 +1,36 @@
+[project]
+name = "{{ project }}"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["{{ dependency }}"]
+
+[dependency-groups]
+dev = [
+    "domainkit[testing]",                   # pytest and httpx2, for the fixtures
+    # Formats what the generators write; this is the range domainkit's own
+    # templates are checked with.
+    "ruff>=0.16.8,<0.17",
+    # The project's types, checked strictly (CI); the range domainkit's own
+    # templates are checked with.
+    "mypy>=2.3.1,<3",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+# The database and client fixtures, and those for events and queued work.
+addopts = "-p domainkit.testing -p domainkit.contrib.messaging.testing"
+domainkit_settings = "config.settings.test"
+
+[tool.ruff.lint]
+# Ruff's defaults, and blocking calls in async code (time.sleep, open(),
+# subprocess, a sync HTTP client): each one holds the event loop.
+extend-select = ["ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# Each settings module builds on base.py with a star import.
+"src/config/settings/*.py" = ["F403", "F405"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+files = ["src", "tests"]

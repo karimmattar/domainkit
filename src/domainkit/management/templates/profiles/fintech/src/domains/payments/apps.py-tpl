@@ -1,0 +1,50 @@
+"""Installation hooks for the payments domain (Django's ``AppConfig``)."""
+
+from typing import Final
+
+from domainkit.apps import DomainConfig
+from domainkit.contrib.approvals import Policy, Threshold, guard
+
+from domains.payments.application.commands import MakeTransfer
+from domains.payments.application.services import MAKE_TRANSFER, make_transfer
+from domains.payments.infrastructure.orm import start_mappers
+from domains.payments.infrastructure.unit_of_work import SqlAlchemyPaymentsUnitOfWork
+
+APPROVAL_THRESHOLD: Final = Threshold({"USD": "1000.00", "EUR": "1000.00"})
+"""A transfer over this amount waits for another person's approval."""
+
+
+def large(command: MakeTransfer) -> bool:
+    """Whether the transfer is over the approval threshold of its currency."""
+    return APPROVAL_THRESHOLD.exceeded_by([command.amount])
+
+
+class PaymentsConfig(DomainConfig):
+    """Map the tables; guard transfers with maker-checker."""
+
+    requires = ("domainkit.contrib.approvals", "domainkit.contrib.limits")
+
+    def ready(self) -> None:
+        """Connect the layers, and register the guard of large transfers.
+
+        Their approvers hold ``payments.approve_transfer`` and pass
+        ``APPROVALS.APPROVE_RULE``, a step-up; the maker never approves.
+        A direct call submits the transfer for approval
+        (``ApprovalPending``, answered 202).
+        """
+        start_mappers()
+        guard(
+            MAKE_TRANSFER,
+            make_transfer,
+            unit_of_work=SqlAlchemyPaymentsUnitOfWork,
+            policies=[
+                Policy(
+                    "payments.large_transfer",
+                    approvals=1,
+                    permission="payments.approve_transfer",
+                    when=large,
+                ),
+            ],
+            permission="payments.add_transfer",
+            submit=True,
+        )

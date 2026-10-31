@@ -1,0 +1,58 @@
+"""Make the audit trail append-only in the database, on every migrate.
+
+``domainkit.contrib.audit`` refuses to start in staging and production
+unless ``domainkit_audit_log`` and ``domainkit_audit_seals`` have their
+triggers (``audit.E001`` to ``audit.E005``), which ``protect()`` makes.
+Made here after each ``migrate``, afresh, they need no edit of the
+revisions ``makemigrations`` writes; on SQLite nothing is made.
+"""
+
+from domainkit.apps import DomainConfig
+from domainkit.contrib.audit.protection import protect, unprotect
+from domainkit.contrib.audit.tables import audit_seals
+from domainkit.db.hooks import on_migrated
+from sqlalchemy import Connection, inspect
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+TRAIL = ("domainkit_audit_log", audit_seals.name)
+
+
+class Operations:
+    """The part of Alembic's ``op`` that ``protect()`` uses, on a connection."""
+
+    def __init__(self, connection: Connection) -> None:
+        """Run statements on ``connection``."""
+        self.connection = connection
+
+    def get_bind(self) -> Connection:
+        """The connection."""
+        return self.connection
+
+    def execute(self, sqltext: str) -> object:
+        """Run one statement."""
+        return self.connection.exec_driver_sql(sqltext)
+
+
+def protect_trail(connection: Connection) -> None:
+    """Drop the trail's triggers, if any, and make them again as they must be."""
+    if not set(TRAIL) <= set(inspect(connection).get_table_names()):
+        return
+    op = Operations(connection)
+    unprotect(op)  # The trail's rows,
+    protect(op)
+    unprotect(op, audit_seals)  # and their places in the hash chain.
+    protect(op, audit_seals)
+
+
+async def migrated(connection: AsyncConnection, alias: str) -> None:
+    """After ``migrate``: protect the trail of each PostgreSQL database."""
+    if connection.dialect.name == "postgresql":
+        await connection.run_sync(protect_trail)
+
+
+class ControlsConfig(DomainConfig):
+    """Register the hooks."""
+
+    def ready(self) -> None:
+        """Protect the trail after each migrate."""
+        on_migrated(migrated)
