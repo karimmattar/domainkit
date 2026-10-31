@@ -806,7 +806,10 @@ async def test_the_worker_expires_requests_on_its_schedule(project: str) -> None
 
     guard_acts()
     request = await submit_command("tests.act", Act(kind="late"), maker="maker")
-    with clock.freeze_time(clock.now() + timedelta(days=3)):
+    with clock.freeze_time(request.expires_at - timedelta(microseconds=1)):
+        await expire_due_requests()
+    assert (await stored(request.id)).status is RequestStatus.PENDING
+    with clock.freeze_time(request.expires_at):
         await expire_due_requests()
     assert (await stored(request.id)).status is RequestStatus.EXPIRED
 
@@ -923,6 +926,11 @@ async def test_a_maker_without_an_id_is_refused(project: str) -> None:
     with refused(InvalidArguments, r"^A maker's id has 1 to 255 characters\.$"):
         await submit_request(
             SubmitRequest(action=ENTRIES, arguments={}, maker=""),
+            ApprovalsUnitOfWork(),
+        )
+    with refused(InvalidArguments, r"^An approver's id has 1 to 255 characters\.$"):
+        await reject_request(
+            RejectRequest(request_id=uuid.uuid4(), approver="", reason="No."),
             ApprovalsUnitOfWork(),
         )
     with refused(InvalidArguments, r"^An approver's id has 1 to 255 characters\.$"):

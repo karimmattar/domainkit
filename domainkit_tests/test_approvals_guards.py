@@ -717,7 +717,8 @@ def test_the_requests_live_in_one_database() -> None:
                 DATABASE_ROUTING={"approvals": "books"},
             ),
             pytest.raises(
-                ImproperlyConfigured, match=r"DATABASE_ROUTING\['approvals'\]"
+                ImproperlyConfigured,
+                match=r"(?<![A-Za-z])DATABASE_ROUTING\['approvals'\](?![A-Za-z])",
             ),
         ):
             setup()

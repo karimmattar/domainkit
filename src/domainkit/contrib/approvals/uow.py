@@ -37,14 +37,16 @@ class RequestRepository(SqlAlchemyRepository[ApprovalRequest, RequestId]):
         return RequestNotFound("No approval request has that id.")
 
     async def due(self, now: datetime, limit: int) -> list[RequestId]:
-        """Ids of up to ``limit`` pending requests whose time was up at ``now``."""
+        """Ids of up to ``limit`` pending requests whose time was up at ``now``.
+
+        In no order: each round expires what it found, and the next finds the rest.
+        """
         found = await self.session.scalars(
             select(requests.c.id)
             .where(
                 requests.c.status == RequestStatus.PENDING,
                 requests.c.expires_at <= now,
             )
-            .order_by(requests.c.expires_at, requests.c.id)
             .limit(limit)
         )
         return [RequestId(each) for each in found]

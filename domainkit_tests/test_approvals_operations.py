@@ -152,21 +152,28 @@ def test_the_command_lists_shows_and_expires(
         run("list", "--limit", "0")
 
 
-def test_privacy_exports_a_persons_requests_and_decisions(project: str) -> None:
-    """What they made, with its command, and what they decided, oldest first."""
+def test_privacy_exports_a_persons_requests_and_decisions(
+    project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What they made, with its command, and what they decided: by time, then id.
+
+    The ids are chosen so that neither their order nor the order the rows
+    went in is the order of the export.
+    """
+    from domainkit.contrib.approvals import models
+
+    ids = iter(uuid.UUID(int=number) for number in (2, 1, 3, 4, 5, 6, 30, 20, 10))
+    monkeypatch.setattr(models, "uuid4", lambda: next(ids))
     now = clock.now()
     with clock.freeze_time(now):
-        same = sorted(
-            [submitted("a", maker="subject"), submitted("b", maker="subject")],
-            key=lambda r: r.id,
-        )
-        theirs = submitted("theirs")
-        others = submitted("others")
+        second, first = submitted("a", maker="subject"), submitted("b", maker="subject")
     with clock.freeze_time(now - timedelta(hours=1)):
         early = submitted("early", maker="subject")
-    with clock.freeze_time(now + timedelta(hours=1)):
+    theirs, others, third = submitted("theirs"), submitted("others"), submitted("x")
+    with clock.freeze_time(now - timedelta(minutes=1)):
+        decide(third, "subject")  # The earliest decision, with the largest id.
+    with clock.freeze_time(now):
         decide(theirs, "subject")
-    with clock.freeze_time(now + timedelta(minutes=30)):
         decide(others, "subject", reject="No.")
     (export,) = on_export_subject.of("approvals")
 
@@ -183,19 +190,19 @@ def test_privacy_exports_a_persons_requests_and_decisions(project: str) -> None:
                 "reason": "",
                 "submitted_at": request.submitted_at.isoformat(),
             }
-            for request in (early, *same)
+            for request in (early, first, second)
         ],
         "decisions": [
             {
-                "request_id": str(others.id),
-                "verdict": "reject",
-                "decided_at": (now + timedelta(minutes=30)).isoformat(),
-            },
-            {
-                "request_id": str(theirs.id),
-                "verdict": "approve",
-                "decided_at": (now + timedelta(hours=1)).isoformat(),
-            },
+                "request_id": str(request.id),
+                "verdict": verdict,
+                "decided_at": when.isoformat(),
+            }
+            for request, verdict, when in (
+                (third, "approve", now - timedelta(minutes=1)),
+                (others, "reject", now),
+                (theirs, "approve", now),
+            )
         ],
     }
     assert run_async(export.call("nobody")) == {}
@@ -341,18 +348,18 @@ def test_the_command_shows_decisions_in_order_and_keys_sorted(project: str) -> N
     request = run_async(submit_command("tests.pair", Pair(b="2", a="1"), maker="m"))
     now = clock.now()
     with clock.freeze_time(now + timedelta(hours=1)):
-        decide(request, "late")
+        decide(request, "amy")
     with clock.freeze_time(now):
-        decide(request, "early")
+        decide(request, "zed")
 
     shown = run("show", str(request.id)).splitlines()
 
     assert shown[3] == '{"a": "1", "b": "2"}'
-    assert [line.split()[1] for line in shown[4:]] == ["early", "late"]
+    assert [line.split()[1] for line in shown[4:]] == ["zed", "amy"]
 
     async def approvers() -> list[str]:
         async with ApprovalsUnitOfWork() as uow:
             found = await uow.requests.get(request.id)
         return [each.approver for each in found.decisions]
 
-    assert run_async(approvers()) == ["early", "late"]
+    assert run_async(approvers()) == ["zed", "amy"]
