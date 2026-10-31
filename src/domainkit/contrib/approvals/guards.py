@@ -47,7 +47,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import BasePermission, Rule
 from domainkit.money import Money, MoneyError
 
-from .exceptions import ApprovalPending, ApprovalRequired, UnknownAction
+from .exceptions import ApprovalPending, ApprovalRequired, PolicyGone, UnknownAction
 from .settings import LONGEST_WAIT, MAX_APPROVALS
 
 type Service = Callable[[Any, Any], Awaitable[Any]]
@@ -74,10 +74,12 @@ def _checked_name(name: str, what: str) -> str:
 class Policy:
     """Who approves a command, how many of them, and for how long it waits.
 
-    Approvers are whoever holds ``permission``, or the members of
-    ``group`` (a principal with ``groups``, such as ``contrib.auth``'s
-    users): one of the two. The maker never counts, even in the group,
-    and one person counts once. ``approve_rule`` is an access rule
+    Approvers are whoever holds ``permission``, the members of ``group``
+    (a principal with ``groups``, such as ``contrib.auth``'s users), or
+    whoever ``approver_rule`` (an access rule: ``IsSuperuser()``, say)
+    allows: one of the three. The maker never counts, even in the group,
+    nor does anyone the guard names as a party to the command, and one
+    person counts once. ``approve_rule`` is an access rule
     whoever approves must pass as well (a step-up rule, say); without it,
     ``APPROVALS.APPROVE_RULE`` applies. ``when`` decides whether the
     policy applies to a command (default: always).
@@ -90,15 +92,17 @@ class Policy:
     expires_after: timedelta | None = None
     approve_rule: Rule | None = None
     when: Callable[[Any], bool] | None = field(default=None, compare=False)
+    approver_rule: Rule | None = None
 
     def __post_init__(self) -> None:
         """Refuse a policy that cannot be met.
 
         Raises:
             ImproperlyConfigured: The name is malformed; ``approvals`` is not
-                1 to 10; not exactly one of ``permission`` and ``group`` is
-                given; ``expires_after`` is not more than zero and at most
-                90 days; or ``approve_rule`` is not an access rule.
+                1 to 10; not exactly one of ``permission``, ``group``, and
+                ``approver_rule`` is given; ``expires_after`` is not more
+                than zero and at most 90 days; or ``approve_rule`` or
+                ``approver_rule`` is not an access rule.
         """
         _checked_name(self.name, "A policy's name")
         if not 1 <= self.approvals <= MAX_APPROVALS:
@@ -106,10 +110,11 @@ class Policy:
                 f"Policy {self.name!r} asks for 1 to {MAX_APPROVALS} approvals, "
                 f"not {self.approvals!r}."
             )
-        if (self.permission is None) == (self.group is None):
+        named = (self.permission, self.group, self.approver_rule)
+        if sum(each is not None for each in named) != 1:
             raise ImproperlyConfigured(
-                f"Policy {self.name!r} names its approvers by a permission or "
-                "by a group: one of the two."
+                f"Policy {self.name!r} names its approvers by a permission, a "
+                "group, or an access rule: one of the three."
             )
         if self.expires_after is not None and not (
             timedelta(0) < self.expires_after <= LONGEST_WAIT
@@ -118,10 +123,11 @@ class Policy:
                 f"Policy {self.name!r} expires after more than nothing and at "
                 "most 90 days."
             )
-        if self.approve_rule is not None and not _is_rule(self.approve_rule):
-            raise ImproperlyConfigured(
-                f"Policy {self.name!r}'s approve_rule is not an access rule."
-            )
+        for rule in (self.approve_rule, self.approver_rule):
+            if rule is not None and not _is_rule(rule):
+                raise ImproperlyConfigured(
+                    f"Policy {self.name!r} names a rule that is not an access rule."
+                )
 
     def applies(self, command: object) -> bool:
         """Whether the policy asks for approval of ``command``."""
@@ -185,7 +191,10 @@ class Guard:
 
     ``permission`` is what a maker must hold to submit it over HTTP (the
     permission a direct call's route would need); None: any maker who may
-    submit requests. ``submit`` makes a direct call submit the command,
+    submit requests. ``maker_rule`` is an access rule the maker must pass
+    as well (``IsSuperuser()`` to make superusers). ``parties`` names, for
+    a command, the people it is about (the user a grant promotes), who may
+    not decide it. ``submit`` makes a direct call submit the command,
     rather than only refuse it.
     """
 
@@ -196,6 +205,8 @@ class Guard:
     policies: tuple[Policy, ...]
     permission: str | None = None
     submit: bool = False
+    maker_rule: Rule | None = None
+    parties: Callable[[Any], Iterable[str]] | None = None
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -224,6 +235,10 @@ class Guard:
         """The command ``arguments`` make, validated (``pydantic.ValidationError``)."""
         return self.adapter.validate_python(arguments)
 
+    def parties_of(self, command: object) -> frozenset[str]:
+        """The people ``command`` is about, who may not decide it."""
+        return frozenset(() if self.parties is None else self.parties(command))
+
     def policy_named(self, name: str) -> Policy | None:
         """The guard's policy called ``name``, if it still has one."""
         return next((each for each in self.policies if each.name == name), None)
@@ -242,6 +257,8 @@ def guard(
     command: type | None = None,
     permission: str | None = None,
     submit: bool = False,
+    maker_rule: Rule | None = None,
+    parties: Callable[[Any], Iterable[str]] | None = None,
     domain: str | None = None,
 ) -> Guard:
     """Register the guard of a use case decorated ``requires_approval(action)``.
@@ -271,6 +288,8 @@ def guard(
         tuple(policies),
         permission=permission,
         submit=submit,
+        maker_rule=maker_rule,
+        parties=parties,
     )
     on_guard(registered, domain=domain)
     return registered
@@ -319,6 +338,24 @@ def guard_for(action: str) -> Guard:
     return found
 
 
+def policy_of(request: Any) -> tuple[Guard, Policy]:  # noqa: ANN401 - a request.
+    """The guard of ``request``'s action, and the policy it waits under.
+
+    Raises:
+        PolicyGone: The guard, or its policy of that name, no longer exists:
+            the request is neither decided nor run, rather than fall back
+            to rules it was not submitted under.
+    """
+    registered = guards().get(request.action)
+    policy = None if registered is None else registered.policy_named(request.policy)
+    if registered is None or policy is None:
+        raise PolicyGone(
+            "The request's guard or policy no longer exists; it is neither "
+            "decided nor run."
+        )
+    return registered, policy
+
+
 @dataclass(frozen=True, slots=True)
 class Running:
     """The approved command being run, which its guard lets through."""
@@ -326,6 +363,8 @@ class Running:
     request_id: Any
     action: str
     command: object
+    maker: str | None = None
+    """Who submitted it: the run acts as them."""
 
 
 _running: ContextVar[Running | None] = ContextVar(
@@ -334,14 +373,21 @@ _running: ContextVar[Running | None] = ContextVar(
 
 
 @contextmanager
-def running(request_id: object, action: str, command: object) -> Iterator[Running]:
+def running(
+    request_id: object, action: str, command: object, maker: str | None = None
+) -> Iterator[Running]:
     """Let ``command`` through ``action``'s guard while the block runs."""
-    current = Running(request_id, action, command)
+    current = Running(request_id, action, command, maker)
     token = _running.set(current)
     try:
         yield current
     finally:
         _running.reset(token)
+
+
+def current_run() -> Running | None:
+    """The approved command being run here, if any."""
+    return _running.get()
 
 
 def approved(action: str, command: object) -> bool:

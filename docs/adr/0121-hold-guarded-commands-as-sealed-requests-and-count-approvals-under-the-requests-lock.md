@@ -1,6 +1,6 @@
 # 0121. Hold guarded commands as sealed requests, and count approvals under the request's lock
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-31 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -135,3 +135,39 @@ so the rule can depend on the policy. Rejecting does not ask for it.
   staging a commit surfaces as SQLAlchemy's `StaleDataError`, not
   `ConcurrentUpdate`, so `Retry(retry_on=(ConcurrentUpdate,))` does not
   retry it.
+
+## Amendment (2026-10-31): the security review (SEC-15b)
+
+The review of the merged 0.15 branch found four ways around these
+decisions; each is closed where it happened.
+
+- **Seal the whole state, and spend a token to run.** The seal left out
+  the status, so a database writer without the key set an executed
+  request back to `approved`, queued its message again, and ran it twice
+  (SEC-15b-4). The seal now covers the policy, the approvers, the expiry,
+  the status, and a `run_token` made when the request is approved; it is
+  made again with each change of state, and checked before each. The
+  message carries the token and the run spends it. What seals cannot do
+  is tell a whole row restored from an earlier copy (seal and token
+  included) from the original: that is the database's own protection,
+  and the append-only audit trail keeps the run's row.
+- **Check the booked entry, not only the command.** A capture booked an
+  entry over the thresholds with no command to check (SEC-15b-2), and
+  lines given as a generator were spent before the hook read them
+  (SEC-15b-6). Approvals also checks every entry posted or captured as
+  it is booked (the ledger's `on_booking`), from its postings, and lets
+  through only the entry of the approved request being run; captures
+  are a guarded action of their own, and `PostEntry` keeps its lines as
+  a tuple. Reversals are left to limits: each moves back what an entry
+  moved.
+- **Who may make a command, and who it is about.** Making superusers
+  took any holder of `auth.change_user` as maker and approver
+  (SEC-15b-1). A guard names a `maker_rule` (a superuser) checked at
+  submission, its service checks the maker again when it runs, a policy
+  may name approvers by an access rule (`approver_rule`, superusers by
+  default), and a guard's `parties` (the user promoted) never decide.
+- **Run as the maker; fail closed without a policy.** The run acted as
+  the last approver, so actor limits charged the approver; it acts as
+  the maker now, and `RequestExecuted` names the approvers. A request
+  whose guard or policy no longer exists is neither decided nor run
+  (`policy_not_found`), where it fell back to `APPROVE_RULE`.

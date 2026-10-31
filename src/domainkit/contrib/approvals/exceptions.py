@@ -86,3 +86,27 @@ class NotTheMaker(PermissionDenied):
     """Only whoever submitted a request may cancel it."""
 
     code = "not_the_maker"
+
+
+class InterestedParty(PermissionDenied):
+    """Whoever the command is about may not approve or reject it."""
+
+    code = "interested_party"
+
+
+class MakerNotAllowed(PermissionDenied):
+    """Whoever submitted the command may not make it (any more)."""
+
+    code = "maker_not_allowed"
+
+
+class RequestTampered(Conflict):
+    """The request was changed outside the application: its seal does not hold."""
+
+    code = "request_tampered"
+
+
+class PolicyGone(Conflict):
+    """The request's guard or policy no longer exists: it is neither decided nor run."""
+
+    code = "policy_not_found"

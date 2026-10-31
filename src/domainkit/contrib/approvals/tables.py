@@ -57,6 +57,7 @@ requests = Table(
     Column("expires_at", UTCDateTime, nullable=False),
     Column("decided_at", UTCDateTime),
     Column("executed_at", UTCDateTime),
+    Column("run_token", String(64)),
     Column("version", Integer, nullable=False),
     Index("ix_domainkit_approval_requests_status", "status", "expires_at"),
     info=INFO,

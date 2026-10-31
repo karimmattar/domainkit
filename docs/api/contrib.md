@@ -134,6 +134,7 @@ Reports of a period: the trial balance and the general ledger, as CSV and JSON.
 
 Maker-checker: commands that run only once other people approve them.
 
+- `CAPTURES`: The guarded action of a hold's capture over its currency's threshold.
 - `ENTRIES`: The guarded action of postings over their currency's threshold.
 - `SUPERUSERS`: The guarded action of making a user a superuser.
 - `AlreadyDecided`: This person approved or rejected the request already (409).
@@ -150,10 +151,13 @@ Maker-checker: commands that run only once other people approve them.
 - `FingerprintMismatch`: What was approved is not what the request holds.
 - `GrantSuperuser`: Make a user a superuser: they hold every permission.
 - `Guard`: A guarded use case: its command, its service, and its policies.
+- `InterestedParty`: Whoever the command is about may not approve or reject it.
 - `InvalidArguments`: A command's arguments do not make the command, or are too large.
 - `MakerCannotDecide`: Whoever submitted a request may not approve or reject it.
+- `MakerNotAllowed`: Whoever submitted the command may not make it (any more).
 - `NotTheMaker`: Only whoever submitted a request may cancel it.
 - `Policy`: Who approves a command, how many of them, and for how long it waits.
+- `PolicyGone`: The request's guard or policy no longer exists: it is neither decided nor run.
 - `RejectRequest`: Reject a request, as `approver`, for `reason`.
 - `RequestApproved`: A request has its approvals; its command is queued to run.
 - `RequestCancelled`: The maker withdrew a request.
@@ -166,6 +170,7 @@ Maker-checker: commands that run only once other people approve them.
 - `RequestRejected`: One person rejected a request, with a reason (kept on the request).
 - `RequestStatus`: Where a request is: waiting, decided, or run.
 - `RequestSubmitted`: A maker submitted a command for approval.
+- `RequestTampered`: The request was changed outside the application: its seal does not hold.
 - `SubmitRequest`: Submit a guarded command for approval: its action, its arguments, its maker.
 - `Threshold`: Amounts, one per currency, over which a policy applies.
 - `UnknownAction`: No guarded command has that name.

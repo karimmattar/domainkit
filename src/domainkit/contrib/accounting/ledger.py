@@ -73,13 +73,22 @@ class CloseAccount(Command):
 
 
 class PostEntry(Command):
-    """Post a journal entry, once per ``source`` and ``reference``."""
+    """Post a journal entry, once per ``source`` and ``reference``.
+
+    ``lines`` is kept as a tuple, however it is given: a generator would
+    be read once, and every reader of the command (a hook, the ledger)
+    must see the same lines.
+    """
 
     source: str
     reference: str
     booked_on: date
     lines: Sequence[Line]
     description: str = ""
+
+    def __post_init__(self) -> None:
+        """Keep the lines as a tuple (the command is frozen)."""
+        object.__setattr__(self, "lines", tuple(self.lines))
 
 
 class ReverseEntry(Command):

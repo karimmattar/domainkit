@@ -18,6 +18,11 @@ says so with it.
 """
 
 import json
+import logging
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any, Final
 from uuid import UUID
 
@@ -25,7 +30,7 @@ from pydantic import ValidationError
 
 from domainkit import clock
 from domainkit.apps import registry
-from domainkit.context import current_request
+from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.ddd import Command, ConcurrentUpdate, DomainError
 from domainkit.money import MoneyError
@@ -36,8 +41,9 @@ from .exceptions import (
     FingerprintMismatch,
     InvalidArguments,
     RequestNotPending,
+    RequestTampered,
 )
-from .guards import Guard, guard_for, running
+from .guards import Guard, guard_for, policy_of, running
 from .models import (
     MAX_PERSON,
     MAX_REASON,
@@ -48,6 +54,9 @@ from .models import (
 from .settings import ApprovalsSettings
 from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias
 
+logger = logging.getLogger(__name__)
+EXECUTE: Final = "domainkit.approvals.execute"
+"""The task that runs an approved request's command (``tasks``)."""
 EXPIRE_BATCH: Final = 500
 """Requests one round of ``expire_requests`` expires at most."""
 MAKER: Final = "A maker's id has 1 to 255 characters."
@@ -204,8 +213,11 @@ async def approve_request(
 
     Raises:
         RequestNotFound: No request has that id.
+        RequestTampered: Its seal does not hold.
+        PolicyGone: Its guard or policy no longer exists.
         RequestNotPending: It is decided already, or has expired.
         MakerCannotDecide: The approver submitted it.
+        InterestedParty: The command is about the approver.
         AlreadyDecided: The approver decided it already.
         FingerprintMismatch: ``fingerprint`` is not the request's.
     """
@@ -213,10 +225,25 @@ async def approve_request(
 
     async with uow:
         request = await uow.locked(command.request_id)
-        if request.approve(approver, command.fingerprint):
-            uow.defer(execute_request, request_id=request.id)
+        request.check_sealed()
+        if request.approve(approver, command.fingerprint, _parties(request)):
+            uow.defer(execute_request, request_id=request.id, token=request.run_token)
         await uow.commit()
     return request
+
+
+def _parties(request: ApprovalRequest) -> frozenset[str]:
+    """The people the request's command is about, who may not decide it.
+
+    Raises:
+        PolicyGone: The request's guard or policy no longer exists.
+        InvalidArguments: Its arguments no longer make its command.
+    """
+    guard, _ = policy_of(request)
+    try:
+        return guard.parties_of(guard.load(request.arguments))
+    except ValidationError:
+        raise InvalidArguments("The arguments do not make the command.") from None
 
 
 async def reject_request(
@@ -225,8 +252,9 @@ async def reject_request(
     """Reject a request for a reason; one rejection ends it.
 
     Raises:
-        RequestNotFound, RequestNotPending, MakerCannotDecide, AlreadyDecided:
-            As ``approve_request``.
+        RequestNotFound, RequestTampered, PolicyGone, RequestNotPending,
+            MakerCannotDecide, InterestedParty, AlreadyDecided: As
+            ``approve_request``.
         InvalidArguments: The reason is longer than 500 characters.
     """
     approver = _person(command.approver, APPROVER)
@@ -234,7 +262,8 @@ async def reject_request(
 
     async with uow:
         request = await uow.locked(command.request_id)
-        request.reject(approver, reason)
+        request.check_sealed()
+        request.reject(approver, reason, _parties(request))
         await uow.commit()
     return request
 
@@ -246,6 +275,7 @@ async def cancel_request(
 
     Raises:
         RequestNotFound: No request has that id.
+        RequestTampered: Its seal does not hold.
         RequestNotPending: It is decided already.
         NotTheMaker: ``maker`` did not submit it.
         InvalidArguments: The reason is longer than 500 characters.
@@ -260,19 +290,30 @@ async def cancel_request(
 
 
 async def expire_requests() -> int:
-    """Expire the pending requests whose time is up; how many there were."""
+    """Expire the pending requests whose time is up; how many there were.
+
+    One whose seal does not hold is left as it is, and logged: expiring it
+    would seal what someone changed around the application.
+    """
     expired = 0
+    tampered: set[RequestId] = set()
     while True:
         async with ApprovalsUnitOfWork() as uow:
             due = await uow.requests.due(clock.now(), EXPIRE_BATCH)
         for request_id in due:
             async with ApprovalsUnitOfWork() as uow:
                 request = await uow.locked(request_id)
-                if request.status is RequestStatus.PENDING:
+                if request.status is not RequestStatus.PENDING:
+                    continue
+                try:
                     request.expire()
-                    await uow.commit()
-                    expired += 1
-        if len(due) < EXPIRE_BATCH:
+                except RequestTampered:
+                    logger.warning("Approval request %s is tampered with", request_id)
+                    tampered.add(request_id)
+                    continue
+                await uow.commit()
+                expired += 1
+        if len(due) < EXPIRE_BATCH or set(due) <= tampered:
             return expired
 
 
@@ -280,15 +321,12 @@ def _rebuild(guard: Guard, request: ApprovalRequest) -> object:
     """The approved command, if it is what was approved.
 
     Raises:
-        FingerprintMismatch: A seal does not hold, the fingerprint is not the
-            arguments', or fewer people than needed approved them.
         InvalidArguments: The arguments no longer make the command, or make
             one that reads back otherwise (the command changed meanwhile).
+        FingerprintMismatch: Fewer people than needed approved what it
+            holds, by decisions whose seals hold, other than its maker and
+            the people the command is about.
     """
-    if request.approvals_verified() < request.required:
-        raise FingerprintMismatch(
-            "The request holds another command than the one approved."
-        )
     try:
         command = guard.load(request.arguments)
     except ValidationError:
@@ -296,6 +334,10 @@ def _rebuild(guard: Guard, request: ApprovalRequest) -> object:
     if guard.dump(command) != request.arguments:
         raise InvalidArguments(
             "The command reads otherwise now than when it was approved."
+        )
+    if request.approvals_verified(guard.parties_of(command)) < request.required:
+        raise FingerprintMismatch(
+            "The request holds another command than the one approved."
         )
     return command
 
@@ -306,11 +348,11 @@ async def _read(request_id: UUID) -> ApprovalRequest:
         return await uow.requests.get(RequestId(request_id))
 
 
-async def _finish(request_id: UUID, error: str | None = None) -> None:
-    """Mark an approved request executed, or failed with ``error``; else nothing."""
+async def _finish(request_id: UUID, token: str, error: str | None = None) -> None:
+    """Mark the request executed, or failed with ``error``, if ``token`` runs it."""
     async with ApprovalsUnitOfWork() as uow:
         request = await uow.locked(request_id)
-        if request.status is RequestStatus.APPROVED:
+        if request.runs(token):
             if error is None:
                 request.executed()
             else:
@@ -318,19 +360,46 @@ async def _finish(request_id: UUID, error: str | None = None) -> None:
             await uow.commit()
 
 
+async def _fail_tampered(request_id: UUID) -> None:
+    """Fail an approved request whose seal does not hold: it never runs."""
+    async with ApprovalsUnitOfWork() as uow:
+        request = await uow.locked(request_id)
+        if request.status is RequestStatus.APPROVED and not request.sealed():
+            logger.warning("Approval request %s is tampered with", request_id)
+            request.failed(RequestTampered.code)
+            await uow.commit()
+
+
+@contextmanager
+def _as_maker(maker: str) -> Iterator[None]:
+    """Act as ``maker`` in the block: what the command does is theirs.
+
+    The approvers are named by the request's own events (``ApprovalGiven``,
+    and ``RequestExecuted``'s ``approvers``).
+    """
+    current = current_request()
+    if current is None:
+        current = RequestContext(
+            request_id=uuid.uuid4().hex, client_ip=None, method="TASK", path=EXECUTE
+        )
+    with bind_request(replace(current, actor=maker)):
+        yield
+
+
 class _Marking:
     """A guarded use case's unit of work, which marks the request executed with it.
 
     For a unit of work on the requests' database: its first commit locks
-    the request, marks it executed (``RequestExecuted``), and commits that
-    with the use case's change, so neither commits without the other.
-    Everything else is the unit of work's own.
+    the request, marks it executed (``RequestExecuted``), spending its run
+    token, and commits that with the use case's change, so neither commits
+    without the other. Everything else is the unit of work's own.
     """
 
-    def __init__(self, uow: SqlAlchemyUnitOfWork, request_id: UUID) -> None:
-        """Wrap ``uow``, for the request ``request_id``."""
+    def __init__(self, uow: SqlAlchemyUnitOfWork, request_id: UUID, token: str) -> None:
+        """Wrap ``uow``, for the request ``request_id`` run by ``token``."""
         self._uow = uow
         self._request_id = request_id
+        self._token = token
         self.marked = False
         """Whether a commit marked the request executed."""
 
@@ -352,32 +421,36 @@ class _Marking:
         """Commit, marking the request executed with the first commit.
 
         Raises:
-            RequestNotPending: The request is not approved any more (it ran).
+            RequestNotPending: The token no longer runs the request (it ran).
         """
         if not self.marked:
             await self._uow.lock(f"approvals.request:{self._request_id}")
             repository: RequestRepository = self._uow.approval_requests  # type: ignore[attr-defined]
             request = await repository.get(RequestId(self._request_id))
-            if request.status is not RequestStatus.APPROVED:
+            if not request.runs(self._token):
                 raise RequestNotPending("The request is not waiting to run.")
             request.executed()
         await self._uow.commit()
         self.marked = True
 
 
-def _marking(uow: object, request_id: UUID) -> "_Marking | None":
+def _marking(uow: object, request_id: UUID, token: str) -> "_Marking | None":
     """``uow``, to mark the request with its commit, if on the requests' database."""
     if isinstance(uow, SqlAlchemyUnitOfWork) and uow.alias == approvals_alias():
-        return _Marking(uow, request_id)
+        return _Marking(uow, request_id, token)
     return None
 
 
-async def execute_request(request_id: UUID) -> None:
-    """Run an approved request's command, once (the task ``EXECUTE``).
+async def execute_request(request_id: UUID, token: str | None = None) -> None:
+    """Run an approved request's command, once, as its maker (the task ``EXECUTE``).
 
-    A request that is not approved (it ran, or failed) is left alone. A
-    command that is not what was approved fails the request, and so does
-    a refusal of the use case's (a ``DomainError`` other than
+    Only the message its approval queued runs it: ``token`` must be the
+    request's run token, which the run spends. A request that is not
+    approved (it ran, or failed), or a token that is not its own (a message
+    queued again), runs nothing; a request whose seal does not hold fails
+    (``request_tampered``). A command that is not what was approved, or
+    whose guard or policy is gone, fails the request, and so does a
+    refusal of the use case's (a ``DomainError`` other than
     ``ConcurrentUpdate``), with the refusal's code. Anything else is
     raised, for the worker to retry.
     """
@@ -386,24 +459,33 @@ async def execute_request(request_id: UUID) -> None:
     request = await _read(request_id)
     if request.status is not RequestStatus.APPROVED:
         return
-    try:
-        guard = guard_for(request.action)
-        command = _rebuild(guard, request)
-    except DomainError as exc:
-        await _finish(request_id, exc.code)
+    if not request.sealed():
+        await _fail_tampered(request_id)
         return
-    uow = guard.unit_of_work()
-    marking = _marking(uow, request_id)
-    try:
-        with running(request.id, request.action, command):
-            await guard(command, marking or uow)
-    except AlreadyHandled:  # It committed in another database, then the run ended.
-        await _finish(request_id)
-        raise
-    except ConcurrentUpdate:
-        raise
-    except (DomainError, MoneyError) as exc:
-        await _finish(request_id, exc.code)
+    if token is None or not request.runs(token):
+        logger.warning(
+            "A message to run approval request %s holds no run token of it", request_id
+        )
         return
-    if marking is None or not marking.marked:
-        await _finish(request_id)
+    with _as_maker(request.maker):
+        try:
+            guard, _ = policy_of(request)
+            command = _rebuild(guard, request)
+        except DomainError as exc:
+            await _finish(request_id, token, exc.code)
+            return
+        uow = guard.unit_of_work()
+        marking = _marking(uow, request_id, token)
+        try:
+            with running(request.id, request.action, command, request.maker):
+                await guard(command, marking or uow)
+        except AlreadyHandled:  # It committed in another database, then the run ended.
+            await _finish(request_id, token)
+            raise
+        except ConcurrentUpdate:
+            raise
+        except (DomainError, MoneyError) as exc:
+            await _finish(request_id, token, exc.code)
+            return
+        if marking is None or not marking.marked:
+            await _finish(request_id, token)

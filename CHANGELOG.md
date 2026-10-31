@@ -318,6 +318,42 @@ and a status.
 
 ### Security
 
+- `contrib.approvals`: with `SUPERUSER_APPROVALS`, a user who held
+  `auth.change_user` could submit `auth.grant_superuser` for themselves
+  and have another such user approve it. Only a superuser submits one
+  now, the run checks that the maker is still an active superuser
+  (`maker_not_allowed`), the approvers are superusers unless
+  `SUPERUSER_APPROVERS` names a permission (its default is now `None`),
+  and the user promoted never decides it (`interested_party`); a guard's
+  `maker_rule` and `parties`, and a policy's `approver_rule`, say so for
+  any use case (SEC-15b-1).
+- `contrib.approvals`: a hold, placed unguarded, captured over
+  `ENTRY_THRESHOLDS` booked the whole amount unapproved. Captures are
+  guarded as `accounting.capture_hold`, and every entry posted or
+  captured is checked against the thresholds as it is booked (the
+  ledger's `on_booking`), so only the approved request being run books
+  one over them (SEC-15b-2).
+- `contrib.approvals`: a request's seal now covers its policy, approvers,
+  expiry, status, and a one-time run token, made again with each change
+  of its state, and the message that runs it carries the token, which
+  the run spends. A status set back to `approved`, or a message queued
+  again, runs nothing; a row changed without the key is neither decided
+  nor run (`request_tampered`). Seals cannot tell a whole row restored
+  from an earlier copy, which the guide says (SEC-15b-4).
+- `contrib.accounting`: `PostEntry` keeps its `lines` as a tuple. Given
+  a generator, the ledger read it before the `on_posting` hooks, which
+  saw no lines, so an entry over `APPROVALS.ENTRY_THRESHOLDS` posted
+  unapproved (SEC-15b-6).
+- `contrib.approvals`: an approved command runs as its maker (the request
+  context's actor), not as its last approver, so actor limits and the
+  audit trail charge the person who asked; `RequestExecuted` lists the
+  approvers. A request whose guard or policy no longer exists is neither
+  decided nor run (`policy_not_found`), where it fell back to
+  `APPROVE_RULE` or no rule. The guide states what maker-checker does
+  not stop: a second account made by someone who may create users and
+  grant the approvers' permission, and amounts split under a threshold
+  (SEC-15b-1).
+
 - A money condition through child entities is one condition on one
   child: `F("lines.price") >= Money.of("100", "USD")` holds for an order
   with a line priced in USD at 100 or more, in memory and in one SQL

@@ -9,7 +9,7 @@ step-up rule would (``APPROVE_RULE``: the sample ``Proof``).
 from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any, Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -441,3 +441,49 @@ async def test_an_approval_refused_by_no_rule_names_no_refusal() -> None:
     request = HTTPConnection({"type": "http", "headers": []})
 
     assert await MayApprove().refusal(request, AnonymousPrincipal()) is None
+
+
+def test_a_grant_runs_only_while_its_maker_is_a_superuser(client: TestClient) -> None:
+    """Approved, then its maker unmade: the run refuses it (``maker_not_allowed``).
+
+    Neither a staff member who may change users, nor the user promoted,
+    approves it: only superusers do.
+    """
+    from domainkit.contrib.approvals import GrantSuperuser, MakerNotAllowed
+    from domainkit.contrib.approvals.builtin import grant_superuser
+    from domainkit.contrib.approvals.guards import running
+
+    root = user("root")
+    run_async(_superuser("root"))
+    other = user("other")
+    run_async(_superuser("other"))
+    staff = user("staff", "auth.change_user", "approvals.view_approvalrequest")
+    target = create_user("target")
+    request = submit(
+        client, root, "auth.grant_superuser", {"user_id": str(target)}
+    ).json()
+    problem(decide(client, request, staff), 403, "permission_denied")
+    assert decide(client, request, other).json()["status"] == "approved"
+
+    async def unmake() -> None:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key("root")
+            assert found is not None
+            found.set_superuser(False)
+            await uow.commit()
+
+    run_async(unmake())
+    run_async(drain())
+    done = client.get(f"{API}/{request['id']}", headers=other).json()
+    assert (done["status"], done["reason"]) == ("failed", "maker_not_allowed")
+
+    async def granted_as(maker: str | None) -> None:
+        command = GrantSuperuser(user_id=target)
+        with running(uuid4(), "auth.grant_superuser", command, maker):
+            await grant_superuser(command, AuthUnitOfWork())
+
+    for maker in (None, "not-an-id", str(uuid4())):
+        with pytest.raises(
+            MakerNotAllowed, match=r"^Only a superuser may make a superuser\.$"
+        ):
+            run_async(granted_as(maker))
