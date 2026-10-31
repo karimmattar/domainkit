@@ -169,6 +169,8 @@ def test_a_large_entry_waits_for_two_people_then_posts_once(client: TestClient) 
     run_async(drain())
     done = client.get(f"{API}/{request['id']}", headers=ann).json()
     assert done["status"] == "executed"
+    assert done["decided_at"] is not None
+    assert done["executed_at"] is not None
     posted = client.get(
         "/accounting/entries", params={"reference": "big"}, headers=clerk
     )

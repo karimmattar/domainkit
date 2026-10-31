@@ -515,6 +515,11 @@ async def test_submissions_are_checked_before_they_are_stored(project: str) -> N
             RejectRequest(request_id=made.id, approver="ann", reason="x" * 501),
             ApprovalsUnitOfWork(),
         )
+    done = await reject_request(
+        RejectRequest(request_id=made.id, approver="ann", reason="x" * 500),
+        ApprovalsUnitOfWork(),
+    )
+    assert done.reason == "x" * 500
 
 
 class Act(Command):
@@ -727,8 +732,17 @@ async def test_a_guard_that_submits_answers_with_the_request(project: str) -> No
     with acting("maker"), refused(ApprovalPending) as raised:
         await acting_guarded(Act(kind="direct"), AccountingUnitOfWork())
     assert isinstance(raised.value, ApprovalPending)
+    assert str(raised.value) == (
+        "This command needs approval: it was submitted for approval."
+    )
     request = await stored(raised.value.request_id)
     assert (request.maker, request.status) == ("maker", RequestStatus.PENDING)
+    assert request.arguments == {"kind": "direct"}
+    with acting(None), refused(ApprovalRequired) as anonymous:
+        await acting_guarded(Act(kind="direct"), AccountingUnitOfWork())
+    assert (
+        str(anonymous.value) == "This command needs approval: submit it for approval."
+    )
 
 
 async def test_expiry_works_through_every_overdue_request(

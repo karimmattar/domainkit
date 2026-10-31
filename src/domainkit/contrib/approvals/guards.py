@@ -262,7 +262,7 @@ def guard(
             "directly would skip approval."
         )
     if command is None:
-        command = _command_of(service)
+        command = _command_of(action, service)
     registered = Guard(
         action,
         command,
@@ -276,15 +276,17 @@ def guard(
     return registered
 
 
-def _command_of(service: Service) -> type:
-    """The type of the first argument of ``service``, which must be a class."""
-    original = getattr(service, "__wrapped__", service)
-    hints = get_type_hints(original)
+def _command_of(action: str, service: Service) -> type:
+    """The type of the first argument of ``service``, which must be a class.
+
+    ``requires_approval`` copies the service's annotations to its wrapper.
+    """
+    hints = get_type_hints(service)
     first = next(iter(hints.items()), None)
     if first is None or first[0] == "return" or not isinstance(first[1], type):
         raise ImproperlyConfigured(
-            f"Name the command of {getattr(original, '__qualname__', original)!r}: "
-            "guard(..., command=...), or annotate its first argument."
+            f"Name the command of {action!r}: guard(..., command=...), or "
+            "annotate the first argument of its service."
         )
     return first[1]
 

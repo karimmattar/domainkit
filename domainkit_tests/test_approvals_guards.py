@@ -183,11 +183,22 @@ def test_an_undecorated_or_unreadable_service_is_refused(installed: None) -> Non
         guard("tests.refund", plain, unit_of_work=object, policies=[POLICY])
 
     @requires_approval("tests.untyped")
-    async def untyped(command, uow):  # type: ignore[no-untyped-def]  # noqa: ANN001, ANN202
-        """No hints."""
+    async def untyped(command, uow) -> None:  # type: ignore[no-untyped-def]  # noqa: ANN001
+        """Only the answer is hinted: no command."""
+
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^Name the command of 'tests\.untyped': guard\(\.\.\., "
+        r"command=\.\.\.\), or annotate the first argument of its service\.$",
+    ):
+        guard("tests.untyped", untyped, unit_of_work=object, policies=[POLICY])
+
+    @requires_approval("tests.bare")
+    async def bare(command, uow):  # type: ignore[no-untyped-def]  # noqa: ANN001, ANN202
+        """No hints at all."""
 
     with pytest.raises(ImproperlyConfigured, match="Name the command"):
-        guard("tests.untyped", untyped, unit_of_work=object, policies=[POLICY])
+        guard("tests.bare", bare, unit_of_work=object, policies=[POLICY])
 
     @requires_approval("tests.generic")
     async def generic(command: list[int], uow: object) -> None:
@@ -216,7 +227,11 @@ def test_two_guards_of_one_name_and_none_without_policies_are_refused(
         guards()
     with pytest.raises(ImproperlyConfigured, match="at least one policy"):
         Guard("tests.empty", Refund, refund, object, ())
-    with pytest.raises(ImproperlyConfigured, match="dotted"):
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^A guarded action's name is dotted lower-case words "
+        r"\('payments\.refund'\), at most 128 characters: 'Refund'\.$",
+    ):
         requires_approval("Refund")
 
 
@@ -293,7 +308,10 @@ def test_paths_around_a_service_are_refused_only_where_guarded(installed: None) 
 
     register()
     refuse_if_guarded("tests.other")
-    with pytest.raises(ApprovalRequired):
+    with pytest.raises(
+        ApprovalRequired,
+        match=r"^This command needs approval: submit it for approval\.$",
+    ):
         refuse_if_guarded("tests.refund")
 
 
@@ -319,3 +337,213 @@ async def test_approving_asks_no_more_than_the_approvers_without_a_rule(
     request.cancel("m", "")
     request.expire()  # Decided already: it stays cancelled.
     assert request.status == "cancelled"
+
+
+def test_a_requests_life_records_its_events() -> None:
+    """Each change records its event, about this request, and dates itself."""
+    from domainkit.contrib.approvals import (
+        RequestCancelled,
+        RequestExpired,
+        RequestFailed,
+        RequestRejected,
+    )
+    from domainkit.contrib.approvals.models import ApprovalRequest
+
+    def made() -> ApprovalRequest:
+        request = ApprovalRequest.submit(
+            "tests.refund",
+            {"amount": 1},
+            maker="m",
+            policy="tests.refunds",
+            required=1,
+            permission="tests.approve",
+            group=None,
+            expires_at=clock.now() + timedelta(days=1),
+        )
+        request.pull_events()
+        return request
+
+    def facts(events: list[Any]) -> list[tuple[str, dict[str, Any]]]:
+        return [
+            (
+                type(event).__name__,
+                {
+                    name: value
+                    for name, value in vars(event).items()
+                    if name not in ("event_id", "occurred_at")
+                },
+            )
+            for event in events
+        ]
+
+    def expected(*events: Any) -> list[tuple[str, dict[str, Any]]]:  # noqa: ANN401
+        return facts(list(events))
+
+    with clock.freeze_time(clock.now()) as frozen:
+        rejected = made()
+        rejected.reject("ann", "No.")
+        assert facts(rejected.pull_events()) == expected(
+            RequestRejected(request_id=rejected.id)
+        )
+        assert rejected.decided_at == frozen.now()
+        cancelled = made()
+        cancelled.cancel("m", "Typo.")
+        assert facts(cancelled.pull_events()) == expected(
+            RequestCancelled(request_id=cancelled.id)
+        )
+        assert (cancelled.decided_at, cancelled.reason) == (frozen.now(), "Typo.")
+        expired = made()
+        expired.expire()
+        assert facts(expired.pull_events()) == expected(
+            RequestExpired(request_id=expired.id)
+        )
+        assert expired.decided_at == frozen.now()
+        failed = made()
+        failed.failed("insufficient_funds")
+        assert facts(failed.pull_events()) == expected(
+            RequestFailed(
+                request_id=failed.id, action="tests.refund", error="insufficient_funds"
+            )
+        )
+        assert (failed.executed_at, failed.reason) == (
+            frozen.now(),
+            "insufficient_funds",
+        )
+
+
+def test_the_routes_rules_by_action() -> None:
+    """View and add by model permission; cancel by add; deciding by the policy."""
+    from domainkit.contrib.approvals.models import ApprovalRequest
+    from domainkit.contrib.approvals.rules import IsApprover, MayApprove, RequestActions
+
+    def described(action: str) -> list[tuple[str, Any]]:
+        return [
+            (type(rule).__name__, getattr(rule, "action", None))
+            for rule in RequestActions().rules_for(action)
+        ]
+
+    assert described("approve") == [("IsApprover", None), ("MayApprove", None)]
+    assert described("reject") == [("IsApprover", None)]
+    assert described("cancel") == [("HasModelPermission", "add")]
+    assert described("view") == [("HasModelPermission", "view")]
+    assert described("add") == [("HasModelPermission", "add")]
+    for action in ("cancel", "view"):
+        (rule,) = RequestActions().rules_for(action)
+        assert getattr(rule, "model", None) is ApprovalRequest
+    assert IsApprover.bounds_scopes
+    assert not MayApprove.bounds_scopes
+
+
+class Someone:
+    """A principal of a project's own, with groups as plain names or not at all."""
+
+    id = "p"
+
+    def __init__(self, *, active: bool = True, groups: Any = None) -> None:  # noqa: ANN401
+        """Active or not; ``groups`` set as an attribute only when given."""
+        self.is_authenticated = True
+        self.is_active = active
+        if groups is not None:
+            self.groups = groups
+
+    async def ahas_perms(self, perms: object, obj: object = None) -> bool:
+        """No permissions: only groups."""
+        return False
+
+
+def someone(*, active: bool = True, groups: Any = None) -> Any:  # noqa: ANN401
+    """A ``Someone``, typed as any principal."""
+    return Someone(active=active, groups=groups)
+
+
+class Seen:
+    """A rule that records what it was asked with, and allows."""
+
+    def __init__(self) -> None:
+        """Nothing asked yet."""
+        self.asked: list[tuple[str, object, object]] = []
+
+    async def has_permission(self, request: object, user: object) -> bool:
+        """Record, allow."""
+        self.asked.append(("request", request, user))
+        return True
+
+    async def has_object_permission(
+        self, request: object, user: object, obj: object
+    ) -> bool:
+        """Record, allow."""
+        self.asked.append(("object", request, user))
+        return True
+
+
+async def test_approvers_by_group_and_the_rule_asked_of_them(installed: None) -> None:
+    """Groups as names; an inactive or group-less principal is no approver.
+
+    ``MayApprove`` asks the policy's rule with the request and the
+    principal; a request whose guard or policy is gone gets the configured
+    rule (none here).
+    """
+    from domainkit.contrib.approvals.models import ApprovalRequest
+    from domainkit.contrib.approvals.rules import IsApprover, MayApprove
+    from domainkit.http.access import BasePermission
+
+    seen = Seen()
+
+    class Recorded(BasePermission):
+        async def has_permission(self, request: Any, user: Any) -> bool:  # noqa: ANN401
+            return await seen.has_permission(request, user)
+
+        async def has_object_permission(
+            self,
+            request: Any,  # noqa: ANN401
+            user: Any,  # noqa: ANN401
+            obj: object,
+        ) -> bool:
+            return await seen.has_object_permission(request, user, obj)
+
+    guard(
+        "tests.refund",
+        refund,
+        unit_of_work=object,
+        policies=[Policy("tests.refunds", group="treasurers", approve_rule=Recorded())],
+        domain="alpha",
+    )
+
+    def request(action: str = "tests.refund", policy: str = "tests.refunds") -> Any:  # noqa: ANN401
+        return ApprovalRequest.submit(
+            action,
+            {},
+            maker="m",
+            policy=policy,
+            required=1,
+            permission=None,
+            group="treasurers",
+            expires_at=clock.now() + timedelta(days=1),
+        )
+
+    class Connection:
+        scope: dict[str, object] = {}  # noqa: RUF012
+
+    connection: Any = Connection()
+    member = someone(groups=["treasurers"])
+    rule = IsApprover()
+    assert await rule.has_permission(connection, member)
+    assert not await rule.has_permission(connection, someone(active=False))
+    assert await rule.has_object_permission(connection, member, request())
+    assert not await rule.has_object_permission(
+        connection, someone(active=False, groups=["treasurers"]), request()
+    )
+    assert not await rule.has_object_permission(connection, someone(), request())
+
+    assert await MayApprove().has_object_permission(connection, member, request())
+    assert seen.asked == [
+        ("request", connection, member),
+        ("object", connection, member),
+    ]
+    assert await MayApprove().has_object_permission(
+        connection, member, request(action="tests.gone")
+    )
+    assert await MayApprove().has_object_permission(
+        connection, member, request(policy="tests.gone")
+    )
+    assert len(seen.asked) == 2

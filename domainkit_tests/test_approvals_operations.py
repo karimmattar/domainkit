@@ -9,7 +9,7 @@ import json
 import uuid
 from collections.abc import Iterator
 from datetime import timedelta
-from typing import Any, Final
+from typing import Final
 
 import pytest
 
@@ -29,9 +29,11 @@ from domainkit.contrib.approvals import (
     guard,
     guards,
     reject_request,
+    requires_approval,
     submit_command,
 )
 from domainkit.contrib.approvals.rules import configured_rule
+from domainkit.ddd import Command
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsAuthenticated
 from domainkit.management import CommandError, call_command, operators
@@ -140,7 +142,7 @@ def test_the_command_lists_shows_and_expires(
         ("approvals.expire", "success", {"requests": 1}),
     ]
 
-    with pytest.raises(CommandError, match="needs a request's id"):
+    with pytest.raises(CommandError, match=r"^show needs a request's id\.$"):
         run("show")
     with pytest.raises(CommandError, match="needs a request's id"):
         run("show", "nope")
@@ -151,20 +153,58 @@ def test_the_command_lists_shows_and_expires(
 
 
 def test_privacy_exports_a_persons_requests_and_decisions(project: str) -> None:
-    """What they made, with its command, and what they decided."""
-    made = submitted("mine", maker="subject")
-    other = submitted("theirs")
-    decide(other, "subject")
+    """What they made, with its command, and what they decided, oldest first."""
+    now = clock.now()
+    with clock.freeze_time(now):
+        same = sorted(
+            [submitted("a", maker="subject"), submitted("b", maker="subject")],
+            key=lambda r: r.id,
+        )
+        theirs = submitted("theirs")
+        others = submitted("others")
+    with clock.freeze_time(now - timedelta(hours=1)):
+        early = submitted("early", maker="subject")
+    with clock.freeze_time(now + timedelta(hours=1)):
+        decide(theirs, "subject")
+    with clock.freeze_time(now + timedelta(minutes=30)):
+        decide(others, "subject", reject="No.")
     (export,) = on_export_subject.of("approvals")
 
-    found: dict[str, Any] = dict(run_async(export.call("subject")))
+    found = run_async(export.call("subject"))
 
-    assert [each["id"] for each in found["requests"]] == [str(made.id)]
-    assert found["requests"][0]["arguments"] == {"kind": "mine"}
-    assert found["requests"][0]["status"] == "pending"
-    assert [each["request_id"] for each in found["decisions"]] == [str(other.id)]
-    assert found["decisions"][0]["verdict"] == "approve"
+    assert found == {
+        "requests": [
+            {
+                "id": str(request.id),
+                "action": "tests.act",
+                "arguments": request.arguments,
+                "fingerprint": request.fingerprint,
+                "status": "pending",
+                "reason": "",
+                "submitted_at": request.submitted_at.isoformat(),
+            }
+            for request in (early, *same)
+        ],
+        "decisions": [
+            {
+                "request_id": str(others.id),
+                "verdict": "reject",
+                "decided_at": (now + timedelta(minutes=30)).isoformat(),
+            },
+            {
+                "request_id": str(theirs.id),
+                "verdict": "approve",
+                "decided_at": (now + timedelta(hours=1)).isoformat(),
+            },
+        ],
+    }
     assert run_async(export.call("nobody")) == {}
+
+
+async def _stored() -> dict[str, ApprovalRequest]:
+    """Every request, by id."""
+    async with ApprovalsUnitOfWork() as uow:
+        return {str(request.id): request for request in await uow.requests.filter()}
 
 
 def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> None:
@@ -178,33 +218,40 @@ def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> 
     decide(decided, "ann", reject="Theirs.")
     approved = submitted("approved")
     decide(approved, "subject")
+    decide(approved, "bob", reject="Bob's too.")
     rejected = submitted("rejected")
     decide(rejected, "subject", reject="Mine.")
     kept = submitted("kept")
     decide(kept, "bob", reject="Bob's.")
+    before = {key: request.version for key, request in run_async(_stored()).items()}
     (erase,) = on_erase_subject.of("approvals")
 
-    counts = run_async(erase.call("subject", "request"))
+    with clock.freeze_time(clock.now()) as frozen:
+        counts = run_async(erase.call("subject", "request"))
 
     assert counts == {"requests": 2, "cancelled": 1, "decisions": 2}
     assert run_async(erase.call("subject", "again")) == {}
-
-    async def read() -> list[ApprovalRequest]:
-        async with ApprovalsUnitOfWork() as uow:
-            return await uow.requests.filter()
-
-    by_kind = {str(request.id): request for request in run_async(read())}
+    by_kind = run_async(_stored())
     first, second = by_kind[str(pending.id)], by_kind[str(decided.id)]
-    assert first.status is RequestStatus.CANCELLED
+    assert (first.status, first.decided_at) == (RequestStatus.CANCELLED, frozen.now())
     assert (first.arguments, second.arguments) == ({}, {})
     assert first.maker == second.maker
     assert first.maker.startswith("erased:")
     assert second.reason == ""
     assert by_kind[str(rejected.id)].reason == ""
     assert by_kind[str(kept.id)].reason == "Bob's."
+    assert by_kind[str(approved.id)].reason == "Bob's too."
     approvers = {each.approver for each in by_kind[str(approved.id)].decisions}
-    assert approvers == {first.maker}
+    assert approvers == {first.maker, "bob"}
     assert by_kind[str(approved.id)].maker == "maker"
+    changed = {key: by_kind[key].version - version for key, version in before.items()}
+    assert changed == {
+        str(pending.id): 3,
+        str(decided.id): 2,
+        str(approved.id): 0,
+        str(rejected.id): 1,
+        str(kept.id): 0,
+    }
 
 
 def test_setup_refuses_thresholds_and_rules_that_cannot_work(
@@ -234,3 +281,59 @@ def test_setup_refuses_thresholds_and_rules_that_cannot_work(
         assert isinstance(configured_rule(), IsAuthenticated)
     registry.clear()
     setup()
+
+
+class Pair(Command):
+    """A command of two fields, to show them in order."""
+
+    b: str
+    a: str
+
+
+@requires_approval("tests.pair")
+async def pair(command: Pair, uow: object) -> None:
+    """Nothing: only shown."""
+
+
+def test_the_command_lists_in_order_within_its_limit(project: str) -> None:
+    """Oldest first, then by id; at most ``--limit`` (1 to 1000, 50 by default)."""
+    now = clock.now()
+    with clock.freeze_time(now):
+        same = sorted((submitted(f"s-{n}") for n in range(50)), key=lambda r: r.id)
+    with clock.freeze_time(now - timedelta(hours=1)):
+        early = submitted("early")
+
+    def ids(*args: str) -> list[str]:
+        return [line.split()[0] for line in run("list", *args).splitlines()]
+
+    assert ids() == [str(each.id) for each in (early, *same[:49])]
+    assert ids("--limit", "1") == [str(early.id)]
+    assert len(ids("--limit", "1000")) == 51
+    with pytest.raises(CommandError, match=r"^--limit is from 1 to 1000\.$"):
+        run("list", "--limit", "1001")
+    with pytest.raises(SystemExit):
+        run("list", "--status", "lost")
+    with pytest.raises(SystemExit):
+        run("lost")
+
+
+def test_the_command_shows_decisions_in_order_and_keys_sorted(project: str) -> None:
+    """Decisions by when they were taken; the command's keys in order."""
+    guard(
+        "tests.pair",
+        pair,
+        unit_of_work=object,
+        policies=[Policy("tests.pairs", approvals=3, permission="a.b")],
+        domain="alpha",
+    )
+    request = run_async(submit_command("tests.pair", Pair(b="2", a="1"), maker="m"))
+    now = clock.now()
+    with clock.freeze_time(now + timedelta(hours=1)):
+        decide(request, "late")
+    with clock.freeze_time(now):
+        decide(request, "early")
+
+    shown = run("show", str(request.id)).splitlines()
+
+    assert shown[3] == '{"a": "1", "b": "2"}'
+    assert [line.split()[1] for line in shown[4:]] == ["early", "late"]
