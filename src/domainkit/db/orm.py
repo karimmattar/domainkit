@@ -25,7 +25,10 @@ so it would fail elsewhere with ``MissingGreenlet``. Load it in the query
 for ``AsyncAttrs.awaitable_attrs`` or ``run_sync``.
 
 Money columns (``MoneyColumns``, or a field hinted ``Money`` in ``table_for``)
-are mapped to one ``Money`` attribute per pair.
+are mapped to one ``Money`` attribute per pair. Encrypted columns
+(``EncryptedColumns``, or a field marked ``Encrypted``) are sealed as rows
+are written and opened as they load, and their blind indexes mapped to
+private attributes (``domainkit.db.encrypted``).
 
 An aggregate's table needs a ``version`` column: it is what makes a stale
 copy fail with ``ConcurrentUpdate`` instead of overwriting a concurrent
@@ -40,6 +43,7 @@ from sqlalchemy import MetaData, Table
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import RelationshipProperty, registry, relationship
 
+from domainkit.db.encrypted import index_properties, watch
 from domainkit.db.money import money_properties
 from domainkit.ddd import AggregateRoot
 from domainkit.exceptions import ImproperlyConfigured
@@ -80,7 +84,8 @@ def map_imperatively(
     ``properties`` that leave ``lazy`` at its default raise on an unloaded
     access, their backrefs too (see the module's docstring). Each pair of
     money columns is mapped to its ``Money`` attribute, unless
-    ``properties`` maps that name.
+    ``properties`` maps that name; each encrypted column is sealed and
+    opened, and its blind index mapped to ``_<column>``.
 
     Args:
         class_: The class to map.
@@ -102,10 +107,13 @@ def map_imperatively(
     given = dict(options.get("properties") or {})
     if money := money_properties(table, given):
         options["properties"] = {**given, **money}
+    if indexes := index_properties(table, given):
+        options["properties"] = {**dict(options.get("properties") or {}), **indexes}
     for prop in dict(options.get("properties") or {}).values():
         if isinstance(prop, RelationshipProperty):
             _raise_on_lazy_loads(prop)
     mapper_registry.map_imperatively(class_, table, **options)
+    watch(class_, table)
 
 
 def _version_aggregate(class_: type, table: Table, options: dict[str, Any]) -> None:

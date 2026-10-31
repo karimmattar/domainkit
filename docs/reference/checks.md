@@ -38,7 +38,7 @@ Installed contrib apps add their own:
   `AUTH.JWT.PREVIOUS_KEYS` that is the signing key or is listed twice
   (`auth.E008`), or that retires more than a day ahead (`auth.E009`)
   ([auth.md](../auth/authentication.md#replacing-a-key))
-- evidence: no `EVIDENCE.SUBJECT_KEY`
+- evidence: no `EVIDENCE.SUBJECT_KEY` (nor `SUBJECT_KEYS`)
   ([contrib.md](../contrib/evidence.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without
   `DEBUG`, SMTP without TLS ([mail.md](../mail.md))
@@ -52,7 +52,9 @@ The application refuses to start there with a route no rule guards
 problems installed domains find (`auth.E101` to `auth.E104`; `auth.E105`,
 password and code attempts counted in each process (a `MemoryBackend` as
 `RATE_LIMIT_BACKEND`), unless `AUTH.REQUIRE_SHARED_THROTTLES = False`;
-`idempotency.E001`; `idempotency.E002`, keyed requests without a deadline,
+`idempotency.E001`; `keys.E001`, `KEYS.PROVIDER = "local"` without
+`KEYS.ALLOW_LOCAL_KEK`, whose key-encryption key derives from `SECRET_KEY`
+([keys.md](../contrib/keys.md#providers)); `idempotency.E002`, keyed requests without a deadline,
 unless `IDEMPOTENCY.REQUIRE_DEADLINE = False`; `audit.E001` to `audit.E003`,
 no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
 schedule, and at startup `audit.E004` and `audit.E005`, an audited
@@ -103,6 +105,7 @@ an unsafe or broken configuration, refused until it changes.
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
 | `accounting.W003` | the ledger without `domainkit.contrib.messaging`: no worker releases expired holds, which keep counting against what is available; silence it once `manage.py accounting expireholds` runs on the project's own schedule ([accounting.md](../contrib/accounting.md#holds)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
+| `keys.W001` | `KEYS.DATA_KEYS` keeps retired keys: values, blind indexes, or subjects' keys may still be sealed under them; in every environment. `manage.py keys reencrypt` moves them, and `keys status --check` fails until none is left ([keys.md](../contrib/keys.md#rotating)) |
 
 `idempotency.W002` (0.10: `IDEMPOTENCY.ANONYMOUS` left unset, so
 `"per-address"`) is gone since 0.11, whose default is `"refuse"`; listed

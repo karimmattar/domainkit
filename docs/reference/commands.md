@@ -26,7 +26,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
-| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent`, `--include-guarded`, `--operator` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
+| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent`, `--include-guarded`, `--decrypt`, `--operator` | Write rows as a JSON fixture, encrypted columns sealed as stored unless `--decrypt`; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
 | `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force`, `--replace`, `--include-guarded`, `--operator` | Load fixtures, saying first what each table gets and how many of its rows are stored already. A row whose primary key is stored is refused without `--replace`; a fixture that writes a guarded table (users, permissions, grants, ...) without `--include-guarded` ([guarded tables](#data-fixtures-flush-and-seeds)). Staging and production refuse without `--force` and a named operator. Each load is audited with its tables and the fixture's SHA-256 ([operators](#operators)). |
 | `flush` | `--database`, `--dry-run`, `--force`, `--include-guarded`, `--operator` | Delete every row but the audit trail's and, without `--include-guarded`, the guarded tables', saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force` and a named operator. Audited, with its tables ([operators](#operators)). |
 | `seed` | `[LABEL ...]` | Run installed domains' `on_seed` hooks, in `INSTALLED_DOMAINS` order. |
@@ -42,6 +42,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `auditforget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
 | `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](../privacy.md), [operators](#operators)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
+| `keys` | `generate [--id ID]`, `rewrap`, `status [--check]`, `reencrypt [--batch-size N]`, `--operator` | Print a new data key wrapped by `KEYS.PROVIDER`, or `KEYS.DATA_KEYS` wrapped under the KEK's newest version; count what each data key seals (`--check` fails while a retired one still does, `keys.W001`); or seal everything under a retired key again under `CURRENT_KEY`, in batches, audited (keys; see [keys.md](../contrib/keys.md#rotating), [operators](#operators)). |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](../auth.md)). |
 | `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
 | `createtoken` | `username`, `--name`, `--days`, `--no-expiry`, `--scope` | Print a new token for a user's scripts, shown once, limited to the `--scope` permissions if given (auth). |
@@ -55,8 +56,9 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
-`auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
-`dumpdata --include-guarded`, which copies credentials out (0.12);
+`auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, `privacy`,
+and `keys reencrypt`; `dumpdata --include-guarded`, which copies credentials out (0.12),
+and `dumpdata --decrypt`, which copies encrypted values out in clear;
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
 `addcertificate`, `cleartokens`, `flags`, `webhooks`, and `accounting`
@@ -102,7 +104,7 @@ itself is recorded once it ends as `operator.<command>`
 (`operator.messages.retry`, `operator.messages.cancel`, `operator.messages.release`,
 `operator.auditforget`, `operator.auditprune`, `operator.loaddata`, `operator.flush`,
 `operator.partitions.prune`, `operator.webhooks.replay`, `operator.accounting.import`,
-`operator.accounting.reconcile`, `operator.accounting.expireholds`), `success` or `failure` (with the error's
+`operator.accounting.reconcile`, `operator.accounting.expireholds`, `operator.keys_reencrypt`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. `operator.loaddata` names the fixture file,
 its SHA-256, and each table with its rows and how many it replaced;
@@ -168,7 +170,11 @@ what was written), and in staging and production needs an operator named
 by `--operator` or `DOMAINKIT_OPERATOR`. So does, in staging and
 production, a dump of a table whose model has fields marked `Personal`,
 recorded with those tables (`personal_tables`), as `privacy export` of one
-person is recorded: it copies everyone out. The audit trail is never loaded or
+person is recorded: it copies everyone out. Encrypted columns
+([keys.md](../contrib/keys.md)) are dumped sealed, as stored; `--decrypt`
+writes their values (`{"plaintext": ...}`), is always recorded, with the
+tables (`decrypted_tables`), and needs a named operator there too;
+`loaddata` seals such values for the rows it writes. The audit trail is never loaded or
 flushed, guarded or not. A kept table whose rows are about other tables'
 objects names the column of their model key (`info={"about_model":
 "content_type"}`, as object grants do): `flush` deletes its rows about

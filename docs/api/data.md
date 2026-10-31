@@ -46,6 +46,8 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `ConnectionHandler`: Lazily created engines and session factories per alias and event loop.
 - `CurrencyCode`: A currency, stored as its code (`"USD"`) and read back as the `Currency`.
 - `DatabaseAccessRefused`: The databases were reached while `ConnectionHandler.refuse` refuses them.
+- `EncryptedColumns`: The column of an encrypted field, and its blind index if it has one.
+- `EncryptedType`: Text holding a value sealed under the key ring (see the module).
 - `EnumValue`: An `Enum` stored by its members' values, so order follows them.
 - `ExactDecimal`: Fixed-point amounts that come back exactly as stored, also on SQLite.
 - `Isolation`: The isolation level of a unit of work's transaction (`isolation=`).
@@ -65,6 +67,16 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `metadata`: Every table of every domain; the target of `makemigrations`.
 - `register_column_type`: Store fields of `cls` (and its subclasses) in `column_type`.
 - `table_for`: The table that stores `cls`: one column per field (see the module).
+
+## `domainkit.db.encrypted`
+
+Columns encrypted at rest: sealed by the ORM, bound to their row.
+
+- `Ciphertext`: A sealed value, as an `EncryptedType` column holds it.
+- `EncryptedColumns`: The column of an encrypted field, and its blind index if it has one.
+- `EncryptedType`: Text holding a value sealed under the key ring (see the module).
+- `Plaintext`: A value a fixture gives in clear (`{"plaintext": ...}`), sealed as it loads.
+- `lookup`: The rows whose `column` equals one of `values`, through its blind index.
 
 ## `domainkit.db.hooks`
 
@@ -133,6 +145,7 @@ Domain-driven design building blocks ("seedwork").
 - `DomainError`: A business rule refused the operation; the message is safe to show.
 - `DomainEvent`: Something that happened in the domain, named in the past tense.
 - `DuplicateValue`: A value that must be unique is taken (a unique constraint refused it).
+- `Encrypted`: `Annotated` metadata: the field is stored encrypted, never in clear.
 - `Entity`: Object with a lifecycle, equal to another only when the ids match.
 - `EventBus`: Deliver events to handlers subscribed to their class or a base class.
 - `EventHandler`: An event handler: `async def handle(event) -> None`.

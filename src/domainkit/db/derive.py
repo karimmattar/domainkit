@@ -32,6 +32,8 @@ a single-field value object    ``ValueObjectType`` around its field's column
 a registered class             ``register_column_type(cls, column_type)``
 ``X | None``                   the same, nullable
 ``Reference[XId]``             the id's column, indexed
+``Encrypted()`` text or bytes  ``EncryptedColumns``: sealed text, and
+                               ``<name>_index`` with ``blind_index``
 =============================  ==========================================
 
 ``id`` is the primary key, and a ``version`` column turns on optimistic
@@ -43,7 +45,7 @@ are added. The result is an ordinary ``Table`` on ``metadata``, so
 ``makemigrations`` sees it as it sees hand-written ones.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
@@ -69,11 +71,20 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.sql.schema import SchemaItem
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
+from domainkit.db.encrypted import EncryptedColumns
 from domainkit.db.money import CHECK, PRECISION, SCALE, MoneyColumns, money_check
 from domainkit.db.orm import VERSION
 from domainkit.db.orm import metadata as default_metadata
 from domainkit.db.types import CurrencyCode, ExactDecimal, UTCDateTime
-from domainkit.ddd.fields import Digits, FieldInfo, MaxLength, fields_of, wrapped_field
+from domainkit.ddd.fields import (
+    Digits,
+    Encrypted,
+    FieldInfo,
+    MaxLength,
+    fields_of,
+    wrapped_field,
+)
+from domainkit.ddd.personal import Personal
 from domainkit.money import Currency, Money
 
 _column_types: dict[type, TypeEngine[Any] | Callable[[], TypeEngine[Any]]] = {}
@@ -207,11 +218,15 @@ def table_for(
     """
     given = {item.name: item for item in extra if isinstance(item, Column)}
     columns: list[SchemaItem] = []
-    for field in fields_of(cls).values():
+    fields = fields_of(cls)
+    for field in fields.values():
         if field.entity is not None:
             continue
         if field.kind is Money:
             columns.extend(_money_columns(field, given, extra))
+            continue
+        if field.encrypted:
+            columns.extend(_encrypted_columns(field, fields, given))
             continue
         if field.name in given:
             columns.append(given.pop(field.name))
@@ -261,6 +276,51 @@ def _money_columns(
     if not field.nullable or checked:
         return [amount, currency]
     return [amount, currency, money_check(field.name, amount, currency)]
+
+
+def _encrypted_columns(
+    field: FieldInfo, fields: Mapping[str, FieldInfo], given: dict[str, Column[Any]]
+) -> list[SchemaItem]:
+    """The columns of an encrypted field: its sealed value, and its blind index.
+
+    Columns given in ``extra`` replace the derived ones of the same names.
+
+    Raises:
+        TypeError: The field is not text or bytes, its subject is not
+            another field, or it has a subject but cannot be None.
+    """
+    marker = field.marker(Encrypted) or Encrypted()
+    personal = field.marker(Personal)
+    subject = marker.subject or (personal.of if personal else None)
+    if subject is not None and (subject == field.name or subject not in fields):
+        raise TypeError(
+            f"{_where(field)}: Encrypted(subject={subject!r}) must name another "
+            "field of the class."
+        )
+    if subject is not None and not field.nullable:
+        raise TypeError(
+            f"{_where(field)} is sealed under the key of the person {subject!r} "
+            "names, which erasing them destroys; it then reads as None, so hint "
+            "it as allowing None."
+        )
+    if field.kind is None:
+        raise TypeError(f"{_where(field)}: the type hint names no class.")
+    try:
+        derived = EncryptedColumns(
+            field.name,
+            field.kind,
+            subject=subject,
+            blind_index=marker.blind_index,
+            nullable=field.nullable,
+        )
+    except TypeError as exc:
+        raise TypeError(f"{_where(field)}: {exc}") from None
+    value = given.pop(field.name, derived.value)
+    if derived.index is None:
+        return [value]
+    if derived.index.name in given:
+        return [value, given.pop(derived.index.name)]
+    return [value, *list(derived)[1:]]
 
 
 def column_type(field: FieldInfo) -> TypeEngine[Any]:

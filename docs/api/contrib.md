@@ -275,6 +275,29 @@ Replay-safe unsafe requests with the `Idempotency-Key` header.
 
 - `IdempotencyMiddleware`: Store and replay responses of requests carrying `Idempotency-Key`.
 
+## `domainkit.contrib.keys`
+
+Keys for encrypted fields: data keys under a KMS, and per-person keys.
+
+- `AwsKmsSettings`: `KEYS["AWS_KMS"]`: the KMS key data keys are wrapped under.
+- `ColumnStatus`: Which keys seal the values of one encrypted column of one database.
+- `KeyStatus`: What `key_status` found.
+- `KeyStoreConflict`: A subject's key could not be stored: their keys were erased meanwhile.
+- `KeysSettings`: Where the key-encryption key is, and the data keys it wraps.
+- `Reencrypted`: What `reencrypt` moved to the current key.
+- `TableSubjectKeyStore`: Reads and adds subjects' keys in the connection's own transaction.
+- `VaultSettings`: `KEYS["VAULT"]`: the transit key data keys are wrapped under.
+- `key_status`: Count, in every hosting database, what each data key seals.
+- `reencrypt`: Move everything still under a retired key to the current one.
+- `ring_for`: The ring `KEYS` describes, its subjects' keys in their table.
+- `shred_subject`: Destroy `subject`'s keys everywhere; return how many there were.
+
+## `domainkit.contrib.keys.tables`
+
+The subjects' keys: one per person, wrapped under a data key.
+
+- `subject_keys`: Subjects' keys: the 32-byte key under `wrapping_key`, nonce first (60 bytes).
+
 ## `domainkit.contrib.mail`
 
 Email through the outbox (Django's `django.core.mail`).

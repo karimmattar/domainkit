@@ -1144,6 +1144,9 @@ jobs:
           - name: domain
             mutants: >-
               domainkit.resources.* domainkit.ddd.* domainkit.testing.* domainkit.i18n.*
+          - name: keys
+            mutants: >-
+              domainkit.keys.* domainkit.db.encrypted.* domainkit.contrib.keys.*
           - name: contrib-1
             mutants: >-
               domainkit.contrib.audit.recorder.* domainkit.contrib.idempotency.apps.*

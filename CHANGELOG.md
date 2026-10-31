@@ -113,6 +113,46 @@ and a status.
   written as `def`: awaited on the event loop, they hold every request and
   message of the process while they work, then fail. `EventBus.subscriptions()`
   lists every subscription (FIN-19).
+- `domainkit.keys`: envelope encryption. A `KeyProvider` makes data keys
+  and wraps them under a key-encryption key it never hands out:
+  `LocalKeyProvider` (derived from `SECRET_KEY`, for development and
+  tests), `domainkit.keys.aws.AwsKmsKeyProvider` (AWS KMS, signed with
+  SigV4 here, with credentials from the `AWS_*` variables, a web identity,
+  or the container's endpoint: no AWS SDK) and
+  `domainkit.keys.vault.VaultTransitKeyProvider` (Vault's transit engine),
+  both through `domainkit.http.client`, logging no key. A `Keyring` holds
+  the data keys by id, unwrapped once at startup, and seals values as
+  `dk1:k.<key id>:...`, naming the key (ADR 0119) (FIN-23, FIN-38).
+- Encrypted fields: `Annotated[str | None, Encrypted()]` (`domainkit.ddd`)
+  is stored sealed (AES-256-GCM) in an `EncryptedType` column, bound to its
+  table, column, and primary key, so a value copied to another row or
+  column does not open; `map_imperatively` seals as rows are written and
+  opens as they load, so a database read, a replica, a backup, or a dump
+  shows no card number. `Encrypted(blind_index=True)` adds a
+  `<name>_index` column of HMACs, so `F("number") == value` and `in_` find
+  rows; other lookups and ordering are refused (`InvalidQuery`). Its
+  leakage is documented (`docs/contrib/keys.md`, ADR 0120) (FIN-23).
+- `domainkit.contrib.keys`: `KEYS` (`PROVIDER`, `AWS_KMS`, `VAULT`,
+  `DATA_KEYS`, `CURRENT_KEY`), `manage.py keys generate`, `rewrap`,
+  `status [--check]`, and `reencrypt [--batch-size]`, which moves values,
+  blind indexes, and subjects' keys from retired data keys to the current
+  one in batches, audited. `check` refuses the local KEK in staging and
+  production unless `KEYS.ALLOW_LOCAL_KEK` (`keys.E001`), and warns while
+  `DATA_KEYS` keeps retired keys (`keys.W001`) (FIN-23, FIN-38).
+- Crypto-shredding: a field marked `Encrypted(subject="customer_id")`, or
+  also `Personal`, is sealed under that person's own random key
+  (`domainkit_keys_subject_keys`); `erase_subject` destroys it in every
+  hosting database, with the blind indexes of their values, and their
+  values read as None from then on, in every copy. What remains is listed
+  in `docs/contrib/keys.md` (ADR 0120) (FIN-24).
+- `dumpdata --decrypt` writes encrypted columns' values
+  (`{"plaintext": ...}`), audited, with a named operator where deployed;
+  without it a dump holds them sealed. `loaddata` seals plaintext values
+  for the rows it writes (FIN-23).
+- Evidence's subject keys are a ring: `EVIDENCE.SUBJECT_KEYS` by id and
+  `SUBJECT_KEY_ID`; new records' keys use the current one, `for_subject`
+  finds records under every key, and receipts keep verifying across a
+  rotation (`SUBJECT_KEY` alone works as before) (FIN-38).
 
 ### Changed
 

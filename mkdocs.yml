@@ -101,6 +101,7 @@ nav:
           - contrib/audit.md
           - contrib/idempotency.md
           - contrib/evidence.md
+          - contrib/keys.md
           - contrib/flags.md
           - contrib/accounting.md
       - cache.md

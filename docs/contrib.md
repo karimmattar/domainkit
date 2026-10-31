@@ -11,6 +11,7 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.audit` | `AUDIT` | `domainkit_audit_log` |
 | `domainkit.contrib.idempotency` | `IDEMPOTENCY` | `domainkit_idempotency_keys` |
 | `domainkit.contrib.evidence` | `EVIDENCE` | none: records live on a ledger |
+| `domainkit.contrib.keys` | `KEYS` | `domainkit_keys_subject_keys`, in every database that hosts a domain; see [keys](contrib/keys.md) |
 | `domainkit.contrib.contenttypes` | none | `domainkit_content_types` |
 | `domainkit.contrib.auth` | `AUTH` | users, groups, permissions, and the principal cache; see [auth.md](auth.md) |
 | `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
@@ -70,5 +71,6 @@ This page has moved, a part a page:
 - [Audit: who did what, when, from where](contrib/audit.md)
 - [Idempotency: safe retries of unsafe requests](contrib/idempotency.md)
 - [Evidence: records that provably never change](contrib/evidence.md)
+- [Keys: encrypted fields under a KMS, and crypto-shredding](contrib/keys.md)
 - [Flags: feature flags and dynamic settings](contrib/flags.md)
 - [Accounting: double-entry books, holds, periods, and reconciliation](contrib/accounting.md)

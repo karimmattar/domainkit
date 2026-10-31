@@ -41,6 +41,11 @@ from domainkit.contrib.auth.settings import (
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.flags.settings import FlagsSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
+from domainkit.contrib.keys.settings import (
+    AwsKmsSettings,
+    KeysSettings,
+    VaultSettings,
+)
 from domainkit.contrib.mail.settings import MailSettings, SmtpSettings
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.notifications.settings import NotificationsSettings
@@ -98,6 +103,9 @@ def documented(pages: str) -> set[str]:
         (FlagsSettings, "contrib/flags.md"),
         (WebhookSettings, "contrib/webhooks.md"),
         (AccountingSettings, "contrib/accounting.md"),
+        (KeysSettings, "contrib/keys.md"),
+        (AwsKmsSettings, "contrib/keys.md"),
+        (VaultSettings, "contrib/keys.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (PreviousJWTKey, "auth.md"),
@@ -412,6 +420,9 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (IdempotencySettings, "contrib/idempotency.md", "IDEMPOTENCY"),
     (EvidenceSettings, "contrib/evidence.md", "EVIDENCE"),
     (FlagsSettings, "contrib/flags.md", "FLAGS"),
+    (KeysSettings, "contrib/keys.md", "KEYS"),
+    (AwsKmsSettings, "contrib/keys.md", 'KEYS["AWS_KMS"]'),
+    (VaultSettings, "contrib/keys.md", 'KEYS["VAULT"]'),
     (AuthSettings, "auth.md", "AUTH"),
     (CookieSettings, "auth.md", 'AUTH["COOKIE"]'),
     (MfaSettings, "auth.md", 'AUTH["MFA"]'),
@@ -438,6 +449,8 @@ PROSE_DEFAULTS = {
     "CookieSettings": {"NAME", "CSRF_NAME"},
     "JWTSettings": {"SIGNING_KEY"},
     "PreviousJWTKey": {"KEY", "RETIRED_AT"},
+    "AwsKmsSettings": {"KEY_ID", "REGION"},
+    "VaultSettings": {"URL", "KEY", "TOKEN"},
     "MailSettings": {"SMTP"},
 }
 """Defaults the tables state in words (computed, required, or "see below")."""

@@ -192,6 +192,49 @@ Local time for display (Django's `django.utils.timezone`).
 - `now`: The current time, aware, in UTC: what to store and compare.
 - `override`: Show times in `timezone` (a name or a `tzinfo`) inside the block.
 
+## `domainkit.keys`
+
+Keys for envelope encryption: data keys wrapped by a key-encryption key.
+
+- `DATA_KEY_BYTES`: The size of a data key: AES-256.
+- `DataKey`: A new data key: its 32 bytes, to use now, and its wrapped form, to store.
+- `KeyProvider`: Makes, unwraps, and rewraps data keys under a key-encryption key.
+- `KeyProviderError`: The key service failed, or refused: it said so, or could not be reached.
+- `LocalKeyProvider`: A KEK held in this process: for development and tests only.
+- `UnknownKey`: A wrapped key this provider cannot unwrap: another's, damaged, or retired.
+
+## `domainkit.keys.aws`
+
+AWS KMS as a `KeyProvider`: data keys under a KMS key, signed with SigV4.
+
+- `AwsCredentials`: An access key, its secret, and for temporary ones a session token.
+- `AwsKmsKeyProvider`: Data keys under one AWS KMS key (see the module).
+- `container_credentials`: Credentials from the container's endpoint (ECS, EKS Pod Identity).
+- `default_credentials`: The first source the environment sets up (see the module).
+- `environment_credentials`: Credentials from the `AWS_*` variables (access key, secret, token).
+- `sign`: `headers` with SigV4's: `X-Amz-Date`, the token, `Authorization`.
+- `web_identity_credentials`: Credentials for `role_arn`, assumed with the token in `token_file`.
+
+## `domainkit.keys.ring`
+
+The data keys a process encrypts values with, and the envelope they make.
+
+- `FORMAT`: The envelope's format: AES-256-GCM, a 96-bit nonce, the key named.
+- `Keyring`: Data keys by id, the current one, and the subjects' keys (see the module).
+- `KeysNotLoaded`: The ring's keys are not unwrapped, and cannot be here: `await ring.load()`.
+- `StoredSubjectKey`: A subject's key as stored: wrapped under the data key `wrapping_key`.
+- `SubjectKeyStore`: Where subjects' keys are kept, read on the transaction's own connection.
+- `forget_held`: Drop the keys of `subjects` from every open transaction of this process.
+- `keyring`: The process's ring.
+- `sealed_key`: The kind (`k` or `s`) and id of the key that sealed `text`, if sealed.
+- `use_keyring`: Seal and open with `ring` from now on; None forgets the ring.
+
+## `domainkit.keys.vault`
+
+HashiCorp Vault's transit engine as a `KeyProvider`.
+
+- `VaultTransitKeyProvider`: Data keys under one key of Vault's transit engine (see the module).
+
 ## `domainkit.lifecycle`
 
 Shutting a process down, in phases, within one budget (`SHUTDOWN_TIMEOUT`).
