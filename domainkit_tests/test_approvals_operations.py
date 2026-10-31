@@ -230,6 +230,7 @@ def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> 
     decide(rejected, "subject", reject="Mine.")
     kept = submitted("kept")
     decide(kept, "bob", reject="Bob's.")
+    bystander = submitted("bystander")  # Someone else's, pending: left alone.
     before = {key: request.version for key, request in run_async(_stored()).items()}
     (erase,) = on_erase_subject.of("approvals")
 
@@ -258,7 +259,9 @@ def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> 
         str(approved.id): 0,
         str(rejected.id): 1,
         str(kept.id): 0,
+        str(bystander.id): 0,
     }
+    assert by_kind[str(bystander.id)].status is RequestStatus.PENDING
 
 
 def test_setup_refuses_thresholds_and_rules_that_cannot_work(
