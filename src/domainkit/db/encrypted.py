@@ -38,15 +38,27 @@ see only ciphertext and indexes. See ADR 0120.
 
 import base64
 import binascii
+import json
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, cast
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import Column, ColumnElement, Index, String, Table, Text, event
-from sqlalchemy.engine import Connection, Dialect
-from sqlalchemy.orm import Mapper, QueryContext, Session, attributes
+from sqlalchemy import (
+    Column,
+    ColumnElement,
+    Index,
+    String,
+    Table,
+    Text,
+    and_,
+    event,
+    select,
+)
+from sqlalchemy.engine import Connection, Dialect, Transaction
+from sqlalchemy.orm import Mapper, ORMExecuteState, QueryContext, Session, attributes
 from sqlalchemy.orm.attributes import instance_state, set_committed_value
+from sqlalchemy.orm.base import PASSIVE_NO_INITIALIZE
 from sqlalchemy.orm.exc import UnmappedColumnError
 from sqlalchemy.sql.schema import SchemaItem
 from sqlalchemy.types import TypeDecorator
@@ -291,10 +303,13 @@ def index_properties(table: Table, given: Mapping[str, Any]) -> dict[str, Any]:
 def context(column: Column[Any], identity: Sequence[object]) -> bytes:
     """What a value of ``column`` in the row ``identity`` (its key) is sealed for.
 
-    Each part of the key as it prints (an id object as the id it wraps).
+    The table, the column, and each part of the key as it prints (an id
+    object as the id it wraps), as a JSON array: no part can run into the
+    next, so two rows of a composite key never share a context (SEC-15a-5).
     """
-    row = "\x1f".join(str(primitive(part)) for part in identity)
-    return f"{column.table.name}\x00{column.name}\x00{row}".encode(
+    parts = [str(primitive(part)) for part in identity]
+    document = [column.table.name, column.name, parts]
+    return json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8", "surrogatepass"
     )
 
@@ -493,7 +508,12 @@ def _changed(target: object, field: _Field, mapper: Mapper[Any]) -> bool:
     """Whether the value, its subject, or the row's key changed since loaded."""
     keys = [field.key, *([field.subject] if field.subject else [])]
     keys += [mapper.get_property_by_column(column).key for column in mapper.primary_key]
-    return any(attributes.get_history(target, key).has_changes() for key in keys)
+    return any(_history(target, key).has_changes() for key in keys)
+
+
+def _history(target: object, key: str) -> attributes.History:
+    """The changes of ``key`` since loaded, without loading what is not."""
+    return attributes.get_history(target, key, PASSIVE_NO_INITIALIZE)
 
 
 def _seal(mapper: Mapper[Any], connection: Connection, target: object) -> None:
@@ -509,6 +529,11 @@ def _seal(mapper: Mapper[Any], connection: Connection, target: object) -> None:
         if state.has_identity and not _changed(target, field, mapper):
             continue
         value = state.dict.get(field.key)
+        loaded = field.key in state.dict and not isinstance(value, Ciphertext)
+        if not (loaded or _history(target, field.key).has_changes()):
+            # Not loaded (load_only, defer), or loaded sealed during the
+            # flush: read what the row holds, under its stored key.
+            value = _stored_value(mapper, connection, target, field)
         if isinstance(value, Ciphertext):
             continue
         index = None
@@ -526,8 +551,106 @@ def _seal(mapper: Mapper[Any], connection: Connection, target: object) -> None:
             setattr(target, field.key, Ciphertext(sealed))
             if field.index is not None:
                 index = ring.blind_index(data, index_context(field.column))
+                if field.subject is not None:
+                    _wrote(connection, field.column.table)
         if field.index is not None:
             setattr(target, field.index, index)
+
+
+def _stored_value(
+    mapper: Mapper[Any], connection: Connection, target: object, field: _Field
+) -> object:
+    """The value the row of ``target`` holds in ``field``, opened.
+
+    Read under the row's key as stored (before a change of it in this
+    flush), so a value that was not loaded is sealed again, not lost
+    (SEC-15a-1). None where the row holds none, or its key is destroyed.
+    """
+    stored: list[object] = []
+    for column in mapper.primary_key:
+        history = _history(target, mapper.get_property_by_column(column).key)
+        stored.append([*history.deleted, *history.unchanged][0])
+    condition = and_(
+        *(
+            column == part
+            for column, part in zip(mapper.primary_key, stored, strict=True)
+        )
+    )
+    text = connection.execute(select(field.column).where(condition)).scalar()
+    if text is None:
+        return None
+    opened = keyring().open(text, context(field.column, stored), connection=connection)
+    return None if opened is None else field.type.from_bytes(opened)
+
+
+def guarded_attributes(mapper: Mapper[Any]) -> frozenset[str]:
+    """What a statement may not set past the ORM's events, by attribute and column.
+
+    The encrypted attributes, their blind indexes, the attributes naming
+    their subjects, and the primary key: each is sealed, made, or bound
+    to as the ORM writes a row. Empty for a mapper without encrypted fields.
+    """
+    if not encrypted_columns(cast("Table", mapper.local_table)):
+        return frozenset()
+    names: set[str] = set()
+    for field in _fields(mapper):
+        names.update(
+            name for name in (field.key, field.subject, field.index) if name is not None
+        )
+    for column in mapper.primary_key:
+        names.add(mapper.get_property_by_column(column).key)
+    columns = {
+        column.name
+        for column in mapper.columns
+        if isinstance(column, Column)
+        and mapper.get_property_by_column(column).key in names
+    }
+    return frozenset(names | columns)
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _refuse_bulk_writes(state: ORMExecuteState) -> None:
+    """Refuse an ORM ``update()`` that sets what only the mapper's events may.
+
+    A bulk statement runs no ``before_update``: it would leave a value
+    under its old subject's key, or a blind index beside a cleared value
+    (SEC-15a-1). ``update_rows`` writes such changes through the ORM.
+
+    Raises:
+        InvalidQuery: The statement sets an encrypted attribute, its index,
+            its subject, or the primary key.
+    """
+    mapper = state.bind_mapper
+    if not state.is_update or mapper is None:
+        return
+    guarded = guarded_attributes(mapper)
+    statement = state.statement
+    values = dict(getattr(statement, "_values", None) or {})
+    values.update(getattr(statement, "_ordered_values", None) or ())
+    names = {str(getattr(key, "key", key)) for key in values}
+    if refused := sorted(names & guarded):
+        raise InvalidQuery(
+            f"An update() of {mapper.class_.__name__} cannot set {', '.join(refused)}: "
+            "encrypted values are sealed, and bound to their subject and row, as "
+            "the ORM writes each row. Load the aggregates and change them, or use "
+            "the repository's update_rows."
+        )
+
+
+_written: WeakKeyDictionary[Transaction, set[Table]] = WeakKeyDictionary()
+"""The tables each open transaction wrote a blind index of a subject's value to."""
+
+
+def _wrote(connection: Connection, table: Table) -> None:
+    """Remember that the transaction indexed a subject's value in ``table``."""
+    transaction = cast("Transaction", connection.get_transaction())  # Flushing.
+    _written.setdefault(transaction, set()).add(table)
+
+
+def indexed_tables(connection: Connection) -> frozenset[Table]:
+    """The tables the connection's transaction wrote subjects' blind indexes to."""
+    transaction = cast("Transaction", connection.get_transaction())  # Committing.
+    return frozenset(_written.get(transaction, ()))
 
 
 def _restore(mapper: Mapper[Any], connection: Connection, target: object) -> None:
@@ -553,8 +676,8 @@ def _open(target: object, context_: QueryContext) -> None:
     session = context_.session
     for field in _fields(mapper):
         value = state.dict.get(field.key)
-        if not isinstance(value, Ciphertext):
-            continue
+        if not isinstance(value, Ciphertext) or field.key in state.committed_state:
+            continue  # In clear, or changed: sealed for this flush, not loaded.
         sealed = sealed_key(value)
         connection = (
             session.connection(bind_arguments={"mapper": mapper})

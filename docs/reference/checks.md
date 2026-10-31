@@ -59,7 +59,9 @@ password and code attempts counted in each process (a `MemoryBackend` as
 `AUTH.STEP_UP.METHODS` never proves, so it refuses everyone;
 `idempotency.E001`; `keys.E001`, `KEYS.PROVIDER = "local"` without
 `KEYS.ALLOW_LOCAL_KEK`, whose key-encryption key derives from `SECRET_KEY`
-([keys.md](../contrib/keys.md#providers)); `idempotency.E002`, keyed requests without a deadline,
+([keys.md](../contrib/keys.md#providers)); `keys.E002`, `KEYS.VAULT.URL` over
+plain `http://`, which sends Vault's token and the data keys in clear;
+`idempotency.E002`, keyed requests without a deadline,
 unless `IDEMPOTENCY.REQUIRE_DEADLINE = False`; `audit.E001` to `audit.E003`,
 no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
 schedule, and at startup `audit.E004` and `audit.E005`, an audited

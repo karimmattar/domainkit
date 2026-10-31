@@ -18,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import instance_state
 
+from domainkit.db.encrypted import guarded_attributes
 from domainkit.db.money import money_columns
 from domainkit.db.query import column_of, compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import AggregateRoot, Repository
@@ -115,6 +116,11 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         session holds are updated in place. ``criteria`` None means every
         row (soft-deleted ones only with ``include_deleted``).
 
+        A value of an encrypted field, or of the field naming its subject,
+        is set on each matching aggregate and flushed through the ORM
+        instead, so it is sealed for its row and subject and its blind
+        index follows (SEC-15a-1); still without invariants or events.
+
         Raises:
             InvalidQuery: A value names no mapped column, the id or the
                 version, or does not fit its field.
@@ -123,14 +129,15 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         mapper = mapper_of(model)
         fields = fields_of(model)
         changes: dict[str, Any] = {}
+        given: dict[str, Any] = {}
         for name, value in values.items():
             if name in {ID, "version"} or name not in fields:
                 raise InvalidQuery(f"update_rows cannot set {name!r}.")
             if (money := money_columns(mapper, name)) is None:
                 column_of(mapper, name)
-                changes[name] = fields[name].coerce(value)
+                changes[name] = given[name] = fields[name].coerce(value)
                 continue
-            coerced = fields[name].coerce(value)
+            coerced = given[name] = fields[name].coerce(value)
             amount, code = (
                 coerced.__composite_values__()
                 if isinstance(coerced, Money)
@@ -140,10 +147,17 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
             changes[mapper.get_property_by_column(money[1]).key] = code
         if not changes:
             raise InvalidQuery("update_rows needs at least one value to set.")
+        scope = self._scope(criteria, include_deleted=include_deleted)
+        if set(given) & guarded_attributes(mapper):
+            found = list(await self.session.scalars(self._where(select(model), scope)))
+            for aggregate in found:
+                for name, value in given.items():
+                    setattr(aggregate, name, value)
+            await self.session.flush()
+            return len(found)
         version = mapper.version_id_col
         if version is not None:
             changes[mapper.get_property_by_column(version).key] = version + 1
-        scope = self._scope(criteria, include_deleted=include_deleted)
         statement = self._where(update(model), scope).values(changes)
         result = await self.session.execute(
             statement.execution_options(synchronize_session="fetch")

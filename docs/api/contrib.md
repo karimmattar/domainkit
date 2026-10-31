@@ -381,6 +381,7 @@ Keys for encrypted fields: data keys under a KMS, and per-person keys.
 
 The subjects' keys: one per person, wrapped under a data key.
 
+- `erasures`: When each subject's keys were last destroyed, kept a day (`ERASURE_MEMORY`).
 - `subject_keys`: Subjects' keys: the 32-byte key under `wrapping_key`, nonce first (60 bytes).
 ## `domainkit.contrib.limits`
 

@@ -22,7 +22,6 @@ from sqlalchemy import (
     Text,
     and_,
     case,
-    delete,
     func,
     not_,
     or_,
@@ -45,10 +44,10 @@ from domainkit.db.routing import router
 from domainkit.encryption import DecryptionFailed
 from domainkit.keys import KeyProvider, LocalKeyProvider
 from domainkit.keys.ring import DATA, FORMAT, SUBJECT, Keyring, forget_held, sealed_key
-from domainkit.signing import derive_key
+from domainkit.signing import derive_keys
 
 from .settings import DEVELOPMENT_KEY, KeysSettings
-from .store import TableSubjectKeyStore
+from .store import TableSubjectKeyStore, clear_indexes, erase
 from .tables import subject_keys
 
 BATCH_SIZE: Final = 500
@@ -86,17 +85,24 @@ def provider_for(config: KeysSettings) -> KeyProvider:
 def ring_for(config: KeysSettings) -> Keyring:
     """The ring ``KEYS`` describes, its subjects' keys in their table.
 
-    With the local provider and no ``DATA_KEYS``, its one key is ``dev``,
-    derived from ``SECRET_KEY``.
+    The development key ``dev`` is derived from ``SECRET_KEY``, and from
+    each of ``SECRET_KEY_FALLBACKS`` to open what it sealed before a
+    rotation (SEC-15a-4). It is the ring's one key with the local provider
+    and no ``DATA_KEYS``, and stays beside them, retired, while
+    ``KEEP_DEVELOPMENT_KEY`` says (with the local provider, by default).
     """
-    known = {}
-    if not config.DATA_KEYS:
-        known[DEVELOPMENT_KEY] = derive_key("keys.development-data-key")
+    known: dict[str, bytes] = {}
+    alternates: dict[str, tuple[bytes, ...]] = {}
+    if config.development_key:
+        current, *older = derive_keys("keys.development-data-key")
+        known[DEVELOPMENT_KEY] = current
+        alternates[DEVELOPMENT_KEY] = tuple(older)
     return Keyring(
         provider_for(config),
         config.DATA_KEYS,
         config.current,
         known=known,
+        alternates=alternates,
         subject_keys=TableSubjectKeyStore(),
     )
 
@@ -127,41 +133,20 @@ async def shred_subject(subject: str) -> int:
     as None. Their ciphertext stays where it is. Their blind indexes are
     cleared, in the rows whose subject column names ``subject``, since a
     blind index outlives the key: whoever holds the data keys could test
-    a guessed value against it.
+    a guessed value against it. A transaction that made the subject's
+    first key meanwhile destroys it as it commits (``store``).
     """
     forget_held({subject})
     destroyed = 0
     try:
         for alias in hosting_aliases():
+            tables = [table for table, _ in encrypted_tables(alias)]
             async with connections.engine(alias).begin() as connection:
-                result = await connection.execute(
-                    delete(subject_keys).where(subject_keys.c.subject == subject)
-                )
-                destroyed += result.rowcount
-                for statement in _clear_indexes(alias, subject):
-                    await connection.execute(statement)
+                destroyed += await connection.run_sync(erase, subject)
+                await connection.run_sync(clear_indexes, tables, subject)
     finally:
         forget_held({subject})  # Also what a transaction read meanwhile.
     return destroyed
-
-
-def _clear_indexes(alias: str, subject: str) -> list[Any]:
-    """``UPDATE``s clearing the blind indexes of ``subject``'s values in ``alias``."""
-    statements = []
-    for table, columns in encrypted_tables(alias):
-        for column in columns:
-            type_ = cast("EncryptedType", column.type)
-            if type_.subject is None or type_.blind_index is None:
-                continue
-            owner = table.c[type_.subject]
-            value = subject_value(owner, subject)
-            if value is not None:
-                statements.append(
-                    update(table)
-                    .where(owner == value)
-                    .values({type_.blind_index: None})
-                )
-    return statements
 
 
 def subject_value(column: Column[Any], subject: str) -> object | None:

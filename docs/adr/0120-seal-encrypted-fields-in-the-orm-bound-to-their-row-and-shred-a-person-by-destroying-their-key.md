@@ -1,6 +1,6 @@
 # 0120. Seal encrypted fields in the ORM, bound to their row, and shred a person by destroying their key
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-31 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -123,3 +123,39 @@ key must be random and stored, wrapped, in one place.
   with `dumpdata --decrypt`, load into the new shape).
 - Erasure concurrent with a write may leave the write's value sealed under
   the key being destroyed: it reads as None, as the erasure intends.
+
+## Amendment (2026-10-31): the security review of 0.15
+
+The review before release (SEC-15a) found three gaps here; each is fixed.
+
+- **The context's format** (SEC-15a-5). It joined the primary key's parts
+  with an unescaped `\x1f`, so two rows of a composite key could share it.
+  It is now the JSON array `[table, column, [part, ...]]`, each part as it
+  prints. This changes every sealed value's associated data; nothing was
+  released under the old format, so no value sealed under it exists
+  outside development databases, and none is migrated: re-create those.
+- **Writes past the mapper's events** (SEC-15a-1). `update_rows` that sets
+  an encrypted field, or the field naming its subject, loads the matching
+  aggregates, sets the values, and flushes, so `before_update` seals them
+  for their row and subject and clears the index of a value set to None;
+  it still checks no invariant and records no event. An ORM `update()`
+  that sets an encrypted field, its index, its subject, or the primary key
+  is refused in the session's `do_orm_execute`; Core SQL is not seen and
+  must seal what it writes. A value not loaded (`load_only`, `defer`) is
+  read from its row, under its stored key, when its subject or key
+  changes, and sealed again; a refresh during the flush leaves a value
+  sealed for that flush as it is.
+- **An erasure racing a first key** (SEC-15a-2). Measured on PostgreSQL:
+  the erasure's `DELETE` neither sees nor waits for a key inserted by an
+  open transaction. A per-subject lock held from the key's making to its
+  commit would make the erasure wait on every writer, and deadlock a
+  request that erases a person it is writing for (the proof's shape). So
+  the erasure leaves a tombstone (`domainkit_keys_erasures`: the subject
+  and the database's `clock_timestamp()`, kept a day) under a
+  transaction-scoped advisory lock of the subject; a transaction that made
+  keys takes the same locks as it commits (the connection's `commit`
+  event) and destroys each key made before its subject's tombstone, with
+  the blind indexes it wrote for that subject. Either the erasure finished
+  first and left its tombstone, or it starts after the commit and sees the
+  key. The tombstone keeps the subject's id for a day, as the audit trail
+  keeps it in the erasure's own record.

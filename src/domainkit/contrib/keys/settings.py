@@ -72,6 +72,10 @@ class KeysSettings(BaseModel):
     the local provider: one development key, ``dev``, derived from ``SECRET_KEY``."""
     CURRENT_KEY: KeyId | None = None
     """The data key new values are sealed under; may be left out with one key."""
+    KEEP_DEVELOPMENT_KEY: bool | None = None
+    """Keep the development key ``dev`` (from ``SECRET_KEY``) beside ``DATA_KEYS``,
+    retired, so what it sealed still opens and ``reencrypt`` moves it;
+    None keeps it with the local provider only."""
     TIMEOUT: float = Field(default=5.0, gt=0, le=60)
     """Seconds each call to the key service may take, retries included."""
 
@@ -117,6 +121,16 @@ class KeysSettings(BaseModel):
         return next(iter(self.DATA_KEYS), DEVELOPMENT_KEY)
 
     @property
+    def development_key(self) -> bool:
+        """Whether the ring holds ``dev``: alone, or retired beside ``DATA_KEYS``."""
+        if not self.DATA_KEYS:
+            return True
+        if self.KEEP_DEVELOPMENT_KEY is None:
+            return self.PROVIDER == "local"
+        return self.KEEP_DEVELOPMENT_KEY
+
+    @property
     def retired(self) -> tuple[str, ...]:
         """The ids of the data keys that only open values, sorted."""
-        return tuple(sorted(set(self.DATA_KEYS) - {self.current}))
+        kept = {DEVELOPMENT_KEY} if self.development_key else set()
+        return tuple(sorted({*self.DATA_KEYS, *kept} - {self.current}))

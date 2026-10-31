@@ -911,3 +911,39 @@ def test_sigv4_dates_are_utc_whatever_the_local_zone(
         monkeypatch.undo()
         time.tzset()
     assert signed["X-Amz-Date"] == "20150830T123600Z"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "full",
+    [
+        "https://credentials.example.com/v1",
+        "http://127.0.0.2/creds",
+        "http://[::1]/creds",
+        "http://localhost:8080/creds",
+        "http://169.254.170.23/v1/credentials",
+        "http://[fd00:ec2::23]/v1/credentials",
+    ],
+)
+async def test_a_full_container_uri_may_use_https_or_reach_the_agent(
+    no_aws: None, monkeypatch: pytest.MonkeyPatch, full: str
+) -> None:
+    """The AWS SDKs' rule: https anywhere, http to loopback or an agent only."""
+    from domainkit.keys.aws import _container_url
+
+    assert _container_url(None, full) == full
+    for refused in ("http://10.0.0.1/c", "ftp://127.0.0.1/c", "http:///c"):
+        with pytest.raises(KeyProviderError, match="must use https"):
+            _container_url(None, refused)
+    assert _container_url("/v2/x", None) == "http://169.254.170.2/v2/x"
+    for relative in ("v2/x", "?x", "#x"):
+        with pytest.raises(KeyProviderError, match="must be a path"):
+            _container_url(relative, None)
+
+
+def test_a_kms_endpoint_with_a_trailing_slash_signs_the_root() -> None:
+    """``https://kms.test/`` calls and signs ``/``, not ``//``."""
+    provider = AwsKmsKeyProvider(
+        KEY_ARN, region="eu-west-1", credentials=static, endpoint="https://kms.test/"
+    )
+    assert provider.endpoint == "https://kms.test"

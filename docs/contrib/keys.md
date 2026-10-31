@@ -91,6 +91,28 @@ prefix, few enough to try them all. Index only fields that are looked up
 by equality, normalize them first (strip spaces in the value object), and
 keep the data keys in the KMS.
 
+## Writing encrypted fields
+
+The ORM seals values as it writes each row, so change encrypted fields
+through the aggregate. A repository's `update_rows` that sets an
+encrypted field, or the field naming its subject, writes through the ORM
+instead of one statement, so the value is sealed again for its new
+subject and its blind index follows (set to None, the index goes too).
+An ORM `update()` of such a model that sets them is refused
+(`InvalidQuery`); Core SQL on the table is not seen at all, and must
+seal what it writes. A value not loaded (`load_only`, `defer`) is read
+from its row when its subject changes, and sealed again.
+
+**What is encrypted is the column, and nothing else.** A value the code
+copies elsewhere is stored there as it was copied, in clear: a domain
+event's fields (and so the outbox's payloads, the audit trail's details,
+and webhook bodies), a command's arguments kept by
+`domainkit.contrib.approvals`, a response kept by
+`domainkit.contrib.idempotency`, a log line, an error message. Keep
+encrypted values out of events and responses, or mark them `Personal` so
+the audit trail keeps pseudonyms and erasure finds the copies. An
+aggregate's `repr` shows `<encrypted>` for each encrypted value.
+
 ## What the database, a dump, and a backup hold
 
 Sealed text and blind indexes, never a value. `manage.py dumpdata` writes
@@ -113,7 +135,12 @@ and still open what they sealed.
 and prints it wrapped, as a `DATA_KEYS` entry (its id defaults to the
 date). The wrapped key is safe to keep in configuration: only the KMS
 opens it. Without `DATA_KEYS`, the local provider's ring has one
-development key, `dev`, derived from `SECRET_KEY`.
+development key, `dev`, derived from `SECRET_KEY`, and from each of
+`SECRET_KEY_FALLBACKS` to open what it sealed before a rotation. Once
+`DATA_KEYS` is set, `dev` stays in the ring as a retired key (with the
+local provider; `KEEP_DEVELOPMENT_KEY` says otherwise), so `keys.W001`
+warns and `keys reencrypt` moves what it sealed; then set
+`KEEP_DEVELOPMENT_KEY = False`.
 
 ### Providers
 
@@ -127,11 +154,18 @@ development key, `dev`, derived from `SECRET_KEY`.
   `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` variables (and
   `AWS_SESSION_TOKEN`), else a web identity (`AWS_ROLE_ARN` and
   `AWS_WEB_IDENTITY_TOKEN_FILE`, as EKS sets them), else the container's
-  endpoint (ECS, EKS Pod Identity). The role needs `kms:GenerateDataKey`,
+  endpoint (ECS, EKS Pod Identity). As the AWS SDKs' container credential
+  provider allows, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` must be a path
+  on `169.254.170.2`, and `AWS_CONTAINER_CREDENTIALS_FULL_URI` must use
+  `https`, or `http` to a loopback address or an agent's
+  (`169.254.170.2`, `169.254.170.23`, `fd00:ec2::23`): the pod's token is
+  sent nowhere else. The role needs `kms:GenerateDataKey`,
   `kms:Decrypt`, and `kms:ReEncrypt*` on the key, best with the condition
   `kms:EncryptionContext:domainkit = data-key`.
 - `vault`: the transit engine's `datakey/plaintext`, `decrypt`, and
   `rewrap` on `VAULT.KEY`; the token needs `update` on those three paths.
+  Staging and production refuse `VAULT.URL` over plain `http://`
+  (`keys.E002`): the token and every data key would cross in clear.
 
 A project can pass any `domainkit.keys.KeyProvider` to its own
 `Keyring`; `domainkit.keys.aws.AwsKmsKeyProvider` also takes a
@@ -169,6 +203,14 @@ destroys their keys in every database that hosts domains
 `{"subject_keys": 1}`). From then on, every value sealed under those keys
 reads as None, in the database and in every backup or dump of it.
 
+An erasure runs in transactions of its own, so a transaction making the
+person's first key at the same time is not seen. The erasure therefore
+leaves a tombstone, `domainkit_keys_erasures` (the subject and when, kept
+a day), under the subject's lock; a transaction that made keys checks, as
+it commits and under the same locks, whether their subjects were erased
+after the keys were made, and if so destroys them, with the blind indexes
+it wrote for them.
+
 What remains:
 
 - **The ciphertext**, where it was: nothing can open it.
@@ -199,6 +241,7 @@ with it; what it writes reads as None afterwards.
 | `VAULT` | `None` | The transit key, below; required with `"vault"`. |
 | `DATA_KEYS` | `{}` | Data keys by id (1 to 32 letters, digits, `_`, `-`), each wrapped by `PROVIDER`; at most 16. Required with a key service. |
 | `CURRENT_KEY` | `None` | The data key new values are sealed under; may be left out when `DATA_KEYS` holds one key. |
+| `KEEP_DEVELOPMENT_KEY` | `None` | Keep `dev` beside `DATA_KEYS`, retired, so what it sealed still opens and `keys reencrypt` moves it: `None` keeps it with the local provider only. |
 | `TIMEOUT` | `5.0` | Seconds each call to the key service may take, retries included; at most 60. |
 
 | `KEYS["AWS_KMS"]` key | Default | Meaning |
@@ -219,6 +262,8 @@ with it; what it writes reads as None afterwards.
 
 - `keys.E001` (error, staging and production): the local KEK without
   `ALLOW_LOCAL_KEK`.
+- `keys.E002` (error, staging and production): `VAULT.URL` over plain
+  `http://`.
 - `keys.W001` (warning): `DATA_KEYS` keeps retired keys; `keys status
   --check` fails while values, indexes, or subjects' keys still use one.
 - `manage.py keys generate | rewrap | status [--check] | reencrypt
