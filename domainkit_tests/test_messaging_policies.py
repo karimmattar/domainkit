@@ -564,6 +564,32 @@ async def test_chains_pass_results_from_step_to_step() -> None:
     assert stored["tests.archive"]["headers"]["chain"] == ["tests.total"]
 
 
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_workers_next_step_is_left_to_the_relay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a broker, the step a worker writes is published by the relay, not it."""
+    from domainkit.contrib.messaging import dispatch
+
+    published: list[list[uuid.UUID]] = []
+    monkeypatch.setattr(
+        dispatch,
+        "publish_committed",
+        lambda config, database, ids: published.append(ids),
+    )
+    await enqueue(chain(charge, receipt), order=7)
+    published.clear()  # The enqueue's own commit publishes its first step.
+    worker = Worker()
+
+    (claimed,) = await worker.claim(1)
+    await worker.process(claimed)
+
+    assert published == []
+    assert [row["target"] for row in await rows() if row["status"] == PENDING] == [
+        "tests.receipt"
+    ]
+
+
 @pytest.mark.usefixtures("tables")
 async def test_a_failed_step_holds_the_rest_back() -> None:
     """The next step is written only once the previous one succeeds."""
@@ -619,10 +645,11 @@ async def test_a_step_no_longer_registered_dead_letters() -> None:
     by_target = {r["target"]: r for r in await rows()}
     assert set(by_target) == {"tests.charge", "tests.gone", "missing.handler"}
     gone = by_target["tests.gone"]
-    assert (gone["status"], gone["queue"], gone["max_attempts"]) == (
+    assert (gone["status"], gone["queue"], gone["max_attempts"], gone["priority"]) == (
         DEAD,
         "default",
         10,
+        0,
     )
     assert gone["last_error"] == "UnknownTarget: No task 'tests.gone'."
 

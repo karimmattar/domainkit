@@ -278,6 +278,12 @@ and a status.
   so 9.95 times a typed 2 was 1990.00, where PostgreSQL gave 19.90. Give
   the factor as a plain `Decimal`, an untyped `bindparam`, or an integer
   or numeric column; `+` and `-` between amounts are unchanged (TEST-11).
+- The 499 mutants 0.14's changed functions left (476 alive, 23 that no
+  test reached) are settled: 219 are killed by new tests (20 of
+  them on PostgreSQL, where the triggers, `NOTIFY` and the database's
+  clock run), 156 die on PostgreSQL already, 106 are equivalent, and
+  12 run only at import; the audit page lists, by module, the 6 left
+  and why (TEST-11).
 
 ### Fixed
 

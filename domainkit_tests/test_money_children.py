@@ -281,5 +281,9 @@ async def test_a_filter_set_compares_one_child_s_amounts_in_its_currency(
 
 def test_a_filter_set_wants_the_currency_with_an_amount() -> None:
     """An amount without its currency compares nothing."""
-    with pytest.raises(InvalidFilter, match="Give item_price_currency"):
+    with pytest.raises(InvalidFilter) as refused:
         BasketFilters(item_price__gte=100)
+    assert refused.value.detail == (
+        "Give item_price_currency with an amount of item_price: amounts compare "
+        "only within a currency."
+    )

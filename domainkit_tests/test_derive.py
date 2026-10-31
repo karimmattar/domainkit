@@ -48,7 +48,14 @@ from domainkit.db import migrations as migrations_module
 from domainkit.db.derive import _column_types, column_type
 from domainkit.db.migrations import render_item
 from domainkit.db.orm import NAMING_CONVENTION
-from domainkit.ddd import AggregateRoot, Digits, Entity, MaxLength, ValueObject
+from domainkit.ddd import (
+    AggregateRoot,
+    Digits,
+    Entity,
+    MaxLength,
+    Reference,
+    ValueObject,
+)
 from domainkit.ddd.fields import FieldInfo, fields_of
 from domainkit.management import call_command
 from domainkit_tests.conftest import ALPHA
@@ -142,6 +149,23 @@ def test_columns_are_derived_from_the_hints() -> None:
     nullable = {column.name for column in table.columns if column.nullable}
     assert nullable == {"code"}
     assert table.info == {}
+
+
+BracketId = NewType("BracketId", int)
+
+
+class Bracket(AggregateRoot[BracketId]):
+    """Holds up a shelf, which it references by id."""
+
+    shelf_id: Reference[ShelfId]
+    spare: int
+
+
+def test_a_reference_to_another_aggregate_is_indexed() -> None:
+    """Its column is looked up by the other's id; other columns are not indexed."""
+    table = table_for(Bracket, "framework_test_brackets", metadata=MetaData())
+
+    assert {column.name for column in table.columns if column.index} == {"shelf_id"}
 
 
 def test_given_columns_and_items_replace_or_join_the_derived() -> None:

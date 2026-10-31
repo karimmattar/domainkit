@@ -12,11 +12,14 @@ import io
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
+from sqlalchemy.dialects import postgresql
 
 from domainkit.apps import registry
+from domainkit.clock import freeze_time
 from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
@@ -387,3 +390,145 @@ def test_leases_are_judged_by_the_earlier_clock_on_postgresql() -> None:
     assert compiled.startswith("least(")
     assert "statement_timestamp()" in compiled
     assert dbclock.now("sqlite") <= admin.lease_now("sqlite")
+
+
+# What the repairs read: statuses written into the SQL, keys stalled, turns kept.
+
+
+def _sql(statement: Any) -> tuple[str, dict[str, Any]]:  # noqa: ANN401 - a statement.
+    """``statement`` as PostgreSQL runs it, and the parameters it still takes."""
+    dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+    compiled = statement.compile(
+        dialect=dialect, compile_kwargs={"render_postcompile": True}
+    )
+    return " ".join(str(compiled).split()), dict(compiled.params)
+
+
+def test_statuses_and_sizes_are_written_into_the_sql() -> None:
+    """A prepared statement still reads ``ORDERING_INDEX``: they imply its condition.
+
+    The key and the time remain parameters; the statuses and the batch's
+    size are text of the statement.
+    """
+    stalled, none = _sql(ordering.stalled(7))
+    idle, timed = _sql(ordering.idle_keys("postgresql", 7, 60.0))
+    first, keyed = _sql(select(messages.c.id).where(ordering.busy("k")))
+
+    assert none == {}
+    assert "domainkit_messages.status IN ('held')" in stalled
+    assert ".status IN ('pending')" in stalled  # Of the key's own messages.
+    assert stalled.endswith("ORDER BY domainkit_messages.ordering_key LIMIT 7")
+    assert list(timed) == ["statement_timestamp_1"]
+    assert "status IN ('pending', 'held', 'dead')" in idle
+    assert idle.endswith("LIMIT 7 FOR UPDATE SKIP LOCKED)")
+    assert "status IN ('pending', 'held') ORDER BY" in first
+    assert sorted(keyed.values(), key=str) == [1, "k"]  # The key, and LIMIT 1.
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_key_is_stalled_with_held_messages_and_none_pending() -> None:
+    """Its own pending message, not another key's, keeps it from being stalled."""
+    for key in ("b", "a", "c"):
+        for number in range(2):
+            await enqueue(step, key=key, label=f"{key}{number}")
+    await finished_unpromoted("b")
+    await finished_unpromoted("a")
+
+    async with connections.engine().connect() as connection:
+        found = await ordering.stalled_keys(connection, 10)
+        first = await ordering.stalled_keys(connection, 1)
+
+    assert (found, first) == (["a", "b"], ["a"])
+
+
+@pytest.mark.usefixtures("tables", "immediate_retries")
+async def test_only_a_dead_letter_takes_a_place_back() -> None:
+    """A finished message before it is not given back, nor does it hold anyone."""
+    runs.broken.add("a1")
+    await enqueue(step, key="a", label="a0")
+    await enqueue(doomed, key="a", label="a1")
+    await enqueue(step, key="a", label="a2")
+    worker = Worker(config())
+    for _ in range(3):
+        (claimed,) = await worker.claim(1)
+        await worker.process(claimed)  # a0 is done; a1 dies, twice.
+    assert await statuses("a") == [DONE, DEAD, PENDING]
+    runs.broken.clear()
+
+    assert await admin.retry_dead(registry.settings(MessagingSettings), None) == 1
+    assert await statuses("a") == [DONE, PENDING, HELD]
+
+
+@pytest.mark.usefixtures("tables", "immediate_retries")
+async def test_a_dead_letter_waits_for_a_lock_that_ends_this_instant() -> None:
+    """A lock is alive to its last instant, as ``locked`` judges it."""
+    await dead_then_next(lock=None, started=False)
+    moment = datetime(2030, 1, 1, tzinfo=UTC)
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(messages)
+            .where(messages.c.status == PENDING, messages.c.ordering_key == "a")
+            .values(locked_until=moment, lock_id=uuid.uuid4())
+        )
+
+    with freeze_time(moment):
+        assert await admin.retry_dead(registry.settings(MessagingSettings), None) == 1
+    assert await statuses("a") == [HELD, PENDING]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_stopped_round_of_pruning_releases_no_stalled_key() -> None:
+    """``prune_keys`` stops before the stalled keys when the worker stops."""
+    for number in range(2):
+        await enqueue(step, key="a", label=f"a{number}")
+    await finished_unpromoted("a")
+    stopped = asyncio.Event()
+    stopped.set()
+
+    assert await Worker(config())._prune_keys(stopped) == 0
+    assert await statuses("a") == [DONE, HELD]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_the_next_message_of_a_key_starts_without_a_word(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A worker with no relay to hand it to only wakes its own loop."""
+    for number in range(2):
+        await enqueue(step, key="a", label=f"a{number}")
+    worker = Worker(config())
+
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
+        (claimed,) = await worker.claim(1)
+        await worker.process(claimed)
+
+    assert await statuses("a") == [DONE, PENDING]
+    assert caplog.messages == []
+
+
+@pytest.mark.usefixtures("tables", "immediate_retries")
+async def test_a_retry_takes_the_turns_of_its_dead_letters_keys_only() -> None:
+    """Another key, with nothing dead, is not touched: its idle time runs on."""
+    from domainkit.contrib.messaging.tables import ordering_keys
+
+    early, later = datetime(2030, 1, 1, tzinfo=UTC), datetime(2030, 1, 2, tzinfo=UTC)
+    with freeze_time(early):
+        await enqueue(step, key="b", label="b0")
+        await enqueue(doomed, key="a", label="a0")
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(messages).where(messages.c.ordering_key == "a").values(status=DEAD)
+        )
+
+    with freeze_time(later):
+        assert await admin.retry_dead(registry.settings(MessagingSettings), None) == 1
+
+    async with connections.engine().connect() as connection:
+        touched = dict(
+            (
+                await connection.execute(
+                    select(ordering_keys.c.key, ordering_keys.c.touched_at)
+                )
+            ).all()
+        )
+    assert touched == {"a": later, "b": early}

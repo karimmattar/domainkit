@@ -10,7 +10,7 @@ from typing import Annotated, Any, Final
 from uuid import UUID
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -29,7 +29,13 @@ from domainkit.contrib.messaging.management.commands.messages import (
 from domainkit.contrib.messaging.management.commands.runworker import (
     Command as RunWorker,
 )
-from domainkit.contrib.messaging.tables import DEAD, DONE, PENDING, messages
+from domainkit.contrib.messaging.tables import (
+    CANCELLED,
+    DEAD,
+    DONE,
+    PENDING,
+    messages,
+)
 from domainkit.db import connections
 from domainkit.ddd import Personal
 from domainkit.management import BaseCommand, CommandError
@@ -143,6 +149,21 @@ async def test_waiting_messages_are_listed_due_first_then_by_priority_and_age(
     assert listed == ["urgent", "older", "due now", "scheduled"]
 
 
+async def test_due_messages_of_one_priority_are_listed_oldest_first(
+    outbox: None,
+) -> None:
+    """Whichever was written first, the one due longest comes first."""
+    await store(
+        row("newer", available_at=NOW - timedelta(minutes=1)),
+        row("older", available_at=NOW - timedelta(hours=2)),
+    )
+
+    with freeze_time(NOW):
+        listed = await targets("pending")
+
+    assert listed == ["older", "newer"]
+
+
 async def test_locked_messages_are_listed_by_the_end_of_their_lock(
     outbox: None,
 ) -> None:
@@ -218,6 +239,23 @@ async def test_a_retried_dead_letter_is_due_now_and_unfinished(outbox: None) -> 
     assert (listed.available_at, listed.finished_at) == (NOW, None)
 
 
+async def test_a_cancelled_message_handed_to_the_broker_keeps_no_lock(
+    outbox: None,
+) -> None:
+    """Published, not started: cancelled, its relay's lock goes with it."""
+    published = row(
+        "published", locked_until=NOW + timedelta(minutes=5), lock_id=uuid.uuid4()
+    )
+    await store(published)
+
+    with freeze_time(NOW):
+        assert await outbox_admin.cancel(CONFIG, published["id"])
+
+    async with connections.engine().connect() as connection:
+        found = (await connection.execute(select(messages))).one()
+    assert (found.status, found.locked_until, found.lock_id) == (CANCELLED, None, None)
+
+
 # The commands ---------------------------------------------------------------------
 
 
@@ -248,6 +286,11 @@ def test_runworker_says_what_each_option_does() -> None:
     "line",
     [
         "--pending list waiting messages, in the order workers take them",
+        "--held list messages waiting for an earlier one of their key",
+        (
+            "--release run the next message of each ordering key left with held "
+            "messages and none pending"
+        ),
         "--locked list running and published messages",
         "--dead list dead letters",
         "--limit LIMIT",
