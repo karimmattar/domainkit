@@ -742,14 +742,38 @@ def test_the_money_attribute_compares_only_with_money() -> None:
         Wallet.limit < None  # type: ignore[operator]  # noqa: B015 - it raises.
 
 
+def test_a_money_fields_parts_keep_its_bounds_and_whether_it_may_be_missing() -> None:
+    """``limit.amount`` may be None, as ``limit`` may, within its ``Digits``."""
+    from domainkit.ddd.fields import fields_of, money_part
+
+    fields = fields_of(Wallet)
+    amount = money_part(fields["limit"], "amount")
+    code = money_part(fields["balance"], "currency")
+
+    assert amount is not None
+    assert code is not None
+    assert (amount.kind, amount.nullable, amount.metadata) == (
+        Decimal,
+        True,
+        fields["limit"].metadata,
+    )
+    assert (code.kind, code.nullable) == (Currency, False)
+    assert money_part(fields["name"], "amount") is None
+    assert money_part(fields["balance"], "cents") is None
+
+
 def test_half_a_pair_loads_as_a_clear_error() -> None:
     """An amount without its currency, or the reverse, is no money, nor None."""
     load = class_mapper(Wallet).composites["limit"].composite_class
 
     assert load(None, None) is None
     assert load(Decimal("1.50"), currency("USD")) == money("1.50", "USD")
-    with pytest.raises(IncompleteMoney, match=r"^A row holds an amount without its"):
+    with pytest.raises(IncompleteMoney) as half:
         load(Decimal("1.50"), None)
+    assert str(half.value) == (
+        "A row holds an amount without its currency, or a currency without its "
+        "amount; add the pair's check (money_check) and repair the row."
+    )
     with pytest.raises(IncompleteMoney, match="money_check"):
         load(None, currency("USD"))
 

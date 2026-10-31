@@ -888,6 +888,42 @@ def test_currencies_take_their_bounds_and_default_to_no_name() -> None:
         (lambda: usd("1") - Money.of("1", "EUR"), CurrencyMismatch, "Cannot subtract"),
         (lambda: usd("1") < Money.of("1", "EUR"), CurrencyMismatch, "Cannot compare"),
         (
+            lambda: currency(Currency("ABC", None, 2)),
+            UnknownCurrency,
+            (
+                "Currency('ABC', None, 2) is not the known currency of its code: "
+                "take currencies from currency() or register_currency."
+            ),
+        ),
+        (
+            lambda: currency("ABCDEFGHIJ"),
+            UnknownCurrency,
+            "No currency has the code: use an ISO 4217 code",
+        ),
+        (
+            lambda: Money.of(1.5, "USD"),  # type: ignore[arg-type]
+            TypeError,
+            (
+                "Money never takes a float amount (floats are inexact): give a "
+                "Decimal, an int, or text."
+            ),
+        ),
+        (
+            lambda: Money.of(1, 5),  # type: ignore[arg-type]
+            TypeError,
+            "A currency is a Currency or its code, not int.",
+        ),
+        (
+            lambda: usd("1").__init__("1", "USD"),  # type: ignore[misc]
+            AttributeError,
+            "Money is immutable; it is made once.",
+        ),
+        (
+            lambda: currency("USD").__init__("USD", 840, 2),  # type: ignore[misc]
+            AttributeError,
+            "A currency is immutable; it is made once.",
+        ),
+        (
             lambda: Money.from_minor(1.5, "USD"),  # type: ignore[arg-type]
             TypeError,
             "Money.from_minor takes a whole number of minor units, not float.",
@@ -945,6 +981,21 @@ def test_each_refusal_says_why(
         make()  # type: ignore[operator]
 
     assert str(caught.value).startswith(message)
+
+
+def test_an_amount_of_38_digits_rounds_to_its_places() -> None:
+    """Rounding works at the full precision, past Python's default 28 digits."""
+    rounded = Money.of("1" * 36 + ".125", "USD", rounding=Rounding.HALF_UP)
+    assert rounded.amount == Decimal("1" * 36 + ".13")
+
+
+def test_amount_text_as_long_as_it_may_be_is_read() -> None:
+    """96 characters: 38 digits and 18 places twice over, a point and a sign."""
+    longest = "0" * 77 + "." + "0" * 18
+    assert len(longest) == 96
+    assert Money.of(longest, "USD") == usd("0")
+    with pytest.raises(ValueError, match="no exponent"):
+        Money.of(longest + "0", "USD")
 
 
 def test_comparisons_at_their_edges() -> None:

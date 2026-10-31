@@ -255,10 +255,21 @@ async def test_a_factor_has_at_most_nine_places(engine: AsyncEngine) -> None:
     await stored(engine, {"id": 1, "amount": Decimal("9.95")})
     product = select(prices.c.amount * bindparam("factor"))
 
-    for factor, error in ((Decimal("0.0000000001"), ValueError), (0.1, TypeError)):
+    for factor, error, message in (
+        (
+            Decimal("0.0000000001"),
+            ValueError,
+            (
+                "A factor of an amount has at most 9 decimal places in SQL; round "
+                "it first, or compute in Python."
+            ),
+        ),
+        (0.1, TypeError, "ExactDecimal takes a Decimal or an int, not float"),
+    ):
         with pytest.raises(StatementError) as refused:
             await scalars_with(engine, product, {"factor": factor})
         assert isinstance(refused.value.orig, error)
+        assert str(refused.value.orig).startswith(message)
     assert await scalars_with(engine, product, {"factor": Decimal("0.000000001")}) == [
         Decimal("0.00000000995")
     ]

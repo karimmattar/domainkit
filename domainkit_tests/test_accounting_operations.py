@@ -46,7 +46,7 @@ from domainkit.contrib.accounting.reconciliation import (
     reconcile,
 )
 from domainkit.contrib.accounting.tables import accounts, postings, statement_lines
-from domainkit.contrib.accounting.tasks import POST_ENTRY
+from domainkit.contrib.accounting.tasks import EXPIRE_HOLDS, POST_ENTRY
 from domainkit.contrib.messaging.registry import get_task
 from domainkit.contrib.messaging.retry import retryable
 from domainkit.db import connections
@@ -54,7 +54,7 @@ from domainkit.ddd import ConcurrentUpdate
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command, operators
 from domainkit.management.base import run_async
-from domainkit.money import UnknownCurrency
+from domainkit.money import Money, UnknownCurrency
 from domainkit_tests.conftest import (
     POSTGRES_VARIABLE,
     MakeDatabase,
@@ -265,10 +265,21 @@ def test_the_ledger_lives_in_one_database() -> None:
             SHARDS={"ledgers": {"DATABASES": ["a", "b"]}},
             DATABASE_ROUTING={"accounting": "ledgers"},
         ),
-        pytest.raises(ImproperlyConfigured, match=r"DATABASE_ROUTING\['accounting'\]"),
+        pytest.raises(
+            ImproperlyConfigured,
+            match=r"^DATABASE_ROUTING\['accounting'\] = 'ledgers' must name a SQL",
+        ),
     ):
         setup()
     registry.clear()
+
+
+@pytest.mark.usefixtures("books")
+async def test_holds_expire_on_a_schedule_named_for_them() -> None:
+    """``EXPIRE_HOLDS`` runs every ``ACCOUNTING.EXPIRE_HOLDS_EVERY``."""
+    spec = get_task(EXPIRE_HOLDS)
+    assert spec is not None
+    assert spec.every == timedelta(minutes=1)
 
 
 def test_without_messaging_no_task_is_registered() -> None:
@@ -348,6 +359,31 @@ def test_holds_that_nothing_expires_are_warned_of_where_deployed(
             "expireholds' from a scheduler and list accounting.W003 in "
             "SILENCED_CHECKS."
         )
+
+
+@pytest.mark.usefixtures("books")
+async def test_a_holders_accounts_are_exported_oldest_first_then_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Accounts opened at one moment come in the order of their ids."""
+    from domainkit.contrib.accounting import models
+
+    ids = iter([uuid.UUID(int=3), uuid.UUID(int=2), uuid.UUID(int=9)])
+    monkeypatch.setattr(models, "uuid4", lambda: next(ids))
+    for code, opened_at in (
+        ("2000", NOW),
+        ("2001", NOW),
+        ("2002", NOW - timedelta(hours=1)),
+    ):
+        with freeze_time(opened_at):
+            await account(code, type=AccountType.LIABILITY, holder="subject-1")
+    monkeypatch.undo()
+    (export,) = on_export_subject.of("accounting")
+
+    exported = await export.call("subject-1")
+
+    found = cast(list[dict[str, Any]], exported["accounts"])
+    assert [each["code"] for each in found] == ["2002", "2001", "2000"]
 
 
 @pytest.mark.usefixtures("books")
@@ -600,6 +636,27 @@ def books_with_a_sale() -> None:
     run_async(make())
 
 
+def test_the_command_says_what_each_argument_is() -> None:
+    """Its ``--help``, as an operator reads it."""
+    from domainkit.contrib.accounting.management.commands.accounting import Command
+
+    usage = Command().create_parser("manage.py", "accounting").format_help()
+    assert " ".join(usage.split()) == (
+        "usage: manage.py accounting [-h] [--format {csv,json}] [--output OUTPUT] "
+        "[--operator NAME] {trialbalance,ledger,verify,expireholds,import,"
+        "reconcile,unmatched} [target] [file] Write a period's trial balance or "
+        "general ledger, check the books, release expired holds, import a "
+        "statement, reconcile an account, or list what is unmatched. positional "
+        "arguments: {trialbalance,ledger,verify,expireholds,import,reconcile,"
+        "unmatched} target the period (name or id) to report, or the account "
+        "(code or id) to import into, reconcile, or list file import: the "
+        "statement's CSV file options: -h, --help show this help message and exit "
+        "--format {csv,json} --output OUTPUT write the report there instead of "
+        "stdout --operator NAME who runs this, for the audit trail (default: "
+        "$DOMAINKIT_OPERATOR, else your login name, else uid-<n>)"
+    )
+
+
 def test_the_command_writes_reports(project: str, tmp_path: Path) -> None:
     """Trial balances and ledgers, CSV or JSON, to stdout or a file."""
     books_with_a_sale()
@@ -676,6 +733,7 @@ def test_the_command_reconciles_a_statement(
     account = json.loads(run("trialbalance", "2026-10", "--format", "json"))[
         "accounts"
     ][0]["account_id"]
+    assert run("unmatched", account) == unmatched  # By id, as by code.
     file = {"account": account, "file": "october.csv"}
     assert actions == [
         ("accounting.import", "success", {**file, "imported": 2, "skipped": 0}),
@@ -758,6 +816,101 @@ async def _tables(alias: str) -> list[str]:
         return await connection.run_sync(
             lambda sync: sorted(sync.dialect.get_table_names(sync))
         )
+
+
+@pytest.mark.usefixtures("books")
+async def test_verify_checks_each_entry_in_each_currency() -> None:
+    """An entry whose currencies are off in opposite ways is off, not balanced."""
+    await period()
+    cash, sales = await account("1000"), await account("4000")
+    euros, income = await account("1100", "EUR"), await account("4100", "EUR")
+    await post_entry(
+        transfer(sales, cash, usd("4"), "balanced"), AccountingUnitOfWork()
+    )
+    entry = await post_entry(
+        PostEntry(
+            source="tests",
+            reference="mixed",
+            booked_on=TODAY,
+            lines=(
+                Line.debit(cash.id, usd("10")),
+                Line.credit(sales.id, usd("10")),
+                Line.debit(euros.id, Money.of("5", "EUR")),
+                Line.credit(income.id, Money.of("5", "EUR")),
+            ),
+        ),
+        AccountingUnitOfWork(),
+    )
+    async with connections.engine().begin() as connection:
+        for line, side, account_id, currency in (
+            (5, "debit", cash.id, "USD"),
+            (6, "credit", income.id, "EUR"),
+        ):
+            await connection.execute(
+                insert(postings).values(
+                    id=uuid.uuid4(),
+                    entry_id=entry.id,
+                    line=line,
+                    account_id=account_id,
+                    side=side,
+                    amount=Decimal(5),
+                    currency=currency,
+                    booked_on=TODAY,
+                    memo="",
+                )
+            )
+
+    problems = [p for p in await verify_ledger() if p.kind == "unbalanced_entry"]
+
+    assert sorted((p.id, p.detail) for p in problems) == [
+        (str(entry.id), "EUR: debits 5.0000, credits 10.0000"),
+        (str(entry.id), "USD: debits 15.0000, credits 10.0000"),
+    ]
+
+
+@pytest.mark.usefixtures("books")
+async def test_verify_lists_the_accounts_by_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Balances that do not add up, in the chart's order, not the ids'."""
+    from domainkit.contrib.accounting import models
+
+    ids = iter([uuid.UUID(int=2), uuid.UUID(int=1)])
+    monkeypatch.setattr(models, "uuid4", lambda: next(ids))
+    first, second = await account("1000"), await account("4000")
+    monkeypatch.undo()
+    async with connections.engine().begin() as connection:
+        await connection.execute(update(accounts).values(balance=Decimal(1)))
+
+    problems = await verify_ledger()
+
+    assert [(p.kind, p.id) for p in problems] == [
+        ("balance_differs", str(first.id)),
+        ("balance_differs", str(second.id)),
+    ]
+
+
+@pytest.mark.usefixtures("books")
+async def test_verify_sums_each_accounts_holds_on_its_own() -> None:
+    """Two accounts, each with its active holds: both add up."""
+    await period()
+    card, other = await account("1000"), await account("1001")
+    for account_id, amount, reference in (
+        (card.id, "3", "a"),
+        (other.id, "2", "b"),
+        (other.id, "4", "c"),
+    ):
+        await place_hold(
+            PlaceHold(
+                account_id=account_id,
+                amount=usd(amount),
+                source="s",
+                reference=reference,
+            ),
+            AccountingUnitOfWork(),
+        )
+
+    assert await verify_ledger() == []
 
 
 @pytest.mark.usefixtures("books")
