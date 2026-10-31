@@ -29,6 +29,7 @@ from domainkit.apps import registry
 from domainkit.ddd import Command, Retry
 
 from .exceptions import InvalidEntry, NoOpenPeriod, PeriodsOverlap, ReferenceReused
+from .hooks import on_posting
 from .models import (
     Account,
     AccountId,
@@ -234,6 +235,7 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
         AccountNotFound: A line names no account.
         NoOpenPeriod, PeriodIsClosed: The date is in no open period.
         AccountIsClosed, InsufficientFunds: As ``Account.post``.
+        DomainError: An ``on_posting`` hook refused it (``approval_required``).
     """
     lines = tuple(command.lines)
     max_lines = config().MAX_LINES
@@ -256,6 +258,8 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
         raise InvalidEntry(
             "The sources that start with 'accounting.' are the ledger's own."
         )
+    for hook in on_posting.hooks():
+        await hook.call(command)
     return await run(
         uow,
         lambda: post(

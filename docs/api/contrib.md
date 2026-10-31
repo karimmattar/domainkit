@@ -1,8 +1,8 @@
 # Public API: the other optional apps
 
-Every `domainkit.contrib` app but auth: accounting, admin, audit, content types,
-evidence, flags, idempotency, mail, messaging, notifications, object
-permissions, privacy, and webhooks ([contrib.md](../contrib.md)). Part of
+Every `domainkit.contrib` app but auth: accounting, admin, approvals, audit,
+content types, evidence, flags, idempotency, mail, messaging,
+notifications, object permissions, privacy, and webhooks ([contrib.md](../contrib.md)). Part of
 the [public API](../api.md), under its compatibility policy.
 
 ## `domainkit.contrib.accounting`
@@ -88,6 +88,12 @@ The ledger over HTTP: accounts, entries, holds, periods, reports, reconciliation
 - `periods`: Accounting periods: list, read, open, close, and their reports.
 - `router`: Every route of the ledger, to mount under a prefix of the project's.
 
+## `domainkit.contrib.accounting.hooks`
+
+Hook points the ledger offers other apps.
+
+- `on_posting`: Check an entry before `post_entry` posts it: `(command)`; raising refuses it.
+
 ## `domainkit.contrib.accounting.reconciliation`
 
 Reconciliation: external statements matched to the ledger's postings.
@@ -121,6 +127,77 @@ Reports of a period: the trial balance and the general ledger, as CSV and JSON.
 - `general_ledger`: The postings dated in a period, streamed as CSV or JSON, with totals.
 - `trial_balance`: The trial balance of a period: every account with a balance or movements.
 - `verify_ledger`: Check the books: entries balance, balances and held amounts add up.
+## `domainkit.contrib.approvals`
+
+Maker-checker: commands that run only once other people approve them.
+
+- `ENTRIES`: The guarded action of postings over their currency's threshold.
+- `SUPERUSERS`: The guarded action of making a user a superuser.
+- `AlreadyDecided`: This person approved or rejected the request already (409).
+- `ApprovalGiven`: One person approved a request; `approvals` of `required` so far.
+- `ApprovalNotNeeded`: No policy asks for approval of this command: call it directly.
+- `ApprovalPending`: A guarded command called directly was submitted for approval instead (403).
+- `ApprovalRequest`: A command that runs only once enough people other than its maker approve it.
+- `ApprovalRequired`: A guarded command was called directly: it runs only once approved (403).
+- `ApprovalsSettings`: How requests wait, who approves them, what is guarded; every key optional.
+- `ApprovalsUnitOfWork`: One transaction on the requests, wherever `approvals` is routed.
+- `ApproveRequest`: Approve a request, as `approver`, holding the `fingerprint` they saw.
+- `CancelRequest`: Withdraw a request, as its `maker`.
+- `Decision`: One person's approval or rejection of a request, and what they saw.
+- `FingerprintMismatch`: What was approved is not what the request holds.
+- `GrantSuperuser`: Make a user a superuser: they hold every permission.
+- `Guard`: A guarded use case: its command, its service, and its policies.
+- `InvalidArguments`: A command's arguments do not make the command, or are too large.
+- `MakerCannotDecide`: Whoever submitted a request may not approve or reject it.
+- `NotTheMaker`: Only whoever submitted a request may cancel it.
+- `Policy`: Who approves a command, how many of them, and for how long it waits.
+- `RejectRequest`: Reject a request, as `approver`, for `reason`.
+- `RequestApproved`: A request has its approvals; its command is queued to run.
+- `RequestCancelled`: The maker withdrew a request.
+- `RequestExecuted`: An approved command ran.
+- `RequestExpired`: A request's time ran out before its approvals came.
+- `RequestFailed`: An approved command was refused when it ran; `error` is the refusal's code.
+- `RequestId`: A request's id (a `UUID`).
+- `RequestNotFound`: No approval request has that id.
+- `RequestNotPending`: The request was approved, rejected, cancelled, or has expired.
+- `RequestRejected`: One person rejected a request, with a reason (kept on the request).
+- `RequestStatus`: Where a request is: waiting, decided, or run.
+- `RequestSubmitted`: A maker submitted a command for approval.
+- `SubmitRequest`: Submit a guarded command for approval: its action, its arguments, its maker.
+- `Threshold`: Amounts, one per currency, over which a policy applies.
+- `UnknownAction`: No guarded command has that name.
+- `Verdict`: What one person decided about a request.
+- `approve_request`: Approve a request; the approval that completes it queues its command.
+- `approved`: Whether `command` is the approved command of `action` being run.
+- `cancel_request`: Withdraw a pending request, as its maker.
+- `execute_request`: Run an approved request's command, once (the task `EXECUTE`).
+- `expire_requests`: Expire the pending requests whose time is up; how many there were.
+- `fingerprint`: SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
+- `guard`: Register the guard of a use case decorated `requires_approval(action)`.
+- `guards`: Every registered guard, by action.
+- `on_guard`: The guards the installed domains registered: `on_guard(Guard(...))`.
+- `refuse_if_guarded`: Refuse `action` done outside approvals, if a guard is registered for it.
+- `reject_request`: Reject a request for a reason; one rejection ends it.
+- `requires_approval`: Guard a use case: called directly, it needs no approval, or is refused.
+- `submit_command`: Store `command` of the guard `action` as a pending request of `maker`'s.
+- `submit_request`: Store a guarded command, given as JSON arguments, as a pending request.
+
+## `domainkit.contrib.approvals.api`
+
+Approval requests over HTTP: submit, list, read, approve, reject, cancel.
+
+- `requests`: Approval requests: list, read, approve, reject, and cancel.
+- `router`: Every route of the requests, to mount under a prefix of the project's.
+
+## `domainkit.contrib.approvals.rules`
+
+Who may decide a request: its policy's approvers, and the rule approving asks.
+
+- `IsApprover`: One of the people a request's policy lets decide it.
+- `MayApprove`: The rule approving a request asks for besides its approvers: a step-up, say.
+- `RequestActions`: The rules of each route of the requests (`ModelActions`' protocol).
+- `configured_rule`: `APPROVALS.APPROVE_RULE`, imported: a rule instance, or None.
+
 ## `domainkit.contrib.admin`
 
 A generic admin over REST: Django's `admin.site.register`, without HTML.

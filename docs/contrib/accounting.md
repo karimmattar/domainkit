@@ -134,6 +134,12 @@ entry = await post_entry(
   ledger's tables alone.
 - `EntryPosted`, like every event of the app, is recorded by
   `contrib.audit` when it is installed.
+- **Checks before posting.** An app may refuse an entry before
+  `post_entry` takes any lock: it registers `async def hook(command)` on
+  `domainkit.contrib.accounting.hooks.on_posting` in `ready()`, and
+  raises. `domainkit.contrib.approvals` refuses there the entries over
+  `APPROVALS.ENTRY_THRESHOLDS` that no approved request posts
+  (`approval_required`, 403; [approvals.md](approvals.md#large-postings)).
 
 ### From messages
 

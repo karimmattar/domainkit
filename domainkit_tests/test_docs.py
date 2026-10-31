@@ -27,6 +27,7 @@ from domainkit.conf.global_settings import (
     StorageConfig,
 )
 from domainkit.contrib.accounting import AccountingSettings
+from domainkit.contrib.approvals import ApprovalsSettings
 from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.auth.settings import (
     AuthSettings,
@@ -98,6 +99,7 @@ def documented(pages: str) -> set[str]:
         (FlagsSettings, "contrib/flags.md"),
         (WebhookSettings, "contrib/webhooks.md"),
         (AccountingSettings, "contrib/accounting.md"),
+        (ApprovalsSettings, "contrib/approvals.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (PreviousJWTKey, "auth.md"),
@@ -408,6 +410,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
     (WebhookSettings, "contrib/webhooks.md", "WEBHOOKS"),
     (AccountingSettings, "contrib/accounting.md", "ACCOUNTING"),
+    (ApprovalsSettings, "contrib/approvals.md", "APPROVALS"),
     (AuditSettings, "contrib/audit.md", "AUDIT"),
     (IdempotencySettings, "contrib/idempotency.md", "IDEMPOTENCY"),
     (EvidenceSettings, "contrib/evidence.md", "EVIDENCE"),

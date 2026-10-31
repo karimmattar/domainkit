@@ -227,6 +227,10 @@ user is made as when one is changed.
 Staff hand out only what they have:
 
 - Only superusers make, unmake, or change superusers.
+- With `domainkit.contrib.approvals` guarding it
+  (`APPROVALS.SUPERUSER_APPROVALS`), no one makes a superuser here
+  (`approval_required`): an approved `auth.grant_superuser` request does
+  ([approvals.md](../contrib/approvals.md#making-superusers)).
 - Other staff cannot grant a permission they lack, directly or through a
   group (`403`).
 - Nor can they change a user or a group that holds such a permission:

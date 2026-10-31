@@ -40,4 +40,6 @@
 | A rate-limit store other than memory or Redis | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |
 | A way to match statement lines to postings | `accounting.reconciliation.MatchingRule`: a `name` and `match(lines, postings, window)` | `ACCOUNTING.MATCHING_RULES` ([accounting.md](../contrib/accounting.md#reconciliation)) |
 | Statements from a bank's file format or API | `accounting.reconciliation.StatementSource`: a `name` and `lines()` | `import_statement(account_id, source)` |
+| A use case that runs only once others approve it (maker-checker) | `@approvals.requires_approval(action)` on its service, and `approvals.Policy` | `approvals.guard(action, service, ...)` in `ready()` ([approvals.md](../contrib/approvals.md#guarding-a-use-case)) |
+| A check of every entry before the ledger posts it | `async def hook(command)`, raising to refuse it | `accounting.hooks.on_posting(hook)` in `ready()` (approvals refuses large entries there) |
 | A command | `BaseCommand` | `management/commands/<name>.py` |
