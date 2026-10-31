@@ -179,7 +179,12 @@ def test_an_undecorated_or_unreadable_service_is_refused(installed: None) -> Non
     async def plain(command: Refund, uow: object) -> None:
         """Not decorated."""
 
-    with pytest.raises(ImproperlyConfigured, match="@requires_approval"):
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^Decorate the service of 'tests\.refund' with "
+        r"@requires_approval\('tests\.refund'\): without it, calling the service "
+        r"directly would skip approval\.$",
+    ):
         guard("tests.refund", plain, unit_of_work=object, policies=[POLICY])
 
     @requires_approval("tests.untyped")
@@ -244,6 +249,16 @@ async def test_a_guarded_service_refuses_what_needs_approval(installed: None) ->
     assert await refund(small, None) == "refunded"
     with pytest.raises(ApprovalRequired):
         await refund(big, None)
+    with (
+        bind_request(
+            RequestContext(
+                request_id="r", client_ip=None, method="POST", path="/", actor="a"
+            )
+        ),
+        pytest.raises(ApprovalRequired) as raised,
+    ):
+        await refund(big, None)  # Someone acts, but the guard does not submit.
+    assert type(raised.value) is ApprovalRequired
     assert ran == [small]
 
 
@@ -342,6 +357,7 @@ async def test_approving_asks_no_more_than_the_approvers_without_a_rule(
 def test_a_requests_life_records_its_events() -> None:
     """Each change records its event, about this request, and dates itself."""
     from domainkit.contrib.approvals import (
+        ApprovalGiven,
         RequestCancelled,
         RequestExpired,
         RequestFailed,
@@ -355,7 +371,7 @@ def test_a_requests_life_records_its_events() -> None:
             {"amount": 1},
             maker="m",
             policy="tests.refunds",
-            required=1,
+            required=2,
             permission="tests.approve",
             group=None,
             expires_at=clock.now() + timedelta(days=1),
@@ -380,6 +396,16 @@ def test_a_requests_life_records_its_events() -> None:
         return facts(list(events))
 
     with clock.freeze_time(clock.now()) as frozen:
+        approved = made()
+        assert not approved.approve("ann", approved.fingerprint)
+        assert facts(approved.pull_events()) == expected(
+            ApprovalGiven(
+                request_id=approved.id,
+                fingerprint=approved.fingerprint,
+                approvals=1,
+                required=2,
+            )
+        )
         rejected = made()
         rejected.reject("ann", "No.")
         assert facts(rejected.pull_events()) == expected(

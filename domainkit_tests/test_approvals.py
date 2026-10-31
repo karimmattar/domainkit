@@ -666,6 +666,15 @@ async def test_the_request_is_marked_with_the_use_cases_first_commit(
     from domainkit.contrib.approvals.services import _marking
 
     assert _marking(object(), uuid.uuid4()) is None
+    from domainkit import setup
+    from domainkit.apps import registry
+
+    registry.clear()
+    setup()
+    guard_acts(unit_of_work=lambda: None)  # Not a SQL unit of work: marked after.
+    elsewhere = await approved_act("nothing")
+    await execute_request(elsewhere.id)
+    assert await status_of(elsewhere) == (RequestStatus.EXECUTED, "")
 
 
 async def test_a_command_that_no_longer_reads_as_approved_never_runs(
