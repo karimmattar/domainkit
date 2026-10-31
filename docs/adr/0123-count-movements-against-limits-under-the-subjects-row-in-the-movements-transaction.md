@@ -1,6 +1,6 @@
 # 0123. Count movements against limits under the subject's row, in the movement's transaction
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-31 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -138,3 +138,39 @@ it.
 - Left open: limits over windows of other lengths (a week, a quarter),
   amounts converted between currencies (one limit per currency instead),
   and limits on what is held rather than what moved.
+
+## Amendment (2026-10-31): every movement is counted
+
+As decided, a movement was written to usage only for a subject some
+window bounded when it moved. A limit set partway through its window, a
+limit that gained a window, or an exemption lifted, then ignored what
+moved earlier in the window: a daily 1,000 set at 11:00 let another 900
+through after the holder's 900 at 10:00 (SEC-15b-5).
+
+Two fixes were weighed. Counting the window's earlier movements when a
+limit changes, from the ledger's postings, covers only the ledger's
+subjects (an actor's movements are not in the postings, nor a project's
+own `consume` calls), must lock every subject a limit for every subject
+covers, and must tell postings already counted from those not. Counting
+every movement always is one rule for every subject. Its cost, measured
+on the ledger (100 postings of one wallet into a till, after one to warm
+up, SQLite and PostgreSQL 16 alike):
+
+| | No limit bounds the entry | A daily limit of the holder |
+| --- | --- | --- |
+| Before | 9 statements a posting | 12 |
+| Every movement counted | 11 | 13 |
+
+The two statements are one insert of the subjects' rows that are missing
+(`ON CONFLICT DO NOTHING`, which locks no row that is there) and one
+insert of the usage rows, each finding its subject's id by the subject's
+key; the per-posting time moved within the noise of the shared host
+(PostgreSQL: 11.8 ms to 12.6 ms without limits). A subject no window
+bounds takes no lock, so an actor or a clearing account that many
+postings share does not make them wait. Usage grows by a row per
+subject per movement, which `purge_usage` keeps to `KEEP_USAGE`.
+
+A holder or an actor that limits cannot take as a subject (a control
+character, more than 255 characters) refused every posting to its
+accounts once limits were installed; it is counted under its digest
+instead (`ledger_subject`).

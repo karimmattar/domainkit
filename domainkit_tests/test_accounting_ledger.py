@@ -48,6 +48,7 @@ from domainkit.contrib.accounting import (
     PostEntry,
     ReferenceReused,
     ReleaseHold,
+    ReversalNotReversible,
     ReverseEntry,
     capture_hold,
     close_account,
@@ -227,7 +228,11 @@ async def test_periods_do_not_overlap() -> None:
 
 
 async def test_a_reversal_undoes_an_entry_once() -> None:
-    """Reversed, the balances are back; reversing again returns the reversal."""
+    """Reversed, the balances are back; reversing again returns the reversal.
+
+    A reversal is not reversed: that booked the entry's money again, past
+    the limits and approvals a new entry meets (SEC-15b-3).
+    """
     await period()
     cash, sales = await account("1000"), await account("4000")
     entry = await post_entry(
@@ -252,12 +257,16 @@ async def test_a_reversal_undoes_an_entry_once() -> None:
     )
     assert (reversal.booked_on, reversal.description) == (NOW.date(), "refund")
     assert set((await balances()).values()) == {Decimal(0)}
-    with freeze_time(NOW):  # Booked today: inside the period whatever the date.
-        twice = await reverse_entry(
-            ReverseEntry(entry_id=reversal.id), AccountingUnitOfWork()
-        )
-    assert twice.reverses == reversal.id
-    assert (await balances())[cash.id] == Decimal("7.0000")
+    with (
+        freeze_time(NOW),  # Booked today: inside the period whatever the date.
+        refused(
+            ReversalNotReversible,
+            match=r"^A reversal is not reversed: post the entry again instead\.$",
+        ) as raised,
+    ):
+        await reverse_entry(ReverseEntry(entry_id=reversal.id), AccountingUnitOfWork())
+    assert raised.value.code == "reversal_not_reversible"
+    assert set((await balances()).values()) == {Decimal(0)}
     with refused(EntryNotFound, match=r"^No journal entry has that id\.$"):
         await reverse_entry(
             ReverseEntry(entry_id=EntryId(uuid.UUID(int=5))),

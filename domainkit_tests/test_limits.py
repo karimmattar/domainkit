@@ -52,7 +52,7 @@ from domainkit.contrib.limits import (
     set_limit,
     usage_of,
 )
-from domainkit.contrib.limits.tables import usage
+from domainkit.contrib.limits.tables import subjects, usage
 from domainkit.db import connections
 from domainkit.ddd import DomainError
 from domainkit.i18n import gettext, override
@@ -69,6 +69,8 @@ LIMITED: Final = Shape(
 """The ledger with limits, migrated once per run."""
 TODAY: Final = date(2026, 10, 30)
 NOON: Final = datetime(2026, 10, 30, 12, tzinfo=UTC)
+FUNDED: Final = datetime(2026, 9, 1, tzinfo=UTC)
+"""When wallets are funded: before any window of the tests' days."""
 ATTEMPTS: Final = 50
 WALLETS: Final = 5
 
@@ -131,18 +133,19 @@ async def wallets(holder: str, count: int) -> tuple[list[Account], list[Account]
         wallet = await account(
             f"wallet-{holder}-{number}", AccountType.LIABILITY, holder=holder
         )
-        await post_entry(
-            PostEntry(
-                source="topups",
-                reference=f"{holder}-{number}",
-                booked_on=TODAY,
-                lines=(
-                    Line.debit(till.id, egp("5000")),
-                    Line.credit(wallet.id, egp("5000")),
+        with freeze_time(FUNDED):
+            await post_entry(
+                PostEntry(
+                    source="topups",
+                    reference=f"{holder}-{number}",
+                    booked_on=TODAY,
+                    lines=(
+                        Line.debit(till.id, egp("5000")),
+                        Line.credit(wallet.id, egp("5000")),
+                    ),
                 ),
-            ),
-            AccountingUnitOfWork(),
-        )
+                AccountingUnitOfWork(),
+            )
         held.append(wallet)
         tills.append(till)
     return held, tills
@@ -166,11 +169,17 @@ async def limit(**fields: object) -> None:
     )
 
 
-async def counted() -> int:
-    """Movements counted and not released."""
+async def counted(kind: str = "holder", direction: str = "out") -> int:
+    """Movements of holders out, or of ``kind`` and ``direction``, not released."""
     async with connections.engine().connect() as connection:
         found = await connection.scalar(
-            select(func.count()).select_from(usage).where(usage.c.released_at.is_(None))
+            select(func.count())
+            .select_from(usage.join(subjects, subjects.c.id == usage.c.subject_id))
+            .where(
+                usage.c.released_at.is_(None),
+                subjects.c.kind == kind,
+                subjects.c.direction == direction,
+            )
         )
     return int(found or 0)
 
@@ -388,3 +397,44 @@ async def test_an_entrys_postings_to_one_account_count_as_one_movement() -> None
             PostEntry(source="payments", reference="p", booked_on=TODAY, lines=lines),
             AccountingUnitOfWork(),
         )
+
+
+@pytest.mark.usefixtures("books")
+async def test_a_holder_or_actor_limits_cannot_name_is_counted_by_its_digest() -> None:
+    """A control character in a holder, a long actor: posted, and counted."""
+    from domainkit.contrib.limits.postings import ledger_subject
+
+    await period()
+    till = await account("till")
+    odd = "h\x1b[2J"
+    wallet = await account("w-odd", AccountType.LIABILITY, holder=odd)
+    actor = "a" * 300
+    digest = ledger_subject(odd)
+    await limit(code="daily", subject=digest, window=Window.DAY, max_amount=egp("10"))
+    with (
+        freeze_time(NOON),
+        bind_request(RequestContext("r-1", None, "POST", "/", actor=actor)),
+    ):
+        await post_entry(
+            PostEntry(
+                source="topups",
+                reference="t",
+                booked_on=TODAY,
+                lines=(
+                    Line.debit(till.id, egp("50")),
+                    Line.credit(wallet.id, egp("50")),
+                ),
+            ),
+            AccountingUnitOfWork(),
+        )
+        await post_entry(spend(wallet, till, egp("10"), "p-1"), AccountingUnitOfWork())
+        with refused(LimitExceeded):
+            await post_entry(
+                spend(wallet, till, egp("1"), "p-2"), AccountingUnitOfWork()
+            )
+        (used,) = await usage_of("holder", digest)
+    assert digest.startswith("sha256:")
+    assert len(digest) == 71
+    assert ledger_subject("h-1") == "h-1"
+    assert (used.used, used.count) == (egp("10"), 1)
+    assert await counted("actor") == 2  # The actor's, by its digest too.

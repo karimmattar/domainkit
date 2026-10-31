@@ -528,3 +528,16 @@ def test_valid_defaults_pass_and_each_part_of_a_bad_one_is_checked() -> None:
         "The time zone is not one, such as 'Africa/Cairo'.",
         "A limit's note has at most 255 characters.",
     ]
+
+
+def test_a_name_no_subject_can_be_is_its_digest_whatever_it_holds() -> None:
+    """A lone surrogate too: the digest of its UTF-8, surrogates passed through."""
+    import hashlib
+
+    from domainkit.contrib.limits.postings import ledger_subject
+
+    odd = "h\x1b\ud800"
+    expected = hashlib.sha256(odd.encode("utf-8", "surrogatepass")).hexdigest()
+
+    assert ledger_subject(odd) == f"sha256:{expected}"
+    assert ledger_subject("") == f"sha256:{hashlib.sha256(b'').hexdigest()}"

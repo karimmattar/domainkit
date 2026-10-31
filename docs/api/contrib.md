@@ -59,6 +59,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `Posting`: One line of a posted entry: an amount on one side of one account.
 - `ReferenceReused`: A source and reference that name an entry or a hold made otherwise.
 - `ReleaseHold`: Make a hold's amount available again, without posting anything.
+- `ReversalNotReversible`: Reversing a reversal: it would move the money of the entry it undid again.
 - `ReverseEntry`: Post the entry that undoes another, dated `booked_on` (default: today).
 - `Side`: A posting's side.
 - `TrialBalance`: Every account with a balance or movements in a period, and the totals.

@@ -134,6 +134,11 @@ async with PaymentsUnitOfWork() as uow:
   the code and a translated detail, as problem details where
   `ERROR_FORMAT = "problem+json"`. Several movements in one call are
   judged together, and each counts once toward `max_count`.
+- **Every movement is counted**, under each of its subjects, whether a
+  window bounds the subject or not: a limit set partway through its
+  window, a limit that gains a window, or an exemption lifted counts what
+  moved earlier in the window. A subject no window bounds is counted
+  without a lock, so its movements do not wait for each other.
 - **Concurrency.** Before reading a subject's usage, `consume` locks the
   subject's row, made on its first movement, so two movements of one
   subject are judged one after the other: of fifty payments of 25.00
@@ -170,8 +175,15 @@ balances do not move. Each entry is a movement:
   debits, `out`.
 
 A reversal counts nothing, and releases what the entry it reverses
-counted. A hold moves nothing: it is counted when captured. The entry's
-key is `accounting.entry:<id>`.
+counted; the ledger reverses no reversal (`reversal_not_reversible`), so
+the money of a reversed entry moves again only as a new entry, counted.
+A hold moves nothing: it is counted when captured. The entry's key is
+`accounting.entry:<id>`.
+
+A holder or an actor that a subject cannot be (a control character, more
+than 255 characters) is counted under its digest, `sha256:` and 64 hex
+digits of its UTF-8 (`limits.postings.ledger_subject`): set its limits
+for that subject. No entry is refused for its holder's name.
 
 ## Over HTTP
 

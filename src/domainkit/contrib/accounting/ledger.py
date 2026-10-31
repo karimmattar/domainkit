@@ -28,7 +28,13 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.ddd import Command, Retry
 
-from .exceptions import InvalidEntry, NoOpenPeriod, PeriodsOverlap, ReferenceReused
+from .exceptions import (
+    InvalidEntry,
+    NoOpenPeriod,
+    PeriodsOverlap,
+    ReferenceReused,
+    ReversalNotReversible,
+)
 from .hooks import on_booking, on_posting
 from .models import (
     Account,
@@ -280,10 +286,13 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
     """Post the reversal of an entry: each of its postings on the other side.
 
     Its source is ``REVERSALS`` and its reference the entry's id, so an
-    entry is reversed once: reversing it again returns that reversal.
+    entry is reversed once: reversing it again returns that reversal. A
+    reversal is not reversed: that would book the entry it undid again,
+    past every check a new entry takes (SEC-15b-3).
 
     Raises:
         EntryNotFound: No entry has that id.
+        ReversalNotReversible: The entry is a reversal.
         ReferenceReused: An entry that does not reverse it was posted under
             its reference (only before ``post_entry`` refused the source).
         NoOpenPeriod, PeriodIsClosed: The date is in no open period.
@@ -294,6 +303,10 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
 
     async def draft() -> Entry:
         original = await uow.entries.get(entry_id)
+        if original.reverses is not None:
+            raise ReversalNotReversible(
+                "A reversal is not reversed: post the entry again instead."
+            )
         lines = original.reversal_lines()
         return Entry.draft(
             REVERSALS,

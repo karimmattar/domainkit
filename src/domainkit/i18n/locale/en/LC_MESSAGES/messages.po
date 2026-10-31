@@ -976,3 +976,7 @@ msgstr ""
 
 msgid "There have been as many of these as a limit allows in its period."
 msgstr ""
+
+#. domainkit.contrib.accounting: reversals
+msgid "A reversal is not reversed: post the entry again instead."
+msgstr ""
