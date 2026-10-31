@@ -90,7 +90,11 @@ class Command(BaseCommand):
     async def _list(self, kind: str | None) -> None:
         """One line per limit: the stored ones, then the defaults they leave."""
         statement = select(limits).order_by(
-            limits.c.code, limits.c.kind, limits.c.currency, limits.c.subject
+            limits.c.code,
+            limits.c.kind,
+            limits.c.direction,
+            limits.c.currency,
+            limits.c.subject,
         )
         if kind is not None:
             statement = statement.where(limits.c.kind == kind)

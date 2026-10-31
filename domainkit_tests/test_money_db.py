@@ -18,6 +18,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    Uuid,
     bindparam,
     func,
     insert,
@@ -298,6 +299,34 @@ async def test_half_of_a_missing_amount_is_refused(tables: None) -> None:
                     limit_currency=None,
                 )
             )
+
+
+def test_only_money_attributes_are_guarded_when_mapped() -> None:
+    """A class mapped now: its money is guarded, its other columns are not."""
+    # A name of its own each run: the mapper registry is the process's.
+    till_type: Any = type(f"Till{uuid4().hex}", (), {})
+    table = Table(
+        f"framework_test_money_tills_{uuid4().hex}",
+        MetaData(),
+        Column("id", Uuid, primary_key=True),
+        *MoneyColumns("cash", 6, 2),
+        Column("rate", ExactDecimal(4, 4)),
+        Column("count", Integer),
+    )
+    map_imperatively(till_type, table, versioned=False)
+    till = till_type()
+    till.id = uuid4()
+    till.rate = Decimal("0.5")
+    till.count = 10**12
+
+    with pytest.raises(AmountOutOfRange) as refused:
+        till.cash = money("10000", "USD")
+
+    assert str(refused.value) == (
+        f"{table.name}.cash holds 2 decimal places, 4 digits before the point: "
+        "this USD amount does not fit."
+    )
+    till.cash = money("9999.99", "USD")
 
 
 def test_money_its_column_cannot_hold_is_refused_as_it_is_set() -> None:

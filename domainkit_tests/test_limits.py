@@ -369,3 +369,22 @@ async def test_each_subject_of_a_posting_is_counted_its_own_way() -> None:
         await post_entry(spend(wallet, till, egp("400"), "p-4"), AccountingUnitOfWork())
         (actor,) = await usage_of("actor", "u-1")
     assert (actor.used, actor.count) == (egp("400"), 1)
+
+
+@pytest.mark.usefixtures("books")
+async def test_an_entrys_postings_to_one_account_count_as_one_movement() -> None:
+    """Three postings to a wallet: one movement of their sum."""
+    await period()
+    (wallet,), (till,) = await wallets("h-1", 1)
+    await limit(code="each", per_transaction=egp("100"))
+    lines = (
+        Line.debit(wallet.id, egp("40")),
+        Line.debit(wallet.id, egp("40")),
+        Line.debit(wallet.id, egp("40")),
+        Line.credit(till.id, egp("120")),
+    )
+    with refused(TransactionLimitExceeded):
+        await post_entry(
+            PostEntry(source="payments", reference="p", booked_on=TODAY, lines=lines),
+            AccountingUnitOfWork(),
+        )

@@ -373,3 +373,158 @@ def test_defaults_that_are_not_limits_are_found() -> None:
     )
     assert default_problems((good,)) == []
     assert issubclass(InvalidLimit, DomainError)
+
+
+def test_a_limit_made_bare_is_for_every_subject_enabled_without_a_note() -> None:
+    """The defaults of ``define``; a note of 255 characters is taken."""
+    limit = Limit.define("x", "holder", "EGP", per_transaction=egp("1"))
+    limit.change(
+        per_transaction=egp("1"),
+        window=None,
+        max_amount=None,
+        max_count=None,
+        time_zone="UTC",
+        enabled=True,
+        note="n" * 255,
+    )
+
+    assert (limit.subject, limit.direction, limit.time_zone) == (
+        "",
+        Direction.OUT,
+        "UTC",
+    )
+    first = limit.pull_events()[0]
+    assert isinstance(first, LimitSet)
+    assert (first.subject, first.enabled) == ("", True)
+    assert Limit.define("x", "holder", "EGP", per_transaction=egp("1")).note == ""
+
+
+def test_a_stored_limit_is_a_rule_of_its_own_bounds() -> None:
+    """``Rule.of`` keeps every field, as stored."""
+    limit = Limit.define(
+        "wallet.daily",
+        "holder",
+        "EGP",
+        subject="h-1",
+        direction=Direction.IN,
+        per_transaction=egp("5"),
+        window=Window.DAY,
+        max_amount=egp("100"),
+        max_count=3,
+        time_zone="Africa/Cairo",
+        enabled=False,
+    )
+
+    assert Rule.of(limit) == rule(
+        "wallet.daily",
+        "h-1",
+        direction=Direction.IN,
+        per_transaction=Decimal("5.00"),
+        max_count=3,
+        time_zone="Africa/Cairo",
+        enabled=False,
+    )
+
+
+def test_a_calendar_window_starts_at_its_midnight_to_the_microsecond() -> None:
+    """Seconds and microseconds are dropped, not kept from now."""
+    now = datetime(2026, 10, 30, 12, 34, 56, 789, tzinfo=UTC)
+
+    assert Window.DAY.start(now, "UTC") == datetime(2026, 10, 30, tzinfo=UTC)
+    assert Window.MONTH.start(now, "UTC") == datetime(2026, 10, 1, tzinfo=UTC)
+
+
+def test_a_breach_names_no_limit_unless_told() -> None:
+    """``limit`` and ``window`` are empty by default."""
+    from domainkit.contrib.limits import LimitExceeded
+
+    bare = LimitExceeded("The amount is more than a limit allows in its period.")
+
+    assert (bare.limit, bare.window, bare.code) == ("", "", "limit_exceeded")
+
+
+def test_usage_over_http_says_where_its_limit_comes_from() -> None:
+    """Every field of a usage, and ``settings`` for a default."""
+    from domainkit.contrib.limits import Usage
+    from domainkit.contrib.limits.api import UsageOut
+
+    usage = Usage(
+        code="daily",
+        kind="holder",
+        direction=Direction.OUT,
+        subject="",
+        window=Window.DAY,
+        since=datetime(2026, 10, 30, tzinfo=UTC),
+        used=egp("30"),
+        count=1,
+        per_transaction=egp("80"),
+        max_amount=egp("100"),
+        max_count=5,
+        stored=False,
+    )
+
+    shown = UsageOut.of(usage).model_dump(mode="json")
+
+    assert shown == {
+        "code": "daily",
+        "kind": "holder",
+        "direction": "out",
+        "subject": "",
+        "window": "day",
+        "since": "2026-10-30T00:00:00Z",
+        "used": {"amount": "30.00", "currency": "EGP"},
+        "count": 1,
+        "remaining": {"amount": "70.00", "currency": "EGP"},
+        "per_transaction": {"amount": "80.00", "currency": "EGP"},
+        "max_amount": {"amount": "100.00", "currency": "EGP"},
+        "max_count": 5,
+        "origin": "settings",
+    }
+
+
+def test_valid_defaults_pass_and_each_part_of_a_bad_one_is_checked() -> None:
+    """Windowed defaults pass; a bad subject, zone, or note does not."""
+    windowed = LimitDefault(
+        code="daily", kind="holder", currency="EGP", window="day", max_amount="100"
+    )
+    counted = LimitDefault(
+        code="count",
+        kind="holder",
+        currency="EGP",
+        window="month",
+        max_count=3,
+        direction="in",
+        subject="h-1",
+    )
+
+    assert default_problems((windowed, counted)) == []
+    bad = default_problems(
+        (
+            LimitDefault(
+                code="a",
+                kind="holder",
+                currency="EGP",
+                subject="\x00",
+                per_transaction="1",
+            ),
+            LimitDefault(
+                code="b",
+                kind="holder",
+                currency="EGP",
+                time_zone="Mars/Olympus",
+                per_transaction="1",
+            ),
+            LimitDefault(
+                code="c",
+                kind="holder",
+                currency="EGP",
+                note="n" * 256,
+                per_transaction="1",
+            ),
+        )
+    )
+    assert [problem.split(": ", 1)[1] for problem in bad] == [
+        "A subject has 1 to 255 printable characters.",
+        "The time zone is not one, such as 'Africa/Cairo'.",
+        "A limit's note has at most 255 characters.",
+    ]

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final, cast
 
 import pytest
+from sqlalchemy import select
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -22,8 +23,10 @@ from domainkit.contrib.limits import (
     consume,
     set_limit,
 )
+from domainkit.contrib.limits.tables import subjects
 from domainkit.contrib.limits.tasks import PURGE_USAGE
 from domainkit.contrib.messaging.registry import periodic_tasks
+from domainkit.db import connections
 from domainkit.management import CommandError, call_command, operators
 from domainkit.management.base import run_async
 from domainkit.money import Money
@@ -76,6 +79,173 @@ def spend(amount: str, holder: str = "h-1") -> None:
                 await uow.commit()
 
     run_async(count())
+
+
+def subjects_named(subject: str) -> list[str]:
+    """The kinds of the subject rows of ``subject``."""
+
+    async def read() -> list[str]:
+        async with connections.engine().connect() as connection:
+            found = await connection.scalars(
+                select(subjects.c.kind).where(subjects.c.subject == subject)
+            )
+            return list(found)
+
+    return run_async(read())
+
+
+@pytest.mark.usefixtures("project")
+def test_the_command_lists_in_order_and_keeps_what_set_leaves_out() -> None:
+    """By code, kind, currency, subject; ``set`` changes only what it is given."""
+    for code, kind, currency, subject in (
+        ("b", "holder", "EGP", ""),
+        ("a", "holder", "USD", ""),
+        ("a", "holder", "EGP", "h-2"),
+        ("a", "holder", "EGP", ""),
+        ("a", "account", "EGP", ""),
+    ):
+        run(
+            "set",
+            code,
+            "--kind",
+            kind,
+            "--currency",
+            currency,
+            "--subject",
+            subject,
+            "--per-transaction",
+            "5",
+        )
+    run(
+        "set",
+        "b",
+        "--kind",
+        "holder",
+        "--currency",
+        "EGP",
+        "--direction",
+        "in",
+        "--window",
+        "day",
+        "--max-count",
+        "2",
+        "--time-zone",
+        "Africa/Cairo",
+        "--note",
+        "kept",
+        "--disable",
+    )
+    run(
+        "set",
+        "b",
+        "--kind",
+        "holder",
+        "--currency",
+        "EGP",
+        "--direction",
+        "in",
+        "--max-count",
+        "3",
+    )
+    with override_settings(
+        LIMITS={
+            "DEFAULTS": [
+                {
+                    "code": "z",
+                    "kind": "account",
+                    "currency": "EGP",
+                    "per_transaction": "1",
+                },
+                {
+                    "code": "y",
+                    "kind": "holder",
+                    "currency": "EGP",
+                    "per_transaction": "1",
+                },
+            ]
+        }
+    ):
+        listed = run("list").splitlines()
+        holders = run("list", "--kind", "holder").splitlines()
+
+    assert listed == [
+        "a: every account, out EGP: at most 5.00 EGP each [stored]",
+        "a: every holder, out EGP: at most 5.00 EGP each [stored]",
+        "a: holder 'h-2', out EGP: at most 5.00 EGP each [stored]",
+        "a: every holder, out USD: at most 5.00 USD each [stored]",
+        "b: every holder, in EGP: 3 a day [stored] (disabled)",
+        "b: every holder, out EGP: at most 5.00 EGP each [stored]",
+        "z: every account, out EGP: at most 1.00 EGP each [settings]",
+        "y: every holder, out EGP: at most 1.00 EGP each [settings]",
+    ]
+    assert holders == [line for line in listed if "account" not in line]
+
+    async def stored() -> tuple[object, ...]:
+        async with LimitsUnitOfWork(readonly=True) as uow:
+            (found,) = [
+                each
+                for each in await uow.limits.filter()
+                if each.code == "b" and each.direction == "in"
+            ]
+        return found.time_zone, found.note, found.enabled, found.window
+
+    assert run_async(stored()) == ("Africa/Cairo", "kept", False, Window.DAY)
+    run(
+        "set",
+        "b",
+        "--kind",
+        "holder",
+        "--currency",
+        "EGP",
+        "--direction",
+        "in",
+        "--window",
+        "none",
+        "--max-count",
+        "none",
+        "--per-transaction",
+        "2",
+        "--enable",
+    )
+    assert run_async(stored()) == ("Africa/Cairo", "kept", True, None)
+
+
+@pytest.mark.usefixtures("project")
+def test_the_command_refuses_options_it_does_not_take() -> None:
+    """A set without its kind or currency, a direction or window it has not."""
+    for args in (
+        ("set", "x", "--currency", "EGP"),
+        ("set", "x", "--kind", "holder"),
+        ("set", "x", "--kind", "holder", "--currency", "EGP", "--direction", "up"),
+        ("set", "x", "--kind", "holder", "--currency", "EGP", "--window", "week"),
+    ):
+        with pytest.raises((CommandError, SystemExit)):
+            run(*args)
+    from domainkit.contrib.limits.management.commands.limits import Command
+
+    shown = Command().create_parser("manage.py", "limits").format_help()
+    for text in (
+        "every limit, stored or default",
+        "what a subject used of its limits",
+        "make a limit or change its bounds",
+        "delete usage older than LIMITS.KEEP_USAGE",
+    ):
+        assert text in shown
+    (actions,) = [
+        each
+        for each in Command().create_parser("manage.py", "limits")._actions
+        if each.dest == "action"
+    ]
+    setting = actions.choices["set"].format_help()  # type: ignore[index]
+    for text in (
+        "--subject SUBJECT",
+        "one subject; none: every one",
+        "{out,in}",
+        "{day,month,rolling_day,rolling_month,none}",
+        "an amount, or none",
+        "a count, or none",
+    ):
+        assert text in " ".join(setting.split()), text
 
 
 @pytest.mark.usefixtures("project")
@@ -183,6 +353,9 @@ def test_the_command_sets_lists_and_shows_usage() -> None:
             "2026-10-29T12:00:00+00:00 (out)\n"
         )
     assert run("usage", "merchant", "m-1") == "No limit bounds merchant 'm-1'.\n"
+    assert run("usage", "holder", "h-1", "--currency", "USD") == (
+        "No limit bounds holder 'h-1'.\n"
+    )
 
 
 @pytest.mark.usefixtures("project")
@@ -285,6 +458,7 @@ def test_a_persons_limits_and_usage_are_exported_and_erased() -> None:
         {"limits": 0, "usage": 0},
     )
     assert run_async(export.call("subject-1")) == {}
+    assert subjects_named("subject-1") == []
     assert (
         cast(dict[str, Any], run_async(export.call("subject-2")))["usage"][0][
             "movements"
@@ -306,7 +480,13 @@ def test_limits_live_where_the_ledger_does() -> None:
     ):
         setup()
     registry.clear()
-    assert "Route 'limits' where 'accounting' is" in str(raised.value)
+    assert str(raised.value) == (
+        "LIMITS cannot be enforced as configured:\n"
+        "  limits.E001: The ledger's postings are counted in their own "
+        "transaction, so the limits must live in the ledger's database "
+        "('default'), not in 'other'.\n"
+        "    Hint: Route 'limits' where 'accounting' is, in DATABASE_ROUTING."
+    )
 
 
 def test_defaults_that_are_not_limits_fail_setup() -> None:
@@ -376,6 +556,11 @@ def test_usage_that_nothing_purges_is_warned_of_where_deployed(
     registry.clear()
     assert [getattr(each, "id", None) for each in found] == warned
     if found:
+        assert found[0] == (
+            "Old usage is not purged on a schedule: domainkit.contrib.messaging is "
+            "not installed, so no worker deletes it, and the usage table grows "
+            "with every movement."
+        )
         assert found[0].hint == (  # type: ignore[attr-defined]
             "Install domainkit.contrib.messaging, or run 'manage.py limits purge' "
             "from a scheduler and list limits.W001 in SILENCED_CHECKS."
@@ -391,3 +576,71 @@ def test_money_of_more_places_than_limits_keep_is_refused() -> None:
     register_currency("USDC6", minor_units=6)
     with pytest.raises(InvalidLimit, match="at most four decimal places"):
         _tally([Movement(Money.of("1", "USDC6"), {"holder": "h"})])
+
+
+@pytest.mark.usefixtures("project")
+def test_an_export_lists_limits_by_code_and_usage_by_kind_direction_currency() -> None:
+    """Each kind, direction, and currency of the subject on a line of its own."""
+
+    async def define() -> None:
+        for code, fields in (
+            ("b", {"kind": "holder", "currency": "EGP", "per_transaction": egp("5")}),
+            (
+                "a",
+                {
+                    "kind": "holder",
+                    "currency": "EGP",
+                    "window": Window.DAY,
+                    "max_count": 9,
+                },
+            ),
+        ):
+            await set_limit(
+                SetLimit(code=code, subject="p-1", **fields),  # type: ignore[arg-type]
+                LimitsUnitOfWork(),
+            )
+        for kind, direction, currency in (
+            ("holder", "out", "USD"),
+            ("holder", "in", "EGP"),
+            ("account", "out", "EGP"),
+        ):
+            await set_limit(
+                SetLimit(
+                    code=f"{kind}-{direction}-{currency.lower()}",
+                    kind=kind,
+                    currency=currency,
+                    direction=direction,  # type: ignore[arg-type]
+                    window=Window.DAY,
+                    max_count=9,
+                ),
+                LimitsUnitOfWork(),
+            )
+        with freeze_time(NOON):
+            async with LimitsUnitOfWork() as uow:
+                for movement in (
+                    Movement(Money.of("1", "USD"), {"holder": "p-1"}),
+                    Movement(egp("1"), {"holder": "p-1", "account": "p-1"}),
+                    Movement(egp("1"), {"holder": "p-1"}, "in"),  # type: ignore[arg-type]
+                    Movement(egp("1"), {"holder": "p-1"}),
+                ):
+                    await consume(uow, movement)
+                await uow.commit()
+
+    run_async(define())
+    (export,) = on_export_subject.of("limits")
+
+    exported = cast(dict[str, Any], run_async(export.call("p-1")))
+
+    assert [(each["code"], each["window"]) for each in exported["limits"]] == [
+        ("a", "day"),
+        ("b", None),
+    ]
+    assert [
+        (each["kind"], each["direction"], each["currency"], each["movements"])
+        for each in exported["usage"]
+    ] == [
+        ("account", "out", "EGP", 1),
+        ("holder", "in", "EGP", 1),
+        ("holder", "out", "EGP", 2),
+        ("holder", "out", "USD", 1),
+    ]

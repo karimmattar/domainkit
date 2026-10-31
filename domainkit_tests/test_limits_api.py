@@ -123,7 +123,10 @@ def test_staff_make_change_list_and_remove_limits(
 
     removed = client.delete(f"/limits/limits/{limit['id']}", headers=clerk)
     assert removed.status_code == 204
-    assert client.get(f"/limits/limits/{limit['id']}", headers=clerk).status_code == 404
+    gone = client.get(f"/limits/limits/{limit['id']}", headers=clerk)
+    assert (gone.status_code, gone.json()["code"]) == (404, "limit_not_found")
+    again_removed = client.delete(f"/limits/limits/{limit['id']}", headers=clerk)
+    assert again_removed.json()["detail"] == "No limit has that id."
 
     changes = audited("limits.limit_set")
     assert [row["details"]["window"] for row in changes] == ["day", "month"]
@@ -135,6 +138,12 @@ def test_staff_make_change_list_and_remove_limits(
     assert {row["actor"] for row in changes} == {
         row["actor"] for row in audited("limits.limit_removed")
     }
+    raised = client.post(
+        "/limits/limits",
+        json={**DAILY, "subject": "h-1", "direction": "in"},
+        headers=clerk,
+    )
+    assert (raised.json()["subject"], raised.json()["direction"]) == ("h-1", "in")
 
 
 @pytest.mark.parametrize(

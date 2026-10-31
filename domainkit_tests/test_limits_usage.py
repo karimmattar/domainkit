@@ -248,7 +248,53 @@ async def test_check_counts_nothing_and_says_what_consume_would() -> None:
             await check(uow, paid("40"))
             with refused(LimitExceeded):
                 await check(uow, paid("41"))
+            # An account without limits is judged first: the holder still is.
+            with refused(LimitExceeded):
+                await check(uow, paid("41", account="a-1"))
         assert await used() == [("daily", egp("60"), 1)]
+
+
+async def test_a_check_of_a_subject_that_never_moved_counts_nothing_used() -> None:
+    """A count of one fits a subject with no row yet."""
+    await limit(code="once", window=Window.DAY, max_count=1)
+    async with LimitsUnitOfWork(readonly=True) as uow:
+        await check(uow, paid("1", holder="new"))
+
+
+async def test_subjects_of_one_name_are_apart_by_kind_direction_and_currency() -> None:
+    """One subject string, four rows: each counts its own movements."""
+    await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
+    await limit(code="acct", kind="account", window=Window.DAY, max_count=9)
+    await limit(code="in", direction=Direction.IN, window=Window.DAY, max_count=9)
+    await limit(code="usd", currency="USD", window=Window.DAY, max_count=9)
+    with freeze_time(NOON):
+        await spend(Movement(egp("10"), {"holder": "x", "account": "x"}))
+        await spend(Movement(egp("20"), {"holder": "x"}, Direction.IN))
+        await spend(Movement(Money.of("30", "USD"), {"holder": "x"}))
+        await spend(Movement(egp("40"), {"holder": "x"}))
+        async with LimitsUnitOfWork(readonly=True) as uow:
+            await check(uow, Movement(egp("50"), {"holder": "x"}))
+        assert await used("x", direction=Direction.OUT, currency="EGP") == [
+            ("daily", egp("50"), 2)
+        ]
+
+
+async def test_a_limit_is_set_by_its_whole_key() -> None:
+    """Limits of one code differing in one part of the key are set apart."""
+    keys: list[dict[str, object]] = [
+        {"per_transaction": egp("1")},
+        {"per_transaction": egp("1"), "kind": "account"},
+        {"per_transaction": egp("1"), "direction": Direction.IN},
+        {"per_transaction": Money.of("1", "USD"), "currency": "USD"},
+    ]
+    for key in keys:
+        await limit(code="k", **key)
+    await limit(code="k", per_transaction=egp("9"))
+
+    async with LimitsUnitOfWork(readonly=True) as uow:
+        found = await uow.limits.filter()
+    bounds = sorted(str(each.per_transaction) for each in found)
+    assert bounds == ["1.00 EGP", "1.00 EGP", "1.00 USD", "9.00 EGP"]
 
 
 async def test_release_gives_back_what_its_key_counted_once() -> None:
@@ -288,6 +334,8 @@ async def test_old_usage_is_purged_and_idle_subjects_with_it() -> None:
         await spend(paid("10", holder="h-old"))
         clock.move_to(NOON + timedelta(days=20))
         await spend(paid("10"))
+        clock.move_to(NOON + timedelta(days=35))  # Kept exactly that long.
+        assert await purge_usage() == 0
         clock.move_to(NOON + timedelta(days=36))
         assert await purge_usage() == 1
         await purge_old_usage()  # The periodic task: nothing more to purge.
@@ -341,14 +389,20 @@ async def test_counting_needs_an_open_unit_of_work_that_writes_on_their_database
     None
 ):
     """Read-only, unopened, elsewhere, or nothing to count: refused with a reason."""
-    with pytest.raises(ReadOnlyError, match="read-only"):
+    with pytest.raises(ReadOnlyError) as readonly:
         async with LimitsUnitOfWork(readonly=True) as uow:
-            await consume(uow, paid("1"))
-    with pytest.raises(RuntimeError, match="inside the unit of work"):
+            await release(uow, "k")
+    with pytest.raises(RuntimeError) as closed:
         await consume(LimitsUnitOfWork(), paid("1"))
-    with pytest.raises(ValueError, match="at least one movement"):
+    with pytest.raises(ValueError, match=r"^Give at least one movement\.$"):
         async with LimitsUnitOfWork() as uow:
             await consume(uow)
+    assert str(readonly.value) == (
+        "LimitsUnitOfWork is read-only; movements are counted in one that writes."
+    )
+    assert str(closed.value) == (
+        "Count movements inside the unit of work: async with uow."
+    )
     with pytest.raises(TypeError, match="Expected a Movement, not Money"):
         async with LimitsUnitOfWork() as uow:
             await consume(uow, egp("1"))  # type: ignore[arg-type]
@@ -363,7 +417,12 @@ async def test_counting_needs_an_open_unit_of_work_that_writes_on_their_database
     with override_settings(
         DATABASES={"default": {"URL": url}, "other": {"URL": "sqlite+aiosqlite://"}}
     ):
-        with pytest.raises(ImproperlyConfigured, match="Limits live in 'default'"):
+        with pytest.raises(ImproperlyConfigured) as elsewhere_refused:
             async with Elsewhere() as elsewhere:
                 await consume(elsewhere, paid("1"))
         await connections.close_all()
+    assert str(elsewhere_refused.value) == (
+        "Limits live in 'default' (DATABASE_ROUTING['limits']), and the unit of "
+        "work in 'other': count movements in a unit of work on the limits' "
+        "database."
+    )

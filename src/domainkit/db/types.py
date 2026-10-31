@@ -263,9 +263,7 @@ def _decimal(value: object) -> Decimal:
 
 def _is_amount(operand: object) -> bool:
     """Whether ``operand`` is an expression of an amount: typed ``ExactDecimal``."""
-    return isinstance(operand, ColumnElement) and isinstance(
-        operand.type, ExactDecimal
-    )
+    return isinstance(operand, ColumnElement) and isinstance(operand.type, ExactDecimal)
 
 
 def _factor(op: OperatorType, operand: object) -> ColumnElement[Any] | None:
