@@ -103,6 +103,7 @@ nav:
           - contrib/evidence.md
           - contrib/flags.md
           - contrib/accounting.md
+          - contrib/approvals.md
       - cache.md
       - live.md
       - uploads.md

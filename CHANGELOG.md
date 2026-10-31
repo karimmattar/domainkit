@@ -114,6 +114,30 @@ and a status.
   message of the process while they work, then fail. `EventBus.subscriptions()`
   lists every subscription (FIN-19).
 
+- `domainkit.contrib.approvals`: maker-checker. A use case decorated
+  `@requires_approval(action)` and registered with `guard(...)` in
+  `ready()` refuses a direct call whose command a `Policy` applies to
+  (`approval_required`), or submits it (`submit=True`). A maker submits it
+  as a request holding the command read back as JSON, its fingerprint,
+  and seals (HMACs under `SECRET_KEY`); approvers named by a permission or
+  a group, never the maker and each person once (unique in the database,
+  across sessions and tokens), approve that fingerprint, within
+  `APPROVALS.EXPIRES_AFTER`, or reject it with a reason, or the maker
+  cancels it. The approval that completes it queues the command through
+  the outbox, and the worker runs it once, under the inbox, after checking
+  the seals, the fingerprint, and that the arguments still make the
+  command; on the requests' database the request is marked executed in
+  the use case's own commit. Each change takes the request's lock: twenty
+  approvals at once count exactly, and run the command once (ADR 0121).
+  Postings over `ENTRY_THRESHOLDS` (per currency, through the ledger's new
+  `accounting.hooks.on_posting`) and making superusers in the auth admin
+  API (`SUPERUSER_APPROVALS`) are guarded on request. The approve route
+  takes any access rule (`APPROVE_RULE`, or a policy's `approve_rule`),
+  such as a step-up rule. `api.router` (submit, list, approve, reject,
+  cancel), `manage.py approvals`, audit events for every change, privacy
+  export and erasure, and Arabic messages (`docs/contrib/approvals.md`)
+  (FIN-36).
+
 ### Changed
 
 - **Breaking:** messaging's outbox has two new columns, `ordering_key` and
