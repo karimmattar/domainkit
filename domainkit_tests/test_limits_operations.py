@@ -473,8 +473,12 @@ def test_limits_live_where_the_ledger_does() -> None:
     with (
         override_settings(
             INSTALLED_DOMAINS=[ACCOUNTING, LIMITS, ALPHA],
-            DATABASES={**SQLITE, "other": {"URL": "sqlite+aiosqlite://"}},
-            DATABASE_ROUTING={"limits": "other"},
+            DATABASES={
+                **SQLITE,
+                "books": {"URL": "sqlite+aiosqlite://"},
+                "other": {"URL": "sqlite+aiosqlite://"},
+            },
+            DATABASE_ROUTING={"accounting": "books", "limits": "other"},
         ),
         pytest.raises(CheckFailed, match=r"limits\.E001") as raised,
     ):
@@ -484,7 +488,7 @@ def test_limits_live_where_the_ledger_does() -> None:
         "LIMITS cannot be enforced as configured:\n"
         "  limits.E001: The ledger's postings are counted in their own "
         "transaction, so the limits must live in the ledger's database "
-        "('default'), not in 'other'.\n"
+        "('books'), not in 'other'.\n"
         "    Hint: Route 'limits' where 'accounting' is, in DATABASE_ROUTING."
     )
 
@@ -644,3 +648,52 @@ def test_an_export_lists_limits_by_code_and_usage_by_kind_direction_currency() -
         ("holder", "out", "EGP", 2),
         ("holder", "out", "USD", 1),
     ]
+
+
+def test_limits_may_live_in_another_database_with_the_ledger() -> None:
+    """Both routed to one database: setup passes, and the hook is registered."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[ACCOUNTING, LIMITS, ALPHA],
+        DATABASES={**SQLITE, "books": {"URL": "sqlite+aiosqlite://"}},
+        DATABASE_ROUTING={"accounting": "books", "limits": "books"},
+    ):
+        setup()
+        hooked = [hook.domain for hook in on_posting.hooks()]
+    registry.clear()
+    assert hooked == ["limits"]
+
+
+@pytest.mark.usefixtures("project")
+def test_set_keeps_the_bounds_it_is_not_given() -> None:
+    """Each bound left out stays as it was; a new limit has no note."""
+    key = ("set", "k", "--kind", "holder", "--currency", "EGP")
+    run(*key, "--per-transaction", "5")
+    run(*key, "--window", "day", "--max-count", "2")
+    run(*key, "--note", "n")
+
+    async def stored() -> tuple[object, ...]:
+        async with LimitsUnitOfWork(readonly=True) as uow:
+            (found,) = await uow.limits.filter()
+        return found.per_transaction, found.window, found.max_count, found.note
+
+    assert run_async(stored()) == (egp("5"), Window.DAY, 2, "n")
+    run(
+        "set",
+        "fresh",
+        "--kind",
+        "holder",
+        "--currency",
+        "USD",
+        "--max-count",
+        "1",
+        "--window",
+        "day",
+    )
+
+    async def fresh() -> str:
+        async with LimitsUnitOfWork(readonly=True) as uow:
+            found = await uow.limits.filter()
+        return next(each.note for each in found if each.code == "fresh")
+
+    assert run_async(fresh()) == ""
