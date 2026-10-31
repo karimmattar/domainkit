@@ -93,7 +93,7 @@ Policy(
     approvals=2,  # 1 to 10
     group="treasurers",  # or permission="treasury.approve_payout"
     expires_after=timedelta(hours=4),  # default APPROVALS.EXPIRES_AFTER
-    approve_rule=RecentSecondFactor(),  # see below
+    approve_rule=StepUp(max_age=timedelta(minutes=5)),  # see below
     when=lambda command: ...,
 )
 ```
@@ -242,18 +242,43 @@ the request's object:
 
 ```python
 # config/rules.py: contrib.auth's step-up rule, or a rule of the project's own.
+from datetime import timedelta
+
+from domainkit.contrib.auth import StepUp
+
 RECENT_PROOF = StepUp(max_age=timedelta(minutes=5))
 
 # config/settings.py
 APPROVALS = {"APPROVE_RULE": "config.rules.RECENT_PROOF"}
 ```
 
+Or on one policy, which then asks it in place of `APPROVE_RULE`:
+
+```python
+from domainkit.contrib.approvals import Policy
+from domainkit.contrib.auth import StepUp
+
+Policy(
+    "treasury.payout",
+    group="treasurers",
+    approve_rule=StepUp(max_age=timedelta(minutes=5)),
+)
+```
+
+An approver who has not stepped up within five minutes gets `401
+step_up_required` from `POST /requests/{id}/approve`; they step up
+(`POST /step-up` with a code of their authenticator,
+[Stepping up](../auth/step-up.md)) and approve again. Mount
+`domainkit.contrib.auth.stepup.router` (and `auth.mfa`'s, to enrol) where
+the API keeps its auth routes.
+
 Any `BasePermission` fits, so `contrib.auth`'s step-up rule
 (`StepUp(max_age=...)`), a project's own, or a combination
 (`StepUp(max_age=...) & IsUnscoped()`) all work, and a policy may ask for
 a fresher proof than the rest (`approve_rule=StepUp(max_age=...)`). A
 refused approval answers 403 ("You cannot approve this request now."),
-or what the rule itself raises. Rejecting asks only that
+unless the rule names its own refusal, as `StepUp` does (`401
+step_up_required`). Rejecting asks only that
 the person is an approver: stopping a request should never wait for a
 second factor.
 

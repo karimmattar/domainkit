@@ -1,4 +1,4 @@
-"""Approvals, the ledger, and the auth admin, mounted as a project would."""
+"""Approvals, the ledger, the auth admin, and step-ups, mounted as a project would."""
 
 from typing import ClassVar
 
@@ -8,12 +8,16 @@ from starlette.requests import HTTPConnection
 from domainkit.contrib.accounting.api import router as accounting
 from domainkit.contrib.approvals.api import router as approvals
 from domainkit.contrib.auth.admin import router as admin
+from domainkit.contrib.auth.mfa import router as mfa
+from domainkit.contrib.auth.stepup import router as step_up
 from domainkit.http.access import BasePermission, Principal
 
 router = APIRouter()
 router.include_router(approvals, prefix="/approvals")
 router.include_router(accounting, prefix="/accounting")
 router.include_router(admin, prefix="/admin/auth")
+router.include_router(mfa, prefix="/auth")
+router.include_router(step_up, prefix="/auth")
 
 
 class Proof(BasePermission):
