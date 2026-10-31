@@ -149,6 +149,21 @@ async def test_waiting_messages_are_listed_due_first_then_by_priority_and_age(
     assert listed == ["urgent", "older", "due now", "scheduled"]
 
 
+async def test_due_messages_of_one_priority_are_listed_oldest_first(
+    outbox: None,
+) -> None:
+    """Whichever was written first, the one due longest comes first."""
+    await store(
+        row("newer", available_at=NOW - timedelta(minutes=1)),
+        row("older", available_at=NOW - timedelta(hours=2)),
+    )
+
+    with freeze_time(NOW):
+        listed = await targets("pending")
+
+    assert listed == ["older", "newer"]
+
+
 async def test_locked_messages_are_listed_by_the_end_of_their_lock(
     outbox: None,
 ) -> None:
