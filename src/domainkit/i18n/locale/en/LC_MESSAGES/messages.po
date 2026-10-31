@@ -817,3 +817,72 @@ msgstr ""
 
 msgid "The amount has more digits than this field holds."
 msgstr ""
+
+msgid "This command needs approval: submit it for approval."
+msgstr ""
+
+msgid "This command needs approval: it was submitted for approval."
+msgstr ""
+
+msgid "No approval request has that id."
+msgstr ""
+
+msgid "No guarded command has that name."
+msgstr ""
+
+msgid "The arguments do not make the command."
+msgstr ""
+
+msgid "The command is larger than APPROVALS allows."
+msgstr ""
+
+msgid "The command is not the one this action takes."
+msgstr ""
+
+msgid "The command reads otherwise now than when it was approved."
+msgstr ""
+
+msgid "This command needs no approval: run it directly."
+msgstr ""
+
+msgid "A maker's id has 1 to 255 characters."
+msgstr ""
+
+msgid "An approver's id has 1 to 255 characters."
+msgstr ""
+
+msgid "A reason has at most 500 characters."
+msgstr ""
+
+msgid "The request is no longer waiting for a decision."
+msgstr ""
+
+msgid "The request has expired."
+msgstr ""
+
+msgid "Whoever submitted a request cannot decide it."
+msgstr ""
+
+msgid "You have decided this request already."
+msgstr ""
+
+msgid "The request holds another command than the one decided on."
+msgstr ""
+
+msgid "Only whoever submitted a request can cancel it."
+msgstr ""
+
+msgid "The request holds another command than the one approved."
+msgstr ""
+
+msgid "The request is not waiting to run."
+msgstr ""
+
+msgid "You may not submit this command."
+msgstr ""
+
+msgid "You are not one of the approvers of this request."
+msgstr ""
+
+msgid "You cannot approve this request now."
+msgstr ""

@@ -827,3 +827,72 @@ msgstr ""
 
 msgid "The amount has more digits than this field holds."
 msgstr "في المبلغ أرقام أكثر مما يتسع له هذا الحقل."
+
+msgid "This command needs approval: submit it for approval."
+msgstr "يحتاج هذا الأمر إلى موافقة: قدّمه طلبًا للموافقة."
+
+msgid "This command needs approval: it was submitted for approval."
+msgstr "يحتاج هذا الأمر إلى موافقة: قُدّم طلبًا للموافقة."
+
+msgid "No approval request has that id."
+msgstr "لا يوجد طلب موافقة بهذا المعرّف."
+
+msgid "No guarded command has that name."
+msgstr "لا يوجد أمر محميّ بهذا الاسم."
+
+msgid "The arguments do not make the command."
+msgstr "المعطيات لا تكوّن الأمر."
+
+msgid "The command is larger than APPROVALS allows."
+msgstr "الأمر أكبر مما يسمح به APPROVALS."
+
+msgid "The command is not the one this action takes."
+msgstr "هذا الأمر ليس الأمر الذي يأخذه هذا الإجراء."
+
+msgid "The command reads otherwise now than when it was approved."
+msgstr "يُقرأ الأمر الآن على غير ما كان عليه حين الموافقة عليه."
+
+msgid "This command needs no approval: run it directly."
+msgstr "لا يحتاج هذا الأمر إلى موافقة: نفّذه مباشرة."
+
+msgid "A maker's id has 1 to 255 characters."
+msgstr "معرّف مقدّم الطلب من حرف واحد إلى ٢٥٥ حرفًا."
+
+msgid "An approver's id has 1 to 255 characters."
+msgstr "معرّف الموافِق من حرف واحد إلى ٢٥٥ حرفًا."
+
+msgid "A reason has at most 500 characters."
+msgstr "السبب ٥٠٠ حرف على الأكثر."
+
+msgid "The request is no longer waiting for a decision."
+msgstr "لم يعد الطلب في انتظار قرار."
+
+msgid "The request has expired."
+msgstr "انتهت مدة الطلب."
+
+msgid "Whoever submitted a request cannot decide it."
+msgstr "لا يحق لمن قدّم الطلب أن يبتّ فيه."
+
+msgid "You have decided this request already."
+msgstr "سبق أن بتَتّ في هذا الطلب."
+
+msgid "The request holds another command than the one decided on."
+msgstr "يحمل الطلب أمرًا غير الذي بُتّ فيه."
+
+msgid "Only whoever submitted a request can cancel it."
+msgstr "لا يلغي الطلب إلا من قدّمه."
+
+msgid "The request holds another command than the one approved."
+msgstr "يحمل الطلب أمرًا غير الذي وُوفق عليه."
+
+msgid "The request is not waiting to run."
+msgstr "الطلب ليس في انتظار التنفيذ."
+
+msgid "You may not submit this command."
+msgstr "لا يحق لك تقديم هذا الأمر."
+
+msgid "You are not one of the approvers of this request."
+msgstr "لست من الموافقين على هذا الطلب."
+
+msgid "You cannot approve this request now."
+msgstr "لا يمكنك الموافقة على هذا الطلب الآن."

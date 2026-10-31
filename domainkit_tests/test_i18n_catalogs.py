@@ -336,6 +336,8 @@ EXTRA_MESSAGES: Final = {
     "Too many open connections; try again later.",  # http.live.TOO_MANY_CONNECTIONS
     "Another item of the batch failed, so nothing was applied.",  # resources.batches
     "Credentials limited to scopes cannot do this.",  # auth.access.IsUnscoped
+    "You are not one of the approvers of this request.",  # approvals.rules
+    "You cannot approve this request now.",  # approvals.rules
     "Too many attempts; try again later.",  # auth.mfa and auth.recovery, by keyword
     "Too many requests for mail; try again later.",  # auth.recovery and auth.signup
     MoneyError.summary,
@@ -352,6 +354,7 @@ SCANNED: Final = (
     "db",
     "ddd",
     "storage",
+    "contrib/approvals",
     "contrib/auth",
     "contrib/idempotency",
     "contrib/objectpermissions",
