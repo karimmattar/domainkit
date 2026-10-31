@@ -24,6 +24,7 @@ from domainkit.contrib.auth.settings import (
     ScaSettings,
     StepUpSettings,
     _with_preset,
+    with_a_factor,
 )
 from domainkit.contrib.auth.tables import password_history
 from domainkit.contrib.auth.validators import (
@@ -481,16 +482,20 @@ def test_staff_mark_the_newest_password_only(identity: Api) -> None:
 
 
 def test_methods_say_what_is_wrong() -> None:
-    """A second factor is required; each method once."""
-    with pytest.raises(ValueError, match="no second factor") as alone:
+    """A second factor is required; each method once; both settings check it."""
+    with pytest.raises(ValueError, match="no second factor"):
         StepUpSettings(METHODS=("pwd",))
-    with pytest.raises(ValueError, match="each method once") as twice:
+    with pytest.raises(ValueError, match="each method once"):
         ScaSettings(METHODS=("otp", "otp"))
+    with pytest.raises(ValueError, match=r"^METHODS must") as alone:
+        with_a_factor(("pwd",))
+    with pytest.raises(ValueError, match=r"^METHODS lists") as twice:
+        with_a_factor(("otp", "pwd", "otp"))
 
-    assert 'METHODS must hold "otp": a password alone is no second factor' in str(
-        alone.value
+    assert str(alone.value) == (
+        'METHODS must hold "otp": a password alone is no second factor'
     )
-    assert "METHODS lists each method once" in str(twice.value)
+    assert str(twice.value) == "METHODS lists each method once"
 
 
 def test_without_the_setting_a_staff_password_just_works(api: Api) -> None:
