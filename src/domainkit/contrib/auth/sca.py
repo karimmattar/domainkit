@@ -41,7 +41,7 @@ import json
 import re
 from dataclasses import replace
 from datetime import datetime
-from typing import Final
+from typing import Final, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -156,39 +156,32 @@ async def consume_authorization(
         TransactionNotAuthorized: It does not hold for this transaction.
     """
     challenge_id, code = _parsed(authorization)
-    now = utc_now()
     async with AuthUnitOfWork() as uow:
-        challenge = None if challenge_id is None else await uow.sca.get(challenge_id)
-        reason = _unusable(challenge, code, user_id, now)
-        if challenge is not None and reason is None:
-            reason = await _spend(
-                uow, challenge, code, user_id, amount, payee, purpose, now
-            )
+        challenge = await uow.sca.get(challenge_id)
+        if challenge is None or not _usable(challenge, code, user_id):
+            reason: str | None = "invalid_authorization"
+        else:
+            reason = await _spend(uow, challenge, code, user_id, amount, payee, purpose)
             await uow.commit()
-    if challenge is None or reason is not None:
-        await audit_refusal(ACTION, reason or "invalid_authorization")
+    if reason is not None:
+        await audit_refusal(ACTION, reason)
         raise TransactionNotAuthorized
-    return challenge
+    return cast(ScaChallenge, challenge)  # Spent: it was stored.
 
 
-def _unusable(
-    challenge: ScaChallenge | None, code: str, user_id: UUID, now: datetime
-) -> str | None:
-    """Why ``challenge`` cannot be spent by ``user_id`` with ``code``; None if it can.
+def _usable(challenge: ScaChallenge, code: str, user_id: UUID) -> bool:
+    """Whether ``user_id`` may spend ``challenge`` with ``code``.
 
-    Unknown, another user's, unconfirmed, used, expired, or changed since
-    its confirmation (the code no longer covers the row).
+    Not another user's, unconfirmed, used, expired, or changed since its
+    confirmation (the code no longer covers the row).
     """
-    if (
-        challenge is None
-        or challenge.user_id != user_id
-        or challenge.confirmed_at is None
-        or challenge.consumed_at is not None
-        or challenge.expired(now)
-        or not _matches(code, challenge)
-    ):
-        return "invalid_authorization"
-    return None
+    return (
+        challenge.user_id == user_id
+        and challenge.confirmed_at is not None
+        and challenge.consumed_at is None
+        and not challenge.expired()
+        and _matches(code, challenge)
+    )
 
 
 async def _spend(
@@ -199,7 +192,6 @@ async def _spend(
     amount: Money,
     payee: str,
     purpose: str,
-    now: datetime,
 ) -> str | None:
     """Spend ``challenge`` on these values; why it was refused, or None.
 
@@ -209,7 +201,7 @@ async def _spend(
         challenge, user_id=user_id, amount=amount, payee=payee, purpose=purpose
     )
     bound = _matches(code, asked)
-    if not await uow.sca.consume(challenge.id, now):
+    if not await uow.sca.consume(challenge.id, utc_now()):
         return "used"
     if not bound:
         return "changed"
@@ -368,13 +360,16 @@ def canonical(challenge: ScaChallenge) -> bytes:
     ).encode()
 
 
-def _parsed(authorization: str) -> tuple[UUID | None, str]:
-    """The challenge's id and the code of ``<id>.<code>``; None for a malformed id."""
+def _parsed(authorization: str) -> tuple[UUID, str]:
+    """The challenge's id and the code of ``<id>.<code>``.
+
+    A malformed id is the nil UUID, which no transaction has (``uuid4``).
+    """
     head, _, code = authorization.partition(".")
     try:
         return UUID(head), code
     except ValueError:
-        return None, code
+        return UUID(int=0), code
 
 
 def _matches(code: str, challenge: ScaChallenge) -> bool:
