@@ -237,7 +237,7 @@ async def test_a_sealed_value_set_on_purpose_is_written_as_it_is(bank: str) -> N
     pan = (await raw("SELECT pan FROM cards_payments"))[0]["pan"]
     async with CardsUnitOfWork() as uow:
         payment = await uow.payments.get(uuid.UUID(int=1))
-        payment.pan = Ciphertext(pan)
+        payment.pan = Ciphertext(pan)  # type: ignore[assignment]
         payment.note = "later fields are still sealed"
         await uow.commit()
     async with CardsUnitOfWork() as uow:
