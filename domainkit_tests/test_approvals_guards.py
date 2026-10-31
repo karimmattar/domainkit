@@ -96,11 +96,17 @@ def register(**options: Any) -> Guard:  # noqa: ANN401 - guard()'s options.
 @pytest.mark.parametrize(
     ("options", "message"),
     [
-        ({"name": "Refunds"}, "dotted lower-case words"),
+        ({"name": "Refunds"}, r"^A policy's name is dotted lower-case words"),
         ({"name": "tests." + "x" * 128}, "at most 128 characters"),
         ({"approvals": 0}, "1 to 10 approvals"),
         ({"approvals": 11}, "1 to 10 approvals"),
-        ({"permission": None}, "one of the two"),
+        (
+            {"permission": None},
+            (
+                r"^Policy 'tests\.p' names its approvers by a permission or by a "
+                r"group: one of the two\.$"
+            ),
+        ),
         ({"group": "treasurers"}, "one of the two"),
         ({"expires_after": timedelta(0)}, "at most 90 days"),
         ({"expires_after": timedelta(days=91)}, "at most 90 days"),
@@ -126,6 +132,7 @@ def test_a_policy_takes_rules_and_their_classes() -> None:
     )
     assert policy.applies(object())
     assert Policy("tests.p", permission="a.b", approve_rule=IsAuthenticated()).name
+    assert Policy("tests.p", permission="a.b", expires_after=timedelta(days=1))
 
 
 def test_thresholds_sum_per_currency_and_never_mix_them() -> None:
@@ -363,6 +370,7 @@ def test_a_requests_life_records_its_events() -> None:
         RequestExpired,
         RequestFailed,
         RequestRejected,
+        RequestSubmitted,
     )
     from domainkit.contrib.approvals.models import ApprovalRequest
 
@@ -377,7 +385,16 @@ def test_a_requests_life_records_its_events() -> None:
             group=None,
             expires_at=clock.now() + timedelta(days=1),
         )
-        request.pull_events()
+        submitted = facts(request.pull_events())
+        assert submitted == expected(
+            RequestSubmitted(
+                request_id=request.id,
+                action="tests.refund",
+                policy="tests.refunds",
+                fingerprint=request.fingerprint,
+                required=2,
+            )
+        )
         return request
 
     def facts(events: list[Any]) -> list[tuple[str, dict[str, Any]]]:

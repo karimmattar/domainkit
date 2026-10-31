@@ -794,9 +794,10 @@ async def test_a_command_too_large_to_hold_is_refused(project: str) -> None:
     """Its JSON is held to ``MAX_ARGUMENTS_BYTES``."""
     guard_acts()
     with override_settings(APPROVALS={"MAX_ARGUMENTS_BYTES": 1024}):
+        # '{"kind":"..."}' is 11 bytes and the kind's.
         with refused(InvalidArguments):
-            await submit_command("tests.act", Act(kind="x" * 1024), maker="maker")
-        assert await submit_command("tests.act", Act(kind="x" * 900), maker="maker")
+            await submit_command("tests.act", Act(kind="x" * 1014), maker="maker")
+        assert await submit_command("tests.act", Act(kind="x" * 1013), maker="maker")
 
 
 async def test_the_worker_expires_requests_on_its_schedule(project: str) -> None:
@@ -913,6 +914,12 @@ async def test_the_executed_event_names_the_request(
 
 async def test_a_maker_without_an_id_is_refused(project: str) -> None:
     """Submitted over JSON with an empty maker: said so."""
+    guard_acts()
+    for maker in ("m", "m" * 255):
+        made = await submit_command("tests.act", Act(kind="k"), maker=maker)
+        assert made.maker == maker
+    with refused(InvalidArguments):
+        await submit_command("tests.act", Act(kind="k"), maker="m" * 256)
     with refused(InvalidArguments, r"^A maker's id has 1 to 255 characters\.$"):
         await submit_request(
             SubmitRequest(action=ENTRIES, arguments={}, maker=""),
