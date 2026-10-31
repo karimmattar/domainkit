@@ -5,9 +5,9 @@ from decimal import Decimal
 from domainkit.contrib.limits import LimitsUnitOfWork, SetLimit, set_limit
 from domainkit.contrib.messaging.testing import Outbox
 from domainkit.money import Money
-from domainkit.testing import TestClient
+from domainkit.testing import FrozenClock, TestClient
 
-from tests.people import URL, Person, usd
+from tests.people import MAKER, URL, Person, usd
 
 
 def test_a_small_transfer_is_made_once_however_often_it_is_sent(maker: Person) -> None:
@@ -26,6 +26,19 @@ def test_a_small_transfer_is_made_once_however_often_it_is_sent(maker: Person) -
     )
     shown = maker.api.get(f"{URL}/transfers/{made.json()['id']}")
     assert shown.json() == made.json()
+
+
+def test_a_customer_sees_their_own_transfers_only(
+    maker: Person, client: TestClient, clock: FrozenClock
+) -> None:
+    """Another customer's transfer, with the same permission, is not found."""
+    card = maker.register_card()
+    made = maker.transfer(card, usd("30.00"), maker.authorize(card, usd("30.00")))
+    other = Person(client, clock, *MAKER)
+
+    theirs = other.api.get(f"{URL}/transfers/{made.json()['id']}")
+
+    assert (theirs.status_code, theirs.json()["code"]) == (404, "transfer_not_found")
 
 
 def test_a_transfer_needs_an_idempotency_key(maker: Person) -> None:

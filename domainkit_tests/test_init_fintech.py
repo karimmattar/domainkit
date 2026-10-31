@@ -237,8 +237,8 @@ def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
     """Every step of its test job but the install: lint, types, check, tests.
 
     The steps that read the database run one after another, as CI runs
-    them; ruff, mypy, and the tests do not depend on each other and run
-    side by side, as test_generators runs them.
+    them; ruff, mypy, and the tests (on a database of their own) depend on
+    nothing else and run beside them, as test_generators runs its checks.
     """
     workflow = yaml.safe_load(
         (bank.root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -260,15 +260,15 @@ def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
     sequential = [line for line in lines if line.startswith("python ")]
     alongside = [line for line in lines if not line.startswith("python ")]
 
-    for line in sequential:
-        program, *args = shlex.split(line)
-        done = bank.run(*programs[program], *args, env=job["env"])
-        assert done.returncode == 0, f"{line}\n{done.stdout}{done.stderr}"
     started = {
         line: bank.start(*programs[program], *args, env=job["env"])
         for line in alongside
         for program, *args in [shlex.split(line)]
     }
+    for line in sequential:
+        program, *args = shlex.split(line)
+        done = bank.run(*programs[program], *args, env=job["env"])
+        assert done.returncode == 0, f"{line}\n{done.stdout}{done.stderr}"
     ended = {line: bank.ended(process) for line, process in started.items()}
 
     for line, done in ended.items():
@@ -282,7 +282,7 @@ def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
         'python manage.py makemigrations --check -m "unused"',
         "pytest",
     ]
-    assert "15 passed" in ended["pytest"].stdout
+    assert "16 passed" in ended["pytest"].stdout
     assert "--strict" not in ended["mypy"].args  # pyproject.toml's strict = true.
 
 

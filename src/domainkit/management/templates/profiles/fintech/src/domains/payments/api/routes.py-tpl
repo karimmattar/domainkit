@@ -27,6 +27,7 @@ from domains.payments.domain.model import (
     CardNotFound,
     Transfer,
     TransferId,
+    TransferNotFound,
 )
 from domains.payments.infrastructure.unit_of_work import SqlAlchemyPaymentsUnitOfWork
 
@@ -197,8 +198,12 @@ async def make_transfer(
     "/transfers/{transfer_id}",
     dependencies=[Depends(Require(HasPermissions("payments.view_transfer")))],
 )
-async def get_transfer(transfer_id: UUID, uow: UnitOfWork) -> TransferOut:
-    """A transfer, by id."""
+async def get_transfer(
+    transfer_id: UUID, user: AuthenticatedUser, uow: UnitOfWork
+) -> TransferOut:
+    """One of the caller's transfers, by id: another's is not found."""
     async with uow:
         transfer = await uow.transfers.get(TransferId(transfer_id))
+    if transfer.maker_id != user.id:
+        raise TransferNotFound(f"Transfer {transfer_id} does not exist.")
     return TransferOut.of(transfer)

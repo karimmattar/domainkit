@@ -76,7 +76,7 @@ change: the image, its `.dockerignore`, `manage.py`, the ASGI module.
 - A new payments project starts with the first-review list answered, and
   `docs/fintech.md` maps each item to its page, setting, and test; the
   tests that page names are checked to exist. `test_init_fintech.py` runs
-  the project's CI steps (its 15 tests, ruff, `mypy --strict`, `check`,
+  the project's CI steps (its 16 tests, ruff, `mypy --strict`, `check`,
   its migrations), `check --deploy` with each key service, each documented
   secret left out, and, on PostgreSQL, the trail made append-only by
   `migrate`.
