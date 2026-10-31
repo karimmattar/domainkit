@@ -6,13 +6,16 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from domainkit import clock
 from domainkit.checks import CheckFailed
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import (
     AuthUnitOfWork,
     InvalidPassword,
+    PasswordHash,
     UserId,
     acheck_password,
     amake_password,
@@ -37,7 +40,13 @@ from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api, UseAuth
 from domainkit_tests.test_auth_admin import ADMIN, ADMIN_PERMISSIONS, staff
-from domainkit_tests.test_auth_http import PASSWORD, audited, bearer, create_user
+from domainkit_tests.test_auth_http import (
+    AUTHENTICATION,
+    PASSWORD,
+    audited,
+    bearer,
+    create_user,
+)
 from domainkit_tests.test_auth_stepup import enrol, now_code
 
 VALIDATORS = "domainkit.contrib.auth.validators"
@@ -140,6 +149,22 @@ def test_presets_are_named() -> None:
         ({"LOGIN_RATE": "2/minute"}, "(8.3.4)"),
         ({"IDLE_TIMEOUT": None}, "IDLE_TIMEOUT None"),
         ({"IDLE_TIMEOUT": timedelta(minutes=14)}, "13 minutes at most"),
+        ({"PASSWORD_CHECKS_COUNT_AS_LOGINS": False}, "(8.3.4)"),
+        (
+            {
+                "AUTHENTICATION_CLASSES": [f"{AUTHENTICATION}.JWTAuthentication"],
+                "JWT": {
+                    "SIGNING_KEY": "k" * 32,
+                    "ACCESS_TOKEN_TTL": timedelta(minutes=14),
+                    "LEEWAY": timedelta(minutes=1, seconds=1),
+                },
+            },
+            (
+                "JWT.ACCESS_TOKEN_TTL 0:14:00 and LEEWAY 0:01:01 let a JSON Web "
+                "Token login idle that long, unrefreshed (8.2.8): 15 minutes "
+                "together at most"
+            ),
+        ),
     ],
 )
 def test_settings_that_contradict_the_preset_are_refused(
@@ -347,8 +372,13 @@ async def _id_of(username: str) -> UserId:
         return UserId(user.id)
 
 
-def test_a_second_factor_comes_after_the_change(identity: Api) -> None:
-    """The challenge is bound to the new password: it holds."""
+def test_the_second_factor_comes_before_the_change(identity: Api) -> None:
+    """With a second factor, the temporary password alone changes nothing.
+
+    ``/login`` answers the challenge and keeps the password; the change is
+    made at ``/mfa/login`` (and ``/session/mfa``), once the code holds
+    (SEC-15c).
+    """
     with freeze_time("2027-01-04T10:00:00Z") as clock:
         client = identity(PASSWORD_CHANGE_ON_FIRST_USE=True)
         create_user("alice", PASSWORD)
@@ -357,16 +387,71 @@ def test_a_second_factor_comes_after_the_change(identity: Api) -> None:
         run_async(_set_for_alice(STRONG[0]))
 
         challenged = log_in(client, STRONG[0], new_password=STRONG[1])
+        kept = history_rows()[-1]["temporary"]
+        token = challenged.json()["mfa_token"]
+        no_change = client.post(
+            "/auth/mfa/login",
+            json={"mfa_token": token, "code": now_code(secret, clock)},
+        )
+        wrong_code = client.post(
+            "/auth/mfa/login",
+            json={"mfa_token": token, "code": "000000", "new_password": STRONG[1]},
+        )
         done = client.post(
             "/auth/mfa/login",
             json={
-                "mfa_token": challenged.json()["mfa_token"],
+                "mfa_token": token,
                 "code": now_code(secret, clock),
+                "new_password": STRONG[1],
             },
+        )
+        browser = TestClient(client.app, base_url="https://testserver")
+        session = browser.post(
+            "/auth/session",
+            json={"username": "alice", "password": STRONG[1]},
+            headers={"Origin": "https://testserver"},
         )
 
     assert challenged.status_code == 202
+    assert kept is True  # Still the temporary one: nothing changed yet.
+    assert (no_change.status_code, no_change.json()["code"]) == (
+        403,
+        "password_change_required",
+    )
+    assert wrong_code.json()["code"] == "invalid_code"
     assert done.status_code == 200, done.json()
+    assert session.status_code == 202  # The new password, then the code.
+    assert log_in(client, STRONG[0]).status_code == 401
+
+
+def test_a_browser_session_changes_it_after_the_code_too(identity: Api) -> None:
+    """``/session/mfa`` takes ``new_password`` as ``/mfa/login`` does."""
+    with freeze_time("2027-01-04T10:00:00Z") as clock:
+        client = identity(PASSWORD_CHANGE_ON_FIRST_USE=True)
+        create_user("alice", PASSWORD)
+        headers = bearer(log_in(client, PASSWORD).json()["access_token"])
+        secret = enrol(client, headers, clock)
+        run_async(_set_for_alice(STRONG[0]))
+        browser = TestClient(client.app, base_url="https://testserver")
+        origin = {"Origin": "https://testserver"}
+
+        token = browser.post(
+            "/auth/session",
+            json={"username": "alice", "password": STRONG[0]},
+            headers=origin,
+        ).json()["mfa_token"]
+        done = browser.post(
+            "/auth/session/mfa",
+            json={
+                "mfa_token": token,
+                "code": now_code(secret, clock),
+                "new_password": STRONG[1],
+            },
+            headers=origin,
+        )
+
+    assert done.status_code == 200, done.json()
+    assert log_in(client, STRONG[1]).status_code == 202
 
 
 async def _set_for_alice(password: str) -> None:
@@ -615,3 +700,143 @@ def test_an_idle_timeout_that_ends_logins_at_15_minutes_holds() -> None:
     config = AuthSettings(**PCI, IDLE_TIMEOUT=timedelta(microseconds=818_181_818))
 
     assert preset_contradictions(config) == []
+
+
+@pytest.mark.parametrize(
+    "classes",
+    [
+        [f"{AUTHENTICATION}.TokenAuthentication"],
+        ["no.such.Authentication", f"{AUTHENTICATION}.JWTAuthentication"],
+    ],
+)
+def test_jwts_within_the_idle_bound_keep_the_preset(classes: list[str]) -> None:
+    """15 minutes together hold; tokens other than JWTs have no such bound."""
+    config = AuthSettings(
+        **PCI,
+        AUTHENTICATION_CLASSES=classes,
+        JWT={
+            "SIGNING_KEY": "k" * 32,
+            "ACCESS_TOKEN_TTL": timedelta(minutes=14),
+            "LEEWAY": timedelta(minutes=1),
+        },
+    )
+
+    assert preset_contradictions(config) == []
+
+
+def test_signed_in_password_checks_count_as_logins_when_set(identity: Api) -> None:
+    """``PASSWORD_CHECKS_COUNT_AS_LOGINS``: one count of guesses per account."""
+    client = identity(LOGIN_RATE="2/hour", PASSWORD_CHECKS_COUNT_AS_LOGINS=True)
+    create_user("alice", STRONG[0])
+    headers = bearer(log_in(client, STRONG[0]).json()["access_token"])
+
+    guesses = [
+        change(client, headers, "wrong", STRONG[1]).status_code for _ in range(2)
+    ]
+    stranger = TestClient(client.app, client=("203.0.113.9", 1))
+    login_after = stranger.post(
+        "/auth/login", json={"username": "alice", "password": STRONG[0]}
+    )
+
+    assert guesses == [400, 400]
+    assert (login_after.status_code, login_after.json()["code"]) == (
+        429,
+        "login_throttled",
+    )
+
+
+def test_wrong_logins_hold_back_signed_in_checks_when_set(identity: Api) -> None:
+    """And the other way: the account's wrong logins count against changes."""
+    client = identity(LOGIN_RATE="2/hour", PASSWORD_CHECKS_COUNT_AS_LOGINS=True)
+    create_user("alice", STRONG[0])
+    headers = bearer(log_in(client, STRONG[0]).json()["access_token"])
+    for number in (1, 2):
+        TestClient(client.app, client=(f"203.0.113.{number}", 1)).post(
+            "/auth/login", json={"username": "alice", "password": "wrong"}
+        )
+
+    held = change(client, headers, STRONG[0], STRONG[1])
+
+    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+
+
+def test_a_hash_no_hasher_reads_is_skipped_with_a_warning(
+    identity: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Refusing it would refuse every password; it is logged and skipped."""
+    identity(PASSWORD_HISTORY=4)
+    alice = create_user("alice", STRONG[0])
+
+    async def keep_unreadable() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                password_history.insert().values(
+                    user_id=alice,
+                    password=PasswordHash("md5$salt$0123456789abcdef"),
+                    created_at=clock.now(),
+                    temporary=False,
+                )
+            )
+
+    run_async(keep_unreadable())
+    with caplog.at_level("WARNING", logger="domainkit.security"):
+        run_async(_set_for_alice_own(STRONG[1]))
+        with pytest.raises(InvalidPassword):
+            run_async(_set_for_alice_own(STRONG[0]))
+
+    assert (
+        caplog.messages.count(
+            f"A kept password hash of user {alice} was made by a hasher no longer in "
+            "AUTH.PASSWORD_HASHERS: reuse of that password is not checked"
+        )
+        == 2
+    )
+
+
+async def _set_for_alice_own(password: str) -> None:
+    """Set alice's password as she would."""
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.get_by_natural_key("alice")
+        assert user is not None
+        await uow.users.set_password(user, password)
+        await uow.commit()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "temporary"),
+    [
+        (["alice"], True),
+        (["alice", "--no-temporary"], False),
+        ([], False),
+        (["--temporary"], True),
+    ],
+)
+def test_changepassword_marks_what_the_operator_sets(
+    identity: Api,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    temporary: bool,
+) -> None:
+    """A user named is to change it; one's own login name, or a flag, decides."""
+    identity(PASSWORD_CHANGE_ON_FIRST_USE=True)
+    create_user("alice", STRONG[0])
+    monkeypatch.setattr("getpass.getuser", lambda: "alice")
+    monkeypatch.setattr(changepassword.Command, "ask_secret", lambda self, _: STRONG[1])
+
+    call_command("changepassword", *arguments, stdout=io.StringIO())
+
+    assert history_rows()[-1]["temporary"] is temporary
+
+
+def test_changepassword_sets_no_temporary_password_without_the_setting(
+    identity: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is kept, and the password just works."""
+    client = identity()
+    create_user("alice", STRONG[0])
+    monkeypatch.setattr(changepassword.Command, "ask_secret", lambda self, _: STRONG[1])
+
+    call_command("changepassword", "alice", stdout=io.StringIO())
+
+    assert log_in(client, STRONG[1]).status_code == 200
+    assert history_rows() == []

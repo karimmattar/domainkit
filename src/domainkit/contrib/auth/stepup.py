@@ -224,7 +224,7 @@ async def _check_password(
             "Enter your password as well.",
             code="password_required",
         )
-    counted = await _throttle(request, f"password:user:{user.id}")
+    counted = await _throttle(request, user)
     if not await _password_holds(user, password):
         await audit_refusal(action, "wrong_password")
         raise APIError(

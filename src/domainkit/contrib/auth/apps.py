@@ -1,13 +1,14 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from http.cookies import SimpleCookie
 from importlib import import_module
 from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Response
+from fastapi.dependencies.models import Dependant
 from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -22,10 +23,19 @@ from domainkit.db.hooks import on_committed, on_migrated, on_stage
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, event_bus
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.access import routes_need_users, served_routes
+from domainkit.http.access import (
+    AllOf,
+    AnyOf,
+    BasePermission,
+    Not,
+    Require,
+    routes_need_users,
+    served_routes,
+)
 from domainkit.http.ratelimit import MemoryBackend
 from domainkit.utils.module_loading import import_string
 
+from .access import StepUp
 from .authentication import get_authenticators
 from .backends import get_backends
 from .hashers import insecure_hashers
@@ -224,6 +234,16 @@ class AuthConfig(DomainConfig):
             )
         problems.extend(self._mailing_problems(app))
         problems.extend(self._unshared_throttles(required=True))
+        problems.extend(
+            CheckMessage(
+                "auth.E106",
+                f"{route} asks StepUp for {', '.join(sorted(missing))}, which no "
+                f"step-up proves (AUTH.STEP_UP.METHODS is "
+                f"{list(auth_settings().STEP_UP.METHODS)}): it refuses everyone. "
+                "Add the methods to AUTH.STEP_UP.METHODS, or leave methods out.",
+            )
+            for route, missing in unprovable_step_ups(app)
+        )
         if (
             self._mounted(app, "cookies")
             and COOKIE_AUTHENTICATION not in auth_settings().AUTHENTICATION_CLASSES
@@ -527,6 +547,49 @@ class AuthConfig(DomainConfig):
                 )
             )
         return errors
+
+
+def unprovable_step_ups(app: FastAPI) -> list[tuple[str, frozenset[str]]]:
+    """Each route whose ``StepUp`` asks for methods no step-up proves, and them.
+
+    ``StepUp(methods=...)`` beyond ``AUTH.STEP_UP.METHODS`` refuses everyone:
+    ``POST /step-up`` proves those alone. Rules are found in ``Require`` at
+    any depth of a route's dependencies, inside ``&``, ``|``, and ``~``.
+    """
+    found = []
+    for route, dependant in served_routes(app.routes):
+        missing: frozenset[str] = frozenset()
+        for rule in _rules_of(dependant):
+            if isinstance(rule, StepUp):
+                missing |= rule.unprovable()
+        if missing:
+            found.append((route, missing))
+    return found
+
+
+def _rules_of(dependant: Dependant | None) -> Iterator[BasePermission]:
+    """Every rule the ``Require`` dependencies of ``dependant`` check, nested too."""
+    if dependant is None:
+        return
+    if isinstance(dependant.call, Require):
+        for rule in dependant.call.rules:
+            yield from _nested(rule)
+    for each in dependant.dependencies:
+        yield from _rules_of(each)
+
+
+def _nested(rule: BasePermission) -> Iterator[BasePermission]:
+    """``rule``, and the rules it combines (``&``, ``|``, ``~``)."""
+    yield rule
+    inner = (
+        rule.rules
+        if isinstance(rule, AllOf | AnyOf)
+        else (rule.rule,)
+        if isinstance(rule, Not)
+        else ()
+    )
+    for each in inner:
+        yield from _nested(each)
 
 
 def _check_middleware() -> None:

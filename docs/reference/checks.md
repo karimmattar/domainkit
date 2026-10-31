@@ -55,6 +55,8 @@ The application refuses to start there with a route no rule guards
 problems installed domains find (`auth.E101` to `auth.E104`; `auth.E105`,
 password and code attempts counted in each process (a `MemoryBackend` as
 `RATE_LIMIT_BACKEND`), unless `AUTH.REQUIRE_SHARED_THROTTLES = False`;
+`auth.E106`, a route whose `StepUp(methods=...)` asks for methods
+`AUTH.STEP_UP.METHODS` never proves, so it refuses everyone;
 `idempotency.E001`; `keys.E001`, `KEYS.PROVIDER = "local"` without
 `KEYS.ALLOW_LOCAL_KEK`, whose key-encryption key derives from `SECRET_KEY`
 ([keys.md](../contrib/keys.md#providers)); `idempotency.E002`, keyed requests without a deadline,

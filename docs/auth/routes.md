@@ -60,8 +60,10 @@ your own subclasses `BasePermission`, overrides `has_permission(request,
 user)` or `has_object_permission(request, user, obj)` (both async), and may
 set `message`. A rule whose refusal should tell the client what to do
 returns its own error from `refusal(request, user)` (as `StepUp` does);
-it answers in place of the `403`, unrecorded, and `&` passes on that of
-its first refusing rule. `user` is the request's `Principal`; annotate it as the
+it answers in place of the `403`, unrecorded, but only when no other
+rule of the request refuses plainly: a plain refusal wins, and is
+recorded, whatever the order (`StepUp(...) & HasPermissions(...)`
+answers a user without the permission with the `403`). `user` is the request's `Principal`; annotate it as the
 users your rule is written for, such as `AnyUser`. Where a route loads one
 object, check it:
 

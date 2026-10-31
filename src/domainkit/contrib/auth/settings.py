@@ -69,6 +69,7 @@ PCI_PRESET: Final[Mapping[str, object]] = {
     "PASSWORD_HISTORY": PCI_HISTORY,
     "PASSWORD_CHANGE_ON_FIRST_USE": True,
     "LOGIN_RATE": "10/hour",
+    "PASSWORD_CHECKS_COUNT_AS_LOGINS": True,
     # A login ends between IDLE_TIMEOUT and a tenth more after its last use
     # (tokens.idle_since): 13 minutes ends it by 14.3, within 8.2.8's 15.
     "IDLE_TIMEOUT": timedelta(minutes=13),
@@ -376,7 +377,8 @@ class AuthSettings(BaseModel):
     PASSWORD_PRESET: Literal["pci-dss-4"] | None = None
     """A set of settings a standard asks for: ``"pci-dss-4"`` sets
     ``PASSWORD_VALIDATORS``, ``PASSWORD_HISTORY``,
-    ``PASSWORD_CHANGE_ON_FIRST_USE``, ``LOGIN_RATE``, and ``IDLE_TIMEOUT``
+    ``PASSWORD_CHANGE_ON_FIRST_USE``, ``LOGIN_RATE``,
+    ``PASSWORD_CHECKS_COUNT_AS_LOGINS``, and ``IDLE_TIMEOUT``
     where they are left unset, and refuses to start where one set
     contradicts it (``auth.E010``). None: no preset."""
     PASSWORD_HISTORY: int = Field(default=0, ge=0, le=24)
@@ -423,6 +425,12 @@ class AuthSettings(BaseModel):
     do not hold, per client address (one-time codes count against
     ``MFA.RATE``). Checks that succeed are not counted.
     """
+    PASSWORD_CHECKS_COUNT_AS_LOGINS: bool = False
+    """Count wrong passwords of signed-in users (``/password``, a step-up,
+    the second factor's changes) against the account's count of wrong
+    logins too, so ``LOGIN_RATE`` bounds every guess at the account's
+    password. False, the default, counts them apart, so others' wrong
+    logins never keep a signed-in user from changing the password."""
     DEVICE_TTL: timedelta | None = Field(
         default=timedelta(days=30),
         ge=timedelta(hours=1),

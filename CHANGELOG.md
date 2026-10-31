@@ -318,6 +318,46 @@ and a status.
 
 ### Security
 
+- The PCI preset bounds a JSON Web Token login's idleness: `auth.E010`
+  refuses `AUTH.JWT.ACCESS_TOKEN_TTL` plus `LEEWAY` above 15 minutes, and
+  with `AUTH.IDLE_TIMEOUT` any access token issued longer ago than the
+  timeout is refused (`401`, "Session ended after inactivity"): a JSON Web
+  Token login's use is its refreshes. An access token living an hour let
+  a login idle an hour under the preset (SEC-15c-1).
+- An open WebSocket or event stream no longer keeps its login alive: its
+  re-checks (`LIVE_REAUTH_INTERVAL`) write no last use, so with
+  `AUTH.IDLE_TIMEOUT` a connection nobody uses closes once its login
+  idles out. A live page left open kept a login from ever idling
+  (SEC-15c-2).
+- `changepassword <user>` sets a password the user changes at the first
+  login, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, as the admin API's
+  does; `--no-temporary` keeps it, `--temporary` asks it of one's own
+  (SEC-15c-3).
+- With a second factor, a password staff set is changed only with the
+  code: `/login` answers the challenge and changes nothing, and
+  `new_password` goes to `/mfa/login` or `/session/mfa`. Whoever held the
+  temporary password could set a lasting one without the factor
+  (SEC-15c-4).
+- `StepUp` is asked on every re-check of an open connection, which closes
+  once its step-up is older than `max_age`, and about objects too
+  (`check_object_permissions`); an open WebSocket kept its step-up for
+  good, and a `StepUp` given to `check_object_permissions` alone checked
+  nothing (SEC-15c-5).
+- A plain refusal answers before one a rule names: `StepUp(...) &
+  HasPermissions(...)`, and `Require` given both, answer a user without
+  the permission with the `403`, recorded as a denial, never `401
+  step_up_required` (SEC-15c-6).
+- The password history skips a kept hash no hasher of
+  `AUTH.PASSWORD_HASHERS` reads, with a security log line, where it was
+  skipped silently (SEC-15c-7).
+- `AUTH.PASSWORD_CHECKS_COUNT_AS_LOGINS` (the PCI preset sets it, and
+  `auth.E010` asks it there): wrong passwords of signed-in users
+  (`/auth/password`, a step-up, the second factor's changes) count against
+  the account's wrong logins too, so `LOGIN_RATE` bounds every guess; they
+  counted apart, doubling the guesses (SEC-15c-8).
+- `auth.E106`: a route whose `StepUp(methods=...)` asks for methods
+  `AUTH.STEP_UP.METHODS` never proves, so it refuses everyone (SEC-15c-9).
+
 - A money condition through child entities is one condition on one
   child: `F("lines.price") >= Money.of("100", "USD")` holds for an order
   with a line priced in USD at 100 or more, in memory and in one SQL

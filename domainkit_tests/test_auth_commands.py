@@ -323,4 +323,4 @@ def test_changepassword_finds_the_user(
     call_command("changepassword", stdout=io.StringIO())
 
     with pytest.raises(CommandError, match="'ghost' does not exist"):
-        run_async(changepassword.Command()._save("ghost", STRONG))
+        run_async(changepassword.Command()._save("ghost", STRONG, temporary=False))

@@ -201,7 +201,7 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
 
 
 async def _changed_on_first_use(
-    user: AbstractBaseUser, new_password: str | None
+    user: AbstractBaseUser, new_password: str | None, *, factor_proven: bool = False
 ) -> AbstractBaseUser:
     """``user``, whose password staff set replaced: it works for this change alone.
 
@@ -209,15 +209,19 @@ async def _changed_on_first_use(
     use. The new one follows ``AUTH.PASSWORD_VALIDATORS`` and the history,
     and every other login of the user ends.
 
-    The user returned holds the new password's hash, which a second
-    factor's challenge is bound to.
+    A user with a second factor changes it only once the factor is proven
+    too (``factor_proven``, at ``/mfa/login`` and ``/session/mfa``): the
+    password alone never sets a lasting one. Until then the user is
+    returned as is, and the login goes on to its challenge.
 
     Raises:
         APIError: 403 ``password_change_required`` without ``new_password``.
         InvalidPassword: The new password breaks a rule.
     """
     async with AuthUnitOfWork() as uow:
-        if not await uow.passwords.must_change(user.id):
+        if not await uow.passwords.must_change(user.id) or (
+            not factor_proven and await uow.mfa.enabled(user.id)
+        ):
             return user
         if new_password is None:
             await _audit_refusal("password_change_required")
@@ -341,7 +345,7 @@ async def change_password(
     request: Request, body: PasswordIn, user: AuthenticatedUser
 ) -> None:
     """Change the password; every other session of the user ends."""
-    counted = await _throttle(request, f"password:user:{user.id}")
+    counted = await _throttle(request, user)
     if not await password_holds(user, body.old_password, priority=True):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
@@ -375,16 +379,23 @@ async def password_holds(
     )
 
 
-async def _throttle(request: Request, *keys: str) -> Attempt:
-    """Refuse a password check past ``AUTH.LOGIN_RATE`` for any of ``keys``.
+async def _throttle(request: Request, user: AbstractBaseUser) -> Attempt:
+    """Refuse a signed-in user's password check past ``AUTH.LOGIN_RATE``.
 
-    The first refusal of each key in a period is audited, not every one, so
-    a flood of attempts writes no rows to the append-only trail. Give the
+    Counted per user; with ``AUTH.PASSWORD_CHECKS_COUNT_AS_LOGINS`` (the
+    PCI preset's), against the account's count of wrong logins too, so the
+    rate bounds every guess at the password, from wherever it comes. The
+    first refusal of each key in a period is audited, not every one, so a
+    flood of attempts writes no rows to the append-only trail. Give the
     result ``succeeded()`` once the password holds: only wrong ones count.
     """
+    config = auth_settings()
+    keys = [f"password:user:{user.id}"]
+    if config.PASSWORD_CHECKS_COUNT_AS_LOGINS:
+        keys.append(account_key("login", user.get_username()))
     return await throttle(
         request,
-        auth_settings().LOGIN_RATE,
+        config.LOGIN_RATE,
         keys,
         action="auth.login",
         detail=LOGIN_THROTTLED,
