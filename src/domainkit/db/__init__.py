@@ -13,6 +13,7 @@ from domainkit.db.derive import (
     register_column_type,
     table_for,
 )
+from domainkit.db.encrypted import EncryptedColumns, EncryptedType
 from domainkit.db.money import MoneyColumns
 from domainkit.db.orm import (
     child,
@@ -29,6 +30,8 @@ __all__ = [
     "ConnectionHandler",
     "CurrencyCode",
     "DatabaseAccessRefused",
+    "EncryptedColumns",
+    "EncryptedType",
     "EnumValue",
     "ExactDecimal",
     "Isolation",

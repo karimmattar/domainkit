@@ -7,7 +7,8 @@ error body.
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `POST /login` | `{"username", "password"}` | `200` with tokens; `401 invalid_credentials`; `429 login_throttled`. |
+| `POST /login` | `{"username", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `401 invalid_credentials`; `429 login_throttled`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
+| `POST /step-up` (`auth.stepup.router`) | `{"code"}`, and `"password"` where asked | `200` with when and how the credentials stepped up, for routes that ask (`StepUp`, [Stepping up](step-up.md)); `401 invalid_code`; `409 no_second_factor`. |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` | `204`: this session's tokens end, or every token of the user. |
 | `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions` (with a scoped token, those its scopes allow). |
@@ -161,7 +162,11 @@ a known device in. With six valid proofs and no ceiling they checked
   to 30 days), a login token or a browser session that authenticated
   nothing that long is refused (`401`, "Session ended after inactivity";
   a cookie leaves the request anonymous), and a JSON Web Token login not
-  refreshed that long cannot refresh. Last uses are then written every
+  refreshed that long cannot refresh, nor can an access token issued
+  longer ago than the timeout authenticate, whatever its lifetime. An open
+  WebSocket or event stream does not use its login: its re-checks
+  (`LIVE_REAUTH_INTERVAL`) write no last use, so it closes once its login
+  idles out (since 0.15). Last uses are then written every
   tenth of the timeout, so a login ends no sooner than the timeout and
   within a tenth of it after, at one more `UPDATE` per active login per
   tenth (40 an hour for 15 minutes, 12 by default). A kept principal that

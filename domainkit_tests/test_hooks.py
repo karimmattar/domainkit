@@ -332,7 +332,7 @@ def test_contrib_apps_register_only_the_hooks_they_have() -> None:
     assert stage == ["auth", "audit", "messaging", "idempotency"]
     assert committed == ["auth", "messaging", "idempotency"]
     assert staged == followed == ["idempotency"]
-    assert migrated == ["contenttypes", "auth"]
+    assert migrated == ["contenttypes", "auth", "audit"]
 
 
 def test_hooks_worked_out_while_the_domains_change_are_not_kept(

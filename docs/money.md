@@ -156,7 +156,12 @@ names no amount.
 The amount column's scale must hold the places of every currency it
 stores: the default 4 holds every ISO 4217 currency, and 14 digits before
 the point; `Digits(12, 2)` holds dollars and euros, not dinars of three
-places (a write schema refuses them, `money_digits`). On SQLite the amount
+places (a write schema refuses them, `money_digits`). A mapped money
+attribute refuses, as it is set, an amount its column cannot hold, with
+more digits before the point or more places than it keeps:
+`AmountOutOfRange`, a `MoneyError` (422 `amount_out_of_range`), so a
+balance added to past its column stops where the use case computed it,
+not when the session writes it. On SQLite the amount
 is whole minor units of the column's scale, so it stays exact
 ([exact amounts](databases.md#exact-amounts)). `map_imperatively` maps the
 pair to the one attribute, and `makemigrations` writes plain `NUMERIC` and
@@ -236,8 +241,8 @@ refers to, and a `Currency` field is its code. A request is refused, 422
 | `money_digits` | a write schema's field cannot hold the amount (its `Digits`) |
 
 A `MoneyError` raised by the domain or a service (`CurrencyMismatch`,
-`InexactAmount`, `UnknownCurrency`) is 422 too, with its code
-(`currency_mismatch`, ...) and a message that names no amount.
+`InexactAmount`, `UnknownCurrency`, `AmountOutOfRange`) is 422 too, with
+its code (`currency_mismatch`, ...) and a message that names no amount.
 
 A `FilterSet` filter of a money field compares amounts within one
 currency, so it brings a `<name>_currency` parameter:
@@ -246,7 +251,9 @@ is a 422 `invalid_filter`; the currency alone filters by currency
 ([queries.md](queries.md#filters-over-http)). Through child entities
 (`Filter("gte", "lte", field="lines.price")`) the amounts and the currency
 are of one line. Cursors of a money ordering
-hold its amount and code. A CSV export writes money as its JSON in one
+hold its amount and code, at the currency's places, which a column of
+fewer may hold (1.500 KWD in a column of two): `cursor_length` counts
+the most places a currency has. A CSV export writes money as its JSON in one
 cell; the admin lists, filters, and describes it as any field.
 
 ## In tests and fixtures

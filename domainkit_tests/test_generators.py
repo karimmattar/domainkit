@@ -6,6 +6,7 @@ import importlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from importlib.util import find_spec
@@ -413,6 +414,65 @@ def test_startaggregate_moves_money_as_the_transfer_recipe_does(shop: Shop) -> N
     assert '"amount": "0.50"' in tests
     assert '"balance": {"amount": "1.50", "currency": "USD"}' in shop.test("fakes.py")
     assert check_domain("gen.shop") == []
+
+
+def _qualify(path: Path, module: str, *names: str) -> None:
+    """Rewrite ``path`` to reach ``names`` through ``import module``, as some do."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.ImportFrom) and node.module == module:
+            kept = [each.name for each in node.names if each.name not in names]
+            imports = [f"import {module}"]
+            if kept:
+                imports.append(f"from {module} import {', '.join(kept)}")
+            lines[node.lineno - 1 : node.end_lineno] = imports
+            break
+    body = "\n".join(lines)
+    for name in names:
+        body = re.sub(rf"(?<![.\w]){name}\b", f"{module}.{name}", body)
+    path.write_text(body + "\n", encoding="utf-8")
+
+
+def test_a_transfer_imports_the_names_its_code_uses(shop: Shop) -> None:
+    """In a domain that reaches them through their modules, it imports them."""
+    model = shop.package / "domain" / "model.py"
+    _qualify(model, "domainkit.ddd", "BusinessRuleViolation")
+    _qualify(shop.package / "api" / "routes.py", "uuid", "UUID")
+    _qualify(shop.package / "api" / "routes.py", "pydantic", "BaseModel")
+    assert check_domain("gen.shop") == []
+
+    shop("startaggregate", "Wallet", fields=["balance:money"])
+
+    def imported(relative: str) -> set[tuple[str | None, str]]:
+        tree = ast.parse(shop.read(relative))
+        return {
+            (node.module, each.name)
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            for each in node.names
+        }
+
+    assert ("domainkit.ddd", "BusinessRuleViolation") in imported("domain/model.py")
+    assert {("uuid", "UUID"), ("pydantic", "BaseModel")} <= imported("api/routes.py")
+
+
+def test_two_money_fields_share_one_retry_policy(shop: Shop) -> None:
+    """Each moves on its own; ``RACES`` is declared once, and names read as words."""
+    shop("startaggregate", "Wallet", fields=["cash_balance:money", "credit:money"])
+
+    assert shop.read("application/services.py").count("RACES = Retry(") == 1
+    assert '"""Take ``amount`` off the cash balance, for the wallet ``to``."""' in (
+        shop.read("domain/model.py")
+    )
+
+
+def test_a_transfer_of_cents_moves_from_a_balance_with_cents(shop: Shop) -> None:
+    """At two places the aggregate starts with 1.50; at fewer, with 1.00."""
+    shop("startaggregate", "Wallet", fields=["balance:money:12:2"])
+
+    assert '"balance": {"amount": "1.50", "currency": "USD"}' in shop.test("fakes.py")
+    assert '"amount": "0.50"' in shop.test("test_transfer_wallet_balance.py")
 
 
 def test_money_transfers_refuse_names_taken(shop: Shop) -> None:

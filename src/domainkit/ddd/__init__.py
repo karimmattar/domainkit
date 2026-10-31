@@ -24,6 +24,7 @@ from domainkit.ddd.exceptions import (
 )
 from domainkit.ddd.fields import (
     Digits,
+    Encrypted,
     InvalidQuery,
     MaxLength,
     Reference,
@@ -65,6 +66,7 @@ __all__ = [
     "DomainError",
     "DomainEvent",
     "DuplicateValue",
+    "Encrypted",
     "Entity",
     "EventBus",
     "EventHandler",

@@ -18,6 +18,8 @@ This page has moved, a part a page:
 - [Authenticating requests](auth/authentication.md)
 - [Logging in: sessions, two factors, and password reset](auth/logging-in.md)
 - [Protecting routes, and the admin API](auth/routes.md)
+- [Stepping up, and transactions authorized for one amount and payee](auth/step-up.md)
+- [PCI DSS v4.0's passwords: the preset, requirement by requirement](auth/pci-dss.md)
 
 ## Settings
 
@@ -30,14 +32,18 @@ This page has moved, a part a page:
 | `HASHING_QUEUE` | `8` | Hashing calls that may wait for a thread (about 0.4 s each); more answer `503 password_checks_busy` (at most 10,000). |
 | `HASHING_RESERVED` | `1` | Places of `HASHING_QUEUE` kept for `POST /auth/password` and the admin's password change; other calls are refused once the rest are taken. More than `HASHING_QUEUE` counts as `HASHING_QUEUE`. |
 | `PASSWORD_VALIDATORS` | the four above | Rules for new passwords; `[]` checks nothing. |
+| `PASSWORD_PRESET` | `None` | `"pci-dss-4"` sets `PASSWORD_VALIDATORS`, `PASSWORD_HISTORY`, `PASSWORD_CHANGE_ON_FIRST_USE`, `LOGIN_RATE`, `PASSWORD_CHECKS_COUNT_AS_LOGINS`, and `IDLE_TIMEOUT` as PCI DSS v4.0 asks, where they are left unset, and refuses to start where one set contradicts it (`auth.E010`) ([PCI DSS v4.0's passwords](auth/pci-dss.md)). |
+| `PASSWORD_HISTORY` | `0` | Passwords of a user's own, the current one among them, that a new one may not repeat (0 to 24); `0` keeps none. |
+| `PASSWORD_CHANGE_ON_FIRST_USE` | `False` | A password staff set (the admin API, `changepassword <user>`) logs in only to be changed: `/login` and `/session` answer `403 password_change_required` until the login sends `new_password`; with a second factor, the change is sent with the code (`/mfa/login`, `/session/mfa`). |
 | `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, in order; at least one. |
 | `AUTHENTICATION_CLASSES` | `["domainkit.contrib.auth.authentication.TokenAuthentication"]` | How requests prove who sent them, in order (at least one); the first issues login tokens. |
 | `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
 | `MAX_LOGINS` | `100` | Logins a user holds at once: login tokens, browser sessions, and JSON Web Token logins (1 to 10,000). A new one past it ends the oldest; personal tokens neither count nor end ([Sessions](auth/logging-in.md#sessions)). |
-| `IDLE_TIMEOUT` | `None` | End a login (a login token, a browser session, a JSON Web Token login's refresh) unused this long, from 5 minutes to 30 days: never before, and within a tenth of it after. `None`: logins last their whole lifetime. Personal tokens and certificates have none ([Sessions](auth/logging-in.md#sessions)). |
+| `IDLE_TIMEOUT` | `None` | End a login (a login token, a browser session, a JSON Web Token login's refresh, and access tokens issued longer ago) unused this long, from 5 minutes to 30 days: never before, and within a tenth of it after. An open WebSocket or event stream does not count as a use. `None`: logins last their whole lifetime. Personal tokens and certificates have none ([Sessions](auth/logging-in.md#sessions)). |
 | `MAX_LIVE_TOKENS` | `100` | Live access tokens (logins and personal tokens) a user may hold and still make a personal token; past it, `409 too_many_tokens` (1 to 10,000). |
+| `PASSWORD_CHECKS_COUNT_AS_LOGINS` | `False` | Count wrong passwords of signed-in users (`/password`, a step-up, the second factor's changes) against the account's count of wrong logins too, so `LOGIN_RATE` bounds every guess at the password. `False` counts them apart, so others' wrong logins never keep a signed-in user from changing the password. |
 | `LOGIN_RATE` | `"10/minute"` | Wrong passwords at login per client address and per username, and at password changes per user; reset, verification, signup, and second-factor links that do not hold, per client address. Checks that succeed are not counted. `None` for no limit. |
 | `DEVICE_TTL` | 30 days | How long a client that logged in keeps a count of its own: a login that works hands out a signed, HttpOnly device proof for its account, and logins that send it count against `LOGIN_RATE` per device, not per account or address. From an hour to 400 days; `None` hands out none, as before 0.10 ([Wrong passwords](auth/logging-in.md#wrong-passwords-and-device-proofs)). |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
@@ -51,6 +57,8 @@ This page has moved, a part a page:
 | `SIGNUP_URL` | `None` | Your page that takes a signup link's token: `{token}` marks where. |
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
 | `MFA` | see below | Second factors (`auth.mfa`). |
+| `STEP_UP` | see below | Authenticating again for one act (`StepUp`, [Stepping up](auth/step-up.md)). |
+| `SCA` | see below | Transactions authorized for one amount and payee ([Stepping up](auth/step-up.md#transactions-authorized-for-one-amount-and-payee)). |
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](auth/authentication.md#the-principal-cache)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
@@ -76,6 +84,15 @@ This page has moved, a part a page:
 | `WINDOW` | `1` | Steps of 30 seconds either side of now whose codes count (0 to 10). |
 | `RATE` | `"10/hour"` | Wrong codes per user, wherever they come from; `None` for no limit. |
 | `ADDRESS_RATE` | `"60/hour"` | Wrong codes per client address at `/mfa/login`, with a challenge that holds; `None` for no limit. |
+
+| `AUTH["STEP_UP"]` key | Default | Meaning |
+| --- | --- | --- |
+| `METHODS` | `["otp"]` | What a step-up proves: a code of the authenticator app (`otp`), or the password with it (`["pwd", "otp"]`); it must hold `otp`, each once. |
+
+| `AUTH["SCA"]` key | Default | Meaning |
+| --- | --- | --- |
+| `METHODS` | `["otp"]` | What confirming a transaction proves, as `STEP_UP.METHODS`. |
+| `TTL` | 5 minutes | How long a transaction's authorization request works, from when it is made, its confirmation and use included (30 minutes at most). |
 
 | `AUTH["CLIENT_CERT"]` key | Default | Meaning |
 | --- | --- | --- |

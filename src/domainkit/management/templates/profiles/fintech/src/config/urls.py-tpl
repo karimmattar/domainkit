@@ -1,0 +1,35 @@
+"""The project's routes: mount each domain's router here.
+
+Every route must say who may call it: ``Depends(Require(...))``, or
+``dependencies=[Public]`` for anyone. ``manage.py check`` lists those that
+do not, and staging and production refuse to start with any.
+"""
+
+from domainkit.contrib.accounting.api import router as accounting_router
+from domainkit.contrib.approvals.api import router as approvals_router
+from domainkit.contrib.audit.api import router as history_router
+from domainkit.contrib.auth.admin import router as admin_router
+from domainkit.contrib.auth.api import router as auth_router
+from domainkit.contrib.auth.mfa import router as mfa_router
+from domainkit.contrib.auth.sca import router as sca_router
+from domainkit.contrib.auth.stepup import router as step_up_router
+from domainkit.contrib.limits.api import router as limits_router
+from domainkit.http.health import router as health_router
+from fastapi import APIRouter
+
+from domains.payments.api.routes import router as payments_router
+
+router = APIRouter()
+router.include_router(health_router)
+# Logging in, second factors, stepping up, and confirming transactions.
+router.include_router(auth_router, prefix="/auth")
+router.include_router(mfa_router, prefix="/auth")
+router.include_router(step_up_router, prefix="/auth")
+router.include_router(sca_router, prefix="/auth")
+router.include_router(admin_router, prefix="/admin/auth")
+router.include_router(history_router, prefix="/admin/history")
+# The controls' own APIs, each route behind its model permission.
+router.include_router(approvals_router, prefix="/api/approvals")
+router.include_router(limits_router, prefix="/api/limits")
+router.include_router(accounting_router, prefix="/api/accounting")
+router.include_router(payments_router, prefix="/api/v1/payments")

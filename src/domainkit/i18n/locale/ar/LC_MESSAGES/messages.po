@@ -827,3 +827,178 @@ msgstr ""
 
 msgid "The amount has more digits than this field holds."
 msgstr "في المبلغ أرقام أكثر مما يتسع له هذا الحقل."
+
+msgid "This command needs approval: submit it for approval."
+msgstr "يحتاج هذا الأمر إلى موافقة: قدّمه طلبًا للموافقة."
+
+msgid "This command needs approval: it was submitted for approval."
+msgstr "يحتاج هذا الأمر إلى موافقة: قُدّم طلبًا للموافقة."
+
+msgid "No approval request has that id."
+msgstr "لا يوجد طلب موافقة بهذا المعرّف."
+
+msgid "No guarded command has that name."
+msgstr "لا يوجد أمر محميّ بهذا الاسم."
+
+msgid "The arguments do not make the command."
+msgstr "المعطيات لا تكوّن الأمر."
+
+msgid "The command is larger than APPROVALS allows."
+msgstr "الأمر أكبر مما يسمح به APPROVALS."
+
+msgid "The command is not the one this action takes."
+msgstr "هذا الأمر ليس الأمر الذي يأخذه هذا الإجراء."
+
+msgid "The command reads otherwise now than when it was approved."
+msgstr "يُقرأ الأمر الآن على غير ما كان عليه حين الموافقة عليه."
+
+msgid "This command needs no approval: run it directly."
+msgstr "لا يحتاج هذا الأمر إلى موافقة: نفّذه مباشرة."
+
+msgid "A maker's id has 1 to 255 characters."
+msgstr "معرّف مقدّم الطلب من حرف واحد إلى ٢٥٥ حرفًا."
+
+msgid "An approver's id has 1 to 255 characters."
+msgstr "معرّف الموافِق من حرف واحد إلى ٢٥٥ حرفًا."
+
+msgid "A reason has at most 500 characters."
+msgstr "السبب ٥٠٠ حرف على الأكثر."
+
+msgid "The request is no longer waiting for a decision."
+msgstr "لم يعد الطلب في انتظار قرار."
+
+msgid "The request has expired."
+msgstr "انتهت مدة الطلب."
+
+msgid "Whoever submitted a request cannot decide it."
+msgstr "لا يحق لمن قدّم الطلب أن يبتّ فيه."
+
+msgid "You have decided this request already."
+msgstr "سبق أن بتَتّ في هذا الطلب."
+
+msgid "The request holds another command than the one decided on."
+msgstr "يحمل الطلب أمرًا غير الذي بُتّ فيه."
+
+msgid "Only whoever submitted a request can cancel it."
+msgstr "لا يلغي الطلب إلا من قدّمه."
+
+msgid "The request holds another command than the one approved."
+msgstr "يحمل الطلب أمرًا غير الذي وُوفق عليه."
+
+msgid "The request is not waiting to run."
+msgstr "الطلب ليس في انتظار التنفيذ."
+
+msgid "You may not submit this command."
+msgstr "لا يحق لك تقديم هذا الأمر."
+
+msgid "You are not one of the approvers of this request."
+msgstr "لست من الموافقين على هذا الطلب."
+
+msgid "You cannot approve this request now."
+msgstr "لا يمكنك الموافقة على هذا الطلب الآن."
+
+#. domainkit.contrib.auth: step-ups, transactions' authorizations, first use
+msgid "Confirm it is you: authenticate again to do this."
+msgstr "تحقّق من هويتك: أعِد المصادقة لتقوم بهذا."
+
+msgid "Turn on a second factor first: confirming it is you needs one."
+msgstr "فعّل عامل تحقق ثانيًا أولًا: التحقق من هويتك يحتاج إليه."
+
+msgid "These credentials cannot step up: log in, then step up."
+msgstr "لا يمكن تعزيز التحقق ببيانات الاعتماد هذه: سجّل الدخول، ثم عزّز التحقق."
+
+msgid "Enter your password as well."
+msgstr "أدخل كلمة المرور أيضًا."
+
+msgid "This transaction is not authorized: confirm its amount and payee, then try again."
+msgstr "هذه المعاملة غير مُصرَّح بها: أكّد مبلغها والمستفيد منها، ثم أعد المحاولة."
+
+msgid "This transaction was confirmed already."
+msgstr "أُكِّدت هذه المعاملة من قبل."
+
+msgid "This transaction can no longer be confirmed; start it again."
+msgstr "لم يعد ممكنًا تأكيد هذه المعاملة؛ ابدأها من جديد."
+
+msgid "No such transaction."
+msgstr "لا توجد معاملة كهذه."
+
+msgid "This password was set for you: choose a new one to log in."
+msgstr "عُيّنت كلمة المرور هذه لك: اختر كلمة مرور جديدة لتسجيل الدخول."
+
+msgid "A transaction's amount must be more than zero."
+msgstr "يجب أن يكون مبلغ المعاملة أكبر من صفر."
+
+msgid "A purpose is a lower-case name, such as transfer or payments.payout."
+msgstr "الغرض اسم بأحرف صغيرة، مثل transfer أو payments.payout."
+
+#. domainkit.money: where amounts are kept
+msgid "The amount is larger, or has more decimal places, than can be stored."
+msgstr "المبلغ أكبر مما يمكن حفظه، أو فيه منازل عشرية أكثر مما يمكن حفظه."
+
+#. domainkit.contrib.limits
+msgid "No limit has that id."
+msgstr "لا يوجد حدّ بهذا المعرّف."
+
+msgid "Limits keep amounts of at most four decimal places."
+msgstr "تحفظ الحدود مبالغ بأربع خانات عشرية على الأكثر."
+
+msgid "A kind of subject has up to 32 lower-case letters, digits, or '_', starting with a letter."
+msgstr "نوع الطرف حتى 32 حرفًا لاتينيًا صغيرًا أو رقمًا أو '_'، يبدأ بحرف."
+
+msgid "A subject has 1 to 255 printable characters."
+msgstr "للطرف من 1 إلى 255 محرفًا قابلًا للطباعة."
+
+msgid "The time zone is not one, such as 'Africa/Cairo'."
+msgstr "هذه ليست منطقة زمنية، مثل 'Africa/Cairo'."
+
+msgid "A limit's code has up to 64 lower-case letters, digits, '_', '.', ':', or '-'."
+msgstr "رمز الحدّ حتى 64 حرفًا لاتينيًا صغيرًا أو رقمًا أو '_' أو '.' أو ':' أو '-'."
+
+msgid "A limit's count is at least one."
+msgstr "عدد الحدّ واحد على الأقل."
+
+msgid "A window needs a maximum amount or count, and they need a window."
+msgstr "تحتاج الفترة إلى حدّ أقصى للمبلغ أو للعدد، ويحتاج كلاهما إلى فترة."
+
+msgid "A limit sets an amount per transaction, or a maximum over a window."
+msgstr "يحدّد الحدّ مبلغًا لكل معاملة، أو حدًا أقصى خلال فترة."
+
+msgid "A limit's note has at most 255 characters."
+msgstr "لملاحظة الحدّ 255 محرفًا على الأكثر."
+
+msgid "A limit's amounts are in its currency."
+msgstr "مبالغ الحدّ بعملته."
+
+msgid "A limit's amounts are more than zero."
+msgstr "مبالغ الحدّ أكبر من صفر."
+
+msgid "A movement's amount is more than zero."
+msgstr "مبلغ الحركة أكبر من صفر."
+
+msgid "A movement names at least one subject."
+msgstr "تسمّي الحركة طرفًا واحدًا على الأقل."
+
+msgid "The amount is more than one movement may be."
+msgstr "المبلغ أكبر مما يُسمح به لحركة واحدة."
+
+msgid "The amount is more than a limit allows in its period."
+msgstr "المبلغ أكبر مما يسمح به حدّ خلال فترته."
+
+msgid "There have been as many of these as a limit allows in its period."
+msgstr "بلغ عدد هذه الحركات ما يسمح به حدّ خلال فترته."
+
+#. domainkit.contrib.accounting: reversals
+msgid "A reversal is not reversed: post the entry again instead."
+msgstr "لا يُعكس قيدُ العكس: سجّل القيد من جديد بدلًا من ذلك."
+
+msgid "Whoever the command is about cannot decide it."
+msgstr "لا يحق لمن يخصّه الأمر أن يبتّ فيه."
+
+msgid "Only a superuser may make a superuser."
+msgstr "لا يجعل مستخدمًا مستخدمًا خارقًا إلا مستخدم خارق."
+
+msgid "The request was changed outside the application; it is neither decided nor run."
+msgstr "عُدّل الطلب خارج التطبيق؛ فلا يُبتّ فيه ولا يُنفّذ."
+
+msgid "The request's guard or policy no longer exists; it is neither decided nor run."
+msgstr "لم تعد حماية الطلب أو سياسته موجودة؛ فلا يُبتّ فيه ولا يُنفّذ."

@@ -20,11 +20,20 @@ them), and ``map_imperatively`` maps the pair to the one attribute, so the
 aggregate sees ``Money`` and queries see its parts (ADR 0115).
 """
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from decimal import Decimal
 from typing import Any, Final, cast
 
-from sqlalchemy import CheckConstraint, Column, ColumnElement, Table, and_, not_, or_
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    ColumnElement,
+    Table,
+    and_,
+    event,
+    not_,
+    or_,
+)
 from sqlalchemy.orm import Composite, Mapper, composite
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.operators import OperatorType
@@ -32,7 +41,7 @@ from sqlalchemy.sql.schema import SchemaItem
 
 from domainkit.db.types import CurrencyCode, ExactDecimal
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
-from domainkit.money import Currency, Money
+from domainkit.money import AmountOutOfRange, Currency, Money
 
 __all__ = [
     "IncompleteMoney",
@@ -157,6 +166,60 @@ def money_properties(table: Table, given: Mapping[str, Any]) -> dict[str, Any]:
             comparator_factory=MoneyComparator,
         )
     return properties
+
+
+def guard_money(class_: type, table: Table, names: Iterable[str]) -> None:
+    """Refuse, as it is set, money the attribute's amount column cannot hold.
+
+    Each of ``names`` is a money attribute of ``class_``, mapped to a pair
+    of ``table``'s columns. Set to an amount with more digits before the
+    point, or more places, than its ``ExactDecimal`` holds, it raises
+    ``AmountOutOfRange`` and keeps its value: a 422 where the use case
+    computed it, not a failed flush.
+    """
+    for column in table.columns:
+        marked = column.info.get(MONEY)
+        if (
+            marked is not None
+            and marked[0] in names
+            and marked[1] == AMOUNT
+            and isinstance(column.type, ExactDecimal)
+        ):
+            event.listen(getattr(class_, marked[0]), "set", _Guard(column))
+
+
+class _Guard:
+    """The ``set`` listener of one money attribute: its amount must fit its column."""
+
+    def __init__(self, column: Column[Any]) -> None:
+        """Guard ``column``, an ``ExactDecimal``."""
+        self.column = column
+        self.type = cast("ExactDecimal", column.type)
+
+    def __call__(
+        self,
+        target: object,
+        value: object,
+        old: object,
+        initiator: object,
+    ) -> None:
+        """Refuse ``value`` if it is money its column cannot hold.
+
+        Raises:
+            AmountOutOfRange: It has more digits before the point, or more
+                places, than the column.
+        """
+        if not isinstance(value, Money):
+            return
+        try:
+            self.type._exact(value.amount)
+        except ValueError:
+            kind = self.type
+            raise AmountOutOfRange(
+                f"{self.column.table.name}.{self.column.name} holds {kind.scale} "
+                f"decimal places, {kind.precision - kind.scale} digits before the "
+                f"point: this {value.currency.code} amount does not fit."
+            ) from None
 
 
 class MoneyComparator(Composite.Comparator[Money]):

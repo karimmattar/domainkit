@@ -1,5 +1,6 @@
 """The ledger's domain, without a database: accounts, entries, holds, periods."""
 
+import hashlib
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, Inexact
@@ -155,6 +156,7 @@ def test_accounts_at_their_bounds_open() -> None:
     )
     assert (len(account.code), account.currency) == (32, "KWD")
     assert Account.open("1", "N", AccountType.ASSET, "CLF").currency == "CLF"
+    assert Account.open("1", "N", AccountType.ASSET, "USD", holder="h").holder == "h"
 
 
 def test_currencies_the_ledger_cannot_hold_are_refused() -> None:
@@ -383,6 +385,47 @@ def test_the_fingerprint_tells_entries_apart() -> None:
     assert len(others) == 6
 
 
+def test_the_fingerprint_is_the_digest_of_a_fixed_document() -> None:
+    """Stored with each entry, it must not change between releases.
+
+    A retry of an entry posted before an upgrade compares the stored digest
+    with a new one: another document would refuse it as a reused reference.
+    """
+    cash, sales = AccountId(uuid.UUID(int=1)), AccountId(uuid.UUID(int=2))
+    lines = [Line.debit(cash, usd("10.5"), "till"), Line.credit(sales, usd("10.5"))]
+    document = (
+        '{"booked_on":"2026-10-30","description":"a sale","lines":['
+        f'["{cash}","debit","10.50","USD","till"],'
+        f'["{sales}","credit","10.50","USD",""]],"reverses":%s}}'
+    )
+
+    def digest(reverses: str) -> str:
+        return hashlib.sha256((document % reverses).encode()).hexdigest()
+
+    assert models.fingerprint(DAY, "a sale", lines, None) == digest("null")
+    reversed_ = EntryId(uuid.UUID(int=3))
+    assert models.fingerprint(DAY, "a sale", lines, reversed_) == digest(
+        f'"{reversed_}"'
+    )
+
+
+def test_a_reversal_is_drafted_with_what_it_reverses() -> None:
+    """Its ``EntryPosted`` names the entry; a description defaults to none."""
+    cash, sales = ids()
+    original = EntryId(uuid.uuid4())
+    entry = draft(
+        [Line.debit(cash, usd("1")), Line.credit(sales, usd("1"))], reverses=original
+    )
+
+    (event,) = entry.pull_events()
+    assert isinstance(event, EntryPosted)
+    assert (event.reverses, entry.reverses, entry.description) == (
+        original,
+        original,
+        "",
+    )
+
+
 def test_a_reversal_puts_each_posting_on_the_other_side() -> None:
     """In the order of the entry's lines, whatever order they were loaded in."""
     cash, sales = ids()
@@ -427,6 +470,7 @@ def test_a_hold_reserves_until_it_finishes() -> None:
     (finished,) = hold.pull_events()
     assert isinstance(finished, HoldFinished)
     assert (finished.status, finished.entry_id) == (HoldStatus.RELEASED, None)
+    assert finished.account_id == account.id
     with refused(HoldNotActive):
         hold.finish(account, HoldStatus.EXPIRED)
 
@@ -525,3 +569,27 @@ def test_malformed_periods_are_refused() -> None:
             Period.open(name, DAY, DAY)
     with refused(PeriodsOverlap, match="ends on or after"):
         Period.open("p", DAY, DAY - timedelta(days=1))
+
+
+def test_every_amount_column_is_exact_and_never_null() -> None:
+    """Balances, held amounts, and every amount: 18 digits, four decimal, NOT NULL."""
+    from sqlalchemy import Table
+
+    from domainkit.contrib.accounting import tables
+    from domainkit.db.types import ExactDecimal
+
+    found = sorted(
+        (table.name, column.name, column.type.precision, column.type.scale)
+        for table in vars(tables).values()
+        if isinstance(table, Table)
+        for column in table.columns
+        if isinstance(column.type, ExactDecimal) and not column.nullable
+    )
+    assert found == [
+        ("domainkit_accounting_accounts", "balance", 18, 4),
+        ("domainkit_accounting_accounts", "held", 18, 4),
+        ("domainkit_accounting_breaks", "amount", 18, 4),
+        ("domainkit_accounting_holds", "amount", 18, 4),
+        ("domainkit_accounting_postings", "amount", 18, 4),
+        ("domainkit_accounting_statement_lines", "amount", 18, 4),
+    ]

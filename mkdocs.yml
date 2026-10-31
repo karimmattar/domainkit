@@ -94,6 +94,8 @@ nav:
           - auth/authentication.md
           - auth/logging-in.md
           - auth/routes.md
+          - auth/step-up.md
+          - auth/pci-dss.md
       - Optional apps:
           - contrib.md
           - contrib/messaging.md
@@ -101,8 +103,11 @@ nav:
           - contrib/audit.md
           - contrib/idempotency.md
           - contrib/evidence.md
+          - contrib/keys.md
           - contrib/flags.md
           - contrib/accounting.md
+          - contrib/approvals.md
+          - contrib/limits.md
       - cache.md
       - live.md
       - uploads.md
@@ -118,6 +123,7 @@ nav:
       - runbook.md
       - security.md
       - threat-model.md
+      - fintech.md
       - upgrading.md
   - Reference:
       - reference.md

@@ -1,0 +1,27 @@
+"""Requests to change payments, built by the API from validated input."""
+
+from uuid import UUID
+
+from domainkit.ddd import Command
+from domainkit.money import Money
+
+
+class RegisterCard(Command):
+    """Register a card of ``owner_id``'s to send money to."""
+
+    owner_id: UUID
+    number: str
+
+
+class MakeTransfer(Command):
+    """Send ``amount`` to the card ``card_id``, as ``maker_id``.
+
+    Its id is chosen before it runs, so an approved transfer that the
+    worker runs again is the same transfer. It holds no card number: a
+    request waiting for approval keeps its command as written.
+    """
+
+    transfer_id: UUID
+    maker_id: UUID
+    card_id: UUID
+    amount: Money

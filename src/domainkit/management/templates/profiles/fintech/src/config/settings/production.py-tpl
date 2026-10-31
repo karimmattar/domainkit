@@ -1,0 +1,125 @@
+"""Settings for production: addresses and secrets come from the environment.
+
+Set {{ prefix }}SETTINGS_MODULE=config.settings.production, and:
+
+- {{ prefix }}ALLOWED_HOSTS (comma-separated), {{ prefix }}DATABASE_URL,
+  {{ prefix }}REDIS_URL (rediss://, with a password), and
+  {{ prefix }}TRUSTED_PROXIES: the networks of the load balancers or proxies
+  in front of the application (comma-separated, such as 10.0.0.0/8), or
+  empty when callers connect directly;
+- {{ prefix }}SECRET_KEY (50 random characters or more: python -c "import
+  secrets; print(secrets.token_urlsafe(50))"; better as
+  {{ prefix }}SECRET_KEY_FILE, a mounted secret), and
+  {{ prefix }}EVIDENCE_SUBJECT_KEY (32 characters or more);
+- the key service that wraps the data keys, {{ prefix }}KEYS_PROVIDER:
+  "aws-kms", with {{ prefix }}KEYS_AWS_KMS_KEY_ID and
+  {{ prefix }}KEYS_AWS_REGION (credentials from AWS_* or the workload's
+  role), or "vault", with {{ prefix }}KEYS_VAULT_URL, {{ prefix }}KEYS_VAULT_KEY,
+  and {{ prefix }}KEYS_VAULT_TOKEN; and the data key it wrapped,
+  {{ prefix }}KEYS_DATA_KEY_ID and {{ prefix }}KEYS_DATA_KEY (manage.py keys
+  generate prints both);
+- the immudb ledger of the evidence and the audit trail's anchors:
+  {{ prefix }}LEDGER_URL (immudb://user:password@host:3322/database),
+  {{ prefix }}LEDGER_TLS_CA, and {{ prefix }}LEDGER_SIGNING_KEY (the server's
+  public signing key), files.
+
+Startup fails when one is missing. The deployment checks (manage.py check
+--deploy) refuse DEBUG, wildcard hosts, weak keys, the development key
+service, a trail that is not anchored or protected, proxies trusted from
+every address, network databases without verified TLS, and password and
+code guesses counted in each process rather than in Redis. To replace the
+secret key, move the old one to {{ prefix }}SECRET_KEY_FALLBACKS until what
+it signed has expired. The API docs are off, browsers are told to use HTTPS
+only, and callers are rate limited; {{ prefix }}API_DOCS,
+{{ prefix }}SECURE_HSTS_SECONDS, and {{ prefix }}RATE_LIMIT change that.
+Logs are JSON lines on stdout, at {{ prefix }}LOG_LEVEL (INFO unless set);
+{{ prefix }}ACCESS_LOG_SAMPLE_RATE writes a share of the access lines (all
+unless set), always those answered 400 and up, and slow ones.
+"""
+
+from domainkit.log import build_logging_config
+
+from config.settings.base import *
+from config.settings.base import env
+
+ENVIRONMENT = "production"
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
+SECRET_KEY = env.str("SECRET_KEY")
+SECRET_KEY_FALLBACKS = env.list("SECRET_KEY_FALLBACKS", [])
+# The proxies' X-Forwarded-For names each caller; without them, every caller
+# behind a load balancer shares its address, and so its rate limit.
+TRUSTED_PROXIES = env.list("TRUSTED_PROXIES")
+# Each process opens at most POOL_SIZE + MAX_OVERFLOW connections: keep
+# processes x replicas x that below the server's max_connections, and
+# MAX_CONCURRENT_REQUESTS near what the pool serves (docs/reference/backends.md).
+DATABASES = {
+    "default": {
+        "URL": env.str("DATABASE_URL"),
+        "SSLMODE": "verify-full",
+        "POOL_SIZE": env.int("DATABASE_POOL_SIZE", 10),
+        "MAX_OVERFLOW": env.int("DATABASE_MAX_OVERFLOW", 5),
+    },
+}
+MAX_CONCURRENT_REQUESTS = env.int("MAX_CONCURRENT_REQUESTS", 60)
+API_DOCS = env.bool("API_DOCS", False)
+SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", 31_536_000)  # A year.
+RATE_LIMIT = env.str("RATE_LIMIT", "300/minute")
+# Requests, and password and code guesses, are counted in Redis, once for
+# every process and replica; counted in each process, a guesser would get
+# the rates once per process, so startup refuses that here (auth.E105).
+# While Redis is down, password and code checks are refused with 503.
+RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"
+RATE_LIMIT_CACHE = "shared"
+# A revoked token is refused at once by every replica, not 5 seconds later.
+AUTH = {**AUTH, "PRINCIPAL_CACHE": {"STAMPS": "shared"}}
+# A cache computation goes on after the request that started it ends; bound
+# it, so one that hangs frees its key instead of holding it until a restart.
+# 30 seconds is REQUEST_TIMEOUT's default.
+CACHES = {
+    "default": {"COMPUTE_TIMEOUT": 30.0},
+    "shared": {
+        "URL": env.str("REDIS_URL"),
+        "KEY_PREFIX": "{{ project }}",
+        "COMPUTE_TIMEOUT": 30.0,
+    },
+}
+
+# The data keys are wrapped by a key that never leaves the key service
+# (docs/contrib/keys.md); the process unwraps them once, at startup.
+_provider = env.str("KEYS_PROVIDER")
+_service: dict[str, dict[str, str]] = {}
+if _provider == "aws-kms":
+    _service["AWS_KMS"] = {
+        "KEY_ID": env.str("KEYS_AWS_KMS_KEY_ID"),
+        "REGION": env.str("KEYS_AWS_REGION"),
+    }
+elif _provider == "vault":
+    _service["VAULT"] = {
+        "URL": env.str("KEYS_VAULT_URL"),
+        "KEY": env.str("KEYS_VAULT_KEY"),
+        "TOKEN": env.str("KEYS_VAULT_TOKEN"),
+    }
+KEYS = {
+    "PROVIDER": _provider,
+    "DATA_KEYS": {env.str("KEYS_DATA_KEY_ID"): env.str("KEYS_DATA_KEY")},
+    **_service,
+}
+# Evidence, and the head of the audit trail's hash chain, on a ledger the
+# database's owner cannot rewrite (docs/contrib/audit.md, "Tamper evidence").
+LEDGERS = {
+    "evidence": {
+        "URL": env.str("LEDGER_URL"),
+        "TLS_CA": env.path("LEDGER_TLS_CA"),
+        "SERVER_SIGNING_KEY": env.path("LEDGER_SIGNING_KEY"),
+    },
+}
+AUDIT = {"LEDGER": "evidence", "NAMESPACE": "{{ namespace }}"}
+EVIDENCE = {
+    "NAMESPACE": "{{ namespace }}",
+    "SUBJECT_KEY": env.str("EVIDENCE_SUBJECT_KEY"),
+}
+
+LOGGING = build_logging_config(log_format="json", level=env.str("LOG_LEVEL", "INFO"))
+# 0.1 writes about one successful request in ten (docs/runtime.md, "Sampling
+# the access log"); every answer from 400 up, and slow ones, are always written.
+ACCESS_LOG_SAMPLE_RATE = env.float("ACCESS_LOG_SAMPLE_RATE", 1.0)

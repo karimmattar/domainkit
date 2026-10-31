@@ -133,6 +133,36 @@ class Sensitive:
 
 
 @dataclass(frozen=True, slots=True)
+class Encrypted:
+    """``Annotated`` metadata: the field is stored encrypted, never in clear.
+
+    Text or bytes (or a single-field value object of them)::
+
+        class Card(AggregateRoot[CardId]):
+            holder_id: CustomerId
+            number: Annotated[
+                str | None, Encrypted(subject="holder_id", blind_index=True)
+            ]
+
+    ``table_for`` stores it in an ``EncryptedType`` column, sealed under a
+    data key from ``KEYS`` (``domainkit.contrib.keys``) and bound to its
+    table, column and row. ``subject`` names the field that identifies
+    the person it is about: the value is then sealed under that person's
+    own key, which erasing them destroys, so the field must allow None,
+    which it reads as afterwards. A field also marked ``Personal`` is
+    sealed for the person its ``of`` names, unless ``subject`` says
+    otherwise. ``blind_index`` adds a column of keyed hashes, so the
+    field can be looked up by equality; without one, a query can only ask
+    whether it is None. See ``domainkit.db.encrypted``.
+    """
+
+    subject: str | None = None
+    """The field naming whose key seals it; default: its ``Personal`` marker's."""
+    blind_index: bool = False
+    """Whether equality lookups are kept possible, through keyed hashes."""
+
+
+@dataclass(frozen=True, slots=True)
 class AggregateReference:
     """``Annotated`` metadata: the field holds another aggregate's id."""
 
@@ -172,14 +202,32 @@ class FieldInfo:
         return self.marker(AggregateReference) is not None
 
     @property
+    def encrypted(self) -> bool:
+        """Whether the field is stored encrypted (``Encrypted``)."""
+        return self.marker(Encrypted) is not None
+
+    @property
     def text(self) -> bool:
-        """Whether text lookups apply: the values are, or wrap, ``str``."""
+        """Whether text lookups apply: the values are, or wrap, ``str``.
+
+        Not for an encrypted field: the database holds only its ciphertext.
+        """
         kind = base_type(self.kind)
-        return kind is not None and issubclass(kind, str) and not issubclass(kind, Enum)
+        return (
+            kind is not None
+            and issubclass(kind, str)
+            and not issubclass(kind, Enum)
+            and not self.encrypted
+        )
 
     @property
     def orderable(self) -> bool:
-        """Whether values sort; a field of unknown type is assumed to."""
+        """Whether values sort; a field of unknown type is assumed to.
+
+        An encrypted field does not: its ciphertexts sort at random.
+        """
+        if self.encrypted:
+            return False
         if self.kind is None:
             return not self.many
         kind = base_type(self.kind)

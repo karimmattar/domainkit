@@ -78,6 +78,7 @@ from domainkit.contrib.messaging.tables import (
     CANCELLED,
     DEAD,
     DONE,
+    HELD,
     PENDING,
     SENSITIVE,
     inbox,
@@ -1186,6 +1187,59 @@ def test_retries_and_cancels_reach_the_outbox_named(
         ("other", 1),
         ("other", None),
     ]
+
+
+def test_releases_and_lags_are_of_the_outbox_named(
+    database_url: str, tmp_path: Path
+) -> None:
+    """``--release`` and the summary's lag read the ``--database`` outbox."""
+    other = f"sqlite+aiosqlite:///{tmp_path / 'other.sqlite3'}"
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING, ALPHA],
+        DATABASES={"default": {"URL": database_url}, "other": {"URL": other}},
+        MESSAGING=FAST,
+    ):
+        setup()
+        done, held = (
+            message_row(
+                kind="task",
+                target="tests.always_fails",
+                payload={},
+                headers={},
+                max_attempts=1,
+                ordering_key="k",
+            )
+            for _ in range(2)
+        )
+
+        async def prepare() -> None:
+            for alias in ("default", "other"):
+                async with connections.engine(alias).begin() as connection:
+                    await connection.run_sync(messages.create)
+                    await connection.run_sync(ordering_keys.create)
+            async with connections.engine("other").begin() as connection:
+                await connection.execute(
+                    insert(messages),
+                    [
+                        {**done, "status": DONE, "sequence": 1},
+                        {**held, "status": HELD, "sequence": 2},
+                    ],
+                )
+                await connection.execute(
+                    insert(ordering_keys).values(
+                        key="k", sequence=2, touched_at=datetime.now(UTC)
+                    )
+                )
+            await connections.close_all()
+
+        asyncio.run(prepare())
+        released = run("messages", "--release", "--database", "other")
+        summary = run("messages", "--database", "other")
+    registry.clear()
+
+    assert released == "Released 1 stalled key(s).\n"
+    assert summary.splitlines()[-1].startswith("lag default: ")
 
 
 def test_sensitive_is_a_task_option() -> None:

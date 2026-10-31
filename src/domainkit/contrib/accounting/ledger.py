@@ -28,7 +28,14 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.ddd import Command, Retry
 
-from .exceptions import InvalidEntry, NoOpenPeriod, PeriodsOverlap, ReferenceReused
+from .exceptions import (
+    InvalidEntry,
+    NoOpenPeriod,
+    PeriodsOverlap,
+    ReferenceReused,
+    ReversalNotReversible,
+)
+from .hooks import on_booking, on_posting
 from .models import (
     Account,
     AccountId,
@@ -66,13 +73,22 @@ class CloseAccount(Command):
 
 
 class PostEntry(Command):
-    """Post a journal entry, once per ``source`` and ``reference``."""
+    """Post a journal entry, once per ``source`` and ``reference``.
+
+    ``lines`` is kept as a tuple, however it is given: a generator would
+    be read once, and every reader of the command (a hook, the ledger)
+    must see the same lines.
+    """
 
     source: str
     reference: str
     booked_on: date
     lines: Sequence[Line]
     description: str = ""
+
+    def __post_init__(self) -> None:
+        """Keep the lines as a tuple (the command is frozen)."""
+        object.__setattr__(self, "lines", tuple(self.lines))
 
 
 class ReverseEntry(Command):
@@ -149,12 +165,14 @@ async def book(
     """Add ``entry`` to the open ``uow``, moving the ``accounts`` it posts to.
 
     The accounts are locked already (after any hold); the period the
-    entry's date falls in is locked last, for share.
+    entry's date falls in is locked last, for share. Then the apps that
+    registered ``on_booking`` see the entry, and may refuse it.
 
     Raises:
         NoOpenPeriod: No period covers the date, and ``REQUIRE_PERIOD``.
         PeriodIsClosed: The period that covers it is closed.
         AccountIsClosed, InvalidEntry, InsufficientFunds: As ``Account.post``.
+        DomainError: An ``on_booking`` hook refused the entry.
     """
     period = await uow.periods.covering(entry.booked_on)
     if period is not None:
@@ -164,6 +182,8 @@ async def book(
         raise NoOpenPeriod("No open accounting period covers the entry's date.")
     for posting in entry.postings:
         accounts[posting.account_id].post(posting.side, posting.money)
+    for hook in on_booking.hooks():
+        await hook.call(uow, entry, accounts)
     await uow.entries.add(entry)
 
 
@@ -234,6 +254,7 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
         AccountNotFound: A line names no account.
         NoOpenPeriod, PeriodIsClosed: The date is in no open period.
         AccountIsClosed, InsufficientFunds: As ``Account.post``.
+        DomainError: An ``on_posting`` hook refused it (``approval_required``).
     """
     lines = tuple(command.lines)
     max_lines = config().MAX_LINES
@@ -256,6 +277,8 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
         raise InvalidEntry(
             "The sources that start with 'accounting.' are the ledger's own."
         )
+    for hook in on_posting.hooks():
+        await hook.call(command)
     return await run(
         uow,
         lambda: post(
@@ -272,10 +295,13 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
     """Post the reversal of an entry: each of its postings on the other side.
 
     Its source is ``REVERSALS`` and its reference the entry's id, so an
-    entry is reversed once: reversing it again returns that reversal.
+    entry is reversed once: reversing it again returns that reversal. A
+    reversal is not reversed: that would book the entry it undid again,
+    past every check a new entry takes (SEC-15b-3).
 
     Raises:
         EntryNotFound: No entry has that id.
+        ReversalNotReversible: The entry is a reversal.
         ReferenceReused: An entry that does not reverse it was posted under
             its reference (only before ``post_entry`` refused the source).
         NoOpenPeriod, PeriodIsClosed: The date is in no open period.
@@ -286,6 +312,10 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
 
     async def draft() -> Entry:
         original = await uow.entries.get(entry_id)
+        if original.reverses is not None:
+            raise ReversalNotReversible(
+                "A reversal is not reversed: post the entry again instead."
+            )
         lines = original.reversal_lines()
         return Entry.draft(
             REVERSALS,

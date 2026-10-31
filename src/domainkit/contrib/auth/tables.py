@@ -32,7 +32,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
-    false,
+    text,
 )
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import relationship
@@ -42,6 +42,7 @@ from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.contrib.contenttypes.tables import start_mappers as start_content_types
 from domainkit.db import (
+    MoneyColumns,
     UTCDateTime,
     ValueObjectType,
     map_imperatively,
@@ -165,7 +166,7 @@ def abstract_user_columns() -> list[Column[Any]]:
         ),
         Column("email", String(254), nullable=False),
         # Existing rows start unverified when the column is added.
-        Column("email_verified", Boolean, nullable=False, server_default=false()),
+        Column("email_verified", Boolean, nullable=False, server_default=text("false")),
         Column("first_name", String(150), nullable=False),
         Column("last_name", String(150), nullable=False),
         Column("is_staff", Boolean, nullable=False),
@@ -300,6 +301,66 @@ pending_signups = Table(
     info={"domain": "auth", "fixtures": False},
 )
 """Accounts asked for at ``/signup``, made once their address is confirmed."""
+
+
+step_ups = Table(
+    "domainkit_step_ups",
+    metadata,
+    # The digest of the login token or browser session that stepped up (a
+    # JSON Web Token carries its own, as claims): its last step-up only.
+    Column("id", String(64), primary_key=True),
+    Column("user_id", Uuid, nullable=False),
+    Column("auth_time", UTCDateTime, nullable=False),
+    # What it proved, RFC 8176's names separated by spaces: "otp", "otp pwd".
+    Column("amr", String(64), nullable=False),
+    Index("ix_domainkit_step_ups_user_id", "user_id"),
+    Index("ix_domainkit_step_ups_auth_time", "auth_time"),
+    info={"domain": "auth", "guarded": True, "fixtures": False},
+)
+"""When each login last authenticated again, and how (``auth.stepup``)."""
+
+PAYEE_MAX_LENGTH = 255
+"""The longest payee a transaction authorization names (an IBAN, an account id)."""
+PURPOSE_MAX_LENGTH = 100
+"""The longest purpose a transaction authorization names (``transfer``)."""
+
+sca_challenges = Table(
+    "domainkit_sca_challenges",
+    metadata,
+    # Random: the authorization names it, with its authentication code.
+    Column("id", Uuid, primary_key=True),
+    Column("user_id", Uuid, nullable=False),
+    *MoneyColumns("amount"),
+    Column("payee", String(PAYEE_MAX_LENGTH), nullable=False),
+    Column("purpose", String(PURPOSE_MAX_LENGTH), nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime, nullable=False),
+    Column("confirmed_at", UTCDateTime),
+    Column("amr", String(64)),
+    # Once set, the authorization never works again: used, or voided.
+    Column("consumed_at", UTCDateTime),
+    Index("ix_domainkit_sca_challenges_user_id", "user_id"),
+    Index("ix_domainkit_sca_challenges_expires_at", "expires_at"),
+    # Payees may be personal data, and rows live minutes: never in fixtures.
+    info={"domain": "auth", "guarded": True, "fixtures": False},
+)
+"""Transactions waiting for, or holding, an authorization (``auth.sca``)."""
+
+password_history = Table(
+    "domainkit_password_history",
+    metadata,
+    # In the order they were set: the clock may stand still between two.
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Uuid, nullable=False),
+    Column("password", PasswordHashType(), nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    # Set by staff, for the user to change at the first login.
+    Column("temporary", Boolean, nullable=False),
+    Index("ix_domainkit_password_history_user_id", "user_id", "id"),
+    info={"domain": "auth", "guarded": True, "fixtures": False},
+)
+"""Hashes of each user's last passwords (``AUTH.PASSWORD_HISTORY``), newest
+last, and whether the current one is to be changed at the next login."""
 
 
 def user_link_tables(user_table: Table) -> tuple[Table, Table]:

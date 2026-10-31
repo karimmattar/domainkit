@@ -266,6 +266,20 @@ class BasePermission:
         """Whether ``user`` may make ``request`` on ``obj``."""
         return True
 
+    async def refusal(
+        self,
+        request: HTTPConnection,
+        user: Any,  # noqa: ANN401 - the rule's principal type (a ``Principal``).
+    ) -> Exception | None:
+        """The error to answer a known principal with when this rule refuses.
+
+        None, the default, answers 403 with ``message``. A rule whose
+        refusal tells the client what to do (``StepUp``: authenticate
+        again) returns its own error; it is not recorded as a denial.
+        Called only once the rule refused ``request``.
+        """
+        return None
+
     def __and__(self, other: "Rule") -> "BasePermission":
         """Both rules must allow."""
         return AllOf(self, _rule(other))
@@ -311,6 +325,17 @@ class AllOf(BasePermission):
     def checks_scopes(self) -> bool:
         """Some rule checks them: all must allow."""
         return any(rule.checks_scopes() for rule in self.rules)
+
+    async def refusal(
+        self, request: HTTPConnection, user: Principal
+    ) -> Exception | None:
+        """The refusal of the rule that decides the request's, if it names one.
+
+        A plain refusal (403) of any rule wins over one a rule names
+        (``_deciding_refusal``): a step-up never hides a denial.
+        """
+        rule = await _deciding_refusal(self.rules, request, user)
+        return None if rule is None else await rule.refusal(request, user)
 
 
 class AnyOf(BasePermission):
@@ -532,7 +557,7 @@ class Require:
         if _scoped(request.scope):
             await check_scopes_bounded(request)
         user = current_user(request)
-        refusal = await _first_refusal(self.rules, request, user)
+        refusal = await _deciding_refusal(self.rules, request, user)
         if refusal is not None:
             raise await _denied(request, user, refusal)
         record_check(request, self.allows)
@@ -556,7 +581,7 @@ async def check_object_permissions(
         PermissionDenied: A principal who proved who they are was refused.
     """
     user = current_user(request)
-    refusal = await _first_refusal(
+    refusal = await _deciding_refusal(
         tuple(_rule(rule) for rule in rules), request, user, obj
     )
     if refusal is not None:
@@ -1006,19 +1031,52 @@ async def _first_refusal(
     return None
 
 
+async def _deciding_refusal(
+    rules: Sequence[BasePermission],
+    request: HTTPConnection,
+    user: Principal,
+    *obj: object,
+) -> BasePermission | None:
+    """The rule whose refusal answers the request (or ``obj``), if any refuses.
+
+    The first rule that refuses plainly, with a 403 (its ``refusal`` names
+    none). A rule that names its own refusal (``StepUp``: authenticate
+    again) answers only when no other refuses: the rules after it are still
+    asked, so ``StepUp(...) & HasPermissions(...)`` answers a user who
+    lacks the permission with the 403, recorded, never a step-up that
+    could not help.
+    """
+    named = None
+    for rule in rules:
+        allowed = (
+            await rule.has_object_permission(request, user, obj[0])
+            if obj
+            else await rule.has_permission(request, user)
+        )
+        if allowed:
+            continue
+        if await rule.refusal(request, user) is None:
+            return rule
+        named = named or rule
+    return named
+
+
 async def _denied(
     connection: HTTPConnection, user: Principal, rule: BasePermission | None
 ) -> Exception:
     """401 for an anonymous caller, 403 with the rule's message for a known one.
 
     The 401's challenge is the principal's own (``challenge()``), if it
-    names one. A 403 is recorded (``record_denial``); ``rule`` None is a
-    refusal of scopes on a route that checks none (``SCOPES_UNBOUNDED``).
+    names one. A rule that names its own refusal (``refusal``) answers with
+    it, unrecorded. A 403 is recorded (``record_denial``); ``rule`` None is
+    a refusal of scopes on a route that checks none (``SCOPES_UNBOUNDED``).
     """
     if not user.is_authenticated:
         challenge = getattr(user, "challenge", None)
         return NotAuthenticated(
             challenge() if challenge is not None else DEFAULT_CHALLENGE
         )
+    if rule is not None and (own := await rule.refusal(connection, user)) is not None:
+        return own
     await record_denial(connection, user, rule)
     return PermissionDenied(SCOPES_UNBOUNDED if rule is None else rule.message)

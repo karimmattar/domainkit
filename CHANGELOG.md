@@ -113,9 +113,175 @@ and a status.
   written as `def`: awaited on the event loop, they hold every request and
   message of the process while they work, then fail. `EventBus.subscriptions()`
   lists every subscription (FIN-19).
+- `domainkit.keys`: envelope encryption. A `KeyProvider` makes data keys
+  and wraps them under a key-encryption key it never hands out:
+  `LocalKeyProvider` (derived from `SECRET_KEY`, for development and
+  tests), `domainkit.keys.aws.AwsKmsKeyProvider` (AWS KMS, signed with
+  SigV4 here, with credentials from the `AWS_*` variables, a web identity,
+  or the container's endpoint: no AWS SDK) and
+  `domainkit.keys.vault.VaultTransitKeyProvider` (Vault's transit engine),
+  both through `domainkit.http.client`, logging no key. A `Keyring` holds
+  the data keys by id, unwrapped once at startup, and seals values as
+  `dk1:k.<key id>:...`, naming the key (ADR 0119) (FIN-23, FIN-38).
+- Encrypted fields: `Annotated[str | None, Encrypted()]` (`domainkit.ddd`)
+  is stored sealed (AES-256-GCM) in an `EncryptedType` column, bound to its
+  table, column, and primary key, so a value copied to another row or
+  column does not open; `map_imperatively` seals as rows are written and
+  opens as they load, so a database read, a replica, a backup, or a dump
+  shows no card number. `Encrypted(blind_index=True)` adds a
+  `<name>_index` column of HMACs, so `F("number") == value` and `in_` find
+  rows; other lookups and ordering are refused (`InvalidQuery`). Its
+  leakage is documented (`docs/contrib/keys.md`, ADR 0120) (FIN-23).
+- `domainkit.contrib.keys`: `KEYS` (`PROVIDER`, `AWS_KMS`, `VAULT`,
+  `DATA_KEYS`, `CURRENT_KEY`), `manage.py keys generate`, `rewrap`,
+  `status [--check]`, and `reencrypt [--batch-size]`, which moves values,
+  blind indexes, and subjects' keys from retired data keys to the current
+  one in batches, audited. `check` refuses the local KEK in staging and
+  production unless `KEYS.ALLOW_LOCAL_KEK` (`keys.E001`), and warns while
+  `DATA_KEYS` keeps retired keys (`keys.W001`) (FIN-23, FIN-38).
+- Crypto-shredding: a field marked `Encrypted(subject="customer_id")`, or
+  also `Personal`, is sealed under that person's own random key
+  (`domainkit_keys_subject_keys`); `erase_subject` destroys it in every
+  hosting database, with the blind indexes of their values, and their
+  values read as None from then on, in every copy. What remains is listed
+  in `docs/contrib/keys.md` (ADR 0120) (FIN-24).
+- `dumpdata --decrypt` writes encrypted columns' values
+  (`{"plaintext": ...}`), audited, with a named operator where deployed;
+  without it a dump holds them sealed. `loaddata` seals plaintext values
+  for the rows it writes (FIN-23).
+- Evidence's subject keys are a ring: `EVIDENCE.SUBJECT_KEYS` by id and
+  `SUBJECT_KEY_ID`; new records' keys use the current one, `for_subject`
+  finds records under every key, and receipts keep verifying across a
+  rotation (`SUBJECT_KEY` alone works as before) (FIN-38).
+- `StepUp(max_age=...)`, an access rule of `domainkit.contrib.auth`: it
+  allows credentials that authenticated again, with a code of the user's
+  authenticator (and the password, with `AUTH.STEP_UP.METHODS = ["pwd",
+  "otp"]`), within `max_age` (a day at most), on routes, `ResourceRouter`
+  actions, WebSockets, and wherever another app takes a rule. Refused, it
+  answers `401 step_up_required` with RFC 9470's `WWW-Authenticate`
+  (`error="insufficient_user_authentication"`, `max_age`). `POST
+  /step-up` (`auth.stepup.router`) steps up: a login token or a browser
+  session keeps its last step-up in `domainkit_step_ups`, read only on
+  the routes that ask; a JSON Web Token login gets a new access token
+  with the `auth_time` and `amr` claims. A login is not a step-up, nor is
+  a recovery code; wrong codes and passwords count against `MFA.RATE` and
+  `LOGIN_RATE` with the user's other checks, and step-ups and refusals
+  go to the audit trail. The core's `BasePermission` gains `refusal()`,
+  so a rule may answer with an error a client can act on in place of the
+  `403` ([ADR 0122](docs/adr/0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md))
+  (FIN-30).
+- Transactions authorized for one amount and one payee, as PSD2's
+  dynamic linking asks (`domainkit.contrib.auth.sca`):
+  `request_authorization(user_id, amount, payee, purpose=...)` stores the
+  transaction, `GET /sca/{id}` shows it, `POST /sca/{id}/confirm` takes a
+  code and returns the authorization, and `consume_authorization(...)`
+  spends it on the transaction its use case is about to make. It holds
+  for that user, the exact amount and currency (`Money`), payee, and
+  purpose, once, within `AUTH.SCA.TTL` (5 minutes); anything else is
+  `403 transaction_not_authorized`, and a substituted amount or payee
+  voids it. The binding is a stored row and an HMAC over a canonical
+  encoding of its values, chosen by a proof of concept where a signed
+  token alone was replayed and a row alone was spent on an edited amount
+  (ADR 0122) (FIN-29).
+- `AUTH.PASSWORD_PRESET = "pci-dss-4"`: PCI DSS v4.0's passwords, opt-in.
+  It sets the validators (12 characters, and the new
+  `LettersAndDigitsValidator`), `PASSWORD_HISTORY` (new: the user's last
+  passwords a new one may not repeat; 4), `PASSWORD_CHANGE_ON_FIRST_USE`
+  (new: a password staff set logs in only with `new_password`, which
+  replaces it; `403 password_change_required` otherwise), `LOGIN_RATE`
+  `"10/hour"`, and `IDLE_TIMEOUT` 13 minutes, where `AUTH` leaves them
+  unset, and refuses to start where a setting contradicts it
+  (`auth.E010`). `docs/auth/pci-dss.md` maps each requirement to its
+  setting, 8.3.4's lockout to device proofs (ADR 0087) (FIN-42).
+- `domainkit.contrib.approvals`: maker-checker. A use case decorated
+  `@requires_approval(action)` and registered with `guard(...)` in
+  `ready()` refuses a direct call whose command a `Policy` applies to
+  (`approval_required`), or submits it (`submit=True`). A maker submits it
+  as a request holding the command read back as JSON, its fingerprint,
+  and seals (HMACs under `SECRET_KEY`); approvers named by a permission or
+  a group, never the maker and each person once (unique in the database,
+  across sessions and tokens), approve that fingerprint, within
+  `APPROVALS.EXPIRES_AFTER`, or reject it with a reason, or the maker
+  cancels it. The approval that completes it queues the command through
+  the outbox, and the worker runs it once, under the inbox, after checking
+  the seals, the fingerprint, and that the arguments still make the
+  command; on the requests' database the request is marked executed in
+  the use case's own commit. Each change takes the request's lock: twenty
+  approvals at once count exactly, and run the command once (ADR 0121).
+  Postings over `ENTRY_THRESHOLDS` (per currency, through the ledger's new
+  `accounting.hooks.on_posting`) and making superusers in the auth admin
+  API (`SUPERUSER_APPROVALS`) are guarded on request. The approve route
+  takes any access rule (`APPROVE_RULE`, or a policy's `approve_rule`),
+  such as `StepUp(max_age=...)`, whose refusal it answers with (`401
+  step_up_required`) rather than its own 403. `api.router` (submit, list, approve, reject,
+  cancel), `manage.py approvals`, audit events for every change, privacy
+  export and erasure, and Arabic messages (`docs/contrib/approvals.md`)
+  (FIN-36).
+- `domainkit.contrib.limits`: limits on money movements. A limit bounds
+  one kind of subject (`account`, `holder`, `actor`, or a kind of the
+  project's) in one currency and direction: the most one movement may be
+  (`per_transaction`), and the sum and number of movements in a calendar
+  day or month, in its time zone, or the last 24 hours or 30 days, by the
+  database's clock. A limit for one subject replaces the one for every
+  subject; `LIMITS.DEFAULTS` gives limits in the settings, which stored
+  ones replace. A use case counts what it moves in its own unit of work
+  (`consume(uow, Movement(amount, {"holder": ...}), key=...)`), under a
+  lock of the subject's row: of fifty payments at once against a limit
+  that forty fit, exactly forty pass on PostgreSQL, where summing the
+  postings under the ledger's account locks let up to 14% more through
+  ([ADR 0123](docs/adr/0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md)).
+  A breach is 422 `limit_exceeded` or `transaction_limit_exceeded`;
+  `check` counts nothing, `release(uow, key)` gives a refund's usage back.
+  Limits are rows, changed through a `ResourceRouter` by model
+  permission (`limits.api.router`) or `manage.py limits set`, each change
+  audited; `manage.py limits list`, `usage`, and `purge`; the usage of a
+  subject over HTTP (`GET /usage`); a periodic purge with messaging, and
+  `limits.W001` without it; `limits.E001` and `limits.E002` in `setup()`;
+  privacy export and erasure (`docs/contrib/limits.md`) (FIN-47).
+- `contrib.accounting.on_booking`: a hook point other apps register on in
+  `ready()`, called for every entry as the ledger books it (posted,
+  reversed, or captured) in its transaction, after its accounts are locked
+  and their balances moved; raising refuses the entry. It is apart from
+  `accounting.hooks.on_posting`, which checks a command before
+  `post_entry` takes any lock. With `contrib.limits`
+  installed, every entry is counted against the limits of its accounts,
+  their holders, and the actor, and a reversal gives back what its entry
+  counted (FIN-47).
+- `domainkit init NAME --profile fintech`: a project with a bank's
+  controls on and wired. Every control app installed and configured: auth
+  with `PASSWORD_PRESET = "pci-dss-4"`, second factors, step-up, and SCA
+  routes; the audit trail, sealed by the worker and anchored on immudb
+  where deployed, made append-only in PostgreSQL after each `migrate`;
+  evidence; idempotency, last in the middleware, with the key required
+  where money moves; messaging; keys, local in development and tests and
+  `aws-kms` or `vault` in production (`keys.E001` refuses the local KEK
+  there); accounting, with postings over 10,000.00 approved by two;
+  approvals, with `StepUp` as the approve rule and superusers made by
+  two; limits per customer; privacy. A sample `payments` domain registers
+  a card after a step-up, its number encrypted with a blind index, and
+  makes a transfer in `Money` that its maker confirms for its amount and
+  card, that counts against the maker's limit in its own transaction, and
+  that waits, over 1,000.00, for another person's approval; with its
+  tests. The project passes its tests, ruff, and `mypy --strict` (its CI
+  runs all three), and its production settings pass `check --deploy`
+  once the secrets they list are set. `docs/fintech.md` answers a bank's
+  first-review list (threat model, provenance, KMS, maker-checker with
+  step-up, verifiable audit with operator identity, written idempotency
+  semantics, a card-number column unreadable in a dump) and the fintech
+  audit's other items, each with its page, setting or command, and the
+  test that proves it; a test checks that each test it names exists. The
+  threat model gains a section on moving money
+  ([ADR 0124](docs/adr/0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md))
+  (FIN-74).
 
 ### Changed
 
+- **Breaking:** auth has three new tables, `domainkit_step_ups`,
+  `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
+  new features use them, but deleting or erasing a user deletes the
+  user's rows there, and the hourly purge and `cleartokens` clear old
+  ones: run `makemigrations` and `migrate` before deploying (FIN-29,
+  FIN-30, FIN-42).
 - **Breaking:** messaging's outbox has two new columns, `ordering_key` and
   `sequence`, a `held` status, and an index, and messaging a new table,
   `domainkit_ordering_keys`: run `makemigrations` and `migrate` before
@@ -131,9 +297,49 @@ and a status.
   none pinned, 75 die on PostgreSQL, 176 are equivalent and 84 reach only
   a server's code; the audit page lists, by module, the 15 left and why,
   and the 682 not checked (TEST-07).
+- **Breaking:** an amount (`ExactDecimal`, money's amount column)
+  multiplied or divided by another amount (`price * cost`, or a parameter
+  or literal typed as an amount) raises `TypeError` as the expression is
+  built, on both databases. On SQLite both sides counted in minor units,
+  so 9.95 times a typed 2 was 1990.00, where PostgreSQL gave 19.90. Give
+  the factor as a plain `Decimal`, an untyped `bindparam`, or an integer
+  or numeric column; `+` and `-` between amounts are unchanged (TEST-11).
+- The 499 mutants 0.14's changed functions left (476 alive, 23 that no
+  test reached) are settled: 219 are killed by new tests (20 of
+  them on PostgreSQL, where the triggers, `NOTIFY` and the database's
+  clock run), 156 die on PostgreSQL already, 106 are equivalent, and
+  12 run only at import; the audit page lists, by module, the 6 left
+  and why (TEST-11).
 
 ### Fixed
 
+- `migrate` makes the audit trail append-only on PostgreSQL itself:
+  `domainkit.contrib.audit` registers `protect_migrated` on
+  `on_migrated`, which makes the triggers of `domainkit_audit_log` and
+  `domainkit_audit_seals` and their functions afresh after every run, as
+  accounting's are made, so one dropped, disabled, or changed is put back.
+  Where deployed, `audit.E004` and `audit.E005` refused to start unless a
+  revision of the project's called `protect(op)` and `protect(op,
+  audit_seals)`; such a revision still applies, as `protect()` now
+  replaces what is there. The refusal says to run `migrate`. The fintech
+  profile's `domains.controls`, which did this in the project, is gone
+  (FIN-74).
+- Revisions `makemigrations` writes on SQLite apply on PostgreSQL: the
+  boolean server defaults of `domainkit_users.email_verified`,
+  `domainkit_audit_seals.late`, and `domainkit_idempotency_keys.pinned`
+  and `.tombstone` were `false()`, written `sa.text('0')` on SQLite, which
+  PostgreSQL refuses for a boolean column; they are `text("false")`, which
+  both accept. A test renders every contrib server default as SQLite
+  writes it and applies it on the database at hand. Existing revisions
+  are unchanged and need no new one (FIN-74).
+
+- A lost optimistic race flushed before the commit (by a query, an
+  explicit `flush()`, a savepoint, or an `on_stage` hook such as the
+  audit trail's) raised SQLAlchemy's `StaleDataError`, so
+  `uow.run(retry=Retry(retry_on=(ConcurrentUpdate,)))` did not run it
+  again and the HTTP boundary answered 500. The SQL unit of work raises
+  `ConcurrentUpdate` (409) wherever the race surfaces, and its new
+  `model` names the aggregate's class (ADR 0092's amendment) (FIN-78).
 - `messages --dead` lists a dead letter without a recorded error, where it
   raised `IndexError` (TEST-07).
 - **Breaking:** an amount (`ExactDecimal`, money's amount column)
@@ -144,8 +350,94 @@ and a status.
   three cents is 0.003, not 0.0030000000000000004; an integer column
   divides as a real number, not by integer division. A factor has at most
   9 places: one with more is refused rather than rounded (TEST-07).
+- Money added to past what its column holds was a 500 when the session
+  flushed it: a mapped money attribute now refuses an amount its amount
+  column cannot hold (more digits before the point, or more places) as it
+  is set, `AmountOutOfRange`, a 422 `amount_out_of_range`, and keeps its
+  value. The transfer tests `startaggregate` writes for a money field of
+  fewer than two places move amounts its column holds (FIN-01).
+- `cursor_length` counted a money field's amount at its column's places,
+  while a cursor holds it at its currency's, which may be more (1.500 KWD
+  in a column of two places): such a cursor was a few characters over the
+  bound `FilterSet` checks. The bound now counts the most places a
+  currency has (FIN-01).
 
 ### Security
+
+- `contrib.approvals`: with `SUPERUSER_APPROVALS`, a user who held
+  `auth.change_user` could submit `auth.grant_superuser` for themselves
+  and have another such user approve it. Only a superuser submits one
+  now, the run checks that the maker is still an active superuser
+  (`maker_not_allowed`), the approvers are superusers unless
+  `SUPERUSER_APPROVERS` names a permission (its default is now `None`),
+  and the user promoted never decides it (`interested_party`); a guard's
+  `maker_rule` and `parties`, and a policy's `approver_rule`, say so for
+  any use case (SEC-15b-1).
+- `contrib.approvals`: a hold, placed unguarded, captured over
+  `ENTRY_THRESHOLDS` booked the whole amount unapproved. Captures are
+  guarded as `accounting.capture_hold`, and every entry posted or
+  captured is checked against the thresholds as it is booked (the
+  ledger's `on_booking`), so only the approved request being run books
+  one over them (SEC-15b-2).
+- `contrib.approvals`: a request's seal now covers its policy, approvers,
+  expiry, status, and a one-time run token, made again with each change
+  of its state, and the message that runs it carries the token, which
+  the run spends. A status set back to `approved`, or a message queued
+  again, runs nothing; a row changed without the key is neither decided
+  nor run (`request_tampered`). Seals cannot tell a whole row restored
+  from an earlier copy, which the guide says (SEC-15b-4).
+- `contrib.accounting`: `PostEntry` keeps its `lines` as a tuple. Given
+  a generator, the ledger read it before the `on_posting` hooks, which
+  saw no lines, so an entry over `APPROVALS.ENTRY_THRESHOLDS` posted
+  unapproved (SEC-15b-6).
+- `contrib.approvals`: an approved command runs as its maker (the request
+  context's actor), not as its last approver, so actor limits and the
+  audit trail charge the person who asked; `RequestExecuted` lists the
+  approvers. A request whose guard or policy no longer exists is neither
+  decided nor run (`policy_not_found`), where it fell back to
+  `APPROVE_RULE` or no rule. The guide states what maker-checker does
+  not stop: a second account made by someone who may create users and
+  grant the approvers' permission, and amounts split under a threshold
+  (SEC-15b-1).
+- The PCI preset bounds a JSON Web Token login's idleness: `auth.E010`
+  refuses `AUTH.JWT.ACCESS_TOKEN_TTL` plus `LEEWAY` above 15 minutes, and
+  with `AUTH.IDLE_TIMEOUT` any access token issued longer ago than the
+  timeout is refused (`401`, "Session ended after inactivity"): a JSON Web
+  Token login's use is its refreshes. An access token living an hour let
+  a login idle an hour under the preset (SEC-15c-1).
+- An open WebSocket or event stream no longer keeps its login alive: its
+  re-checks (`LIVE_REAUTH_INTERVAL`) write no last use, so with
+  `AUTH.IDLE_TIMEOUT` a connection nobody uses closes once its login
+  idles out. A live page left open kept a login from ever idling
+  (SEC-15c-2).
+- `changepassword <user>` sets a password the user changes at the first
+  login, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, as the admin API's
+  does; `--no-temporary` keeps it, `--temporary` asks it of one's own
+  (SEC-15c-3).
+- With a second factor, a password staff set is changed only with the
+  code: `/login` answers the challenge and changes nothing, and
+  `new_password` goes to `/mfa/login` or `/session/mfa`. Whoever held the
+  temporary password could set a lasting one without the factor
+  (SEC-15c-4).
+- `StepUp` is asked on every re-check of an open connection, which closes
+  once its step-up is older than `max_age`, and about objects too
+  (`check_object_permissions`); an open WebSocket kept its step-up for
+  good, and a `StepUp` given to `check_object_permissions` alone checked
+  nothing (SEC-15c-5).
+- A plain refusal answers before one a rule names: `StepUp(...) &
+  HasPermissions(...)`, and `Require` given both, answer a user without
+  the permission with the `403`, recorded as a denial, never `401
+  step_up_required` (SEC-15c-6).
+- The password history skips a kept hash no hasher of
+  `AUTH.PASSWORD_HASHERS` reads, with a security log line, where it was
+  skipped silently (SEC-15c-7).
+- `AUTH.PASSWORD_CHECKS_COUNT_AS_LOGINS` (the PCI preset sets it, and
+  `auth.E010` asks it there): wrong passwords of signed-in users
+  (`/auth/password`, a step-up, the second factor's changes) count against
+  the account's wrong logins too, so `LOGIN_RATE` bounds every guess; they
+  counted apart, doubling the guesses (SEC-15c-8).
+- `auth.E106`: a route whose `StepUp(methods=...)` asks for methods
+  `AUTH.STEP_UP.METHODS` never proves, so it refuses everyone (SEC-15c-9).
 
 - A money condition through child entities is one condition on one
   child: `F("lines.price") >= Money.of("100", "USD")` holds for an order
@@ -241,6 +533,51 @@ and a status.
   the docs say to namespace keys, never to take them raw from a request,
   and to keep personal data out of them, as erasure and export do not
   reach them (SEC-14c-2).
+- The ledger refuses to reverse a reversal (`ReversalNotReversible`, 422
+  `reversal_not_reversible`). Reversing one booked the entry it undid
+  again, as a reversal, which limits do not count and approvals do not
+  guard: a payment reversed, then its reversal reversed, left the account
+  again with nothing counted, as often as it held money, and an approved
+  large entry was booked again without approval. Post the entry again
+  instead (SEC-15b-3).
+- Limits count every movement, whether a window bounds its subject or
+  not: a limit set partway through its window, a limit that gains a
+  window, and an exemption lifted count what moved earlier in the window,
+  where they missed it (a daily 1,000 set at 11:00 let another 900
+  through after 900 at 10:00). A posting costs two statements more
+  without limits, one more with them (ADR 0123's amendment). A holder or
+  actor that is not a valid subject (a control character, more than 255
+  characters) is counted under its `sha256:` digest, where it refused
+  every posting to its accounts (SEC-15b-5).
+- Encrypted fields stay sealed for their row and subject however they are
+  written: `update_rows` that sets an encrypted field, or the field naming
+  its subject, writes through the ORM, so a value moved to another person
+  is sealed under their key and a value set to None loses its blind index;
+  an ORM `update()` that sets them is refused (`InvalidQuery`); and a
+  value not loaded (`load_only`) is read from its row and sealed again when
+  its subject changes. An entity's `repr` shows `<encrypted>` for them
+  (SEC-15a-1).
+- A person's first key, made by a transaction still open while they are
+  erased, no longer survives the erasure: `shred_subject` leaves a
+  tombstone (`domainkit_keys_erasures`, kept a day) under the subject's
+  lock, and the transaction destroys the key, and the blind indexes it
+  wrote for them, as it commits (SEC-15a-2).
+- AWS container credentials are taken only from the endpoints the AWS
+  SDKs allow: `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` must be a path on
+  ECS's agent, and `AWS_CONTAINER_CREDENTIALS_FULL_URI` must use https, or
+  http to a loopback address or an agent's, so the pod's token goes
+  nowhere else (SEC-15a-3).
+- The development data key `dev` is derived from `SECRET_KEY` and each of
+  `SECRET_KEY_FALLBACKS`, so rotating `SECRET_KEY` no longer makes what it
+  sealed unreadable; once `KEYS.DATA_KEYS` is set it stays in the ring,
+  retired (`KEYS.KEEP_DEVELOPMENT_KEY`), so `keys.W001` warns and
+  `keys reencrypt` moves its values (SEC-15a-4).
+- A sealed value's associated data encodes the primary key's parts as a
+  JSON array, so two rows of a composite key whose parts hold `\x1f` no
+  longer share it (SEC-15a-5).
+- Staging and production refuse `KEYS.VAULT.URL` over plain HTTP
+  (`keys.E002`); `AWS_KMS.ENDPOINT` given with a trailing `/` signs the
+  path `/` (SEC-15a-6).
 
 ## [0.13.0] - 2026-10-29
 

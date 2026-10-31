@@ -124,7 +124,10 @@ entry = await post_entry(
   entry that undoes another, each posting on the other side, dated today
   unless `booked_on` says; an entry is reversed once (its source is
   `accounting.reversal`, its reference the entry's id), and reversing it
-  again returns that reversal. On PostgreSQL,
+  again returns that reversal. A reversal is not reversed
+  (`reversal_not_reversible`, 422): that would book the entry it undid
+  again, past the checks a new entry meets (limits, approvals); post the
+  entry again instead, under a reference of its own. On PostgreSQL,
   triggers that `migrate` makes afresh each time refuse every update,
   delete, and truncation of entries and postings, the table owner's too;
   in staging and production the application refuses to start without
@@ -134,6 +137,24 @@ entry = await post_entry(
   ledger's tables alone.
 - `EntryPosted`, like every event of the app, is recorded by
   `contrib.audit` when it is installed.
+- **Checks before posting.** An app may refuse an entry before
+  `post_entry` takes any lock: it registers `async def hook(command)` on
+  `domainkit.contrib.accounting.hooks.on_posting` in `ready()`, and
+  raises. `domainkit.contrib.approvals` refuses there the entries over
+  `APPROVALS.ENTRY_THRESHOLDS` that no approved request posts
+  (`approval_required`, 403; [approvals.md](approvals.md#large-postings)).
+- **Checks as entries are booked.** An app sees every entry as it is
+  booked: a function registered in its `ready()` with
+  `on_booking(hook)` (from `domainkit.contrib.accounting`) is awaited as
+  `hook(uow, entry, accounts)` in the posting's transaction, after its
+  accounts and period are locked and their balances moved, for entries
+  posted, reversals, and captures. Raising refuses the entry; rows it
+  locks come after the accounts, in an order of its own.
+  [Limits](limits.md#on-the-ledger) count each entry this way, and
+  approvals refuses there the postings and captures over its thresholds
+  that no approved request books.
+- `PostEntry` keeps its `lines` as a tuple, however they are given (a
+  generator, a list), so every hook and the ledger read the same lines.
 
 ### From messages
 

@@ -28,7 +28,7 @@ work again when it loses a race (``uow.run(..., retry=Retry(...))``);
 """
 
 from argparse import ArgumentParser
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from domainkit.management.base import CommandError
 from domainkit.management.generators import (
@@ -571,6 +571,14 @@ def _transfer_tests(domain: Domain, names: Names, spec: FieldSpec) -> None:
     A, a, many, field = names.cls, names.snake, names.plural, spec.name
     held = Decimal("1.50") if int(spec.options[1]) >= 2 else Decimal("1.00")
     left, received = f"{held - 1:.2f}", f"{held + 1:.2f}"
+    # Amounts the column holds: a column of fewer places refuses 0.01 when set.
+    least = Decimal(1).scaleb(-min(int(spec.options[1]), 2))
+    first, second = (
+        Decimal(amount).quantize(least, ROUND_DOWN) for amount in ("2.50", "4.00")
+    )
+    small, moved, kept = f"{least:.2f}", f"{first:.2f}", f"{10 - first:.2f}"
+    got, again, rest = f"{least + first:.2f}", f"{second:.2f}", f"{10 - second:.2f}"
+    got_again = f"{least + second:.2f}"
     F = camel_case(field)
     command, event = f"Transfer{A}{F}", f"{A}{F}Transferred"
     invalid, short = f"Invalid{A}Transfer", f"Insufficient{A}{F}"
@@ -639,12 +647,12 @@ async def test_{service}_publishes_{snake_case(event)}() -> None:
 
     bus.subscribe({event}, collect)
     uow = {fake}(bus)
-    source, target = await funded(uow, "10.00"), await funded(uow, "0.01")
+    source, target = await funded(uow, "10.00"), await funded(uow, "{small}")
 
-    command = {command}({a}_id=source.id, to=target.id, amount=usd("2.50"))
+    command = {command}({a}_id=source.id, to=target.id, amount=usd("{moved}"))
     await services.{service}(command, uow)
 
-    assert (source.{field}, target.{field}) == (usd("7.50"), usd("2.51"))
+    assert (source.{field}, target.{field}) == (usd("{kept}"), usd("{got}"))
     assert uow.commits == 3
     assert [type(each) for each in published] == [{event}]
 
@@ -663,13 +671,13 @@ async def test_a_transfer_that_loses_a_race_runs_again_whole() -> None:
             await super()._commit()
 
     uow = LosesOnce()
-    source, target = await funded(uow, "10.00"), await funded(uow, "0.01")
+    source, target = await funded(uow, "10.00"), await funded(uow, "{small}")
 
-    command = {command}({a}_id=source.id, to=target.id, amount=usd("4.00"))
+    command = {command}({a}_id=source.id, to=target.id, amount=usd("{again}"))
     await services.{service}(command, uow)
 
     assert (uow.lost, uow.commits) == (True, 3)
-    assert (source.{field}, target.{field}) == (usd("6.00"), usd("4.01"))
+    assert (source.{field}, target.{field}) == (usd("{rest}"), usd("{got_again}"))
 
 
 def test_{service}_route(admin_client: TestClient) -> None:

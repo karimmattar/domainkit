@@ -9,6 +9,7 @@ from typing import Final
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.clock import freeze_time
@@ -47,6 +48,7 @@ from domainkit.contrib.accounting import (
     PostEntry,
     ReferenceReused,
     ReleaseHold,
+    ReversalNotReversible,
     ReverseEntry,
     capture_hold,
     close_account,
@@ -221,10 +223,16 @@ async def test_periods_do_not_overlap() -> None:
         AccountingUnitOfWork(),
     )
     assert november.status is PeriodStatus.OPEN
+    september = await period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+    assert september is not None  # Wholly before October: no overlap.
 
 
 async def test_a_reversal_undoes_an_entry_once() -> None:
-    """Reversed, the balances are back; reversing again returns the reversal."""
+    """Reversed, the balances are back; reversing again returns the reversal.
+
+    A reversal is not reversed: that booked the entry's money again, past
+    the limits and approvals a new entry meets (SEC-15b-3).
+    """
     await period()
     cash, sales = await account("1000"), await account("4000")
     entry = await post_entry(
@@ -249,12 +257,16 @@ async def test_a_reversal_undoes_an_entry_once() -> None:
     )
     assert (reversal.booked_on, reversal.description) == (NOW.date(), "refund")
     assert set((await balances()).values()) == {Decimal(0)}
-    with freeze_time(NOW):
-        twice = await reverse_entry(
-            ReverseEntry(entry_id=reversal.id), AccountingUnitOfWork()
-        )
-    assert twice.reverses == reversal.id
-    assert (await balances())[cash.id] == Decimal("7.0000")
+    with (
+        freeze_time(NOW),  # Booked today: inside the period whatever the date.
+        refused(
+            ReversalNotReversible,
+            match=r"^A reversal is not reversed: post the entry again instead\.$",
+        ) as raised,
+    ):
+        await reverse_entry(ReverseEntry(entry_id=reversal.id), AccountingUnitOfWork())
+    assert raised.value.code == "reversal_not_reversible"
+    assert set((await balances()).values()) == {Decimal(0)}
     with refused(EntryNotFound, match=r"^No journal entry has that id\.$"):
         await reverse_entry(
             ReverseEntry(entry_id=EntryId(uuid.UUID(int=5))),
@@ -593,3 +605,131 @@ async def test_holds_are_keyed_by_source_and_reference_together() -> None:
     )
     assert shop.id != cards.id
     assert (await balances())[card.id] == Decimal(0)
+
+
+async def test_a_period_covers_only_its_own_days() -> None:
+    """The day before its first is not in it, nor the day after its last."""
+    await period("2026-10", date(2026, 10, 1), date(2026, 10, 31))
+    async with AccountingUnitOfWork() as uow:
+        before = await uow.periods.covering(date(2026, 9, 30))
+        first = await uow.periods.covering(date(2026, 10, 1))
+        after = await uow.periods.covering(date(2026, 11, 1))
+    assert (before, after) == (None, None)
+    assert first is not None
+
+
+@postgres_only
+async def test_a_posting_sees_its_period_as_it_is_now() -> None:
+    """A period read earlier in the unit of work, and closed since, is read again.
+
+    PostgreSQL only: SQLite's reading transaction keeps the close out.
+    """
+    october = await period()
+    async with AccountingUnitOfWork() as uow:
+        earlier = await uow.periods.get(october)
+        await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+        now = await uow.periods.covering(TODAY)
+    assert now is earlier
+    assert now.status is PeriodStatus.CLOSED
+
+
+@postgres_only
+async def test_a_posting_holds_its_period_for_share_only() -> None:
+    """Other postings share the lock; a close, which takes it for update, waits."""
+    october = await period()
+    select_period = "SELECT id FROM domainkit_accounting_periods WHERE id = :id "
+    async with (
+        AccountingUnitOfWork() as posting,
+        connections.engine().connect() as other,
+    ):
+        assert (await posting.periods.covering(TODAY)) is not None
+        shared = await other.scalar(
+            text(select_period + "FOR SHARE NOWAIT"), {"id": october}
+        )
+        await other.rollback()
+        with pytest.raises(DBAPIError, match="could not obtain lock"):
+            await other.execute(
+                text(select_period + "FOR UPDATE NOWAIT"), {"id": october}
+            )
+        await other.rollback()
+    assert shared == october
+
+
+async def test_another_source_may_post_under_the_same_reference() -> None:
+    """An entry is known by its source and reference together."""
+    await period()
+    cash, sales = await account("1000"), await account("4000")
+    first = await post_entry(
+        transfer(sales, cash, usd("1"), "r"), AccountingUnitOfWork()
+    )
+    second = await post_entry(
+        PostEntry(
+            source="other",
+            reference="r",
+            booked_on=TODAY,
+            lines=(Line.credit(sales.id, usd("2")), Line.debit(cash.id, usd("2"))),
+        ),
+        AccountingUnitOfWork(),
+    )
+    assert first.id != second.id
+    assert (await balances())[cash.id] == Decimal("3.0000")
+
+
+async def test_a_posting_runs_as_often_as_retry_attempts_says() -> None:
+    """``ACCOUNTING.RETRY_ATTEMPTS`` runs in all, not ``UnitOfWork.run``'s default."""
+    from domainkit.contrib.accounting.ledger import run
+    from domainkit_tests.test_transactions import conflict
+
+    runs: list[int] = []
+
+    async def lost() -> None:
+        runs.append(len(runs) + 1)
+        raise conflict()
+
+    with (
+        override_settings(ACCOUNTING={"RETRY_ATTEMPTS": 4}),
+        freeze_time(NOW),
+        pytest.raises(DBAPIError),
+    ):
+        await run(AccountingUnitOfWork(), lost)
+    assert runs == [1, 2, 3, 4]
+
+
+async def test_the_sweep_expires_the_oldest_holds_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """By expiry, then by id: the order a stopped sweep would resume in."""
+    from domainkit.contrib.accounting import models
+
+    await period()
+    card = await account("1000")
+    ids = iter([uuid.UUID(int=1), uuid.UUID(int=3), uuid.UUID(int=2)])
+    monkeypatch.setattr(models, "uuid4", lambda: next(ids))
+    with freeze_time(NOW):
+        for reference, seconds in (("late", 3), ("first", 1), ("tied", 1)):
+            await place_hold(
+                PlaceHold(
+                    account_id=card.id,
+                    amount=usd("1"),
+                    source="shop",
+                    reference=reference,
+                    expires_at=NOW + timedelta(seconds=seconds),
+                ),
+                AccountingUnitOfWork(),
+            )
+    monkeypatch.undo()
+    finished: list[HoldFinished] = []
+
+    async def note(event: HoldFinished) -> None:
+        finished.append(event)
+
+    event_bus.subscribe(HoldFinished, note)
+    try:
+        assert await expire_holds(NOW + timedelta(seconds=3)) == 3
+    finally:
+        event_bus.unsubscribe(HoldFinished, note)
+    assert [event.hold_id for event in finished] == [
+        uuid.UUID(int=2),
+        uuid.UUID(int=3),
+        uuid.UUID(int=1),
+    ]

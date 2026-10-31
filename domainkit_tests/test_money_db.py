@@ -18,6 +18,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    Uuid,
     bindparam,
     func,
     insert,
@@ -57,7 +58,14 @@ from domainkit.ddd import (
 from domainkit.ddd.query import Criteria, F, Ordering, Selection
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
-from domainkit.money import Currency, Money, UnknownCurrency, currency
+from domainkit.money import (
+    AmountOutOfRange,
+    Currency,
+    Money,
+    MoneyError,
+    UnknownCurrency,
+    currency,
+)
 from domainkit_tests.conftest import ALPHA, POSTGRES_VARIABLE
 
 pytestmark = pytest.mark.anyio
@@ -291,6 +299,59 @@ async def test_half_of_a_missing_amount_is_refused(tables: None) -> None:
                     limit_currency=None,
                 )
             )
+
+
+def test_only_money_attributes_are_guarded_when_mapped() -> None:
+    """A class mapped now: its money is guarded, its other columns are not."""
+    # A name of its own each run: the mapper registry is the process's.
+    till_type: Any = type(f"Till{uuid4().hex}", (), {})
+    table = Table(
+        f"framework_test_money_tills_{uuid4().hex}",
+        MetaData(),
+        Column("id", Uuid, primary_key=True),
+        *MoneyColumns("cash", 6, 2),
+        Column("rate", ExactDecimal(4, 4)),
+        Column("count", Integer),
+    )
+    map_imperatively(till_type, table, versioned=False)
+    till = till_type()
+    till.id = uuid4()
+    till.rate = Decimal("0.5")
+    till.count = 10**12
+
+    with pytest.raises(AmountOutOfRange) as refused:
+        till.cash = money("10000", "USD")
+
+    assert str(refused.value) == (
+        f"{table.name}.cash holds 2 decimal places, 4 digits before the point: "
+        "this USD amount does not fit."
+    )
+    till.cash = money("9999.99", "USD")
+
+
+def test_money_its_column_cannot_hold_is_refused_as_it_is_set() -> None:
+    """Past the column's whole digits, or with more places than it keeps.
+
+    ``AmountOutOfRange`` is a ``MoneyError``, a 422 over HTTP; the value
+    stays what it was. Missing money, and money that fits, are taken.
+    """
+    held = wallet("a", money("1", "USD"), money("9999999999.99", "USD"))
+
+    with pytest.raises(AmountOutOfRange, match="2 decimal places, 10 digits before"):
+        held.limit = held.limit + money("0.01", "USD")
+    with pytest.raises(AmountOutOfRange):
+        held.limit = money("1.234", "KWD")
+    with pytest.raises(AmountOutOfRange):
+        wallet("b", money("100000000000000", "USD"))
+
+    assert held.limit == money("9999999999.99", "USD")
+    held.limit = money("-9999999999.99", "USD")
+    held.limit = money("1.230", "KWD")
+    held.limit = None
+    held.balance = money("-99999999999999.9999", "CLF")
+    assert (held.limit, held.balance.amount) == (None, Decimal("-99999999999999.9999"))
+    assert issubclass(AmountOutOfRange, MoneyError)
+    assert AmountOutOfRange.code == "amount_out_of_range"
 
 
 async def test_an_unknown_code_is_refused_on_the_way_in(tables: None) -> None:
@@ -742,14 +803,38 @@ def test_the_money_attribute_compares_only_with_money() -> None:
         Wallet.limit < None  # type: ignore[operator]  # noqa: B015 - it raises.
 
 
+def test_a_money_fields_parts_keep_its_bounds_and_whether_it_may_be_missing() -> None:
+    """``limit.amount`` may be None, as ``limit`` may, within its ``Digits``."""
+    from domainkit.ddd.fields import fields_of, money_part
+
+    fields = fields_of(Wallet)
+    amount = money_part(fields["limit"], "amount")
+    code = money_part(fields["balance"], "currency")
+
+    assert amount is not None
+    assert code is not None
+    assert (amount.kind, amount.nullable, amount.metadata) == (
+        Decimal,
+        True,
+        fields["limit"].metadata,
+    )
+    assert (code.kind, code.nullable) == (Currency, False)
+    assert money_part(fields["name"], "amount") is None
+    assert money_part(fields["balance"], "cents") is None
+
+
 def test_half_a_pair_loads_as_a_clear_error() -> None:
     """An amount without its currency, or the reverse, is no money, nor None."""
     load = class_mapper(Wallet).composites["limit"].composite_class
 
     assert load(None, None) is None
     assert load(Decimal("1.50"), currency("USD")) == money("1.50", "USD")
-    with pytest.raises(IncompleteMoney, match=r"^A row holds an amount without its"):
+    with pytest.raises(IncompleteMoney) as half:
         load(Decimal("1.50"), None)
+    assert str(half.value) == (
+        "A row holds an amount without its currency, or a currency without its "
+        "amount; add the pair's check (money_check) and repair the row."
+    )
     with pytest.raises(IncompleteMoney, match="money_check"):
         load(None, currency("USD"))
 

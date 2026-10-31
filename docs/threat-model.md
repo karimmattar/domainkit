@@ -1,12 +1,12 @@
 # Threat model
 
-**Draft (0.9.2).** This is a first version, written for the teams that
-build services on domainkit and for their security reviewers. It says what
-a domainkit service has to protect, where its trust boundaries are, what
-can go wrong at each (by STRIDE), what domainkit does about it, and what is
-left to the project. It describes the framework as released; it does not
-replace a project's own threat model, which knows its data, its users, and
-its deployment.
+**Draft (0.9.2; moving money added in 0.15).** This is a first version,
+written for the teams that build services on domainkit and for their
+security reviewers. It says what a domainkit service has to protect,
+where its trust boundaries are, what can go wrong at each (by STRIDE),
+what domainkit does about it, and what is left to the project. It
+describes the framework as released; it does not replace a project's own
+threat model, which knows its data, its users, and its deployment.
 
 To report a vulnerability, follow [SECURITY.md](../SECURITY.md).
 
@@ -83,7 +83,7 @@ project" is the team that builds and runs the service.
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
 | **Spoofing** the server | `SSLMODE = "verify-full"` required for network databases where deployed ([reference/checks.md](reference/checks.md)). | Certificates and their rotation. |
-| **Tampering** with rows | Bound parameters only; optimistic versions refuse a lost update, and a table without `version` is refused ([databases.md](databases.md#versions)); `protect()` triggers keep the trail append-only ([contrib.md](contrib/audit.md#tamper-evidence)). | Who can connect as the schema owner; `protect()` must be migrated in (`check` warns without it). |
+| **Tampering** with rows | Bound parameters only; optimistic versions refuse a lost update, and a table without `version` is refused ([databases.md](databases.md#versions)); `protect()` triggers keep the trail append-only ([contrib.md](contrib/audit.md#tamper-evidence)). | Who can connect as the schema owner; `migrate` makes the `protect()` triggers, and startup refuses a trail without them where deployed. |
 | **Repudiation** | The trail is written in the transaction of the change. | Changes made outside the application (a `psql` session) are not audited. |
 | **Information disclosure** | Bound values never logged where deployed (`LOG_PARAMETERS` refused); TOTP secrets encrypted; tokens stored as digests; audit pseudonyms. | Encryption at rest, backups and their access, row-level security. |
 | **Denial of service** | Statement, lock, idle, connect, and pool timeouts ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). | Pool sizing for the load ([performance.md](performance.md)). |
@@ -137,6 +137,24 @@ project" is the team that builds and runs the service.
 | --- | --- | --- |
 | **Tampering** with the package | Releases built in CI from `main`, approved, and published with trusted publishing and attestations; actions pinned to commit SHAs ([SECURITY.md](../SECURITY.md)). | Verifying attestations when installing. |
 | Vulnerable dependencies | pip-audit and a secret scan on every push; updates through Renovate. | The project's own lock file and its updates. |
+
+## Moving money
+
+A transfer crosses every boundary above, so a bank reads it as one flow:
+a customer asks for it, confirms it, is counted against their limits,
+and, past a threshold, waits for someone else. Each control is a page of
+its own; `domainkit init --profile fintech` turns them all on, with a
+transfer that goes through each ([fintech.md](fintech.md)).
+
+| Threat | What domainkit does | What remains |
+| --- | --- | --- |
+| **Spoofing** the customer who moves money | A second factor at login, and again for the act: `StepUp(max_age=...)` on routes that add a payee or approve, and an authorization the customer confirms with a code for one amount and one payee, spent once ([auth/step-up.md](auth/step-up.md)). | Enrolling every customer in a second factor is the project's choice; a recovery code never steps up. |
+| **Tampering** with the amount or the payee | The authorization is an HMAC over the transaction's canonical values: another amount, currency, or payee is refused and voids it ([ADR 0122](adr/0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md)); an approval states the fingerprint of the command it approves, and the worker runs only that command, under seals ([contrib/approvals.md](contrib/approvals.md)); amounts are exact `Money`, never floats ([money.md](money.md)). | Showing the customer the real amount and payee is the client's. |
+| **Repudiation** of a transfer or an approval | Every change is an event the trail records with its actor, in the change's transaction, sealed and anchored ([contrib/audit.md](contrib/audit.md#tamper-evidence)); makers, approvers, and operators are named ([reference/commands.md](reference/commands.md#operators)). | Keeping the trail and the ledger as long as the regulator asks. |
+| **Tampering** by running twice | `Idempotency-Key` replays a retried request's response and never runs a committed one again ([contrib/idempotency.md](contrib/idempotency.md)); approved commands run once, under the inbox; ledger entries are posted once per reference. | Keys are kept for days, not forever: refuse what must never happen twice with a unique column. |
+| **Information disclosure** of card numbers | Fields marked `Encrypted` are sealed under data keys a KMS or Vault wraps, bound to their row; the database, replicas, backups, and dumps hold ciphertext; erasing a person destroys their key ([contrib/keys.md](contrib/keys.md)). | A blind index tells whoever holds the data keys whether a guessed value is stored; keep them in the key service. |
+| **Denial of service** by draining an account | Limits per transaction and per window, per account, holder, or actor, counted under the subject's lock in the movement's transaction ([contrib/limits.md](contrib/limits.md)). | Choosing the limits. |
+| **Elevation of privilege** by one person | Maker-checker: guarded commands run only once others approve them, never their maker, each once, with a step-up; making a superuser can be guarded the same way ([contrib/approvals.md](contrib/approvals.md)). | Who holds the approvers' permission or group. |
 
 ## Mitigations at a glance
 
@@ -192,8 +210,8 @@ left to the project on purpose.
   ledger credentials, `EVIDENCE.SUBJECT_KEY`, the JWT key, from the
   environment or files; rotate `SECRET_KEY` with `SECRET_KEY_FALLBACKS`.
 - Give the application a row-level database role and migrate with the
-  schema owner (`MIGRATION_URL`); migrate the audit trail's `protect()`
-  triggers.
+  schema owner (`MIGRATION_URL`), which makes the audit trail's
+  `protect()` triggers.
 - Use Redis for `RATE_LIMIT_BACKEND` (staging and production refuse
   attempts counted in each process), and watch for the `503
   throttle_unavailable` answers that its outages cause.

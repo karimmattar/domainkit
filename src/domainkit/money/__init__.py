@@ -63,6 +63,7 @@ from domainkit.utils.decimals import decimal_text
 __all__ = [
     "ISO_4217_PUBLISHED",
     "MAX_DIGITS",
+    "AmountOutOfRange",
     "Currency",
     "CurrencyMismatch",
     "InexactAmount",
@@ -128,6 +129,20 @@ class InexactAmount(MoneyError):
 
     code: ClassVar[str] = "inexact_amount"
     summary: ClassVar[str] = "The amount has more decimal places than its currency has."
+
+
+class AmountOutOfRange(MoneyError):
+    """An amount where it is kept cannot hold it: too many digits, or places.
+
+    A mapped money attribute refuses one as it is set, so a balance added
+    to past its column's ``Digits`` stops the use case there, a 422, rather
+    than failing when the session writes it (``domainkit.db``).
+    """
+
+    code: ClassVar[str] = "amount_out_of_range"
+    summary: ClassVar[str] = (
+        "The amount is larger, or has more decimal places, than can be stored."
+    )
 
 
 class CurrencyMismatch(MoneyError):
