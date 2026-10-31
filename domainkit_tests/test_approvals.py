@@ -799,3 +799,118 @@ async def test_the_worker_expires_requests_on_its_schedule(project: str) -> None
     with clock.freeze_time(clock.now() + timedelta(days=3)):
         await expire_due_requests()
     assert (await stored(request.id)).status is RequestStatus.EXPIRED
+
+
+async def test_seals_stop_rows_written_around_the_application(project: str) -> None:
+    """A forged decision, or a request whose seal was changed, runs nothing."""
+    from domainkit.contrib.approvals.guards import guard_for
+    from domainkit.contrib.approvals.services import _rebuild
+
+    guard_vaults(approvals=2)
+    half = await submit_command("tests.open_vault", OpenVault(code="v-1"), maker="m")
+    await approve(half, "ann")
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            decisions.insert().values(
+                id=uuid.uuid4(),
+                request_id=half.id,
+                approver="mallory",
+                verdict="approve",
+                fingerprint=half.fingerprint,
+                seal="forged",
+                decided_at=clock.now(),
+            )
+        )
+        await connection.execute(
+            update(requests)
+            .where(requests.c.id == half.id)
+            .values(status="approved", approvals=2)
+        )
+    guard_acts()
+    whole = await approved_act("whole")
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(requests).where(requests.c.id == whole.id).values(seal="forged")
+        )
+    message = r"^The request holds another command than the one approved\.$"
+    for request in (half, whole):
+        with refused(FingerprintMismatch, message):
+            _rebuild(guard_for(request.action), await stored(request.id))
+        await execute_request(request.id)
+        assert await status_of(request) == (
+            RequestStatus.FAILED,
+            "fingerprint_mismatch",
+        )
+    async with AccountingUnitOfWork() as uow:
+        assert await uow.accounts.filter() == []
+
+
+async def test_a_command_rebuilt_otherwise_is_named_as_such(project: str) -> None:
+    """The arguments no longer make it, or read back otherwise: said so."""
+    from domainkit.contrib.approvals.guards import Guard
+    from domainkit.contrib.approvals.services import _rebuild
+
+    guard_acts()
+    request = await stored((await approved_act("x")).id)
+
+    class Other(Command):
+        number: int
+
+    class Wider(Command):
+        kind: str
+        memo: str = ""
+
+    def as_(command: type) -> Guard:
+        return Guard(
+            "tests.act",
+            command,
+            acting_guarded,
+            AccountingUnitOfWork,
+            (Policy("tests.acts", permission="a.b"),),
+        )
+
+    with refused(InvalidArguments, r"^The arguments do not make the command\.$"):
+        _rebuild(as_(Other), request)
+    with refused(
+        InvalidArguments,
+        r"^The command reads otherwise now than when it was approved\.$",
+    ):
+        _rebuild(as_(Wider), request)
+
+
+async def test_the_executed_event_names_the_request(
+    project: str,
+) -> None:
+    """``RequestExecuted`` says which request ran, and its action."""
+    from domainkit.contrib.approvals import RequestExecuted
+    from domainkit.ddd import event_bus
+
+    seen: list[RequestExecuted] = []
+
+    async def keep(event: RequestExecuted) -> None:
+        seen.append(event)
+
+    event_bus.subscribe(RequestExecuted, keep)
+    try:
+        guard_acts()
+        request = await approved_act("ran")
+        await execute_request(request.id)
+    finally:
+        event_bus.unsubscribe(RequestExecuted, keep)
+    assert [(event.request_id, event.action) for event in seen] == [
+        (request.id, "tests.act")
+    ]
+
+
+async def test_a_maker_without_an_id_is_refused(project: str) -> None:
+    """Submitted over JSON with an empty maker: said so."""
+    with refused(InvalidArguments, r"^A maker's id has 1 to 255 characters\.$"):
+        await submit_request(
+            SubmitRequest(action=ENTRIES, arguments={}, maker=""),
+            ApprovalsUnitOfWork(),
+        )
+    with refused(InvalidArguments, r"^An approver's id has 1 to 255 characters\.$"):
+        await approve_request(
+            ApproveRequest(request_id=uuid.uuid4(), approver="", fingerprint="0"),
+            ApprovalsUnitOfWork(),
+        )

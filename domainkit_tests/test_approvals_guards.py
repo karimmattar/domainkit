@@ -547,3 +547,57 @@ async def test_approvers_by_group_and_the_rule_asked_of_them(installed: None) ->
         connection, member, request(policy="tests.gone")
     )
     assert len(seen.asked) == 2
+
+
+def test_the_guards_approvals_brings_follow_their_settings() -> None:
+    """Postings and superusers, each policy as ``APPROVALS`` says."""
+    registry.clear()
+    try:
+        with override_settings(
+            INSTALLED_DOMAINS=[
+                "domainkit.contrib.contenttypes",
+                "domainkit.contrib.auth",
+                "domainkit.contrib.accounting",
+                *DOMAINS,
+            ],
+            AUTH={
+                "PASSWORD_HASHERS": [
+                    "domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"
+                ]
+            },
+            APPROVALS={
+                "ENTRY_THRESHOLDS": {"USD": "10"},
+                "ENTRY_APPROVALS": 3,
+                "ENTRY_APPROVERS": "accounting.approve_large",
+                "SUPERUSER_APPROVALS": 4,
+                "SUPERUSER_APPROVERS": "auth.approve_superuser",
+            },
+        ):
+            setup()
+            found = guards()
+            entries, superusers = (
+                found["accounting.post_entry"],
+                found["auth.grant_superuser"],
+            )
+            assert entries.permission == "accounting.add_entry"
+            assert [
+                (each.name, each.approvals, each.permission, each.group)
+                for each in entries.policies
+            ] == [("accounting.large_entry", 3, "accounting.approve_large", None)]
+            assert superusers.permission == "auth.approve_superuser"
+            assert [
+                (each.name, each.approvals, each.permission, each.group)
+                for each in superusers.policies
+            ] == [("auth.superuser", 4, "auth.approve_superuser", None)]
+    finally:
+        registry.clear()
+
+
+async def test_a_missing_guard_is_named_when_refused(installed: None) -> None:
+    """The refusal of a decorated service with no guard says what to do."""
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^'tests\.refund' requires approval, but no guard is registered for "
+        r"it: install domainkit\.contrib\.approvals and call guard\(\) in ready\(\)\.$",
+    ):
+        await check("tests.refund", Refund(amount=Money.of("1", "USD")))
