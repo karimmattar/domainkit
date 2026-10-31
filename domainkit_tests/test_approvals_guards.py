@@ -358,6 +358,7 @@ def test_a_requests_life_records_its_events() -> None:
     """Each change records its event, about this request, and dates itself."""
     from domainkit.contrib.approvals import (
         ApprovalGiven,
+        RequestApproved,
         RequestCancelled,
         RequestExpired,
         RequestFailed,
@@ -406,6 +407,24 @@ def test_a_requests_life_records_its_events() -> None:
                 required=2,
             )
         )
+        assert approved.decided_at is None
+        assert approved.approve("bob", approved.fingerprint)
+        assert facts(approved.pull_events()) == expected(
+            ApprovalGiven(
+                request_id=approved.id,
+                fingerprint=approved.fingerprint,
+                approvals=2,
+                required=2,
+            ),
+            RequestApproved(request_id=approved.id, action="tests.refund"),
+        )
+        assert (approved.status, vars(approved)["decided_at"]) == (
+            "approved",
+            frozen.now(),
+        )
+        late = made()
+        assert not late.expired(late.expires_at - timedelta(microseconds=1))
+        assert late.expired(late.expires_at)
         rejected = made()
         rejected.reject("ann", "No.")
         assert facts(rejected.pull_events()) == expected(
@@ -627,3 +646,17 @@ async def test_a_missing_guard_is_named_when_refused(installed: None) -> None:
         r"it: install domainkit\.contrib\.approvals and call guard\(\) in ready\(\)\.$",
     ):
         await check("tests.refund", Refund(amount=Money.of("1", "USD")))
+
+
+def test_the_fingerprint_is_of_canonical_json() -> None:
+    """Keys sorted, no spaces, UTF-8 as is: what a client can work out itself."""
+    import hashlib
+
+    from domainkit.contrib.approvals import fingerprint
+    from domainkit.contrib.approvals.models import _sealed_text
+
+    text = '{"action":"a.b","arguments":{"a":[1,2],"z":"é"}}'
+    assert fingerprint("a.b", {"z": "é", "a": [1, 2]}) == (
+        hashlib.sha256(text.encode("utf-8")).hexdigest()
+    )
+    assert _sealed_text((1, "a")) == '["1","a"]'

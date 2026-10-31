@@ -27,7 +27,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import SqlAlchemyUnitOfWork
-from domainkit.ddd import Command, ConcurrentUpdate, DomainError, Retry
+from domainkit.ddd import Command, ConcurrentUpdate, DomainError
 from domainkit.money import MoneyError
 
 from .exceptions import (
@@ -48,8 +48,6 @@ from .models import (
 from .settings import ApprovalsSettings
 from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias
 
-RETRY: Final = Retry(attempts=3)
-"""Runs of a change to a request, for the races its database still reports."""
 EXPIRE_BATCH: Final = 500
 """Requests one round of ``expire_requests`` expires at most."""
 MAKER: Final = "A maker's id has 1 to 255 characters."
@@ -200,8 +198,9 @@ async def approve_request(
     """Approve a request; the approval that completes it queues its command.
 
     Under the request's lock, so concurrent approvals count one by one, and
-    one of them completes it. The command is queued through the outbox in
-    the same transaction (``execute_request``).
+    one of them completes it; that one lock is all they wait for, so they
+    never deadlock. The command is queued through the outbox in the same
+    transaction (``execute_request``).
 
     Raises:
         RequestNotFound: No request has that id.
@@ -212,15 +211,12 @@ async def approve_request(
     """
     approver = _person(command.approver, APPROVER)
 
-    async def work() -> ApprovalRequest:
-        async with uow:
-            request = await uow.locked(command.request_id)
-            if request.approve(approver, command.fingerprint):
-                uow.defer(execute_request, request_id=request.id)
-            await uow.commit()
-        return request
-
-    return await uow.run(work, retry=RETRY)
+    async with uow:
+        request = await uow.locked(command.request_id)
+        if request.approve(approver, command.fingerprint):
+            uow.defer(execute_request, request_id=request.id)
+        await uow.commit()
+    return request
 
 
 async def reject_request(
@@ -236,14 +232,11 @@ async def reject_request(
     approver = _person(command.approver, APPROVER)
     reason = _reason(command.reason)
 
-    async def work() -> ApprovalRequest:
-        async with uow:
-            request = await uow.locked(command.request_id)
-            request.reject(approver, reason)
-            await uow.commit()
-        return request
-
-    return await uow.run(work, retry=RETRY)
+    async with uow:
+        request = await uow.locked(command.request_id)
+        request.reject(approver, reason)
+        await uow.commit()
+    return request
 
 
 async def cancel_request(
@@ -259,14 +252,11 @@ async def cancel_request(
     """
     reason = _reason(command.reason)
 
-    async def work() -> ApprovalRequest:
-        async with uow:
-            request = await uow.locked(command.request_id)
-            request.cancel(command.maker, reason)
-            await uow.commit()
-        return request
-
-    return await uow.run(work, retry=RETRY)
+    async with uow:
+        request = await uow.locked(command.request_id)
+        request.cancel(command.maker, reason)
+        await uow.commit()
+    return request
 
 
 async def expire_requests() -> int:
