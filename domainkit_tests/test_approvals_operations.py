@@ -258,15 +258,27 @@ def test_setup_refuses_thresholds_and_rules_that_cannot_work(
     project: str,
 ) -> None:
     """A threshold not of its currency, and an approve rule that is none."""
-    for approvals in (
-        {"ENTRY_THRESHOLDS": {"USD": "1.001"}},
-        {"APPROVE_RULE": "domainkit_tests.nowhere.Rule"},
-        {"APPROVE_RULE": f"{__name__}.NOT_A_RULE"},
+    for approvals, message in (
+        ({"ENTRY_THRESHOLDS": {"USD": "1.001"}}, "threshold"),
+        (
+            {"APPROVE_RULE": "domainkit_tests.nowhere.Rule"},
+            (
+                r"^APPROVALS\.APPROVE_RULE 'domainkit_tests\.nowhere\.Rule' cannot be "
+                r"imported: "
+            ),
+        ),
+        (
+            {"APPROVE_RULE": f"{__name__}.NOT_A_RULE"},
+            (
+                rf"^APPROVALS\.APPROVE_RULE '{__name__}\.NOT_A_RULE' is not an access "
+                r"rule \(BasePermission\)\.$"
+            ),
+        ),
     ):
         registry.clear()
         with (
             override_settings(APPROVALS=approvals),
-            pytest.raises(ImproperlyConfigured),
+            pytest.raises(ImproperlyConfigured, match=message),
         ):
             setup()
     registry.clear()
@@ -337,3 +349,10 @@ def test_the_command_shows_decisions_in_order_and_keys_sorted(project: str) -> N
 
     assert shown[3] == '{"a": "1", "b": "2"}'
     assert [line.split()[1] for line in shown[4:]] == ["early", "late"]
+
+    async def approvers() -> list[str]:
+        async with ApprovalsUnitOfWork() as uow:
+            found = await uow.requests.get(request.id)
+        return [each.approver for each in found.decisions]
+
+    assert run_async(approvers()) == ["early", "late"]

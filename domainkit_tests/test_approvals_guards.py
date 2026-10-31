@@ -677,3 +677,63 @@ def test_the_fingerprint_is_of_canonical_json() -> None:
         hashlib.sha256(text.encode("utf-8")).hexdigest()
     )
     assert _sealed_text((1, "a")) == '["1","a"]'
+
+
+def test_the_worker_runs_approved_commands_and_expires_requests(
+    installed: None,
+) -> None:
+    """The run task under its name, dead-lettering a request gone; the expiry."""
+    from domainkit.contrib.approvals import RequestNotFound, execute_request
+    from domainkit.contrib.approvals.tasks import (
+        EXECUTE,
+        EXPIRE,
+        expire_due_requests,
+    )
+    from domainkit.contrib.messaging.registry import get_task, periodic_tasks
+
+    spec = get_task(EXECUTE)
+    assert spec is not None
+    assert spec.function is execute_request
+    assert spec.dont_retry_on == (RequestNotFound,)
+    assert [
+        (each.key, every) for each, every in periodic_tasks() if each.key == EXPIRE
+    ] == [(EXPIRE, timedelta(minutes=5))]
+    assert get_task(EXPIRE).function is expire_due_requests  # type: ignore[union-attr]
+
+
+def test_the_requests_live_in_one_database() -> None:
+    """Routed to a shard group, approvals refuses to start, naming the setting."""
+    registry.clear()
+    try:
+        with (
+            override_settings(
+                INSTALLED_DOMAINS=DOMAINS,
+                DATABASES={
+                    "default": {"URL": "sqlite+aiosqlite://"},
+                    "a": {"URL": "sqlite+aiosqlite://"},
+                    "b": {"URL": "sqlite+aiosqlite://"},
+                },
+                SHARDS={"books": {"DATABASES": ["a", "b"]}},
+                DATABASE_ROUTING={"approvals": "books"},
+            ),
+            pytest.raises(
+                ImproperlyConfigured, match=r"DATABASE_ROUTING\['approvals'\]"
+            ),
+        ):
+            setup()
+    finally:
+        registry.clear()
+
+
+def test_names_and_thresholds_at_their_bounds() -> None:
+    """128 characters is a name, 129 is not; a threshold of zero is one."""
+    assert Policy("t." + "x" * 126, permission="a.b").name
+    with pytest.raises(ImproperlyConfigured):
+        Policy("t." + "x" * 127, permission="a.b")
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^A guarded action's name is dotted lower-case words",
+    ):
+        Guard("Refund", Refund, refund, object, (POLICY,))
+    assert Threshold({"USD": "0"}).exceeded_by([Money.of("0.01", "USD")])
+    assert Threshold({"USD": "0.50"}).limits["USD"] == Money.of("0.50", "USD")
