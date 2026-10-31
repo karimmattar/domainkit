@@ -34,7 +34,7 @@ from .permissions import declared_permissions, sync_permissions
 from .principals import invalidate_all, stamp_committed, stamp_pending, watch
 from .settings import PRINCIPAL_TTL, AuthSettings, auth_settings
 from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
-from .validators import get_password_validators
+from .validators import get_password_validators, preset_contradictions
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
 MESSAGING = "domainkit.contrib.messaging"
@@ -461,6 +461,15 @@ class AuthConfig(DomainConfig):
                     "auth.E003",
                     f"AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of CACHES "
                     f"that every process shares, not {stamps!r}.",
+                )
+            )
+        if contradictions := preset_contradictions(config):
+            errors.append(
+                CheckMessage(
+                    "auth.E010",
+                    f"AUTH.PASSWORD_PRESET {config.PASSWORD_PRESET!r} is "
+                    f"contradicted: {'; '.join(contradictions)}. Leave these "
+                    "settings out for the preset's, or drop the preset.",
                 )
             )
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:

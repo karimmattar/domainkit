@@ -817,3 +817,37 @@ msgstr ""
 
 msgid "The amount has more digits than this field holds."
 msgstr ""
+
+#. domainkit.contrib.auth: step-ups, transactions' authorizations, first use
+msgid "Confirm it is you: authenticate again to do this."
+msgstr ""
+
+msgid "Turn on a second factor first: confirming it is you needs one."
+msgstr ""
+
+msgid "These credentials cannot step up: log in, then step up."
+msgstr ""
+
+msgid "Enter your password as well."
+msgstr ""
+
+msgid "This transaction is not authorized: confirm its amount and payee, then try again."
+msgstr ""
+
+msgid "This transaction was confirmed already."
+msgstr ""
+
+msgid "This transaction can no longer be confirmed; start it again."
+msgstr ""
+
+msgid "No such transaction."
+msgstr ""
+
+msgid "This password was set for you: choose a new one to log in."
+msgstr ""
+
+msgid "A transaction's amount must be more than zero."
+msgstr ""
+
+msgid "A purpose is a lower-case name, such as transfer or payments.payout."
+msgstr ""

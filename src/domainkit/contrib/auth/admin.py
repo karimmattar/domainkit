@@ -302,6 +302,9 @@ async def create_user(
 ) -> AdminUserOut:
     """Create a user; a password is checked by ``AUTH.PASSWORD_VALIDATORS``.
 
+    With ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``, the user changes it at the
+    first login.
+
     ``fields`` are tidied by the model's ``clean_field``, as on a change.
     """
     if body.is_superuser:
@@ -325,6 +328,8 @@ async def create_user(
         )
         for name, value in fields.items():
             setattr(user, name, user.clean_field(name, value))
+        if body.password is not None:  # The user changes it at the first login.
+            await uow.passwords.require_change(user.id)
         await uow.commit()
     return AdminUserOut.of(user)
 
@@ -388,13 +393,19 @@ async def delete_user(
 async def set_password(
     user_id: UUID, body: AdminPasswordIn, actor: Annotated[AnyUser, _users("change")]
 ) -> None:
-    """Set a user's password (null: unusable); the user's sessions end."""
+    """Set a user's password (null: unusable); the user's sessions end.
+
+    With ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``, another user's password set
+    here logs in only to be changed (PCI DSS v4.0 8.3.5).
+    """
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await _may_change(actor, user)
         if body.password is not None:
             validate_password(body.password, user)
-        await uow.users.set_password(user, body.password, priority=True)
+        await uow.users.set_password(
+            user, body.password, priority=True, temporary=user.id != actor.id
+        )
         await uow.tokens.revoke_user(user.id)
         await uow.commit()
 

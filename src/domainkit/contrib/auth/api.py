@@ -70,6 +70,11 @@ class LoginIn(BaseModel):
 
     username: str = Field(min_length=1, max_length=255)
     password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
+    new_password: str | None = Field(
+        default=None, min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False
+    )
+    """The password to change to, where the current one must be changed
+    (``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``): it replaces it, then logs in."""
 
 
 class RefreshIn(BaseModel):
@@ -190,7 +195,43 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
             code="invalid_credentials",
         )
     await counted.succeeded()
+    if auth_settings().PASSWORD_CHANGE_ON_FIRST_USE:
+        return await _changed_on_first_use(user, body.new_password)
     return user
+
+
+async def _changed_on_first_use(
+    user: AbstractBaseUser, new_password: str | None
+) -> AbstractBaseUser:
+    """``user``, whose password staff set replaced: it works for this change alone.
+
+    PCI DSS v4.0 8.3.5: a password set for the user is changed at its first
+    use. The new one follows ``AUTH.PASSWORD_VALIDATORS`` and the history,
+    and every other login of the user ends.
+
+    The user returned holds the new password's hash, which a second
+    factor's challenge is bound to.
+
+    Raises:
+        APIError: 403 ``password_change_required`` without ``new_password``.
+        InvalidPassword: The new password breaks a rule.
+    """
+    async with AuthUnitOfWork() as uow:
+        if not await uow.passwords.must_change(user.id):
+            return user
+        if new_password is None:
+            await _audit_refusal("password_change_required")
+            raise APIError(
+                status.HTTP_403_FORBIDDEN,
+                "This password was set for you: choose a new one to log in.",
+                code="password_change_required",
+            )
+        validate_password(new_password, user)
+        stored = await uow.users.get(UserId(user.id))
+        await uow.users.set_password(stored, new_password, priority=True)
+        await uow.tokens.revoke_user(user.id)
+        await uow.commit()
+    return stored
 
 
 async def issue_login(user: AbstractBaseUser) -> IssuedTokens:
