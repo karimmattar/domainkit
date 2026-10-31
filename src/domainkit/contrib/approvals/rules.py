@@ -13,7 +13,7 @@ as ``StepUp(max_age=timedelta(minutes=5))``), or a class taking no
 arguments.
 """
 
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from starlette.requests import HTTPConnection
 
@@ -34,6 +34,9 @@ from .models import ApprovalRequest
 from .settings import ApprovalsSettings
 
 __all__ = ["IsApprover", "MayApprove", "RequestActions", "configured_rule"]
+
+REFUSED_BY: Final = "domainkit.approvals.refused_by"
+"""Where a request keeps the approve rule that refused it (``MayApprove``)."""
 
 
 def configured_rule() -> BasePermission | None:
@@ -101,14 +104,31 @@ class MayApprove(BasePermission):
     async def has_object_permission(
         self, request: HTTPConnection, user: Principal, obj: object
     ) -> bool:
-        """Whether the rule that applies allows the approval."""
+        """Whether the rule that applies allows the approval.
+
+        A rule that refuses is kept in the request's scope, for ``refusal``.
+        """
         assert isinstance(obj, ApprovalRequest)  # noqa: S101 - the resource's model.
         rule = _rule_of(obj)
         if rule is None:
             return True
-        return await rule.has_permission(
+        allowed = await rule.has_permission(
             request, user
         ) and await rule.has_object_permission(request, user, obj)
+        if not allowed:
+            request.scope[REFUSED_BY] = rule
+        return allowed
+
+    async def refusal(
+        self, request: HTTPConnection, user: Principal
+    ) -> Exception | None:
+        """The refusal of the rule that refused, if it names one.
+
+        ``StepUp``'s ``401 step_up_required`` tells the approver to step up;
+        a rule that names none leaves the 403 of ``message``.
+        """
+        rule: BasePermission | None = request.scope.get(REFUSED_BY)
+        return None if rule is None else await rule.refusal(request, user)
 
 
 def _rule_of(request: ApprovalRequest) -> BasePermission | None:

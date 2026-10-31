@@ -7,18 +7,22 @@ step-up rule would (``APPROVE_RULE``: the sample ``Proof``).
 """
 
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any, Final
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import HTTPConnection
 
+from domainkit.clock import freeze_time
 from domainkit.contrib.accounting import AccountingUnitOfWork
 from domainkit.contrib.approvals import Policy, guard
-from domainkit.contrib.auth import AuthUnitOfWork
+from domainkit.contrib.approvals.rules import MayApprove
+from domainkit.contrib.auth import AuthUnitOfWork, StepUp
 from domainkit.contrib.messaging.testing import drain
 from domainkit.http import get_asgi_application
-from domainkit.http.access import open_routes
+from domainkit.http.access import AnonymousPrincipal, open_routes
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     ALPHA,
@@ -34,6 +38,7 @@ from domainkit_tests.test_accounting_api import open_books, sale
 from domainkit_tests.test_approvals import FAST, acting_guarded
 from domainkit_tests.test_auth_admin import join, make_group, token_for
 from domainkit_tests.test_auth_http import bearer, create_user, grant
+from domainkit_tests.test_auth_stepup import enrol, now_code
 
 ROUTES: Final = "domainkit_tests.sample_approval_routes"
 APPROVALS_API: Final = Shape(
@@ -391,3 +396,48 @@ async def _superuser(username: str) -> None:
         found.set_superuser(True)
         found.set_staff(True)  # type: ignore[attr-defined]
         await uow.commit()
+
+
+def test_a_policy_asks_its_approvers_to_step_up(client: TestClient) -> None:
+    """``approve_rule=StepUp(...)``: ``401 step_up_required`` until they step up."""
+    with freeze_time("2027-01-04T10:00:00Z") as clock:
+        guard(
+            "tests.act",
+            acting_guarded,
+            unit_of_work=AccountingUnitOfWork,
+            policies=[
+                Policy(
+                    "tests.stepped",
+                    group="treasurers",
+                    approve_rule=StepUp(max_age=timedelta(minutes=5)),
+                )
+            ],
+            domain="alpha",
+        )
+        maker = user(
+            "maker", "approvals.add_approvalrequest", "approvals.view_approvalrequest"
+        )
+        make_group("treasurers")
+        member = user("member", "approvals.view_approvalrequest")
+        join("member", "treasurers")
+        secret = enrol(client, member, clock)
+        request = submit(client, maker, "tests.act", {"kind": "vault"}).json()
+
+        refused = decide(client, request, member)
+        stepped = client.post(
+            "/auth/step-up", json={"code": now_code(secret, clock)}, headers=member
+        )
+        approved = decide(client, request, member)
+
+    problem(refused, 401, "step_up_required")
+    assert refused.headers["WWW-Authenticate"].endswith('max_age="300"')
+    assert stepped.status_code == 200, stepped.json()
+    assert approved.json()["status"] == "approved"
+
+
+@pytest.mark.anyio
+async def test_an_approval_refused_by_no_rule_names_no_refusal() -> None:
+    """Asked before any rule refused, ``MayApprove`` leaves the 403 as it is."""
+    request = HTTPConnection({"type": "http", "headers": []})
+
+    assert await MayApprove().refusal(request, AnonymousPrincipal()) is None

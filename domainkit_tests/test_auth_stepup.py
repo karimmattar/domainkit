@@ -1,5 +1,6 @@
 """Stepping up: ``StepUp`` asks for a second factor proven again, recently."""
 
+import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
@@ -816,3 +817,29 @@ def test_a_step_up_is_kept_for_its_own_user(identity: Api) -> None:
     assert mine is not None
     assert mine[1] == {"otp", "pwd"}  # type: ignore[index]
     assert theirs is None
+
+
+def test_concurrent_step_ups_of_one_login_keep_the_latest(identity: Api) -> None:
+    """Ten at once on one token: none fails, and the latest proof is kept."""
+    alice = create_user("alice")
+    digest = "e" * 64
+    start = clock.now()
+
+    async def record(seconds: int) -> None:
+        methods = ["otp", "pwd"] if seconds == 9 else ["otp"]
+        async with AuthUnitOfWork() as uow:
+            await uow.step_ups.record(
+                digest, alice, start + timedelta(seconds=seconds), methods
+            )
+            await uow.commit()
+
+    async def race() -> tuple[object, object]:
+        await asyncio.gather(*(record(seconds) for seconds in range(10)))
+        await record(3)  # An older proof, after: it does not replace the newer.
+        async with AuthUnitOfWork() as uow:
+            return await uow.step_ups.last(digest, alice), None
+
+    kept, _ = run_async(race())
+
+    assert kept == (start + timedelta(seconds=9), frozenset({"otp", "pwd"}))
+    assert len(step_up_rows()) == 1

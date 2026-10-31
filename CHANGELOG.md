@@ -173,7 +173,8 @@ and a status.
   `accounting.hooks.on_posting`) and making superusers in the auth admin
   API (`SUPERUSER_APPROVALS`) are guarded on request. The approve route
   takes any access rule (`APPROVE_RULE`, or a policy's `approve_rule`),
-  such as a step-up rule. `api.router` (submit, list, approve, reject,
+  such as `StepUp(max_age=...)`, whose refusal it answers with (`401
+  step_up_required`) rather than its own 403. `api.router` (submit, list, approve, reject,
   cancel), `manage.py approvals`, audit events for every change, privacy
   export and erasure, and Arabic messages (`docs/contrib/approvals.md`)
   (FIN-36).
