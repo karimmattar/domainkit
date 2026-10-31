@@ -39,6 +39,7 @@ import hashlib
 import hmac
 import json
 import re
+from dataclasses import replace
 from datetime import datetime
 from typing import Final
 from uuid import UUID
@@ -204,18 +205,10 @@ async def _spend(
 
     It is spent either way: values other than those confirmed void it.
     """
-    bound = _matches(
-        code,
-        ScaChallenge(
-            id=challenge.id,
-            user_id=user_id,
-            amount=amount,
-            payee=payee,
-            purpose=purpose,
-            created_at=challenge.created_at,
-            expires_at=challenge.expires_at,
-        ),
+    asked = replace(
+        challenge, user_id=user_id, amount=amount, payee=payee, purpose=purpose
     )
+    bound = _matches(code, asked)
     if not await uow.sca.consume(challenge.id, now):
         return "used"
     if not bound:

@@ -1,6 +1,7 @@
 """Dynamic linking: an authorization holds for one amount, one payee, once."""
 
 import asyncio
+import re
 from collections.abc import Iterator
 from datetime import timedelta
 from decimal import Decimal
@@ -546,3 +547,94 @@ def test_the_store_confirms_a_live_unused_transaction_once(alice: Alice) -> None
 
     assert run_async(check()) == [True, False, False, False, True]
     assert sorted(row["amr"] or "" for row in rows()) == ["", "otp", "otp pwd"]
+
+
+NOT_AUTHORIZED = (
+    "This transaction is not authorized: confirm its amount and payee, then try again."
+)
+
+
+def test_spending_one_authorization_leaves_the_others(alice: Alice) -> None:
+    """The use marks its own row: the user's other authorizations still hold."""
+    first = alice.authorized()
+    second = alice.authorized()
+
+    spent = alice.transfer(first)
+
+    assert spent.status_code == 200
+    assert alice.transfer(second).status_code == 200
+    [used] = audited("auth.transaction_authorization_used")[:1]
+    assert used["details"] == {
+        "user_id": str(run_async(_user_id("alice"))),
+        "challenge_id": first.partition(".")[0],
+        "purpose": "transfer",
+    }
+
+
+def test_refusals_say_what_to_do_and_not_why(alice: Alice) -> None:
+    """One detail for every refusal; the trail keeps the reason."""
+    forged = alice.transfer(f"{UUID(int=7)}.code")
+    missing = alice.client.get(f"/auth/sca/{UUID(int=7)}", headers=alice.headers)
+
+    assert forged.json()["detail"] == NOT_AUTHORIZED
+    assert missing.json()["detail"] == "No such transaction."
+    assert [row["details"]["reason"] for row in audited("auth.sca")] == [
+        "invalid_authorization"
+    ]
+
+
+def test_a_use_that_loses_the_race_is_refused_as_used(
+    alice: Alice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spent elsewhere between the read and the write."""
+    authorization = alice.authorized()
+
+    async def lost(*args: object) -> bool:
+        return False
+
+    from domainkit.contrib.auth.repositories import ScaStore
+
+    monkeypatch.setattr(ScaStore, "consume", lost)
+
+    assert refused(alice.transfer(authorization))
+    assert [row["details"]["reason"] for row in audited("auth.sca")] == ["used"]
+
+
+def test_authentication_codes_are_256_bits_in_base64url(alice: Alice) -> None:
+    """43 characters, no padding."""
+    code = alice.authorized().partition(".")[2]
+
+    assert re.fullmatch(r"[A-Za-z0-9_-]{43}", code)
+
+
+@pytest.mark.parametrize(
+    ("amount", "payee", "purpose", "message"),
+    [
+        (
+            Money.of("0", "EUR"),
+            IBAN,
+            "transfer",
+            "A transaction's amount must be more than zero.",
+        ),
+        (
+            Money.of("1", "EUR"),
+            IBAN,
+            "Transfer",
+            "A purpose is a lower-case name, such as transfer or payments.payout.",
+        ),
+        (
+            Money.of("1", "EUR"),
+            "",
+            "transfer",
+            "A payee is 1 to 255 printable characters.",
+        ),
+    ],
+)
+def test_what_cannot_be_authorized_says_why(
+    alice: Alice, amount: Money, payee: str, purpose: str, message: str
+) -> None:
+    """In words a client may show."""
+    with pytest.raises(InvalidTransaction) as refusal:
+        run_async(request_authorization(uuid4(), amount, payee, purpose=purpose))
+
+    assert str(refusal.value) == message
