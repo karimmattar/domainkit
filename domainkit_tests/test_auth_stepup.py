@@ -373,6 +373,12 @@ def test_step_ups_that_no_step_up_proves_are_found(use_auth: UseAuth) -> None:
     )
     async def either() -> None: ...
 
+    @app.get(
+        "/twice",
+        dependencies=[Depends(Require(beyond, StepUp(max_age=timedelta(minutes=1))))],
+    )
+    async def twice() -> None: ...
+
     problems = [
         problem
         for problem in application_problems(app)
@@ -382,8 +388,9 @@ def test_step_ups_that_no_step_up_proves_are_found(use_auth: UseAuth) -> None:
     assert unprovable_step_ups(app) == [
         ("GET /both", frozenset({"pwd"})),
         ("GET /either", frozenset({"pwd"})),
+        ("GET /twice", frozenset({"pwd"})),
     ]
-    assert len(problems) == 2
+    assert len(problems) == 3
     assert str(problems[0]).startswith(
         "GET /both asks StepUp for pwd, which no step-up proves "
         "(AUTH.STEP_UP.METHODS is ['otp']): it refuses everyone."
@@ -938,10 +945,13 @@ def test_a_browser_session_open_live_idles_out_and_closes(identity: Api) -> None
         middleware = AuthenticationMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
         assert run_async(middleware.reauthenticate(socket)) is False  # No auth yet.
         socket["auth"] = run_async(_credentials_of(socket))
+        socket[PROOF] = None  # A step-up read before: read afresh after.
         held = []
         for _ in range(4):
             clock.tick(timedelta(minutes=4))
             held.append(run_async(middleware.reauthenticate(socket)))
+            if held == [True]:
+                assert PROOF not in socket
 
         idle = browser.get("/whoami")
 

@@ -667,6 +667,7 @@ def test_each_contradiction_names_its_requirement_and_its_fix() -> None:
         PASSWORD_CHANGE_ON_FIRST_USE=False,
         LOGIN_RATE=None,
         IDLE_TIMEOUT=None,
+        PASSWORD_CHECKS_COUNT_AS_LOGINS=False,
     )
 
     assert preset_contradictions(config) == [
@@ -692,6 +693,11 @@ def test_each_contradiction_names_its_requirement_and_its_fix() -> None:
             "last use (8.2.8): a login ends up to a tenth after it, so 13 minutes "
             "at most"
         ),
+        (
+            "PASSWORD_CHECKS_COUNT_AS_LOGINS is off: password checks of "
+            "signed-in users guess on a count of their own, besides the "
+            "login's (8.3.4)"
+        ),
     ]
 
 
@@ -703,25 +709,37 @@ def test_an_idle_timeout_that_ends_logins_at_15_minutes_holds() -> None:
 
 
 @pytest.mark.parametrize(
-    "classes",
+    ("classes", "ttl", "contradicted"),
     [
-        [f"{AUTHENTICATION}.TokenAuthentication"],
-        ["no.such.Authentication", f"{AUTHENTICATION}.JWTAuthentication"],
+        ([f"{AUTHENTICATION}.TokenAuthentication"], timedelta(hours=1), False),
+        ([f"{AUTHENTICATION}.JWTAuthentication"], timedelta(minutes=14), False),
+        (
+            ["no.such.Authentication", f"{AUTHENTICATION}.JWTAuthentication"],
+            timedelta(minutes=14),
+            False,
+        ),
+        (
+            ["no.such.Authentication", f"{AUTHENTICATION}.JWTAuthentication"],
+            timedelta(minutes=14, seconds=1),
+            True,
+        ),
     ],
 )
-def test_jwts_within_the_idle_bound_keep_the_preset(classes: list[str]) -> None:
+def test_only_jwts_beyond_the_idle_bound_contradict_the_preset(
+    classes: list[str], ttl: timedelta, contradicted: bool
+) -> None:
     """15 minutes together hold; tokens other than JWTs have no such bound."""
     config = AuthSettings(
         **PCI,
         AUTHENTICATION_CLASSES=classes,
         JWT={
             "SIGNING_KEY": "k" * 32,
-            "ACCESS_TOKEN_TTL": timedelta(minutes=14),
+            "ACCESS_TOKEN_TTL": ttl,
             "LEEWAY": timedelta(minutes=1),
         },
     )
 
-    assert preset_contradictions(config) == []
+    assert bool(preset_contradictions(config)) is contradicted
 
 
 def test_signed_in_password_checks_count_as_logins_when_set(identity: Api) -> None:
@@ -758,6 +776,7 @@ def test_wrong_logins_hold_back_signed_in_checks_when_set(identity: Api) -> None
     held = change(client, headers, STRONG[0], STRONG[1])
 
     assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert "throttled" in [row["details"]["reason"] for row in audited("auth.login")]
 
 
 def test_a_hash_no_hasher_reads_is_skipped_with_a_warning(
