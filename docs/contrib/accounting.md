@@ -124,7 +124,10 @@ entry = await post_entry(
   entry that undoes another, each posting on the other side, dated today
   unless `booked_on` says; an entry is reversed once (its source is
   `accounting.reversal`, its reference the entry's id), and reversing it
-  again returns that reversal. On PostgreSQL,
+  again returns that reversal. A reversal is not reversed
+  (`reversal_not_reversible`, 422): that would book the entry it undid
+  again, past the checks a new entry meets (limits, approvals); post the
+  entry again instead, under a reference of its own. On PostgreSQL,
   triggers that `migrate` makes afresh each time refuse every update,
   delete, and truncation of entries and postings, the table owner's too;
   in staging and production the application refuses to start without

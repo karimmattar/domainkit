@@ -50,6 +50,7 @@ from .exceptions import (
     PeriodNotFound,
     PeriodsOverlap,
     ReferenceReused,
+    ReversalNotReversible,
     UnbalancedEntry,
 )
 from .holds import (
@@ -160,6 +161,7 @@ __all__ = [
     "Posting",
     "ReferenceReused",
     "ReleaseHold",
+    "ReversalNotReversible",
     "ReverseEntry",
     "Side",
     "TrialBalance",

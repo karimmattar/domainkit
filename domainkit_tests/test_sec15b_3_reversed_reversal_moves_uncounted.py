@@ -14,16 +14,23 @@ The same path re-runs a large entry posted by an approved request with
 no approval: the ledger books ``RR`` as a reversal, which approvals
 never guards.
 
-The test asserts the safe behaviour (after the reversal of the reversal,
-the window holds 100, and another 100 is refused) and fails on
-``d23a2ec``.
+The test asserts the safe behaviour and fails on ``d23a2ec``. The fix
+refuses the reversal of a reversal in the ledger
+(``reversal_not_reversible``): no money moves, the window is as the
+reversal left it, and a payment of the window's 100 passes once, the
+next being refused. (As first written, the test expected the reversal
+of the reversal to pass and be counted; the ledger now books no such
+entry, so it checks the refusal and that nothing left uncounted.)
 """
+
+from decimal import Decimal
 
 import pytest
 
 from domainkit.clock import freeze_time
 from domainkit.contrib.accounting import (
     AccountingUnitOfWork,
+    ReversalNotReversible,
     ReverseEntry,
     post_entry,
     reverse_entry,
@@ -54,13 +61,18 @@ async def test_a_reversed_reversal_counts_against_the_window() -> None:
         undone = await reverse_entry(
             ReverseEntry(entry_id=paid.id), AccountingUnitOfWork()
         )
-        # Reversing the reversal pays the 100 out of the wallet again.
-        await reverse_entry(ReverseEntry(entry_id=undone.id), AccountingUnitOfWork())
+        # Reversing the reversal would pay the 100 out of the wallet again.
+        with pytest.raises(ReversalNotReversible) as refused:
+            await reverse_entry(
+                ReverseEntry(entry_id=undone.id), AccountingUnitOfWork()
+            )
+        assert refused.value.code == "reversal_not_reversible"
+        async with AccountingUnitOfWork(readonly=True) as uow:
+            assert (await uow.accounts.get(wallet.id)).balance == Decimal("5000")
         (used,) = await usage_of("holder", "h-1")
-        assert used.used == egp("100"), (
-            f"100 left the wallet again and the window holds {used.used}"
-        )
+        assert used.used == egp("0"), f"the window holds {used.used}"
+        await post_entry(spend(wallet, till, egp("100"), "p-2"), AccountingUnitOfWork())
         with pytest.raises(LimitExceeded):
             await post_entry(
-                spend(wallet, till, egp("100"), "p-2"), AccountingUnitOfWork()
+                spend(wallet, till, egp("100"), "p-3"), AccountingUnitOfWork()
             )
