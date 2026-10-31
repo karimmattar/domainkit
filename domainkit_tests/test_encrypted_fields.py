@@ -41,6 +41,7 @@ from domainkit.db.encrypted import (
 from domainkit.db.query import compile_criteria, compile_ordering
 from domainkit.ddd import (
     AggregateRoot,
+    ConcurrentUpdate,
     DuplicateValue,
     Encrypted,
     F,
@@ -256,6 +257,26 @@ async def test_a_failed_flush_gives_the_aggregate_its_value_back(bank: str) -> N
     with pytest.raises(DuplicateValue):
         await save(again)
     assert again.pan == CardNumber(PAN)
+
+
+@pytest.mark.anyio
+async def test_a_lost_race_is_a_concurrent_update_and_keeps_the_value(
+    bank: str,
+) -> None:
+    """A stale write fails as ``ConcurrentUpdate``; the aggregate holds its value."""
+    await save(pay(1, note="first"))
+    async with CardsUnitOfWork() as stale:
+        mine = await stale.payments.get(uuid.UUID(int=1))
+        async with CardsUnitOfWork() as other:
+            theirs = await other.payments.get(uuid.UUID(int=1))
+            theirs.note = "theirs"
+            await other.commit()
+        mine.note = "mine"
+        with pytest.raises(ConcurrentUpdate):
+            await stale.commit()
+    assert mine.note == "mine"
+    async with CardsUnitOfWork() as uow:
+        assert (await uow.payments.get(uuid.UUID(int=1))).note == "theirs"
 
 
 @pytest.mark.anyio

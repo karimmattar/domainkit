@@ -42,10 +42,10 @@ class Command(BaseCommand):
                     continue
                 try:
                     validate_password(password, user)
-                except InvalidPassword as exc:
+                    run_async(self._save(username, password))
+                except InvalidPassword as exc:  # A rule, or the history.
                     self.stderr.write("\n".join(exc.errors) + "\n")
                     continue
-                run_async(self._save(username, password))
                 self.write(f"Password changed successfully for user {username!r}")
                 return
         except (KeyboardInterrupt, EOFError):

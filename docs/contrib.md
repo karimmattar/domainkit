@@ -17,7 +17,9 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
 | `domainkit.contrib.flags` | `FLAGS` | `domainkit_flags`, `domainkit_dynamic_settings` |
 | `domainkit.contrib.objectpermissions` | none | `domainkit_object_permissions`, in every database that hosts a domain; see [auth.md](auth/users.md#grants-on-single-objects) |
+| `domainkit.contrib.limits` | `LIMITS` | `domainkit_limits_limits`, `_subjects`, `_usage`, in the ledger's database when it is installed; see [limits](contrib/limits.md) |
 | `domainkit.contrib.accounting` | `ACCOUNTING` | `domainkit_accounting_accounts`, `_periods`, `_entries`, `_postings`, `_holds`, `_statement_lines`, `_matches`, `_breaks`, in one database; see [accounting](contrib/accounting.md) |
+| `domainkit.contrib.approvals` | `APPROVALS` | `domainkit_approval_requests`, `domainkit_approval_decisions`, in one database; see [approvals](contrib/approvals.md) |
 
 With several databases ([databases.md](databases.md)), the outbox, its
 inbox and ordering keys, and the audit trail commit with business data, so their tables are
@@ -37,6 +39,7 @@ missing, before any app's `ready()` runs:
 | `domainkit.contrib.notifications` | `domainkit.contrib.messaging` | The worker sends the messages. |
 | `domainkit.contrib.webhooks` | `domainkit.contrib.messaging` | Deliveries are outbox tasks. |
 | `domainkit.contrib.privacy` | `domainkit.contrib.audit` | It records every operation in the audit trail. |
+| `domainkit.contrib.approvals` | `domainkit.contrib.messaging`, `domainkit.contrib.audit` | Approved commands run in the worker; every decision is audited. |
 
 The order in `INSTALLED_DOMAINS` does not matter for these. Other apps use
 messaging when it is installed (scheduled purges and seals, durable
@@ -74,3 +77,5 @@ This page has moved, a part a page:
 - [Keys: encrypted fields under a KMS, and crypto-shredding](contrib/keys.md)
 - [Flags: feature flags and dynamic settings](contrib/flags.md)
 - [Accounting: double-entry books, holds, periods, and reconciliation](contrib/accounting.md)
+- [Approvals: maker-checker for sensitive commands](contrib/approvals.md)
+- [Limits: transaction and velocity limits on money](contrib/limits.md)

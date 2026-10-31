@@ -472,7 +472,10 @@ def start_mappers() -> None:
 An aggregate's table has a `version` column. `map_imperatively` makes every
 `UPDATE` and `DELETE` of the aggregate check and bump it, so a copy loaded
 before someone else's change fails with `ConcurrentUpdate` (409
-`concurrent_update`) instead of overwriting that change. Without it, ten
+`concurrent_update`) instead of overwriting that change, wherever the
+stale write is flushed: at the commit, by a query or a `flush()` before
+it, in a savepoint, or by a domain's `on_stage` hook. Its `model` names
+the aggregate's class, for logs. Without it, ten
 requests that each read a balance of 1000.00, take 10.00 off, and commit
 all succeed and leave 990.00.
 
@@ -587,8 +590,10 @@ PostgreSQL would store differently.
   starts from the integer column, and SQLite would add a count to cents.
 - **In Python instead:**
   - floor division (`price // 2` is refused);
-  - arithmetic between two amount columns other than `+` and `-` (on SQLite
-    `price * cost` multiplies cents by cents);
+  - products and quotients of two amounts: `price * cost`, or `price *
+    bindparam("x", type_=price.type)`, raise `TypeError` as they are
+    built (on SQLite they multiplied cents by cents); give the factor as a
+    number instead;
   - new amounts with more places than the column, such as
     `update(...).values(price=prices.c.price * Decimal("1.1"))`.
     PostgreSQL rounds them to the column's scale, and SQLite keeps the

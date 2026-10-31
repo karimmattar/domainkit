@@ -1049,7 +1049,8 @@ jobs:
             mutants: >-
               domainkit.contrib.auth.devices.*
               domainkit.contrib.auth.events.* domainkit.contrib.auth.onetime.*
-              domainkit.contrib.auth.personal_tokens.*
+              domainkit.contrib.auth.personal_tokens.* domainkit.contrib.auth.sca.*
+              domainkit.contrib.auth.stepup.*
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*
               domainkit.contrib.auth.totp.* domainkit.contrib.auth.uow.*
           - name: auth-3
@@ -1170,6 +1171,12 @@ jobs:
           - name: accounting
             mutants: >-
               domainkit.contrib.accounting.*
+          - name: approvals
+            mutants: >-
+              domainkit.contrib.approvals.*
+          - name: limits
+            mutants: >-
+              domainkit.contrib.limits.*
           - name: core
             mutants: >-
               domainkit.x* domainkit.architecture.* domainkit.clock.*

@@ -89,7 +89,7 @@ async def test_a_squatted_reversal_source_does_not_fake_a_reversal() -> None:
 
     await _squat(REVERSALS, str(entry.id))
     reversal = await reverse_entry(
-        ReverseEntry(entry_id=entry.id), AccountingUnitOfWork()
+        ReverseEntry(entry_id=entry.id, booked_on=TODAY), AccountingUnitOfWork()
     )
 
     assert reversal.reverses == entry.id, (
@@ -122,7 +122,7 @@ async def test_a_squatted_capture_source_does_not_block_the_capture() -> None:
 
     await _squat(CAPTURES, str(hold.id))
     captured = await capture_hold(
-        CaptureHold(hold_id=hold.id, counter_account_id=merchant.id),
+        CaptureHold(hold_id=hold.id, counter_account_id=merchant.id, booked_on=TODAY),
         AccountingUnitOfWork(),
     )
 

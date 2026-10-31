@@ -1,8 +1,8 @@
 # Public API: the other optional apps
 
-Every `domainkit.contrib` app but auth: accounting, admin, audit, content types,
-evidence, flags, idempotency, mail, messaging, notifications, object
-permissions, privacy, and webhooks ([contrib.md](../contrib.md)). Part of
+Every `domainkit.contrib` app but auth: accounting, admin, approvals, audit,
+content types, evidence, flags, idempotency, limits, mail, messaging,
+notifications, object permissions, privacy, and webhooks ([contrib.md](../contrib.md)). Part of
 the [public API](../api.md), under its compatibility policy.
 
 ## `domainkit.contrib.accounting`
@@ -69,6 +69,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `defer_entry`: Post `command`'s entry once `uow` commits, through the outbox, once.
 - `expire_holds`: Release every active hold whose time is up, each in its own transaction.
 - `general_ledger`: The postings dated in a period, streamed as CSV or JSON, with totals.
+- `on_booking`: See every entry as it is booked: `(uow, entry, accounts)`; raise to refuse it.
 - `open_account`: Open an account; another with the same code is `account_code_taken`.
 - `open_period`: Open a period; one whose dates another covers is refused.
 - `place_hold`: Reserve an amount on an account, or return the hold placed under its reference.
@@ -87,6 +88,13 @@ The ledger over HTTP: accounts, entries, holds, periods, reports, reconciliation
 - `holds`: Holds: list, read, place, capture, and release.
 - `periods`: Accounting periods: list, read, open, close, and their reports.
 - `router`: Every route of the ledger, to mount under a prefix of the project's.
+
+## `domainkit.contrib.accounting.hooks`
+
+Hook points the ledger offers other apps (ADR 0101).
+
+- `on_booking`: See every entry as it is booked: `(uow, entry, accounts)`; raise to refuse it.
+- `on_posting`: Check an entry before `post_entry` posts it: `(command)`; raising refuses it.
 
 ## `domainkit.contrib.accounting.reconciliation`
 
@@ -121,6 +129,77 @@ Reports of a period: the trial balance and the general ledger, as CSV and JSON.
 - `general_ledger`: The postings dated in a period, streamed as CSV or JSON, with totals.
 - `trial_balance`: The trial balance of a period: every account with a balance or movements.
 - `verify_ledger`: Check the books: entries balance, balances and held amounts add up.
+## `domainkit.contrib.approvals`
+
+Maker-checker: commands that run only once other people approve them.
+
+- `ENTRIES`: The guarded action of postings over their currency's threshold.
+- `SUPERUSERS`: The guarded action of making a user a superuser.
+- `AlreadyDecided`: This person approved or rejected the request already (409).
+- `ApprovalGiven`: One person approved a request; `approvals` of `required` so far.
+- `ApprovalNotNeeded`: No policy asks for approval of this command: call it directly.
+- `ApprovalPending`: A guarded command called directly was submitted for approval instead (403).
+- `ApprovalRequest`: A command that runs only once enough people other than its maker approve it.
+- `ApprovalRequired`: A guarded command was called directly: it runs only once approved (403).
+- `ApprovalsSettings`: How requests wait, who approves them, what is guarded; every key optional.
+- `ApprovalsUnitOfWork`: One transaction on the requests, wherever `approvals` is routed.
+- `ApproveRequest`: Approve a request, as `approver`, holding the `fingerprint` they saw.
+- `CancelRequest`: Withdraw a request, as its `maker`.
+- `Decision`: One person's approval or rejection of a request, and what they saw.
+- `FingerprintMismatch`: What was approved is not what the request holds.
+- `GrantSuperuser`: Make a user a superuser: they hold every permission.
+- `Guard`: A guarded use case: its command, its service, and its policies.
+- `InvalidArguments`: A command's arguments do not make the command, or are too large.
+- `MakerCannotDecide`: Whoever submitted a request may not approve or reject it.
+- `NotTheMaker`: Only whoever submitted a request may cancel it.
+- `Policy`: Who approves a command, how many of them, and for how long it waits.
+- `RejectRequest`: Reject a request, as `approver`, for `reason`.
+- `RequestApproved`: A request has its approvals; its command is queued to run.
+- `RequestCancelled`: The maker withdrew a request.
+- `RequestExecuted`: An approved command ran.
+- `RequestExpired`: A request's time ran out before its approvals came.
+- `RequestFailed`: An approved command was refused when it ran; `error` is the refusal's code.
+- `RequestId`: A request's id (a `UUID`).
+- `RequestNotFound`: No approval request has that id.
+- `RequestNotPending`: The request was approved, rejected, cancelled, or has expired.
+- `RequestRejected`: One person rejected a request, with a reason (kept on the request).
+- `RequestStatus`: Where a request is: waiting, decided, or run.
+- `RequestSubmitted`: A maker submitted a command for approval.
+- `SubmitRequest`: Submit a guarded command for approval: its action, its arguments, its maker.
+- `Threshold`: Amounts, one per currency, over which a policy applies.
+- `UnknownAction`: No guarded command has that name.
+- `Verdict`: What one person decided about a request.
+- `approve_request`: Approve a request; the approval that completes it queues its command.
+- `approved`: Whether `command` is the approved command of `action` being run.
+- `cancel_request`: Withdraw a pending request, as its maker.
+- `execute_request`: Run an approved request's command, once (the task `EXECUTE`).
+- `expire_requests`: Expire the pending requests whose time is up; how many there were.
+- `fingerprint`: SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
+- `guard`: Register the guard of a use case decorated `requires_approval(action)`.
+- `guards`: Every registered guard, by action.
+- `on_guard`: The guards the installed domains registered: `on_guard(Guard(...))`.
+- `refuse_if_guarded`: Refuse `action` done outside approvals, if a guard is registered for it.
+- `reject_request`: Reject a request for a reason; one rejection ends it.
+- `requires_approval`: Guard a use case: called directly, it needs no approval, or is refused.
+- `submit_command`: Store `command` of the guard `action` as a pending request of `maker`'s.
+- `submit_request`: Store a guarded command, given as JSON arguments, as a pending request.
+
+## `domainkit.contrib.approvals.api`
+
+Approval requests over HTTP: submit, list, read, approve, reject, cancel.
+
+- `requests`: Approval requests: list, read, approve, reject, and cancel.
+- `router`: Every route of the requests, to mount under a prefix of the project's.
+
+## `domainkit.contrib.approvals.rules`
+
+Who may decide a request: its policy's approvers, and the rule approving asks.
+
+- `IsApprover`: One of the people a request's policy lets decide it.
+- `MayApprove`: The rule approving a request asks for besides its approvers: a step-up, say.
+- `RequestActions`: The rules of each route of the requests (`ModelActions`' protocol).
+- `configured_rule`: `APPROVALS.APPROVE_RULE`, imported: a rule instance, or None.
+
 ## `domainkit.contrib.admin`
 
 A generic admin over REST: Django's `admin.site.register`, without HTML.
@@ -297,6 +376,48 @@ Keys for encrypted fields: data keys under a KMS, and per-person keys.
 The subjects' keys: one per person, wrapped under a data key.
 
 - `subject_keys`: Subjects' keys: the 32-byte key under `wrapping_key`, nonce first (60 bytes).
+## `domainkit.contrib.limits`
+
+Limits on money movements: per transaction, per window, per subject, per currency.
+
+- `ACCOUNT`: The kind of subject that is a ledger's account, by its id.
+- `ACTOR`: The kind of subject that is who acts: the request's actor.
+- `HOLDER`: The kind of subject that is the holder an account is kept for.
+- `ChangeLimit`: Set a limit's bounds, all of them: one left out is None (no bound).
+- `Direction`: Which movements of a subject a limit counts.
+- `InvalidLimit`: A limit, or a movement checked against limits, that cannot be as written.
+- `Limit`: What one kind of subject may move in one currency and direction.
+- `LimitDefault`: A limit the settings give, unless a stored limit of the same key replaces it.
+- `LimitExceeded`: A movement over what a limit allows in its window: an amount, or a count.
+- `LimitId`: A limit's id (a `UUID`).
+- `LimitNotFound`: No limit has that id.
+- `LimitRemoved`: A limit was removed: a default of the settings may apply again.
+- `LimitSet`: A limit was made or changed: what it allows, as it now stands.
+- `LimitTaken`: Another limit has the same code, kind, direction, currency, and subject.
+- `LimitsSettings`: Default limits, and how long usage is kept; every key is optional.
+- `LimitsUnitOfWork`: One transaction on the limits, wherever `limits` is routed.
+- `Movement`: An amount of money moving, and the subjects whose limits it counts against.
+- `RemoveLimit`: Remove a limit: a default of the settings with its key applies again.
+- `SetLimit`: Make the limit of this key, or set the bounds of the one there is.
+- `TransactionLimitExceeded`: A movement over the most one movement may be (`per_transaction`).
+- `Usage`: What one subject used of one limit in its current window.
+- `Window`: The time a limit's sum and count are taken over.
+- `change_limit`: Set a limit's bounds.
+- `check`: Refuse `movements` as `consume` would now, counting nothing.
+- `consume`: Count `movements` against their subjects' limits, or refuse them.
+- `define_limit`: Make a limit; another of its key is `limit_taken` (409).
+- `purge_usage`: Delete usage older than `LIMITS.KEEP_USAGE`, and subjects idle as long.
+- `release`: Give back what was counted under `key`; how many movements it gave back.
+- `remove_limit`: Remove a limit.
+- `set_limit`: Make the limit of the command's key, or set the bounds of the one there is.
+- `usage_of`: What `subject` of `kind` used of each limit that bounds it, now.
+
+## `domainkit.contrib.limits.api`
+
+Limits over HTTP: list, read, make, change, and remove them; read usage.
+
+- `limits`: The limits: list, read, make, change, and remove.
+- `router`: Every route of the limits (see the module).
 
 ## `domainkit.contrib.mail`
 

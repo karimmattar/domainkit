@@ -27,6 +27,15 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **Auth has three new tables** (FIN-29, FIN-30, FIN-42):
+  `domainkit_step_ups`, `domainkit_sca_challenges`, and
+  `domainkit_password_history`. No default changed, and only `StepUp`,
+  the step-up and transaction routes, `PASSWORD_HISTORY`, and
+  `PASSWORD_CHANGE_ON_FIRST_USE` read and write them; but deleting or
+  erasing a user deletes the user's rows there, and the hourly purge of
+  tokens and `cleartokens` clear old ones, so each fails until the
+  database has them. **Fix:** run `makemigrations` and `migrate` in each
+  project that installs auth, before the new version serves.
 - **Messaging's outbox gained columns, a status, and a table** (FIN-19).
   The outbox has `ordering_key` and `sequence` columns, a `held` status,
   and an index, `ix_domainkit_messages_ordering`, and messaging has a
@@ -41,6 +50,16 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   `messages --release`, releases it (SEC-14c-3). `messages` prints a
   `held` line after `pending`: a script that reads its lines by position
   reads them by name instead. Nothing keeps the old schema.
+- **An amount in SQL is multiplied or divided by a number, not by another
+  amount** (TEST-11). `amount * other` and `amount / other`, where `other`
+  is an amount too (an `ExactDecimal` column, money's amount column
+  included, or a parameter or literal typed as one), raise `TypeError`
+  when the expression is built. On SQLite they gave minor units times
+  minor units (9.95 times a typed 2 was 1990.00); on PostgreSQL they gave
+  the product. **Fix:** give the factor as a number: a plain `Decimal` or
+  an untyped `bindparam("rate")`, or a column declared `Integer` or
+  `Numeric` (a rate is not an amount); `+` and `-` between amounts are
+  unchanged.
 - **A factor of an amount in SQL has at most 9 places** (TEST-07).
   `amount * factor` and `amount / factor`, with `factor` a value or a
   bound parameter, refuse a factor of more places (`ValueError`), where

@@ -37,7 +37,10 @@ Installed contrib apps add their own:
   in any environment, with `JWTAuthentication`, a key of
   `AUTH.JWT.PREVIOUS_KEYS` that is the signing key or is listed twice
   (`auth.E008`), or that retires more than a day ahead (`auth.E009`)
-  ([auth.md](../auth/authentication.md#replacing-a-key))
+  ([auth.md](../auth/authentication.md#replacing-a-key)); and, in any
+  environment, a setting that contradicts `AUTH.PASSWORD_PRESET`
+  (`auth.E010`), each contradiction named with its PCI DSS requirement
+  ([PCI DSS v4.0's passwords](../auth/pci-dss.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY` (nor `SUBJECT_KEYS`)
   ([contrib.md](../contrib/evidence.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without
@@ -64,7 +67,10 @@ missing, unless `AUDIT.REQUIRE_BASELINE = False`;
 startup `accounting.E001` and `accounting.E002`, a ledger on PostgreSQL
 whose append-only triggers are missing, disabled, or changed, or could
 not be checked, unless `ACCOUNTING.REQUIRE_PROTECTION = False`
-([accounting.md](../contrib/accounting.md#entries))); `setup()` refuses a domain whose `requires` is not
+([accounting.md](../contrib/accounting.md#entries))); `setup()` refuses
+limits routed to another database than the ledger's (`limits.E001`), or
+a default of `LIMITS.DEFAULTS` that is not a limit (`limits.E002`)
+([limits.md](../contrib/limits.md)), anywhere; and a domain whose `requires` is not
 installed (`apps.E001`), or that defines a hook method 0.13 removed
 (`apps.E002`), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
@@ -103,6 +109,7 @@ an unsafe or broken configuration, refused until it changes.
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](../auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
+| `limits.W001` | limits without `domainkit.contrib.messaging`: no worker purges old usage, and its table grows with every movement; silence it once `manage.py limits purge` runs on the project's own schedule ([limits.md](../contrib/limits.md#settings)) |
 | `accounting.W003` | the ledger without `domainkit.contrib.messaging`: no worker releases expired holds, which keep counting against what is available; silence it once `manage.py accounting expireholds` runs on the project's own schedule ([accounting.md](../contrib/accounting.md#holds)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
 | `keys.W001` | `KEYS.DATA_KEYS` keeps retired keys: values, blind indexes, or subjects' keys may still be sealed under them; in every environment. `manage.py keys reencrypt` moves them, and `keys status --check` fails until none is left ([keys.md](../contrib/keys.md#rotating)) |

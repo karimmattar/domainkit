@@ -1,8 +1,11 @@
 """The auth API with resets, verification, signup, and sessions, for tests."""
 
+from datetime import timedelta
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, WebSocket
+from pydantic import BaseModel
 
 from domainkit.contrib.auth import (
     AnyUser,
@@ -10,6 +13,7 @@ from domainkit.contrib.auth import (
     CurrentUser,
     IsAdminUser,
     IsSuperuser,
+    StepUp,
     current_user,
 )
 from domainkit.contrib.auth.api import router as auth_router
@@ -17,7 +21,13 @@ from domainkit.contrib.auth.cookies import router as session_router
 from domainkit.contrib.auth.mfa import router as mfa_router
 from domainkit.contrib.auth.personal_tokens import router as tokens_router
 from domainkit.contrib.auth.recovery import router as recovery_router
+from domainkit.contrib.auth.sca import (
+    consume_authorization,
+    request_authorization,
+)
+from domainkit.contrib.auth.sca import router as sca_router
 from domainkit.contrib.auth.signup import router as signup_router
+from domainkit.contrib.auth.stepup import router as step_up_router
 from domainkit.http.access import (
     HasPermissions,
     HasScope,
@@ -26,6 +36,7 @@ from domainkit.http.access import (
     Require,
 )
 from domainkit.http.health import router as health_router
+from domainkit.money import Money
 
 VIEW_PRODUCT = "shop.view_product"
 
@@ -38,6 +49,8 @@ for included in (
     session_router,
     mfa_router,
     tokens_router,
+    step_up_router,
+    sca_router,
 ):
     router.include_router(included, prefix="/auth")
 
@@ -126,3 +139,80 @@ async def mine(user: AuthenticatedUser) -> dict[str, str]:
 async def scoped_mine(user: AuthenticatedUser) -> dict[str, str]:
     """Users who may view products: the rule checks the scopes."""
     return {"user": user.get_username()}
+
+
+FIVE_MINUTES = timedelta(minutes=5)
+
+
+@router.post("/payees", dependencies=[Depends(Require(StepUp(max_age=FIVE_MINUTES)))])
+async def add_payee(request: Request, user: AuthenticatedUser) -> dict[str, Any]:
+    """Users who stepped up within five minutes."""
+    return _seen(user, request)
+
+
+@router.post(
+    "/payees/strict",
+    dependencies=[
+        Depends(
+            Require(
+                HasPermissions(VIEW_PRODUCT)
+                & StepUp(max_age=FIVE_MINUTES, methods=("pwd", "otp"))
+            )
+        )
+    ],
+)
+async def add_payee_strictly() -> dict[str, bool]:
+    """Users who may view products, and stepped up with the password too."""
+    return {"ok": True}
+
+
+@router.websocket(
+    "/live/stepped", dependencies=[Depends(Require(StepUp(max_age=FIVE_MINUTES)))]
+)
+async def live_stepped(websocket: WebSocket) -> None:
+    """Greet a user who stepped up, once the socket is open."""
+    await websocket.accept()
+    await websocket.send_json({"user": current_user(websocket).get_username()})
+    await websocket.receive_text()
+    await websocket.close()
+
+
+class TransferIn(BaseModel):
+    """An amount, to a payee."""
+
+    amount: Money
+    payee: str
+
+
+class TransferOut(BaseModel):
+    """A transfer that was made."""
+
+    amount: Money
+    payee: str
+    challenge: UUID
+
+
+@router.post("/transfers/authorize")
+async def authorize_transfer(
+    body: TransferIn, user: AuthenticatedUser
+) -> dict[str, Any]:
+    """Ask the user to confirm a transfer: its id, for ``/auth/sca/{id}``."""
+    challenge = await request_authorization(
+        user.id, body.amount, body.payee, purpose="transfer"
+    )
+    return {"challenge": str(challenge.id)}
+
+
+@router.post("/transfers")
+async def transfer(
+    body: TransferIn, request: Request, user: AuthenticatedUser
+) -> TransferOut:
+    """Make a transfer its user authorized: this amount, to this payee, once."""
+    used = await consume_authorization(
+        request.headers.get("X-Authorization", ""),
+        user_id=user.id,
+        amount=body.amount,
+        payee=body.payee,
+        purpose="transfer",
+    )
+    return TransferOut(amount=body.amount, payee=body.payee, challenge=used.id)

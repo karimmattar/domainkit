@@ -44,7 +44,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import RelationshipProperty, registry, relationship
 
 from domainkit.db.encrypted import index_properties, watch
-from domainkit.db.money import money_properties
+from domainkit.db.money import guard_money, money_properties
 from domainkit.ddd import AggregateRoot
 from domainkit.exceptions import ImproperlyConfigured
 
@@ -113,6 +113,8 @@ def map_imperatively(
         if isinstance(prop, RelationshipProperty):
             _raise_on_lazy_loads(prop)
     mapper_registry.map_imperatively(class_, table, **options)
+    if money:
+        guard_money(class_, table, money)
     watch(class_, table)
 
 

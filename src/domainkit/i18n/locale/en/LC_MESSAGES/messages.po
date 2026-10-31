@@ -817,3 +817,162 @@ msgstr ""
 
 msgid "The amount has more digits than this field holds."
 msgstr ""
+
+msgid "This command needs approval: submit it for approval."
+msgstr ""
+
+msgid "This command needs approval: it was submitted for approval."
+msgstr ""
+
+msgid "No approval request has that id."
+msgstr ""
+
+msgid "No guarded command has that name."
+msgstr ""
+
+msgid "The arguments do not make the command."
+msgstr ""
+
+msgid "The command is larger than APPROVALS allows."
+msgstr ""
+
+msgid "The command is not the one this action takes."
+msgstr ""
+
+msgid "The command reads otherwise now than when it was approved."
+msgstr ""
+
+msgid "This command needs no approval: run it directly."
+msgstr ""
+
+msgid "A maker's id has 1 to 255 characters."
+msgstr ""
+
+msgid "An approver's id has 1 to 255 characters."
+msgstr ""
+
+msgid "A reason has at most 500 characters."
+msgstr ""
+
+msgid "The request is no longer waiting for a decision."
+msgstr ""
+
+msgid "The request has expired."
+msgstr ""
+
+msgid "Whoever submitted a request cannot decide it."
+msgstr ""
+
+msgid "You have decided this request already."
+msgstr ""
+
+msgid "The request holds another command than the one decided on."
+msgstr ""
+
+msgid "Only whoever submitted a request can cancel it."
+msgstr ""
+
+msgid "The request holds another command than the one approved."
+msgstr ""
+
+msgid "The request is not waiting to run."
+msgstr ""
+
+msgid "You may not submit this command."
+msgstr ""
+
+msgid "You are not one of the approvers of this request."
+msgstr ""
+
+msgid "You cannot approve this request now."
+msgstr ""
+
+#. domainkit.contrib.auth: step-ups, transactions' authorizations, first use
+msgid "Confirm it is you: authenticate again to do this."
+msgstr ""
+
+msgid "Turn on a second factor first: confirming it is you needs one."
+msgstr ""
+
+msgid "These credentials cannot step up: log in, then step up."
+msgstr ""
+
+msgid "Enter your password as well."
+msgstr ""
+
+msgid "This transaction is not authorized: confirm its amount and payee, then try again."
+msgstr ""
+
+msgid "This transaction was confirmed already."
+msgstr ""
+
+msgid "This transaction can no longer be confirmed; start it again."
+msgstr ""
+
+msgid "No such transaction."
+msgstr ""
+
+msgid "This password was set for you: choose a new one to log in."
+msgstr ""
+
+msgid "A transaction's amount must be more than zero."
+msgstr ""
+
+msgid "A purpose is a lower-case name, such as transfer or payments.payout."
+msgstr ""
+
+#. domainkit.money: where amounts are kept
+msgid "The amount is larger, or has more decimal places, than can be stored."
+msgstr ""
+
+#. domainkit.contrib.limits
+msgid "No limit has that id."
+msgstr ""
+
+msgid "Limits keep amounts of at most four decimal places."
+msgstr ""
+
+msgid "A kind of subject has up to 32 lower-case letters, digits, or '_', starting with a letter."
+msgstr ""
+
+msgid "A subject has 1 to 255 printable characters."
+msgstr ""
+
+msgid "The time zone is not one, such as 'Africa/Cairo'."
+msgstr ""
+
+msgid "A limit's code has up to 64 lower-case letters, digits, '_', '.', ':', or '-'."
+msgstr ""
+
+msgid "A limit's count is at least one."
+msgstr ""
+
+msgid "A window needs a maximum amount or count, and they need a window."
+msgstr ""
+
+msgid "A limit sets an amount per transaction, or a maximum over a window."
+msgstr ""
+
+msgid "A limit's note has at most 255 characters."
+msgstr ""
+
+msgid "A limit's amounts are in its currency."
+msgstr ""
+
+msgid "A limit's amounts are more than zero."
+msgstr ""
+
+msgid "A movement's amount is more than zero."
+msgstr ""
+
+msgid "A movement names at least one subject."
+msgstr ""
+
+msgid "The amount is more than one movement may be."
+msgstr ""
+
+msgid "The amount is more than a limit allows in its period."
+msgstr ""
+
+msgid "There have been as many of these as a limit allows in its period."
+msgstr ""

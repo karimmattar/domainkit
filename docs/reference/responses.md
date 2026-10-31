@@ -41,7 +41,7 @@ See ADR 0032.
 | other `DomainError` | 400 | from the class |
 | `domainkit.http.APIError(status, detail, code=…)` | as given | as given |
 | `domainkit.exceptions.ServiceBusy(message, retry_after=…)`: something the operation needs is busy, raised below the HTTP layer (a full hashing queue is `PasswordChecksBusy`) | 503 | from the class (`password_checks_busy`), with `Retry-After` |
-| `domainkit.money.MoneyError`: amounts of two currencies added or compared, an amount with more places than its currency, an unknown currency | 422 | `currency_mismatch`, `inexact_amount`, `unknown_currency`; the detail names no amount ([money.md](../money.md#over-http)) |
+| `domainkit.money.MoneyError`: amounts of two currencies added or compared, an amount with more places than its currency, an unknown currency, money set on an attribute whose column cannot hold it | 422 | `currency_mismatch`, `inexact_amount`, `unknown_currency`, `amount_out_of_range`; the detail names no amount ([money.md](../money.md#over-http)) |
 | request validation | 422 | `validation_error` |
 | a cursor this API did not issue for the request's ordering, or one that was altered | 422 | `invalid_cursor` ([queries.md](../queries.md#pages)) |
 | a filter a `FilterSet` does not offer, given twice, or over its bounds | 422 | `invalid_filter` ([queries.md](../queries.md#filters-over-http)) |
