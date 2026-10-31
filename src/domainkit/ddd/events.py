@@ -174,6 +174,17 @@ class EventBus:
                 if entry.durable
             ]
 
+    def subscriptions(
+        self,
+    ) -> list[tuple[type[DomainEvent], EventHandler[Any], bool]]:
+        """Return every ``(event type, handler, durable)`` subscription."""
+        with self._lock:
+            return [
+                (event_type, entry.handler, entry.durable)
+                for event_type, subscriptions in self._handlers.items()
+                for entry in subscriptions
+            ]
+
     async def publish(self, event: DomainEvent) -> None:
         """Run the in-process handlers for ``event`` in order, isolating failures.
 

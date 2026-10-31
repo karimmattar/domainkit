@@ -86,6 +86,7 @@ nav:
       - resources.md
       - queries.md
       - databases.md
+      - money.md
       - Users and permissions:
           - auth.md
           - auth/install.md
@@ -101,6 +102,7 @@ nav:
           - contrib/idempotency.md
           - contrib/evidence.md
           - contrib/flags.md
+          - contrib/accounting.md
       - cache.md
       - live.md
       - uploads.md

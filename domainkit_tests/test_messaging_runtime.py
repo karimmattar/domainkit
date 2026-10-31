@@ -67,6 +67,13 @@ from domainkit.contrib.messaging.dispatch import (
 )
 from domainkit.contrib.messaging.metrics import refresh_outbox
 from domainkit.contrib.messaging.outbox import message_row, notifies
+from domainkit.contrib.messaging.registry import (
+    periodic,
+    periodic_tasks,
+    qualified_name,
+    spec_for,
+)
+from domainkit.contrib.messaging.retry import Backoff
 from domainkit.contrib.messaging.tables import (
     CANCELLED,
     DEAD,
@@ -78,6 +85,7 @@ from domainkit.contrib.messaging.tables import (
 from domainkit.contrib.messaging.worker import LEASE_MARGIN, Claimed
 from domainkit.db import connections
 from domainkit.db.routing import router
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.lifecycle import Budget as ShutdownBudget
 from domainkit.lifecycle import close_resources
 from domainkit.management import call_command
@@ -309,7 +317,7 @@ async def test_a_budget_refuses_impossible_counts() -> None:
     with pytest.raises(ValueError, match=r"^A budget needs at least one slot\.$"):
         Budget(0)
     budget = Budget(1)
-    with pytest.raises(ValueError, match="Acquire at least one slot"):
+    with pytest.raises(ValueError, match=r"^Acquire at least one slot\.$"):
         await budget.acquire(0)
     with pytest.raises(ValueError, match="Cannot give back 1 of 0 slots"):
         budget.release()
@@ -393,6 +401,101 @@ async def test_workers_of_one_process_share_one_budget() -> None:
 
     assert gate.peak == 2
     assert {row["status"] for row in await rows()} == {DONE}
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages() -> (
+    None
+):
+    """The wait for a slot ends at the stop; running ones get SHUTDOWN_TIMEOUT.
+
+    Then they are given back to wait again, no longer started.
+    """
+    await enqueue(at_gate, name="held")
+    budget = WatchedBudget(1)
+    config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
+    stop = asyncio.Event()
+    running = asyncio.create_task(Worker(config, budget=budget).run(stop))
+    await gate.until(lambda: gate.started == ["held"])
+    await budget.until_waiting(1)
+
+    def run_time() -> float:
+        labels = {"kind": "task"}
+        name = "messaging_message_duration_seconds_sum"
+        return REGISTRY.get_sample_value(name, labels) or 0.0
+
+    before = run_time()
+    stop.set()
+    await within(running)
+
+    assert gate.finished == []
+    assert [(row["status"], row["started_at"]) for row in await rows()] == [
+        (PENDING, None)
+    ]
+    assert 0 <= run_time() - before < WAIT  # The time it ran, not a clock's reading.
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_running_message_may_finish_within_a_short_shutdown_timeout() -> None:
+    """A SHUTDOWN_TIMEOUT under a second is waited for: what ends in it is done."""
+    await enqueue(at_gate, name="ending")
+    config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.9})
+    stop = asyncio.Event()
+    running = asyncio.create_task(Worker(config).run(stop))
+    await gate.until(lambda: gate.started == ["ending"])
+
+    stop.set()
+    await asyncio.sleep(0.1)  # The worker is waiting for it to finish.
+    gate.open()
+    await within(running)
+
+    assert gate.finished == ["ending"]
+    assert [row["status"] for row in await rows()] == [DONE]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_failed_cleanup_is_logged_with_its_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log record of a failed cleanup carries the error."""
+    monkeypatch.setattr(worker_module, "CLEANUP_START", 0)
+    worker = Worker(MessagingSettings(**FAST))
+    stop = asyncio.Event()
+    failure = ConnectionError("database down")
+
+    async def broken(stop_cleaning: asyncio.Event) -> int:
+        stop.set()
+        raise failure
+
+    monkeypatch.setattr(worker, "_clean", broken)
+    with caplog.at_level(logging.ERROR, logger=worker_module.__name__):
+        await within(worker.clean_until(stop))
+
+    (record,) = [each for each in caplog.records if each.levelno == logging.ERROR]
+    assert record.exc_info is not None
+    assert record.exc_info[1] is failure
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_failed_schedule_is_logged_with_its_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log record of a failed run of the periodic schedule carries the error."""
+    worker = Worker(MessagingSettings(**FAST))
+    stop = asyncio.Event()
+    failure = ConnectionError("database down")
+
+    async def broken() -> None:
+        stop.set()
+        raise failure
+
+    monkeypatch.setattr(worker, "schedule_periodic", broken)
+    with caplog.at_level(logging.ERROR, logger=worker_module.__name__):
+        await within(worker.run(stop))
+
+    (record,) = [each for each in caplog.records if each.levelno == logging.ERROR]
+    assert record.exc_info is not None
+    assert record.exc_info[1] is failure
 
 
 @pytest.mark.usefixtures("tables")
@@ -605,6 +708,176 @@ async def test_a_round_never_unlocks_a_message_a_consumer_took_over() -> None:
     assert claimed is not None
     (row,) = await rows()
     assert row["lock_id"] == claimed.lock_id
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_confirmed_message_a_consumer_took_over_keeps_its_lease() -> None:
+    """The relay's REPUBLISH_AFTER lock goes only on messages it still holds."""
+    await enqueue(remember, value=uuid.uuid4())
+    worker = Worker()
+    taken: list[Claimed | None] = []
+
+    class Confirming(MemoryBroker):
+        async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+            pointer = json.loads(body)
+            message, lock = uuid.UUID(pointer["id"]), uuid.UUID(pointer["lock"])
+            taken.append(await worker.take_over(message, lock))  # A fast consumer.
+            await super().publish(queue, body, message_id=message_id)
+
+    assert await within(worker.relay(Confirming(), 10)) == 1
+
+    (claimed,) = taken
+    assert claimed is not None
+    (row,) = await rows()
+    assert row["lock_id"] == claimed.lock_id
+    assert seconds_left(row) <= worker.config.VISIBILITY_TIMEOUT
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_failed_declaration_names_every_new_queue(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The queues the relay could not declare are listed, apart."""
+    await enqueue(remember, value=uuid.uuid4())
+    await enqueue(at_gate_emails, name="e")
+    with caplog.at_level(logging.WARNING, worker_module.__name__):
+        assert await Worker().relay(Down(), 10) == 0
+
+    assert "(declaring 'default', 'emails': down)" in caplog.messages[0]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_each_failed_publication_is_logged_for_debugging(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """At DEBUG, the message, its queue, and the broker's error."""
+    await enqueue(remember, value=uuid.uuid4())
+    (row,) = await rows()
+
+    class Refusing(MemoryBroker):
+        async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+            raise BrokerUnavailable("down")
+
+    with caplog.at_level(logging.DEBUG, worker_module.__name__):
+        assert await Worker().relay(Refusing(), 10) == 0
+
+    assert f"Could not publish {row['id']} to 'default': down" in caplog.messages
+
+
+@pytest.mark.usefixtures("tables")
+async def test_every_failed_publication_is_counted() -> None:
+    """The relay's failed count goes up by each message, not by each round."""
+    for _ in range(2):
+        await enqueue(remember, value=uuid.uuid4())
+
+    class Refusing(MemoryBroker):
+        async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+            raise BrokerUnavailable("down")
+
+    def failed() -> float:
+        labels = {"outcome": "failed"}
+        return REGISTRY.get_sample_value("messaging_relayed_total", labels) or 0.0
+
+    before = failed()
+    assert await Worker().relay(Refusing(), 10) == 0
+
+    assert failed() - before == 2
+
+
+def test_periodic_tasks_say_what_they_need() -> None:
+    """A schedule, given once, an interval above zero, and a zone for cron= only."""
+    for options, message in [
+        ({}, "Periodic tasks need either every= or cron=."),
+        ({"every": timedelta(0)}, "Periodic tasks need a positive interval."),
+        ({"every": timedelta(hours=1), "tz": "Africa/Cairo"}, "tz= goes with cron=."),
+    ]:
+        with pytest.raises(ImproperlyConfigured) as refused:
+            periodic(**options)  # type: ignore[arg-type]
+        assert str(refused.value) == message
+
+
+def test_a_function_that_is_no_task_is_named_in_the_refusal() -> None:
+    """``spec_for`` says which function, and how to make it a task."""
+
+    async def plain() -> None:
+        """Nothing."""
+
+    with pytest.raises(ImproperlyConfigured) as refused:
+        spec_for(plain)
+
+    assert str(refused.value) == (
+        f"{qualified_name(plain)} is not a task; decorate it with @task."
+    )
+
+
+def test_periodic_tasks_run_at_the_default_priority() -> None:
+    """Unless told, a periodic task's messages have priority 0, as tasks' do."""
+
+    @periodic(timedelta(hours=1), name="tests.runtime.hourly")
+    async def hourly() -> None:
+        """Nothing."""
+
+    assert spec_for(hourly).priority == 0
+
+
+def test_periodic_tasks_keep_their_options() -> None:
+    """Named after the function unless named; a backoff of their own."""
+    backoff = Backoff.fixed(60)
+
+    @periodic(timedelta(hours=1), backoff=backoff)
+    async def hourly() -> None:
+        """Nothing."""
+
+    spec = spec_for(hourly)
+    assert (spec.key, spec.backoff) == (qualified_name(hourly), backoff)
+
+
+@pytest.mark.parametrize(
+    ("module", "scheduled"),
+    [
+        ("shop.billing.tasks", True),  # A project's: imported by an installed domain.
+        ("domainkit.contrib.audit", False),  # An app's that is not installed.
+        ("domainkit.contrib.audit.tasks", False),
+    ],
+)
+def test_periodic_tasks_of_apps_not_installed_never_run(
+    module: str, scheduled: bool
+) -> None:
+    """A ``domainkit.contrib`` app's tasks run only while that app is installed."""
+
+    async def hourly() -> None:
+        """Nothing."""
+
+    hourly.__module__ = module
+    periodic(timedelta(hours=1), name=f"tests.runtime.{module}")(hourly)
+
+    assert (hourly in [spec.function for spec, _ in periodic_tasks()]) is scheduled
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_cron_task_queued_ahead_holds_back_no_other() -> None:
+    """A daily run in the outbox already does not keep a minutely one from its next."""
+
+    @periodic(cron="0 0 * * *", name="tests.runtime.daily")
+    async def daily() -> None:
+        """Nothing."""
+
+    @periodic(cron="* * * * *", name="tests.runtime.minutely")
+    async def minutely() -> None:
+        """Nothing."""
+
+    worker = Worker()
+    with clock.freeze_time("2040-01-01T12:00:30Z") as frozen:
+        await worker.schedule_periodic()
+        frozen.tick(timedelta(minutes=1))
+        await worker.schedule_periodic()
+
+    mine = {"tests.runtime.daily", "tests.runtime.minutely"}
+    assert sorted(row["target"] for row in await rows() if row["target"] in mine) == [
+        "tests.runtime.daily",
+        "tests.runtime.minutely",
+        "tests.runtime.minutely",
+    ]
 
 
 @pytest.mark.usefixtures("tables")
@@ -2122,6 +2395,9 @@ async def test_a_lost_listener_listens_again(caplog: pytest.LogCaptureFixture) -
         "polling until listening again in 0.01s"
     )
     assert back == "Listening for new messages in 'default' again after 1 failures"
+    (record,) = [each for each in caplog.records if each.levelno == logging.ERROR]
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == "The connection listening for messages was lost."
 
 
 @pytest.mark.usefixtures("tables")
@@ -2893,6 +3169,78 @@ async def test_deliveries_are_given_back_once_consuming_stopped(
     delivery, answers = answers_recorded()
     await within(never.give_back(delivery))  # Consuming never stopped: given up.
     assert answers == []
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_delivery_takes_over_its_own_message_at_its_moment() -> None:
+    """Due this very moment, it runs; a lock ending this very moment still holds.
+
+    Taking one message over starts it under a lock of its own, and leaves the
+    other messages as the relay published them.
+    """
+    worker = Worker()
+    with clock.freeze_time("2040-01-01T00:00:00Z"):
+        now = clock.now()
+        for _ in range(2):
+            await enqueue(remember, value=uuid.uuid4())
+        await worker.relay(MemoryBroker(), 10)
+        first, second = await rows()
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(messages)
+                .where(messages.c.id == first["id"])
+                .values(locked_until=now)
+            )
+
+        stale = await worker.take_over(first["id"], uuid.uuid4())
+        claimed = await worker.take_over(first["id"], first["lock_id"])
+
+    assert stale is None
+    assert claimed is not None
+    after = {row["id"]: row for row in await rows()}
+    taken, other = after[first["id"]], after[second["id"]]
+    assert (taken["lock_id"], taken["started_at"], taken["attempts"]) == (
+        claimed.lock_id,
+        now,
+        1,
+    )
+    assert claimed.lock_id is not None
+    assert (other["lock_id"], other["started_at"], other["attempts"]) == (
+        second["lock_id"],
+        None,
+        0,
+    )
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_an_idle_relay_waits_for_its_next_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing to relay, the relay waits for its poll: it never spins."""
+    config = registry.settings(MessagingSettings).model_copy(
+        update={"POLL_INTERVAL": 30}
+    )
+    worker = Worker(config)
+    relays: list[int] = []
+
+    async def nothing_to_relay(broker: object, limit: int) -> int:
+        relays.append(limit)
+        await asyncio.sleep(0)
+        return 0
+
+    monkeypatch.setattr(worker, "relay", nothing_to_relay)
+    stop = asyncio.Event()
+    relaying = asyncio.create_task(
+        BrokerWorkers([worker], ["default"], config)._relay_until(
+            worker, work_broker(), stop
+        )
+    )
+    for _ in range(50):
+        await asyncio.sleep(0)
+    stop.set()
+    await within(relaying)
+
+    assert relays == [config.BATCH_SIZE]
 
 
 @pytest.mark.usefixtures("broker_tables")

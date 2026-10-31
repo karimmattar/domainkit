@@ -415,7 +415,7 @@ ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
 
 A call that blocks inside an `async def` (a sync HTTP client, `time.sleep`,
 `open()` on a slow disk, a CPU-heavy loop) stops every request on the
-event loop while it runs. domainkit looks for it in four places, so it is
+event loop while it runs. domainkit looks for it in five places, so it is
 found before production:
 
 - **While developing.** With `DEBUG` on, the application runs its loop in
@@ -457,6 +457,15 @@ found before production:
   provides are `async`: `CurrentUser` (`acurrent_user`; `current_user` stays
   a plain function to call with a request), and a `ResourceRouter`'s unit of
   work and `FilterSet`, which it builds on the loop.
+- **In `check`, for handlers and tasks.** Event handlers, in-process or
+  durable, and messaging tasks are awaited on the event loop itself, with
+  no thread pool between. One written as `def` runs all its work there,
+  holding every request and message of the process (and, behind a message
+  with an ordering key, the rest of its key), then fails, as it returns
+  nothing to await. `check` warns about each (`blocking.W002`), in every
+  environment: make it `async def`, and hand blocking calls to
+  `asyncio.to_thread`. `allow_sync` marks one that returns an awaitable
+  on purpose.
 - **While writing.** Projects made by `init` turn on Ruff's `ASYNC` rules,
   which catch `time.sleep`, `open()`, `subprocess`, and sync HTTP clients
   inside `async def`.

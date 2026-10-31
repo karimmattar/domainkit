@@ -12,6 +12,7 @@ import json
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, Final
 from uuid import UUID
@@ -28,6 +29,7 @@ from domainkit.apps import DomainConfig, registry
 from domainkit.apps.hooks import Hook, on_erase_subject, on_export_subject
 from domainkit.conf import override_settings
 from domainkit.contrib.audit.tables import audit_log
+from domainkit.contrib.idempotency.operations import Operation, run_operation
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.contrib.messaging import task
 from domainkit.contrib.messaging.admin import retry_dead
@@ -342,6 +344,31 @@ def test_pending_messages_are_left_to_run_and_counted(
     ) in caplog.text
 
 
+def test_held_messages_are_left_to_run_and_counted_with_the_pending(
+    scenario: Scenario,
+) -> None:
+    """Messages of one ordering key: the first pending, the second held; both wait.
+
+    The two dead ones, written before, are blanked all the same.
+    """
+
+    async def queue_and_erase() -> dict[str, int]:
+        async with PatientsUnitOfWork() as uow:
+            for _ in range(2):
+                uow.defer(
+                    welcome,
+                    patient_id=scenario.subject,
+                    email=EMAIL,
+                    ordering_key=scenario.subject,
+                )
+            await uow.commit()
+        from domainkit.contrib.messaging.erasure import erase_subject as erase_queued
+
+        return await erase_queued(scenario.subject)
+
+    assert run_async(queue_and_erase()) == {"messages": 2, "pending": 2}
+
+
 def test_an_export_lists_every_copy_until_erased(scenario: Scenario) -> None:
     """Each store's copies are in the export, under its label; none after erasure.
 
@@ -570,3 +597,37 @@ def test_a_body_picked_by_the_project_is_withheld(scenario: Scenario) -> None:
     (delivery,) = exported["copies"]["webhooks"]["deliveries"]
     assert (delivery["body"]["data"], delivery["withheld"]) == (None, True)
     assert DOCTOR_PHONE not in json.dumps(exported)
+
+
+def test_a_keyed_commit_notes_everyone_its_events_are_about(
+    scenario: Scenario,
+) -> None:
+    """Two registrations in one keyed request: both people are noted, not the last."""
+    operation = Operation("k" * 64, "t" * 32)
+
+    async def register_two() -> None:
+        now = clock.now()
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                insert(idempotency_keys).values(
+                    key_hash=operation.key_hash,
+                    fingerprint="f" * 64,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=1),
+                    token=operation.token,
+                    locked_until=now + timedelta(minutes=1),
+                )
+            )
+        patients = [
+            Patient(id=uuid.uuid4(), name=name, registered_at=now)
+            for name in ("Ann", "Bob")
+        ]
+        for patient, email in zip(patients, (EMAIL, OTHER_EMAIL), strict=True):
+            patient.record(PatientRegistered(patient_id=patient.id, email=email))
+        with run_operation(operation):
+            async with PatientsUnitOfWork() as uow:
+                await uow.patients.add_all(patients)
+                await uow.commit()
+        assert operation.subjects == {str(patient.id) for patient in patients}
+
+    run_async(register_two())

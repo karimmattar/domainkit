@@ -10,6 +10,7 @@ transfers that lock their rows in opposite orders deadlock.
 import asyncio
 import logging
 import os
+import sqlite3
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any, ClassVar, Final
@@ -437,6 +438,23 @@ async def test_rows_are_locked_by_id_whatever_order_they_are_asked_in() -> None:
         await other.get_many_for_update([first.id], nowait=True)
     with pytest.raises(NotFound, match=f"No aggregate has id {UUID(int=0)}"):
         await shared.get_many_for_update([first.id, GadgetId(UUID(int=0))])
+
+
+async def test_nowait_refuses_locked_rows_without_waiting() -> None:
+    """``nowait`` raises at once: releasing the lock afterwards changes nothing."""
+    gadget = make_gadget("a")
+    holder = fake(gadget)
+    other = InMemoryGadgets(locks=holder.gadgets.locks)
+    other.items = holder.gadgets.items
+    async with holder:
+        await holder.gadgets.get_many_for_update([gadget.id])
+        attempt = asyncio.create_task(
+            other.get_many_for_update([gadget.id], nowait=True)
+        )
+        await asyncio.sleep(0)
+
+    with pytest.raises(LockNotAvailable):
+        await attempt
 
 
 async def test_a_failed_savepoint_drops_events_of_what_it_first_loaded() -> None:
@@ -869,6 +887,38 @@ async def test_conflicts_are_postgresqls_serialization_failures_and_deadlocks(
     assert uow._conflicted(conflict("40P01"))
     assert not uow._conflicted(conflict("55P03"))
     assert not uow._conflicted(Lost())
+
+
+async def test_work_at_an_isolation_level_returns_what_it_committed(
+    tables: None,
+) -> None:
+    """After the commit, the aggregates read as committed, without a database trip."""
+    gadget = make_gadget("kept", stock=3)
+
+    async with GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as uow:
+        await uow.gadgets.add(gadget)
+        await uow.commit()
+
+    assert (gadget.name, gadget.stock) == ("kept", 3)
+
+
+async def test_errors_without_a_sqlstate_are_raised_after_one_run(
+    database: str, waits: list[float]
+) -> None:
+    """SQLite's errors name no SQLSTATE: ``run`` raises them as they are."""
+    uow = GadgetsUnitOfWork()
+    runs: list[int] = []
+
+    async def locked() -> None:
+        runs.append(1)
+        raise OperationalError(
+            "COMMIT", None, sqlite3.OperationalError("database is locked")
+        )
+
+    with pytest.raises(OperationalError, match="database is locked"):
+        await uow.run(locked, retry=NOW)
+
+    assert (runs, waits) == ([1], [])
 
 
 # Locking several rows in order --------------------------------------------------------

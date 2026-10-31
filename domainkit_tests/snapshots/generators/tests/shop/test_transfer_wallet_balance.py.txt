@@ -1,0 +1,117 @@
+"""``TransferWalletBalance``: the money moves whole, once, even when a race is lost."""
+
+import pytest
+from gen.shop.application import services
+from gen.shop.application.commands import TransferWalletBalance
+from gen.shop.domain.events import WalletBalanceTransferred
+from gen.shop.domain.model import (
+    InsufficientWalletBalance,
+    InvalidWalletTransfer,
+    Wallet,
+)
+
+from domainkit.ddd import ConcurrentUpdate, DomainEvent, EventBus
+from domainkit.money import CurrencyMismatch, Money
+from domainkit.testing import TestClient
+
+from .fakes import FakeShopUnitOfWork, new_wallet, new_wallet_request
+
+URL = "/api/v1/shop/wallets"
+
+
+def usd(amount: str) -> Money:
+    """``amount`` US dollars."""
+    return Money.of(amount, "USD")
+
+
+async def funded(uow: FakeShopUnitOfWork, amount: str) -> Wallet:
+    """A stored wallet holding ``amount`` US dollars."""
+    wallet = new_wallet()
+    wallet.balance = usd(amount)
+    async with uow:
+        await uow.wallets.add(wallet)
+        await uow.commit()
+    return wallet
+
+
+def test_a_transfer_takes_at_most_the_balance_in_its_currency() -> None:
+    """Past the balance, nothing, to itself, or of another currency: refused."""
+    source, target = new_wallet(), new_wallet()
+    source.balance = usd("1.00")
+
+    with pytest.raises(InsufficientWalletBalance):
+        source.transfer_balance(to=target.id, amount=usd("1.01"))
+    with pytest.raises(InvalidWalletTransfer):
+        source.transfer_balance(to=target.id, amount=usd("0.00"))
+    with pytest.raises(InvalidWalletTransfer):
+        source.transfer_balance(to=source.id, amount=usd("1.00"))
+    with pytest.raises(CurrencyMismatch):
+        source.transfer_balance(to=target.id, amount=Money.of("1", "EUR"))
+    assert source.balance == usd("1.00")
+    assert source.pull_events() == []
+
+
+@pytest.mark.anyio
+async def test_transfer_wallet_balance_publishes_wallet_balance_transferred() -> None:
+    """The money moves, in one commit; WalletBalanceTransferred follows."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: WalletBalanceTransferred) -> None:
+        published.append(event)
+
+    bus.subscribe(WalletBalanceTransferred, collect)
+    uow = FakeShopUnitOfWork(bus)
+    source, target = await funded(uow, "10.00"), await funded(uow, "0.01")
+
+    command = TransferWalletBalance(
+        wallet_id=source.id, to=target.id, amount=usd("2.50")
+    )
+    await services.transfer_wallet_balance(command, uow)
+
+    assert (source.balance, target.balance) == (usd("7.50"), usd("2.51"))
+    assert uow.commits == 3
+    assert [type(each) for each in published] == [WalletBalanceTransferred]
+
+
+@pytest.mark.anyio
+async def test_a_transfer_that_loses_a_race_runs_again_whole() -> None:
+    """The first commit fails; the second run moves the money, once."""
+
+    class LosesOnce(FakeShopUnitOfWork):
+        lost = False
+
+        async def _commit(self) -> None:
+            if self.commits == 2 and not self.lost:  # The transfer's first commit.
+                self.lost = True
+                raise ConcurrentUpdate("Another transfer changed the wallet.")
+            await super()._commit()
+
+    uow = LosesOnce()
+    source, target = await funded(uow, "10.00"), await funded(uow, "0.01")
+
+    command = TransferWalletBalance(
+        wallet_id=source.id, to=target.id, amount=usd("4.00")
+    )
+    await services.transfer_wallet_balance(command, uow)
+
+    assert (uow.lost, uow.commits) == (True, 3)
+    assert (source.balance, target.balance) == (usd("6.00"), usd("4.01"))
+
+
+def test_transfer_wallet_balance_route(admin_client: TestClient) -> None:
+    """A transfer past the balance is refused, 422, and nothing moves."""
+    ids = [admin_client.post(URL, json=new_wallet_request()).json()["id"] for _ in "ab"]
+    transfer = {"to": ids[1], "amount": {"amount": "1.00", "currency": "USD"}}
+
+    moved = admin_client.post(f"{URL}/{ids[0]}/transfer-balance", json=transfer)
+    refused = admin_client.post(f"{URL}/{ids[0]}/transfer-balance", json=transfer)
+
+    assert moved.status_code == 200, moved.json()
+    assert moved.json()["balance"] == {"amount": "0.50", "currency": "USD"}
+    assert (refused.status_code, refused.json()["code"]) == (
+        422,
+        "insufficient_wallet_balance",
+    )
+    target = admin_client.get(f"{URL}/{ids[1]}").json()
+    assert target["balance"] == {"amount": "2.50", "currency": "USD"}

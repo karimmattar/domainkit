@@ -4,6 +4,7 @@ import re
 from collections.abc import AsyncIterator, Iterator
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import (
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Table,
+    bindparam,
     func,
     insert,
     select,
@@ -23,6 +25,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.schema import CreateTable
+from sqlalchemy.sql.elements import BindParameter
 
 from domainkit.conf import override_settings
 from domainkit.db import ExactDecimal, connections
@@ -194,6 +197,92 @@ async def test_fractional_products_come_back_in_their_shortest_form(
         found = (await connection.execute(products)).one()
 
     assert tuple(found) == (Decimal("2.331"), Decimal("2.331"))
+
+
+async def test_factors_are_numbers_however_they_are_given(engine: AsyncEngine) -> None:
+    """A bound, literal, or integer-column factor or divisor is never an amount.
+
+    A bound parameter took the amount's type, and so was counted in minor
+    units on SQLite: 9.95 times a bound 0.1 was 9950.0000 there (TEST-07).
+    """
+    await stored(
+        engine,
+        {"id": 1, "amount": Decimal("9.95"), "quantity": 4, "rate": Decimal("0.0500")},
+        {"id": 2, "amount": Decimal("0.03"), "quantity": 3, "rate": Decimal("0.0001")},
+    )
+    amount, quantity, rate = prices.c.amount, prices.c.quantity, prices.c.rate
+    factor: BindParameter[Any] = bindparam("factor")
+    cases: list[tuple[Any, dict[str, Any], Decimal]] = [
+        (amount * factor, {"factor": Decimal("0.1")}, Decimal("0.995")),
+        (Decimal("0.1") * amount, {}, Decimal("0.995")),
+        (amount * factor, {"factor": 3}, Decimal("29.85")),
+        (amount / factor, {"factor": Decimal("4")}, Decimal("2.4875")),
+        (amount / factor, {"factor": Decimal("0.5")}, Decimal("19.9")),
+        (amount * Decimal("0.1"), {}, Decimal("0.995")),
+        (amount / Decimal("0.25"), {}, Decimal("39.8")),
+        (amount * quantity, {}, Decimal("39.80")),
+        (amount / quantity, {}, Decimal("2.4875")),
+        (amount + rate, {}, Decimal("10.0000")),
+        (amount - rate, {}, Decimal("9.9000")),
+        (amount + factor, {"factor": Decimal("0.05")}, Decimal("10.00")),
+        (amount - factor, {"factor": Decimal("0.05")}, Decimal("9.90")),
+    ]
+    async with engine.connect() as connection:
+        for expression, parameters, expected in cases:
+            found = await connection.scalar(
+                select(expression).where(prices.c.id == 1), parameters
+            )
+            assert type(found) is Decimal, expression
+            assert found == expected, expression
+        # Three cents times 0.1: no binary fraction of 0.1 shows (0.0030000...4).
+        tenth = await connection.scalar(
+            select(amount * factor).where(prices.c.id == 2), {"factor": Decimal("0.1")}
+        )
+        third = await connection.scalar(
+            select(amount / quantity).where(prices.c.id == 2)
+        )
+        given = await connection.scalar(
+            select(amount * Decimal("0.1")).where(prices.c.id == 2)
+        )
+    assert (type(tenth), tenth) == (Decimal, Decimal("0.003"))
+    assert (type(given), given) == (Decimal, Decimal("0.003"))
+    assert type(third) is Decimal
+    assert abs(third - Decimal("0.01")) < Decimal("1E-15")
+
+
+async def test_a_factor_has_at_most_nine_places(engine: AsyncEngine) -> None:
+    """A finer factor is refused rather than rounded, a float rather than taken."""
+    await stored(engine, {"id": 1, "amount": Decimal("9.95")})
+    product = select(prices.c.amount * bindparam("factor"))
+
+    for factor, error in ((Decimal("0.0000000001"), ValueError), (0.1, TypeError)):
+        with pytest.raises(StatementError) as refused:
+            await scalars_with(engine, product, {"factor": factor})
+        assert isinstance(refused.value.orig, error)
+    assert await scalars_with(engine, product, {"factor": Decimal("0.000000001")}) == [
+        Decimal("0.00000000995")
+    ]
+
+
+async def scalars_with(
+    engine: AsyncEngine,
+    query: Any,  # noqa: ANN401 - a query.
+    parameters: dict[str, object],
+) -> list[object]:
+    """The first column of every row ``query`` returns, with ``parameters``."""
+    async with engine.connect() as connection:
+        return list((await connection.execute(query, parameters)).scalars())
+
+
+async def test_a_missing_factor_gives_a_missing_amount(engine: AsyncEngine) -> None:
+    """``amount * None`` and ``amount / None`` are NULL, as in SQL."""
+    await stored(engine, {"id": 1, "amount": Decimal("9.95")})
+    amount = prices.c.amount
+
+    found = await scalars(engine, select(amount * None))
+    divided = await scalars(engine, select(amount / None))
+
+    assert (found, divided) == ([None], [None])
 
 
 async def test_updates_go_through_the_type(engine: AsyncEngine) -> None:

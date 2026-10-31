@@ -12,6 +12,7 @@ from pydantic import AwareDatetime, BaseModel, Field
 
 from domainkit.contrib.auth import AuthenticatedUser
 from domainkit.http import Filter, FilterSet, Pagination
+from domainkit.money import Money
 from domainkit.resources import ModelActions, PatchModel, ResourceRouter, schema_for
 from gen.shop.application import queries, services
 from gen.shop.application.commands import (
@@ -19,11 +20,14 @@ from gen.shop.application.commands import (
     ArchiveProduct,
     CreateCategory,
     CreateProduct,
+    CreateWallet,
     DeleteCategory,
     DeleteProduct,
+    DeleteWallet,
     LockProduct,
     PublishProduct,
     RetitleCategory,
+    TransferWalletBalance,
     UpdateProduct,
 )
 from gen.shop.application.queries import (
@@ -32,7 +36,7 @@ from gen.shop.application.queries import (
     ProductsByOwner,
 )
 from gen.shop.application.unit_of_work import ShopUnitOfWork
-from gen.shop.domain.model import NAME_LENGTH, NOTE_LENGTH, Category, Product
+from gen.shop.domain.model import NAME_LENGTH, NOTE_LENGTH, Category, Product, Wallet
 from gen.shop.infrastructure.unit_of_work import SqlAlchemyShopUnitOfWork
 
 router = APIRouter(tags=["shop"])
@@ -153,3 +157,31 @@ categories.query_route(
     CategoriesTitled, handler=queries.categories_titled, path="/titled"
 )
 router.include_router(categories)
+
+
+WalletIn = schema_for(Wallet, write=True)
+
+
+class TransferWalletBalanceIn(BaseModel):
+    """What ``TransferWalletBalance`` takes."""
+
+    to: UUID
+    amount: Money
+
+
+wallets = ResourceRouter(
+    "/wallets",
+    model=Wallet,
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.wallets,
+    rule=ModelActions(Wallet),
+)
+wallets.command_route(CreateWallet, service=services.create_wallet, body=WalletIn)
+wallets.command_route(DeleteWallet, service=services.delete_wallet, method="DELETE")
+wallets.command_route(
+    TransferWalletBalance,
+    service=services.transfer_wallet_balance,
+    body=TransferWalletBalanceIn,
+    path="/transfer-balance",
+)
+router.include_router(wallets)

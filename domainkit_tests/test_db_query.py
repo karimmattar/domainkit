@@ -468,7 +468,7 @@ async def test_bulk_updates_check_what_they_set(tables: None) -> None:
         ({"id": uuid4()}, "cannot set 'id'"),
         ({"version": 3}, "cannot set 'version'"),
         ({"nope": 3}, "cannot set 'nope'"),
-        ({}, "at least one value"),
+        ({}, r"^update_rows needs at least one value to set\.$"),
         ({"stock": "many"}, "holds int, not str"),
         ({"parts": []}, "is not a mapped column"),
     ]
@@ -476,6 +476,17 @@ async def test_bulk_updates_check_what_they_set(tables: None) -> None:
         for values, message in cases:
             with pytest.raises(InvalidQuery, match=message):
                 await uow.gadgets.update_rows(None, **values)
+
+
+async def test_bulk_updates_leave_soft_deleted_rows_unless_asked(tables: None) -> None:
+    """update_rows sets live rows; soft-deleted ones too with include_deleted."""
+    live, gone = make_gadget("live"), make_gadget("gone")
+    gone.mark_deleted()
+    await store(live, gone)
+    async with GadgetsUnitOfWork() as uow:
+        assert await uow.gadgets.update_rows(None, stock=1) == 1
+        assert await uow.gadgets.update_rows(None, include_deleted=True, stock=2) == 2
+        await uow.commit()
 
 
 async def test_bulk_deletes_remove_rows_for_good(tables: None) -> None:
@@ -489,6 +500,51 @@ async def test_bulk_deletes_remove_rows_for_good(tables: None) -> None:
         await uow.commit()
     async with GadgetsUnitOfWork() as uow:
         assert await uow.gadgets.count(include_deleted=True) == 0
+
+
+async def test_a_locking_read_shows_what_was_committed_since(tables: None) -> None:
+    """``get_for_update`` reads the row again: not the copy loaded before."""
+    gadget = make_gadget("g", stock=1)
+    await store(gadget)
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.get(gadget.id)
+        async with GadgetsUnitOfWork() as other:
+            await other.gadgets.update_rows(F("name") == "g", stock=5)
+            await other.commit()
+
+        locked = await uow.gadgets.get_for_update(gadget.id)
+
+    assert locked.stock == 5
+
+
+async def test_bulk_updates_leave_deleted_rows_unless_asked(tables: None) -> None:
+    """update_rows sets live rows only; ``include_deleted`` reaches the others."""
+    live, deleted = make_gadget("live"), make_gadget("deleted")
+    deleted.mark_deleted()
+    await store(live, deleted)
+    async with GadgetsUnitOfWork() as uow:
+        assert await uow.gadgets.update_rows(None, stock=1) == 1
+        assert await uow.gadgets.update_rows(None, include_deleted=True, size=10) == 2
+        await uow.commit()
+    async with GadgetsUnitOfWork() as uow:
+        found = await uow.gadgets.filter(
+            Selection(ordering=["name"], include_deleted=True)
+        )
+    assert [(each.name, each.stock, each.size) for each in found] == [
+        ("deleted", None, Size.LARGE),
+        ("live", 1, Size.LARGE),
+    ]
+
+
+async def test_bulk_deletes_drop_the_aggregates_loaded_before(tables: None) -> None:
+    """An aggregate read before delete_rows is gone from the same unit of work."""
+    gadget = make_gadget("doomed")
+    await store(gadget)
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.get(gadget.id)
+        assert await uow.gadgets.delete_rows(F("name") == "doomed") == 1
+
+        assert await uow.gadgets.find(gadget.id) is None
 
 
 async def test_a_failed_savepoint_reloads_what_it_changed(tables: None) -> None:
@@ -647,7 +703,8 @@ async def test_nowait_passes_other_database_errors_on(
             raise DBAPIError("SELECT", {}, Locked())
 
         monkeypatch.setattr(uow.session, "scalars", locked)
-        with pytest.raises(LockNotAvailable):
+        refused = r"^The data is being changed by another request; try again\.$"
+        with pytest.raises(LockNotAvailable, match=refused):
             await uow.gadgets.get_for_update(gadget.id, nowait=True)
 
 

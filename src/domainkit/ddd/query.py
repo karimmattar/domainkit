@@ -26,6 +26,12 @@ Python, the SQL one in the database:
 - Values are checked against the field's type hint: an amount compares
   exactly, a datetime must be aware, an enum field takes a member or its
   value. Single-field value objects compare by what they wrap.
+- A money field (``domainkit.money.Money``) compares only with money of the
+  same currency: ``F("total") >= Money.of("10", "USD")`` holds for totals
+  in USD of at least 10.00, and for no total in another currency. Its
+  parts are fields too: ``F("total.currency") == "USD"``,
+  ``F("total.amount") > Decimal("9.995")``. It sorts by currency, then
+  amount.
 
 ``Selection`` says which aggregates to load. It was called ``Query`` before
 0.9.2, a name 0.11 removed: ``domainkit.ddd.Query`` is the base of CQRS
@@ -44,8 +50,10 @@ from domainkit.ddd.fields import (
     InvalidQuery,
     UnknownField,
     fields_of,
+    money_part,
     primitive,
 )
+from domainkit.money import Money
 
 __all__ = [
     "Criteria",
@@ -178,10 +186,21 @@ class Condition(Criteria):
     )
     """The fields the name resolved to, once bound."""
 
-    def bind(self, model: type) -> "Condition":
-        """Resolve the field and check, and coerce, the value."""
+    def bind(self, model: type) -> Criteria:
+        """Resolve the field and check, and coerce, the value.
+
+        A condition on money with a value becomes conditions on its parts:
+        the currency, and the amount. Through child entities, both parts
+        are of one child (``Within``): ``lines.price >= 100 USD`` is some
+        line priced in USD at 100 or more, never the currency of one line
+        and the amount of another.
+        """
         path = resolve(model, self.field)
         value = _bound_value(path[-1], self.lookup, self.value)
+        if path[-1].kind is Money and _compares(self.lookup, value):
+            prefix, _, leaf = self.field.rpartition(".")
+            parts = _on_money_parts(leaf, self.lookup, value)
+            return (Within(prefix, parts) if prefix else parts).bind(model)
         return Condition(self.field, self.lookup, value, path)
 
     def evaluate(self, candidate: object) -> bool:
@@ -268,6 +287,84 @@ class Not(Criteria):
     def conditions(self) -> Iterator[Condition]:
         """The part's conditions."""
         return self.part.conditions()
+
+
+@dataclass(frozen=True, slots=True)
+class Within(Criteria):
+    """Criteria on one child entity: some child at ``relation`` meets them all.
+
+    ``Within("lines", (F("price.currency") == "USD") & (F("price.amount")
+    >= 100))`` holds when one line meets both, where ``F("lines.price.currency")
+    == "USD"`` and ``F("lines.price.amount") >= 100`` would each look at
+    every line on its own. Money through child entities binds to it; in
+    SQL it is one ``EXISTS``.
+    """
+
+    relation: str
+    """The (dotted) name of the child entities, from the model."""
+    criteria: Criteria
+    """The criteria, on the child entity's fields."""
+    path: tuple[FieldInfo, ...] = dataclasses.field(
+        default=(), compare=False, repr=False
+    )
+    """The relations the name resolved to, once bound."""
+
+    def bind(self, model: type) -> "Within":
+        """Resolve the relation, and bind the criteria to its entity.
+
+        Raises:
+            UnknownField: A part of the relation names no field.
+            InvalidQuery: A part of the relation is not a child entity.
+        """
+        path = _relations(model, self.relation)
+        entity = cast("type", path[-1].entity)
+        return Within(self.relation, self.criteria.bind(entity), path)
+
+    def evaluate(self, candidate: object) -> bool:
+        """Some child at the relation meets the criteria."""
+        if not self.path:
+            raise InvalidQuery("Bind the criteria to a class before evaluating them.")
+        return any(
+            self.criteria.evaluate(child) for child in _reached(candidate, self.path)
+        )
+
+    def conditions(self) -> Iterator[Condition]:
+        """The criteria's conditions, named from the model."""
+        for each in self.criteria.conditions():
+            yield Condition(f"{self.relation}.{each.field}", each.lookup, each.value)
+
+
+def _relations(model: type, name: str) -> tuple[FieldInfo, ...]:
+    """The child entity fields a (dotted) name passes through, from ``model``.
+
+    Raises:
+        UnknownField: A part names no field.
+        InvalidQuery: A part is not a child entity.
+    """
+    path: list[FieldInfo] = []
+    owner = model
+    for part in name.split("."):
+        try:
+            info = fields_of(owner)[part]
+        except KeyError:
+            raise UnknownField(f"{owner.__name__} has no field {part!r}.") from None
+        if info.entity is None:
+            raise InvalidQuery(f"{name!r}: {part} holds no child entities.")
+        path.append(info)
+        owner = info.entity
+    return tuple(path)
+
+
+def _reached(candidate: object, path: tuple[FieldInfo, ...]) -> Iterator[object]:
+    """The child entities at the end of ``path`` from ``candidate``."""
+    head, rest = path[0], path[1:]
+    current = getattr(candidate, head.name)
+    children = current if head.many else () if current is None else (current,)
+    for child in children:
+        if rest:
+            yield from _reached(child, rest)
+        else:
+            yield child
 
 
 def _parts(criteria: Criteria, kind: type[And | Or]) -> tuple[Criteria, ...]:
@@ -659,6 +756,9 @@ def resolve(model: type, name: str) -> tuple[FieldInfo, ...]:
     path: list[FieldInfo] = []
     owner = model
     for part in name.split("."):
+        if path and (inner := money_part(path[-1], part)) is not None:
+            path.append(inner)
+            continue
         if path:
             entity = path[-1].entity
             if entity is None:
@@ -700,6 +800,38 @@ def _bound_value(info: FieldInfo, lookup: Lookup, value: object) -> object:
     if lookup is Lookup.RANGE and len(coerced) != 2:
         raise InvalidQuery("range takes a low and a high value.")
     return coerced if lookup in {Lookup.IN, Lookup.RANGE} else coerced[0]
+
+
+def _compares(lookup: Lookup, value: object) -> bool:
+    """Whether a condition compares values: not ``isnull``, None, or ``in_(())``."""
+    return lookup is not Lookup.ISNULL and value is not None and value != ()
+
+
+def _on_money_parts(name: str, lookup: Lookup, value: Any) -> Criteria:  # noqa: ANN401 - money, or a tuple of it.
+    """A condition on the money field ``name``, as conditions on its parts.
+
+    Money compares only with money of its currency, so each comparison is
+    also one of currencies: ``total >= 10 USD`` is ``total.currency == USD
+    and total.amount >= 10``.
+
+    Raises:
+        InvalidQuery: A range's two amounts are in different currencies.
+    """
+    amount, code = F(f"{name}.amount"), F(f"{name}.currency")
+    if lookup is Lookup.IN:
+        moneys: tuple[Money, ...] = value
+        return Or.of(
+            *((code == each.currency) & (amount == each.amount) for each in moneys)
+        )
+    if lookup is Lookup.RANGE:
+        low: Money
+        high: Money
+        low, high = value
+        if low.currency != high.currency:
+            raise InvalidQuery(f"A range of {name} takes two amounts of one currency.")
+        return (code == low.currency) & amount.range(low.amount, high.amount)
+    money: Money = value
+    return (code == money.currency) & amount.lookup(lookup, money.amount)
 
 
 def _holds(
@@ -760,6 +892,8 @@ def _sort_key(name: str) -> Callable[[object], tuple[bool, Any]]:
 
     def key(candidate: object) -> tuple[bool, Any]:
         value = primitive(getattr(candidate, name))
+        if isinstance(value, Money):
+            return False, (value.currency.code, value.amount)
         return value is None, value
 
     return key
@@ -808,7 +942,26 @@ def _beyond(
 ) -> Criteria | None:
     """Criteria for values that sort after ``value``; None if nothing does."""
     if descending:
-        return name.isnull(value=False) if value is None else name < value
+        return name.isnull(value=False) if value is None else _past(name, value, True)
     if value is None:
         return None
-    return (name > value) | name.isnull() if nullable else name > value
+    after = _past(name, value, False)
+    return after | name.isnull() if nullable else after
+
+
+def _past(name: F, value: object, descending: bool) -> Criteria:
+    """Present values past ``value``: greater, or less if ``descending``.
+
+    Money sorts by currency, then amount: past 10 USD are the amounts in
+    USD above 10, and every amount in a currency whose code sorts after.
+    """
+    if not isinstance(value, Money):
+        return name < value if descending else name > value
+    code, amount = F(f"{name.name}.currency"), F(f"{name.name}.amount")
+    if not descending:
+        return (code > value.currency) | (
+            (code == value.currency) & (amount > value.amount)
+        )
+    return (code < value.currency) | (
+        (code == value.currency) & (amount < value.amount)
+    )

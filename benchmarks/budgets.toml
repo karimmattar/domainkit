@@ -32,7 +32,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 779
+modules = 783
 
 [rungs.nested]
 calls = 305
@@ -40,7 +40,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 779
+modules = 783
 
 [rungs.default]
 calls = 414
@@ -48,7 +48,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 780
+modules = 784
 
 [rungs.default-json]
 calls = 546
@@ -56,7 +56,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 780
+modules = 784
 
 [rungs.template]
 calls = 538
@@ -64,7 +64,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 782
+modules = 786
 
 [rungs.template-json]
 calls = 661
@@ -72,7 +72,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 782
+modules = 786
 
 [rungs.me]
 calls = 780
@@ -80,7 +80,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 811
+modules = 815
 
 [rungs.read]
 calls = 1839
@@ -88,7 +88,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
-modules = 811
+modules = 815
 
 [rungs.write]
 calls = 2173
@@ -96,7 +96,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
-modules = 811
+modules = 815
 
 [rungs.resource-read]
 calls = 2606
@@ -104,7 +104,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
-modules = 811
+modules = 815
 
 [rungs.resource-command]
 calls = 3329
@@ -112,7 +112,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
-modules = 811
+modules = 815
 
 [rungs.keyed-write]
 calls = 3636
@@ -120,7 +120,7 @@ statements = 4
 transactions = 3
 checkouts = 3
 pings = 3
-modules = 812
+modules = 816
 
 [rungs.throttled]
 calls = 778
@@ -128,4 +128,4 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 811
+modules = 815

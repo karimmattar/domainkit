@@ -23,10 +23,10 @@ reference renders each name's docstring, module by module.
 | Page | Modules |
 | --- | --- |
 | [Setup, settings, and the process](api/core.md) | `domainkit`, `apps`, `architecture`, `checks`, `clock`, `conf`, `deadlines`, `debug`, `deprecation`, `encryption`, `exceptions`, `i18n`, `lifecycle`, `log`, `management`, `reporting`, `signing`, `tasks`, `testing`, `tracing`, `utils` |
-| [Domains, data, and resources](api/data.md) | `ddd`, `db`, `resources`, `ledger`, `cache`, `storage`, `broker` |
+| [Domains, data, and resources](api/data.md) | `ddd`, `money`, `db`, `resources`, `ledger`, `cache`, `storage`, `broker` |
 | [HTTP](api/http.md) | `http` and its modules |
 | [Users and permissions](api/auth.md) | `contrib.auth` and its modules |
-| [The other optional apps](api/contrib.md) | `contrib.admin`, `audit`, `contenttypes`, `evidence`, `flags`, `idempotency`, `mail`, `messaging`, `notifications`, `objectpermissions`, `privacy`, `webhooks` |
+| [The other optional apps](api/contrib.md) | `contrib.accounting`, `admin`, `audit`, `contenttypes`, `evidence`, `flags`, `idempotency`, `mail`, `messaging`, `notifications`, `objectpermissions`, `privacy`, `webhooks` |
 
 Until 0.13 every module was listed on this one page; each keeps its
 heading, and its anchor (`#domainkitcache`), on its new page.

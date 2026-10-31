@@ -4,8 +4,9 @@ Each domain package has four layers; dependencies point inward only::
 
     api  ->  infrastructure  ->  application  ->  domain
 
-- ``domain``: the standard library, ``domainkit.ddd``, ``domainkit.clock``, and
-  its own domain layer. No frameworks, no I/O, no settings.
+- ``domain``: the standard library, ``domainkit.ddd``, ``domainkit.clock``,
+  ``domainkit.money``, and its own domain layer. No frameworks, no I/O, no
+  settings.
 - ``application``: no ``infrastructure`` or ``api`` code, and no web or
   database libraries; it reaches storage through repository ports.
 - ``infrastructure``: no ``api`` code and no web libraries.
@@ -49,7 +50,7 @@ __all__ = [
 LAYERS: Final = ("domain", "application", "infrastructure", "api")
 """Layer packages of a domain, innermost first."""
 
-DOMAIN_ALLOWED_PREFIXES: Final = ("domainkit.ddd", "domainkit.clock")
+DOMAIN_ALLOWED_PREFIXES: Final = ("domainkit.ddd", "domainkit.clock", "domainkit.money")
 """Non-stdlib modules a domain layer may import (besides its own layer)."""
 
 FORBIDDEN_LIBRARIES: Final = {

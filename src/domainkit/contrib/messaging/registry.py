@@ -5,6 +5,7 @@ from the database. Events and task arguments travel as JSON, validated
 against the event class or the task signature on the way back.
 """
 
+import inspect
 import math
 import re
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
@@ -13,12 +14,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
 from typing import Any, Final, overload
+from weakref import WeakKeyDictionary
 
 from pydantic import TypeAdapter, validate_call
 
 from domainkit.apps import registry
 from domainkit.conf.global_settings import NAME_PATTERN
 from domainkit.ddd import DomainEvent, EventBus
+from domainkit.ddd.uow import MAX_ORDERING_KEY, checked_ordering_key
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.decimals import jsonable, with_decimal_text
 from domainkit.utils.rates import parse_rate
@@ -86,11 +89,43 @@ def checked_queue(queue: str | None) -> str:
 
 
 def _register(spec: TaskSpec) -> None:
-    """Add ``spec``, refusing two different functions under one key."""
+    """Add ``spec``, refusing two different functions under one key.
+
+    A key the task declares by name (``ordered``) must name one of its
+    arguments (SEC-14c-2).
+    """
     existing = _tasks.get(spec.key)
     if existing is not None and existing.function is not spec.function:
         raise ImproperlyConfigured(f"Two tasks are registered as {spec.key!r}.")
+    _check_key_argument(spec.function, spec.key)
     _tasks[spec.key] = spec
+
+
+def _check_key_argument(function: Task, name: str) -> None:
+    """Refuse a task whose ``ordered`` key names none of its arguments.
+
+    Such a key would be None for every message, which leaves them without
+    a key: they would run in parallel, in any order, and nothing would say
+    so. A task that takes ``**kwargs`` may be given any argument.
+    """
+    source = _marked.get(function)
+    if not isinstance(source, str):
+        return
+    parameters = inspect.signature(function).parameters.values()
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (parameter.name == source and parameter.kind is not _POSITIONAL)
+        for parameter in parameters
+    ):
+        return
+    raise ImproperlyConfigured(
+        f"Task {name!r} is ordered by {source!r}, which is not one of its "
+        "arguments: its messages would have no key."
+    )
+
+
+_POSITIONAL: Final = inspect.Parameter.POSITIONAL_ONLY
+"""Tasks are called with keyword arguments: a positional-only one is no key."""
 
 
 def _options(
@@ -376,6 +411,96 @@ def _validated(function: Task) -> Task:
 async def call_task(function: Task, payload: Mapping[str, Any]) -> object:
     """Run ``function`` with arguments converted back from JSON; return its result."""
     return await _validated(function)(**payload)
+
+
+MAX_KEY_LENGTH: Final = MAX_ORDERING_KEY
+"""The longest ordering key, in characters (the outbox column's size)."""
+
+type KeySource = str | Callable[..., object]
+"""How a task or handler derives its key: a name, or a function.
+
+A name is the task's argument, or the event's attribute, whose value is
+the key. A function gets the task's keyword arguments, or the event, and
+returns the key. Either way a value that is not a string is turned into
+one (a UUID, a number), and None means the message has no key.
+"""
+
+_marked: Final[WeakKeyDictionary[Callable[..., Any], KeySource]] = WeakKeyDictionary()
+"""The tasks and durable handlers marked ``ordered`` (methods by their function)."""
+
+
+def ordered[F: Callable[..., Any]](key: KeySource, /) -> Callable[[F], F]:
+    """Run a task's or durable handler's messages one at a time per key, in order.
+
+    The messages of one key run one after another, in the order their
+    commits happened, across every worker; other keys run beside them.
+    ``key`` names the task's argument, or the event's attribute, whose
+    value is the key, or is a function that takes the task's keyword
+    arguments, or the event, and returns it::
+
+        @ordered("payment_id")
+        async def send_status(event: PaymentEvent) -> None: ...
+
+        event_bus.subscribe(PaymentEvent, send_status, durable=True)
+
+        @task
+        @ordered(lambda account_id, **_: f"account:{account_id}")  # before or after
+        async def post_entry(account_id: UUID, amount: Decimal) -> None: ...
+
+    A value that is not a string is turned into one; None leaves the
+    message without a key. ``ordering_key=`` given to ``uow.defer`` or
+    ``enqueue`` wins. Keys are shared by every task and handler of an
+    outbox: messages of different targets with one key run in one line,
+    so put the target's name in the key to keep a line of its own.
+    """
+    if not (callable(key) or (isinstance(key, str) and key.isidentifier())):
+        raise ImproperlyConfigured(
+            "An ordering key is the name of an argument or attribute, or a "
+            f"function that returns the key, not {key!r}."
+        )
+
+    def mark(function: F) -> F:
+        _marked[getattr(function, "__func__", function)] = key
+        for spec in _tasks.values():  # Marked after @task: check it now.
+            if spec.function is function:
+                _check_key_argument(function, spec.key)
+        return function
+
+    return mark
+
+
+def checked_key(value: object) -> str | None:
+    """The ordering key ``value`` stands for: a string, or None for no key.
+
+    Raises:
+        ValueError: the key is empty, longer than ``MAX_KEY_LENGTH``, or
+            holds a NUL character, which no database column stores.
+    """
+    if value is None:
+        return None
+    return checked_ordering_key(value if isinstance(value, str) else str(value))
+
+
+def event_key(handler: Callable[..., Any], event: object) -> str | None:
+    """The key of durable ``handler``'s message for ``event``, if it is ``ordered``."""
+    source = _marked.get(getattr(handler, "__func__", handler))
+    if source is None:
+        return None
+    if isinstance(source, str):
+        return checked_key(getattr(event, source))
+    return checked_key(source(event))
+
+
+def task_key(
+    function: Callable[..., Any], arguments: Mapping[str, object]
+) -> str | None:
+    """The key of task ``function``'s message for ``arguments``, if ``ordered``."""
+    source = _marked.get(function)  # Tasks are functions, never methods.
+    if source is None:
+        return None
+    if isinstance(source, str):
+        return checked_key(arguments.get(source))
+    return checked_key(source(**arguments))
 
 
 CHAIN: Final = "chain"

@@ -1,6 +1,6 @@
 # 0005. A transactional outbox instead of a broker
 
-- Status: Accepted
+- Status: Accepted; amended by [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md)
 - Date: 2026-10-14
 
 ## Context

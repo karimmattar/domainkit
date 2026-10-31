@@ -74,6 +74,13 @@ compiles it, with these rules on both:
   what it wraps, and is compared, ordered, and searched by what it wraps,
   as its column stores it. Amounts compare exactly, also on SQLite
   (`ExactDecimal`).
+- **Money compares within its currency.** `F("total") >= Money.of("10",
+  "USD")` holds for totals in USD of at least 10.00, and for none in
+  another currency; `~` of it includes those. Its two parts are fields:
+  `F("total.currency") == "USD"`, `F("total.amount") > Decimal("9.995")`.
+  Through child entities (`F("lines.price")`) the amount and its currency
+  are of one child. It sorts by currency code, then amount
+  ([money.md](money.md#in-queries)).
 - **Missing values never match** a condition, and `~` negates exactly:
   `~(F("stock") > 5)` includes the rows without stock. A condition through
   a child entity that is not there is false.
@@ -252,6 +259,14 @@ declare its MaxLength(n), as Annotated[str, MaxLength(n)], or do not order by it
 
 Three text fields of `MaxLength(150)` fit together, in any script, with a
 UUID id; for longer ones, lower `max_ordering`.
+
+A filter of a money field compares amounts within one currency, so it
+comes with a `<name>_currency` parameter, which an amount needs:
+`?total__gte=10.00&total_currency=USD` asks for totals in USD of at least
+10.00; `?total__gte=10` alone is a 422 `invalid_filter`, and
+`?total_currency=USD` alone keeps the totals in USD. The amount may have
+more places than the currency (`9.995`), and is compared exactly. A money
+field orders by currency, then amount, and its cursor holds both.
 
 What FastAPI cannot see is a 422 `invalid_filter`: a lookup the set does
 not offer on a field it filters (`?total__regex=`), a filter given twice,

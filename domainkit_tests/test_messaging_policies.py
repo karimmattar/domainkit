@@ -976,8 +976,14 @@ def test_the_messages_command_lists_and_cancels() -> None:
     assert " running " in locked
     assert run("messages", "--dead") == ""
     counts = run("messages").splitlines()
-    assert counts[:4] == ["pending  3", "done     0", "dead     0", "cancelled 0"]
-    assert counts[4].startswith("lag default: ")
+    assert counts[:5] == [
+        "pending  3",
+        "held     0",
+        "done     0",
+        "dead     0",
+        "cancelled 0",
+    ]
+    assert counts[5].startswith("lag default: ")
     with pytest.raises(CommandError, match="--limit must be 1 or more"):
         run("messages", "--dead", "--limit", "0")
     with pytest.raises(SystemExit):

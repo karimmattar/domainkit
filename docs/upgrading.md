@@ -23,6 +23,31 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.13 to 0.14
+
+### Breaking changes
+
+- **Messaging's outbox gained columns, a status, and a table** (FIN-19).
+  The outbox has `ordering_key` and `sequence` columns, a `held` status,
+  and an index, `ix_domainkit_messages_ordering`, and messaging has a
+  table of ordering keys, `domainkit_ordering_keys`, in every database
+  that holds an outbox. Workers claim through the new columns, so they
+  fail until the database has them. **Fix:** run `makemigrations` and
+  `migrate` in each project that installs messaging, before the new
+  version's workers start. Stop the 0.13 workers before any 0.14 process
+  (a web process too) writes a message with an ordering key: a 0.13
+  worker finishes such a message without making the next of its key
+  pending, and the key waits until a 0.14 worker's cleanup round, or
+  `messages --release`, releases it (SEC-14c-3). `messages` prints a
+  `held` line after `pending`: a script that reads its lines by position
+  reads them by name instead. Nothing keeps the old schema.
+- **A factor of an amount in SQL has at most 9 places** (TEST-07).
+  `amount * factor` and `amount / factor`, with `factor` a value or a
+  bound parameter, refuse a factor of more places (`ValueError`), where
+  they used to compute with it (and on SQLite counted a bound one as an
+  amount). **Fix:** round the factor to 9 places with the rule the domain
+  needs, or compute the product in Python with `Money.multiply`.
+
 ## 0.12 to 0.13
 
 ### Breaking changes

@@ -6,7 +6,7 @@ configured by one setting, a dictionary whose keys are all optional.
 
 | App | Setting | Tables |
 | --- | --- | --- |
-| `domainkit.contrib.messaging` | `MESSAGING` | `domainkit_messages`, `domainkit_inbox` |
+| `domainkit.contrib.messaging` | `MESSAGING` | `domainkit_messages`, `domainkit_inbox`, `domainkit_ordering_keys` |
 | `domainkit.contrib.webhooks` | `WEBHOOKS` | `domainkit_webhook_subscriptions`, `_deliveries`, `_attempts` |
 | `domainkit.contrib.audit` | `AUDIT` | `domainkit_audit_log` |
 | `domainkit.contrib.idempotency` | `IDEMPOTENCY` | `domainkit_idempotency_keys` |
@@ -16,9 +16,10 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
 | `domainkit.contrib.flags` | `FLAGS` | `domainkit_flags`, `domainkit_dynamic_settings` |
 | `domainkit.contrib.objectpermissions` | none | `domainkit_object_permissions`, in every database that hosts a domain; see [auth.md](auth/users.md#grants-on-single-objects) |
+| `domainkit.contrib.accounting` | `ACCOUNTING` | `domainkit_accounting_accounts`, `_periods`, `_entries`, `_postings`, `_holds`, `_statement_lines`, `_matches`, `_breaks`, in one database; see [accounting](contrib/accounting.md) |
 
 With several databases ([databases.md](databases.md)), the outbox, its
-inbox, and the audit trail commit with business data, so their tables are
+inbox and ordering keys, and the audit trail commit with business data, so their tables are
 created in every database that hosts a domain. The idempotency table stays in its own
 `DATABASE`.
 
@@ -70,3 +71,4 @@ This page has moved, a part a page:
 - [Idempotency: safe retries of unsafe requests](contrib/idempotency.md)
 - [Evidence: records that provably never change](contrib/evidence.md)
 - [Flags: feature flags and dynamic settings](contrib/flags.md)
+- [Accounting: double-entry books, holds, periods, and reconciliation](contrib/accounting.md)

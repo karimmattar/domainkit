@@ -9,7 +9,7 @@
 | Process resources (clients, pools) | `async def hook()` | `domainkit.apps.hooks.on_startup(hook)` / `on_shutdown(hook)` in `ready()` (called by the app lifespan, a domain's shutdown hooks once all its startup hooks ran; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
 | A readiness check | `async def hook()`, raising when the domain cannot serve | `on_check(hook)` in `ready()` (called by `/ready`; a domain's checks in turn, within `READINESS_TIMEOUT` together) |
 | A check of the built application (routes, middleware) | `def hook(app)`, returning problems, best as `domainkit.checks.CheckMessage("<label>.E001", ...)` | `on_check_application(hook)` in `ready()` (called when the app is built and by `check`; staging and production refuse to start with any) |
-| Warnings about a domain's weak settings where deployed | `def hook()`, returning warnings (none outside staging and production), best as `CheckMessage("<label>.W001", ...)`, which `SILENCED_CHECKS` can name | `on_deployment_warnings(hook)` in `ready()` (listed by `check` after the framework's own) |
+| Warnings about a domain's weak settings where deployed, or its code | `def hook()`, returning warnings (about settings, none outside staging and production; about code the project must change, such as messaging's `def` tasks, anywhere), best as `CheckMessage("<label>.W001", ...)`, which `SILENCED_CHECKS` can name | `on_deployment_warnings(hook)` in `ready()` (listed by `check` after the framework's own) |
 | Work staged with each commit | `async def hook(uow, events, tasks)`, typed on `SqlAlchemyUnitOfWork` | `domainkit.db.hooks.on_stage(hook)` in `ready()` (called by the unit of work; only domains that registered are called) |
 | Work after each commit | `async def hook(uow)` | `on_committed(hook)` in `ready()` (called by the unit of work; failures are reported, never raised) |
 | The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` in `ready()` (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
@@ -38,4 +38,6 @@
 | Middleware | an ASGI class taking `app` | `MIDDLEWARE` |
 | An error tracker | `(exc, context) -> None` | `ERROR_REPORTERS` |
 | A rate-limit store other than memory or Redis | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |
+| A way to match statement lines to postings | `accounting.reconciliation.MatchingRule`: a `name` and `match(lines, postings, window)` | `ACCOUNTING.MATCHING_RULES` ([accounting.md](../contrib/accounting.md#reconciliation)) |
+| Statements from a bank's file format or API | `accounting.reconciliation.StatementSource`: a `name` and `lines()` | `import_statement(account_id, source)` |
 | A command | `BaseCommand` | `management/commands/<name>.py` |

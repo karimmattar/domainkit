@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import DateTime, Integer, Numeric
+from sqlalchemy import DateTime, Integer, Numeric, String, literal
 from sqlalchemy.engine import Dialect
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql import operators
@@ -15,8 +15,16 @@ from sqlalchemy.sql.selectable import FromClause
 from sqlalchemy.sql.visitors import InternalTraversal
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
+from domainkit.money import Currency, currency
+
 MAX_DIGITS: Final = 18
 """The most digits an ``ExactDecimal`` holds: any 18 fit SQLite's 64-bit integers."""
+FACTOR_PLACES: Final = 9
+"""The most places of a number an amount is multiplied or divided by in SQL.
+
+On SQLite such a factor is sent as a whole number of billionths, so the
+product of two exact integers is what the database divides back.
+"""
 _SCALING: Final = frozenset({operators.mul, operators.truediv})
 _COMPARING: Final = frozenset(
     {
@@ -114,7 +122,16 @@ class ExactDecimal(TypeDecorator[Decimal]):
             *other: Any,  # noqa: ANN401 - any operand.
             **kwargs: Any,  # noqa: ANN401 - SQLAlchemy's options.
         ) -> ColumnElement[Any]:
-            """Rescale a column operand of another scale; then operate as usual."""
+            """Scale by a factor, or rescale an operand of another scale; else as usual.
+
+            A number an amount is multiplied or divided by, given as a value
+            or as a bound parameter, is a factor, never an amount: on SQLite
+            it must not be counted in minor units.
+            """
+            if op in _SCALING and other:
+                factor = _factor(op, other[0])
+                if factor is not None:
+                    return _Scaling(self.expr, factor, op, self.type)
             scale = self.type.scale
             theirs = _scale_of(other[0]) if op in _LIKE_UNITS and other else None
             if theirs is None or theirs == scale:
@@ -122,6 +139,17 @@ class ExactDecimal(TypeDecorator[Decimal]):
             common = ExactDecimal(MAX_DIGITS, max(scale, theirs))
             mine = _Rescaled(self.expr, common.scale - scale, common)
             return op(mine, _Rescaled(other[0], common.scale - theirs, common))
+
+        def reverse_operate(
+            self,
+            op: OperatorType,
+            other: Any,  # noqa: ANN401 - any operand.
+            **kwargs: Any,  # noqa: ANN401 - SQLAlchemy's options.
+        ) -> ColumnElement[Any]:
+            """``factor * amount`` is ``amount * factor``; the rest as usual."""
+            if op is operators.mul and (factor := _factor(op, other)) is not None:
+                return _Scaling(self.expr, factor, op, self.type)
+            return super().reverse_operate(op, other, **kwargs)
 
     comparator_factory = Comparator
 
@@ -219,6 +247,87 @@ def _decimal(value: object) -> Decimal:
     if not amount.is_finite():
         raise ValueError(f"ExactDecimal cannot hold {amount}.")
     return amount
+
+
+def _factor(op: OperatorType, operand: object) -> ColumnElement[Any] | None:
+    """``operand`` as a factor of an amount, if it is one; else None.
+
+    A value or an untyped bound parameter is a ``_Factor``; so is a whole
+    number a divisor, while a whole multiplier stays an integer (exact in
+    minor units). An integer column divides as it is. Anything else (an
+    amount column, a typed parameter) is left to SQLAlchemy.
+    """
+    if isinstance(operand, BindParameter):
+        null = operand.type._isnull  # SQLAlchemy's flag of an untyped parameter.
+        return operand._with_binary_element_type(_Factor()) if null else None
+    if isinstance(operand, ColumnElement):
+        divides = op is operators.truediv and isinstance(operand.type, Integer)
+        return operand if divides else None
+    whole = isinstance(operand, int) and not isinstance(operand, bool)
+    if whole and op is operators.mul:
+        return None
+    return literal(operand, _Factor())
+
+
+class _Scaling(ColumnElement[Decimal]):
+    """An amount multiplied or divided by a factor, as the amount's type.
+
+    PostgreSQL computes it in ``NUMERIC``, exactly. On SQLite the amount is
+    minor units and a bound factor billionths (``FACTOR_PLACES``): the two
+    integers are multiplied exactly, then divided back, so a result of 15
+    significant digits or fewer reads back exactly. An integer column
+    divides the amount as a real number, never by integer division.
+    """
+
+    inherit_cache = True
+    _traverse_internals = [  # noqa: RUF012 - SQLAlchemy's declaration.
+        ("amount", InternalTraversal.dp_clauseelement),
+        ("factor", InternalTraversal.dp_clauseelement),
+        ("dividing", InternalTraversal.dp_plain_obj),
+        ("type", InternalTraversal.dp_type),
+    ]
+
+    def __init__(
+        self,
+        amount: ColumnElement[Any],
+        factor: ColumnElement[Any],
+        op: OperatorType,
+        type_: "ExactDecimal",
+    ) -> None:
+        """Scale ``amount`` by ``factor`` (``op`` is ``mul`` or ``truediv``)."""
+        self.amount = amount
+        self.factor = factor
+        self.dividing = op is operators.truediv
+        self.type = type_
+
+    @property
+    def _from_objects(self) -> list[FromClause]:
+        """The tables of both operands."""
+        return [*self.amount._from_objects, *self.factor._from_objects]
+
+
+@compiles(_Scaling)
+def _scaling(element: _Scaling, compiler: SQLCompiler, **kwargs: Any) -> str:  # noqa: ANN401
+    """``amount * factor`` or ``amount / factor``, in ``NUMERIC``."""
+    amount = compiler.process(element.amount.self_group(), **kwargs)
+    factor = compiler.process(element.factor.self_group(), **kwargs)
+    sign = "/" if element.dividing else "*"
+    return f"({amount} {sign} {factor})"
+
+
+@compiles(_Scaling, "sqlite")
+def _scaling_on_sqlite(
+    element: _Scaling,
+    compiler: SQLCompiler,
+    **kwargs: Any,  # noqa: ANN401 - the compiler's options.
+) -> str:
+    """Minor units times billionths, divided back; or divided as reals."""
+    amount = compiler.process(element.amount.self_group(), **kwargs)
+    factor = compiler.process(element.factor.self_group(), **kwargs)
+    unit = 10**FACTOR_PLACES if isinstance(element.factor.type, _Factor) else 1
+    if element.dividing:
+        return f"(({amount} * {unit}) / ({factor} * 1.0))"
+    return f"(({amount} * {factor}) / {unit}.0)"
 
 
 def _scale_of(operand: object) -> int | None:
@@ -334,12 +443,11 @@ class _MinorUnits(Numeric[Decimal]):
 
 
 class _Factor(TypeDecorator[Decimal]):
-    """A fraction an amount is multiplied by, or a number it is divided by.
+    """A number an amount is multiplied or divided by: never an amount itself.
 
-    The result takes the amount's type. On SQLite the amount is in minor
-    units, and so is the result, which that type scales back; the factor
-    is sent as a float, so a quotient is not truncated to a whole number.
-    PostgreSQL computes in ``NUMERIC``, exactly.
+    It has at most ``FACTOR_PLACES`` places, refused past them rather than
+    rounded. On SQLite it is sent as a whole number of billionths (see
+    ``_Scaling``); elsewhere as the exact ``Decimal``.
     """
 
     impl = Numeric
@@ -347,8 +455,51 @@ class _Factor(TypeDecorator[Decimal]):
 
     def process_bind_param(
         self, value: Decimal | int | None, dialect: Dialect
-    ) -> Decimal | float | None:
-        """A float on SQLite; as it is elsewhere."""
-        if value is None or dialect.name != "sqlite":
-            return value
-        return float(value)
+    ) -> Decimal | int | None:
+        """The exact factor; on SQLite, in billionths.
+
+        Raises:
+            TypeError: A float, a ``bool``, or not a number.
+            ValueError: Not finite, or more than ``FACTOR_PLACES`` places.
+        """
+        if value is None:
+            return None
+        factor = _decimal(value)
+        if factor.as_tuple().exponent < -FACTOR_PLACES:  # type: ignore[operator]
+            raise ValueError(
+                f"A factor of an amount has at most {FACTOR_PLACES} decimal "
+                "places in SQL; round it first, or compute in Python."
+            )
+        if dialect.name == "sqlite":
+            return int(factor.scaleb(FACTOR_PLACES))
+        return factor
+
+
+class CurrencyCode(TypeDecorator[Currency]):
+    """A currency, stored as its code (``"USD"``) and read back as the ``Currency``.
+
+    Values are a ``Currency`` or a code; a code no currency has is refused
+    (``UnknownCurrency``), on the way in and on the way out, so a
+    registered currency must be registered before its rows are read.
+    Comparisons and ``ORDER BY`` compare the codes.
+    """
+
+    impl = String(8)  # The longest code: three letters for ISO 4217, eight registered.
+    cache_ok = True
+
+    @property
+    def python_type(self) -> type[Currency]:
+        """``Currency``."""
+        return Currency
+
+    def process_bind_param(
+        self, value: Currency | str | None, dialect: Dialect
+    ) -> str | None:
+        """The code of a known currency."""
+        return None if value is None else currency(value).code
+
+    def process_result_value(
+        self, value: str | None, dialect: Dialect
+    ) -> Currency | None:
+        """The currency of the stored code."""
+        return None if value is None else currency(value)

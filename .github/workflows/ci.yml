@@ -91,6 +91,7 @@ jobs:
           domainkit_tests/test_api.py domainkit_tests/test_ci.py
           domainkit_tests/test_docs.py domainkit_tests/test_recipes.py
           domainkit_tests/test_sec13c_1_upgrade_guide_skips_removals.py
+          domainkit_tests/test_sec14b_5_erase_leaves_documented_code.py
           domainkit_tests/test_walkthroughs.py
 
   lint:
@@ -1086,14 +1087,14 @@ jobs:
               domainkit.db.dbclock.* domainkit.db.derive.* domainkit.db.drivers.*
               domainkit.db.fixtures.* domainkit.db.migrations.* domainkit.db.orm.*
               domainkit.db.query.* domainkit.db.repository.* domainkit.db.uow.*
-              domainkit.ledger.*
+              domainkit.ledger.* domainkit.db.money.*
               domainkit.db.models.*
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*
               domainkit.db.partitioning.* domainkit.db.routing.*
               domainkit.db.snapshots.* domainkit.db.squashing.* domainkit.db.types.*
-              domainkit.storage.*
+              domainkit.storage.* domainkit.money.*
           - name: messaging
             mutants: >-
               domainkit.contrib.messaging.* domainkit.broker.*
@@ -1163,6 +1164,9 @@ jobs:
               domainkit.contrib.idempotency.statements.*
               domainkit.contrib.idempotency.tasks.*
               domainkit.contrib.objectpermissions.* domainkit.contrib.privacy.*
+          - name: accounting
+            mutants: >-
+              domainkit.contrib.accounting.*
           - name: core
             mutants: >-
               domainkit.x* domainkit.architecture.* domainkit.clock.*

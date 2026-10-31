@@ -1,10 +1,126 @@
 # Public API: the other optional apps
 
-Every `domainkit.contrib` app but auth: admin, audit, content types,
+Every `domainkit.contrib` app but auth: accounting, admin, audit, content types,
 evidence, flags, idempotency, mail, messaging, notifications, object
 permissions, privacy, and webhooks ([contrib.md](../contrib.md)). Part of
 the [public API](../api.md), under its compatibility policy.
 
+## `domainkit.contrib.accounting`
+
+A double-entry ledger: accounts, journal entries, holds, periods, reconciliation.
+
+- `CAPTURES`: The source of the entries captures post; each one's reference is the hold's id.
+- `REVERSALS`: The source of reversing entries; each one's reference is the reversed entry's id.
+- `Account`: An account of the chart: one currency, one type, open or closed.
+- `AccountClosed`: An account was closed: it takes no more postings or holds.
+- `AccountCodeTaken`: Another account has that code.
+- `AccountId`: An account's id (a `UUID`).
+- `AccountIsClosed`: A posting or a hold on an account that is closed.
+- `AccountNotEmpty`: Closing an account that still has a balance, or holds.
+- `AccountNotFound`: No account has that id or code.
+- `AccountOpened`: An account was opened.
+- `AccountStatus`: Whether an account takes postings.
+- `AccountType`: What an account counts, which decides its normal balance.
+- `AccountingSettings`: How the ledger posts, holds, and reconciles; every key is optional.
+- `AccountingUnitOfWork`: One transaction on the ledger, wherever `accounting` is routed.
+- `CaptureHold`: Post the hold's amount (or `amount`, less) out of its account into another.
+- `CloseAccount`: Close an account with nothing on it.
+- `ClosePeriod`: Close a period: no entry may be dated in it afterwards.
+- `Entry`: A posted journal entry: balanced lines, never changed once posted.
+- `EntryId`: A journal entry's id (a `UUID`).
+- `EntryNotFound`: No journal entry has that id.
+- `EntryPosted`: A journal entry was posted; `reverses` names the entry it undoes.
+- `Hold`: An amount reserved on an account until it is captured, released, or expires.
+- `HoldFinished`: A hold was captured into an entry, released, or expired (`status`).
+- `HoldId`: A hold's id (a `UUID`).
+- `HoldNotActive`: Capturing or releasing a hold that was captured, released, or has expired.
+- `HoldNotFound`: No hold has that id.
+- `HoldPlaced`: An amount was reserved on an account.
+- `HoldStatus`: Where a hold is: reserving, or finished one of three ways.
+- `InsufficientFunds`: A change that would take an account that may not go negative below zero.
+- `InvalidAmount`: An amount that is not one of its currency: unknown, inexact, or not positive.
+- `InvalidEntry`: An entry that cannot be posted as written: its lines, or its accounts.
+- `InvalidStatement`: A statement that cannot be imported: its format, or one of its lines.
+- `Line`: One line of an entry to post: an amount on one side of one account.
+- `NoOpenPeriod`: No accounting period covers the entry's date (`REQUIRE_PERIOD`).
+- `OpenAccount`: Open an account of the chart.
+- `OpenPeriod`: Open an accounting period from `starts_on` to `ends_on`, both included.
+- `Period`: Dates entries may be booked on, from `starts_on` to `ends_on` included.
+- `PeriodClosed`: An accounting period was closed: no entry may be dated in it any more.
+- `PeriodId`: An accounting period's id (a `UUID`).
+- `PeriodIsClosed`: An entry dated in a period that is closed.
+- `PeriodNameTaken`: Another period has that name.
+- `PeriodNotFound`: No accounting period has that id.
+- `PeriodOpened`: An accounting period was opened.
+- `PeriodStatus`: Whether a period takes entries.
+- `PeriodsOverlap`: A new period whose dates another period covers, or that ends before it starts.
+- `PlaceHold`: Reserve `amount` on an account, once per `source` and `reference`.
+- `PostEntry`: Post a journal entry, once per `source` and `reference`.
+- `Posting`: One line of a posted entry: an amount on one side of one account.
+- `ReferenceReused`: A source and reference that name an entry or a hold made otherwise.
+- `ReleaseHold`: Make a hold's amount available again, without posting anything.
+- `ReverseEntry`: Post the entry that undoes another, dated `booked_on` (default: today).
+- `Side`: A posting's side.
+- `TrialBalance`: Every account with a balance or movements in a period, and the totals.
+- `UnbalancedEntry`: An entry whose debits and credits differ in some currency.
+- `capture_hold`: Capture a hold into an entry; capturing it again returns it as captured.
+- `close_account`: Close an account whose balance is zero and that holds nothing.
+- `close_period`: Close a period, once the postings dated in it so far have committed.
+- `defer_entry`: Post `command`'s entry once `uow` commits, through the outbox, once.
+- `expire_holds`: Release every active hold whose time is up, each in its own transaction.
+- `general_ledger`: The postings dated in a period, streamed as CSV or JSON, with totals.
+- `open_account`: Open an account; another with the same code is `account_code_taken`.
+- `open_period`: Open a period; one whose dates another covers is refused.
+- `place_hold`: Reserve an amount on an account, or return the hold placed under its reference.
+- `post_entry`: Post a balanced entry, or return the one posted under its reference before.
+- `release_hold`: Release a hold; one released or expired already is returned as it is.
+- `reverse_entry`: Post the reversal of an entry: each of its postings on the other side.
+- `trial_balance`: The trial balance of a period: every account with a balance or movements.
+- `verify_ledger`: Check the books: entries balance, balances and held amounts add up.
+
+## `domainkit.contrib.accounting.api`
+
+The ledger over HTTP: accounts, entries, holds, periods, reports, reconciliation.
+
+- `accounts`: The chart of accounts: list, read, open, close, and reconcile.
+- `entries`: Journal entries: list, read, post, and reverse; never change or delete.
+- `holds`: Holds: list, read, place, capture, and release.
+- `periods`: Accounting periods: list, read, open, close, and their reports.
+- `router`: Every route of the ledger, to mount under a prefix of the project's.
+
+## `domainkit.contrib.accounting.reconciliation`
+
+Reconciliation: external statements matched to the ledger's postings.
+
+- `Break`: Something a reconciliation left unmatched.
+- `ByAmountAndDate`: A line and a posting of the same amount and currency, near in date, alone.
+- `ByReference`: A line and a posting with the same reference, amount, and currency, near in date.
+- `CsvStatement`: A statement as CSV text, with a header row.
+- `Imported`: What `import_statement` did: lines stored, and lines it had already.
+- `MatchingRule`: A way to pair statement lines with postings (`ACCOUNTING.MATCHING_RULES`).
+- `PostingItem`: An unmatched posting on the account, as rules see it.
+- `Reconciled`: What `reconcile` did: matches by rule, and the breaks left.
+- `StatementItem`: An unmatched statement line, as rules see it.
+- `StatementLine`: One line of an external statement, as a source reads it.
+- `StatementSource`: Where statement lines come from: a file, a bank's API.
+- `breaks_of`: The breaks the account's last reconciliation left, by date.
+- `import_statement`: Store `source`'s lines for an account; a line stored before is skipped.
+- `reconcile`: Match an account's statement lines to its postings; record matches and breaks.
+
+## `domainkit.contrib.accounting.reports`
+
+Reports of a period: the trial balance and the general ledger, as CSV and JSON.
+
+- `GENERAL_LEDGER_FORMAT`: What a general ledger's JSON says it is (`format`).
+- `TRIAL_BALANCE_FORMAT`: What a trial balance's JSON says it is (`format`).
+- `CurrencyTotal`: What one currency's rows add up to: zero `net`, in balanced books.
+- `LedgerProblem`: Something `verify_ledger` found wrong with the books.
+- `PeriodSummary`: The period a report is of.
+- `TrialBalance`: Every account with a balance or movements in a period, and the totals.
+- `TrialBalanceRow`: One account's line: its balance before the period, its movements, and after.
+- `general_ledger`: The postings dated in a period, streamed as CSV or JSON, with totals.
+- `trial_balance`: The trial balance of a period: every account with a balance or movements.
+- `verify_ledger`: Check the books: entries balance, balances and held amounts add up.
 ## `domainkit.contrib.admin`
 
 A generic admin over REST: Django's `admin.site.register`, without HTML.
@@ -207,6 +323,7 @@ Transactional outbox, durable event handlers, and background tasks.
 - `current_attempt`: The run of the message being processed, or None outside the worker.
 - `enqueue`: Queue `function(**kwargs)` now, in its own transaction.
 - `inbox`: Commit a handler's or task's database work once per message.
+- `ordered`: Run a task's or durable handler's messages one at a time per key, in order.
 - `periodic`: Register an argument-free task that runs on a schedule, cluster-wide.
 - `task`: Register an async function as a background task (`uow.defer(task)`).
 - `tasks_kept`: Put the registered tasks back as they were when the block ends.
@@ -220,6 +337,7 @@ Operator queries: queue depth, lag, listings, retries, and cancelling.
 - `list_messages`: List messages in `state`, most urgent (or, for dead ones, newest) first.
 - `queue_counts`: Count messages by status in alias `database` (default: the home outbox).
 - `queue_lag`: Seconds the oldest due message of each queue has waited to start.
+- `release_stalled`: Make the next message of each stalled ordering key pending; how many.
 - `retry_dead`: Return dead messages (one, or all) to the queue with fresh attempts.
 
 ## `domainkit.contrib.messaging.dbclock`

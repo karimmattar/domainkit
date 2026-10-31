@@ -24,6 +24,9 @@ so it would fail elsewhere with ``MissingGreenlet``. Load it in the query
 (``selectinload``), or ask for lazy loading on purpose with ``lazy=True``,
 for ``AsyncAttrs.awaitable_attrs`` or ``run_sync``.
 
+Money columns (``MoneyColumns``, or a field hinted ``Money`` in ``table_for``)
+are mapped to one ``Money`` attribute per pair.
+
 An aggregate's table needs a ``version`` column: it is what makes a stale
 copy fail with ``ConcurrentUpdate`` instead of overwriting a concurrent
 change. ``map_imperatively`` refuses an aggregate table without one, unless
@@ -37,6 +40,7 @@ from sqlalchemy import MetaData, Table
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import RelationshipProperty, registry, relationship
 
+from domainkit.db.money import money_properties
 from domainkit.ddd import AggregateRoot
 from domainkit.exceptions import ImproperlyConfigured
 
@@ -74,7 +78,9 @@ def map_imperatively(
     column: every UPDATE and DELETE checks and bumps the version, so saving
     a stale copy raises ``ConcurrentUpdate``. Relationships in
     ``properties`` that leave ``lazy`` at its default raise on an unloaded
-    access, their backrefs too (see the module's docstring).
+    access, their backrefs too (see the module's docstring). Each pair of
+    money columns is mapped to its ``Money`` attribute, unless
+    ``properties`` maps that name.
 
     Args:
         class_: The class to map.
@@ -93,6 +99,9 @@ def map_imperatively(
         return
     if issubclass(class_, AggregateRoot) and versioned:
         _version_aggregate(class_, table, options)
+    given = dict(options.get("properties") or {})
+    if money := money_properties(table, given):
+        options["properties"] = {**given, **money}
     for prop in dict(options.get("properties") or {}).values():
         if isinstance(prop, RelationshipProperty):
             _raise_on_lazy_loads(prop)

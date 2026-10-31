@@ -3,7 +3,9 @@
 A pending message is *waiting* until a worker starts it, *running* while a
 worker holds it (``started_at`` and a live lock), and back to waiting if it
 fails and is retried. With a broker, a waiting message may also be
-*published*: locked by the relay while it travels to a worker.
+*published*: locked by the relay while it travels to a worker. A message
+with an ordering key is *held* while an earlier one of its key has not
+finished.
 """
 
 import uuid
@@ -12,20 +14,24 @@ from typing import Any, Final, Literal
 
 from sqlalchemy import (
     ColumnElement,
+    DateTime,
     and_,
     case,
     false,
     func,
+    literal,
     not_,
+    or_,
     select,
     update,
 )
 
 from domainkit import clock
-from domainkit.db import connections
+from domainkit.db import UTCDateTime, connections
 
+from . import dbclock
 from .settings import MessagingSettings
-from .tables import BLANKED, CANCELLED, DEAD, PENDING, messages
+from .tables import BLANKED, CANCELLED, DEAD, HELD, PENDING, messages
 
 __all__ = [
     "blanked_dead_letters",
@@ -33,12 +39,13 @@ __all__ = [
     "list_messages",
     "queue_counts",
     "queue_lag",
+    "release_stalled",
     "retry_dead",
 ]
 
-type State = Literal["pending", "locked", "dead"]
-"""What ``list_messages`` lists: waiting, locked (running or published), dead."""
-STATES: Final = ("pending", "locked", "dead")
+type State = Literal["pending", "held", "locked", "dead"]
+"""What ``list_messages`` lists: waiting, held, locked (running or published), dead."""
+STATES: Final = ("pending", "held", "locked", "dead")
 
 LISTED: Final = (
     messages.c.id,
@@ -53,6 +60,7 @@ LISTED: Final = (
     messages.c.started_at,
     messages.c.finished_at,
     messages.c.last_error,
+    messages.c.ordering_key,
 )
 """The columns listings show; payloads and headers stay out."""
 
@@ -62,7 +70,21 @@ def _now() -> datetime:
     return clock.now()
 
 
-def locked(now: datetime) -> ColumnElement[bool]:
+def lease_now(dialect: str) -> dbclock.Moment:
+    """The time operator queries judge leases by: the earlier of two clocks.
+
+    Workers lock messages by the database's clock on PostgreSQL
+    (``dbclock``); the process that runs a command may have another. A
+    lease counts as alive while either clock says so, so a host whose
+    clock runs ahead never cancels a message a worker runs (SEC-14c-4).
+    """
+    if dialect != "postgresql":
+        return _now()
+    database = func.statement_timestamp(type_=DateTime(timezone=True))
+    return func.least(literal(_now(), UTCDateTime()), database)
+
+
+def locked(now: dbclock.Moment) -> ColumnElement[bool]:
     """Pending messages a lock holds: running, or published to a broker."""
     return and_(
         messages.c.status == PENDING,
@@ -71,12 +93,12 @@ def locked(now: datetime) -> ColumnElement[bool]:
     )
 
 
-def running(now: datetime) -> ColumnElement[bool]:
+def running(now: dbclock.Moment) -> ColumnElement[bool]:
     """Pending messages a worker is running now."""
     return and_(locked(now), messages.c.started_at.is_not(None))
 
 
-def waiting(now: datetime) -> ColumnElement[bool]:
+def waiting(now: dbclock.Moment) -> ColumnElement[bool]:
     """Pending messages no worker is running (published ones included)."""
     return and_(messages.c.status == PENDING, not_(running(now)))
 
@@ -99,13 +121,15 @@ async def queue_lag(
     Queues with nothing due are left out. Running messages do not count;
     published ones do, as they wait on the broker.
     """
+    engine = connections.engine(database or config.DATABASE)
+    moment = lease_now(engine.dialect.name)
     now = _now()
     statement = (
         select(messages.c.queue, func.min(messages.c.available_at))
-        .where(waiting(now), messages.c.available_at <= now)
+        .where(waiting(moment), messages.c.available_at <= moment)
         .group_by(messages.c.queue)
     )
-    async with connections.engine(database or config.DATABASE).connect() as connection:
+    async with engine.connect() as connection:
         rows = (await connection.execute(statement)).all()
     return {queue: (now - oldest).total_seconds() for queue, oldest in rows}
 
@@ -121,9 +145,12 @@ async def list_messages(
     """List messages in ``state``, most urgent (or, for dead ones, newest) first.
 
     ``pending`` lists waiting messages in the order workers take them,
-    ``locked`` running and published ones, ``dead`` dead letters.
+    ``held`` those waiting for an earlier message of their key, by key and
+    in their order, ``locked`` running and published ones, ``dead`` dead
+    letters.
     """
-    now = _now()
+    engine = connections.engine(database or config.DATABASE)
+    now = lease_now(engine.dialect.name)
     statement = select(*LISTED).limit(limit)
     if state == "pending":
         statement = statement.where(not_(locked(now)), messages.c.status == PENDING)
@@ -131,6 +158,10 @@ async def list_messages(
             case((messages.c.available_at <= now, 0), else_=1),  # Due ones first.
             messages.c.priority.desc(),
             messages.c.available_at,
+        )
+    elif state == "held":
+        statement = statement.where(messages.c.status == HELD).order_by(
+            messages.c.ordering_key, messages.c.sequence
         )
     elif state == "locked":
         statement = statement.where(locked(now)).order_by(messages.c.locked_until)
@@ -140,7 +171,7 @@ async def list_messages(
         )
     if queue is not None:
         statement = statement.where(messages.c.queue == queue)
-    async with connections.engine(database or config.DATABASE).connect() as connection:
+    async with engine.connect() as connection:
         return list((await connection.execute(statement)).all())
 
 
@@ -164,24 +195,41 @@ async def retry_dead(
     """Return dead messages (one, or all) to the queue with fresh attempts.
 
     Those whose arguments were blanked (``blanked``) stay dead: they have
-    nothing left to run with.
+    nothing left to run with. One with an ordering key goes back in its
+    place: before the messages of its key committed after it that still
+    wait, after the one under way (running, or handed to the broker), if
+    any (``ordering.requeue``).
     """
-    statement = (
-        update(messages)
-        .where(messages.c.status == DEAD, not_(blanked()))
-        .values(
-            status=PENDING,
-            attempts=0,
-            available_at=_now(),
-            finished_at=None,
-            started_at=None,
-        )
-    )
+    from . import ordering  # Not for the gauges, which import this (PERF-15).
+
+    dead = and_(messages.c.status == DEAD, not_(blanked()))
     if message_id is not None:
-        statement = statement.where(messages.c.id == message_id)
-    async with connections.engine(database or config.DATABASE).begin() as connection:
-        result = await connection.execute(statement)
-    return int(result.rowcount)
+        dead = and_(dead, messages.c.id == message_id)
+    engine = connections.engine(database or config.DATABASE)
+    fresh = {
+        "attempts": 0,
+        "available_at": dbclock.now(engine.dialect.name),
+        "finished_at": None,
+        "started_at": None,
+    }
+    async with engine.begin() as connection:
+        dialect = connection.dialect.name
+        keys = (
+            await connection.execute(
+                select(messages.c.ordering_key)
+                .where(dead, messages.c.ordering_key.is_not(None))
+                .distinct()
+            )
+        ).scalars()
+        result = await connection.execute(
+            update(messages)
+            .where(dead, messages.c.ordering_key.is_(None))
+            .values(status=PENDING, **fresh)
+        )
+        count = int(result.rowcount)
+        for key in sorted(keys):  # Each key's turn, in one order.
+            count += await ordering.requeue(connection, dialect, key, dead, fresh)
+    return count
 
 
 async def blanked_dead_letters(
@@ -210,23 +258,52 @@ async def cancel(
     the cancel changes nothing; a cancelled message is never claimed. A
     published one is skipped when its delivery arrives. The rest of a chain
     is never queued. Its arguments are blanked, as a done message's are.
+    A held message may be cancelled too; cancelling the first of a key
+    lets the next one run.
     """
-    now = _now()
+    from . import ordering  # Not for the gauges, which import this (PERF-15).
+
+    engine = connections.engine(database or config.DATABASE)
+    dialect = engine.dialect.name
     statement = (
         update(messages)
-        .where(messages.c.id == message_id, waiting(now))
+        .where(
+            messages.c.id == message_id,
+            or_(waiting(lease_now(dialect)), messages.c.status == HELD),
+        )
         .values(
             status=CANCELLED,
-            finished_at=now,
+            finished_at=dbclock.now(dialect),
             locked_until=None,
             lock_id=None,
             last_error="Cancelled by an operator.",
             payload={},
         )
     )
-    async with connections.engine(database or config.DATABASE).begin() as connection:
-        result = await connection.execute(statement)
-    return bool(result.rowcount)
+    async with engine.begin() as connection:
+        key = await connection.scalar(
+            select(messages.c.ordering_key).where(messages.c.id == message_id)
+        )
+        if key is not None:  # The key's turn first, as every writer of the key.
+            await ordering.take_turns(connection, dialect, {key: 0})
+        cancelled = bool((await connection.execute(statement)).rowcount)
+        if cancelled and key is not None:
+            await ordering.promote(connection, dialect, key)
+    return cancelled
+
+
+async def release_stalled(
+    config: MessagingSettings, database: str | None = None
+) -> int:
+    """Make the next message of each stalled ordering key pending; how many.
+
+    What each worker's cleanup does every ``CLEANUP_INTERVAL``
+    (``Worker.release_stalled``), at once: for keys left with held
+    messages and none pending, as a 0.13 worker leaves them (SEC-14c-3).
+    """
+    from .worker import Worker  # Not for the gauges (PERF-15).
+
+    return await Worker(config, database=database).release_stalled()
 
 
 def state_of(row: Any, now: datetime) -> str:  # noqa: ANN401 - a result row.

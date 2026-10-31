@@ -21,6 +21,12 @@ the query string into a ``Selection``::
 search in one of the search fields. ``__in`` and ``ordering`` repeat:
 ``?status__in=open&status__in=paid``.
 
+A filter of a money field (``domainkit.money.Money``) compares amounts,
+and brings a ``<name>_currency`` parameter: amounts compare only within a
+currency, so ``?total__gte=10.00&total_currency=USD`` means totals in USD
+of at least 10.00, and an amount without the currency is refused.
+``?total_currency=USD`` alone keeps the totals in USD.
+
 Parameters are typed from the model's fields, so OpenAPI lists each with
 its type (and an enum's values), and FastAPI answers a value of the wrong
 type, or out of the field's bounds (an amount past its ``Digits``), with
@@ -60,6 +66,7 @@ from domainkit.ddd.query import (
     Or,
     Ordering,
     Selection,
+    Within,
     resolve,
     total_ordering,
 )
@@ -69,9 +76,12 @@ from domainkit.http.pagination import (
     cursor_length,
     longest_ordering,
 )
+from domainkit.money import Currency, Money
 
 SEPARATOR: Final = "__"
 """Between a field and its lookup: ``total__gte``."""
+CURRENCY: Final = "_currency"
+"""After a money filter's name, its currency's parameter: ``total_currency``."""
 ORDERING: Final = "ordering"
 SEARCH: Final = "search"
 REQUEST: Final = "_request"
@@ -172,6 +182,8 @@ class FilterSet:
 
     filters: ClassVar[Mapping[str, tuple[Filter, Lookup, FieldInfo]]] = {}
     """Every query parameter, with its filter, lookup, and field."""
+    currencies: ClassVar[Mapping[str, str]] = {}
+    """The currency parameter of each money filter, by the filter's name."""
 
     def __init_subclass__(cls) -> None:
         """Check the declarations against the model and build the parameters."""
@@ -189,6 +201,7 @@ class FilterSet:
             for each in declared
             for lookup in each.lookups
         }
+        cls.currencies = _currency_parameters(cls, declared)
         if taken := {ORDERING, SEARCH, REQUEST} & set(cls.filters):
             names = ", ".join(sorted(taken))
             raise TypeError(f"{cls.__name__}: {names} cannot name a filter.")
@@ -240,11 +253,22 @@ class FilterSet:
             InvalidFilter: A value does not fit its field (a value object
                 refused it, say).
         """
+        priced = {
+            each.name
+            for each, lookup, field in map(self.filters.__getitem__, self.values)
+            if field.kind is Money and lookup is not Lookup.ISNULL
+        }
+        compared = {self.currencies[name] for name in priced}
         parts: list[Criteria] = []
+        amounts: dict[Filter, list[tuple[Lookup, object]]] = {}
         for name, value in self.values.items():
-            each, lookup, _ = self.filters[name]
+            each, lookup, field = self.filters[name]
             argument = tuple(value) if lookup is Lookup.IN else value
-            parts.append(F(each.field or name).lookup(lookup, argument))
+            if field.kind is Money and lookup is not Lookup.ISNULL:
+                amounts.setdefault(each, []).append((lookup, argument))
+            elif name not in compared:
+                parts.append(F(each.field or name).lookup(lookup, argument))
+        parts.extend(self._money(each, given) for each, given in amounts.items())
         parts.extend(
             Or.of(*(F(name).icontains(word) for name in self.search_fields))
             for word in self.search
@@ -261,6 +285,29 @@ class FilterSet:
         except (ValueError, TypeError) as exc:  # A value object's; it may quote one.
             raise InvalidFilter("A filter value does not fit its field.") from exc
         return criteria
+
+    def _money(self, each: Filter, amounts: list[tuple[Lookup, object]]) -> Criteria:
+        """The amounts given to the money filter ``each``, in its currency.
+
+        The currency and the amounts are those of one value: through child
+        entities, of one child (``Within``), so no amount is compared under
+        another child's currency.
+
+        Raises:
+            InvalidFilter: The currency is not given.
+        """
+        currency = self.currencies[each.name]
+        if currency not in self.values:
+            raise InvalidFilter(
+                f"Give {currency} with an amount of {each.name}: amounts compare "
+                "only within a currency."
+            )
+        relation, _, leaf = (each.field or each.name).rpartition(".")
+        criteria = And.of(
+            F(f"{leaf}.currency") == self.values[currency],
+            *(F(f"{leaf}.amount").lookup(*given) for given in amounts),
+        )
+        return Within(relation, criteria) if relation else criteria
 
     def _check_names(self, request: Request) -> None:
         """Refuse lookups this set does not offer, and filters given twice.
@@ -284,6 +331,36 @@ class FilterSet:
                 raise InvalidFilter(
                     f"Unknown lookup on {base}; it offers {', '.join(offered[base])}."
                 )
+
+
+def _currency_parameters(
+    cls: type[FilterSet], declared: list[Filter]
+) -> dict[str, str]:
+    """Add the ``<name>_currency`` parameter of each money filter to ``cls.filters``.
+
+    Raises:
+        TypeError: A filter of the set already has that name.
+    """
+    currencies: dict[str, str] = {}
+    filters = dict(cls.filters)
+    money = [
+        each
+        for each in declared
+        if filters[each.parameter(each.lookups[0])][2].kind is Money
+    ]
+    for each in money:
+        name = f"{each.name}{CURRENCY}"
+        if name in filters:
+            raise TypeError(
+                f"{cls.__name__}: {name} is the currency of the money filter "
+                f"{each.name}; name the other filter otherwise."
+            )
+        path = f"{each.field}.currency"
+        *_, part = resolve(cls.model, path)
+        filters[name] = (Filter(field=path, max_length=8), Lookup.EXACT, part)
+        currencies[each.name] = name
+    cls.filters = filters
+    return currencies
 
 
 def _checked(model: type, each: Filter, lookup: Lookup) -> FieldInfo:
@@ -423,7 +500,9 @@ def _value_type(field: FieldInfo) -> object:
     kind = field.kind
     if kind is not None and not issubclass(kind, Enum):
         kind = base_type(kind)
-    if kind is None:
+    if kind is Money:  # Its amount: the currency has a parameter of its own.
+        return Decimal
+    if kind is None or kind is Currency:  # A currency's code, which the field checks.
         return str
     if kind is datetime:
         return AwareDatetime

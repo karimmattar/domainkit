@@ -9,6 +9,239 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.money`: `Money`, an amount with exactly its currency's
+  places and the currency, immutable and exact: `Money.of("10.5", "USD")`
+  is 10.50, more places are refused (`InexactAmount`) and never rounded,
+  and floats are refused everywhere. `+`, `-`, comparisons, and
+  `Money.sum` take one currency and raise `CurrencyMismatch` for two;
+  `from_minor` and `minor` count in minor units. `Currency` and
+  `currency("KWD")` know the 165 active ISO 4217 currencies with minor
+  units (SIX's list of 2026-09-17, kept as data in the package; JPY 0, KWD
+  and BHD 3, CLF and UYW 4); `register_currency` adds a project's own,
+  such as a token, and the test plugin drops each test's
+  (`currencies_kept()`). A domain layer may import it. Conversion between
+  currencies is left to the project, with a rate source it trusts
+  (`docs/money.md`) (FIN-01).
+- Money in tables, queries, and HTTP: a field hinted `Money` is two
+  columns, `<name>` (`ExactDecimal`, 18 digits and 4 places unless
+  `Digits` says) and `<name>_currency` (`CurrencyCode`), with a check that
+  a missing amount has no currency; `MoneyColumns` makes them for a
+  hand-written table, `map_imperatively` maps them to the one attribute,
+  and `makemigrations` writes them. Queries compare money within its
+  currency (`F("total") >= Money.of("10", "USD")`) and name its parts
+  (`F("total.currency")`, `F("total.amount")`); it orders by currency,
+  then amount, with keyset pages and `update_rows` too. JSON is
+  `{"amount": "10.50", "currency": "USD"}`, one `Money` schema in OpenAPI;
+  a write schema refuses an amount its columns cannot hold
+  (`money_digits`); a `FilterSet` filter of a money field takes its
+  amount with a `<name>_currency` parameter
+  (`?total__gte=10.00&total_currency=USD`); a `MoneyError` is a 422 with
+  its code. `MoneyFactory` in `domainkit.testing`; `dumpdata` and
+  `loaddata` write and check both columns; audit details, task arguments,
+  and exports write money as its JSON. The storage was chosen by
+  measurement over minor units in an integer
+  ([ADR 0115](docs/adr/0115-store-money-as-an-exact-amount-and-a-currency-code.md))
+  (FIN-01).
+- Named rounding: `Rounding.HALF_EVEN`, `HALF_UP`, `DOWN`, `UP`,
+  `CEILING`, `FLOOR` (the `decimal` constants). `amount.multiply(factor,
+  rounding=...)` is exact, and refuses a product that needs rounding
+  unless one is named; `Money.of(..., rounding=...)` rounds a computed
+  amount as named (FIN-02).
+- `amount.allocate(ratios)` splits an amount in proportion by largest
+  remainder: the parts always sum to it, none loses or gains more than one
+  minor unit of its share, and a ratio of 0 gets nothing; property tests
+  check it for every currency (FIN-03).
+- `startaggregate --field balance:money` (and `addcommand --field
+  amount:money`): a money field, and for one that may not be None a
+  transfer between two aggregates as `docs/databases.md` writes one:
+  `transfer_balance` and `receive_balance`, which refuse an overdraft and
+  another currency, `TransferWalletBalance`, whose use case locks both
+  rows by ascending id and runs again on a lost race (`uow.run(...,
+  retry=Retry(...))`), `POST /wallets/{wallet_id}/transfer-balance`, and
+  their tests. The payment recipe holds its amounts in `Money` (FIN-01).
+- `domainkit.contrib.accounting`: double-entry books. A chart of accounts
+  (a code, a type and its normal balance, one currency, open or closed, a
+  holder), journal entries whose postings must balance per currency, and
+  balances moved in the posting's own transaction. A posting locks its
+  accounts by ascending id inside the unit of work and runs again when it
+  loses a race (`ACCOUNTING.RETRY_ATTEMPTS`), so 50 transfers at once
+  between overlapping pairs of accounts neither deadlock nor lose an
+  update; locked in the order of their lines, 33 to 41 of the 50
+  deadlocked. An entry is posted once per `source` and `reference`, so a
+  retried request books once, and entries posted from messages
+  (`defer_entry`) run under the inbox, so a message delivered twice books
+  once. Entries never change: corrections are reversals
+  (`reverse_entry`), and on PostgreSQL triggers that `migrate` makes
+  refuse updates, deletes, and truncation of entries and postings, checked
+  at startup in staging and production (`accounting.E001`,
+  `accounting.E002`, `ACCOUNTING.REQUIRE_PROTECTION`). Holds reserve an
+  amount (available = balance − holds) until captured into an entry,
+  released, or expired; accounting periods close, and an entry dated in a
+  closed one is refused; a period's trial balance and general ledger come
+  as CSV or stable JSON, and each nets to zero per currency.
+  `verify_ledger` checks the books. Reconciliation imports statement
+  lines through a port (`StatementSource`, with `CsvStatement`; amounts
+  exact), matches them to postings by reference, amount, currency, and a
+  date window, by rules a project extends (`ACCOUNTING.MATCHING_RULES`),
+  and records matches and breaks. `domainkit.contrib.accounting.api`
+  serves all of it as `ResourceRouter`s, each route guarded by a model
+  permission; `manage.py accounting` writes the reports, checks the books,
+  expires holds, and reconciles. See
+  [docs/contrib/accounting.md](docs/contrib/accounting.md), and ADRs
+  [0116](docs/adr/0116-keep-double-entry-books-locked-in-id-order-and-append-only.md)
+  and [0117](docs/adr/0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md).
+  (FIN-07, FIN-08, FIN-10, FIN-11)
+- Ordering keys for messaging: messages that share a key run one at a
+  time, in the order their commits happened, across every worker and
+  replica, while other keys run beside them. `uow.defer(...,
+  ordering_key=...)` and `enqueue(..., ordering_key=...)` give one;
+  `@ordered("name")` or `@ordered(function)` declares how a task or a
+  durable handler derives it from its arguments or its event. A failing
+  message holds its key while it is retried, as does a worker that died
+  until its lease ends; a dead-lettered one lets the key go on, and
+  `messages --retry` puts it back in its place. The outbox holds a key's
+  later messages back (`held`), so the claim and its index are unchanged
+  (0.12 ms where a check in the claim took 515 ms behind 50,000 waiting
+  messages of one key), and through RabbitMQ only each key's first is
+  published, the next by the consumer that finished it. Writers of a key
+  take turns on its row in `domainkit_ordering_keys`; under `REPEATABLE
+  READ` a stale snapshot fails and `run` retries it. `messages --held`
+  lists the held messages (`docs/contrib/messaging.md`, ADR 0118) (FIN-19).
+- `check` warns (`blocking.W002`) about event handlers and messaging tasks
+  written as `def`: awaited on the event loop, they hold every request and
+  message of the process while they work, then fail. `EventBus.subscriptions()`
+  lists every subscription (FIN-19).
+
+### Changed
+
+- **Breaking:** messaging's outbox has two new columns, `ordering_key` and
+  `sequence`, a `held` status, and an index, and messaging a new table,
+  `domainkit_ordering_keys`: run `makemigrations` and `migrate` before
+  deploying, as workers claim through the new columns. `messages` counts
+  `held` messages on a line of its own (FIN-19).
+- `uow.defer`'s `dedupe_key` drops a task while a message with that key is
+  in the outbox, as it always did, not if one "was ever queued": finished
+  messages are deleted after `RETENTION_SECONDS`, and their keys with them
+  (FIN-18).
+- The modules money touches (`db.types`, `ddd`, `contrib.idempotency`,
+  `contrib.messaging`, `db.uow`, `db.repository`) were mutated whole on
+  0.13.0: 209 of the mutants that lived are killed by tests of behaviour
+  none pinned, 75 die on PostgreSQL, 176 are equivalent and 84 reach only
+  a server's code; the audit page lists, by module, the 15 left and why,
+  and the 682 not checked (TEST-07).
+
+### Fixed
+
+- `messages --dead` lists a dead letter without a recorded error, where it
+  raised `IndexError` (TEST-07).
+- **Breaking:** an amount (`ExactDecimal`, money's amount column)
+  multiplied or divided by a bound parameter was counted as an amount on
+  SQLite: `amount * bindparam("r")` with 0.1 gave 9950.0000 for 9.95, and
+  `amount / bindparam("r")` was as wrong. A bound parameter or a value is
+  now a factor, sent to SQLite as exact billionths, so `amount * 0.1` of
+  three cents is 0.003, not 0.0030000000000000004; an integer column
+  divides as a real number, not by integer division. A factor has at most
+  9 places: one with more is refused rather than rounded (TEST-07).
+
+### Security
+
+- A money condition through child entities is one condition on one
+  child: `F("lines.price") >= Money.of("100", "USD")` holds for an order
+  with a line priced in USD at 100 or more, in memory and in one SQL
+  `EXISTS`, `in_` and `range` too, and so does a `FilterSet` filter of
+  `lines.price` with its amounts and `<name>_currency`. Its currency and
+  its amount went through the lines each on its own, so an order of 1 USD
+  and 1000 EUR matched (SEC-14a-1).
+- The money attribute `map_imperatively` maps compares as money in
+  SQLAlchemy's own queries: `Wallet.balance < Money.of("100", "USD")` is
+  the currency equal and the amount less, `==` both columns, `!=` its
+  negation (true of no money), and `== None` a missing amount; anything
+  but money is a `TypeError`. It compared each column on its own, so `<
+  100 USD` found 10 EUR (SEC-14a-2).
+- `makemigrations` writes the both-or-neither check of a nullable money
+  field added to a table that exists (in batch mode on SQLite), and
+  `table_for` derives it when only the amount column is given
+  (`money_check`). A row holding half a pair all the same fails to load
+  with `IncompleteMoney`, not a `TypeError` (SEC-14a-3).
+- Money is immutable against a second `__init__`, as `Currency` is; a
+  `Currency` made by hand is checked against the known one of its code,
+  so `Money` and `CurrencyCode` refuse one with other units
+  (`UnknownCurrency`); an amount past 38 digits, a product's too, is a
+  `MoneyError` (422), not a `ValueError` (500); and the test plugin drops
+  the currencies a test registers before any domain is loaded. The
+  transfer `startaggregate` writes, and `docs/databases.md`, say what a
+  project adds to it: idempotency, and a rule on who may move the money.
+  The security review's notes on money (FIN-01).
+- `contrib.accounting`: the sources that start with `accounting.` are the
+  ledger's own, and `post_entry` (`POST /entries`, `defer_entry`) refuses
+  them (`invalid_entry`). A caller who could post entries could take a
+  reversal's or a capture's source and reference first: `reverse_entry`
+  then returned that entry as the reversal, and the hold could never be
+  captured (a unique violation, 500 on SQLite). A reversal is now only an
+  entry that reverses the one asked, and a capture takes the entry's lock
+  and looks first, as every posting does; an entry already there is
+  refused (`reference_reused`). A posting from a message that lost its
+  race `RETRY_ATTEMPTS` times is retried by the worker, not dead-lettered
+  (SEC-14b-1).
+- `contrib.accounting`: `accounting.E001` counts an append-only trigger
+  only as `migrate` makes it: enabled, of its type, with no `WHEN` and no
+  column list, running the table's own function with its body. A trigger
+  that never fired, or that ran another function, passed the check and
+  let entries and postings change. `migrate` makes the triggers and their
+  functions afresh each time (SEC-14b-2).
+- `contrib.accounting`: a statement with a field over 128 KiB is refused
+  (`invalid_statement`), and a hold's `expires_at` must have a time zone
+  and be at most 366 days away (`invalid_entry`; a time without a zone is
+  a 422 over HTTP); both answered 500. `verify_ledger` also checks that
+  each account's `held` is the sum of its active holds, and `check` warns
+  where deployed without messaging, as no worker then releases expired
+  holds (`accounting.W003`) (SEC-14b-3).
+- `contrib.accounting`: a statement line's id, reference, and description
+  with control characters are refused (`invalid_statement`), as an
+  entry's reference is, whatever the `StatementSource`: `manage.py
+  accounting unmatched` wrote them to the operator's terminal. A line
+  imported again under its id with another date, amount, reference, or
+  description is refused, where it was skipped, and a matching rule that
+  pairs a line or posting it was not given (another account's) fails the
+  reconciliation (SEC-14b-4).
+- The accounting guide opened a wallet under `code=f"2100-{user.id}"`,
+  which erasure leaves in place (and which a UUID makes too long for a
+  code): the example takes an opaque code, with the person in `holder`
+  alone. `docs/privacy.md` says what erasure keeps: codes, names,
+  references, descriptions, and memos as written (SEC-14b-5).
+- A key left with held messages and none pending is released. Only the
+  transaction that finishes a key's message made the next one pending, so
+  a 0.13 worker that finished a message 0.14 wrote during a rolling deploy
+  left the rest of its key, and every later message of it, waiting for
+  good. Each cleanup round (`prune_keys`) now makes the first held message
+  of such a key pending, under the key's turn, through the ordering index,
+  and logs it; `messages --release` (`admin.release_stalled`) does it at
+  once. The upgrade guide says to stop 0.13 workers before 0.14 processes
+  write keyed messages (SEC-14c-3).
+- `messages --retry` puts a dead letter of a key back where the docs said:
+  before the key's pending message too, while no worker has started it and
+  no relay holds it for the broker, which is held again behind it. It
+  went after any pending message, so a message promoted when the older
+  one died ran first (SEC-14c-1).
+- `@ordered("name")` on a task must name one of the task's arguments (or
+  the task takes `**kwargs`): `@task` and `@periodic` refuse it with
+  `ImproperlyConfigured`, before or after `@ordered`. A misspelt name left
+  every message without a key, unordered, and nothing said so
+  (SEC-14c-2).
+- `messages --cancel`, the listings and the lag judge a lease by the
+  earlier of the process's clock and, on PostgreSQL, the database's, which
+  locks it: a host whose clock ran ahead could cancel a running message
+  and start the next of its key beside it. `--retry` makes messages due by
+  the database's clock (SEC-14c-4).
+- An ordering key no outbox can store, longer than 255 characters or
+  holding a NUL character, is refused with `ValueError` where it is given
+  (`uow.defer`, `enqueue`, `DeferredTask`), not by the database at commit;
+  the docs say to namespace keys, never to take them raw from a request,
+  and to keep personal data out of them, as erasure and export do not
+  reach them (SEC-14c-2).
+
 ## [0.13.0] - 2026-10-29
 
 A minor release. It removes what 0.12 deprecated: the hook methods of

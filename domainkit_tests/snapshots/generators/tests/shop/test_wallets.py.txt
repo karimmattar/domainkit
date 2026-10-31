@@ -1,0 +1,57 @@
+"""The Wallet aggregate: its model, its use cases, and its resource."""
+
+import pytest
+from gen.shop.application import services
+from gen.shop.application.commands import CreateWallet, DeleteWallet
+from gen.shop.domain.events import WalletCreated, WalletDeleted
+from gen.shop.domain.model import Wallet, WalletNotFound
+
+from domainkit.money import Money
+from domainkit.testing import TestClient
+
+from .fakes import FakeShopUnitOfWork, new_wallet_request
+
+URL = "/api/v1/shop/wallets"
+
+
+def test_create_and_delete_record_events() -> None:
+    """A new wallet records WalletCreated; deleting it, WalletDeleted."""
+    wallet = Wallet.create(
+        balance=Money.of("1.50", "USD"), owed=Money.of("1.50", "USD")
+    )
+    wallet.delete()
+
+    created, deleted = wallet.pull_events()
+    assert isinstance(created, WalletCreated)
+    assert isinstance(deleted, WalletDeleted)
+    assert created.wallet_id == deleted.wallet_id == wallet.id
+
+
+@pytest.mark.anyio
+async def test_use_cases_store_and_remove() -> None:
+    """Creating stores and commits; deleting removes; a missing one is not found."""
+    uow = FakeShopUnitOfWork()
+
+    wallet = await services.create_wallet(
+        CreateWallet(balance=Money.of("1.50", "USD"), owed=Money.of("1.50", "USD")), uow
+    )
+    assert uow.wallets.items == {wallet.id: wallet}
+    await services.delete_wallet(DeleteWallet(wallet_id=wallet.id), uow)
+
+    assert uow.wallets.items == {}
+    with pytest.raises(WalletNotFound):
+        await services.delete_wallet(DeleteWallet(wallet_id=wallet.id), uow)
+
+
+def test_resource(admin_client: TestClient) -> None:
+    """Create, read, list, and delete over HTTP."""
+    created = admin_client.post(URL, json=new_wallet_request())
+    assert created.status_code == 201, created.json()
+    item = created.headers["location"]
+
+    assert admin_client.get(item).json() == created.json()
+    assert [each["id"] for each in admin_client.get(URL).json()["items"]] == [
+        created.json()["id"]
+    ]
+    assert admin_client.delete(item).status_code == 204
+    assert admin_client.get(item).status_code == 404

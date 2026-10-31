@@ -22,7 +22,7 @@ statuses, and the amendments they name.
 | [0002](0002-django-conventions-for-ddd-services.md) | Django's conventions for domain-driven services | Accepted |
 | [0003](0003-enforced-layer-rules.md) | Layer rules enforced by `check` | Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), and 2026-10-25 (at the end) |
 | [0004](0004-async-sqlalchemy-imperative-mapping.md) | Async SQLAlchemy with imperative mapping | Accepted; amended 2026-10-25 (at the end) |
-| [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted |
+| [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted; amended by [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md) |
 | [0006](0006-environment-prefix-from-project-name.md) | Environment variable prefix from the project name | Accepted |
 | [0007](0007-own-repository-released-to-pypi.md) | Its own repository, released to PyPI | Accepted; amended 2026-10-26 (at the end) |
 | [0008](0008-multiple-databases-and-routing.md) | Several databases: two kinds, routed by domain | Accepted |
@@ -121,6 +121,10 @@ statuses, and the amendments they name.
 | [0112](0112-refuse-the-test-databases-to-a-test-that-did-not-request-them.md) | Refuse the test databases to a test that did not request them | Accepted |
 | [0113](0113-reset-module-state-through-public-resets-the-plugin-calls.md) | Reset module state through public resets the plugin calls | Accepted |
 | [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) | Split the reference and the public API into pages by area | Accepted |
+| [0115](0115-store-money-as-an-exact-amount-and-a-currency-code.md) | Store money as an exact amount and a currency code | Accepted |
+| [0116](0116-keep-double-entry-books-locked-in-id-order-and-append-only.md) | Keep double-entry books: post under locks taken in id order, and append only | Accepted |
+| [0117](0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md) | Reconcile statements through a port, match by rules in order, and record breaks | Accepted |
+| [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md) | Run a key's messages in commit order by holding the later ones in the outbox | Accepted; amended 2026-10-30 (at the end) |
 
 ### Decisions still without a record
 

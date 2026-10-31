@@ -26,6 +26,7 @@ from domainkit.conf.global_settings import (
     ShardConfig,
     StorageConfig,
 )
+from domainkit.contrib.accounting import AccountingSettings
 from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.auth.settings import (
     AuthSettings,
@@ -96,6 +97,7 @@ def documented(pages: str) -> set[str]:
         (EvidenceSettings, "contrib/evidence.md"),
         (FlagsSettings, "contrib/flags.md"),
         (WebhookSettings, "contrib/webhooks.md"),
+        (AccountingSettings, "contrib/accounting.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (PreviousJWTKey, "auth.md"),
@@ -405,6 +407,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (DebugToolbarConfig, REFERENCE, "DEBUG_TOOLBAR"),
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
     (WebhookSettings, "contrib/webhooks.md", "WEBHOOKS"),
+    (AccountingSettings, "contrib/accounting.md", "ACCOUNTING"),
     (AuditSettings, "contrib/audit.md", "AUDIT"),
     (IdempotencySettings, "contrib/idempotency.md", "IDEMPOTENCY"),
     (EvidenceSettings, "contrib/evidence.md", "EVIDENCE"),
@@ -585,7 +588,7 @@ def test_every_setting_row_states_its_default_and_bounds(
 
 AUDIT_PAGE = DOCS / "audit" / "0.9.0.md"
 _AUDIT_ID = re.compile(
-    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|1[0-3][abc]|121)-\d+|"
+    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|1[0-4][abc]|121)-\d+|"
     r"(?:PERF|FIN|AUTH|CONC|WEB|DATA|TEST|INFRA|DOCS|DSGN)-\d+)\b"
 )
 

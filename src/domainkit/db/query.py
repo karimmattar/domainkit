@@ -10,6 +10,10 @@ The compiled SQL keeps the semantics the in-memory repository has:
 - A condition on a nullable column is also false where the column is NULL,
   so ``NOT`` negates exactly (two-valued logic, as in Python).
 - ``NULLS LAST`` ascending, ``NULLS FIRST`` descending, on every database.
+- A money attribute (``MoneyColumns``) is its two columns: conditions on
+  money come bound as conditions on ``total.amount`` and ``total.currency``
+  (``domainkit.ddd.query``), which name them; ``isnull`` looks at the
+  amount, and ordering sorts by currency, then amount.
 - Text lookups never use the pattern characters of the text they are given:
   on PostgreSQL they become ``LIKE`` with ``%``, ``_`` and the escape
   character escaped; on SQLite, whose ``LIKE`` ignores ASCII case, they use
@@ -26,7 +30,8 @@ from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.expression import type_coerce
 from sqlalchemy.sql.schema import Column
 
-from domainkit.ddd.fields import InvalidQuery, UnknownField
+from domainkit.db.money import money_columns
+from domainkit.ddd.fields import MONEY_PARTS, InvalidQuery, UnknownField
 from domainkit.ddd.query import (
     CASE_FOLDED,
     ORDERING_LOOKUPS,
@@ -37,6 +42,7 @@ from domainkit.ddd.query import (
     Not,
     Or,
     Ordering,
+    Within,
 )
 
 __all__ = [
@@ -102,6 +108,8 @@ def compile_criteria(
         return or_(*(compile_criteria(p, model, dialect) for p in criteria.parts))
     if isinstance(criteria, Not):
         return not_(compile_criteria(criteria.part, model, dialect))
+    if isinstance(criteria, Within):
+        return _within(criteria.relation, criteria.criteria, mapper, dialect)
     compiler = _COMPILERS.get(type(criteria))
     if compiler is not None:
         return compiler(criteria, model, dialect)
@@ -115,11 +123,13 @@ def compile_ordering(
     mapper = mapper_of(model)
     terms = []
     for item in ordering:
-        column = column_of(mapper, item.field)
-        term = column.desc() if item.descending else column.asc()
-        if column.nullable:
-            term = term.nulls_first() if item.descending else term.nulls_last()
-        terms.append(term)
+        money = money_columns(mapper, item.field)
+        columns = reversed(money) if money else [column_of(mapper, item.field)]
+        for column in columns:  # Money: the currency, then the amount.
+            term = column.desc() if item.descending else column.asc()
+            if column.nullable:
+                term = term.nulls_first() if item.descending else term.nulls_last()
+            terms.append(term)
     return terms
 
 
@@ -142,22 +152,69 @@ def _condition(
 ) -> ColumnElement[bool]:
     """One condition; a dotted name becomes ``EXISTS`` through the relationship."""
     head, _, rest = name.partition(".")
-    if rest:
-        if head not in mapper.relationships:
-            raise UnknownField(
-                f"{mapper.class_.__name__}.{head} is not a mapped relationship."
-            )
-        relationship = mapper.relationships[head]
-        inner = _condition(rest, lookup, value, relationship.mapper, dialect)
-        attribute = getattr(mapper.class_, head)
-        exists = attribute.any(inner) if relationship.uselist else attribute.has(inner)
-        return cast("ColumnElement[bool]", exists)
-    column = column_of(mapper, head)
+    if (money := money_columns(mapper, head)) is not None:
+        column = _money_column(money, rest)
+    elif rest:
+        return _through(
+            mapper,
+            head,
+            lambda child: _condition(rest, lookup, value, child, dialect),
+        )
+    else:
+        column = column_of(mapper, head)
     expression = _compare(column, lookup, value, dialect)
     total = lookup is Lookup.ISNULL or (lookup is Lookup.EXACT and value is None)
     if column.nullable and not total:
         return and_(column.is_not(None), expression)
     return expression
+
+
+def _within(
+    name: str, criteria: Criteria, mapper: Mapper[Any], dialect: str
+) -> ColumnElement[bool]:
+    """``criteria`` on one child entity at the relation ``name``: one ``EXISTS``."""
+    head, _, rest = name.partition(".")
+    if rest:
+        return _through(
+            mapper, head, lambda child: _within(rest, criteria, child, dialect)
+        )
+    return _through(
+        mapper,
+        head,
+        lambda child: compile_criteria(criteria, child.class_, dialect),
+    )
+
+
+def _through(
+    mapper: Mapper[Any],
+    name: str,
+    inner: Callable[[Mapper[Any]], ColumnElement[bool]],
+) -> ColumnElement[bool]:
+    """``EXISTS`` a row related through ``name`` that meets ``inner`` of its mapper.
+
+    Raises:
+        UnknownField: ``name`` is not a mapped relationship.
+    """
+    if name not in mapper.relationships:
+        raise UnknownField(
+            f"{mapper.class_.__name__}.{name} is not a mapped relationship."
+        )
+    relationship = mapper.relationships[name]
+    condition = inner(relationship.mapper)
+    attribute = getattr(mapper.class_, name)
+    exists = (
+        attribute.any(condition) if relationship.uselist else attribute.has(condition)
+    )
+    return cast("ColumnElement[bool]", exists)
+
+
+def _money_column(money: tuple[Column[Any], ...], part: str) -> Column[Any]:
+    """The column of a money attribute's part: the amount, unless the currency.
+
+    Bound criteria name only ``amount`` and ``currency`` (``resolve``), or
+    no part for ``isnull``.
+    """
+    return money[1] if part == MONEY_PARTS[1] else money[0]
 
 
 def _compare(

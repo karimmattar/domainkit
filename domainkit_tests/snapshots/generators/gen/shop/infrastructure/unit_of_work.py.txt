@@ -11,6 +11,9 @@ from gen.shop.domain.model import (
     Product,
     ProductId,
     ProductRepository,
+    Wallet,
+    WalletId,
+    WalletRepository,
 )
 
 
@@ -29,6 +32,7 @@ class SqlAlchemyShopUnitOfWork(SqlAlchemyUnitOfWork, ShopUnitOfWork):
         """Bind the repositories to ``session``."""
         self.products = SqlAlchemyProductRepository(session)
         self.categories = SqlAlchemyCategoryRepository(session)
+        self.wallets = SqlAlchemyWalletRepository(session)
 
 
 class SqlAlchemyCategoryRepository(
@@ -37,3 +41,11 @@ class SqlAlchemyCategoryRepository(
     """Category storage in the ``shop_categories`` table."""
 
     model = Category
+
+
+class SqlAlchemyWalletRepository(
+    SqlAlchemyRepository[Wallet, WalletId], WalletRepository
+):
+    """Wallet storage in the ``shop_wallets`` table."""
+
+    model = Wallet

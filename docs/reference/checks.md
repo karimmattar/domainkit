@@ -58,7 +58,11 @@ no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
 schedule, and at startup `audit.E004` and `audit.E005`, an audited
 PostgreSQL database whose `protect()` triggers could not be checked or are
 missing, unless `AUDIT.REQUIRE_BASELINE = False`;
-[contrib.md](../contrib/audit.md#in-staging-and-production)); `setup()` refuses a domain whose `requires` is not
+[contrib.md](../contrib/audit.md#in-staging-and-production); and at
+startup `accounting.E001` and `accounting.E002`, a ledger on PostgreSQL
+whose append-only triggers are missing, disabled, or changed, or could
+not be checked, unless `ACCOUNTING.REQUIRE_PROTECTION = False`
+([accounting.md](../contrib/accounting.md#entries))); `setup()` refuses a domain whose `requires` is not
 installed (`apps.E001`), or that defines a hook method 0.13 removed
 (`apps.E002`), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
@@ -90,11 +94,14 @@ an unsafe or broken configuration, refused until it changes.
 | `servers.W002` | a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no caller has an address ([Server limits](servers.md); a deployed application also logs it at start) |
 | `live.W001` | WebSockets served without `WebSocketLimitsMiddleware` ([live.md](../live.md#message-size)) |
 | `blocking.W001` | a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](../runtime.md#finding-blocking-code)); in every environment |
+| `blocking.W002` | an event handler (in-process or durable) or a messaging task written as `def`: it is awaited on the event loop itself, so its work holds every request and message of the process, and the keys of the messages waiting behind it, then it fails, as it returns nothing to await ([runtime.md](../runtime.md#finding-blocking-code)); in every environment. `allow_sync` marks one that returns an awaitable on purpose |
 | `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](../auth/authentication.md#the-principal-cache)) |
 | `auth.W002`, `auth.W003` | `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None`: guesses without limit |
 | `auth.W004` | with `AUTH.REQUIRE_SHARED_THROTTLES = False` only: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own; what `auth.E105` refuses ([auth.md](../auth/logging-in.md#logging-in-and-out)) |
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](../auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
+| `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
+| `accounting.W003` | the ledger without `domainkit.contrib.messaging`: no worker releases expired holds, which keep counting against what is available; silence it once `manage.py accounting expireholds` runs on the project's own schedule ([accounting.md](../contrib/accounting.md#holds)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
 
 `idempotency.W002` (0.10: `IDEMPOTENCY.ANONYMOUS` left unset, so

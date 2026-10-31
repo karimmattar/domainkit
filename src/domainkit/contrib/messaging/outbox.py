@@ -5,6 +5,9 @@ notifies the workers (``NOTIFY domainkit_messages``), so an idle worker
 starts them right after the commit instead of on its next poll. The row
 stays the record: a notification is only a hint, sent when the transaction
 commits and lost harmlessly when no worker listens.
+
+A message with an ordering key takes its key's turn first, and is written
+``held`` when an earlier message of the key still waits (``ordering``).
 """
 
 import logging
@@ -32,10 +35,13 @@ from .registry import (
     CHAIN,
     Chain,
     Task,
+    checked_key,
     dump_arguments,
     dump_event,
+    event_key,
     qualified_name,
     spec_for,
+    task_key,
 )
 from .settings import MessagingSettings
 from .tables import DEFAULT_QUEUE, PENDING, messages
@@ -101,8 +107,9 @@ def message_row(
     dedupe_key: str | None = None,
     available_at: datetime | None = None,
     priority: int = 0,
+    ordering_key: str | None = None,
 ) -> dict[str, Any]:
-    """Build one pending outbox row."""
+    """Build one pending outbox row (``write`` holds a keyed one back if it must)."""
     now = _now()
     return {
         "id": uuid.uuid4(),
@@ -118,6 +125,7 @@ def message_row(
         "available_at": available_at or now + (delay or timedelta(0)),
         "created_at": now,
         "dedupe_key": dedupe_key,
+        "ordering_key": ordering_key,
     }
 
 
@@ -127,7 +135,11 @@ def rows_for(
     bus: EventBus,
     config: MessagingSettings,
 ) -> list[dict[str, Any]]:
-    """Turn committed events (one row per durable handler) and tasks into rows."""
+    """Turn committed events (one row per durable handler) and tasks into rows.
+
+    A row's ordering key is the one ``defer`` was given, or the one its task
+    or handler declares (``ordered``); a chain's, its first step's.
+    """
     rows = [
         message_row(
             kind="event",
@@ -135,6 +147,7 @@ def rows_for(
             payload=dump_event(event),
             headers=context_headers(event_type=qualified_name(type(event))),
             max_attempts=config.MAX_ATTEMPTS,
+            ordering_key=event_key(handler, event),
         )
         for event in events
         for handler in bus.handlers_for(type(event), durable=True)
@@ -147,6 +160,7 @@ def rows_for(
             spec = spec_for(function.steps[0])
         else:
             spec = spec_for(deferred.function)
+        key = checked_key(deferred.ordering_key)
         rows.append(
             message_row(
                 kind="task",
@@ -158,43 +172,95 @@ def rows_for(
                 delay=deferred.delay,
                 dedupe_key=deferred.dedupe_key,
                 priority=spec.priority,
+                ordering_key=key or task_key(spec.function, deferred.kwargs),
             )
         )
     return rows
 
 
-def insert_statements(dialect: str, rows: Sequence[dict[str, Any]]) -> list[Insert]:
-    """Build inserts; rows with a ``dedupe_key`` skip keys that already exist.
+def _on_database_clock(
+    dialect: str, rows: Sequence[dict[str, Any]]
+) -> Sequence[dict[str, Any]]:
+    """``rows``, those due at once made due by the database's clock where it decides.
 
-    Where the database's clock decides (``dbclock``), a message due at once
-    is due by that clock too: a writer whose clock runs ahead does not make
-    it wait out the difference.
+    A writer whose clock runs ahead does not make them wait out the
+    difference (``dbclock``).
     """
-    if dbclock.uses_database(dialect):
-        now = dbclock.now(dialect)
-        rows = [
-            {**row, "available_at": func.least(_utc(row["available_at"]), now)}
-            if row["available_at"] <= row["created_at"]
-            else row
-            for row in rows
-        ]
+    if not dbclock.uses_database(dialect):
+        return rows
+    now = dbclock.now(dialect)
+    return [
+        {**row, "available_at": func.least(_utc(row["available_at"]), now)}
+        if row["available_at"] <= row["created_at"]
+        else row
+        for row in rows
+    ]
+
+
+def _deduplicating(dialect: str) -> Any:  # noqa: ANN401 - the dialect's insert.
+    """The insert of ``dialect`` that can skip rows whose ``dedupe_key`` exists."""
+    if dialect == "postgresql":
+        return postgresql.insert(messages)
+    if dialect == "sqlite":
+        return sqlite.insert(messages)
+    raise ImproperlyConfigured(
+        f"Deduplicated messages need PostgreSQL or SQLite, not {dialect}."
+    )
+
+
+def insert_statements(dialect: str, rows: Sequence[dict[str, Any]]) -> list[Insert]:
+    """Build inserts of rows without an ordering key (``write`` adds the others).
+
+    Rows with a ``dedupe_key`` skip keys that already exist. Where the
+    database's clock decides (``dbclock``), a message due at once is due by
+    that clock too.
+    """
+    rows = _on_database_clock(dialect, rows)
     plain = [row for row in rows if row["dedupe_key"] is None]
-    keyed = [row for row in rows if row["dedupe_key"] is not None]
+    deduped = [row for row in rows if row["dedupe_key"] is not None]
     statements: list[Insert] = [insert(messages).values(plain)] if plain else []
-    if keyed:
-        if dialect == "postgresql":
-            statement: Any = postgresql.insert(messages)
-        elif dialect == "sqlite":
-            statement = sqlite.insert(messages)
-        else:
-            raise ImproperlyConfigured(
-                f"Deduplicated messages need PostgreSQL or SQLite, not {dialect}."
-            )
+    if deduped:
         statements.append(
-            statement.values(keyed).on_conflict_do_nothing(
-                index_elements=["dedupe_key"]
-            )
+            _deduplicating(dialect)
+            .values(deduped)
+            .on_conflict_do_nothing(index_elements=["dedupe_key"])
         )
+    return statements
+
+
+async def _ordered_statements(
+    executor: AsyncSession | AsyncConnection,
+    dialect: str,
+    rows: Sequence[dict[str, Any]],
+) -> list[Insert]:
+    """Take the turns of the keys of ``rows``; build one insert per row, in order.
+
+    Each row gets the next sequence of its key, and is held if an earlier
+    message of the key still waits, this transaction's included: each
+    insert sees the ones before it.
+    """
+    if not rows:
+        return []
+    from . import ordering  # Loaded by the first commit of a key (PERF-15).
+
+    sequences = await ordering.take_turns(executor, dialect, ordering.counts_of(rows))
+    statements: list[Insert] = []
+    for row in _on_database_clock(dialect, rows):
+        key = row["ordering_key"]
+        values = {
+            **row,
+            "sequence": sequences[key],
+            "status": ordering.first_status(key),
+        }
+        sequences[key] += 1
+        if row["dedupe_key"] is None:
+            statements.append(insert(messages).values(values))
+        else:
+            statements.append(
+                _deduplicating(dialect)
+                .values(values)
+                .on_conflict_do_nothing(index_elements=["dedupe_key"])
+            )
     return statements
 
 
@@ -205,20 +271,31 @@ async def write(
 ) -> None:
     """Insert ``rows`` through an async session or connection.
 
+    Rows without an ordering key go first; then, for those with one, each
+    key's turn is taken (``ordering``) and they go one at a time.
+
     On PostgreSQL, also notify the queues of the rows due at once, when
     ``notifies`` says so; the notification goes out with the commit. Only
-    rows the inserts return count: one skipped for its ``dedupe_key``
-    (a periodic slot every worker queues, say) wakes no worker.
+    rows the inserts return pending count: one skipped for its
+    ``dedupe_key`` (a periodic slot every worker queues, say), or held
+    behind an earlier message of its key, wakes no worker.
     """
-    statements = insert_statements(dialect, rows)
+    statements = insert_statements(
+        dialect, [row for row in rows if row.get("ordering_key") is None]
+    )
+    statements += await _ordered_statements(
+        executor, dialect, [row for row in rows if row.get("ordering_key") is not None]
+    )
     if dialect != "postgresql" or not notifies(registry.settings(MessagingSettings)):
         for statement in statements:
             await executor.execute(statement)
         return
     inserted: set[uuid.UUID] = set()
     for statement in statements:
-        result = await executor.execute(statement.returning(messages.c.id))
-        inserted.update(result.scalars())
+        result = await executor.execute(
+            statement.returning(messages.c.id, messages.c.status)
+        )
+        inserted.update(id_ for id_, status in result.all() if status == PENDING)
     due = {
         row["queue"]
         for row in rows
@@ -235,9 +312,13 @@ async def enqueue(
     *,
     delay: timedelta | None = None,
     dedupe_key: str | None = None,
+    ordering_key: str | None = None,
     **kwargs: object,
 ) -> None:
     """Queue ``function(**kwargs)`` now, in its own transaction.
+
+    ``ordering_key`` (or the key the task declares, ``ordered``) runs it
+    after the messages of its key committed before, one at a time.
 
     Inside a use case prefer ``uow.defer``: the task is then stored only if
     the business change commits. Installed domains join the transaction as
@@ -247,7 +328,7 @@ async def enqueue(
     so a retry does not queue it again.
     """
     config = registry.settings(MessagingSettings)
-    task = DeferredTask(function, kwargs, delay, dedupe_key)
+    task = DeferredTask(function, kwargs, delay, dedupe_key, ordering_key)
     rows = rows_for((), [task], EventBus(), config)
     async with connections.engine(config.DATABASE).begin() as connection:
         await write(connection, connection.dialect.name, rows)

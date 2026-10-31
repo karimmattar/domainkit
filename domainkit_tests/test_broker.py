@@ -489,7 +489,7 @@ def test_broker_command_checks_and_declares(monkeypatch: pytest.MonkeyPatch) -> 
         ALPHA=UNSET,
     ):
         setup()
-        with pytest.raises(CommandError, match=r"declare needs MESSAGING\.BROKER"):
+        with pytest.raises(CommandError, match=r"^declare needs MESSAGING\.BROKER\.$"):
             run("broker", "declare")
         registry.clear()
         with override_settings(MESSAGING={"BROKER": "rabbit"}):
