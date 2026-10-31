@@ -627,3 +627,26 @@ def test_a_subjects_key_erased_while_it_is_stored_is_given_up_on() -> None:
     with pytest.raises(KeyStoreConflict, match="3 attempts"):
         TableSubjectKeyStore().add(connection, key)  # type: ignore[arg-type]
     assert connection.statements == 6
+
+
+def test_two_writers_of_a_subjects_first_key_both_keep_the_first(
+    database_url: str, tmp_path: Path
+) -> None:
+    """The second insert conflicts and returns the key stored first."""
+    from domainkit.contrib.keys.store import TableSubjectKeyStore
+    from domainkit.keys.ring import StoredSubjectKey
+
+    first = StoredSubjectKey("a" * 32, "ann", "dev", b"\x01" * 60)
+    second = StoredSubjectKey("b" * 32, "ann", "dev", b"\x02" * 60)
+
+    async def store_both() -> tuple[StoredSubjectKey, StoredSubjectKey]:
+        store = TableSubjectKeyStore()
+        async with connections.engine("default").begin() as connection:
+            made = await connection.run_sync(store.add, first)
+            kept = await connection.run_sync(store.add, second)
+        return made, kept
+
+    with project(database_url, tmp_path):
+        made, kept = run_async(store_both())
+    assert made is first
+    assert (kept.id, kept.wrapped) == (first.id, first.wrapped)
