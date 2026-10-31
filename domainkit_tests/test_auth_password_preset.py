@@ -1,6 +1,7 @@
 """PCI DSS v4.0's passwords: the preset, the history, and the change on first use."""
 
 import io
+import itertools
 from datetime import timedelta
 from typing import Any
 
@@ -9,9 +10,21 @@ from sqlalchemy import select
 
 from domainkit.checks import CheckFailed
 from domainkit.clock import freeze_time
-from domainkit.contrib.auth import AuthUnitOfWork, InvalidPassword, UserId
+from domainkit.contrib.auth import (
+    AuthUnitOfWork,
+    InvalidPassword,
+    UserId,
+    acheck_password,
+    amake_password,
+    repositories,
+)
 from domainkit.contrib.auth.management.commands import changepassword
-from domainkit.contrib.auth.settings import AuthSettings, _with_preset
+from domainkit.contrib.auth.settings import (
+    AuthSettings,
+    ScaSettings,
+    StepUpSettings,
+    _with_preset,
+)
 from domainkit.contrib.auth.tables import password_history
 from domainkit.contrib.auth.validators import (
     LettersAndDigitsValidator,
@@ -364,18 +377,120 @@ async def _set_for_alice(password: str) -> None:
         await uow.commit()
 
 
-def test_the_change_ends_the_users_other_logins(api: Api) -> None:
-    """As a change of password does."""
-    client, root = admin(api, PASSWORD_CHANGE_ON_FIRST_USE=True)
-    alice = create_user("alice", PASSWORD)
+def test_the_change_ends_the_users_other_logins(
+    identity: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As a change of password does; hashed in the places kept for changes."""
+    client = identity(PASSWORD_CHANGE_ON_FIRST_USE=True)
+    create_user("alice", PASSWORD)
     before = bearer(log_in(client, PASSWORD).json()["access_token"])
-    client.post(
-        f"{ADMIN}/users/{alice}/password", json={"password": STRONG[0]}, headers=root
+    run_async(_set_for_alice(STRONG[0]))
+    asked: list[object] = []
+    making = amake_password
+
+    async def spy(password: str, **options: Any) -> str:  # noqa: ANN401
+        asked.append(options.get("priority"))
+        made: str = await making(password, **options)
+        return made
+
+    monkeypatch.setattr(repositories, "amake_password", spy)
+
+    asked_for = log_in(client, STRONG[0])
+    similar = log_in(client, STRONG[0], new_password="alice-x91")
+    changed = log_in(client, STRONG[0], new_password=STRONG[1])
+
+    assert asked_for.json()["detail"] == (
+        "This password was set for you: choose a new one to log in."
     )
-
-    log_in(client, STRONG[0], new_password=STRONG[1])
-
+    assert "too similar to the username" in similar.json()["detail"]
+    assert changed.status_code == 200
+    assert asked == [True]
     assert client.get("/whoami", headers=before).status_code == 401
+
+
+def test_hashing_for_a_change_keeps_its_priority(
+    identity: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The history's checks and the new hash both use the caller's priority."""
+    identity(PASSWORD_HISTORY=4)
+    create_user("alice", STRONG[0])
+    seen: list[tuple[str, object]] = []
+    checking, making = acheck_password, amake_password
+
+    async def check(password: str, encoded: str, **options: Any) -> bool:  # noqa: ANN401
+        seen.append(("check", options.get("priority")))
+        held: bool = await checking(password, encoded, **options)
+        return held
+
+    async def make(password: str, **options: Any) -> str:  # noqa: ANN401
+        seen.append(("make", options.get("priority")))
+        made: str = await making(password, **options)
+        return made
+
+    monkeypatch.setattr(repositories, "acheck_password", check)
+    monkeypatch.setattr(repositories, "amake_password", make)
+
+    async def change_to(password: str, **options: bool) -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key("alice")
+            assert user is not None
+            await uow.users.set_password(user, password, **options)
+            await uow.commit()
+
+    run_async(change_to(STRONG[1], priority=True))
+    urgent, seen[:] = list(seen), []
+    run_async(change_to(STRONG[2]))
+
+    assert urgent == [("check", True), ("make", True)]
+    assert seen == [("check", False), ("check", False), ("make", False)]
+
+
+def test_a_shorter_history_checks_the_newest_only(identity: Api) -> None:
+    """Rows kept under a longer history: the newest of them count."""
+    client = identity(PASSWORD_HISTORY=4)
+    create_user("alice", STRONG[0])
+    headers = bearer(log_in(client, STRONG[0]).json()["access_token"])
+    for old, new in itertools.pairwise(STRONG):
+        assert change(client, headers, old, new).status_code == 204
+    client = identity(PASSWORD_HISTORY=2)
+    headers = bearer(log_in(client, STRONG[3]).json()["access_token"])
+
+    assert change(client, headers, STRONG[3], STRONG[2]).status_code == 422
+    assert change(client, headers, STRONG[3], STRONG[1]).status_code == 204
+
+
+def test_staff_mark_the_newest_password_only(identity: Api) -> None:
+    """``require_change`` marks the current one; older ones stay as they were."""
+    identity(PASSWORD_HISTORY=4, PASSWORD_CHANGE_ON_FIRST_USE=True)
+    alice = create_user("alice", STRONG[0])
+
+    async def mark() -> bool:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key("alice")
+            assert user is not None
+            await uow.users.set_password(user, STRONG[1])
+            await uow.commit()
+        async with AuthUnitOfWork() as uow:
+            await uow.passwords.require_change(alice)
+            await uow.commit()
+        async with AuthUnitOfWork() as uow:
+            return await uow.passwords.must_change(alice)
+
+    assert run_async(mark()) is True
+    assert [row["temporary"] for row in history_rows()] == [False, True]
+
+
+def test_methods_say_what_is_wrong() -> None:
+    """A second factor is required; each method once."""
+    with pytest.raises(ValueError, match="no second factor") as alone:
+        StepUpSettings(METHODS=("pwd",))
+    with pytest.raises(ValueError, match="each method once") as twice:
+        ScaSettings(METHODS=("otp", "otp"))
+
+    assert 'METHODS must hold "otp": a password alone is no second factor' in str(
+        alone.value
+    )
+    assert "METHODS lists each method once" in str(twice.value)
 
 
 def test_without_the_setting_a_staff_password_just_works(api: Api) -> None:
