@@ -218,6 +218,7 @@ Money: an amount in a currency, exact, with named rounding and allocation.
 
 - `ISO_4217_PUBLISHED`: The date of the ISO 4217 list the known currencies come from (`iso4217.csv`).
 - `MAX_DIGITS`: The most digits an amount has before its point, as `NUMERIC(38)` holds.
+- `AmountOutOfRange`: An amount where it is kept cannot hold it: too many digits, or places.
 - `Currency`: A currency: its code, its ISO 4217 numeric code, and its minor units.
 - `CurrencyMismatch`: Amounts of two currencies were added, subtracted, or compared.
 - `InexactAmount`: An amount with more places than its currency has; nothing is rounded.

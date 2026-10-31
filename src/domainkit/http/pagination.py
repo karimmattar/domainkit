@@ -73,7 +73,7 @@ from domainkit.ddd.query import (
 )
 from domainkit.ddd.repository import Repository
 from domainkit.http.errors import APIError
-from domainkit.money import Currency, Money
+from domainkit.money import MAX_MINOR_UNITS, Currency, Money
 from domainkit.utils.decimals import decimal_text
 
 CURSOR_PATTERN: Final = r"^[A-Za-z0-9_-]+$"
@@ -291,9 +291,13 @@ def _value_size(field: FieldInfo) -> int:
                 "Digits(precision, scale)], or do not order by it."
             )
         size = _amount_size(digits)
-    elif kind is Money:  # ["10.50","USD"]: the amount, as its column bounds it.
+    elif kind is Money:  # ["10.50","USD"]: the column's whole digits, at its
+        # currency's places, which may be more than the column's (a column of 2
+        # holds 1.50 of a currency of 3, written 1.500): up to MAX_MINOR_UNITS.
         digits = field.marker(Digits) or _MONEY_DIGITS
-        size = 3 + _amount_size(digits) + _SIZES[Currency]
+        whole = digits.precision - digits.scale
+        size = 3 + _digits_size(whole, max(digits.scale, MAX_MINOR_UNITS))
+        size += _SIZES[Currency]
     elif (known := _SIZES.get(kind)) is not None:
         size = known
     else:
@@ -306,9 +310,13 @@ def _value_size(field: FieldInfo) -> int:
 
 def _amount_size(digits: Digits) -> int:
     """The most bytes an amount of ``digits`` takes in a cursor, with its quotes."""
-    whole = max(digits.precision - digits.scale, 1)
-    point = digits.scale + 1 if digits.scale else 0
-    return 3 + whole + point  # The quotes and a sign.
+    return _digits_size(digits.precision - digits.scale, digits.scale)
+
+
+def _digits_size(whole: int, places: int) -> int:
+    """The most bytes an amount of ``whole`` digits and ``places`` takes, quoted."""
+    point = places + 1 if places else 0
+    return 3 + max(whole, 1) + point  # The quotes and a sign.
 
 
 def _signature(ordering: Sequence[Ordering]) -> str:
