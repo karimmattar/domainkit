@@ -504,3 +504,45 @@ def test_what_can_be_authorized_at_the_bounds(
 
     assert (made.amount, made.payee, made.purpose) == (amount, payee, purpose)
     assert len(rows()) == 1
+
+
+def test_the_store_confirms_a_live_unused_transaction_once(alice: Alice) -> None:
+    """Not twice, not once used, not at its expiry; it returns what it stored."""
+    user_id = run_async(_user_id("alice"))
+    now = alice.clock.tick(0)
+
+    async def check() -> list[bool]:
+        async with AuthUnitOfWork() as uow:
+            made = [
+                await uow.sca.add(
+                    user_id,
+                    Money.of("1", "EUR"),
+                    IBAN,
+                    "transfer",
+                    ttl=timedelta(minutes=5),
+                )
+                for _ in range(3)
+            ]
+            first, used, late = made
+            assert (first.user_id, first.created_at, first.expires_at) == (
+                user_id,
+                now,
+                now + timedelta(minutes=5),
+            )
+            assert await uow.sca.consume(used.id, now)
+            answers = [
+                await uow.sca.confirm(first.id, now, ["otp"]),
+                await uow.sca.confirm(first.id, now, ["otp"]),
+                await uow.sca.confirm(used.id, now, ["otp"]),
+                await uow.sca.confirm(late.id, late.expires_at, ["otp"]),
+                await uow.sca.confirm(
+                    late.id,
+                    late.expires_at - timedelta(seconds=1),
+                    ["otp", "pwd", "otp"],
+                ),
+            ]
+            await uow.commit()
+        return answers
+
+    assert run_async(check()) == [True, False, False, False, True]
+    assert sorted(row["amr"] or "" for row in rows()) == ["", "otp", "otp pwd"]
