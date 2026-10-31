@@ -750,3 +750,26 @@ def test_key_ids_are_matched_as_written_not_as_patterns(
         assert "cards_cardholders.card_number: x21: 0, x_1: 0; subjects' keys: 1\n" in (
             command("status")
         )
+
+
+def test_a_decrypted_dump_is_recorded_with_its_tables(
+    database_url: str, tmp_path: Path
+) -> None:
+    """``dumpdata --decrypt`` leaves ``operator.dumpdata`` naming what it opened."""
+    with project(database_url, tmp_path, AUDIT):
+        run_async(save(Cardholder(id=ANN, name="Ann", card_number=PAN)))
+        call_command("dumpdata", "cards", "--decrypt", stdout=io.StringIO())
+        call_command("dumpdata", "cards", stdout=io.StringIO())
+        recorded = run_async(
+            rows(
+                "SELECT details FROM domainkit_audit_log "
+                "WHERE action = 'operator.dumpdata'"
+            )
+        )
+    [details] = [
+        json.loads(row["details"])
+        if isinstance(row["details"], str)
+        else row["details"]
+        for row in recorded
+    ]
+    assert details["decrypted_tables"] == ["cards_cardholders", "cards_payments"]

@@ -64,6 +64,9 @@ async def test_a_new_subject_key_writes_new_keys_and_still_finds_old_records() -
     assert [
         each.evidence.id for each in await rotated.for_subject("customer:42", limit=1)
     ] == [uuid.UUID(int=2)]
+    await store(ledger, OLD).record(evidence(3))
+    found = await rotated.for_subject("customer:42", limit=2)
+    assert [each.evidence.id for each in found] == [uuid.UUID(int=2), uuid.UUID(int=1)]
     forgotten = store(ledger, NEW)
     assert [
         each.evidence.id for each in await forgotten.for_subject("customer:42")

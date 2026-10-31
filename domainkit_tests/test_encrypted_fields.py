@@ -469,6 +469,8 @@ async def test_a_shredded_value_dumps_as_null(bank: str) -> None:
     await shred_subject(str(ANN))
     document = await fixture_io.dump("default", [tables.cardholders], decrypt=True)
     assert document["tables"][0]["rows"][0]["card_number"] is None
+    sealed = await fixture_io.dump("default", [tables.cardholders])
+    assert sealed["tables"][0]["rows"][0]["card_number"].startswith("dk1:s.")
 
 
 @pytest.mark.anyio
@@ -572,6 +574,9 @@ def test_derived_columns_follow_the_marker() -> None:
     assert not tables.payments.c.pan.nullable
     start_mappers()
     assert [field.key for field in _fields(class_mapper(Payment))] == ["pan", "note"]
+    mapper = class_mapper(Cardholder)
+    index = mapper.get_property_by_column(tables.cardholders.c.card_number_index)
+    assert index.key == "_card_number_index"  # Kept out of the domain's names.
     assert [type(item).__name__ for item in EncryptedColumns("plain")] == ["Column"]
 
 
