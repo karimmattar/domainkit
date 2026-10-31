@@ -83,7 +83,7 @@ project" is the team that builds and runs the service.
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
 | **Spoofing** the server | `SSLMODE = "verify-full"` required for network databases where deployed ([reference/checks.md](reference/checks.md)). | Certificates and their rotation. |
-| **Tampering** with rows | Bound parameters only; optimistic versions refuse a lost update, and a table without `version` is refused ([databases.md](databases.md#versions)); `protect()` triggers keep the trail append-only ([contrib.md](contrib/audit.md#tamper-evidence)). | Who can connect as the schema owner; `protect()` must be migrated in (`check` warns without it). |
+| **Tampering** with rows | Bound parameters only; optimistic versions refuse a lost update, and a table without `version` is refused ([databases.md](databases.md#versions)); `protect()` triggers keep the trail append-only ([contrib.md](contrib/audit.md#tamper-evidence)). | Who can connect as the schema owner; `migrate` makes the `protect()` triggers, and startup refuses a trail without them where deployed. |
 | **Repudiation** | The trail is written in the transaction of the change. | Changes made outside the application (a `psql` session) are not audited. |
 | **Information disclosure** | Bound values never logged where deployed (`LOG_PARAMETERS` refused); TOTP secrets encrypted; tokens stored as digests; audit pseudonyms. | Encryption at rest, backups and their access, row-level security. |
 | **Denial of service** | Statement, lock, idle, connect, and pool timeouts ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). | Pool sizing for the load ([performance.md](performance.md)). |
@@ -210,8 +210,8 @@ left to the project on purpose.
   ledger credentials, `EVIDENCE.SUBJECT_KEY`, the JWT key, from the
   environment or files; rotate `SECRET_KEY` with `SECRET_KEY_FALLBACKS`.
 - Give the application a row-level database role and migrate with the
-  schema owner (`MIGRATION_URL`); migrate the audit trail's `protect()`
-  triggers.
+  schema owner (`MIGRATION_URL`), which makes the audit trail's
+  `protect()` triggers.
 - Use Redis for `RATE_LIMIT_BACKEND` (staging and production refuse
   attempts counted in each process), and watch for the `503
   throttle_unavailable` answers that its outages cause.

@@ -20,7 +20,8 @@ INSTALLED_DOMAINS = [
     "domainkit.contrib.messaging",  # The outbox, its inbox, and ordering keys.
     "domainkit.contrib.contenttypes",
     "domainkit.contrib.auth",  # PCI passwords, second factors, step-up, SCA.
-    "domainkit.contrib.audit",  # Who did what: sealed, and anchored when deployed.
+    # Who did what: sealed, anchored when deployed, append-only after migrate.
+    "domainkit.contrib.audit",
     "domainkit.contrib.evidence",  # Facts on a ledger that cannot be rewritten.
     "domainkit.contrib.idempotency",  # Retried requests run once.
     "domainkit.contrib.keys",  # Encrypted fields under a key service.
@@ -28,7 +29,6 @@ INSTALLED_DOMAINS = [
     "domainkit.contrib.accounting",  # Double-entry books.
     "domainkit.contrib.approvals",  # Maker-checker.
     "domainkit.contrib.limits",  # Transaction and velocity limits.
-    "domains.controls",
     "domains.payments",
 ]
 ROOT_ROUTER = "config.urls.router"

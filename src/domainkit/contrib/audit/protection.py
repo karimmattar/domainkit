@@ -19,16 +19,24 @@ creates them: ``protect(op, audit_seals)``. On other databases both do
 nothing. In staging and production the application checks at startup that
 both tables have their triggers, enabled, firing when and as these make
 them, and running the function these write (``baseline``).
+
+``migrate`` makes them itself: after each upgrade, ``protect_migrated``
+makes the function and the triggers of both tables afresh on the schema
+owner's connection, as accounting's are made, so no revision of the
+project's needs to call ``protect``. Calling it there too does no harm:
+it replaces what is there.
 """
 
 from typing import Final, Protocol
 
-from sqlalchemy import Connection, Table
+from sqlalchemy import Connection, Table, inspect
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .tables import audit_log
+from .tables import audit_log, audit_seals
 
 __all__ = [
     "protect",
+    "protect_migrated",
     "unprotect",
 ]
 
@@ -59,17 +67,25 @@ def function_body(table: Table) -> str:
 
 
 def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The statements that protect ``table``, and those that undo them."""
+    """The statements that protect ``table``, and those that undo them.
+
+    Protecting replaces what is there: the function, and each trigger
+    dropped and made again, so a trigger changed in place (disabled, under
+    a ``WHEN``, running another function) is put back as it must be.
+    """
     function, truncate = trigger_names(table)
     body = function_body(table)
     protect = (
         f"""
-    CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $${body}$$
+    CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql
+    AS $${body}$$
     """,
+        f"DROP TRIGGER IF EXISTS {function} ON {table.name}",
         (
             f"CREATE TRIGGER {function} BEFORE UPDATE OR DELETE ON {table.name} "
             f"FOR EACH ROW EXECUTE FUNCTION {function}()"
         ),
+        f"DROP TRIGGER IF EXISTS {truncate} ON {table.name}",
         (
             f"CREATE TRIGGER {truncate} BEFORE TRUNCATE ON {table.name} "
             f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()"
@@ -115,3 +131,20 @@ def _run(op: Operations, statements: tuple[str, ...]) -> None:
         return
     for statement in statements:
         op.execute(statement)
+
+
+async def protect_migrated(connection: AsyncConnection, database: str) -> None:
+    """After ``migrate``: protect the trail and its seals afresh (``on_migrated``).
+
+    Only on PostgreSQL, and only the tables ``database`` holds:
+    ``makemigrations`` may not have written them yet.
+    """
+    if connection.dialect.name != "postgresql":
+        return
+    present = set(
+        await connection.run_sync(lambda sync: inspect(sync).get_table_names())
+    )
+    for table in (audit_log, audit_seals):
+        if table.name in present:
+            for statement in statements(table)[0]:
+                await connection.exec_driver_sql(statement)

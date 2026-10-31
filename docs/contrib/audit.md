@@ -115,26 +115,16 @@ subject only; SQLite runs one writer at a time): `forget` waits for a
 writer making a key, then deletes that key as well.
 
 The application only inserts. To make sure a compromised API cannot rewrite
-history, make the table append-only in the database itself. Add a revision
-that calls `domainkit.contrib.audit.protection.protect(op)` in `upgrade()`
-and `unprotect(op)` in `downgrade()`. On PostgreSQL this installs triggers
-that refuse `UPDATE`, `DELETE`, and `TRUNCATE` for every role. Only the table
-owner (the migration role) can drop them, for example to apply a retention
-policy:
-
-```python
-from alembic import op
-
-from domainkit.contrib.audit.protection import protect, unprotect
-
-
-def upgrade() -> None:
-    protect(op)
-
-
-def downgrade() -> None:
-    unprotect(op)
-```
+history, the table is append-only in the database itself: on PostgreSQL,
+`migrate` installs triggers that refuse `UPDATE`, `DELETE`, and `TRUNCATE`
+of `domainkit_audit_log` and `domainkit_audit_seals` for every role, and
+makes them afresh after every run, so a trigger dropped, disabled, or
+changed is put back (`domainkit.contrib.audit.protection.protect_migrated`,
+registered on `on_migrated`). No revision of the project's needs to call
+them. Only the table owner (the migration role) can drop them, for example
+to apply a retention policy; `unprotect(op)` in a revision does, until the
+next `migrate`. A revision that calls `protect(op)` itself, as 0.14 asked,
+still applies: protecting replaces what is there.
 
 ## Tamper evidence
 
@@ -326,22 +316,6 @@ staging and production do not start without the four, `check` fails, and
 each missing part is an error (`audit.E001` to `audit.E005`) that
 `SILENCED_CHECKS` cannot name. `AUDIT.REQUIRE_BASELINE = False` keeps
 0.9's warnings (`audit.W001` to `audit.W005`).
-
-Protect the seals like the trail, in the revision that creates them:
-
-```python
-from domainkit.contrib.audit.tables import audit_seals
-
-
-def upgrade() -> None:
-    ...  # The revision's create_table.
-    protect(op, audit_seals)
-
-
-def downgrade() -> None:
-    unprotect(op, audit_seals)
-    ...
-```
 
 | `AUDIT` key | Default | Meaning |
 | --- | --- | --- |

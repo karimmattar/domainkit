@@ -174,9 +174,8 @@ async def protection_problems() -> list[str]:
                 _problem(
                     5,
                     f"The audit trail in {database!r} is not append-only: triggers "
-                    f"{', '.join(missing)} are missing, disabled, or changed. Call "
-                    "protect(op) and protect(op, audit_seals) from a revision "
-                    "(domainkit.contrib.audit.protection) and migrate.",
+                    f"{', '.join(missing)} are missing, disabled, or changed. Run "
+                    "'manage.py migrate', which makes them.",
                 )
             )
     return problems

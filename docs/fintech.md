@@ -27,7 +27,7 @@ control below installed, configured, and wired
 | What | Where in the project |
 | --- | --- |
 | PCI DSS v4.0's passwords, second factors, step-up, and transactions authorized for one amount and payee | `AUTH` in `config/settings/base.py`; the `mfa`, `stepup`, and `sca` routers in `config/urls.py` |
-| The audit trail, sealed by the worker, anchored on the ledger where deployed, append-only in PostgreSQL after every `migrate` | `domainkit.contrib.audit`; `AUDIT` in `production.py`; `domains/controls/apps.py` |
+| The audit trail, sealed by the worker, anchored on the ledger where deployed, append-only in PostgreSQL after every `migrate` | `domainkit.contrib.audit`, whose triggers `migrate` makes; `AUDIT` in `production.py` |
 | Evidence on immudb | `domainkit.contrib.evidence`; `LEDGERS` and `EVIDENCE` in `production.py` |
 | Idempotency keys, required where money moves | `IdempotencyMiddleware`, last in `MIDDLEWARE`; the transfer route refuses a request without one (`400 idempotency_key_required`) |
 | Messaging: the outbox, its inbox, ordering keys, and the worker that runs approved commands | `domainkit.contrib.messaging` |
@@ -46,10 +46,7 @@ key it wrapped (`manage.py keys generate` prints it), and the ledger's URL,
 CA, and signing key. Once they are set, `manage.py check --deploy` passes
 with no error and no warning; without one, the project does not start and
 names the variable. The project's CI runs ruff, `mypy --strict`, `check`,
-its migrations, and its tests. Make the migrations the project deploys
-against the engine it deploys on (point `DATABASE_URL` at PostgreSQL for
-`makemigrations`): a revision written on SQLite does not apply on
-PostgreSQL.
+its migrations, and its tests.
 
 ## The first-review list
 

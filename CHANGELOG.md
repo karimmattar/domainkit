@@ -313,6 +313,26 @@ and a status.
 
 ### Fixed
 
+- `migrate` makes the audit trail append-only on PostgreSQL itself:
+  `domainkit.contrib.audit` registers `protect_migrated` on
+  `on_migrated`, which makes the triggers of `domainkit_audit_log` and
+  `domainkit_audit_seals` and their functions afresh after every run, as
+  accounting's are made, so one dropped, disabled, or changed is put back.
+  Where deployed, `audit.E004` and `audit.E005` refused to start unless a
+  revision of the project's called `protect(op)` and `protect(op,
+  audit_seals)`; such a revision still applies, as `protect()` now
+  replaces what is there. The refusal says to run `migrate`. The fintech
+  profile's `domains.controls`, which did this in the project, is gone
+  (FIN-74).
+- Revisions `makemigrations` writes on SQLite apply on PostgreSQL: the
+  boolean server defaults of `domainkit_users.email_verified`,
+  `domainkit_audit_seals.late`, and `domainkit_idempotency_keys.pinned`
+  and `.tombstone` were `false()`, written `sa.text('0')` on SQLite, which
+  PostgreSQL refuses for a boolean column; they are `text("false")`, which
+  both accept. A test renders every contrib server default as SQLite
+  writes it and applies it on the database at hand. Existing revisions
+  are unchanged and need no new one (FIN-74).
+
 - A lost optimistic race flushed before the commit (by a query, an
   explicit `flush()`, a savepoint, or an `on_stage` hook such as the
   audit trail's) raised SQLAlchemy's `StaleDataError`, so

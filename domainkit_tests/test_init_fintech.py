@@ -37,8 +37,6 @@ STEP_TIMEOUT = 120
 """Seconds one command may run: one that runs two minutes hangs."""
 FINTECH_FILES = {
     "src/config/rules.py",
-    "src/domains/controls/__init__.py",
-    "src/domains/controls/apps.py",
     "src/domains/payments/__init__.py",
     "src/domains/payments/api/__init__.py",
     "src/domains/payments/api/routes.py",
@@ -61,7 +59,7 @@ FINTECH_FILES = {
 }
 DOMAINS = (
     "messaging, contenttypes, auth, audit, evidence, idempotency, keys, privacy, "
-    "accounting, approvals, limits, controls, payments"
+    "accounting, approvals, limits, payments"
 )
 SECRETS = {
     "BANK_API_SETTINGS_MODULE": "config.settings.production",
@@ -379,10 +377,12 @@ ROW = (
 def test_migrate_makes_the_trail_append_only_on_postgresql(
     tmp_path: Path, make_database: MakeDatabase
 ) -> None:
-    """``domains.controls`` protects the trail after each migrate, afresh.
+    """Revisions written on SQLite apply on PostgreSQL, which they protect.
 
     ``audit.E001`` to ``E005`` refuse to start where deployed without the
-    triggers; the project makes them without editing its revisions.
+    triggers; ``migrate`` makes them afresh each time, with no revision of
+    the project's edited, and the revisions ``makemigrations`` writes on
+    a developer's SQLite apply where the project is deployed.
     """
     init("bankAPI", str(tmp_path / "bank"), "--profile", "fintech")
     bank = Project(tmp_path / "bank")
@@ -392,7 +392,7 @@ def test_migrate_makes_the_trail_append_only_on_postgresql(
         "BANK_API_DATABASE_URL": url,
     }
 
-    made = bank.run("manage.py", "makemigrations", "-m", "fintech", env=on_postgres)
+    made = bank.run("manage.py", "makemigrations", "-m", "fintech")  # On SQLite.
     first = bank.run("manage.py", "migrate", env=on_postgres)
     again = bank.run("manage.py", "migrate", env=on_postgres)
 
