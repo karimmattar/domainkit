@@ -12,7 +12,7 @@ server: they make an account and call it. Add these to
 helper that returns a new account:
 
 ```python title="tests/domains/accounts/test_model.py"
-from decimal import Decimal
+from domainkit.money import CurrencyMismatch, Money
 
 from domains.accounts.domain.model import InvalidAmount
 
@@ -21,22 +21,32 @@ def test_deposits_add_to_the_balance() -> None:
     """Each deposit adds its amount, exactly: no float creeps in."""
     account = make()
 
-    account.deposit(amount=Decimal("0.10"))
-    account.deposit(amount=Decimal("0.20"))
+    account.deposit(amount=Money.of("0.10", "USD"))
+    account.deposit(amount=Money.of("0.20", "USD"))
 
-    assert account.balance == Decimal("0.30")
+    assert account.balance == Money.of("0.30", "USD")
 
 
-@pytest.mark.parametrize("amount", [Decimal(0), Decimal("-0.01")])
-def test_deposits_must_be_positive(amount: Decimal) -> None:
+@pytest.mark.parametrize("amount", ["0", "-0.01"])
+def test_deposits_must_be_positive(amount: str) -> None:
     """Nothing, or less, is refused; the balance stays, and nothing is recorded."""
     account = make()
 
     with pytest.raises(InvalidAmount):
-        account.deposit(amount=amount)
+        account.deposit(amount=Money.of(amount, "USD"))
 
-    assert account.balance == 0
+    assert account.balance == Money.zero("USD")
     assert account.pull_events() == []
+
+
+def test_a_deposit_in_another_currency_is_refused() -> None:
+    """Euros never add to dollars."""
+    account = make()
+
+    with pytest.raises(CurrencyMismatch):
+        account.deposit(amount=Money.of("5.00", "EUR"))
+
+    assert account.balance == Money.zero("USD")
 ```
 
 ## Test the API
@@ -47,17 +57,23 @@ is logged in as a superuser, and each test gets a fresh database. Add this
 one to `tests/domains/accounts/test_deposit_account.py`:
 
 ```python title="tests/domains/accounts/test_deposit_account.py"
+DOLLAR = {"amount": "1.00", "currency": "USD"}
+
+
 def test_an_archived_account_refuses_deposits(admin_client: TestClient) -> None:
     """``422 account_is_archived``, and the balance stays."""
     created = admin_client.post(URL, json=new_account_request())
     item = created.headers["location"]
     admin_client.post(f"{item}/archive")
 
-    answer = admin_client.post(f"{item}/deposit", json={"amount": "1.00"})
+    answer = admin_client.post(f"{item}/deposit", json={"amount": DOLLAR})
 
     assert answer.status_code == 422
     assert answer.json()["code"] == "account_is_archived"
-    assert admin_client.get(item).json()["balance"] == "0.00"
+    assert admin_client.get(item).json()["balance"] == {
+        "amount": "0.00",
+        "currency": "USD",
+    }
 ```
 
 A test can also make the user it needs, and sign in as them: here the
@@ -78,7 +94,7 @@ def test_a_clerk_reads_but_cannot_deposit(admin_client: TestClient) -> None:
     as_clerk = admin_client.authenticated_as(clerk)
 
     assert as_clerk.get(item).status_code == 200
-    answer = as_clerk.post(f"{item}/deposit", json={"amount": "1.00"})
+    answer = as_clerk.post(f"{item}/deposit", json={"amount": DOLLAR})
     assert answer.status_code == 403
 ```
 

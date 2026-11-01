@@ -18,7 +18,7 @@ own code ([databases.md](../databases.md#unique-values)).
 
 Every 429 is `rate_limited`, whichever limit refused: `RATE_LIMIT`, a
 route's `Throttle`, or a login, code, or link throttle of
-`domainkit.contrib.auth` (0.15 answered `throttled` and `login_throttled`
+`domainkit.contrib.auth` (0.12 answered `throttled` and `login_throttled`
 too). `Retry-After` says when to try again.
 
 How each status is reached, and which fields a body holds, is in

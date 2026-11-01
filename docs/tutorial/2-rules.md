@@ -10,7 +10,7 @@ account (the API, a script, a test) meets them.
 The server from part 1 is stopped. Add the command with its generator:
 
 ```bash
-python manage.py addcommand accounts Account DepositAccount --field amount:decimal
+python manage.py addcommand accounts Account DepositAccount --field amount:money
 ```
 
 It wrote the `DepositAccount` command, a use case that loads the account
@@ -35,12 +35,12 @@ class InvalidAmount(BusinessRuleViolation):
 
 class Account(AggregateRoot[AccountId]):
     ...
-    balance: Annotated[Decimal, Digits(12, 2)] = Decimal("0.00")
+    balance: Annotated[Money, Digits(12, 2)] = Money.zero("USD")
 
-    def deposit(self, *, amount: Decimal) -> None:
+    def deposit(self, *, amount: Money) -> None:
         """Add a positive ``amount`` to the balance of an open account."""
         self._ensure_active()
-        if amount <= 0:
+        if amount.amount <= 0:
             raise InvalidAmount("A deposit must be positive.")
         self.balance += amount
         self.record(AccountDeposited(account_id=self.id, amount=amount))
@@ -52,9 +52,14 @@ Three things hold here, and nothing outside the aggregate can skip them:
   refuses every change.
 - `InvalidAmount` is a `BusinessRuleViolation`. The HTTP layer answers each
   one `422`, with a code made from the class name: `invalid_amount`.
-- `Digits(12, 2)` bounds the field: the table's column becomes
-  `NUMERIC(12, 2)`, and the API refuses an amount with more digits before
-  the use case runs. Money stays a `Decimal`, never a float.
+- Money is `Money` ([money.md](../money.md)): an exact amount and its
+  currency, `{"amount": "100.00", "currency": "USD"}` in JSON, never a
+  float. An amount with more places than its currency is refused, never
+  rounded, and amounts of two currencies never add: a deposit in euros to
+  a balance in dollars answers `422 currency_mismatch`.
+- `Digits(12, 2)` bounds the field: the table holds it in two columns,
+  `balance` (12 digits, 2 of them places) and `balance_currency`, and the
+  API refuses an amount with more digits before the use case runs.
 
 ## Migrate
 
@@ -66,13 +71,14 @@ python manage.py makemigrations -m "account balance"
 ```
 
 The accounts table has a row already, the one part 1 opened, and a column
-that may not be empty needs a value for it. In the migration
+that may not be empty needs a value for it: the balance is two columns,
+the amount and its currency. In the migration
 `makemigrations` just wrote (`migrations/0002_..._account_balance.py`),
 give the column a default for the rows that exist, then apply it:
 
 ```python title="migrations/0002_*_account_balance.py"
 def upgrade() -> None:
-    """Add the balance: zero for the accounts that exist."""
+    """Add the balance: zero dollars for the accounts that exist."""
     with op.batch_alter_table("accounts_accounts", schema=None) as batch_op:
         batch_op.add_column(
             sa.Column(
@@ -82,6 +88,14 @@ def upgrade() -> None:
                 server_default="0",
             )
         )
+        batch_op.add_column(
+            sa.Column(
+                "balance_currency",
+                sa.String(length=8),
+                nullable=False,
+                server_default="USD",
+            )
+        )
 ```
 
 ```bash
@@ -89,8 +103,8 @@ python manage.py migrate
 pytest
 ```
 
-The generated tests pass: the command's test deposits `1.50`, which the
-rules allow. [Part 5](5-testing-and-deploying.md) adds tests of the
+The generated tests pass: the command's test deposits `1.50` dollars,
+which the rules allow. [Part 5](5-testing-and-deploying.md) adds tests of the
 refusals.
 
 ## Try it
@@ -100,21 +114,24 @@ python manage.py runserver
 ```
 
 From the second shell, where `$TOKEN` and `$ID` are still set, deposit
-`100.00`. The answer is the account, with its new balance:
+100 dollars. The answer is the account, with its new balance:
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"amount": "100.00"}'
+  -H "Content-Type: application/json" -d '{"amount": {"amount": "100.00", "currency": "USD"}}'
 ```
 
-A negative amount is refused by the aggregate, and a third decimal place
-by the API, before the use case runs:
+A negative amount is refused by the aggregate, a third decimal place of
+dollars by the API, before the use case runs, and euros by the balance in
+dollars:
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"amount": "-5.00"}'   # 422
+  -H "Content-Type: application/json" -d '{"amount": {"amount": "-5.00", "currency": "USD"}}'   # 422
 curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"amount": "1.005"}'   # 422
+  -H "Content-Type: application/json" -d '{"amount": {"amount": "1.005", "currency": "USD"}}'   # 422
+curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"amount": {"amount": "5.00", "currency": "EUR"}}'   # 422
 ```
 
 Archive a second account, and see the older rule hold for deposits too:
@@ -125,7 +142,7 @@ CLOSED=$(curl -s http://127.0.0.1:8000/api/v1/accounts/accounts -H "Authorizatio
   | python -c "import json, sys; print(json.load(sys.stdin)['id'])")
 curl -X POST http://127.0.0.1:8000/api/v1/accounts/accounts/$CLOSED/archive -H "Authorization: Bearer $TOKEN"
 curl http://127.0.0.1:8000/api/v1/accounts/accounts/$CLOSED/deposit -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"amount": "10.00"}'   # 422
+  -H "Content-Type: application/json" -d '{"amount": {"amount": "10.00", "currency": "USD"}}'   # 422
 ```
 
 Stop the server. [Part 3](3-permissions.md) lets someone other than the

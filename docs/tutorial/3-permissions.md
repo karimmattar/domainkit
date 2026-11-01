@@ -72,7 +72,7 @@ Now the clerk reads the accounts, but a deposit, which needs
 ```bash
 curl http://127.0.0.1:8000/api/v1/accounts/accounts -H "Authorization: Bearer $CLERK_TOKEN"
 curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorization: Bearer $CLERK_TOKEN" \
-  -H "Content-Type: application/json" -d '{"amount": "5.00"}'   # 403
+  -H "Content-Type: application/json" -d '{"amount": {"amount": "5.00", "currency": "USD"}}'   # 403
 ```
 
 A grant takes effect at once in this process. With several processes,

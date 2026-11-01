@@ -54,7 +54,7 @@ From the second shell:
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"amount": "25.00"}'
+  -H "Content-Type: application/json" -d '{"amount": {"amount": "25.00", "currency": "USD"}}'
 ```
 
 Stop the server, and look at the outbox. The deposit's message waits
@@ -73,7 +73,7 @@ python manage.py runworker --once
 python manage.py messages --pending
 ```
 
-The log shows `Deposited 25.00 into account ...`, and the outbox is empty.
+The log shows `Deposited 25.00 USD into account ...`, and the outbox is empty.
 A handler that fails is retried with a growing delay, then kept as a dead
 letter for `messages --dead` and `messages --retry`. Since a message may
 run more than once (the worker can crash after the handler, before it

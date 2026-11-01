@@ -8,12 +8,12 @@ configured by one setting, a dictionary whose keys are all optional.
 | --- | --- | --- |
 | `domainkit.contrib.messaging` | `MESSAGING` | `domainkit_messages`, `domainkit_inbox`, `domainkit_ordering_keys` |
 | `domainkit.contrib.webhooks` | `WEBHOOKS` | `domainkit_webhook_subscriptions`, `_deliveries`, `_attempts` |
-| `domainkit.contrib.audit` | `AUDIT` | `domainkit_audit_log` |
+| `domainkit.contrib.audit` | `AUDIT` | `domainkit_audit_log`, `_seals`, `_checkpoints`, `_keys` (the pseudonyms' keys), and `domainkit_ledger_states`; see [audit](contrib/audit.md) |
 | `domainkit.contrib.idempotency` | `IDEMPOTENCY` | `domainkit_idempotency_keys` |
 | `domainkit.contrib.evidence` | `EVIDENCE` | none: records live on a ledger |
 | `domainkit.contrib.keys` | `KEYS` | `domainkit_keys_subject_keys`, `domainkit_keys_erasures`, in every database that hosts a domain; see [keys](contrib/keys.md) |
 | `domainkit.contrib.contenttypes` | none | `domainkit_content_types` |
-| `domainkit.contrib.auth` | `AUTH` | users, groups, permissions, and the principal cache; see [auth.md](auth.md) |
+| `domainkit.contrib.auth` | `AUTH` | users, groups, permissions, tokens, second factors and recovery codes, pending signups, step-ups, transaction authorizations, and the password history; see [auth.md](auth.md) |
 | `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
 | `domainkit.contrib.flags` | `FLAGS` | `domainkit_flags`, `domainkit_dynamic_settings` |
 | `domainkit.contrib.objectpermissions` | none | `domainkit_object_permissions`, in every database that hosts a domain; see [auth.md](auth/users.md#grants-on-single-objects) |
