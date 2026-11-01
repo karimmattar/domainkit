@@ -13,6 +13,7 @@ Freezing a person must stop the instructions they left waiting.
 from datetime import date
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from domainkit.contrib.accounting import (
@@ -147,3 +148,24 @@ def test_a_request_of_a_maker_who_lost_the_permission_never_runs(
     done = client.get(f"{API}/{request['id']}", headers=ann).json()
     assert (done["status"], done["reason"]) == ("failed", "maker_not_allowed")
     assert run_async(_booked("revoked")) == 0
+
+
+def test_the_refusal_says_the_maker_may_no_longer_make_it(
+    client: TestClient,  # noqa: F811 - the fixture.
+) -> None:
+    """An active maker with the permission passes; one without it is refused so."""
+    from domainkit.contrib.approvals import ENTRIES, MakerNotAllowed
+    from domainkit.contrib.approvals.guards import guard_for
+    from domainkit.contrib.approvals.services import _check_maker
+    from domainkit_tests.test_approvals_api import _id
+
+    user("allowed", *CLERK)
+    user("other", "approvals.view_approvalrequest")
+    entries_guard = guard_for(ENTRIES)
+
+    run_async(_check_maker(entries_guard, str(_id("allowed"))))
+    with pytest.raises(
+        MakerNotAllowed,
+        match=r"^Whoever submitted this command may no longer make it\.$",
+    ):
+        run_async(_check_maker(entries_guard, str(_id("other"))))

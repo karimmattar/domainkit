@@ -288,6 +288,13 @@ def test_erasure_fails_a_request_approved_and_launders_no_seal(project: str) -> 
     approved = submitted("approved", maker="subject")
     decide(approved, "ann")
     decide(approved, "bob")
+    again = submitted("again", maker="subject")
+    decide(again, "ann")
+    decide(again, "bob")
+    pending = [submitted(f"pending-{n}", maker="subject") for n in range(2)]
+    both = submitted("both")
+    decide(both, "bob")
+    decide(both, "subject")
     tampered = submitted("tampered", maker="subject")
     decide(tampered, "subject-2")
     other = submitted("other")
@@ -315,8 +322,16 @@ def test_erasure_fails_a_request_approved_and_launders_no_seal(project: str) -> 
         by_kind[str(tampered.id)],
         by_kind[str(other.id)],
     )
-    assert counts == {"requests": 2, "failed": 1, "decisions": 1}
+    assert counts == {"requests": 5, "cancelled": 2, "failed": 2, "decisions": 2}
     assert (done.status, done.reason) == (RequestStatus.FAILED, "maker_not_allowed")
+    assert by_kind[str(again.id)].status is RequestStatus.FAILED
+    assert [
+        (by_kind[str(each.id)].status, by_kind[str(each.id)].reason) for each in pending
+    ] == [(RequestStatus.CANCELLED, "")] * 2
+    bob, theirs_too = by_kind[str(both.id)].decisions
+    assert (bob.approver, theirs_too.approver[:7]) == ("bob", "erased:")
+    assert bob.verified(both.id)
+    assert theirs_too.verified(both.id)
     assert done.sealed()
     assert (kept.status, kept.sealed()) == (RequestStatus.PENDING, False)
     assert kept.maker.startswith("erased:")

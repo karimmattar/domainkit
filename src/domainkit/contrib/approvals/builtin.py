@@ -38,6 +38,7 @@ from .exceptions import ApprovalRequired, MakerNotAllowed
 from .guards import (
     Guard,
     Policy,
+    Running,
     Threshold,
     check,
     current_run,
@@ -198,12 +199,12 @@ def guard_entries(config: ApprovalsSettings) -> None:
             )
         if run.action == REVERSES and isinstance(command, ReverseEntry):
             return entry.reverses == command.entry_id
-        return run.action not in LEDGER_ACTIONS and approved_run(config)
+        return run.action not in LEDGER_ACTIONS and approved_run(run, config)
 
     async def check_entry(command: PostEntry) -> None:
         """Refuse a posting over its threshold that no approved request runs."""
         run = current_run()
-        if run is None or run.action in LEDGER_ACTIONS or not approved_run(config):
+        if run is None or run.action in LEDGER_ACTIONS or not approved_run(run, config):
             await check(ENTRIES, command)
 
     on_posting(check_entry)
@@ -214,14 +215,13 @@ LEDGER_ACTIONS: Final = frozenset({ENTRIES, CAPTURES, REVERSES})
 """The ledger's own guarded actions, whose runs book only what they approved."""
 
 
-def approved_run(config: ApprovalsSettings) -> bool:
-    """Whether an approved request runs here, under as many approvals as entries need.
+def approved_run(run: Running, config: ApprovalsSettings) -> bool:
+    """Whether the approved request ``run`` had as many approvals as entries need.
 
     Its policy asked at least ``ENTRY_APPROVALS`` approvals: what another
     guard's command books passes the thresholds (FIN-92).
     """
-    run = current_run()
-    return run is not None and run.required >= config.ENTRY_APPROVALS
+    return run.required >= config.ENTRY_APPROVALS
 
 
 class GrantSuperuser(Command):
