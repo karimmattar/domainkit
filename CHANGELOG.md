@@ -598,7 +598,10 @@ step-up) matter only to projects that ran 0.13 to 0.15 from source.
 - **Breaking:** `@task` and `@periodic` refuse a name longer than 255
   characters, the outbox's column: PostgreSQL refused its messages at
   every commit. A scheduled run's key hashes a name too long to leave
-  room for the slot's number (CONC-16).
+  room for the slot's number. `event_bus.subscribe(..., durable=True)`
+  refuses a handler whose `module.QualName` is longer, with `ValueError`:
+  it is its messages' key and its inbox rows', and PostgreSQL refused
+  every commit that published its event (CONC-16).
 - **Breaking:** a `CancelledError` a handler or task raises while its
   worker is not stopping it (it awaited something that was cancelled) is
   a failed run, `HandlerCancelled`, retried with backoff and counted. The
@@ -1050,6 +1053,16 @@ lead to the finding on [docs/audit/0.9.0.md](docs/audit/0.9.0.md).
   schema shows it: a filter of a field with a blind index answers whether
   a guessed value is stored, an oracle on what the derived schema now
   hides (DSGN-19).
+- A message's first sighting as an unknown target (CONC-15's grace)
+  outlived the stay it was about: a chain's next step inherited it, and a
+  dead letter kept it through `messages --retry`, so either was
+  dead-lettered at once by an older worker, with no grace, and its
+  ordering key went on without it. The sighting is dropped once the
+  message runs, fails or dies another way, and is never copied into a
+  chain's next step. The grace is measured by the time of the claim, on
+  the clock that decides on the outbox (PostgreSQL's), not the worker
+  host's, so a host whose clock runs ahead no longer ends it early
+  (SEC-16c-2).
 - A command on one aggregate and an atomic batch hold the aggregate to the
   version their object rules saw: since WEB-16 the rules are asked
   outside the write's transaction, and an aggregate changed in between

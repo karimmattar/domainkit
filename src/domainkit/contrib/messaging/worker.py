@@ -212,6 +212,16 @@ def _failure(caught: BaseException) -> Exception:
     return failure
 
 
+def _without_sighting(headers: dict[str, Any]) -> dict[str, Any]:
+    """``headers`` without the first sighting of an unknown target.
+
+    The sighting belongs to one stay of one message in the outbox: a chain's
+    next step, a run that went on another way, or a dead letter given back
+    gets a grace of its own if its target is unknown (SEC-16c-2).
+    """
+    return {name: value for name, value in headers.items() if name != UNKNOWN_SINCE}
+
+
 def _seen_unknown(headers: dict[str, Any]) -> datetime | None:
     """When a worker first found the message's target unknown, if one did."""
     try:
@@ -262,6 +272,15 @@ def slot_prefix(kind: str, key: str) -> str:
     if len(prefix) + _NUMBER_LENGTH <= _KEY_LENGTH:
         return prefix
     return f"{kind}:sha256-{hashlib.sha256(key.encode()).hexdigest()}:"
+
+
+def _claimed_at(message: "Claimed") -> datetime:
+    """When ``message`` was claimed, by the outbox's clock (``dbclock``).
+
+    Claims return it; a message claimed some other way reads this process's
+    clock.
+    """
+    return message.started_at or _now()
 
 
 def _sensitive(message: "Claimed", spec: TaskSpec | None) -> bool:
@@ -320,6 +339,8 @@ class Claimed:
     lock_id: uuid.UUID
     ordering_key: str | None = None
     """Its key: the next message of the key waits until this one finishes."""
+    started_at: datetime | None = None
+    """When the claim began, by the clock that decides on the outbox (``dbclock``)."""
 
 
 _CLAIMED: Final = (
@@ -331,6 +352,7 @@ _CLAIMED: Final = (
     messages.c.attempts,
     messages.c.max_attempts,
     messages.c.ordering_key,
+    messages.c.started_at,
 )
 """The columns a claim returns (``Claimed`` without its lock)."""
 
@@ -1064,7 +1086,7 @@ class Worker:
         None once ``UNKNOWN_TARGET_GRACE`` has passed since (at once, for 0):
         the message is then dead-lettered.
         """
-        now = _now()
+        now = _claimed_at(message)
         since = _seen_unknown(message.headers) or now
         waited = (now - since).total_seconds()
         return since if waited < self.config.UNKNOWN_TARGET_GRACE else None
@@ -1079,9 +1101,10 @@ class Worker:
         module, whose default name changed). The message keeps its place,
         and its ordering key's, without spending an attempt, and comes back
         after a delay that doubles, until ``UNKNOWN_TARGET_GRACE`` has passed
-        since a worker first found it unknown (CONC-15).
+        since a worker first found it unknown (CONC-15), by the clock that
+        decides on the outbox, as its due times are (SEC-16c-2).
         """
-        waited = (_now() - since).total_seconds()
+        waited = (_claimed_at(message) - since).total_seconds()
         left = self.config.UNKNOWN_TARGET_GRACE - waited
         delay = min(
             max(waited, self.config.RETRY_BASE_SECONDS),
@@ -1115,7 +1138,7 @@ class Worker:
             return None
         target, *rest = chain
         spec = get_task(target)
-        headers = {**message.headers, **trace_headers()}
+        headers = {**_without_sighting(message.headers), **trace_headers()}
         headers.pop(CHAIN)
         if rest:
             headers[CHAIN] = rest
@@ -1172,6 +1195,9 @@ class Worker:
         Return whether this run still held it.
         """
         dialect = self.dialect
+        if UNKNOWN_SINCE in message.headers and "headers" not in values:
+            # Its target ran, or it left another way: the sighting is over.
+            values = {**values, "headers": _without_sighting(message.headers)}
         statement = (
             update(messages)
             .where(messages.c.id == message.id, messages.c.lock_id == message.lock_id)
@@ -1290,7 +1316,8 @@ class Worker:
         if permanent or message.attempts >= message.max_attempts:
             blanked: dict[str, object] = {}
             if _sensitive(message, spec):
-                blanked = {"payload": {}, "headers": {**message.headers, BLANKED: True}}
+                headers = _without_sighting(message.headers)
+                blanked = {"payload": {}, "headers": {**headers, BLANKED: True}}
             await self._release(
                 message,
                 status=DEAD,

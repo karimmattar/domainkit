@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import re
 import uuid
 from collections.abc import Iterator
@@ -44,7 +45,9 @@ from domainkit.contrib.messaging.worker import (
     slot_prefix,
 )
 from domainkit.db import connections
+from domainkit.ddd import DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_messaging import (  # noqa: F401
     FAST,
     messaging,
@@ -721,3 +724,94 @@ async def test_a_handlers_own_cancellation_keeps_its_cause() -> None:
 
     assert isinstance(failure, HandlerCancelled)
     assert failure.__cause__ is cancelled
+
+
+# SEC-16c-2: the first sighting belongs to one stay in the outbox.
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_message_that_runs_forgets_its_sighting() -> None:
+    """Once its target ran, the row keeps no sighting a retry could inherit."""
+    with freeze_time("2026-11-01T09:00:00Z") as clock:
+        await queue_for_new_code()
+        await Worker(config()).run_once()
+        assert UNKNOWN_SINCE in (await row_of())["headers"]
+        clock.tick(5)
+        task(name=NEW_TASK)(added_by_the_deploy)
+        await Worker(config()).run_once()
+
+    row = await row_of()
+    assert row["status"] == DONE
+    assert UNKNOWN_SINCE not in row["headers"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_dead_letter_forgets_its_sighting() -> None:
+    """A dead letter, blanked or not, keeps no sighting: a retry waits afresh."""
+    secret_task = task(name="tests.reliability.secret", max_attempts=1, sensitive=True)
+
+    async def secret(code: str) -> None:
+        raise RuntimeError("refused")
+
+    try:
+        with freeze_time("2026-11-01T09:00:00Z") as clock:
+            await queue_for_new_code()
+            await Worker(config()).run_once()
+            clock.tick(HOUR)
+            await Worker(config()).run_once()  # Past the grace: dead.
+
+            secret_task(secret)
+            await enqueue(secret, code="123456")
+            tasks._tasks.pop("tests.reliability.secret")
+            clock.tick(5)
+            await Worker(config()).run_once()  # Found unknown.
+            secret_task(secret)
+            clock.tick(5)
+            await Worker(config()).run_once()  # It fails: dead, and blanked.
+    finally:
+        tasks._tasks.pop("tests.reliability.secret", None)
+
+    unknown, blanked = await row_of(), await row_of("tests.reliability.secret")
+    assert (unknown["status"], blanked["status"]) == (DEAD, DEAD)
+    assert UNKNOWN_SINCE not in unknown["headers"]
+    assert blanked["headers"]["payload_blanked"] is True
+    assert UNKNOWN_SINCE not in blanked["headers"]
+
+
+@pytest.mark.skipif(
+    not os.environ.get(POSTGRES_VARIABLE), reason=f"set {POSTGRES_VARIABLE}"
+)
+@pytest.mark.usefixtures("tables")
+async def test_the_grace_is_measured_by_the_databases_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker whose host runs two hours ahead does not end an hour's grace."""
+    settings = config(RETRY_BASE_SECONDS=0.05, RETRY_MAX_SECONDS=10)
+    await queue_for_new_code()
+    assert await Worker(settings).run_once() == 1  # Found unknown, by the database.
+    await asyncio.sleep(0.2)  # Due again.
+
+    real = clock_module.now
+    monkeypatch.setattr(clock_module, "now", lambda: real() + timedelta(hours=2))
+    assert await Worker(settings).run_once() == 1
+
+    row = await row_of()
+    assert (row["status"], row["attempts"]) == (PENDING, 0)
+
+
+def test_a_durable_handler_name_longer_than_the_outbox_column_is_refused() -> None:
+    """Its name is its messages' key; in-process handlers have no such limit."""
+    bus = EventBus()
+
+    async def handler(event: DomainEvent) -> None: ...
+
+    handler.__qualname__ = "h" * (255 - len(handler.__module__) - 1)
+    bus.subscribe(DomainEvent, handler, durable=True)
+    handler.__qualname__ += "h"
+    bus.subscribe(DomainEvent, handler)
+    with pytest.raises(ValueError, match="at most 255 characters") as refused:
+        bus.subscribe(DomainEvent, handler, durable=True)
+    assert str(refused.value).endswith(
+        "has 256: define it in a shorter module or name."
+    )
+    assert len(bus.subscriptions()) == 2
