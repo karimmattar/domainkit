@@ -18,6 +18,7 @@ from domainkit.contrib.messaging import (
     Worker,
     admin,
     enqueue,
+    ordering,
     periodic,
     task,
 )
@@ -32,6 +33,7 @@ from domainkit.contrib.messaging.tables import (
     PENDING,
     UNKNOWN_SINCE,
     messages,
+    ordering_keys,
 )
 from domainkit.contrib.messaging.worker import (
     CRON,
@@ -278,6 +280,11 @@ def test_unnamed_tasks_are_warned_about_where_deployed(
     mine = [each for each in found if key in each.message]
     assert [each.id for each in mine] == ["messaging.W001"]
     assert not any("tests.reliability.named" in each.message for each in found)
+    assert mine[0].message == (
+        f"The task {key!r} is named after its module's path: moving or renaming "
+        "it renames its messages, which then wait for a task of the old name and "
+        "are dead-lettered after MESSAGING.UNKNOWN_TARGET_GRACE."
+    )
     assert mine[0].hint == "Give it a name of its own: @task(name=...)."
 
 
@@ -427,8 +434,12 @@ def test_a_task_name_longer_than_the_outbox_column_is_refused() -> None:
     """The outbox stores 255 characters of a task's name."""
     task(name="x" * 255)(added_by_the_deploy)
     tasks._tasks.pop("x" * 255)
-    with pytest.raises(ImproperlyConfigured, match="at most 255 characters"):
+    with pytest.raises(ImproperlyConfigured) as refused:
         task(name="x" * 256)(added_by_the_deploy)
+    assert str(refused.value) == (
+        "Task names have at most 255 characters, as the outbox stores them; "
+        f"{'x' * 60!r}... has 256."
+    )
 
 
 def test_a_scheduled_runs_key_fits_its_column() -> None:
@@ -513,7 +524,7 @@ async def test_a_long_slots_row_is_deleted_once_the_slot_is_over() -> None:
             assert kept["target"] == "tests.reliability.monthly"
             clock.move_to(start + timedelta(days=30, seconds=-1))
             assert await worker.cleanup() == 0
-            clock.tick(2)
+            clock.tick(1)  # The slot has ended.
             assert await worker.cleanup() == 1
     finally:
         for name in ("tests.reliability.monthly", "tests.reliability.hourly"):
@@ -625,3 +636,82 @@ async def test_a_retried_keyed_message_takes_no_turn() -> None:
         event.remove(sync_engine, "before_cursor_execute", record)
 
     assert not any("domainkit_ordering_keys" in each for each in statements)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_long_slots_name_is_matched_exactly() -> None:
+    """``_`` in a task's name is a character, not ``LIKE``'s wildcard."""
+
+    @periodic(every=timedelta(days=30), name="tests.reliability.long_x")
+    async def monthly() -> None: ...
+
+    @periodic(every=timedelta(hours=1), name="tests.reliability.longXx")
+    async def hourly() -> None: ...
+
+    try:
+        with freeze_time("2026-11-01T09:00:00Z") as clock:
+            worker = Worker(config(RETENTION_SECONDS=86400))
+            await worker.run_once()
+            clock.tick(timedelta(hours=36))  # Past the retention, in the slot.
+            assert await worker.cleanup() == 1
+            (kept,) = await outbox()
+            assert kept["target"] == "tests.reliability.long_x"
+    finally:
+        for name in ("tests.reliability.long_x", "tests.reliability.longXx"):
+            tasks._tasks.pop(name)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_promoting_takes_the_keys_turn_unless_taken() -> None:
+    """Alone (a repair, a cancel), promote writes the key's row, adding nothing."""
+    async with connections.engine().begin() as connection:
+        dialect = connection.dialect.name
+        assert await ordering.promote(connection, dialect, "fresh") is None
+        assert (
+            await ordering.promote(connection, dialect, "untouched", turn_taken=True)
+            is None
+        )
+        found = (
+            await connection.execute(
+                select(ordering_keys.c.key, ordering_keys.c.sequence)
+            )
+        ).all()
+
+    assert [tuple(row) for row in found] == [("fresh", 0)]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_cancelling_a_keyed_message_takes_its_keys_turn_once() -> None:
+    """The cancel takes the turn first; the promotion after it does not again."""
+    await enqueue(added_by_the_deploy_known, ordering_key="k", label="one")
+    await enqueue(added_by_the_deploy_known, ordering_key="k", label="two")
+    first = min(await outbox(), key=lambda row: str(row["sequence"]))
+    statements: list[str] = []
+
+    def record(*args: Any) -> None:  # noqa: ANN401
+        if "domainkit_ordering_keys" in str(args[2]):
+            statements.append(str(args[2]))
+
+    sync_engine = connections.engine().sync_engine
+    event.listen(sync_engine, "before_cursor_execute", record)
+    try:
+        assert await admin.cancel(config(), uuid.UUID(str(first["id"])))
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", record)
+
+    assert len(statements) == 1
+    by_key = sorted(await outbox(), key=lambda row: str(row["sequence"]))
+    assert [row["status"] for row in by_key] == ["cancelled", PENDING]
+
+
+async def test_a_handlers_own_cancellation_keeps_its_cause() -> None:
+    """``HandlerCancelled`` chains the ``CancelledError`` it stands for."""
+    cancelled = asyncio.CancelledError()
+
+    async def fail() -> Exception:
+        return worker_module._failure(cancelled)
+
+    failure = await asyncio.create_task(fail())
+
+    assert isinstance(failure, HandlerCancelled)
+    assert failure.__cause__ is cancelled
