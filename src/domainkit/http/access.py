@@ -977,7 +977,7 @@ def _kind(route: BaseRoute) -> str:
     return "MOUNT" if isinstance(route, Mount) else type(route).__name__
 
 
-def _uses(dependant: Dependant, *, or_public: bool) -> bool:
+def _uses(dependant: Dependant, *, or_public: bool, public_counts: bool = True) -> bool:
     """Whether ``dependant`` depends, at any depth, on ``Require`` or a reader.
 
     A reader is a dependency marked ``reads_principal``. With ``or_public``
@@ -990,10 +990,24 @@ def _uses(dependant: Dependant, *, or_public: bool) -> bool:
     if (
         isinstance(call, Require)
         or (reader and not (or_public and call in _ANYONE_READERS))
-        or (or_public and call is public)
+        or (or_public and public_counts and call is public)
     ):
         return True
-    return any(_uses(each, or_public=or_public) for each in dependant.dependencies)
+    return any(
+        _uses(each, or_public=or_public, public_counts=public_counts)
+        for each in dependant.dependencies
+    )
+
+
+def checks_callers(dependant: Dependant) -> bool:
+    """Whether ``dependant`` checks who calls, at any depth, as ``open_routes`` reads.
+
+    ``Require``, or a dependency marked ``reads_principal`` that is not one
+    of the core's readers that let anyone in (``CurrentUser``): a provider's
+    ``AuthenticatedUser`` refuses anonymous callers. ``Public`` checks no
+    one. ``live.W002`` asks it of routes that turn re-checks off (SEC-16a-3).
+    """
+    return _uses(dependant, or_public=True, public_counts=False)
 
 
 def _rule(rule: Rule) -> BasePermission:

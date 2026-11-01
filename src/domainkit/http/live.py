@@ -234,21 +234,26 @@ def _shared(given: dict[str, Any]) -> dict[str, Any]:
 def unchecked_routes(routes: Sequence[BaseRoute]) -> list[str]:
     """Routes that keep live connections open without re-checking who holds them.
 
-    A route with an access rule whose ``LiveLimits(reauth_interval=None)``
-    turns re-authorization off keeps a revoked token, a deactivated user,
-    or a removed permission connected for its whole lifetime, unseen by
-    ``security.W005``, which reads ``LIVE_REAUTH_INTERVAL`` alone (WEB-24).
-    ``check`` warns where deployed (``live.W002``).
+    A route with an access rule (``Require``, or a dependency such as
+    ``AuthenticatedUser`` that refuses anonymous callers: ``checks_callers``,
+    as ``open_routes`` reads them, SEC-16a-3) whose
+    ``LiveLimits(reauth_interval=None)`` turns re-authorization off keeps a
+    revoked token, a deactivated user, or a removed permission connected
+    for its whole lifetime, unseen by ``security.W005``, which reads
+    ``LIVE_REAUTH_INTERVAL`` alone (WEB-24). ``check`` warns where deployed
+    (``live.W002``).
     """
-    from domainkit.http.access import Require, served_routes  # They import this.
+    from domainkit.http.access import (  # It imports this module.
+        checks_callers,
+        served_routes,
+    )
 
     found = []
     for name, dependant in served_routes(routes):
         if dependant is None:
             continue
         limits = [call for call in _calls(dependant) if isinstance(call, LiveLimits)]
-        guarded = any(isinstance(call, Require) for call in _calls(dependant))
-        if guarded and any(
+        if checks_callers(dependant) and any(
             "reauth_interval" in each.overrides
             and each.overrides["reauth_interval"] is None
             for each in limits

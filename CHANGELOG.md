@@ -1050,6 +1050,19 @@ lead to the finding on [docs/audit/0.9.0.md](docs/audit/0.9.0.md).
   schema shows it: a filter of a field with a blind index answers whether
   a guessed value is stored, an oracle on what the derived schema now
   hides (DSGN-19).
+- A command on one aggregate and an atomic batch hold the aggregate to the
+  version their object rules saw: since WEB-16 the rules are asked
+  outside the write's transaction, and an aggregate changed in between
+  (given to another owner, frozen) was written past them. Such a write is
+  now 409 `concurrent_update` (412 with `If-Match`), as a generic write's
+  is; a batch holds each aggregate at the first item that acts on it. The
+  rules still run with no connection of the request held (SEC-16a-1).
+- `live.W002` names live routes guarded the way `open_routes` counts a
+  rule, `AuthenticatedUser` included, not only those with `Require`
+  (SEC-16a-3).
+- A command's or a batch's `returns=` schema leaves out a field read from
+  a hidden attribute under another name (`validation_alias`, an alias
+  path or choices), as it leaves out one of the same name (WEB-20).
 
 - `live_server` no longer leaves `127.0.0.1` in `ALLOWED_HOSTS` after a
   test that also changed a setting through the `settings` fixture: the
