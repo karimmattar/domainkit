@@ -175,10 +175,15 @@ await approve_request(
   grants, and watch the audit trail for both (`auth.user_created`,
   `auth.user_permission_granted`, `auth.user_joined_group`).
 - **Splitting.** A threshold judges one command. Ten postings of 999
-  dollars under a 1,000-dollar threshold need no approval, nor does an
-  amount moved through a currency without one. Bound what an actor may
-  move in a window with `domainkit.contrib.limits`, which counts every
-  entry booked; approved ones count against their maker.
+  dollars under a 1,000-dollar threshold need no approval. Bound what an
+  actor may move in a window with `domainkit.contrib.limits`, which
+  counts every entry booked against the subjects a window bounds;
+  approved ones count against their maker. A currency no threshold
+  names needs approval at any amount.
+- **A maker who leaves.** An approved command runs only while its maker,
+  a user, is active and holds the guard's maker permission; otherwise
+  the request fails (`maker_not_allowed`). Deactivate a person, or take
+  the permission back, and what they left waiting runs nothing.
 
 The approval that completes a request queues its command through the
 outbox, in the same transaction ([messaging](messaging.md)): it is
@@ -277,10 +282,23 @@ path around the command (a capture, lines a hook could not read) books
 nothing over the threshold unapproved. A booked entry passes only as the
 approved request being run: the posting with its source and reference,
 or the capture of its hold. `PostEntry` keeps its `lines` as a tuple,
-however they are given. Reversals are not guarded: a reversal moves back
-what an entry moved; `domainkit.contrib.limits` counts it. A currency
-without an amount is not guarded. The ledger's own semantics are
+however they are given. A reversal is guarded the same way, as
+`accounting.reverse_entry` (`REVERSES`, policy `accounting.large_reversal`):
+it moves as much as the entry it undoes, back, so undoing a payout two
+people approved takes two people too; submit `{"entry_id": ...,
+"booked_on": ...}`, and the makers need `accounting.reverse_entry`. Run
+approved, it counts against limits as a movement and frees nothing (a
+reversal on one person's say gives back what its entry counted). A
+currency without an amount needs approval, whatever the amount, unless
+`"*"` gives one for every currency. The ledger's own semantics are
 unchanged.
+
+The run of any approved request whose policy asked at least
+`ENTRY_APPROVALS` approvals passes the thresholds for the entries its
+command books, so a project's own guarded payout posts its entry
+without a second request; a run of the ledger's own guards books only
+what it approved. A policy of fewer approvals still has its large
+entries refused.
 
 ## Making superusers
 
@@ -408,7 +426,7 @@ than runs.
 | `EXPIRE_EVERY` | 5 minutes | How often the worker expires the requests whose time is up (at most 1 day). |
 | `APPROVE_RULE` | `None` | Import path of an access rule (an instance, or a class taking no arguments) whoever approves must pass as well, unless the policy names its own; a path that is not a rule fails `setup()`. |
 | `MAX_ARGUMENTS_BYTES` | `65536` | The largest command a request holds, as JSON (1 KiB to 1 MiB). |
-| `ENTRY_THRESHOLDS` | `{}` | Per currency, the amount (text) over which `accounting.post_entry` needs approval; empty: postings are not guarded. An amount not exact in its currency fails `setup()`. |
+| `ENTRY_THRESHOLDS` | `{}` | Per currency, the amount (text) over which `accounting.post_entry`, `capture_hold`, and `reverse_entry` need approval; empty: they are not guarded. A currency it does not name always needs approval, unless `"*"` gives an amount for every one (read in each currency's units). An amount not exact in its currency fails `setup()`. |
 | `ENTRY_APPROVALS` | `2` | Approvals a posting over its threshold needs (at most 10). |
 | `ENTRY_APPROVERS` | `"accounting.add_entry"` | The permission whoever approves a posting holds. |
 | `SUPERUSER_APPROVALS` | `0` | Approvals making a superuser needs (at most 10); 0: it is not guarded. |
