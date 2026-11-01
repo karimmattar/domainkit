@@ -27,6 +27,31 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **A route that only reads `CurrentUser` declares no rule** (DSGN-17).
+  Staging and production refuse to start with one (`security.E101`), and
+  `check` lists it. **Fix:** add `dependencies=[Public]` to a route that
+  anyone may call, or take `AuthenticatedUser` where a login is meant.
+- **Making a personal token asks the user to authenticate again, and the
+  token ends** (AUTH-16). `POST /auth/tokens` needs a step-up within 5
+  minutes from users with a second factor, and the `password` in the body
+  from the others; tokens work `AUTH.PERSONAL_TOKEN_MAX_AGE` (90 days) at
+  most, and `expires_in_days: null` is refused; `login` is no longer a
+  token's name. **Fix:** clients send the password, or step up first;
+  `AUTH = {"PERSONAL_TOKEN_MAX_AGE": None}` keeps tokens that never end.
+  Tokens already made keep their lifetime.
+- **An account takes 100 wrong passwords a day at most** (AUTH-19), from
+  `AUTH.ACCOUNT_LOGIN_RATE`, beside `LOGIN_RATE`. A user whose account a
+  stranger floods logs in from the browsers they used before; a new one
+  waits for the day, or a password reset. **Fix:** nothing, or set the
+  rate (`None` restores 0.15's, and `check` warns of it where deployed,
+  `auth.W006`).
+- **`If-Match: *` no longer satisfies `require_if_match`** (WEB-22): it is
+  `428 precondition_required`, as a write without `If-Match`. **Fix:**
+  clients send the `ETag` of the version they change.
+- **Turning a second factor on ends the user's other logins and tokens**
+  (AUTH-20), personal tokens and registered certificates
+  included. **Fix:** make personal tokens, and register certificates,
+  after turning it on.
 - **An open live connection no longer keeps its login alive**
   (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
   WebSocket or event stream wrote the login's last use, so a page left

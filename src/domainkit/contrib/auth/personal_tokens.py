@@ -12,12 +12,18 @@ Mount the router next to the one that logs in::
   ``scopes`` (permission keys the user has) if given, and shows it once:
   the answer is marked ``Cache-Control: no-store``, so neither caches nor
   ``IdempotencyMiddleware`` keep it, and a retry with its idempotency key
-  gets 409 rather than the token again.
+  gets 409 rather than the token again. The user authenticates again
+  first: a step-up within 5 minutes where they have a second factor
+  (``401 step_up_required`` otherwise), the ``password`` where they do not.
+  A token works ``AUTH.PERSONAL_TOKEN_MAX_AGE`` at most (90 days by
+  default); one that never ends only where that setting is None (AUTH-16).
 - ``DELETE /tokens/{id}`` revokes one of the user's tokens (a JWT login's
   refresh token takes its login with it).
 
 Only credentials without scopes may use these routes (``IsUnscoped``): a
 scoped token can neither see the others nor make a token with more. A
+personal token is no login: logging out of a session, and idling out, leave
+it; a password change, a reset, or logging out everywhere ends it. A
 token never carries a scope its user lacks when it is made; scopes only
 narrow what the user may do, so a permission taken from the user later is
 gone from the token too. Tokens are identified by the digest the table
@@ -28,7 +34,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Final
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from domainkit.http.access import IsAuthenticated, IsUnscoped, Require
 from domainkit.http.errors import APIError
@@ -40,12 +46,15 @@ from domainkit.http.pagination import (
     encode_cursor,
 )
 
-from .api import _credentials, _errors, _no_store
+from .access import StepUp
+from .api import PASSWORD_MAX_LENGTH, _credentials, _errors, _no_store
 from .backends import get_all_permissions
 from .events import TokenCreated, TokenRevoked
-from .models import UserId
+from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
-from .tokens import AuthToken, TokenKind
+from .stepup import check_password_again
+from .throttling import audit_refusal
+from .tokens import LOGIN_NAME, AuthToken, TokenKind
 from .uow import AuthUnitOfWork
 
 __all__ = [
@@ -57,6 +66,12 @@ MAX_PAGE_SIZE: Final = 100
 MAX_SCOPES: Final = 100
 NAME_MAX_LENGTH: Final = 100
 DIGEST_PATTERN: Final = r"^[0-9a-f]{64}$"
+DEFAULT_DAYS: Final = 90
+"""Days a token works when the request names none (within the setting's)."""
+STEP_UP_AGE: Final = timedelta(minutes=5)
+"""How recent a step-up must be to make a token, for users with a second factor."""
+ACTION: Final = "auth.token_create"
+"""The audit trail's action for refused attempts to make a token."""
 
 router = APIRouter(
     tags=["auth"], dependencies=[Depends(Require(IsAuthenticated(), IsUnscoped()))]
@@ -71,13 +86,28 @@ class TokenIn(BaseModel):
     name: str = Field(
         min_length=1, max_length=NAME_MAX_LENGTH, pattern=r"^[^\x00-\x1f\x7f]+$"
     )
-    """What it is for, as the list shows it: one line."""
+    """What it is for, as the list shows it: one line; never ``login``, the name
+    of logins' tokens."""
     scopes: list[Annotated[str, Field(min_length=1, max_length=255)]] | None = Field(
         default=None, max_length=MAX_SCOPES
     )
     """Permission keys it is limited to; None: all of the user's."""
-    expires_in_days: int | None = Field(default=90, ge=1, le=3650)
-    """Days it works; None: until revoked."""
+    expires_in_days: int | None = Field(default=DEFAULT_DAYS, ge=1, le=3650)
+    """Days it works; None: until revoked, where ``PERSONAL_TOKEN_MAX_AGE``
+    allows. Left out: 90, or the setting's, if shorter."""
+    password: str | None = Field(
+        default=None, min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False
+    )
+    """The user's password: needed by users without a second factor, who
+    cannot step up."""
+
+    @field_validator("name")
+    @classmethod
+    def _not_a_login(cls, value: str) -> str:
+        """Refuse ``login``: tokens so named are logins' (``tokens.is_login``)."""
+        if value == LOGIN_NAME:
+            raise ValueError(f"{LOGIN_NAME!r} names logins' tokens; choose another")
+        return value
 
 
 class TokenInfo(BaseModel):
@@ -87,7 +117,7 @@ class TokenInfo(BaseModel):
     """Its SHA-256 digest: what revoking it takes."""
     name: str
     kind: str
-    """``access``, ``session``, or ``refresh``."""
+    """``access``, ``session``, ``refresh``, or ``certificate``."""
     scopes: list[str] | None
     created_at: datetime
     expires_at: datetime | None
@@ -139,15 +169,23 @@ async def list_tokens(
     "/tokens",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(
+        status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
         status.HTTP_409_CONFLICT,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
     ),
 )
 async def create_token(body: TokenIn, request: Request, response: Response) -> NewToken:
-    """Make a personal token, limited to ``scopes`` if given; it is shown once."""
+    """Make a personal token, limited to ``scopes`` if given; it is shown once.
+
+    The user authenticates again first (``reauthenticate``), and the token
+    works ``AUTH.PERSONAL_TOKEN_MAX_AGE`` at most.
+    """
     _no_store(response)
     user = _credentials(request).user
+    ttl = lifetime(body)
     scopes = None if body.scopes is None else frozenset(body.scopes)
     if scopes is not None and (
         missing := sorted(scopes - await get_all_permissions(user))
@@ -157,7 +195,7 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
             f"A token cannot have permissions you lack: {', '.join(missing)}.",
             code="scope_not_held",
         )
-    ttl = None if body.expires_in_days is None else timedelta(days=body.expires_in_days)
+    await reauthenticate(request, user, body.password)
     limit = auth_settings().MAX_LIVE_TOKENS
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
@@ -204,6 +242,54 @@ async def revoke_token(
         stored = await uow.users.get(UserId(user.id))
         stored.record(TokenRevoked(user_id=user.id, name=token.name))
         await uow.commit()
+
+
+def lifetime(body: TokenIn) -> timedelta | None:
+    """How long the token asked for works; None: until revoked.
+
+    Raises:
+        APIError: 422 ``token_lifetime_too_long``, past
+            ``AUTH.PERSONAL_TOKEN_MAX_AGE``.
+    """
+    longest = auth_settings().PERSONAL_TOKEN_MAX_AGE
+    if "expires_in_days" not in body.model_fields_set:
+        asked = timedelta(days=DEFAULT_DAYS)
+        return asked if longest is None else min(asked, longest)
+    days = body.expires_in_days
+    if longest is None:
+        return None if days is None else timedelta(days=days)
+    if days is None or timedelta(days=days) > longest:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"A token works {longest.days} days at most here; ask for fewer.",
+            code="token_lifetime_too_long",
+        )
+    return timedelta(days=days)
+
+
+async def reauthenticate(
+    request: Request, user: AbstractBaseUser, password: str | None
+) -> None:
+    """Make the user prove it is them again before a token is made (AUTH-16).
+
+    With a second factor: a step-up of these credentials within
+    ``STEP_UP_AGE`` (``POST /auth/step-up``). Without one: the password,
+    counted with the user's other password checks.
+
+    Raises:
+        StepUpRequired: 401, no recent step-up.
+        APIError: 400 ``password_required`` or ``wrong_password``; 429 past
+            ``AUTH.LOGIN_RATE``.
+    """
+    async with AuthUnitOfWork() as uow:
+        factor = await uow.mfa.enabled(user.id)
+    if not factor:
+        await check_password_again(request, user, password, ACTION)
+        return
+    rule = StepUp(max_age=STEP_UP_AGE)
+    if not await rule.has_permission(request, user):
+        await audit_refusal(ACTION, "step_up_required")
+        raise await rule.refusal(request, user)
 
 
 def _info(token: AuthToken, request: Request) -> TokenInfo:

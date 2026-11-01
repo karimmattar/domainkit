@@ -742,3 +742,70 @@ def test_deletes_leave_grants_alone_where_nothing_is_granted(
 
     assert connection.execute.call_count == 0
     assert event.contains(Mapper, "after_delete", deletions.forget_grants)
+
+
+def test_backends_list_the_grants_users_and_groups_hold(project: str) -> None:
+    """``object_grants``: a user's own and their groups', a group's own."""
+    from domainkit.contrib.auth.backends import BaseBackend, ObjectGrant, object_grants
+
+    first, second = products("first", "second")
+    root = person("root", is_superuser=True)
+    keepers = make_group("keepers")
+    ada = person("ada")
+    join("ada", "keepers")
+    ada = reload("ada")
+    run(grant_permission(root, CHANGE, first, user=ada.id))
+    run(grant_permission(root, VIEW, second, group=keepers))
+    group = next(iter(ada.groups))
+
+    assert run(object_grants(ada)) == {
+        ObjectGrant(CHANGE, "shop.product", first.id),
+        ObjectGrant(VIEW, "shop.product", second.id),
+    }
+    assert run(object_grants(group)) == {ObjectGrant(VIEW, "shop.product", second.id)}
+    assert run(object_grants(reload("root"))) == frozenset()
+    assert run(BaseBackend().object_grants(ada)) == frozenset()
+    assert str(ObjectGrant(CHANGE, "shop.product", 42)) == (
+        "shop.change_product on shop.product 42"
+    )
+
+
+def test_staff_change_what_holds_object_grants_only_holding_them(
+    project: str,
+) -> None:
+    """The admin API's ceiling counts grants on objects (AUTH-14)."""
+    from domainkit.contrib.auth import admin
+
+    (vault,) = products("vault")
+    root = person("root", is_superuser=True)
+    owner = person("owner")
+    run(grant_permission(root, CHANGE, vault, user=owner.id))
+    keepers = make_group("keepers")
+    run(grant_permission(root, CHANGE, vault, group=keepers))
+    helper = person("helper", "auth.change_user", "auth.change_group", is_staff=True)
+    peer = person("peer", "auth.change_user", "auth.change_group", is_staff=True)
+    run(grant_permission(root, CHANGE, vault, user=peer.id))
+    peer = reload("peer")
+    modeller = person(
+        "modeller", "auth.change_user", "auth.change_group", CHANGE, is_staff=True
+    )
+    password = admin.AdminPasswordIn(password="Zq8!wL-d4#Kp7v")
+    rename = admin.GroupPatch(name="keepers")
+    lacking = "shop.change_product on shop.product"
+
+    with pytest.raises(PermissionDenied, match=lacking) as refused:
+        run(admin.set_password(owner.id, password, helper))
+    with pytest.raises(PermissionDenied, match="change groups whose"):
+        run(admin.rename_group(keepers, rename, helper))
+    assert str(refused.value).startswith(
+        "You can only change users whose permissions you have; you lack"
+    )
+    # The same grant on the object, the permission on the model, or a superuser.
+    run(admin.set_password(owner.id, password, peer))
+    run(admin.rename_group(keepers, rename, peer))
+    run(admin.set_password(owner.id, password, modeller))
+    run(admin.set_password(owner.id, password, root))
+    joined = run(
+        admin.set_user_groups(peer.id, admin.GroupsIn(groups=["keepers"]), peer)
+    )
+    assert joined.groups == ["keepers"]

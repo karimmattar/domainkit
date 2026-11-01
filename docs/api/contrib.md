@@ -560,7 +560,7 @@ Permissions on single objects (django-guardian's grants), for users or groups.
 - `ObjectPermission`: `permission` on one object, for one user or one group.
 - `ObjectPermissionBackend`: Permissions granted on an object to a user or to one of their groups.
 - `ObjectPermissionGranted`: A user or a group may now do something to one object.
-- `ObjectPermissionId`: NewType creates simple unique types with almost zero runtime overhead.
+- `ObjectPermissionId`: A grant's id: a UUID typed apart from other ids.
 - `ObjectPermissionRepository`: Grants: find them with `about(...)`.
 - `ObjectPermissionRevoked`: A grant on one object was taken back.
 - `ObjectPermissionsUnitOfWork`: One transaction on the grants of one database (the objects').

@@ -189,6 +189,11 @@ msgstr "انتهت مهلة تسجيل الدخول؛ سجّل الدخول مر
 msgid "The code is wrong, or was used already."
 msgstr "الرمز غير صحيح، أو استُخدم من قبل."
 
+msgid ""
+"Your authenticator can no longer be checked here; ask for your second "
+"factor to be reset."
+msgstr "لم يعد ممكنًا التحقق من تطبيق المصادقة هنا؛ اطلب إعادة ضبط التحقق بخطوتين."
+
 msgid "No such token."
 msgstr "لا يوجد رمز كهذا."
 

@@ -5,15 +5,24 @@ unless options give them. With ``--noinput`` it asks nothing and reads
 what the options leave out from ``<PREFIX>SUPERUSER_<FIELD>`` (or a
 ``_FILE`` holding it), such as ``BILLING_API_SUPERUSER_PASSWORD``; without
 a password the user gets an unusable one.
+
+A password the validators refuse is kept only on request, and only where
+no ``AUTH.PASSWORD_PRESET`` holds and outside staging and production
+(AUTH-18). A password read from the environment, which whoever deploys
+holds too, is to change at its first use under
+``AUTH.PASSWORD_CHANGE_ON_FIRST_USE`` (PCI DSS v4.0 8.3.5), unless
+``--no-temporary``.
 """
 
 import getpass
-from argparse import ArgumentParser
+from argparse import ArgumentParser, BooleanOptionalAction
 from collections.abc import Callable
 from types import SimpleNamespace
 
 from domainkit import setup
+from domainkit.conf import settings
 from domainkit.conf.env import Env
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.management.base import BaseCommand, CommandError, run_async
 
 from ...exceptions import (
@@ -22,9 +31,22 @@ from ...exceptions import (
     InvalidUsername,
     UsernameTaken,
 )
+from ...settings import auth_settings
 from ...uow import AuthUnitOfWork
 from ...users import get_user_model
 from ...validators import validate_password
+
+
+def _may_bypass() -> bool:
+    """Whether a refused password may be kept on request (AUTH-18).
+
+    Not under a preset, whose rules ``auth.E010`` holds, nor in staging
+    and production.
+    """
+    return (
+        auth_settings().PASSWORD_PRESET is None
+        and settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS
+    )
 
 
 def _label(field: str) -> str:
@@ -54,9 +76,24 @@ class Command(BaseCommand):
             action="store_false",
             help="ask nothing; read missing values from <PREFIX>SUPERUSER_<FIELD>",
         )
+        parser.add_argument(
+            "--temporary",
+            action=BooleanOptionalAction,
+            default=None,
+            help="the user changes the password at the first login (default: "
+            "with --noinput, under AUTH.PASSWORD_CHANGE_ON_FIRST_USE)",
+        )
 
-    def handle(self, *, interactive: bool, **options: str | None) -> None:
+    def handle(
+        self,
+        *,
+        interactive: bool,
+        temporary: bool | None = None,
+        **options: str | None,
+    ) -> None:
         """Gather the values, then create the user."""
+        if temporary is None:
+            temporary = not interactive and auth_settings().PASSWORD_CHANGE_ON_FIRST_USE
         try:
             values = self._values(interactive, options)
             password = (
@@ -67,7 +104,7 @@ class Command(BaseCommand):
         except (KeyboardInterrupt, EOFError):
             raise CommandError("Operation cancelled.") from None
         try:
-            run_async(self._create(values, password))
+            run_async(self._create(values, password, temporary=temporary))
         except (UsernameTaken, InvalidUsername, InvalidEmail) as exc:
             raise CommandError(exc.message) from None
         self.write("Superuser created successfully.")
@@ -128,6 +165,8 @@ class Command(BaseCommand):
                 validate_password(password, SimpleNamespace(**values))
             except InvalidPassword as exc:
                 self._error("\n".join(exc.errors))
+                if not _may_bypass():
+                    continue
                 answer = self.ask(
                     "Bypass password validation and create user anyway? [y/N]: "
                 )
@@ -150,12 +189,16 @@ class Command(BaseCommand):
         async with AuthUnitOfWork() as uow:
             return await uow.users.get_by_natural_key(username) is not None
 
-    async def _create(self, values: dict[str, str], password: str | None) -> None:
-        """Store the superuser."""
+    async def _create(
+        self, values: dict[str, str], password: str | None, *, temporary: bool
+    ) -> None:
+        """Store the superuser; a ``temporary`` password changes at first use."""
         fields = dict(values)
         username = fields.pop(get_user_model().USERNAME_FIELD)
         async with AuthUnitOfWork() as uow:
-            await uow.users.create_superuser(username, password, **fields)
+            user = await uow.users.create_superuser(username, password, **fields)
+            if password is not None and temporary:
+                await uow.passwords.require_change(user.id)
             await uow.commit()
 
     def _error(self, message: str) -> None:

@@ -48,7 +48,7 @@ from domainkit.tasks import owned
 from domainkit_tests.conftest import Api
 from domainkit_tests.conftest import identity as identity
 from domainkit_tests.fake_smtp import certificate
-from domainkit_tests.test_auth_http import bearer, create_user, grant, login
+from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, grant, login
 from domainkit_tests.test_auth_principals import (
     CERTIFICATES,
     STAMPED,
@@ -587,7 +587,8 @@ def test_users_hold_a_bounded_number_of_live_tokens(identity: Api) -> None:
     headers = bearer(login(client, "alice")["access_token"])  # One live token.
 
     def make() -> Any:  # noqa: ANN401 - a response.
-        return client.post("/auth/tokens", json={"name": "ci"}, headers=headers)
+        body = {"name": "ci", "password": PASSWORD}
+        return client.post("/auth/tokens", json=body, headers=headers)
 
     made = [make() for _ in range(3)]
     assert [each.status_code for each in made] == [201, 201, 409]

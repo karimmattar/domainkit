@@ -703,7 +703,11 @@ def test_deployments_report_every_auth_refusal_at_once(use_auth: UseAuth) -> Non
 
 
 def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
-    """``LOGIN_RATE`` and ``MFA.RATE`` set to None are warnings there."""
+    """Guesses without limit, or past NIST's 100 a day, are warnings there.
+
+    ``LOGIN_RATE`` and ``MFA.RATE`` set to None, and an ``ACCOUNT_LOGIN_RATE``
+    over 100 a day (AUTH-19).
+    """
     deployed = {
         "ENVIRONMENT": "production",
         "ALLOWED_HOSTS": ["api.example.com"],
@@ -712,10 +716,16 @@ def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
     hashers = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
 
     use_auth(
-        settings=deployed, PASSWORD_HASHERS=hashers, LOGIN_RATE=None, MFA={"RATE": None}
+        settings=deployed,
+        PASSWORD_HASHERS=hashers,
+        LOGIN_RATE=None,
+        ACCOUNT_LOGIN_RATE=None,
+        MFA={"RATE": None},
     )
     unlimited = domain_warnings("auth")
-    use_auth(settings=deployed, PASSWORD_HASHERS=hashers)
+    use_auth(settings=deployed, PASSWORD_HASHERS=hashers, ACCOUNT_LOGIN_RATE="5/hour")
+    hourly = domain_warnings("auth")
+    use_auth(settings=deployed, PASSWORD_HASHERS=hashers, ACCOUNT_LOGIN_RATE="4/hour")
     limited = domain_warnings("auth")
 
     assert unlimited == [
@@ -724,9 +734,21 @@ def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
             'set it, such as "10/minute".'
         ),
         (
+            "AUTH.ACCOUNT_LOGIN_RATE None lets more than 100 wrong passwords a day "
+            "at one account, past NIST SP 800-63B 5.2.2; set it to "
+            '"100/day" or less.'
+        ),
+        (
             "AUTH.MFA.RATE is None, so one-time codes can be guessed without "
             'limit; set it, such as "10/hour".'
         ),
+    ]
+    assert hourly == [
+        (
+            "AUTH.ACCOUNT_LOGIN_RATE '5/hour' lets more than 100 wrong passwords "
+            "a day at one account, past NIST SP 800-63B 5.2.2; set it to "
+            '"100/day" or less.'
+        )
     ]
     assert limited == []
 

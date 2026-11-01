@@ -1067,6 +1067,16 @@ class MfaStore:
         )
         return _count(result) == 1
 
+    async def sealed(
+        self, *, after: UUID | None = None, limit: int = 500
+    ) -> list[TotpDevice]:
+        """Authenticators by id, after ``after``: a page of their sealed secrets."""
+        statement = select(mfa_devices).order_by(mfa_devices.c.id).limit(limit)
+        if after is not None:
+            statement = statement.where(mfa_devices.c.id > after)
+        rows = await self.session.execute(statement)
+        return [TotpDevice(**row._mapping) for row in rows]
+
     async def reseal(self, device_id: UUID, secret: bytes) -> None:
         """Store the secret encrypted again (under the current key)."""
         await self.session.execute(

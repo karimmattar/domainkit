@@ -267,6 +267,7 @@ def test_scoped_credentials_cannot_step_up(identity: Api, frozen: FrozenClock) -
     client = identity()
     headers = bearer(login(client, "alice")["access_token"])
     secret = enrol(client, headers, frozen)
+    assert step_up(client, headers, now_code(secret, frozen)).status_code == 200
     scoped = client.post(
         "/auth/tokens",
         json={"name": "ci", "scopes": ["shop.view_product"]},

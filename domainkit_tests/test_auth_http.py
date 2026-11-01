@@ -491,7 +491,9 @@ def test_attempts_the_counter_cannot_count_may_fail_closed(
         ]
         closed = api(LOGIN_RATE="1/minute", THROTTLE_FAIL_CLOSED=True)
         refused = closed.post("/auth/login", json=wrong)
-        unlimited = api(LOGIN_RATE=None, THROTTLE_FAIL_CLOSED=True)
+        unlimited = api(
+            LOGIN_RATE=None, ACCOUNT_LOGIN_RATE=None, THROTTLE_FAIL_CLOSED=True
+        )
         unthrottled = unlimited.post("/auth/login", json=wrong)
 
     assert let_through == [401] * 3

@@ -187,6 +187,11 @@ msgstr ""
 msgid "The code is wrong, or was used already."
 msgstr ""
 
+msgid ""
+"Your authenticator can no longer be checked here; ask for your second "
+"factor to be reset."
+msgstr ""
+
 msgid "No such token."
 msgstr ""
 

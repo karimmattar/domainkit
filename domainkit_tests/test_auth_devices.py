@@ -341,3 +341,52 @@ def login_token(client: TestClient) -> str:
     """Alice's access token, before she has a second factor."""
     token: str = client.post("/auth/login", json=RIGHT).json()["access_token"]
     return token
+
+
+def test_an_account_takes_at_most_a_days_guesses(api: Api) -> None:
+    """``ACCOUNT_LOGIN_RATE`` bounds the day's wrong passwords per account (AUTH-19).
+
+    However slowly they come, under ``LOGIN_RATE``: strangers fill the
+    unproven count, and a new browser of alice's is held; a proven client
+    has a daily count of its own, which they cannot touch, as strict.
+    """
+    create_user("alice")
+    client = api(LOGIN_RATE="100/minute", ACCOUNT_LOGIN_RATE="3/day")
+    alice = browser(client.app, "203.0.113.50")
+    assert alice.post("/auth/login", json=RIGHT).status_code == 200
+    wrong = {"username": "alice", "password": "wrong"}
+
+    with freeze_time("2026-10-26T10:00:00Z") as clock:
+        guesses = []
+        for number in range(1, 5):
+            guesses.append(guess(client.app, f"198.51.100.{number}"))
+            clock.tick(timedelta(hours=1))
+        new_browser = browser(client.app, "203.0.113.51").post(
+            "/auth/login", json=RIGHT
+        )
+        proven = [alice.post("/auth/login", json=RIGHT).status_code]
+        proven += [alice.post("/auth/login", json=wrong).status_code for _ in range(4)]
+
+    assert guesses == [401, 401, 401, 429]
+    assert new_browser.status_code == 429
+    assert proven == [200, 401, 401, 401, 429]
+
+
+def test_signed_in_password_checks_count_on_the_day_too(api: Api) -> None:
+    """With ``PASSWORD_CHECKS_COUNT_AS_LOGINS``, a wrong ``/auth/password`` counts."""
+    create_user("alice")
+    client = api(
+        LOGIN_RATE="100/minute",
+        ACCOUNT_LOGIN_RATE="2/day",
+        PASSWORD_CHECKS_COUNT_AS_LOGINS=True,
+    )
+    login = client.post("/auth/login", json=RIGHT).json()["access_token"]
+    wrong = {"old_password": "wrong", "new_password": "Zq8!wL-d4#Kp7v"}
+
+    changes = [
+        client.post("/auth/password", json=wrong, headers=bearer(login)).status_code
+        for _ in range(3)
+    ]
+
+    assert changes == [400, 400, 429]
+    assert guess(client.app, "198.51.100.1") == 429

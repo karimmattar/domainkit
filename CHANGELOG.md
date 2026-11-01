@@ -276,6 +276,39 @@ and a status.
 
 ### Changed
 
+- **Breaking:** a route whose only dependency on the user is
+  `CurrentUser` no longer declares who may call it: `CurrentUser` lets
+  anyone in, an anonymous caller as `AnonymousUser`, so `open_routes`
+  lists such a route, `check` fails with it, and staging and production
+  refuse to start (`security.E101`). Add `dependencies=[Public]` where
+  anonymous callers are meant, or take `AuthenticatedUser`
+  ([ADR 0017](docs/adr/0017-deny-by-default-and-admin-api.md)'s
+  amendment) (DSGN-17).
+- **Breaking:** `POST /auth/tokens` asks the user to authenticate again:
+  a step-up within 5 minutes where they have a second factor (`401
+  step_up_required`), the `password` in the body where they do not (`400
+  password_required`, `wrong_password`). A token works
+  `AUTH.PERSONAL_TOKEN_MAX_AGE` at most, a new setting, 90 days by
+  default: `expires_in_days` beyond it, or `null`, is `422
+  token_lifetime_too_long` unless the setting is `None`. A token may not
+  be named `login`, the name of logins' tokens, which made it one
+  (`createtoken --name login` is refused too) (AUTH-16).
+- **Breaking:** wrong passwords at one account are bounded over the day
+  too: `AUTH.ACCOUNT_LOGIN_RATE`, a new setting, `"100/day"` by default,
+  as NIST SP 800-63B 5.2.2 asks; `LOGIN_RATE` (10 a minute) let 14,400 a
+  day through. Clients with a device proof for the account count apart
+  at the same rate, which strangers cannot use up. `check` warns where
+  deployed of `None` or more than 100 a day (`auth.W006`)
+  ([ADR 0087](docs/adr/0087-count-proven-devices-apart-and-bound-scopes-by-route.md)'s
+  amendment) (AUTH-19).
+- **Breaking:** under `require_if_match=True`, `If-Match: *` is answered
+  as no `If-Match`, `428 precondition_required`: it names no version, so
+  it passed the requirement and wrote over whatever was stored (WEB-22).
+- **Breaking:** turning a second factor on (`POST /auth/mfa/totp/confirm`)
+  ends every other login and token of the user, personal tokens and
+  certificates included, as a new password does: what logged in with the
+  password alone may not be the user's. The request's own login stays
+  (AUTH-20).
 - **Breaking:** auth has three new tables, `domainkit_step_ups`,
   `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
   new features use them, but deleting or erasing a user deletes the
@@ -312,6 +345,30 @@ and a status.
   and why (TEST-11).
 
 ### Fixed
+
+- `ModelActions` checks the scopes of credentials limited to them (it asks
+  `HasPermissions`) and now says so (`bounds_scopes`), so a personal
+  token scoped to `shop.view_gadget` lists and reads a `ResourceRouter`
+  guarded by `ModelActions(Gadget)`, the generated domains' rule, where
+  it got `403` under `SCOPED_CREDENTIALS = "refuse"` (WEB-15).
+- The password chosen at signup is kept in the password history
+  (`AUTH.PASSWORD_HISTORY`), so the user cannot change back to it at once
+  (PCI DSS v4.0 8.3.7) (AUTH-15).
+- `createsuperuser` offers to keep a password the validators refuse only
+  without `AUTH.PASSWORD_PRESET`, and outside staging and production. With
+  `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, a password it reads from the
+  environment (`--noinput`), which whoever deploys holds too, is to change
+  at the first login, unless `--no-temporary` (8.3.5, 8.3.6) (AUTH-18).
+- A TOTP secret that no key held opens (`SECRET_KEY` replaced, and the
+  old key dropped from `SECRET_KEY_FALLBACKS` before its user logged in)
+  answered `500` at every code check. It is `409
+  second_factor_unreadable` now, audited and logged; recovery codes still
+  work. `manage.py resealmfa` encrypts every secret still under a fallback
+  again under `SECRET_KEY`, so the fallback can be dropped, and
+  `resealmfa --check` fails while one is (AUTH-17).
+- `GET /auth/tokens` documents `certificate` among the kinds it lists, and
+  the API reference describes `UserId`, `GroupId`, and
+  `ObjectPermissionId` (AUTH-20).
 
 - `migrate` makes the audit trail append-only on PostgreSQL itself:
   `domainkit.contrib.audit` registers `protect_migrated` on
@@ -363,6 +420,18 @@ and a status.
   currency has (FIN-01).
 
 ### Security
+
+- The admin API bounded staff by model permissions alone: a staff member
+  with `auth.change_user` set the password, or the address, of a user
+  holding grants on single objects (`contrib.objectpermissions`) they
+  lacked, and became that user, or joined a group holding such grants.
+  Backends now say what they grant on objects
+  (`BaseBackend.object_grants`, `ObjectGrant`, `backends.object_grants`;
+  `ObjectPermissionBackend` reads every database's grants), and staff
+  change no user or group, and add no one to a group, holding a grant they
+  lack through its permission on the model or the same grant on the
+  object (`403`, naming each) ([ADR 0017](docs/adr/0017-deny-by-default-and-admin-api.md)'s
+  amendment) (AUTH-14).
 
 - `contrib.approvals`: with `SUPERUSER_APPROVALS`, a user who held
   `auth.change_user` could submit `auth.grant_superuser` for themselves
