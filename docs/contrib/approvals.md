@@ -409,14 +409,17 @@ approvers are the actors of `approval_given`, and listed in
 `request_executed`. Reasons are kept on the request, not in the trail.
 
 `privacy export` lists the requests a person made, with their commands,
-and the decisions they took. `privacy erase` keeps the record that a
-request was made and decided, but unlinks the person: their pending
-requests are cancelled, the commands of their requests and the reasons
-they wrote are blanked (the fingerprint stays, and proves what was
-approved), and their id becomes one `erased:` id, so a request still
-shows that its maker and approvers were different people. A request of
-theirs approved but not run yet no longer verifies, and fails rather
-than runs.
+and the decisions they took. `privacy erase` keeps the record of who
+approved what, which a business must keep (a payment's authorisation,
+the evidence of who checked whom), pseudonymised (FIN-94): their id
+becomes one `erased:` id wherever they are maker or approver, so a
+request still shows that its maker and approvers were different people;
+the commands and the decisions stay as they were, and the seals are made
+again for the pseudonym, so the record still verifies (only seals that
+held: an erasure launders no row changed around the application). Their
+pending requests are cancelled, an approved one of theirs not run yet
+fails (`maker_not_allowed`) rather than runs, and the reasons they wrote,
+free text, are blanked.
 
 ## Settings
 
