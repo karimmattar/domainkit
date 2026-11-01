@@ -2,10 +2,11 @@
 
 import io
 import json
+import os
 import secrets
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Final, cast
@@ -315,6 +316,16 @@ def test_retired_keys_are_warned_about() -> None:
     ):
         setup()
         [warning] = domain_warnings("keys")
+    with override_settings(
+        INSTALLED_DOMAINS=[KEYS, ALPHA],
+        KEYS={
+            "DATA_KEYS": {"a": FIRST, "b": SECOND, "c": wrapped()},
+            "CURRENT_KEY": "c",
+            "KEEP_DEVELOPMENT_KEY": False,
+        },
+    ):
+        setup()
+        [two] = domain_warnings("keys")
     registry.clear()
     assert isinstance(warning, CheckMessage)
     assert warning.id == "keys.W001"
@@ -322,6 +333,7 @@ def test_retired_keys_are_warned_about() -> None:
         "KEYS.DATA_KEYS keeps retired keys (a): values and subjects' keys may "
         "still be sealed under them."
     )
+    assert str(two).startswith("KEYS.DATA_KEYS keeps retired keys (a, b): ")
     assert warning.hint == (
         "Run 'manage.py keys reencrypt', then 'manage.py keys status --check'; "
         "remove the keys once nothing uses them (for dev, set "
@@ -374,7 +386,11 @@ def test_generate_prints_a_wrapped_key_for_data_keys(
         assert '"b"' in command("generate", "--id", "b")
         with pytest.raises(CommandError, match="already holds 'a'"):
             command("generate", "--id", "a")
-        with pytest.raises(CommandError, match="1 to 32 letters"):
+        with pytest.raises(
+            CommandError,
+            match=r"^A key's id is 1 to 32 letters, digits, '_' and '-', such as "
+            r"2026-10\.$",
+        ):
             command("generate", "--id", "no spaces")
 
 
@@ -388,7 +404,9 @@ def test_rewrap_prints_the_same_keys_under_the_newest_kek(
     again = json.loads(printed.rsplit("}", 1)[0] + "}")
     provider = LocalKeyProvider.from_secret_key()
     assert provider.unwrap_now(again["a"]) == provider.unwrap_now(FIRST)
-    assert "Replace KEYS['DATA_KEYS']" in printed
+    assert printed.endswith(
+        "\nReplace KEYS['DATA_KEYS'] with these: the data keys are the same.\n"
+    )
 
 
 def test_a_key_service_that_fails_is_a_command_error(
@@ -452,9 +470,13 @@ def test_rotating_the_data_key_and_reencrypting(
             "indexes to remake: 1" in status
         )
         assert "default subjects' keys wrapped under a: 2" in status
-        with pytest.raises(CommandError, match=r"keys\.W001: 8 value"):
+        with pytest.raises(
+            CommandError,
+            match=r"^keys\.W001: 8 value\(s\), index\(es\), or subject key\(s\) are "
+            r"still under a retired key; run 'manage\.py keys reencrypt'\.$",
+        ):
             command("status", "--check")
-        with pytest.raises(CommandError, match="at least 1"):
+        with pytest.raises(CommandError, match=r"^--batch-size must be at least 1\.$"):
             command("reencrypt", "--batch-size", "0")
         printed = command("reencrypt", "--batch-size", "1")
         assert printed.strip() == (
@@ -520,8 +542,13 @@ def test_reencrypt_leaves_and_counts_what_does_not_open(
     with project(
         database_url, tmp_path, DATA_KEYS={"a": FIRST, "b": SECOND}, CURRENT_KEY="b"
     ):
-        with pytest.raises(CommandError, match=r"^2 value"):
+        with pytest.raises(
+            CommandError,
+            match=r"^2 value\(s\) did not open: tampered, or sealed under a key the "
+            r"ring no longer holds\. They were left as they are\.$",
+        ):
             command("reencrypt")
+        assert "default subjects' keys wrapped under a: 1, b: 1\n" in command("status")
         status = run_async(key_status(keyring()))
         # The tampered values and their indexes, and Carol's broken key; Bob's,
         # after hers, moved.
@@ -704,6 +731,20 @@ async def test_shredding_reaches_every_hosting_database(
         assert await reencrypt(keyring()) is not None
 
 
+@pytest.mark.anyio
+async def test_shredding_adds_up_the_keys_of_every_database(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database after the one holding the key does not reset the count."""
+    from domainkit.contrib.keys import operations
+
+    with project(database_url, tmp_path):
+        await save(Cardholder(id=ANN, name="Ann", card_number=PAN))
+        # The same database again, as a second one holding none of Ann's keys.
+        monkeypatch.setattr(operations, "hosting_aliases", lambda: ("default",) * 2)
+        assert await shred_subject(str(ANN)) == 1
+
+
 def test_a_subjects_key_erased_while_it_is_stored_is_given_up_on() -> None:
     """The insert lost to a key that was gone when read: tried again, then refused."""
     from domainkit.contrib.keys.store import KeyStoreConflict, TableSubjectKeyStore
@@ -728,7 +769,11 @@ def test_a_subjects_key_erased_while_it_is_stored_is_given_up_on() -> None:
 
     connection = Losing()
     key = StoredSubjectKey("a" * 32, "ann", "k", b"\x00" * 60)
-    with pytest.raises(KeyStoreConflict, match="3 attempts"):
+    with pytest.raises(
+        KeyStoreConflict,
+        match=r"^The key of a subject could not be stored in 3 attempts: each time, "
+        r"another writer's key for them was being erased\.$",
+    ):
         TableSubjectKeyStore().add(connection, key)  # type: ignore[arg-type]
     assert connection.statements == 6
 
@@ -783,6 +828,26 @@ def test_key_ids_are_matched_as_written_not_as_patterns(
         assert "cards_cardholders.card_number: x21: 0, x_1: 0; subjects' keys: 1\n" in (
             command("status")
         )
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("DOMAINKIT_TEST_POSTGRES_URL")),
+    reason="staging asks PostgreSQL for TLS, which the tests' server lacks",
+)
+def test_a_decrypted_dump_names_its_operator_where_deployed(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In staging, ``--decrypt`` is what the refusal says needs a named operator."""
+    monkeypatch.delenv("DOMAINKIT_OPERATOR", raising=False)
+    with (
+        project(database_url, tmp_path, AUDIT),
+        override_settings(ENVIRONMENT="staging"),
+        pytest.raises(
+            CommandError,
+            match=r"^Name the operator who runs dumpdata --decrypt in staging: ",
+        ),
+    ):
+        call_command("dumpdata", "cards", "--decrypt", stdout=io.StringIO())
 
 
 def test_a_decrypted_dump_is_recorded_with_its_tables(
@@ -896,13 +961,18 @@ async def test_tombstones_are_kept_a_day(database_url: str, tmp_path: Path) -> N
     from domainkit.contrib.keys.tables import erasures
 
     with project(database_url, tmp_path):
-        now = await database_now() or datetime(2026, 10, 31, 12, tzinfo=UTC)
+        on_postgres = await database_now()
+        now = on_postgres or datetime(2026, 10, 31, 12, tzinfo=UTC)
+        # PostgreSQL's clock moves on before the erasure reads it: a day to
+        # the second is exact only under SQLite's frozen clock.
+        margin = timedelta(minutes=1) if on_postgres else timedelta(0)
         async with connections.engine("default").begin() as connection:
             await connection.execute(
                 erasures.insert(),
                 [
                     {"subject": "old", "erased_at": now - timedelta(days=1, seconds=1)},
                     {"subject": "recent", "erased_at": now - timedelta(hours=23)},
+                    {"subject": "a day", "erased_at": now - timedelta(days=1) + margin},
                 ],
             )
         with freeze_time(now):
@@ -910,7 +980,7 @@ async def test_tombstones_are_kept_a_day(database_url: str, tmp_path: Path) -> N
         left = await rows(
             "SELECT subject FROM domainkit_keys_erasures ORDER BY subject"
         )
-    assert [row["subject"] for row in left] == ["ann", "recent"]
+    assert [row["subject"] for row in left] == ["a day", "ann", "recent"]
 
 
 @pytest.mark.anyio
@@ -931,3 +1001,235 @@ async def test_a_host_clock_ahead_keeps_the_tombstone_it_leaves(
             await shred_subject("ann")
         left = await rows("SELECT subject FROM domainkit_keys_erasures")
     assert [row["subject"] for row in left] == ["ann"]
+
+
+# What the command says, and how it moves keys in batches -----------------------------
+
+
+def keys_help(*action: str) -> str:
+    """``keys``' ``--help``, or an action's, on one line."""
+    from domainkit.contrib.keys.management.commands.keys import Command
+
+    parser = Command().create_parser("manage.py", "keys")
+    out = io.StringIO()
+    with redirect_stdout(out), pytest.raises(SystemExit):
+        parser.parse_args([*action, "--help"])
+    return " ".join(out.getvalue().split())
+
+
+def test_the_command_says_what_each_action_does() -> None:
+    """Each action's line of ``--help``, and each option's line of the action's."""
+    assert (
+        "{generate,rewrap,status,reencrypt} generate make a data key, wrapped rewrap "
+        "print DATA_KEYS wrapped under the KEK's newest version status count what "
+        "each key seals reencrypt seal everything still under a retired key again "
+        "options:"
+    ) in keys_help()
+    assert keys_help("generate").endswith(
+        " --id KEY_ID its id in DATA_KEYS (default: today's date)"
+    )
+    assert keys_help("status").endswith(
+        " --check fail while anything is sealed under a retired key (keys.W001)"
+    )
+    assert keys_help("reencrypt").endswith(
+        " --batch-size BATCH_SIZE rows per transaction (default: 500)"
+    )
+
+
+def test_status_names_every_retired_key(database_url: str, tmp_path: Path) -> None:
+    """Retired keys are listed in the order DATA_KEYS gives them."""
+    keys = {"DATA_KEYS": {"a": FIRST, "b": SECOND, "c": wrapped()}, "CURRENT_KEY": "c"}
+    with project(database_url, tmp_path, **keys):
+        assert command("status").startswith("Current key: c; retired: a, b.\n")
+
+
+def holders(count: int) -> list[Cardholder]:
+    """``count`` card holders, each with a card number sealed under their own key."""
+    return [
+        Cardholder(id=uuid.UUID(int=n + 1), name=f"h{n}", card_number=PAN)
+        for n in range(count)
+    ]
+
+
+def test_reencrypt_reads_at_most_batch_size_rows_at_a_time(
+    database_url: str, tmp_path: Path
+) -> None:
+    """A query per batch of ``--batch-size``, and one more that finds none left."""
+    from domainkit.testing.queries import CapturedQueries
+
+    with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
+        run_async(save(*holders(2)))
+    rotated = {"DATA_KEYS": {"a": FIRST, "b": SECOND}, "CURRENT_KEY": "b"}
+    with project(database_url, tmp_path, **rotated):
+        with CapturedQueries() as queries:
+            command("reencrypt", "--batch-size", "1")
+        batches = [each for each in queries.statements if " LIMIT " in each]
+        on_keys = [each for each in batches if "domainkit_keys_subject_keys" in each]
+        # Two subjects' keys, and two card numbers' indexes to remake: three
+        # queries each; passports, API secrets and payments, none to move: one.
+        assert (len(on_keys), len(batches)) == (3, 3 + 3 + 4)
+
+
+def test_one_batch_wraps_every_subject_key_in_it(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Each key moved counts, not only the last of a batch."""
+    with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
+        run_async(save(*holders(2)))
+    rotated = {"DATA_KEYS": {"a": FIRST, "b": SECOND}, "CURRENT_KEY": "b"}
+    with project(database_url, tmp_path, **rotated):
+        assert (
+            command("reencrypt")
+            .strip()
+            .endswith("and wrapped 2 subject key(s) under b.")
+        )
+
+
+def test_subjects_keys_are_wrapped_again_in_the_order_of_their_ids(
+    database_url: str, tmp_path: Path
+) -> None:
+    """One at a time, none is skipped: each batch starts after the last id done."""
+    with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
+        run_async(save(*holders(8)))
+    rotated = {"DATA_KEYS": {"a": FIRST, "b": SECOND}, "CURRENT_KEY": "b"}
+    with project(database_url, tmp_path, **rotated):
+        command("reencrypt", "--batch-size", "1")
+        status = run_async(key_status(keyring()))
+    assert status.subject_keys == {"default": {"b": 8}}
+
+
+def test_a_subject_key_wrapped_again_meanwhile_is_left_as_it_is(
+    database_url: str, tmp_path: Path
+) -> None:
+    """The update names the wrapping key it read: another run's move is kept."""
+    with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
+        run_async(save(*holders(1)))
+    rotated = {"DATA_KEYS": {"a": FIRST, "b": SECOND}, "CURRENT_KEY": "b"}
+    with project(database_url, tmp_path, **rotated):
+        read = run_async(stored_subject_keys())
+        command("reencrypt")
+        assert run_async(rewrap_again(read)) == 0
+
+
+async def stored_subject_keys() -> list[Any]:
+    """The rows of the subjects' keys, as ``reencrypt`` reads them."""
+    async with connections.engine("default").connect() as connection:
+        return list((await connection.execute(select(subject_keys))).all())
+
+
+async def rewrap_again(read: list[Any]) -> int:
+    """Wrap the keys of rows read before again, as ``reencrypt`` would; how many."""
+    from domainkit.contrib.keys.operations import _rewrap_rows
+
+    async with connections.engine("default").begin() as connection:
+        return await connection.run_sync(_rewrap_rows, keyring(), read)
+
+
+def test_a_value_under_a_retired_key_without_its_index_is_sealed_again(
+    database_url: str, tmp_path: Path
+) -> None:
+    """A row written without its blind index (a fixture's) still moves, and gets one."""
+    with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
+        run_async(
+            save(Payment(id=uuid.UUID(int=1), holder_id=ANN, pan=CardNumber(PAN)))
+        )
+        run_async(drop_indexes())
+    rotated = {"DATA_KEYS": {"a": FIRST, "b": SECOND}, "CURRENT_KEY": "b"}
+    with project(database_url, tmp_path, **rotated):
+        assert command("reencrypt").startswith(
+            "Sealed 1 value(s) again, remade 1 blind index(es)"
+        )
+
+
+async def drop_indexes() -> None:
+    """Clear the payments' blind indexes, as a fixture without them leaves them."""
+    async with connections.engine("default").begin() as connection:
+        await connection.execute(update(tables.payments).values(pan_index=None))
+
+
+def test_a_subjects_lock_is_a_signed_64_bit_hash_the_same_everywhere() -> None:
+    """BLAKE2b of the subject in 8 bytes, big-endian and signed: a BIGINT."""
+    from domainkit.contrib.keys.store import _lock_key
+
+    assert [_lock_key(subject) for subject in ("ann", "bob", "\ud800")] == [
+        2326584288098257840,
+        -7046027984218438332,
+        -5504369782091661012,
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_subjects_key_that_does_not_open_is_passed_over_once(
+    database_url: str, tmp_path: Path
+) -> None:
+    """The next batch starts after it: one at a time, the run still ends."""
+    import asyncio
+
+    from domainkit.contrib.keys import reencrypt
+
+    with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
+        await save(*holders(1))
+        async with connections.engine("default").begin() as connection:
+            await connection.execute(
+                subject_keys.insert().values(
+                    id="f" * 32,
+                    subject="carol",
+                    wrapping_key="a",
+                    key=b"\x00" * 60,
+                    created_at=clock.now(),
+                )
+            )
+    rotated = {"DATA_KEYS": {"a": FIRST, "b": SECOND}, "CURRENT_KEY": "b"}
+    with project(database_url, tmp_path, **rotated):
+        done = await asyncio.wait_for(reencrypt(keyring(), batch_size=1), 30)
+    assert done.subject_keys == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    not os.environ.get("DOMAINKIT_TEST_POSTGRES_URL"),
+    reason="SQLite's clock is the host's",
+)
+async def test_keys_and_tombstones_are_dated_by_the_database(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An hour off on the host, a key's making and its erasure are PostgreSQL's."""
+    from datetime import timedelta
+
+    from sqlalchemy import func
+
+    from domainkit.contrib.keys.tables import erasures
+
+    real = clock.now
+    monkeypatch.setattr(clock, "now", lambda: real() + timedelta(hours=1))
+    with project(database_url, tmp_path):
+        await save(Cardholder(id=ANN, name="Ann", card_number=PAN))
+        async with connections.engine("default").connect() as connection:
+            made = await connection.scalar(select(subject_keys.c.created_at))
+        await shred_subject(str(ANN))
+        async with connections.engine("default").connect() as connection:
+            erased = await connection.scalar(select(erasures.c.erased_at))
+            now = await connection.scalar(select(func.statement_timestamp()))
+    assert made is not None
+    assert erased is not None
+    assert now is not None
+    assert abs(made - now) < timedelta(minutes=5)
+    assert abs(erased - now) < timedelta(minutes=5)
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    not os.environ.get("DOMAINKIT_TEST_POSTGRES_URL"),
+    reason="SQLite serializes the two writers; the race needs PostgreSQL",
+)
+async def test_a_key_made_during_an_erasure_with_no_index_is_destroyed(
+    database_url: str, tmp_path: Path
+) -> None:
+    """A first key sealing only a passport, no blind index: destroyed as it commits."""
+    with project(database_url, tmp_path):
+        async with CardsUnitOfWork() as uow:
+            await uow.cardholders.add(Cardholder(id=ANN, name="Ann", passport="P1"))
+            await uow.session.flush()  # Ann's key is made, not yet committed.
+            await shred_subject(str(ANN))
+            await uow.commit()
+        assert await rows("SELECT subject FROM domainkit_keys_subject_keys") == []

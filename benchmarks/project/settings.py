@@ -6,6 +6,7 @@ migrations are written to (``python -m benchmarks`` makes one per run).
 
 import os
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 ENVIRONMENT = "local"
@@ -29,4 +30,10 @@ ROOT_ROUTER = "benchmarks.project.routes.router"
 DATABASES = {"default": {"URL": "sqlite+aiosqlite:///:memory:"}}
 API_DOCS = False
 # Users are made once, when the database is: hashing cost is not measured.
-AUTH = {"PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"]}
+# A principal is kept for the whole run (5 minutes, the most): with the
+# default 5 seconds, a counted pass that outlasted it read the principal
+# again, two statements and a transaction more, now and then (PERF-32).
+AUTH = {
+    "PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"],
+    "PRINCIPAL_CACHE": {"TTL": timedelta(minutes=5)},
+}

@@ -524,8 +524,13 @@ def include_object(
     domain is not installed. Untagged tables belong to ``default``. Leftover
     tables of other targets or uninstalled apps are ignored, so routing or
     uninstalling never proposes a destructive drop. Partitions (``partitions``)
-    are managed by ``manage.py partitions``, not by revisions.
+    are managed by ``manage.py partitions``, not by revisions, and so are the
+    indexes a table names in ``info={"unmanaged_indexes": (prefix, ...)}``
+    (the audit trail's history indexes, which ``migrate`` makes): a revision
+    never drops one.
     """
+    if type_ == "index" and reflected:
+        return not _unmanaged_index(obj, name)
     if type_ != "table":
         return True
     if not reflected:
@@ -536,6 +541,16 @@ def include_object(
     if known is None:
         return router.holds_tables(None, target)
     return router.holds_table(known, target)
+
+
+def _unmanaged_index(obj: object, name: str | None) -> bool:
+    """Whether a reflected index is one its table says revisions leave alone."""
+    table = getattr(obj, "table", None)
+    known = metadata.tables.get(getattr(table, "name", ""))
+    prefixes: tuple[str, ...] = (
+        () if known is None else known.info.get("unmanaged_indexes", ())
+    )
+    return name is not None and any(name.startswith(prefix) for prefix in prefixes)
 
 
 @comparators.dispatch_for("table")

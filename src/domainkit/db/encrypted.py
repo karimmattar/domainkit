@@ -41,7 +41,7 @@ import binascii
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from weakref import WeakKeyDictionary
 
 from sqlalchemy import (
@@ -65,7 +65,9 @@ from sqlalchemy.types import TypeDecorator
 
 from domainkit.ddd.fields import InvalidQuery, primitive, wrapped_field
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.keys.ring import SUBJECT, keyring, sealed_key
+
+if TYPE_CHECKING:
+    from domainkit.keys.ring import Keyring
 
 __all__ = [
     "Ciphertext",
@@ -407,6 +409,8 @@ def hold_subject_keys(
     ``open_row`` then finds them held: a dump of N people's rows reads their
     keys in one statement, not N (PERF-22).
     """
+    from domainkit.keys.ring import SUBJECT, sealed_key
+
     key_ids = [
         found[1]
         for column in encrypted_columns(table)
@@ -454,6 +458,17 @@ class _Field:
     """The attribute naming the subject, if sealed for one."""
     index: str | None
     """The attribute holding the blind index, if there is one."""
+
+
+def keyring() -> "Keyring":
+    """The process's key ring (``domainkit.keys.ring``, imported on first use).
+
+    A project that encrypts no field never imports the key ring (ADR 0104,
+    PERF-31).
+    """
+    from domainkit.keys.ring import keyring as ring
+
+    return ring()
 
 
 def watch(class_: type, table: Table) -> None:
@@ -740,6 +755,8 @@ def _open_together(state: ORMExecuteState) -> Result[Any] | None:
 
 def _open_waiting(session: Session, waiting: Sequence[_Waiting]) -> None:
     """Open the values ``waiting``, their subjects' keys read together per mapper."""
+    from domainkit.keys.ring import sealed_key
+
     ring = keyring()
     by_mapper: dict[Mapper[Any], list[_Waiting]] = {}
     for entry in waiting:
@@ -764,6 +781,8 @@ def _open(target: object, context_: QueryContext) -> None:
     A value sealed for a subject, loaded by a query ``_open_together``
     runs, waits for the query's other rows, to be opened with them.
     """
+    from domainkit.keys.ring import SUBJECT, sealed_key
+
     state = instance_state(target)
     mapper = state.mapper
     session = context_.session
