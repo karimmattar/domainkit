@@ -1,5 +1,6 @@
 """Batches: one command for many items, each answered, atomically or not."""
 
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -7,14 +8,24 @@ import pytest
 from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy.exc import TimeoutError as PoolTimeout
+from starlette.requests import HTTPConnection
 
+from domainkit.conf import override_settings
 from domainkit.ddd import Command, NotFound, Retry
 from domainkit.ddd.query import F
+from domainkit.http.access import BasePermission
+from domainkit.http.client import CallTimeout
 from domainkit.http.errors import APIError
+from domainkit.reporting import flush_reports
 from domainkit.resources import PatchModel
 from domainkit.resources.batches import Enlisted, failure, not_applied
 from domainkit_tests.conftest import UseAuth
-from domainkit_tests.gadgets import FakeGadgetsUnitOfWork, Gadget, InMemoryGadgets
+from domainkit_tests.gadgets import (
+    FakeGadgetsUnitOfWork,
+    Gadget,
+    GadgetId,
+    InMemoryGadgets,
+)
 from domainkit_tests.test_resources import (
     DropGadget,
     GadgetChanges,
@@ -378,3 +389,139 @@ def test_an_atomic_batch_raises_what_it_kept_losing_to_if_no_refusal(
     notes = ["The work ran 2 times; each run lost a race."] if attempts > 1 else []
     assert getattr(raised.value, "__notes__", []) == notes
     assert runs == [known["a"]] * attempts
+
+
+reported: list[tuple[str, Mapping[str, object]]] = []
+
+
+def reporter(exc: BaseException, context: Mapping[str, object]) -> None:
+    """Collect reported errors."""
+    reported.append((type(exc).__name__, context))
+
+
+async def breaks_on_b(command: RenameGadget, uow: FakeGadgetsUnitOfWork) -> Gadget:
+    """Rename; a name of ``boom`` fails as a bug does, ``slow`` as a call does."""
+    if command.name == "boom":
+        raise ZeroDivisionError
+    if command.name == "slow":
+        raise CallTimeout("The rates service took too long.")
+    return await rename(command, uow)
+
+
+@pytest.mark.usefixtures("reports_sent")
+def test_a_bug_past_the_first_item_answers_each_item(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Items before it committed: 207, the item 500 and reported, the rest 424.
+
+    An outgoing call that failed is the item's 504, as a request's (WEB-17).
+    """
+    use_auth()
+    resource = gadgets(store)
+    resource.batch_route(RenameGadget, service=breaks_on_b, body=RenameIn)
+    client = client_of(resource)
+    known = ids(store)
+    reported.clear()
+
+    with override_settings(
+        ERROR_REPORTERS=["domainkit_tests.test_resource_batches.reporter"]
+    ):
+        answer = client.post(
+            BATCH,
+            json={
+                "items": [
+                    {"gadget_id": str(known["a"]), "name": "x"},
+                    {"gadget_id": str(known["b"]), "name": "slow"},
+                    {"gadget_id": str(known["b"]), "name": "boom"},
+                    {"gadget_id": str(known["c"]), "name": "y"},
+                ]
+            },
+            headers=as_("changer"),
+        )
+        flush_reports()
+
+    results = answer.json()["results"]
+    assert answer.status_code == 207
+    assert [each["status"] for each in results] == [200, 504, 500, 424]
+    assert [each.get("error", {}).get("code") for each in results] == [
+        None,
+        "upstream_timeout",
+        "internal_error",
+        "not_applied",
+    ]
+    assert store.items[GadgetId(known["a"])].name == "x"
+    assert store.items[GadgetId(known["c"])].name == "c"
+    assert [(name, context["method"]) for name, context in reported] == [
+        ("ZeroDivisionError", "POST")
+    ]
+
+
+OPEN: set[int] = set()
+"""The units of work entered and not left, by ``id``."""
+
+
+class OnlyA(BasePermission):
+    """Lets a caller have one gadget alone, asking the database as grants do."""
+
+    def __init__(self, allowed: UUID) -> None:
+        """Allow the gadget ``allowed``."""
+        self.allowed = allowed
+        self.asked: list[bool] = []
+
+    async def has_object_permission(
+        self,
+        request: HTTPConnection,
+        user: Any,  # noqa: ANN401 - a principal.
+        obj: object,
+    ) -> bool:
+        """Only that one; note whether a unit of work was open meanwhile."""
+        self.asked.append(bool(OPEN))
+        return getattr(obj, "id", None) == self.allowed
+
+
+def test_atomic_batches_ask_object_rules_before_their_transaction(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No rule runs inside the transaction; a refusal undoes the batch before it."""
+    use_auth()
+    known = ids(store)
+    rule = OnlyA(known["a"])
+    resource = gadgets(store)
+    resource.batch_route(RenameGadget, service=rename, body=RenameIn, rule=rule)
+    client = client_of(resource)
+    enter, leave = FakeGadgetsUnitOfWork.__aenter__, FakeGadgetsUnitOfWork.__aexit__
+
+    async def entered(self: FakeGadgetsUnitOfWork) -> FakeGadgetsUnitOfWork:
+        OPEN.add(id(self))
+        return await enter(self)
+
+    async def left(self: FakeGadgetsUnitOfWork, *exc: Any) -> None:  # noqa: ANN401
+        OPEN.discard(id(self))
+        await leave(self, *exc)
+
+    OPEN.clear()
+    monkeypatch.setattr(FakeGadgetsUnitOfWork, "__aenter__", entered)
+    monkeypatch.setattr(FakeGadgetsUnitOfWork, "__aexit__", left)
+
+    allowed = client.post(
+        BATCH,
+        json={"atomic": True, "items": [{"gadget_id": str(known["a"]), "name": "x"}]},
+        headers=as_("changer"),
+    )
+    refused = client.post(
+        BATCH,
+        json={
+            "atomic": True,
+            "items": [
+                {"gadget_id": str(known["a"]), "name": "y"},
+                {"gadget_id": str(known["b"]), "name": "z"},
+            ],
+        },
+        headers=as_("changer"),
+    )
+
+    assert [each["status"] for each in allowed.json()["results"]] == [200]
+    assert [each["status"] for each in refused.json()["results"]] == [424, 403]
+    names = {name: store.items[GadgetId(known[name])].name for name in "ab"}
+    assert names == {"a": "x", "b": "b"}
+    assert rule.asked == [False, False, False]

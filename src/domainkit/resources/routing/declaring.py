@@ -20,6 +20,7 @@ from domainkit.ddd.uow import UnitOfWork
 from domainkit.http.access import Require, Rule
 from domainkit.http.errors import error_responses
 from domainkit.http.middleware import body_limit
+from domainkit.http.openapi import REQUIRED_HEADERS
 from domainkit.http.pagination import PageRequest
 
 from .context import (
@@ -38,6 +39,15 @@ if TYPE_CHECKING:
     from . import ResourceRouter
 
 IF_NONE_MATCH: Final = "The ETag you hold: 304 if it is current."
+ETAG: Final = {
+    "description": "The version of the aggregate answered: send it back as "
+    "If-Match to change it, or If-None-Match to read it again.",
+    "schema": {"type": "string"},
+}
+LOCATION: Final = {
+    "description": "Where the aggregate created is read.",
+    "schema": {"type": "string"},
+}
 OPTIONAL: Final = (
     "parent_uow",
     "body",
@@ -119,6 +129,8 @@ def _endpoint(
 
     endpoint.__name__ = endpoint.__qualname__ = name
     endpoint.__doc__ = spec.summary
+    if spec.detail and spec.writes and router.require_if_match:
+        setattr(endpoint, REQUIRED_HEADERS, ("If-Match",))
     endpoint.__signature__ = inspect.Signature(parameters)  # type: ignore[attr-defined]
     return endpoint
 
@@ -198,6 +210,8 @@ def _responses(
         codes.append(status.HTTP_412_PRECONDITION_FAILED)
         if router.require_if_match:
             codes.append(status.HTTP_428_PRECONDITION_REQUIRED)
+    if spec.body is not None:
+        codes.append(status.HTTP_408_REQUEST_TIMEOUT)
     exporting = spec.listing and len(router.media_types) > 1
     if spec.listing or spec.asked is not None:
         codes.append(status.HTTP_422_UNPROCESSABLE_CONTENT)
@@ -216,6 +230,12 @@ def _responses(
         responses[status.HTTP_304_NOT_MODIFIED] = {
             "description": "The ETag sent is still current."
         }
+    answers_aggregate = spec.returns is DEFAULT or spec.returns is router.schema
+    if spec.reads or (spec.writes and answers_aggregate):
+        headers = {"ETag": ETAG}
+        if spec.status_code == status.HTTP_201_CREATED:
+            headers["Location"] = LOCATION
+        responses.setdefault(spec.status_code, {})["headers"] = headers
     return responses
 
 
