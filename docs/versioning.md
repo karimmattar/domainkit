@@ -2,70 +2,103 @@
 
 ## Version numbers
 
-domainkit follows [Semantic Versioning](https://semver.org/). Before 1.0, the
-minor number plays the role of the major one:
+domainkit follows [Semantic Versioning](https://semver.org/) from 1.0.0:
 
-| Release | May contain |
-| --- | --- |
-| `0.x.Y` (patch) | Bug and security fixes only. Always safe to take. |
-| `0.X.0` (minor) | New features; removals announced at least one minor release earlier. |
-| `1.0.0` and later | Removals only in a major release. |
+| Release | May contain | May not |
+| --- | --- | --- |
+| `1.x.Y` (patch) | Bug and security fixes; documentation. Always safe to take. | A new feature, setting, or deprecation; any change a project relies on, but the security exception below. |
+| `1.X.0` (minor) | New features, settings, commands, routes, and checks; new problem codes; deprecations, each with its replacement; a new optional table or column, with its migration; a raised dependency floor or a dropped Python or PostgreSQL version its maintainers stopped fixing. | Removing or renaming anything public, changing a default, changing what a public name, setting, route, or format means, or a new error or deployment check that refuses what 1.0 accepted. |
+| `2.0.0` | Removing what 1.x deprecated, and changes to defaults and formats. | |
 
-Projects pin a compatible range: from 1.0, up to the next major
-(`domainkit = ">=1.0,<2"`, which `domainkit init` writes); before it, up to
-the next minor (`">=0.12,<0.13"`), upgrading one minor release at a time.
+Before 1.0, the minor number played the role of the major one: 0.x
+minors changed defaults and broke behaviours, each listed in
+[upgrading.md](upgrading.md).
+
+Projects pin a compatible range: up to the next major
+(`domainkit = ">=1.0,<2"`, which `domainkit init` writes).
 
 ## What is public
 
-These are covered by the policy:
+Everything a project, its clients, or its operators can build on, and
+nothing else. From 1.0, each is removed or changed only in 2.0:
 
-- the names listed in [api.md](api.md): every name a package or module
-  puts in its `__all__` (`domainkit.ddd.Selection`,
-  `domainkit.http.middleware.CORSMiddleware`, ...), and only those. A test
-  keeps the page and the code in step, and fails when another page tells
-  users to import a name that is not listed
-- documented settings and their defaults
-- management commands and their options
-- the generated project and domain layout (`init`, `startdomain`), which
-  imports public names only
-- the extras (`pip install "domainkit[keys]"`) and what each makes work
-- check ids, and the problem codes [reference/problems.md](reference/problems.md) lists
-- table schemas of the contrib apps, which change only with a migration in the release
-- the package's extras (`domainkit[postgres]`, `domainkit[jwt]`, ...) and the
-  packages each installs, and the `domainkit` command. Removing or renaming
-  an extra breaks a project silently: pip only warns about an extra it does
-  not know, and installs without its packages, so the project fails at
-  import, in production. An extra is deprecated like a name: kept, and
-  announced, until the next major release (INFRA-19)
+- **Names**: those listed in [api.md](api.md), every name a package or
+  module puts in its `__all__` (`domainkit.ddd.Selection`,
+  `domainkit.http.middleware.CORSMiddleware`, ...), with their signatures
+  and the exceptions they document. A test keeps the pages and the code in
+  step, and fails when another page tells users to import a name that is
+  not listed.
+- **Settings**: every setting documented on the
+  [reference](reference/settings.md) and the apps' pages, its default, and
+  its bounds; and the environment variables domainkit reads itself
+  (`<PREFIX>_SETTINGS_MODULE`, `DOMAINKIT_OPERATOR`, the `<NAME>_FILE`
+  form of a secret).
+- **Commands**: management commands, their arguments and options, and their
+  exit statuses ([reference/commands.md](reference/commands.md)). A
+  command's printed lines are for people unless its page says a script
+  may read them.
+- **Check ids**: `auth.E105` keeps its meaning; a check may be added in a
+  minor only as a warning ([reference/checks.md](reference/checks.md)).
+- **Problem codes**: every code [reference/problems.md](reference/problems.md)
+  lists, with its status.
+- **Routes**: the paths, methods, bodies, and answers of the contrib apps'
+  routers (`/auth`, `/admin`, and the ledger's, approvals', and limits'),
+  and the headers domainkit reads and writes (`Idempotency-Key`,
+  `If-Match`, `ETag`, `X-Request-ID`, `Retry-After`).
+- **Table schemas** of the contrib apps, which change only with a
+  migration in the release.
+- **Wire and storage formats** that outlive a process: sealed values
+  (`dk1:`) and blind indexes, wrapped data keys, signed values
+  (`domainkit.signing`), tokens and cursors, webhook signatures (Standard
+  Webhooks' `v1`), the audit chain, its seals, checkpoints, and exports,
+  and the outbox's messages, so that a 1.x worker runs what another 1.x
+  release wrote, and a value written by one 1.x release is read by every
+  later one.
+- **The extras** (`domainkit[postgres]`, `domainkit[keys]`, ...) and what
+  each makes work. Removing or renaming an extra breaks a project
+  silently: pip only warns about an extra it does not know, and installs
+  without its packages, so the project fails at import, in production. An
+  extra is deprecated like a name: kept, and announced, until the next
+  major release (INFRA-19).
+- **The generated project and domain layout** (`init`, `startdomain`), which
+  imports public names only, and the `domainkit` command.
 
-Names starting with `_`, modules without `__all__`, names a module does not
-list in its `__all__`, and the exact wording of log and error messages are
-internal and may change in any release. Until 0.9.2 the rule named only
-what a package's `__init__` exported, which left out most of what the pages
-told users to use, such as the middleware; those are listed now
-([ADR 0076](adr/0076-public-api-is-docs-api-md.md)).
+Internal, and free to change in any release: names starting with `_`,
+modules without `__all__`, names a module does not list in its `__all__`,
+the exact wording of log lines and of `detail` and other messages for
+people, and how anything is done as long as what it does holds. Metric
+and span names and labels ([reference/observability.md](reference/observability.md))
+are kept within 1.x where possible; a change to one is a changelog entry
+of its own. Until 0.9.2 the rule named
+only what a package's `__init__` exported, which left out most of what the
+pages told users to use, such as the middleware; those are listed now
+([ADR 0076](adr/0076-public-api-is-docs-api-md.md), and its 1.0
+amendment by [ADR 0125](adr/0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)).
 
 ## Deprecating
 
 A public API is never removed without warning:
 
-1. The release that deprecates it keeps it working and warns with
+1. The minor release that deprecates it keeps it working and warns with
    `domainkit.deprecation.DomainkitDeprecationWarning`, naming the
    replacement and the release that removes it:
 
    ```python
    @warnings.deprecated(
-       "Use Page.items; removed in domainkit 0.4.",
+       "Use Page.items; removed in domainkit 2.0.",
        category=DomainkitDeprecationWarning,
    )
    ```
 
-2. The changelog lists it under **Deprecated**, with the replacement.
-3. It is removed no earlier than the next minor release (the next major
-   release after 1.0), and the changelog lists it under **Removed**.
+2. The changelog lists it under **Deprecated**, with the replacement, and
+   [upgrading.md](upgrading.md) says what to write instead.
+3. From 1.0, it is removed only in the next major release (2.0 for what
+   1.x deprecates), and the changelog lists it under **Removed**. Before
+   1.0 the next minor release could remove it.
 
 A security fix may break compatibility in a patch release when there is no
-safe alternative. Its changelog entry says so.
+safe alternative. Its changelog entry starts with **Breaking:**, says so,
+and has its line in [upgrading.md](upgrading.md).
 
 A patch release deprecates nothing: a new warning would fail the projects
 that make deprecations errors, as below. When a patch adds a better name,
@@ -82,8 +115,8 @@ and the setting that keeps a default's old behaviour.
 
 ### Deprecations planned for 0.13
 
-All done: 0.13 removed what 0.12 deprecated.
-[upgrading.md](upgrading.md#012-to-013) lists each, with what to write
+All done: 0.13 removed what 0.12 deprecated, and 1.0, the first release since 0.12.1, is the first published without it.
+[upgrading.md](upgrading.md#012-to-10) lists each, with what to write
 instead.
 
 | Deprecated in 0.12 | Use instead | What 0.13 did |
@@ -95,8 +128,8 @@ instead.
 
 1.0 renamed these names of 0.12, and froze the rest ([ADR 0125](adr/0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)).
 Each old name still works through 1.x, warning with
-`DomainkitDeprecationWarning`; 2.0 removes it, with `apps.E002`.
-[upgrading.md](upgrading.md#013-to-014) says what to write instead.
+`DomainkitDeprecationWarning`; 2.0 removes them, and `apps.E002` with them.
+[upgrading.md](upgrading.md#deprecated-removed-in-20) says what to write instead.
 
 | Deprecated in 1.0 | Use instead |
 | --- | --- |

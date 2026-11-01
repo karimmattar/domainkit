@@ -75,8 +75,8 @@ not be checked, unless `ACCOUNTING.REQUIRE_PROTECTION = False`
 limits routed to another database than the ledger's (`limits.E001`), or
 a default of `LIMITS.DEFAULTS` that is not a limit (`limits.E002`)
 ([limits.md](../contrib/limits.md)), anywhere; and a domain whose `requires` is not
-installed (`apps.E001`), or that defines a hook method 0.13 removed
-(`apps.E002`), anywhere. `check` adds layer rules
+installed (`apps.E001`), or that defines a hook method 1.0 removed
+(`apps.E002`, until 2.0), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
