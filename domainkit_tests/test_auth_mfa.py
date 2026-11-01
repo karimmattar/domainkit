@@ -15,6 +15,7 @@ from sqlalchemy import select
 from domainkit import signing
 from domainkit.conf import UNSET, override_settings
 from domainkit.contrib.auth import AuthUnitOfWork, UserId, mfa, totp
+from domainkit.contrib.auth.management.commands import resealmfa
 from domainkit.contrib.auth.settings import MfaSettings
 from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
 from domainkit.db import connections
@@ -921,10 +922,12 @@ def test_resealmfa_moves_secrets_off_the_fallbacks(
         return out.getvalue()
 
     with override_settings(SECRET_KEY=NEW_KEY, SECRET_KEY_FALLBACKS=[OLD_KEY]):
-        with pytest.raises(
-            CommandError, match=re.escape("2 TOTP secret(s) are still under")
-        ):
+        with pytest.raises(CommandError) as remaining:
             reseal("--check")
+        assert str(remaining.value) == (
+            "2 TOTP secret(s) are still under a key of SECRET_KEY_FALLBACKS; "
+            "run 'manage.py resealmfa' before dropping it."
+        )
         assert reseal("--batch-size", "1") == (
             "TOTP secrets: 0 under SECRET_KEY, 2 sealed again under SECRET_KEY, "
             "0 under no key held.\n"
@@ -945,20 +948,55 @@ def test_resealmfa_moves_secrets_off_the_fallbacks(
         assert finish(client, token, code_at(secret, clock[0])).status_code == 200
     with (
         override_settings(SECRET_KEY=OLD_KEY),
-        pytest.raises(
-            CommandError, match=re.escape("2 TOTP secret(s) open under no key held")
-        ),
+        pytest.raises(CommandError) as unreadable,
     ):
         reseal()
-    with pytest.raises(CommandError, match="--batch-size must be at least 1"):
+    assert str(unreadable.value) == (
+        "2 TOTP secret(s) open under no key held: their users cannot use their "
+        "authenticator; turn it off with resetmfa."
+    )
+    with pytest.raises(CommandError) as refused:
         reseal("--batch-size", "0")
+    assert str(refused.value) == "--batch-size must be at least 1."
+    parser = resealmfa.Command().create_parser("manage.py", "resealmfa")
+    text = " ".join(parser.format_help().split())
+    assert (
+        "--check change nothing; fail while a secret is under a fallback or no key"
+        in text
+    )
+    assert "--batch-size BATCH_SIZE authenticators per transaction (500)" in text
+
+
+def test_authenticators_are_read_in_pages_by_id(
+    identity: Api, clock: list[float]
+) -> None:
+    """``MfaStore.sealed``: ``limit`` of them, by id, after ``after``."""
+    create_user("alice")
+    create_user("bob")
+    client = identity()
+    for name in ("alice", "bob"):
+        enrol(client, bearer(login(client, name)["access_token"]), clock)
+
+    async def pages() -> tuple[list[UUID], list[UUID], list[UUID]]:
+        async with AuthUnitOfWork() as uow:
+            every = await uow.mfa.sealed(limit=10)
+            first = await uow.mfa.sealed(limit=1)
+            rest = await uow.mfa.sealed(after=first[0].id, limit=10)
+        ids = [device.id for device in every]
+        return ids, [device.id for device in first], [device.id for device in rest]
+
+    every, first, rest = run_async(pages())
+
+    assert every == sorted(every)
+    assert len(every) == 2
+    assert (first, rest) == (every[:1], every[1:])
 
 
 def test_a_secret_no_key_opens_is_refused_and_recorded(
-    identity: Api, clock: list[float]
+    identity: Api, clock: list[float], caplog: pytest.LogCaptureFixture
 ) -> None:
     """``409 second_factor_unreadable``, audited, at every code check (AUTH-17)."""
-    create_user("alice")
+    alice = create_user("alice")
     create_user("bob")
     with override_settings(SECRET_KEY=OLD_KEY):
         client = identity()
@@ -996,6 +1034,20 @@ def test_a_secret_no_key_opens_is_refused_and_recorded(
     assert recovered.status_code == 200  # Recovery codes still work.
     reasons = [row["details"]["reason"] for row in audited("auth.mfa")]
     assert reasons.count("second_factor_unreadable") == 3
+    assert logging_in.json()["detail"] == (
+        "Your authenticator can no longer be checked here; ask for your second "
+        "factor to be reset."
+    )
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "domainkit.security"
+    ]
+    assert (
+        f"The TOTP secret of user {alice} opens under no key held: SECRET_KEY "
+        "changed without it in SECRET_KEY_FALLBACKS (run resealmfa before "
+        "dropping a fallback); turn it off with resetmfa"
+    ) in lines
     (step_up,) = audited("auth.step_up")
     assert step_up["details"]["reason"] == "second_factor_unreadable"
 

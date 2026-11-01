@@ -746,6 +746,7 @@ def test_deletes_leave_grants_alone_where_nothing_is_granted(
 
 def test_backends_list_the_grants_users_and_groups_hold(project: str) -> None:
     """``object_grants``: a user's own and their groups', a group's own."""
+    from domainkit.contrib.auth import backends as auth_backends
     from domainkit.contrib.auth.backends import BaseBackend, ObjectGrant, object_grants
 
     first, second = products("first", "second")
@@ -765,6 +766,20 @@ def test_backends_list_the_grants_users_and_groups_hold(project: str) -> None:
     assert run(object_grants(group)) == {ObjectGrant(VIEW, "shop.product", second.id)}
     assert run(object_grants(reload("root"))) == frozenset()
     assert run(BaseBackend().object_grants(ada)) == frozenset()
+
+    class Listed(BaseBackend):
+        async def object_grants(
+            self, holder: AbstractBaseUser | Group
+        ) -> frozenset[ObjectGrant]:
+            return frozenset({ObjectGrant(VIEW, "shop.product", 1)})
+
+    every = (ObjectPermissionBackend(), Listed())
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(auth_backends, "get_backends", lambda: every)
+        assert run(object_grants(group)) == {
+            ObjectGrant(VIEW, "shop.product", second.id),
+            ObjectGrant(VIEW, "shop.product", 1),
+        }
     assert str(ObjectGrant(CHANGE, "shop.product", 42)) == (
         "shop.change_product on shop.product 42"
     )
@@ -780,6 +795,7 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
     root = person("root", is_superuser=True)
     owner = person("owner")
     run(grant_permission(root, CHANGE, vault, user=owner.id))
+    run(grant_permission(root, VIEW, vault, user=owner.id))
     keepers = make_group("keepers")
     run(grant_permission(root, CHANGE, vault, group=keepers))
     helper = person("helper", "auth.change_user", "auth.change_group", is_staff=True)
@@ -787,7 +803,12 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
     run(grant_permission(root, CHANGE, vault, user=peer.id))
     peer = reload("peer")
     modeller = person(
-        "modeller", "auth.change_user", "auth.change_group", CHANGE, is_staff=True
+        "modeller",
+        "auth.change_user",
+        "auth.change_group",
+        CHANGE,
+        VIEW,
+        is_staff=True,
     )
     password = admin.AdminPasswordIn(password="Zq8!wL-d4#Kp7v")
     rename = admin.GroupPatch(name="keepers")
@@ -797,10 +818,22 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
         run(admin.set_password(owner.id, password, helper))
     with pytest.raises(PermissionDenied, match="change groups whose"):
         run(admin.rename_group(keepers, rename, helper))
-    assert str(refused.value).startswith(
-        "You can only change users whose permissions you have; you lack"
+    with pytest.raises(PermissionDenied) as joining:
+        run(
+            admin.set_user_groups(helper.id, admin.GroupsIn(groups=["keepers"]), helper)
+        )
+    assert str(refused.value) == (
+        "You can only change users whose permissions you have; you lack "
+        f"shop.change_product on shop.product {vault.id}, "
+        f"shop.view_product on shop.product {vault.id}."
+    )
+    assert str(joining.value) == (
+        "You can only grant permissions you have; you lack "
+        f"shop.change_product on shop.product {vault.id}."
     )
     # The same grant on the object, the permission on the model, or a superuser.
+    run(grant_permission(root, VIEW, vault, user=peer.id))
+    peer = reload("peer")
     run(admin.set_password(owner.id, password, peer))
     run(admin.rename_group(keepers, rename, peer))
     run(admin.set_password(owner.id, password, modeller))

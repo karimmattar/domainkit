@@ -390,3 +390,5 @@ def test_signed_in_password_checks_count_on_the_day_too(api: Api) -> None:
 
     assert changes == [400, 400, 429]
     assert guess(client.app, "198.51.100.1") == 429
+    refused = client.post("/auth/password", json=wrong, headers=bearer(login))
+    assert refused.json()["detail"] == "Too many login attempts; try again later."

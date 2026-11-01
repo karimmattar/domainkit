@@ -196,6 +196,11 @@ def test_createsuperuser_usage(auth_project: str) -> None:
         "<PREFIX>SUPERUSER_<FIELD>" in text
     )
     assert createsuperuser._label("first_name") == "First name"
+    assert (
+        "--temporary, --no-temporary the user changes the password at the first "
+        "login (default: with --noinput, under AUTH.PASSWORD_CHANGE_ON_FIRST_USE)"
+        in text
+    )
 
 
 def test_createsuperuser_without_input(

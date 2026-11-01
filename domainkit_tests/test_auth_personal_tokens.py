@@ -341,9 +341,11 @@ def test_tokens_may_work_until_revoked_where_the_project_allows(
 
     body = make(client, user_session(client), expires_in_days=None).json()
     default = make(client, user_session(client)).json()
+    week = make(client, user_session(client), expires_in_days=7).json()
 
     assert body["expires_at"] is None
     assert lifetime_of(default) == timedelta(days=90)
+    assert lifetime_of(week) == timedelta(days=7)
 
 
 def lifetime_of(token: dict[str, Any]) -> timedelta:

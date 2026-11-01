@@ -1068,7 +1068,7 @@ class MfaStore:
         return _count(result) == 1
 
     async def sealed(
-        self, *, after: UUID | None = None, limit: int = 500
+        self, *, after: UUID | None = None, limit: int
     ) -> list[TotpDevice]:
         """Authenticators by id, after ``after``: a page of their sealed secrets."""
         statement = select(mfa_devices).order_by(mfa_devices.c.id).limit(limit)
