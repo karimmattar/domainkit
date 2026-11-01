@@ -308,6 +308,49 @@ and a status.
   do not measure: decorated functions, code only a server reaches, flaky
   tests counted as kills, and no whole run since 0.12.0 (TEST-16,
   TEST-17).
+- **Breaking:** SQLite checks foreign keys, as PostgreSQL does: every
+  connection the framework opens runs `PRAGMA foreign_keys = ON`, so a row
+  naming no parent is refused and `ON DELETE CASCADE` cascades (also for
+  `delete_rows`, `flush`, and `loaddata`). Migrations turn the check off
+  while revisions run, as batch mode recreates tables, and `migrate` then
+  checks every row, refusing with `ForeignKeyViolation`, by table, rows
+  stored while nothing was checked (DATA-18).
+- **Breaking:** derived schemas leave `Encrypted` fields out unless
+  `include` names them: `schema_for(Card)`, `crud=True` with
+  `writable=ALL_FIELDS`, and the admin no longer serve a card number in
+  clear by default; `schema_for(Card, include=[..., "number"])` or
+  `writable=[..., "number"]` serves it on purpose (DSGN-19).
+- **Breaking:** `makemigrations` renders revisions in batch mode on every
+  database, so a revision written against PostgreSQL applies on the SQLite
+  test database (on PostgreSQL batch mode is plain `ALTER`). Revisions
+  written before are unchanged (DATA-13).
+- **Breaking:** `makemigrations` adds the both-or-neither check of a
+  nullable money pair whenever the database table lacks it: a field made
+  optional (`Money` to `Money | None`) gets it, and a pair added before
+  0.14's check gets it in the next revision (DATA-20).
+- `domainkit.db.types.MAX_DIGITS` is `STORED_DIGITS`: 18, what an
+  `ExactDecimal` holds in all, fewer than `domainkit.money.MAX_DIGITS`
+  (38), which bounds money in memory and in JSON; both say how they relate
+  (DATA-21).
+- The key ring follows the settings: `KEYS` (and `SECRET_KEY`, which the
+  development key derives from) changed by `override_settings` or the
+  `settings` fixture seals and opens with the ring it describes, made
+  once per value (`SettingsKeyring`); `use_keyring` takes a function
+  giving the ring. Approvals' guard of entries reads `ENTRY_THRESHOLDS`
+  of the settings it runs under (TEST-15).
+- `SubjectKeyStore` has `find_many`: a query's rows sealed for subjects
+  read their keys in one statement once the query has loaded
+  (`Keyring.subject_keys_by_id`), as does `dumpdata --decrypt`, so a page
+  of N people costs one statement for their keys, not N (PERF-22). The
+  blind index's key is derived once per data key, and `keys reencrypt`
+  locks each batch's rows and writes them back in one statement per kind
+  of change (PERF-33).
+- The docs no longer promise that crypto-shredding reaches a backup taken
+  before the erasure, which holds the person's key: `docs/contrib/keys.md`
+  ("Backups taken before an erasure") and `docs/operations.md` say to bound
+  backup retention and to apply recorded erasures (`privacy.erase` in the
+  audit trail) again after a restore; ADR 0120 is amended (DOCS-14).
+
 - **Breaking:** auth has three new tables, `domainkit_step_ups`,
   `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
   new features use them, but deleting or erasing a user deletes the
@@ -342,6 +385,46 @@ and a status.
   clock run), 156 die on PostgreSQL already, 106 are equivalent, and
   12 run only at import; the audit page lists, by module, the 6 left
   and why (TEST-11).
+- The new list endpoints read their default order through an index: the
+  ledger's entries (`posted_at`) and holds (`placed_at`), and approval
+  requests (`submitted_at`); each page scanned and sorted the table
+  before (107 ms a page at 500,000 entries). Run `makemigrations` and
+  `migrate` (PERF-29).
+- `AUDIT.HISTORY_FIELDS`: the fields of `details` a project reads
+  histories by (`history(aggregate=(field, id))`, `GET /history?field=`).
+  On PostgreSQL, `migrate` keeps an index of each,
+  `ix_domainkit_audit_log_history_<field>`, and drops those of fields no
+  longer named; revisions leave them alone. Without one a history by
+  aggregate scans the whole trail (555 ms a page at 500,000 rows). The
+  query writes the field into the SQL there, so prepared statements use
+  the index (PERF-29).
+- Fewer index writes on the books: postings lose their own index of
+  `entry_id` (the unique `(entry_id, line)` serves it), the limits'
+  subjects lose the index of `touched_at`, so the lock each movement
+  takes is a HOT update, and usage's `key` index is a hash on PostgreSQL
+  (40 MB instead of 111 MB at 1.5 million rows), renamed
+  `ix_domainkit_limits_usage_key_hash`. Run `makemigrations` and
+  `migrate` (PERF-30).
+- A process that encrypts no field and handles no money no longer
+  imports the key ring or `csv`: `domainkit.db.encrypted` loads the ring
+  on first use, and money `csv` when it first reads its currencies, four
+  modules fewer in every process (`bare` 786 to 782). `domainkit.money`,
+  `domainkit.db.money` and `domainkit.db.encrypted` stay on the import
+  path, about 5 ms (`docs/performance.md`) (PERF-31).
+- The benchmark ladder measures money: `money-write`, `posting` (a
+  posting counted against a limit), `encrypted-read`, and `step-up`
+  rungs, with budgets. CI's `bench` job runs on Python 3.13.16, the
+  release its budgets were written on, as the counts moved between 3.13
+  patch releases; the bench project keeps principals for the run, so a
+  counted pass no longer reads one again now and then; the JSON-log rungs
+  are budgeted at the highest of three runs. `docs/performance.md`'s
+  table is this release's (ADR 0064's amendment) (PERF-32).
+- The 642 mutants 0.15's changed functions left (605 alive, 37 that no
+  test reached) are settled: 303 are killed by new tests (13 of them
+  on PostgreSQL, where the database's clock and the erasure race run),
+  69 die on PostgreSQL already, 233 are equivalent, and 25 run only at
+  import; the audit page lists, by module, the 12 left and why
+  (TEST-12).
 
 ### Fixed
 
@@ -356,6 +439,29 @@ and a status.
   write, and hypothesis has no deadline in CI; assertion-free and
   status-only tests now check the state or the problem code (TEST-20,
   TEST-23).
+- `dumpdata` reads every table in one snapshot (`REPEATABLE READ`, read
+  only, on PostgreSQL; a transaction begun before the first read on
+  SQLite): a parent and child committed while it ran were in the dump as
+  the child alone (DATA-14).
+- On SQLite, a plain-number server default of an amount column
+  (`server_default="1.50"`) is written in minor units, where it read back
+  as 0.015, and a check written as SQL compares amounts in their own units
+  (`CHECK (cap <= 100)` capped the column at 1.00); as tables are created,
+  and in revisions, which declare the column as plain `NUMERIC` (DATA-15).
+- The in-memory unit of work rolls back: a block that leaves without
+  `commit()`, or raises, puts its in-memory repositories back as they were
+  when it began or last committed, as the database does (DATA-16).
+- `Money.of(..., rounding=...)` and `multiply` refuse an amount that
+  rounding carries past `MAX_DIGITS` (`MoneyError`), where they made money
+  that could not be copied, pickled, or read back (DATA-17).
+- After `uow.rollback()`, the aggregates the SQL unit of work loaded are
+  read again, as stored; reading one raised `MissingGreenlet` (DATA-19).
+- An erasure forgets old tombstones (`domainkit_keys_erasures`) by the
+  clock that dated them, PostgreSQL's: with the host's clock more than a
+  day ahead of the database, it deleted the tombstone it had just left,
+  and a subject's first key made meanwhile survived the erasure, undoing
+  SEC-15a-2 (DATA-22).
+
 - `migrate` makes the audit trail append-only on PostgreSQL itself:
   `domainkit.contrib.audit` registers `protect_migrated` on
   `on_migrated`, which makes the triggers of `domainkit_audit_log` and

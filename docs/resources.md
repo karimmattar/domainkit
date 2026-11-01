@@ -261,7 +261,15 @@ ProductOut.from_domain(product)
 | `set[str]` | a sorted list, so the representation is stable |
 | `X | None` | the same, or null |
 
-A read schema lists every field, required, and has `from_domain`. A write
+A field stored encrypted (`Annotated[str | None, Encrypted(...)]`, a card
+number) is in a schema only where `include` names it: a read schema, and
+the bodies `crud=True` derives with `writable=ALL_FIELDS`, leave it out, so
+no derived route serves it in clear by default; serve it on purpose with
+`schema_for(Card, include=["id", "number"])` or `writable=[..., "number"]`.
+A field holding a secret (`Sensitive`, a password hash) is refused even
+when named.
+
+A read schema lists every other field, required, and has `from_domain`. A write
 schema (`write=True`) leaves out `id`, `version`, and `deleted_at`, takes
 the domain's defaults, forbids unknown fields, takes only datetimes with a
 time zone, and bounds integers to 64 bits. `include` keeps fields, in its

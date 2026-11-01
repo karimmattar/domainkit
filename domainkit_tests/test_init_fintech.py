@@ -476,3 +476,19 @@ def test_the_fintech_tests_pass_on_postgresql_as_the_applications_role(
 
     assert tested.returncode == 0, f"{tested.stdout}{tested.stderr}"
     assert "16 passed" in tested.stdout
+
+
+def test_init_says_what_each_argument_is() -> None:
+    """Its ``--help``: the name, the directory, and the profiles it offers."""
+    from domainkit.management.commands.init import Command
+
+    usage = " ".join(Command().create_parser("manage.py", "init").format_help().split())
+    assert usage.startswith("usage: manage.py init [-h] [--profile {fintech}] name ")
+    assert usage.endswith(
+        " positional arguments: name project name, as in [project].name; it sets "
+        "the environment variable prefix (billingAPI: BILLING_API_) directory where "
+        "to create it (default: ./<name>); empty or missing options: -h, --help show "
+        "this help message and exit --profile {fintech} a project with a sector's "
+        "controls on and wired: fintech, a bank's first-review list "
+        "(docs/fintech.md)"
+    )

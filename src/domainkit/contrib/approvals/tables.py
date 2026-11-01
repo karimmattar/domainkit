@@ -60,9 +60,14 @@ requests = Table(
     Column("run_token", String(64)),
     Column("version", Integer, nullable=False),
     Index("ix_domainkit_approval_requests_status", "status", "expires_at"),
+    Index("ix_domainkit_approval_requests_submitted_at", "submitted_at"),
     info=INFO,
 )
-"""Commands waiting for approval, and what became of them."""
+"""Commands waiting for approval, and what became of them.
+
+``submitted_at`` is indexed for the listing's default order, newest first
+(PERF-29).
+"""
 
 decisions = Table(
     "domainkit_approval_decisions",
