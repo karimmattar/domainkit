@@ -1,6 +1,6 @@
 # 0017. Routes deny by default; staff manage users through an admin API
 
-- Status: Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 and 2026-11-01 (at the end)
+- Status: Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26, 2026-11-01, and 2026-11-02 (at the end)
 - Date: 2026-10-15
 
 ## Context
@@ -113,3 +113,17 @@ less than they meant.
   the object. Refusing every change to a holder of object grants but by
   superusers was the smaller change, and was weighed: it would have kept
   a helpdesk that holds the same grants from serving its own users.
+
+## Amendment (2026-11-02, 1.0): a backend that lists nothing leaves users to superusers
+
+`object_grants` defaulted to none, so a backend granting on objects
+without listing them (every one written before 1.0, and `OwnerBackend`,
+which grants by the object's own fields and could not list them) counted
+as granting nothing, and staff took over its grants' holders as before
+(SEC-16a-5). While a configured backend other than `ModelBackend` keeps
+`BaseBackend.object_grants`, only superusers change users and groups
+through the admin API, as already for inactive users under such
+backends, and `check` warns (`auth.W007`) in every environment. A backend
+that grants on no object says so with an empty set. A refusal now says
+how many grants on objects the staff member lacks, not which objects: the
+target's grants are not theirs to learn.

@@ -56,6 +56,7 @@ from .access import IsAdminUser, IsSuperuser
 from .backends import (
     ModelBackend,
     ObjectGrant,
+    backends_without_object_grants,
     get_all_permissions,
     get_backends,
     object_grants,
@@ -668,16 +669,29 @@ async def _may_hold(
 
     A grant is held through its permission on the whole model, or the same
     grant on the object (``object_grants``). Superusers hold every one.
+    While a backend does not list its grants (``object_grants`` left as
+    ``BaseBackend``'s), only superusers pass (SEC-16a-5). A refusal names
+    how many grants are lacked, not the objects.
     """
+    if actor.is_superuser:
+        return
+    if unlisted := backends_without_object_grants():
+        raise PermissionDenied(
+            "Only superusers may change users and groups while a backend does "
+            f"not list its grants on objects (object_grants): {', '.join(unlisted)}."
+        )
     wanted = set(grants)
-    if actor.is_superuser or not wanted:
+    if not wanted:
         return
     model = await get_all_permissions(actor)
     # Staff are stored users: the routes' rules refuse anyone else.
     held = await object_grants(cast(AbstractBaseUser, actor))
     lacked = {grant for grant in wanted if grant.permission not in model} - held
-    if missing := sorted(str(grant) for grant in lacked):
-        raise PermissionDenied(f"{refusal}; you lack {', '.join(missing)}.")
+    if lacked:
+        # How many, not which: staff need not learn where the target holds grants.
+        raise PermissionDenied(
+            f"{refusal}; you lack {len(lacked)} of its grants on single objects."
+        )
 
 
 async def _grants_of(*groups: Group) -> set[ObjectGrant]:

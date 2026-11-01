@@ -114,6 +114,11 @@ msgstr "كلمة المرور القديمة التي أدخلتها غير صح
 msgid "Too many login attempts; try again later."
 msgstr "محاولات تسجيل دخول كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
 
+msgid ""
+"Your password or second factor changed while you logged in; log in "
+"again."
+msgstr "تغيّرت كلمة المرور أو التحقق بخطوتين أثناء تسجيل الدخول؛ سجّل الدخول مرة أخرى."
+
 msgid "Tokens are not refreshed here; log in again."
 msgstr "لا تُجدَّد الرموز هنا؛ سجّل الدخول مرة أخرى."
 

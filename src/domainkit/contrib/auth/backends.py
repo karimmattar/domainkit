@@ -40,6 +40,7 @@ __all__ = [
     "ModelBackend",
     "ObjectGrant",
     "authenticate",
+    "backends_without_object_grants",
     "get_all_permissions",
     "get_user",
     "has_perm",
@@ -97,7 +98,10 @@ class BaseBackend:
         For a user, their own grants and their groups', whether the user is
         active or not (what they would hold once active); for a group, its
         own. A backend that grants on objects must answer it: the admin
-        API bounds staff by it (AUTH-14). None by default.
+        API bounds staff by it (AUTH-14). A backend that grants on no
+        object answers it too, with an empty set: one that leaves this
+        default lets only superusers change users and groups there
+        (``backends_without_object_grants``, ``auth.W007``).
         """
         return frozenset()
 
@@ -132,6 +136,8 @@ class ModelBackend(BaseBackend):
             return None
         if check.rehashed is not None:
             await self._rehash(user.id, user.password, check.rehashed)
+            # The login is held to the hash it checked (``api.held_login``).
+            user.rehash_password(PasswordHash(check.rehashed))
         return user
 
     def user_can_authenticate(self, user: AbstractBaseUser) -> bool:
@@ -223,6 +229,24 @@ async def get_all_permissions(
     for backend in get_backends():
         granted |= await backend.get_all_permissions(user, obj)
     return frozenset(granted)
+
+
+def backends_without_object_grants() -> list[str]:
+    """The configured backends that do not say what they grant on objects.
+
+    Those that keep ``BaseBackend.object_grants``, which answers nothing,
+    but ``ModelBackend``, which grants on no object. Such a backend may
+    grant on objects all the same (``has_perm(user, perm, obj)``), so the
+    admin API lets only superusers change users and groups while one is
+    configured (SEC-16a-5); one that grants on no object says so by
+    answering ``object_grants`` with an empty set.
+    """
+    return [
+        f"{type(backend).__module__}.{type(backend).__qualname__}"
+        for backend in get_backends()
+        if not isinstance(backend, ModelBackend)
+        and type(backend).object_grants is BaseBackend.object_grants
+    ]
 
 
 async def object_grants(holder: AbstractBaseUser | Group) -> frozenset[ObjectGrant]:

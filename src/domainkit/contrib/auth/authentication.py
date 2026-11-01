@@ -410,6 +410,11 @@ class JWTAuthentication(BaseAuthentication):
             or token.expired()
         ):
             raise AuthenticationFailed("Invalid refresh token.")
+        # Under the user's credentials lock, a login ended meanwhile is seen,
+        # and one ended later takes the new refresh token too (SEC-16a-6).
+        await uow.tokens.lock_user(token.user_id)
+        if not await uow.tokens.stored(token.id):
+            raise AuthenticationFailed("Invalid refresh token.")
         if is_login(token.kind, token.name) and idle_since(token.created_at, utc_now()):
             raise AuthenticationFailed(IDLE)
         if token.used_at is not None or not await uow.tokens.mark_used(token):

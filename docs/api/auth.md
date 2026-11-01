@@ -98,6 +98,7 @@ Who a user is, and what they may do (Django's authentication backends).
 - `ModelBackend`: Passwords from the user table; permissions of users and their groups.
 - `ObjectGrant`: `permission` granted on one object: its content type and its id.
 - `authenticate`: The user the credentials prove, by the first backend that accepts them.
+- `backends_without_object_grants`: The configured backends that do not say what they grant on objects.
 - `get_all_permissions`: Keys of every permission any backend grants `user` (on `obj`).
 - `get_user`: The user with `user_id`, from the first backend that has it.
 - `has_perm`: Whether `user` has `perm` (on `obj`).

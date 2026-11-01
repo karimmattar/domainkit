@@ -1341,6 +1341,37 @@ lead to the finding on [docs/audit/0.9.0.md](docs/audit/0.9.0.md).
 
 ### Security
 
+- A login, a refresh, or a personal token checked before the user's
+  password changed, or before a second factor was turned on, and issued
+  after, outlived "every other login ends": the revocation deleted only
+  the rows already stored. Ending a user's tokens (`revoke_user`,
+  `revoke_family`) and issuing one now hold the user's credentials lock
+  (their row, `FOR UPDATE`, on PostgreSQL; the write lock on SQLite), and
+  the issue checks under it that what it checked still holds: the
+  password hash, no factor turned on since a login found none, the
+  request's own credentials for a personal token, the refresh token
+  itself. A login so refused answers `401` and is audited as
+  `credentials_changed` (SEC-16a-6).
+- `AUTH.ACCOUNT_LOGIN_RATE` was a bucket that refills: `"100/day"` let a
+  burst of 100 and then one every 14.4 minutes, 199 wrong passwords
+  within 24 hours. It is counted in fixed windows now (`throttling.Window`),
+  each UTC day for `"100/day"` (SEC-16a-2).
+- One copied device proof filled the account's daily count of proven
+  attempts and kept every browser of the owner out. Each device has a
+  daily count of its own at `ACCOUNT_LOGIN_RATE`, under a ceiling of twice
+  it for the account's proven attempts together (SEC-16a-7).
+- A signed-in user's password checks (`/auth/password`, a step-up,
+  `POST /auth/tokens`) were bounded by `LOGIN_RATE` alone unless
+  `PASSWORD_CHECKS_COUNT_AS_LOGINS`: 14,400 guesses a day from one
+  session. They count at `ACCOUNT_LOGIN_RATE` per user too (SEC-16a-4).
+- **Breaking:** a backend that grants on objects without listing them
+  (`object_grants` left as `BaseBackend`'s) counted as granting nothing,
+  so staff with `auth.change_user` took over its grants' holders. While a
+  backend of `AUTH.BACKENDS` other than `ModelBackend` leaves it so, only
+  superusers change users and groups through the admin API, and `check`
+  warns (`auth.W007`); `backends.backends_without_object_grants` lists
+  them. A refusal says how many grants on objects the staff member lacks,
+  no longer on which objects (SEC-16a-5).
 - A `PasswordHash` in a model's own field, or inside another value object
   (`Credential(hash: PasswordHash)`, an API client's secret), loaded any
   text shaped like a hash through `loaddata`, `plaintext$hunter2` included:

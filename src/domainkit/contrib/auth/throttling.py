@@ -34,6 +34,7 @@ import threading
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Final
 
 from fastapi import Request, status
@@ -54,8 +55,35 @@ AUDIT = "domainkit.contrib.audit"
 MAX_REFUSALS = 10_000
 """Throttled keys remembered, to audit each once per period."""
 
-type Limit = tuple[str, str | None]
-"""A count's key, and its rate (None: not counted)."""
+
+@dataclass(frozen=True, slots=True)
+class Window:
+    """A rate held in fixed windows: at most its limit from each period's start.
+
+    A plain rate is a bucket that refills smoothly (``http.ratelimit``): a
+    period after an idle stretch can see about twice its limit. A window
+    counts at most ``limit`` attempts in each period, aligned on the epoch
+    (each UTC day for ``"100/day"``), as a daily bound must (SEC-16a-2): a
+    burst of ``limit`` is let through, and nothing more until the next
+    period starts.
+    """
+
+    rate: str
+    """``"100/day"``: the limit, and the period of each window."""
+
+    def bucket(self, now: float) -> tuple[str, int, float, int]:
+        """The window ``now`` (epoch seconds) falls in, as a bucket that never refills.
+
+        Its key's suffix, limit, and the bucket's period, past which one
+        attempt would be refilled: ``limit + 1`` windows, so none is within
+        this one; and the window's own period.
+        """
+        limit, period = parse_rate(self.rate)
+        return f"@{int(now // period)}", limit, float(period * (limit + 1)), period
+
+
+type Limit = tuple[str, str | Window | None]
+"""A count's key, and its rate or window (None: not counted)."""
 
 
 class Attempt:
@@ -64,7 +92,7 @@ class Attempt:
     def __init__(self, counter: Backend | None) -> None:
         """Count in ``counter`` (None: nothing is counted)."""
         self.counter = counter
-        self.counted: list[tuple[str, int, int]] = []
+        self.counted: list[tuple[str, int, float]] = []
         """The ``(key, limit, period)`` counts the attempt took."""
 
     async def succeeded(self) -> None:
@@ -116,8 +144,8 @@ async def attempt(
     """
     counted = [(key, rate) for key, rate in limits if rate is not None]
     taken = Attempt(limiter(request) if counted else None)
-    for key, rate in counted:
-        limit, period = parse_rate(rate)
+    for name, rate in counted:
+        key, limit, period, audited = _bucket(name, rate)
         decision = await limiter(request).hit(key, limit, period)
         if decision.allowed and decision.counted:
             taken.counted.append((key, limit, period))
@@ -127,10 +155,19 @@ async def attempt(
         await taken.succeeded()  # Refused, so not made: give back what it took.
         if decision.allowed:
             raise _uncounted(decision)
-        if first_refusal(request, key, period):
+        if first_refusal(request, key, audited):
             await audit_refusal(action, "throttled")
         raise _throttled(decision, detail)
     return taken
+
+
+def _bucket(key: str, rate: str | Window) -> tuple[str, int, float, int]:
+    """The key, limit, and period a count is hit with; its period for audits."""
+    if isinstance(rate, Window):
+        suffix, limit, period, window = rate.bucket(clock.now().timestamp())
+        return key + suffix, limit, period, window
+    limit, every = parse_rate(rate)
+    return key, limit, every, every
 
 
 def fails_closed() -> bool:

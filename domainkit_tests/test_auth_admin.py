@@ -17,15 +17,18 @@ from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import pseudonym_of
 from domainkit.contrib.auth import (
+    AbstractBaseUser,
     AnyUser,
     AuthUnitOfWork,
     BaseBackend,
+    Group,
     Permission,
     User,
     UserId,
     admin,
     get_user_model,
 )
+from domainkit.contrib.auth.backends import ObjectGrant
 from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
 from domainkit.db import connections
 from domainkit.ddd import PermissionDenied, SoftDeletable
@@ -41,6 +44,7 @@ from domainkit_tests.conftest import (
     SHOP,
     Api,
     UseAuth,
+    domain_warnings,
 )
 from domainkit_tests.engine_events import watching
 from domainkit_tests.test_auth_access import request, user
@@ -623,6 +627,12 @@ class RoleBackend(BaseBackend):
             return frozenset({"shop.delete_product"})
         return frozenset()
 
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """None: it grants on no object (and so says, SEC-16a-5)."""
+        return frozenset()
+
 
 BACKENDS = [
     "domainkit.contrib.auth.backends.ModelBackend",
@@ -677,6 +687,12 @@ class DirectoryBackend(BaseBackend):
         """Every admin permission for ``helpdesk``, nothing for anyone else."""
         if obj is None and user.is_active and user.get_username() == "helpdesk":
             return frozenset(ADMIN_PERMISSIONS)
+        return frozenset()
+
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """None: it grants on no object (and so says, SEC-16a-5)."""
         return frozenset()
 
 
@@ -1522,4 +1538,60 @@ def test_a_soft_deleted_user_logs_in_no_more(swapped: TestClient) -> None:
     assert [row["details"] for row in audited("auth.user_status_changed")] == [
         {"user_id": str(bob), "field": "is_active", "value": False},
         {"user_id": str(carol), "field": "is_active", "value": False},
+    ]
+
+
+class SilentBackend(BaseBackend):
+    """Grants on objects, but does not say which (no ``object_grants``)."""
+
+    async def has_perm(
+        self, user: AnyUser, perm: str, obj: object | None = None
+    ) -> bool:
+        """Owners change their own objects."""
+        return obj is not None and getattr(obj, "owner_id", None) == user.id
+
+
+class QuietBackend(SilentBackend):
+    """Another backend that does not list its grants."""
+
+
+def test_a_backend_that_lists_no_object_grants_leaves_users_to_superusers(
+    api: Api,
+) -> None:
+    """Only superusers change users and groups then, and ``check`` warns (SEC-16a-5)."""
+    silent = f"{__name__}.SilentBackend"
+    quiet = f"{__name__}.QuietBackend"
+    client = api(
+        BACKENDS=["domainkit.contrib.auth.backends.ModelBackend", silent, quiet]
+    )
+    headers = staff("helpdesk", *ADMIN_PERMISSIONS)
+    plain = create_user("plain")
+    crew = make_group("crew")
+    root = staff("root", is_superuser=True)
+
+    refused = client.post(
+        f"{ADMIN}/users/{plain}/password", json={"password": None}, headers=headers
+    )
+    renamed = client.patch(
+        f"{ADMIN}/groups/{crew}", json={"name": "crew"}, headers=headers
+    )
+    allowed = client.post(
+        f"{ADMIN}/users/{plain}/password", json={"password": None}, headers=root
+    )
+
+    only = (
+        "Only superusers may change users and groups while a backend does not "
+        f"list its grants on objects (object_grants): {silent}, {quiet}."
+    )
+    assert error(refused, 403) == ("permission_denied", only)
+    assert error(renamed, 403) == ("permission_denied", only)
+    assert allowed.status_code == 204
+    assert [str(warning) for warning in domain_warnings("auth")] == [
+        (
+            f"AUTH.BACKENDS {backend} does not list its grants on objects "
+            "(object_grants), so only superusers change users and groups "
+            "through the admin API; override object_grants, with an empty set "
+            "if it grants on no object."
+        )
+        for backend in (silent, quiet)
     ]

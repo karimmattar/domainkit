@@ -7,7 +7,7 @@ caller commits (see ``AuthUnitOfWork``).
 import dataclasses
 import logging
 import uuid
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cache
@@ -494,12 +494,54 @@ class PermissionStore:
         return frozenset(permission.key for permission in await self.all())
 
 
-class TokenStore:
-    """Opaque tokens, found by their digest; the raw token is never stored."""
+CREDENTIALS_LOCK: Final = "domainkit.auth.credentials:{user_id}"
+"""The lock every change to a user's credentials holds on SQLite (SEC-16a-6)."""
 
-    def __init__(self, session: AsyncSession) -> None:
-        """Work in ``session``."""
+
+class TokenStore:
+    """Opaque tokens, found by their digest; the raw token is never stored.
+
+    What ends a user's tokens (``revoke_user``, ``revoke_family``) and what
+    issues one on a check made earlier (a login, a refresh, a personal
+    token) hold the user's credentials lock (``lock_user``) until they
+    commit, so a token issued meanwhile is never left behind: an issue
+    that waits sees the end and refuses, and an end that waits deletes
+    what was issued (SEC-16a-6).
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        lock: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        """Work in ``session``; ``lock`` is the unit of work's (``uow.lock``)."""
         self.session = session
+        self._lock = lock
+
+    async def lock_user(self, user_id: UUID) -> None:
+        """Hold the user's credentials lock until the transaction ends.
+
+        On PostgreSQL, the user's row (``FOR UPDATE``): what changes the
+        user's password, or records an event of theirs, writes that row, so
+        every transaction about the user's credentials waits on one lock,
+        and none waits on two in another order. On SQLite, the database's
+        write lock (``uow.lock``). Without the unit of work's lock (a store
+        on a bare session), none.
+        """
+        if self._lock is None:
+            return
+        if self.session.get_bind().dialect.name == "postgresql":
+            table = get_user_table()
+            await self.session.execute(
+                select(table.c.id).where(table.c.id == user_id).with_for_update()
+            )
+            return
+        await self._lock(CREDENTIALS_LOCK.format(user_id=user_id))
+
+    async def stored(self, digest: str) -> bool:
+        """Whether the token ``digest`` is still stored, expired or not."""
+        statement = select(exists().where(tokens.c.id == digest))
+        return bool(await self.session.scalar(statement))
 
     async def issue(
         self,
@@ -717,7 +759,12 @@ class TokenStore:
         return await self._revoke(tokens.c.id == token_id)
 
     async def revoke_family(self, family: UUID) -> int:
-        """Delete every token one login led to."""
+        """Delete every token one login led to, under its user's lock."""
+        owner = await self.session.scalar(
+            select(tokens.c.user_id).where(tokens.c.family == family).limit(1)
+        )
+        if owner is not None:
+            await self.lock_user(owner)
         return await self._revoke(tokens.c.family == family, family_target(family))
 
     async def revoke_user(
@@ -726,8 +773,10 @@ class TokenStore:
         """Delete every token of ``user_id``, except one token or one family.
 
         Every principal of the user is read again after the commit, the
-        kept token's too.
+        kept token's too. The user's credentials lock is held first, so a
+        token being issued is deleted too, or sees this end.
         """
+        await self.lock_user(user_id)
         condition = tokens.c.user_id == user_id
         if keep is not None:
             condition &= tokens.c.id != keep
