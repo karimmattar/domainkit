@@ -366,3 +366,17 @@ def test_the_command_shows_decisions_in_order_and_keys_sorted(project: str) -> N
         return [each.approver for each in found.decisions]
 
     assert run_async(approvers()) == ["zed", "amy"]
+
+
+def test_the_command_says_what_each_argument_is() -> None:
+    """Its ``--help``: what ``request`` and ``--status`` are for."""
+    from domainkit.contrib.approvals.management.commands.approvals import Command
+
+    usage = " ".join(
+        Command().create_parser("manage.py", "approvals").format_help().split()
+    )
+    assert " request show: the request's id options:" in usage
+    assert (
+        " --status {pending,approved,executed,rejected,cancelled,expired,failed} "
+        "list: the requests in this status (default: pending) --limit LIMIT "
+    ) in usage

@@ -123,7 +123,12 @@ rollout, as a job, not in each web process's start:
    prints the SQL, for review, without touching the schema.
 2. The migration job runs `python manage.py migrate` with the new code,
    while the old code still serves.
-3. The new code rolls out.
+3. The new code rolls out. With messaging, roll the workers out first
+   when the release adds tasks or durable handlers, and the web processes
+   first when it removes them: a worker that does not know a message's
+   task gives it back, and dead-letters it after
+   `MESSAGING.UNKNOWN_TARGET_GRACE`
+   ([messaging.md](contrib/messaging.md)).
 
 Between steps 2 and 3, the old code runs against the new schema. Keep each
 release's schema change one the old code survives, and spread a breaking
@@ -239,6 +244,13 @@ and test restores.
   do not try to make it go away. Messages that ran after the restore point
   run again (handlers are idempotent), and messages written after it are
   lost with their changes.
+- **Erasures after a restore.** A backup from before an erasure still
+  holds the person's keys and their values (crypto-shredding reaches only
+  copies made afterwards). Before restoring, list the erasures made since
+  the backup's time (`manage.py auditlog --action privacy.erase`), keep the
+  list outside the databases being restored, and run `manage.py privacy
+  erase --subject <id>` for each once restored
+  ([contrib/keys.md](contrib/keys.md#backups-taken-before-an-erasure)).
 - **SQLite** is for development and tests: one file, on one host.
 - **Fixtures are not backups.** `loaddata` only adds rows (`--replace`
   replaces stored ones), and writes no guarded table (users, permissions,

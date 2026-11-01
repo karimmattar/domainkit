@@ -1,14 +1,28 @@
 """Column types that behave the same on every supported database."""
 
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Final
+from typing import Any, Final, cast
 
-from sqlalchemy import DateTime, Integer, Numeric, String, literal
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    DefaultClause,
+    Integer,
+    Numeric,
+    String,
+    Table,
+    TextClause,
+    literal,
+)
 from sqlalchemy.engine import Dialect
+from sqlalchemy.exc import CompileError
 from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.schema import CreateColumn
 from sqlalchemy.sql import operators
-from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.sql.compiler import DDLCompiler, SQLCompiler
 from sqlalchemy.sql.elements import BindParameter, ColumnElement
 from sqlalchemy.sql.operators import OperatorType
 from sqlalchemy.sql.selectable import FromClause
@@ -17,8 +31,13 @@ from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from domainkit.money import Currency, currency
 
-MAX_DIGITS: Final = 18
-"""The most digits an ``ExactDecimal`` holds: any 18 fit SQLite's 64-bit integers."""
+STORED_DIGITS: Final = 18
+"""The most digits an ``ExactDecimal`` holds: any 18 fit SQLite's 64-bit integers.
+
+Fewer than ``domainkit.money.MAX_DIGITS`` (38), the most ``Money`` holds in
+memory: a stored amount has at most ``precision - scale`` digits before its
+point, so a money column refuses (``AmountOutOfRange``) what money takes.
+"""
 FACTOR_PLACES: Final = 9
 """The most places of a number an amount is multiplied or divided by in SQL.
 
@@ -148,7 +167,7 @@ class ExactDecimal(TypeDecorator[Decimal]):
             theirs = _scale_of(other[0]) if op in _LIKE_UNITS and other else None
             if theirs is None or theirs == scale:
                 return super().operate(op, *other, **kwargs)
-            common = ExactDecimal(MAX_DIGITS, max(scale, theirs))
+            common = ExactDecimal(STORED_DIGITS, max(scale, theirs))
             mine = _Rescaled(self.expr, common.scale - scale, common)
             return op(mine, _Rescaled(other[0], common.scale - theirs, common))
 
@@ -167,9 +186,9 @@ class ExactDecimal(TypeDecorator[Decimal]):
 
     def __init__(self, precision: int, scale: int) -> None:
         """Hold ``precision`` digits, ``scale`` of them after the point."""
-        if not (0 <= scale <= precision and 1 <= precision <= MAX_DIGITS):
+        if not (0 <= scale <= precision and 1 <= precision <= STORED_DIGITS):
             raise ValueError(
-                f"ExactDecimal needs 1 <= precision <= {MAX_DIGITS} and "
+                f"ExactDecimal needs 1 <= precision <= {STORED_DIGITS} and "
                 f"0 <= scale <= precision, not precision={precision}, "
                 f"scale={scale}."
             )
@@ -520,3 +539,123 @@ class CurrencyCode(TypeDecorator[Currency]):
     ) -> Currency | None:
         """The currency of the stored code."""
         return None if value is None else currency(value)
+
+
+# SQL written around an amount, on SQLite ------------------------------------
+
+_DEFAULT_LITERAL: Final = re.compile(
+    r"\s*\(?\s*'?\s*(-?[0-9]+(?:\.[0-9]+)?)\s*'?\s*\)?\s*"
+)
+"""A server default that is a plain number: ``1.50``, ``'1.50'``, ``(0)``."""
+_NAME: Final = r'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)'
+_SQL_TOKEN: Final = re.compile(
+    r"'(?:[^']|'')*'"  # A string: left as it is.
+    rf"|(?:{_NAME}\.)?"  # A name, maybe after its table's.
+    r'(?:"(?P<quoted>(?:[^"]|"")*)"|(?P<bare>[A-Za-z_][A-Za-z0-9_$]*))'
+)
+
+
+def stored_scale(column: Column[Any]) -> int | None:
+    """The places an amount column of ``column``'s name holds, if it is one.
+
+    A revision declares the column as plain ``NUMERIC`` (``render_item``):
+    its table in ``domainkit.db.metadata`` says whether it is an amount.
+    """
+    if isinstance(column.type, ExactDecimal):
+        return column.type.scale
+    from domainkit.db.orm import metadata  # orm imports types.
+
+    table = column.table if isinstance(column.table, Table) else None
+    known = None if table is None else metadata.tables.get(table.fullname)
+    if known is None or column.name not in known.c:
+        return None
+    kind = known.c[column.name].type
+    return kind.scale if isinstance(kind, ExactDecimal) else None
+
+
+def default_in_minor_units(
+    column: Column[Any], specification: str, compiler: DDLCompiler
+) -> str:
+    """``specification`` with a plain-number default of an amount in minor units.
+
+    On SQLite the column holds minor units, so ``DEFAULT 1.50`` would read
+    back as 0.015: it is written ``DEFAULT 150`` (DATA-15).
+
+    Raises:
+        CompileError: The default has more places than the column.
+    """
+    scale = stored_scale(column)
+    default = column.server_default
+    if not scale or not isinstance(default, DefaultClause):
+        return specification
+    given = default.arg if isinstance(default.arg, str) else None
+    if isinstance(default.arg, TextClause):
+        given = default.arg.text
+    found = None if given is None else _DEFAULT_LITERAL.fullmatch(given)
+    if found is None:
+        return specification
+    minor = Decimal(found[1]).scaleb(scale)
+    if minor != minor.to_integral_value():
+        raise CompileError(
+            f"{column.name}'s default has more than {scale} decimal places."
+        )
+    written = compiler.get_column_default_string(column)
+    for form in (f"DEFAULT ({written})", f"DEFAULT {written}"):
+        if form in specification:
+            return specification.replace(form, f"DEFAULT {int(minor)}", 1)
+    return specification  # pragma: no cover - SQLite writes one of the two.
+
+
+@compiles(CreateColumn, "sqlite")
+def _create_column_on_sqlite(
+    element: CreateColumn,
+    compiler: DDLCompiler,
+    **kwargs: Any,  # noqa: ANN401 - the compiler's options.
+) -> str:
+    """A column of ``CREATE TABLE``, its amount's default in minor units."""
+    specification = cast("str", compiler.visit_create_column(element, **kwargs))  # type: ignore[no-untyped-call]
+    return default_in_minor_units(element.element, specification, compiler)
+
+
+@compiles(CheckConstraint, "sqlite")
+def _check_on_sqlite(
+    constraint: CheckConstraint,
+    compiler: DDLCompiler,
+    **kwargs: Any,  # noqa: ANN401 - the compiler's options.
+) -> str:
+    """A check written as SQL, comparing amounts rather than their minor units.
+
+    Each name of an amount column becomes ``(name / 100.0)`` for a scale of
+    2: a real number, compared with the check's literals as they are, so
+    ``CHECK (cap <= 100)`` caps the column at 100.00, as on PostgreSQL
+    (DATA-15). Checks built as expressions bind their values through the
+    column's type already.
+    """
+    visit = getattr(compiler, f"visit_{constraint.__visit_name__}")
+    written: str = visit(constraint, **kwargs)
+    table = constraint.table if isinstance(constraint.parent, Table) else None
+    if table is None and isinstance(constraint.parent, Column):
+        table = constraint.parent.table
+    if not isinstance(constraint.sqltext, TextClause) or not isinstance(table, Table):
+        return written
+    scales = {
+        column.name.lower(): scale
+        for column in table.columns
+        if (scale := stored_scale(column))
+    }
+    if not scales:
+        return written
+    inner = compiler.sql_compiler.process(
+        constraint.sqltext, include_table=False, literal_binds=True
+    )
+
+    def scaled(token: re.Match[str]) -> str:
+        quoted, bare = token["quoted"], token["bare"]
+        name = bare if quoted is None else quoted.replace('""', '"')
+        if name is None or name.lower() not in scales:  # A string, or no amount.
+            return token[0]
+        return f"({token[0]} / {10 ** scales[name.lower()]}.0)"
+
+    return written.replace(
+        f"CHECK ({inner})", f"CHECK ({_SQL_TOKEN.sub(scaled, inner)})", 1
+    )

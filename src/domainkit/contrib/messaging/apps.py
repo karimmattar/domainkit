@@ -17,6 +17,8 @@ from domainkit.apps.hooks import (
     on_export_subject,
 )
 from domainkit.checks import CheckMessage
+from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.routing import DatabaseRouter, router
@@ -94,6 +96,7 @@ class MessagingConfig(DomainConfig):
         on_erase_subject(self.erase_copies)
         on_export_subject(self.export_copies)
         on_deployment_warnings(self.blocking_tasks)
+        on_deployment_warnings(self.unnamed_tasks)
 
     async def stage_outbox(
         self,
@@ -138,6 +141,30 @@ class MessagingConfig(DomainConfig):
             (f"the task {spec.key!r}", spec.function) for spec in all_tasks()
         )
         return [CheckMessage("blocking.W002", message) for message in found]
+
+    def unnamed_tasks(self) -> list[CheckMessage]:
+        """``messaging.W001``: tasks named after their module's path, where deployed.
+
+        A task's name is the key its messages carry. Without ``name=`` it is
+        ``module.function``: moving or renaming the function renames it,
+        and the messages queued under the old name find no task (CONC-15).
+        """
+        from .registry import all_tasks
+
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        return [
+            CheckMessage(
+                "messaging.W001",
+                f"The task {spec.key!r} is named after its module's path: moving "
+                "or renaming it renames its messages, which then wait for a task "
+                "of the old name and are dead-lettered after "
+                "MESSAGING.UNKNOWN_TARGET_GRACE.",
+                hint="Give it a name of its own: @task(name=...).",
+            )
+            for spec in all_tasks()
+            if not spec.named
+        ]
 
     async def erase_copies(self, subject: str, reason: str) -> Mapping[str, int]:
         """Blank dead messages about ``subject``; count pending ones (``erasure``)."""

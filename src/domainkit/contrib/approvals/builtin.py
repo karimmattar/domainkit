@@ -25,6 +25,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
+from domainkit.apps import registry
 from domainkit.ddd import Command
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
@@ -51,6 +52,24 @@ SUPERUSERS: Final = "auth.grant_superuser"
 """The guarded action of making a user a superuser."""
 
 
+_threshold: tuple[ApprovalsSettings, Threshold] | None = None
+"""The thresholds last read, with the settings they were read from."""
+
+
+def current_threshold() -> Threshold:
+    """``ENTRY_THRESHOLDS`` of the settings now, read again when they change.
+
+    A test that changes them through ``override_settings`` or the
+    ``settings`` fixture is held to the new amounts (TEST-15).
+    """
+    global _threshold
+    config = registry.settings(ApprovalsSettings)
+    kept = _threshold
+    if kept is None or kept[0] is not config:
+        kept = _threshold = (config, Threshold(config.ENTRY_THRESHOLDS))
+    return kept[1]
+
+
 def guard_entries(config: ApprovalsSettings) -> None:
     """Guard postings and captures over ``ENTRY_THRESHOLDS``; refuse them unapproved.
 
@@ -70,10 +89,10 @@ def guard_entries(config: ApprovalsSettings) -> None:
     )
     from domainkit.contrib.accounting.hooks import on_booking, on_posting
 
-    threshold = Threshold(config.ENTRY_THRESHOLDS)
+    Threshold(config.ENTRY_THRESHOLDS)  # A wrong amount fails setup().
 
     def large(command: PostEntry) -> bool:
-        return threshold.exceeded_by(
+        return current_threshold().exceeded_by(
             line.amount for line in command.lines if line.side is Side.DEBIT
         )
 
@@ -116,7 +135,7 @@ def guard_entries(config: ApprovalsSettings) -> None:
         if entry.source != CAPTURED and entry.source.startswith("accounting."):
             return
         moved = (line.amount for line in entry.lines() if line.side is Side.DEBIT)
-        if not threshold.exceeded_by(moved) or _approved_booking(entry):
+        if not current_threshold().exceeded_by(moved) or _approved_booking(entry):
             return
         raise ApprovalRequired("This command needs approval: submit it for approval.")
 

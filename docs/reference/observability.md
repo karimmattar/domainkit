@@ -18,7 +18,7 @@ queue's 10,000 records is dropped and counted, never waited for
 | `http_requests_queued` | (requests waiting for a slot) |
 | `http_requests_shed_total` | `reason` (`queue_full`, `queue_timeout`) |
 | `http_request_deadlines_exceeded_total` | |
-| `messaging_messages_total` | `kind`, `outcome` |
+| `messaging_messages_total` | `kind`, `outcome` (`done`, `retry`, `dead`, `throttled`, `handled`, `superseded`, `unknown`, `unrecorded`, `interrupted`) |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |
 | `messaging_outbox_lag_seconds` | `queue` (seconds its oldest due message has waited for a worker) |

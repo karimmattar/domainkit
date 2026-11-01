@@ -46,6 +46,14 @@ class MessagingSettings(BaseModel):
     """
     SHUTDOWN_TIMEOUT: float = Field(default=20.0, ge=0, le=3600)
     """Seconds a stopping worker lets running messages finish; the rest run again."""
+    UNKNOWN_TARGET_GRACE: float = Field(default=3600.0, ge=0, le=MAX_DELAY)
+    """Seconds a message naming a task or handler no worker knows waits for one.
+
+    A rolling deploy's older workers do not know what the new code added;
+    the message comes back, with a doubling delay, until a worker that
+    knows it runs it, or this has passed: then it is dead-lettered. 0
+    dead-letters it at once.
+    """
     RETENTION_SECONDS: float = Field(default=7 * 24 * 3600.0, gt=0, le=MAX_DELAY)
     """How long finished messages are kept; dead ones are kept until retried."""
     CLEANUP_INTERVAL: float = Field(default=3600.0, gt=0, le=24 * 3600)

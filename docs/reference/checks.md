@@ -114,6 +114,7 @@ an unsafe or broken configuration, refused until it changes.
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](../auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
+| `messaging.W001` | a task registered without `name=` (in staging and production): its name is its module's path, so moving or renaming the function renames its messages, which then wait for a task of the old name and are dead-lettered after `MESSAGING.UNKNOWN_TARGET_GRACE` ([messaging.md](../contrib/messaging.md)) |
 | `limits.W001` | limits without `domainkit.contrib.messaging`: no worker purges old usage, and its table grows with every movement; silence it once `manage.py limits purge` runs on the project's own schedule ([limits.md](../contrib/limits.md#settings)) |
 | `accounting.W003` | the ledger without `domainkit.contrib.messaging`: no worker releases expired holds, which keep counting against what is available; silence it once `manage.py accounting expireholds` runs on the project's own schedule ([accounting.md](../contrib/accounting.md#holds)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |

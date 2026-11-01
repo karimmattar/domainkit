@@ -17,6 +17,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,6 +107,9 @@ FAST = {
     "VISIBILITY_TIMEOUT": 1,
 }
 
+NO_GRACE: Final = MessagingSettings(**FAST, UNKNOWN_TARGET_GRACE=0)
+"""``FAST``, dead-lettering a message for an unknown target at once."""
+
 ran: list[Any] = []
 reported: list[tuple[str, Mapping[str, object]]] = []
 
@@ -189,21 +193,28 @@ def immediate_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_module, "backoff", lambda attempts, config: 0.0)
 
 
-@pytest.fixture
-def messaging(database_url: str) -> Iterator[None]:
-    """Install messaging on an empty database."""
+@contextmanager
+def installed(database: dict[str, object]) -> Iterator[None]:
+    """Install messaging on the empty database ``database`` describes."""
     ran.clear()
     reported.clear()
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[MESSAGING, ALPHA],
-        DATABASES={"default": {"URL": database_url}},
+        DATABASES={"default": database},
         MESSAGING=FAST,
         ERROR_REPORTERS=["domainkit_tests.test_messaging.reporter"],
     ):
         setup()
         yield
     registry.clear()
+
+
+@pytest.fixture
+def messaging(database_url: str) -> Iterator[None]:
+    """Install messaging on an empty database."""
+    with installed({"URL": database_url}):
+        yield
 
 
 @pytest.fixture
@@ -532,7 +543,7 @@ NOTE_WRITTEN = "domainkit_tests.test_db.NoteWritten"
 async def test_unknown_targets_dead_letter_at_once(
     tables: None, kind: str, target: str, headers: dict[str, str], error: str
 ) -> None:
-    """Messages this process cannot run are not retried."""
+    """Messages this process cannot run are not retried without a grace."""
     row = message_row(
         kind=kind, target=target, payload={}, headers=headers, max_attempts=5
     )
@@ -541,7 +552,7 @@ async def test_unknown_targets_dead_letter_at_once(
 
     event_bus.subscribe(NoteWritten, durable_handler, durable=True)
     try:
-        await Worker().run_once()
+        await Worker(NO_GRACE).run_once()
     finally:
         event_bus.unsubscribe(NoteWritten, durable_handler)
 
@@ -574,7 +585,7 @@ async def test_any_event_handlers_run_only_for_their_event_types(
     event_bus.subscribe(NoteWritten, any_event_handler, durable=True)
     try:
         await queue(greeting)
-        await Worker().run_once()
+        await Worker(NO_GRACE).run_once()
         (refused,) = await outbox()
         event_bus.subscribe(GreetingSent, any_event_handler, durable=True)
         await queue(greeting)

@@ -313,3 +313,25 @@ async def touch_now(digest: str, now: datetime) -> None:
     async with AuthUnitOfWork() as uow:
         await uow.tokens.touch_digest(digest, now)
         await uow.commit()
+
+
+@pytest.mark.parametrize("by", ["token", "cookie"])
+def test_a_login_in_use_writes_its_use_every_tenth_of_the_timeout(
+    identity: Api, by: str
+) -> None:
+    """Used 4.9 minutes in, it lasts until 16.5 minutes after that use."""
+    create_user("alice")
+    client = identity(IDLE_TIMEOUT=timedelta(minutes=15))
+    with freeze_time("2026-10-26T10:00:00Z") as clock:
+        if by == "token":
+            headers = user_session(client)
+            browsing = client
+        else:
+            headers = {}
+            browsing = TestClient(client.app, base_url=SITE)
+            start(browsing)
+        for step in (timedelta(0), timedelta(minutes=1), timedelta(minutes=3.9)):
+            clock.tick(step)
+            assert browsing.get("/whoami", headers=headers).json()["user"] == "alice"
+        clock.tick(timedelta(minutes=16, seconds=20))
+        assert browsing.get("/whoami", headers=headers).json()["user"] == "alice"

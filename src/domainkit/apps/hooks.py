@@ -39,7 +39,8 @@ defines one (``apps.E002``).
 
 Registrations belong to the domains loaded at the time: ``registry.clear()``
 and the next ``populate`` forget them, and the domains register again in
-``ready()``.
+``ready()``. ``hooks_kept()`` puts every point's registrations back as they
+were when the block began: the pytest plugin drops what a test registered.
 """
 
 import inspect
@@ -47,8 +48,8 @@ import threading
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple
-from weakref import WeakKeyDictionary
+from typing import TYPE_CHECKING, Any, NamedTuple
+from weakref import WeakKeyDictionary, WeakSet
 
 from domainkit.exceptions import ImproperlyConfigured
 
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Hook",
     "HookPoint",
+    "hooks_kept",
     "on_check",
     "on_check_application",
     "on_deployment_warnings",
@@ -115,6 +117,7 @@ class HookPoint[F: Callable[..., object]]:
         )
         self._hooks: _Known[F] | None = None
         self._registry: DomainRegistry | None = None
+        _points.add(self)
 
     def __repr__(self) -> str:
         """Show the point's name."""
@@ -224,6 +227,34 @@ class HookPoint[F: Callable[..., object]]:
             for function in registered.functions.get(config.label, ()):
                 yield Hook(config.label, function)
 
+    def _kept(self, registry: "DomainRegistry") -> "_Kept[F] | None":
+        """What ``registry``'s domains registered now, to put back later."""
+        registered = self._registered.get(registry)
+        if registered is None or registered.generation != registry.generation:
+            return None
+        return _Kept(
+            registered.generation,
+            {label: list(each) for label, each in registered.functions.items()},
+        )
+
+    def _put_back(self, registry: "DomainRegistry", kept: "_Kept[F] | None") -> None:
+        """Drop what was registered since ``kept``; restore what was removed.
+
+        Registrations of a later generation (the domains loaded again) are
+        theirs, and stay.
+        """
+        with self._lock:
+            registered = self._registered.get(registry)
+            if registered is None or registered.generation != registry.generation:
+                return
+            if kept is None or kept.generation == registered.generation:
+                registered.functions = (
+                    {}
+                    if kept is None
+                    else {k: list(v) for k, v in kept.functions.items()}
+                )
+                self._hooks = None
+
     def _current(self, registry: "DomainRegistry") -> "_Registered[F]":
         """What ``registry``'s domains registered since it last changed.
 
@@ -244,12 +275,41 @@ class _Registered[F]:
     functions: dict[str, list[F]] = field(default_factory=dict)
 
 
+class _Kept[F](NamedTuple):
+    """One point's registrations, as ``hooks_kept`` found them."""
+
+    generation: int
+    functions: dict[str, list[F]]
+
+
 class _Known[F: Callable[..., object]](NamedTuple):
     """The hooks last worked out, and for which registry and generation."""
 
     registry: "DomainRegistry"
     generation: int
     hooks: tuple[Hook[F], ...]
+
+
+_points: "WeakSet[HookPoint[Any]]" = WeakSet()
+"""Every hook point made, for ``hooks_kept``."""
+
+
+@contextmanager
+def hooks_kept() -> Iterator[None]:
+    """Put every hook point's registrations back as they were, when the block ends.
+
+    A test that registers a hook for an installed domain
+    (``on_guard(check, domain="payments")``) has it dropped afterwards, and
+    one it removed comes back; the pytest plugin keeps each test in such a
+    block, as ``subscriptions_kept()`` keeps the event bus's.
+    """
+    registry = _registry()
+    kept = [(point, point._kept(registry)) for point in list(_points)]
+    try:
+        yield
+    finally:
+        for point, before in kept:
+            point._put_back(registry, before)
 
 
 _populating: "list[DomainRegistry]" = []

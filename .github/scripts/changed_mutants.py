@@ -7,7 +7,15 @@ mutmut names a mutant after the function it changes: ``module.x_name`` for
 a function, ``module.xǁClassǁname`` for a method of a top-level class,
 then ``__mutmut_<n>``. Code outside them (imports, constants, class
 bodies) has no mutants of its own and is left out; so is a function only
-deleted.
+deleted. A function some of whose lines were deleted counts as changed,
+and a module moved and edited is compared with where it was.
+
+mutmut 3 never mutates a function with a decorator other than a lone
+``@staticmethod`` or ``@classmethod`` (routes, ``@property``,
+``@contextmanager``, validators, fixtures): such functions are not named,
+which would leave ``mutmut run`` nothing to match, but listed in
+``unmutated-functions.txt`` and on standard error, so the job summary says
+what the score leaves out (ADR 0106, TEST-16).
 
 Prints the patterns on one line, separated by spaces; nothing when the
 change touches no function. Writes ``changed-mutants.txt`` with one pattern
@@ -31,11 +39,15 @@ _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
 def changed_lines(diff: str) -> set[int]:
-    """The lines of the new file that a unified diff (``-U0``) adds or changes."""
+    """The lines of the new file that a unified diff (``-U0``) adds or changes.
+
+    A hunk that only deletes (``+N,0``) counts line ``N``, the one before
+    the deletion: deleted from a function, it falls in that function.
+    """
     lines: set[int] = set()
     for match in _HUNK.finditer(diff):
         start, count = int(match[1]), int(match[2] or 1)
-        lines.update(range(start, start + count))
+        lines.update(range(start, start + count) if count else {start})
     return lines
 
 
@@ -48,21 +60,45 @@ def module_of(path: Path) -> str:
 def touched(source: str, lines: set[int]) -> list[str]:
     """The names mutmut gives the functions and methods ``lines`` fall in.
 
-    A function's lines run from its first decorator to its last line.
+    A function's lines run from its first decorator to its last line. Only
+    functions mutmut mutates are named (``unmutated`` lists the others).
     """
-    names: list[str] = []
+    return [name for name, node in _functions(source, lines) if _mutated(node)]
+
+
+def unmutated(source: str, lines: set[int]) -> list[str]:
+    """The names of the functions ``lines`` fall in that mutmut never mutates."""
+    return [name for name, node in _functions(source, lines) if not _mutated(node)]
+
+
+type _Function = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _functions(source: str, lines: set[int]) -> list[tuple[str, _Function]]:
+    """Each top-level function and method ``lines`` fall in, by mutmut's name."""
+    found: list[tuple[str, _Function]] = []
     for node in ast.parse(source).body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             if _spans(node, lines):
-                names.append(f"x_{node.name}")
+                found.append((f"x_{node.name}", node))
         elif isinstance(node, ast.ClassDef):
-            names += [
-                f"x{SEPARATOR}{node.name}{SEPARATOR}{method.name}"
+            found += [
+                (f"x{SEPARATOR}{node.name}{SEPARATOR}{method.name}", method)
                 for method in node.body
                 if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef)
                 and _spans(method, lines)
             ]
-    return names
+    return found
+
+
+def _mutated(node: _Function) -> bool:
+    """Whether mutmut mutates ``node``: no decorator, or one static/classmethod."""
+    decorators = node.decorator_list
+    return not decorators or (
+        len(decorators) == 1
+        and isinstance(decorators[0], ast.Name)
+        and decorators[0].id in {"staticmethod", "classmethod"}
+    )
 
 
 def _spans(node: ast.FunctionDef | ast.AsyncFunctionDef, lines: set[int]) -> bool:
@@ -71,22 +107,26 @@ def _spans(node: ast.FunctionDef | ast.AsyncFunctionDef, lines: set[int]) -> boo
     return any(first <= line <= (node.end_lineno or node.lineno) for line in lines)
 
 
-def patterns(base: str) -> list[str]:
-    """The mutant name patterns of what changed since ``base``."""
+def patterns(base: str) -> tuple[list[str], list[str]]:
+    """The mutant name patterns of what changed since ``base``; the unmutated.
+
+    The second list names the changed functions mutmut never mutates.
+    """
     found: list[str] = []
-    for name in sorted(
-        _git("diff", "--name-only", "--diff-filter=AM", base, "--", "src").split()
-    ):
+    skipped: list[str] = []
+    status = _git("diff", "--name-status", "-M", "--diff-filter=AMR", base, "--", "src")
+    for line in sorted(status.splitlines()):
+        *paths, name = line.split("\t")
         path = Path(name)
         if path.suffix != ".py":
             continue
-        lines = changed_lines(_git("diff", "-U0", base, "--", name))
+        diff = _git("diff", "-U0", "-M", base, "--", *paths[1:], name)
+        lines = changed_lines(diff)
         source = path.read_text(encoding="utf-8")
-        found += [
-            f"{module_of(path)}.{function}__mutmut_*"
-            for function in touched(source, lines)
-        ]
-    return found
+        module = module_of(path)
+        found += [f"{module}.{each}__mutmut_*" for each in touched(source, lines)]
+        skipped += [f"{module}.{each}" for each in unmutated(source, lines)]
+    return found, skipped
 
 
 def _git(*args: str) -> str:
@@ -104,8 +144,11 @@ def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print(__doc__, file=sys.stderr)  # noqa: T201 - a command-line script.
         return 2
-    found = patterns(argv[0])
+    found, skipped = patterns(argv[0])
     Path("changed-mutants.txt").write_text("".join(f"{each}\n" for each in found))
+    Path("unmutated-functions.txt").write_text("".join(f"{each}\n" for each in skipped))
+    for each in skipped:
+        print(f"Not mutated (decorated): {each}", file=sys.stderr)  # noqa: T201
     print(" ".join(found))  # noqa: T201 - read by the job.
     return 0
 

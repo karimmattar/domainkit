@@ -48,14 +48,40 @@ not guaranteed, unless they share an ordering key
 
 **Failures** are retried with exponential backoff and jitter, up to
 `max_attempts`. Then the message is dead-lettered and sent to
-`ERROR_REPORTERS`. A message naming an unknown task or handler is
-dead-lettered at once. So is a message whose worker died (a crash, or a
-kill) during its last attempt: it is not run again after `max_attempts`. `python manage.py messages --dead` lists dead
+`ERROR_REPORTERS`. A message whose worker died (a crash, or a kill)
+during its last attempt is dead-lettered too: it is not run again after
+`max_attempts`. A handler or task that raises `CancelledError` while the
+worker is not stopping it (it awaited a task or future that was
+cancelled) has failed, as `HandlerCancelled`, and is retried and counted
+as any failure. `python manage.py messages --dead` lists dead
 letters, and `--retry ID` (or `all`) queues them again after a fix. A
 message's last error is kept with it, logged, and reported. Validation
 errors (arguments or an event that no longer fit) are kept as `InvalidData`,
 naming the fields and rules but not the values, which are often personal
 data. Pass ids in task arguments rather than names or emails all the same.
+
+**Unknown tasks and handlers, and deploys.** A message names its task or
+durable handler; a worker that does not know it (an older release, while a
+deploy rolls out) gives it back without spending an attempt, after a delay
+that doubles, logged as a warning and counted as the outcome `unknown`,
+and keeps its ordering key's place meanwhile. Once
+`UNKNOWN_TARGET_GRACE` (an hour) has passed since a worker first found
+it unknown, it is dead-lettered, and `--retry` queues it again. So:
+
+- **Deploy workers first** when a release adds tasks or durable handlers,
+  and web processes first when it removes them, so no message waits on
+  a worker that cannot run it. Within the grace, either order works.
+- **Name your tasks.** A task's name is what its messages carry. Without
+  `name=`, it is `module.function`: moving the function to another module,
+  or renaming it, renames the task, and messages queued under the old name
+  wait, then die. `@task(name="billing.push_invoice")` keeps it whatever
+  the code does; `check` warns about tasks without one in staging and
+  production (`messaging.W001`). A durable handler's name is always
+  `module.QualName`: keep a moved handler's old one subscribed for a
+  release, or let its messages drain first.
+
+The test plugin's `drain` dead-letters such a message at once and reports
+it: in a test's process, every task is there.
 
 **Database outages** do not stop a worker. When its outbox cannot be
 reached (a restart, a network drop, a failover), it logs the error, waits
@@ -89,7 +115,8 @@ inspects any outbox.
 | `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. |
+| `UNKNOWN_TARGET_GRACE` | `3600.0` | Seconds a message naming a task or handler no worker knows waits for one, given back with a doubling delay, before it is dead-lettered (see *Unknown tasks and handlers* above); 0 dead-letters it at once (at most 365 days). |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. A periodic task's run is kept until its slot ends, however long: it is what stops workers from queuing the slot again. |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
@@ -581,7 +608,11 @@ Durable event handlers use the `MESSAGING` settings.
 ## Schedules
 
 `@periodic(every=timedelta(...))` runs a task once per interval, at the
-start of each. `@periodic(cron="...", tz="...")` runs it at the wall-clock
+start of each. Workers queue the slot under a key of its own, and keep its
+run until the slot ends, even past `RETENTION_SECONDS`, so a worker that
+starts during the slot does not run it again. Queueing never holds up
+the work that is due: a failure is logged and tried again after a pause
+that doubles, up to a minute. `@periodic(cron="...", tz="...")` runs it at the wall-clock
 times of a five-field cron expression in an IANA time zone (UTC by default):
 
 | Field | Values |
