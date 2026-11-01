@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from sqlalchemy import event, select, update
 
+from domainkit import clock as clock_module
 from domainkit.clock import freeze_time
 from domainkit.conf import settings
 from domainkit.contrib.messaging import (
@@ -557,10 +558,15 @@ async def test_rows_without_a_dedupe_key_are_cleaned_up_beside_long_slots() -> N
 async def test_the_lag_ignores_a_host_clock_that_runs_ahead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The wait is measured by the clock that wrote the times."""
+    """The wait is measured by the clock that wrote the times.
+
+    On PostgreSQL that is the database's: the host's, an hour ahead, writes
+    no due time and measures no wait. On SQLite the host's clock is the
+    database's.
+    """
+    real = clock_module.now
+    monkeypatch.setattr(clock_module, "now", lambda: real() + timedelta(hours=1))
     await enqueue(added_by_the_deploy_known, label="waiting")
-    real = admin._now
-    monkeypatch.setattr(admin, "_now", lambda: real() + timedelta(hours=1))
 
     lag = await admin.queue_lag(config())
 
