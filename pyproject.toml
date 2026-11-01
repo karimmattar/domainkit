@@ -1,6 +1,6 @@
 [project]
 name = "domainkit"
-version = "0.13.0"
+version = "1.0.0"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
 license = "MIT"
@@ -11,7 +11,7 @@ authors = [
 ]
 keywords = ["ddd", "domain-driven-design", "fastapi", "sqlalchemy", "outbox", "framework"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Framework :: FastAPI",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
