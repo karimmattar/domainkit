@@ -45,9 +45,10 @@ async def test_a_monthly_task_runs_once_per_month_across_worker_restarts() -> No
             assert await first.run_once() == 1
 
             # Eight days on, still in the same 30-day slot: cleanup runs
-            # (every worker does it hourly) and deletes the finished run.
+            # (every worker does it hourly); on d126394 it deleted the
+            # finished run, the slot's only record.
             frozen.tick(timedelta(days=8))
-            assert await first.cleanup() == 1
+            await first.cleanup()
 
             # A deploy (or a crash restart): a new worker process.
             restarted = Worker()

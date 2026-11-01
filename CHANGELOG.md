@@ -273,9 +273,36 @@ and a status.
   threat model gains a section on moving money
   ([ADR 0124](docs/adr/0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md))
   (FIN-74).
+- `MESSAGING.UNKNOWN_TARGET_GRACE` (an hour by default): a message naming
+  a task or durable handler the worker does not know waits for a worker
+  that does, given back with a delay that doubles, its attempt not spent
+  and its ordering key's place kept, and is dead-lettered once the grace
+  has passed since a worker first found it unknown (outcome `unknown` in
+  `messaging_messages_total`). The test plugin's `drain` still
+  dead-letters it at once. `check` warns (`messaging.W001`, in staging
+  and production) about tasks without `name=`, whose name follows their
+  module's path; the messaging guide gives the deploy order (CONC-15).
 
 ### Changed
 
+- **Breaking:** a message naming a task or durable handler the worker does
+  not know is no longer dead-lettered at once: it waits up to
+  `MESSAGING.UNKNOWN_TARGET_GRACE` (an hour) for a worker that knows it.
+  A rolling deploy's older workers dead-lettered every message for what
+  the new code added, and a dead letter let its ordering key's later
+  messages run first; a task moved to another module did the same to the
+  messages queued under its old name. `UNKNOWN_TARGET_GRACE = 0` keeps
+  the old behaviour (CONC-15).
+- **Breaking:** `@task` and `@periodic` refuse a name longer than 255
+  characters, the outbox's column: PostgreSQL refused its messages at
+  every commit. A scheduled run's key hashes a name too long to leave
+  room for the slot's number (CONC-16).
+- **Breaking:** a `CancelledError` a handler or task raises while its
+  worker is not stopping it (it awaited something that was cancelled) is
+  a failed run, `HandlerCancelled`, retried with backoff and counted. The
+  worker took it for its own stop: the message went back at once, its
+  attempt refunded, and ran again and again, never dead-lettered, holding
+  its ordering key and, through a broker, a consumer's slot (CONC-17).
 - **Breaking:** auth has three new tables, `domainkit_step_ups`,
   `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
   new features use them, but deleting or erasing a user deletes the
@@ -313,6 +340,28 @@ and a status.
 
 ### Fixed
 
+- A periodic task whose interval is longer than `RETENTION_SECONDS` ran
+  again at every worker start once cleanup had deleted the slot's
+  finished run, the only record that it was queued: a 30-day task, or a
+  daily one with an hour's retention, ran after each deploy or restart.
+  Cleanup now keeps the run of such a task until its slot ends (CONC-13).
+- A claim, or a consumer's take-over, cut off by a cancellation as it
+  committed (a second signal, the code running the worker cancelling it)
+  is given back, as the relay's lease already was: its messages stayed
+  locked for `VISIBILITY_TIMEOUT` with an attempt spent, and one on its
+  last attempt was dead-lettered without running (CONC-14).
+- Queueing the periodic tasks no longer holds up claiming: a failure to
+  queue them is logged and tried again after a pause that doubles, up to
+  a minute, while due messages still run, through a broker too. One
+  that kept failing (a name too long for the outbox's key) stopped the
+  home outbox's worker for good, logged as an outage (CONC-16).
+- The queue-lag gauge (`admin.queue_lag`, `messages`, metrics) measures
+  the wait on PostgreSQL by the database's clock, which wrote the times:
+  a host whose clock ran ahead reported lag that was not there (CONC-18).
+- The transaction that finishes a keyed message takes its key's turn
+  before it updates the message, as every writer of the key does (ADR
+  0118): it took it after, and could deadlock with `messages --cancel` of
+  a message whose run outlived its lease (CONC-19).
 - `migrate` makes the audit trail append-only on PostgreSQL itself:
   `domainkit.contrib.audit` registers `protect_migrated` on
   `on_migrated`, which makes the triggers of `domainkit_audit_log` and

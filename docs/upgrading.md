@@ -63,6 +63,26 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   `messages --release`, releases it (SEC-14c-3). `messages` prints a
   `held` line after `pending`: a script that reads its lines by position
   reads them by name instead. Nothing keeps the old schema.
+- **A message for an unknown task or handler waits before it dies**
+  (CONC-15). It is given back, its attempt not spent, until
+  `MESSAGING.UNKNOWN_TARGET_GRACE` (an hour) has passed, then
+  dead-lettered as before. A message whose target no deploy brings back
+  is dead-lettered an hour later, and an ordered key waits behind it
+  meanwhile. **Fix:** nothing, usually; `MESSAGING =
+  {"UNKNOWN_TARGET_GRACE": 0}` keeps the old behaviour. Deploy workers
+  before web processes when a release adds tasks or handlers, and name
+  tasks (`@task(name=...)`): `check` warns about the others where
+  deployed (`messaging.W001`).
+- **Task names are at most 255 characters** (CONC-16): `@task` and
+  `@periodic` refuse a longer `name=` (or module path) with
+  `ImproperlyConfigured`. PostgreSQL refused its messages anyway.
+  **Fix:** a shorter `name=`.
+- **A handler's own `CancelledError` is a failure** (CONC-17). One raised
+  while the worker is not stopping (a cancelled task or future awaited)
+  is retried with backoff, counts as an attempt, and dead-letters the
+  message after `max_attempts`, as `HandlerCancelled`; it used to be
+  retried at once, uncounted, for ever. **Fix:** nothing; a handler that
+  cancels on purpose raises another error.
 - **An amount in SQL is multiplied or divided by a number, not by another
   amount** (TEST-11). `amount * other` and `amount / other`, where `other`
   is an amount too (an `ExactDecimal` column, money's amount column
