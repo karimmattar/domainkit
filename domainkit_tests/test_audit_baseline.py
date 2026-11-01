@@ -21,6 +21,7 @@ from domainkit.contrib.audit.baseline import (
     protection_problems,
     settings_problems,
 )
+from domainkit.contrib.audit.history import index_history
 from domainkit.contrib.audit.protection import (
     ROW_TRIGGER,
     TRUNCATE_TRIGGER,
@@ -414,7 +415,10 @@ async def test_migrate_protects_only_the_tables_there_are(installed: str) -> Non
     await connections.close_all()
 
     assert names is False
-    assert [hook.call for hook in on_migrated.hooks()] == [protect_migrated]
+    assert [hook.call for hook in on_migrated.hooks()] == [
+        protect_migrated,
+        index_history,  # The indexes of AUDIT.HISTORY_FIELDS (PERF-29).
+    ]
     if installed.startswith("postgresql"):
         assert lacking == [
             "domainkit_audit_seals_append_only",

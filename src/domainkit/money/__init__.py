@@ -25,7 +25,6 @@ from which list); ``register_currency`` adds a project's own, such as a
 token or an internal unit, before any amount uses it.
 """
 
-import csv
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -291,8 +290,11 @@ def _whole(value: object) -> bool:
 def _iso_4217() -> Mapping[str, Currency]:
     """The active ISO 4217 currencies that have minor units, by code.
 
-    Read from ``iso4217.csv`` on first use, comment lines skipped.
+    Read from ``iso4217.csv`` on first use, comment lines skipped; ``csv``
+    is imported then too (PERF-31).
     """
+    import csv
+
     text = files(__name__).joinpath("iso4217.csv").read_text(encoding="utf-8")
     rows = csv.DictReader(
         line for line in text.splitlines() if not line.startswith("#")

@@ -41,7 +41,7 @@ import binascii
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from weakref import WeakKeyDictionary
 
 from sqlalchemy import (
@@ -65,7 +65,9 @@ from sqlalchemy.types import TypeDecorator
 
 from domainkit.ddd.fields import InvalidQuery, primitive, wrapped_field
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.keys.ring import SUBJECT, keyring, sealed_key
+
+if TYPE_CHECKING:
+    from domainkit.keys.ring import Keyring
 
 __all__ = [
     "Ciphertext",
@@ -426,6 +428,17 @@ class _Field:
     """The attribute holding the blind index, if there is one."""
 
 
+def keyring() -> "Keyring":
+    """The process's key ring (``domainkit.keys.ring``, imported on first use).
+
+    A project that encrypts no field never imports the key ring (ADR 0104,
+    PERF-31).
+    """
+    from domainkit.keys.ring import keyring as ring
+
+    return ring()
+
+
 def watch(class_: type, table: Table) -> None:
     """Seal and open ``class_``'s encrypted attributes as its rows are written, read."""
     if not encrypted_columns(table):
@@ -671,6 +684,8 @@ def _rolled_back(session: Session, previous_transaction: object) -> None:
 
 def _open(target: object, context_: QueryContext) -> None:
     """Open each sealed value of a row just loaded."""
+    from domainkit.keys import ring
+
     state = instance_state(target)
     mapper = state.mapper
     session = context_.session
@@ -678,10 +693,10 @@ def _open(target: object, context_: QueryContext) -> None:
         value = state.dict.get(field.key)
         if not isinstance(value, Ciphertext) or field.key in state.committed_state:
             continue  # In clear, or changed: sealed for this flush, not loaded.
-        sealed = sealed_key(value)
+        sealed = ring.sealed_key(value)
         connection = (
             session.connection(bind_arguments={"mapper": mapper})
-            if sealed is not None and sealed[0] == SUBJECT
+            if sealed is not None and sealed[0] == ring.SUBJECT
             else None
         )
         opened = keyring().open(
