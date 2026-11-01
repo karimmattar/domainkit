@@ -33,6 +33,7 @@ the database's write lock.
 
 import hashlib
 import logging
+import re
 import threading
 from abc import abstractmethod
 from collections.abc import Sequence
@@ -51,7 +52,7 @@ from domainkit.apps import registry
 from domainkit.db.connections import INTERNAL, Reads, connections
 from domainkit.db.errors import duplicate_value
 from domainkit.db.hooks import on_committed, on_stage
-from domainkit.db.orm import metadata
+from domainkit.db.orm import mapper_registry, metadata
 from domainkit.db.repository import _sqlstate, reload_expired
 from domainkit.db.routing import ShardKey, router
 from domainkit.ddd import (
@@ -244,6 +245,8 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         """
         self._deferred.clear()
         await self.session.close()
+        if isinstance(exc, StaleDataError):
+            raise concurrent_update(exc) from exc
         if isinstance(exc, IntegrityError):
             duplicate = duplicate_value(exc, metadata)
             if duplicate is not None:
@@ -254,9 +257,17 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         """Assign this unit of work's repositories, all bound to ``session``."""
 
     async def commit(self) -> None:
-        """Commit inside a ``uow.commit`` span (see ``domainkit.tracing``)."""
+        """Commit inside a ``uow.commit`` span (see ``domainkit.tracing``).
+
+        A lost optimistic-locking race raises ``ConcurrentUpdate``, whether
+        the stale write was flushed by the commit or before it, by a domain's
+        ``on_stage`` hook.
+        """
         with span("uow.commit", database=self.alias):
-            await super().commit()
+            try:
+                await super().commit()
+            except StaleDataError as exc:
+                raise concurrent_update(exc) from exc
 
     async def _stage(
         self, events: Sequence[DomainEvent], tasks: Sequence[DeferredTask]
@@ -283,16 +294,11 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     async def _commit(self) -> None:
         """Commit, translating what the database refused.
 
-        A lost optimistic-locking race raises ``ConcurrentUpdate``, and a
-        taken unique value ``DuplicateValue``.
+        A taken unique value raises ``DuplicateValue``; a lost
+        optimistic-locking race is ``commit``'s, wherever it flushed.
         """
         try:
             await self.session.commit()
-        except StaleDataError as exc:
-            raise ConcurrentUpdate(
-                "The data changed while this request was running; reload it and "
-                "try again."
-            ) from exc
         except IntegrityError as exc:
             duplicate = duplicate_value(exc, metadata)
             if duplicate is None:
@@ -343,10 +349,48 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         return _SessionSavepoint(self.session, await self.session.begin_nested())
 
     def _translate(self, exc: BaseException) -> BaseException | None:
-        """A unique violation inside a savepoint becomes ``DuplicateValue``."""
+        """In a savepoint, a unique violation or a lost race, as the domain's error."""
+        if isinstance(exc, StaleDataError):
+            return concurrent_update(exc)
         if isinstance(exc, IntegrityError):
             return duplicate_value(exc, metadata)
         return None
+
+
+STALE_TABLE: Final = re.compile(r"\bstatement on table '([^']+)'")
+"""Where SQLAlchemy's ``StaleDataError`` names the table it found stale."""
+
+
+def concurrent_update(error: StaleDataError) -> ConcurrentUpdate:
+    """The domain's error for a lost optimistic-locking race the ORM reported.
+
+    SQLAlchemy raises ``StaleDataError`` (``ConcurrentModificationError`` is
+    the same class) when an ``UPDATE`` or ``DELETE`` of a versioned row
+    matches no row of the version it read, at whichever flush sends it: a
+    commit, a query that flushes first, an explicit ``flush()``, a
+    savepoint, or an ``on_stage`` hook. ``model`` names the class mapped to
+    the table its message names, if one is.
+    """
+    found = STALE_TABLE.search(str(error))
+    model = None
+    if found is not None:
+        model = next(
+            (
+                qualified(mapper.base_mapper.class_)
+                for mapper in mapper_registry.mappers
+                if mapper.local_table.fullname == found[1]  # type: ignore[attr-defined]
+            ),
+            None,
+        )
+    return ConcurrentUpdate(
+        "The data changed while this request was running; reload it and try again.",
+        model=model,
+    )
+
+
+def qualified(cls: type) -> str:
+    """``module.QualName`` of ``cls``."""
+    return f"{cls.__module__}.{cls.__qualname__}"
 
 
 class _SessionSavepoint(Savepoint):

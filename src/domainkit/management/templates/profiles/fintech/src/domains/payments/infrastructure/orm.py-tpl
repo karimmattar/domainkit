@@ -1,0 +1,19 @@
+"""Tables of the payments domain, derived from the model and mapped onto it.
+
+A card's number is an ``EncryptedType`` column, sealed as the row is
+written and opened as it loads, and ``number_index`` its blind index: the
+database, its replicas, backups, and dumps hold no card number.
+"""
+
+from domainkit.db import map_imperatively, table_for
+
+from domains.payments.domain.model import Card, Transfer
+
+cards = table_for(Card, "payments_cards", domain="payments")
+transfers = table_for(Transfer, "payments_transfers", domain="payments")
+
+
+def start_mappers() -> None:
+    """Map the aggregates onto their tables (idempotent)."""
+    map_imperatively(Card, cards)
+    map_imperatively(Transfer, transfers)

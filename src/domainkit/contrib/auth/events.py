@@ -193,3 +193,28 @@ class GroupPermissionRevoked(DomainEvent):
 
     group_id: UUID
     permission: str
+
+
+class SteppedUp(DomainEvent):
+    """A user authenticated again, for acts that ask for it (``StepUp``)."""
+
+    user_id: UUID
+    methods: tuple[str, ...]
+    """What they proved, RFC 8176's names: ``otp``, ``pwd``."""
+
+
+class TransactionAuthorized(DomainEvent):
+    """A user confirmed a transaction: one amount, to one payee, once."""
+
+    user_id: UUID
+    challenge_id: UUID
+    purpose: str
+    methods: tuple[str, ...]
+
+
+class TransactionAuthorizationUsed(DomainEvent):
+    """A transaction's authorization was spent on the transaction it names."""
+
+    user_id: UUID
+    challenge_id: UUID
+    purpose: str

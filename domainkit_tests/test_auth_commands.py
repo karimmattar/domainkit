@@ -306,6 +306,10 @@ def test_changepassword_usage(auth_project: str) -> None:
 
     assert "[username]" in text
     assert "username whose password (default: your login name)" in text
+    assert (
+        "--temporary, --no-temporary the user changes it at the first login "
+        "(default: for a user named, with AUTH.PASSWORD_CHANGE_ON_FIRST_USE)"
+    ) in text
 
 
 def test_changepassword_finds_the_user(
@@ -323,4 +327,4 @@ def test_changepassword_finds_the_user(
     call_command("changepassword", stdout=io.StringIO())
 
     with pytest.raises(CommandError, match="'ghost' does not exist"):
-        run_async(changepassword.Command()._save("ghost", STRONG))
+        run_async(changepassword.Command()._save("ghost", STRONG, temporary=False))

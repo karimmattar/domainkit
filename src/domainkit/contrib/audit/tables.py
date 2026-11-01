@@ -20,7 +20,7 @@ from sqlalchemy import (
     Table,
     Text,
     Uuid,
-    false,
+    text,
 )
 
 from domainkit.db import UTCDateTime, metadata
@@ -66,7 +66,7 @@ audit_seals = Table(
     Column("digest", String(64), nullable=False),
     Column("link", String(64), nullable=False),
     Column("sealed_at", UTCDateTime, nullable=False),
-    Column("late", Boolean, nullable=False, server_default=false()),
+    Column("late", Boolean, nullable=False, server_default=text("false")),
     info={"domain": "audit", "append_only": True, "fixtures": False},
 )
 """Each row's place in the hash chain (see ``seals``); append-only too.

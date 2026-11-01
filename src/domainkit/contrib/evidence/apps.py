@@ -27,12 +27,13 @@ class EvidenceConfig(DomainConfig):
     def ready(self) -> None:
         """Fail fast unless ``EVIDENCE.LEDGER`` names a ledger.
 
-        Staging and production also need ``EVIDENCE.SUBJECT_KEY``: the
-        development key is public, so it would not hide subjects.
+        Staging and production also need ``EVIDENCE.SUBJECT_KEY`` (or
+        ``SUBJECT_KEYS``): the development key is public, so it would not
+        hide subjects.
         """
         config = registry.settings(EvidenceSettings)
         ledgers.config(config.LEDGER)
-        if config.SUBJECT_KEY is None and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+        if not config.has_subject_key and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             raise ImproperlyConfigured(
                 f"EVIDENCE.SUBJECT_KEY is required in {settings.ENVIRONMENT}: a "
                 "random secret of 32 characters or more, kept for as long as "

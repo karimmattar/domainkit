@@ -18,11 +18,13 @@ from sqlalchemy import (
     String,
     Table,
     create_engine,
+    false,
     select,
 )
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import column_property
+from sqlalchemy.sql.elements import ColumnElement
 
 from domainkit.conf import override_settings
 from domainkit.db import SqlAlchemyRepository, connections, map_imperatively
@@ -37,7 +39,7 @@ from domainkit.ddd import (
     ReadOnlyError,
     UnknownField,
 )
-from domainkit.ddd.query import Criteria, F, Ordering, RowLock, Selection
+from domainkit.ddd.query import Criteria, F, Ordering, RowLock, Selection, Within
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet
 from domainkit.testing import AsyncTestClient, assert_num_queries
@@ -154,6 +156,7 @@ CASES: list[tuple[Criteria | None, tuple[str, ...]]] = [
     (F("name").contains("a") | F("name").contains("zz"), ()),
     (~F("name").startswith("a"), ("name",)),
     (F("parts.sku").startswith("x"), ()),
+    (Within("parts", F("sku").startswith("x")), ()),  # Case-sensitive on SQLite too.
     (F("stock").isnull(), ()),
     (~F("stock").in_([0, 3]), ()),
     (F("stock").in_([]), ()),
@@ -171,6 +174,40 @@ CASES: list[tuple[Criteria | None, tuple[str, ...]]] = [
     (~(F("maker.name") == "bolt"), ("name",)),
     ((F("stock") >= 0) & ~F("name").contains("%") | (F("size") == 2), ("-size",)),
 ]
+
+
+def test_a_compiler_of_ones_own_criteria_is_told_the_dialect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``register_compiler``'s compilers get the dialect's name, inside others too."""
+    from domainkit.db import query as query_module
+
+    class Odd(Criteria):
+        def bind(self, model: type) -> Criteria:
+            return self
+
+        def evaluate(self, candidate: object) -> bool:
+            return False
+
+        def conditions(self) -> Iterator[Any]:
+            return iter(())
+
+    told: list[str] = []
+
+    def compile_odd(
+        criteria: Any,  # noqa: ANN401 - as register_compiler gives it.
+        model: type,
+        dialect: str,
+    ) -> ColumnElement[bool]:
+        told.append(dialect)
+        return false()
+
+    monkeypatch.setattr(query_module, "_COMPILERS", dict(query_module._COMPILERS))
+    query_module.register_compiler(Odd, compile_odd)
+    compile_criteria(Odd(), Gadget, "sqlite")
+    compile_criteria(Within("parts", Odd()), Gadget, "postgresql")
+
+    assert told == ["sqlite", "postgresql"]
 
 
 async def test_sql_answers_as_the_fake_does(tables: None) -> None:

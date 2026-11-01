@@ -13,7 +13,7 @@ from domainkit.apps.hooks import (
     on_startup,
 )
 from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively
-from domainkit.db.hooks import on_stage
+from domainkit.db.hooks import on_migrated, on_stage
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.ledger.trust import use_states
@@ -22,6 +22,7 @@ from .baseline import check_at_startup, required, settings_problems
 from .checkpoints import configured_public_key
 from .ledgerstates import DatabaseStateStore
 from .models import AuditEntry
+from .protection import protect_migrated
 from .recorder import Outcome, event_rows, record, write
 from .settings import AuditSettings
 from .tables import audit_log
@@ -41,7 +42,9 @@ class AuditConfig(DomainConfig):
         """Check where explicit records go; seal on a schedule with messaging.
 
         ``AuditEntry`` is mapped so content types give it its permission.
-        Each commit's events are written with it (``on_stage``).
+        Each commit's events are written with it (``on_stage``), and
+        ``migrate`` makes the trail append-only on PostgreSQL
+        (``protect_migrated``).
 
         Ledgers keep the state they were last verified at in
         ``AUDIT.DATABASE`` (``ledgerstates``), so every process starts from it.
@@ -56,6 +59,7 @@ class AuditConfig(DomainConfig):
         router.require_standalone(config.DATABASE, "AUDIT.DATABASE")
         map_imperatively(AuditEntry, audit_log)
         on_stage(self.stage_events)
+        on_migrated(protect_migrated)
         use_states(DatabaseStateStore(config.DATABASE))
         configured_public_key()  # Refuse a key that cannot verify, now.
         if registry.is_installed(MESSAGING):

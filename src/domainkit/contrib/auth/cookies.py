@@ -70,12 +70,13 @@ from .authentication import (
     BaseAuthentication,
     Credentials,
     accept,
+    rechecking,
     stored_credential,
     unless_idle,
 )
 from .devices import hand_out
 from .events import UserLoggedOut
-from .mfa import MfaLoginIn, challenge, verify_challenge
+from .mfa import MfaLoginIn, challenge, first_use_after_code, verify_challenge
 from .models import AbstractBaseUser, UserId
 from .principals import forget
 from .settings import auth_settings
@@ -156,7 +157,9 @@ class CookieAuthentication(BaseAuthentication):
         if user is None:
             return None
         check_request(connection, token.id)
-        await accept(entry, config.PRINCIPAL_CACHE, every=every)
+        await accept(
+            entry, config.PRINCIPAL_CACHE, touch=not rechecking(connection), every=every
+        )
         return Credentials(user, scheme=SCHEME, token_id=token.id)
 
 
@@ -297,7 +300,9 @@ async def log_in_with_code(
     """Finish a login with a second factor; start the browser session."""
     _no_store(response)
     check_origin(request)
-    user = await verify_challenge(request, body.mfa_token, body.code)
+    user = await first_use_after_code(
+        await verify_challenge(request, body.mfa_token, body.code), body.new_password
+    )
     started = await start_session(user, response, previous=_session_of(request))
     await hand_out(request, response, user)
     return started

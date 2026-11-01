@@ -254,3 +254,74 @@ async def test_the_trial_balance_opens_with_what_came_before_its_first_day() -> 
         (Decimal(0), Decimal("4.0000")),
         (Decimal(0), Decimal(0)),
     ]
+
+
+async def transfers(*days: date) -> tuple[Account, Account]:
+    """Cash and sales, and a sale of a dollar on each of ``days``."""
+    cash, sales = await account("1000"), await account("4000", type=AccountType.INCOME)
+    for number, day in enumerate(days):
+        await post_entry(
+            PostEntry(
+                source="tests",
+                reference=f"t-{number}",
+                booked_on=day,
+                lines=(Line.debit(cash.id, usd("1")), Line.credit(sales.id, usd("1"))),
+            ),
+            AccountingUnitOfWork(),
+        )
+    return cash, sales
+
+
+@pytest.mark.usefixtures("books")
+async def test_the_general_ledger_leaves_out_the_days_before_its_period() -> None:
+    """A posting the day before the period's first is in the period before."""
+    await period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+    october = await period("2026-10", date(2026, 10, 1), date(2026, 10, 31))
+    await transfers(date(2026, 9, 30), date(2026, 10, 1))
+
+    found = json.loads("".join([p async for p in general_ledger(october, "json")]))
+
+    assert {p["booked_on"] for p in found["postings"]} == {"2026-10-01"}
+
+
+@pytest.mark.usefixtures("books")
+async def test_the_general_ledger_joins_its_chunks_as_one_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Postings read in chunks are one JSON array, each chunk after a comma."""
+    from domainkit.contrib.accounting import reports
+
+    monkeypatch.setattr(reports, "CHUNK", 2)
+    october = await period("2026-10", date(2026, 10, 1), date(2026, 10, 31))
+    await transfers(date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 3))
+
+    pieces = [p async for p in general_ledger(october, "json")]
+
+    assert len(pieces) == 5  # The head, three chunks of two, the totals.
+    assert len(json.loads("".join(pieces))["postings"]) == 6
+
+
+@pytest.mark.usefixtures("books")
+async def test_the_trial_balance_keeps_an_accounts_debits_and_credits_apart() -> None:
+    """Movements both ways in the period: each side is summed on its own."""
+    october = await period("2026-10", date(2026, 10, 1), date(2026, 10, 31))
+    cash, sales = await transfers(date(2026, 10, 1), date(2026, 10, 2))
+    await post_entry(
+        PostEntry(
+            source="tests",
+            reference="refund",
+            booked_on=date(2026, 10, 3),
+            lines=(
+                Line.credit(cash.id, usd("0.25")),
+                Line.debit(sales.id, usd("0.25")),
+            ),
+        ),
+        AccountingUnitOfWork(),
+    )
+
+    report = await trial_balance(october)
+
+    assert [(r.code, r.debits, r.credits) for r in report.rows] == [
+        ("1000", Decimal("2.0000"), Decimal("0.2500")),
+        ("4000", Decimal("0.2500"), Decimal("2.0000")),
+    ]

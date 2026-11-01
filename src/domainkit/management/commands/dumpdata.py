@@ -25,8 +25,10 @@ class Command(BaseCommand):
     names, they are left out and the command says so. A dump with guarded
     tables is audited (``operator.dumpdata``), and needs a named operator
     in staging and production; so does one, there, of a table whose model
-    has fields marked ``Personal`` (SEC-12a-7). A fixture can hold personal
-    data; keep it as safe as the database. ``--output`` writes a new file
+    has fields marked ``Personal`` (SEC-12a-7). Encrypted columns are
+    written sealed, as stored; ``--decrypt`` writes their values, and is
+    audited and needs a named operator there too. A fixture can hold
+    personal data; keep it as safe as the database. ``--output`` writes a new file
     only its owner can read, and refuses a path that exists, a symbolic
     link too.
     """
@@ -55,6 +57,11 @@ class Command(BaseCommand):
             "--indent", type=int, default=2, help="spaces per level (default: 2)"
         )
         parser.add_argument(
+            "--decrypt",
+            action="store_true",
+            help="write encrypted columns' values, not their ciphertext",
+        )
+        parser.add_argument(
             "--include-guarded",
             action="store_true",
             help="dump guarded tables too: users and their password hashes, "
@@ -69,6 +76,7 @@ class Command(BaseCommand):
         output: Path | None,
         indent: int,
         include_guarded: bool,
+        decrypt: bool = False,
         **options: object,
     ) -> None:
         """Read the tables and write their rows."""
@@ -80,10 +88,21 @@ class Command(BaseCommand):
                 if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS
                 else []
             )
-            if not (guarded or people):
+            decrypted = (
+                sorted(table.name for table in tables if fixtures.encrypted(table))
+                if decrypt
+                else []
+            )
+            if not (guarded or people or decrypted):
                 await self._write(database, tables, output, indent)
                 return
-            what = "--include-guarded" if guarded else "of personal data"
+            what = (
+                "--include-guarded"
+                if guarded
+                else "--decrypt"
+                if decrypted
+                else "of personal data"
+            )
             require_named(self.operator, f"dumpdata {what}")
             async with self.recorded(
                 "dumpdata",
@@ -91,8 +110,13 @@ class Command(BaseCommand):
                 output="stdout" if output is None else output.name,
                 include_guarded=include_guarded,
                 personal_tables=people,
+                **({"decrypted_tables": decrypted} if decrypted else {}),
             ) as details:
-                details.update(await self._write(database, tables, output, indent))
+                details.update(
+                    await self._write(
+                        database, tables, output, indent, decrypt=bool(decrypted)
+                    )
+                )
         except (fixtures.FixtureError, ValueError) as exc:
             raise CommandError(str(exc)) from None
 
@@ -123,13 +147,19 @@ class Command(BaseCommand):
         return [table for table in tables if not fixtures.guarded(table)]
 
     async def _write(
-        self, database: str, tables: list[Table], output: Path | None, indent: int
+        self,
+        database: str,
+        tables: list[Table],
+        output: Path | None,
+        indent: int,
+        *,
+        decrypt: bool = False,
     ) -> dict[str, object]:
         """Dump ``tables`` to ``output``; what the record of it holds.
 
         Table names, row counts, and the SHA-256 of the text written: no row.
         """
-        document = await fixtures.dump(database, tables)
+        document = await fixtures.dump(database, tables, decrypt=decrypt)
         text = fixtures.to_json(document, indent=indent or None)
         rows = {entry["table"]: len(entry["rows"]) for entry in document["tables"]}
         if output is None:

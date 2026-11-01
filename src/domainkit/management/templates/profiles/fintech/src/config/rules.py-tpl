@@ -1,0 +1,12 @@
+"""Access rules the settings name by import path.
+
+``APPROVALS.APPROVE_RULE`` is ``config.rules.RECENT_PROOF``: whoever
+approves a request must have authenticated again, with a code of their
+authenticator, within five minutes (docs/auth/step-up.md).
+"""
+
+from datetime import timedelta
+
+from domainkit.contrib.auth import StepUp
+
+RECENT_PROOF = StepUp(max_age=timedelta(minutes=5))

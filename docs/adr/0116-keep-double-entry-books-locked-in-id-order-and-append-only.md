@@ -1,6 +1,6 @@
 # 0116. Keep double-entry books: post under locks taken in id order, and append only
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-31 (at the end)
 - Date: 2026-10-30
 
 ## Context
@@ -132,3 +132,18 @@ both databases, and a currency of more is refused when an account opens.
 - Left open: a digest of each day's journal recorded as evidence
   (tamper evidence beyond the triggers), credit limits in `available`,
   multi-currency revaluation, and periods that close in steps.
+
+## Amendment (2026-10-31): a reversal is not reversed
+
+`reverse_entry` took any entry, a reversal too. Reversing a reversal
+booked the entry it undid again, under the source `accounting.reversal`,
+which no check of a new entry sees: `contrib.limits` counts nothing for a
+reversal (it releases what the reversed entry counted), and
+`contrib.approvals` guards `post_entry` alone. So a payment, reversed,
+then its reversal reversed, moved its money again, uncounted, as often as
+the account allowed, and an approved large entry was booked again without
+approval (SEC-15b-3). Nothing in the ledger needs it: a correction of a
+reversal is the entry posted again, which every check meets. The ledger
+now refuses it, `ReversalNotReversible` (422 `reversal_not_reversible`),
+in the reversal's transaction, after the entry's lock; the 0.14 test that
+reversed a reversal now expects the refusal.

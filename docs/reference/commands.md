@@ -7,7 +7,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 
 | Command | Options | Purpose |
 | --- | --- | --- |
-| `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. What it writes passes the project's own `ruff check` and `ruff format --check`; its dev group installs ruff, which formats what the generators write. |
+| `init` | `name`, `[directory]`, `--profile fintech` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. What it writes passes the project's own `ruff check` and `ruff format --check`; its dev group installs ruff, which formats what the generators write. `--profile fintech` writes a bank's controls on and wired, with a guarded sample transfer and its tests, which also pass `mypy --strict`, and production settings that pass `check --deploy` once their secrets are set ([fintech.md](../fintech.md), ADR 0124). |
 | `check` | `--deploy` | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](../runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](checks.md) as warnings. Every finding has an id; `--deploy` fails on warnings not in `SILENCED_CHECKS` too, and runs only in staging and production. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](../i18n.md)). |
@@ -26,7 +26,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
-| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent`, `--include-guarded`, `--operator` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
+| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent`, `--include-guarded`, `--decrypt`, `--operator` | Write rows as a JSON fixture, encrypted columns sealed as stored unless `--decrypt`; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
 | `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force`, `--replace`, `--include-guarded`, `--operator` | Load fixtures, saying first what each table gets and how many of its rows are stored already. A row whose primary key is stored is refused without `--replace`; a fixture that writes a guarded table (users, permissions, grants, ...) without `--include-guarded` ([guarded tables](#data-fixtures-flush-and-seeds)). Staging and production refuse without `--force` and a named operator. Each load is audited with its tables and the fixture's SHA-256 ([operators](#operators)). |
 | `flush` | `--database`, `--dry-run`, `--force`, `--include-guarded`, `--operator` | Delete every row but the audit trail's and, without `--include-guarded`, the guarded tables', saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force` and a named operator. Audited, with its tables ([operators](#operators)). |
 | `seed` | `[LABEL ...]` | Run installed domains' `on_seed` hooks, in `INSTALLED_DOMAINS` order. |
@@ -34,7 +34,9 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
 | `messages` | `--pending\|--held\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--release`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them (`--held`: those waiting for an earlier message of their ordering key), requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked; one with an ordering key goes back in its place), cancel a message no worker runs, or release ordering keys left with held messages and none pending; retries, cancels and releases are audited (messaging; [operators](#operators)). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
+| `approvals` | `list [--status STATUS] [--limit N]`, `show ID`, `expire`, `--operator` | List approval requests (pending by default), show one with its command and decisions, or expire those whose time is up; expiries are audited (approvals; see [approvals.md](../contrib/approvals.md#from-the-command-line), [operators](#operators)). |
 | `accounting` | `trialbalance\|ledger PERIOD [--format csv\|json] [--output FILE]`, `verify`, `expireholds`, `import ACCOUNT FILE`, `reconcile ACCOUNT`, `unmatched ACCOUNT`, `--operator` | Write a period's trial balance or general ledger, check that every entry balances and every balance sums its postings (fails otherwise), release expired holds, import a bank statement (CSV) into an account, reconcile it, or list what is unmatched; a period by name or id, an account by code or id; imports, reconciliations, and expiries are audited (accounting; see [accounting.md](../contrib/accounting.md#from-the-command-line), [operators](#operators)). |
+| `limits` | `list [--kind K]`, `usage KIND SUBJECT [--currency C]`, `set CODE --kind K --currency C [--subject S] [--direction in\|out] [--per-transaction A] [--window W] [--max-amount A] [--max-count N] [--time-zone Z] [--note T] [--enable\|--disable]`, `purge`, `--operator` | List the limits, stored and from `LIMITS.DEFAULTS`, show a subject's usage of each window, make a limit or change the bounds given (`none` clears one), or delete usage older than `LIMITS.KEEP_USAGE`; changes are audited as the operator's, and so is `purge` (limits; see [limits.md](../contrib/limits.md#from-the-command-line), [operators](#operators)). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](../contrib/audit.md#history)). |
 | `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
 | `auditverify` | `--database`, `--export FILE`, `--check-export FILE --public-key PEM` | Check the audit trail against its seals, checkpoints, and anchors; fails if anything changed. `--export` then writes signed checkpoints of every trail for a third party (`AUDIT.CHECKPOINT_KEY`, read by this and `auditprune` alone); `--check-export` checks such a file offline, with the public key alone (audit). |
@@ -42,8 +44,9 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `auditforget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
 | `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](../privacy.md), [operators](#operators)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
+| `keys` | `generate [--id ID]`, `rewrap`, `status [--check]`, `reencrypt [--batch-size N]`, `--operator` | Print a new data key wrapped by `KEYS.PROVIDER`, or `KEYS.DATA_KEYS` wrapped under the KEK's newest version; count what each data key seals (`--check` fails while a retired one still does, `keys.W001`); or seal everything under a retired key again under `CURRENT_KEY`, in batches, audited (keys; see [keys.md](../contrib/keys.md#rotating), [operators](#operators)). |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](../auth.md)). |
-| `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
+| `changepassword` | `[username] [--temporary/--no-temporary]` | Set a user's password, asked twice and validated; the user's tokens end (auth). With `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, the password of a user named is to change at the first login, unless `--no-temporary`; `--temporary` asks it for any. |
 | `createtoken` | `username`, `--name`, `--days`, `--no-expiry`, `--scope` | Print a new token for a user's scripts, shown once, limited to the `--scope` permissions if given (auth). |
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
@@ -55,13 +58,15 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
-`auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
-`dumpdata --include-guarded`, which copies credentials out (0.12);
+`auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, `privacy`,
+and `keys reencrypt`; `dumpdata --include-guarded`, which copies credentials out (0.12),
+and `dumpdata --decrypt`, which copies encrypted values out in clear;
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
-`addcertificate`, `cleartokens`, `flags`, `webhooks`, and `accounting`
-(its `import`, `reconcile`, and `expireholds`). Their listings
-(`flags list`, `webhooks deliveries`, `accounting verify`, ...) take the
+`addcertificate`, `cleartokens`, `flags`, `webhooks`, `accounting`
+(its `import`, `reconcile`, and `expireholds`), `approvals` (its
+`expire`), and `limits` (its `set` and `purge`). Their listings
+(`flags list`, `webhooks deliveries`, `accounting verify`, `approvals list`, ...) take the
 operator too but record nothing; `evidence`, `auditlog`, and `auditverify` only read and take none.
 The operator is, in this order:
 
@@ -96,13 +101,14 @@ who can reach its database.
 The command runs as the actor `operator:<name>`, so what it records itself
 (`privacy.erase`, `privacy.purge`, `auth.mfa_disabled`,
 `auth.token_created`, `auth.password_changed`, `auth.user_created`,
-`auth.user_logged_out`, `flags.flag_changed`, `flags.setting_changed`)
+`auth.user_logged_out`, `flags.flag_changed`, `flags.setting_changed`, `limits.limit_set`)
 names the operator instead of `system`. An action that records nothing
 itself is recorded once it ends as `operator.<command>`
 (`operator.messages.retry`, `operator.messages.cancel`, `operator.messages.release`,
 `operator.auditforget`, `operator.auditprune`, `operator.loaddata`, `operator.flush`,
 `operator.partitions.prune`, `operator.webhooks.replay`, `operator.accounting.import`,
-`operator.accounting.reconcile`, `operator.accounting.expireholds`), `success` or `failure` (with the error's
+`operator.accounting.reconcile`, `operator.accounting.expireholds`,
+`operator.approvals.expire`, `operator.limits.purge`, `operator.keys_reencrypt`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. `operator.loaddata` names the fixture file,
 its SHA-256, and each table with its rows and how many it replaced;
@@ -168,7 +174,11 @@ what was written), and in staging and production needs an operator named
 by `--operator` or `DOMAINKIT_OPERATOR`. So does, in staging and
 production, a dump of a table whose model has fields marked `Personal`,
 recorded with those tables (`personal_tables`), as `privacy export` of one
-person is recorded: it copies everyone out. The audit trail is never loaded or
+person is recorded: it copies everyone out. Encrypted columns
+([keys.md](../contrib/keys.md)) are dumped sealed, as stored; `--decrypt`
+writes their values (`{"plaintext": ...}`), is always recorded, with the
+tables (`decrypted_tables`), and needs a named operator there too;
+`loaddata` seals such values for the rows it writes. The audit trail is never loaded or
 flushed, guarded or not. A kept table whose rows are about other tables'
 objects names the column of their model key (`info={"about_model":
 "content_type"}`, as object grants do): `flush` deletes its rows about

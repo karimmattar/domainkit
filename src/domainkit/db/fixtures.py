@@ -10,7 +10,13 @@ empties tables. A fixture is one JSON document::
 Values are JSON: numbers and text as they are, decimals, times, durations,
 ids, and enums as text, bytes as base64, JSON columns as JSON. Money is
 its two columns, the amount as text and the currency's code
-(``{"total": "10.50", "total_currency": "USD"}``). Loading
+(``{"total": "10.50", "total_currency": "USD"}``). An encrypted column
+(``domainkit.db.encrypted``) holds its sealed text, never the value, and
+its blind index beside it: such a fixture loads back only where the same
+keys open it, into the same rows. ``dump(..., decrypt=True)``
+(``dumpdata --decrypt``) writes the values instead, as
+``{"plaintext": ...}`` (bytes in base64), and loading seals those for
+the database it writes to, under its current key. Loading
 converts them back from each column's type, and only adds rows: one whose
 primary key is stored is refused, unless the load is told to replace
 (``loaddata --replace``). ``loaddata`` reads numbers with a fraction as
@@ -48,7 +54,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import batched, groupby
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import (
@@ -70,12 +76,22 @@ from sqlalchemy.types import TypeEngine
 
 from domainkit.db.connections import connections, create_owner_engine
 from domainkit.db.derive import ValueObjectType
+from domainkit.db.encrypted import (
+    Ciphertext,
+    EncryptedType,
+    Plaintext,
+    encrypted_columns,
+    open_row,
+    seal_row,
+)
 from domainkit.db.models import installed_models
 from domainkit.db.money import AMOUNT, MONEY
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
 from domainkit.ddd.personal import personal_fields
+from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import DomainkitError
+from domainkit.keys.ring import sealed_key
 from domainkit.money import Money
 from domainkit.utils.decimals import jsonable
 
@@ -170,6 +186,11 @@ def personal(table: Table) -> bool:
     return False
 
 
+def encrypted(table: Table) -> bool:
+    """Whether ``table`` has encrypted columns."""
+    return bool(encrypted_columns(table))
+
+
 def fixture_table(table: Table) -> bool:
     """Whether ``table`` holds data fixtures may carry."""
     return table.info.get("fixtures", True) is not False and table.name not in (
@@ -197,24 +218,52 @@ def select_tables(database: str, names: Sequence[str] = ()) -> list[Table]:
     return [table for table in tables if table in picked]
 
 
-async def dump(database: str, tables: Sequence[Table]) -> dict[str, Any]:
-    """The fixture of ``tables`` in ``database``, rows in primary key order."""
+async def dump(
+    database: str, tables: Sequence[Table], *, decrypt: bool = False
+) -> dict[str, Any]:
+    """The fixture of ``tables`` in ``database``, rows in primary key order.
+
+    Encrypted columns hold their sealed text, unless ``decrypt``: then
+    their values, opened, as ``{"plaintext": ...}`` (null once shredded).
+
+    Raises:
+        FixtureError: With ``decrypt``, a value does not open.
+    """
     documents = []
     engine = create_owner_engine(connections.config(database))
     try:
         async with engine.connect() as connection:
             for table in tables:
                 query = select(table).order_by(*table.primary_key.columns)
-                rows = (await connection.execute(query)).mappings()
-                documents.append(
-                    {
-                        "table": table.name,
-                        "rows": [_encoded_row(table, row) for row in rows],
-                    }
-                )
+                rows = (await connection.execute(query)).mappings().all()
+                encoded = [_encoded_row(table, row) for row in rows]
+                if decrypt and encrypted(table):
+                    for row, written in zip(rows, encoded, strict=True):
+                        written.update(await _opened(connection, table, row))
+                documents.append({"table": table.name, "rows": encoded})
     finally:
         await engine.dispose()
     return {"format": FORMAT, "version": VERSION, "tables": documents}
+
+
+async def _opened(
+    connection: AsyncConnection, table: Table, row: RowMapping
+) -> dict[str, Any]:
+    """The encrypted columns of ``row``, opened, as a fixture writes them.
+
+    Raises:
+        FixtureError: A value does not open.
+    """
+    try:
+        opened = await connection.run_sync(open_row, table, dict(row))
+    except DecryptionFailed as exc:
+        raise FixtureError(f"A value of {table.name!r} does not open: {exc}") from None
+    return {
+        name: None
+        if value is None
+        else {"plaintext": cast("EncryptedType", table.c[name].type).to_json(value)}
+        for name, value in opened.items()
+    }
 
 
 def read_fixture(
@@ -292,7 +341,12 @@ async def load(
     try:
         async with engine.begin() as connection:
             await _lock(connection, [table for table, _ in tables])
-            for table, rows in tables:
+            for table, given in tables:
+                rows = given
+                if encrypted(table):
+                    rows = [
+                        await connection.run_sync(seal_row, table, row) for row in given
+                    ]
                 replaced = await _stored(connection, table, rows)
                 statement = _insert(connection, table, replace=replace)
                 for batch in _batches(rows):
@@ -584,7 +638,32 @@ def _decoded(column: Column[Any], value: object) -> object:
         return value
     if isinstance(column.type, ValueObjectType):
         return _value_object(column, column.type, value)
+    if isinstance(column.type, EncryptedType):
+        return _sealed(column, column.type, value)
     return _converted(column, column.type, value)
+
+
+def _sealed(column: Column[Any], type_: EncryptedType, value: object) -> object:
+    """An encrypted column's value: sealed text, or ``{"plaintext": ...}`` to seal.
+
+    Raises:
+        FixtureError: It is neither, or the plaintext is not of the
+            column's kind.
+    """
+    if isinstance(value, str) and sealed_key(value) is not None:
+        return Ciphertext(value)
+    if isinstance(value, dict) and set(value) == {"plaintext"}:
+        plaintext = value["plaintext"]
+        try:
+            return Plaintext(None if plaintext is None else type_.from_json(plaintext))
+        except (ValueError, TypeError):
+            raise FixtureError(
+                f"{_where(column)} holds a plaintext that is not {type_.kind.__name__}."
+            ) from None
+    raise FixtureError(
+        f"{_where(column)} is encrypted: it takes a sealed value, or "
+        '{"plaintext": ...} to seal.'
+    )
 
 
 def _converted(column: Column[Any], type_: TypeEngine[Any], value: object) -> object:

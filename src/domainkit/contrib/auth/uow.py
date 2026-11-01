@@ -7,9 +7,12 @@ from domainkit.db import SqlAlchemyUnitOfWork
 from .repositories import (
     GroupRepository,
     MfaStore,
+    PasswordHistoryStore,
     PermissionStore,
     PrincipalStore,
+    ScaStore,
     SignupStore,
+    StepUpStore,
     TokenStore,
     UserRepository,
 )
@@ -33,6 +36,9 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
     tokens: TokenStore
     mfa: MfaStore
     signups: SignupStore
+    step_ups: StepUpStore
+    sca: ScaStore
+    passwords: PasswordHistoryStore
 
     def create_repositories(self, session: AsyncSession) -> None:
         """Bind the repositories to the session."""
@@ -43,3 +49,6 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
         self.tokens = TokenStore(session)
         self.mfa = MfaStore(session)
         self.signups = SignupStore(session)
+        self.step_ups = StepUpStore(session)
+        self.sca = ScaStore(session)
+        self.passwords = PasswordHistoryStore(session)

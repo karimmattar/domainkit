@@ -89,7 +89,8 @@ jobs:
       - run: >-
           poetry run pytest -n auto --junitxml=junit.xml
           domainkit_tests/test_api.py domainkit_tests/test_ci.py
-          domainkit_tests/test_docs.py domainkit_tests/test_recipes.py
+          domainkit_tests/test_docs.py domainkit_tests/test_fintech_docs.py
+          domainkit_tests/test_recipes.py
           domainkit_tests/test_sec13c_1_upgrade_guide_skips_removals.py
           domainkit_tests/test_sec14b_5_erase_leaves_documented_code.py
           domainkit_tests/test_walkthroughs.py
@@ -491,6 +492,7 @@ jobs:
       - run: |
           python -m zipfile -l dist/*.whl | grep -q "management/templates/domain"
           python -m zipfile -l dist/*.whl | grep -q "management/templates/project/dot-env-tpl"
+          python -m zipfile -l dist/*.whl | grep -q "management/templates/profiles/fintech/dot-github/workflows/ci.yml-tpl"
           python -m zipfile -l dist/*.whl | grep -q "contrib/auth/common-passwords.txt.gz"
       - run: |
           python -m venv /tmp/clean
@@ -1049,7 +1051,8 @@ jobs:
             mutants: >-
               domainkit.contrib.auth.devices.*
               domainkit.contrib.auth.events.* domainkit.contrib.auth.onetime.*
-              domainkit.contrib.auth.personal_tokens.*
+              domainkit.contrib.auth.personal_tokens.* domainkit.contrib.auth.sca.*
+              domainkit.contrib.auth.stepup.*
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*
               domainkit.contrib.auth.totp.* domainkit.contrib.auth.uow.*
           - name: auth-3
@@ -1144,6 +1147,9 @@ jobs:
           - name: domain
             mutants: >-
               domainkit.resources.* domainkit.ddd.* domainkit.testing.* domainkit.i18n.*
+          - name: keys
+            mutants: >-
+              domainkit.keys.* domainkit.db.encrypted.* domainkit.contrib.keys.*
           - name: contrib-1
             mutants: >-
               domainkit.contrib.audit.recorder.* domainkit.contrib.idempotency.apps.*
@@ -1167,6 +1173,12 @@ jobs:
           - name: accounting
             mutants: >-
               domainkit.contrib.accounting.*
+          - name: approvals
+            mutants: >-
+              domainkit.contrib.approvals.*
+          - name: limits
+            mutants: >-
+              domainkit.contrib.limits.*
           - name: core
             mutants: >-
               domainkit.x* domainkit.architecture.* domainkit.clock.*

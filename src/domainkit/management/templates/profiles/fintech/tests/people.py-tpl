@@ -1,0 +1,98 @@
+"""People who move money and approve it, each with an authenticator app."""
+
+import base64
+import hashlib
+import hmac
+import struct
+from typing import Any
+
+from domainkit.contrib.auth.testing import create_user
+from domainkit.testing import FrozenClock, TestClient
+
+URL = "/api/v1/payments"
+PASSWORD = "correct-horse-battery-42"
+"""PCI DSS's rules: 12 characters at least, letters and digits."""
+CARD = "4111 1111 1111 1111"
+MAKER = ("payments.add_card", "payments.add_transfer", "payments.view_transfer")
+APPROVER = ("payments.approve_transfer", "approvals.view_approvalrequest")
+
+
+def usd(amount: str) -> dict[str, str]:
+    """``amount`` US dollars, as JSON."""
+    return {"amount": amount, "currency": "USD"}
+
+
+def totp(secret: bytes, at: float) -> str:
+    """The authenticator's code at ``at`` (RFC 6238: SHA-1, 6 digits, 30 s)."""
+    digest = hmac.new(secret, struct.pack(">Q", int(at // 30)), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+    return f"{value % 1_000_000:06d}"
+
+
+class Person:
+    """A user granted ``permissions``, logged in, with a second factor."""
+
+    def __init__(
+        self, client: TestClient, clock: FrozenClock, *permissions: str
+    ) -> None:
+        """Store the user and turn their authenticator app on."""
+        self.user = client.run(create_user, *permissions, password=PASSWORD)
+        self.api = client.authenticated_as(self.user)
+        self.clock = clock
+        started = self.api.post("/auth/mfa/totp", json={"password": PASSWORD})
+        assert started.status_code == 200, started.json()
+        encoded: str = started.json()["secret"]
+        self.secret = base64.b32decode(encoded + "=" * (-len(encoded) % 8))
+        confirmed = self.api.post("/auth/mfa/totp/confirm", json={"code": self.code()})
+        assert confirmed.status_code == 200, confirmed.json()
+
+    @property
+    def id(self) -> str:
+        """The user's id, as the audit trail and the limits name them."""
+        return str(self.user.id)
+
+    def code(self) -> str:
+        """A code of the authenticator app, a step after the last one used."""
+        self.clock.tick(30)
+        return totp(self.secret, self.clock.tick(0).timestamp())
+
+    def step_up(self) -> None:
+        """Authenticate again, with a code."""
+        stepped = self.api.post("/auth/step-up", json={"code": self.code()})
+        assert stepped.status_code == 200, stepped.json()
+
+    def register_card(self, number: str = CARD) -> str:
+        """Step up, register a card, and return its id."""
+        self.step_up()
+        registered = self.api.post(f"{URL}/cards", json={"number": number})
+        assert registered.status_code == 201, registered.json()
+        card_id: str = registered.json()["id"]
+        return card_id
+
+    def authorize(self, card_id: str, amount: dict[str, str]) -> str:
+        """Confirm a transfer of ``amount`` to the card with a code."""
+        body = {"card_id": card_id, "amount": amount}
+        asked = self.api.post(f"{URL}/transfers/authorize", json=body)
+        assert asked.status_code == 200, asked.json()
+        challenge = asked.json()["challenge"]
+        confirmed = self.api.post(
+            f"/auth/sca/{challenge}/confirm", json={"code": self.code()}
+        )
+        assert confirmed.status_code == 200, confirmed.json()
+        authorization: str = confirmed.json()["authorization"]
+        return authorization
+
+    def transfer(
+        self,
+        card_id: str,
+        amount: dict[str, str],
+        authorization: str,
+        key: str | None = "transfer-1",
+    ) -> Any:
+        """Post the transfer with ``authorization`` and an ``Idempotency-Key``."""
+        headers = {"X-Authorization": authorization}
+        if key is not None:
+            headers["Idempotency-Key"] = key
+        body = {"card_id": card_id, "amount": amount}
+        return self.api.post(f"{URL}/transfers", json=body, headers=headers)

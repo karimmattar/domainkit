@@ -132,6 +132,26 @@ def test_every_route_needs_a_rule(client: TestClient) -> None:
     ] == []
 
 
+def test_an_account_kept_for_someone_names_its_holder(
+    client: TestClient, clerk: Headers
+) -> None:
+    """``holder`` is answered as it was given."""
+    opened = client.post(
+        f"{API}/accounts",
+        json={
+            "code": "2000",
+            "name": "Wallet",
+            "type": "liability",
+            "currency": "USD",
+            "holder": "customer-7",
+        },
+        headers=clerk,
+    )
+
+    assert opened.status_code == 201, opened.json()
+    assert (opened.json()["holder"], opened.json()["closed_at"]) == ("customer-7", None)
+
+
 def test_entries_are_posted_once_and_move_balances(
     client: TestClient, clerk: Headers
 ) -> None:
@@ -428,6 +448,8 @@ def test_entries_are_reversed_and_periods_and_accounts_closed(
     assert (reversal.json()["reverses"], reversal.json()["reference"]) == (entry, entry)
     assert closed_account.json()["status"] == "closed"
     assert closed.json()["status"] == "closed"
+    assert closed_account.json()["closed_at"] is not None
+    assert closed.json()["closed_at"] is not None
     assert (refused.status_code, refused.json()["code"]) == (422, "period_closed")
 
 

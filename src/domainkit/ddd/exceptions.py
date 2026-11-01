@@ -39,7 +39,16 @@ class Conflict(DomainError):
 
 
 class ConcurrentUpdate(Conflict):
-    """Someone else changed the aggregate first; reload it and try again."""
+    """Someone else changed the aggregate first; reload it and try again.
+
+    ``model`` names the aggregate's class (``module.QualName``), where the
+    unit of work could tell it; it is for logs, never for the answer.
+    """
+
+    def __init__(self, message: str, *, model: str | None = None) -> None:
+        """Store the message, and the model that lost the race if known."""
+        super().__init__(message)
+        self.model = model
 
 
 class DuplicateValue(Conflict):

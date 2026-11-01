@@ -27,6 +27,7 @@ from domainkit.conf.global_settings import (
     StorageConfig,
 )
 from domainkit.contrib.accounting import AccountingSettings
+from domainkit.contrib.approvals import ApprovalsSettings
 from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.auth.settings import (
     AuthSettings,
@@ -37,10 +38,18 @@ from domainkit.contrib.auth.settings import (
     PasswordValidatorConfig,
     PreviousJWTKey,
     PrincipalCacheSettings,
+    ScaSettings,
+    StepUpSettings,
 )
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.flags.settings import FlagsSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
+from domainkit.contrib.keys.settings import (
+    AwsKmsSettings,
+    KeysSettings,
+    VaultSettings,
+)
+from domainkit.contrib.limits import LimitsSettings
 from domainkit.contrib.mail.settings import MailSettings, SmtpSettings
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.notifications.settings import NotificationsSettings
@@ -98,11 +107,18 @@ def documented(pages: str) -> set[str]:
         (FlagsSettings, "contrib/flags.md"),
         (WebhookSettings, "contrib/webhooks.md"),
         (AccountingSettings, "contrib/accounting.md"),
+        (KeysSettings, "contrib/keys.md"),
+        (AwsKmsSettings, "contrib/keys.md"),
+        (VaultSettings, "contrib/keys.md"),
+        (ApprovalsSettings, "contrib/approvals.md"),
+        (LimitsSettings, "contrib/limits.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (PreviousJWTKey, "auth.md"),
         (CookieSettings, "auth.md"),
         (MfaSettings, "auth.md"),
+        (StepUpSettings, "auth.md"),
+        (ScaSettings, "auth.md"),
         (ClientCertSettings, "auth.md"),
         (PrincipalCacheSettings, "auth.md"),
         (MailSettings, "mail.md"),
@@ -408,13 +424,20 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
     (WebhookSettings, "contrib/webhooks.md", "WEBHOOKS"),
     (AccountingSettings, "contrib/accounting.md", "ACCOUNTING"),
+    (ApprovalsSettings, "contrib/approvals.md", "APPROVALS"),
+    (LimitsSettings, "contrib/limits.md", "LIMITS"),
     (AuditSettings, "contrib/audit.md", "AUDIT"),
     (IdempotencySettings, "contrib/idempotency.md", "IDEMPOTENCY"),
     (EvidenceSettings, "contrib/evidence.md", "EVIDENCE"),
     (FlagsSettings, "contrib/flags.md", "FLAGS"),
+    (KeysSettings, "contrib/keys.md", "KEYS"),
+    (AwsKmsSettings, "contrib/keys.md", 'KEYS["AWS_KMS"]'),
+    (VaultSettings, "contrib/keys.md", 'KEYS["VAULT"]'),
     (AuthSettings, "auth.md", "AUTH"),
     (CookieSettings, "auth.md", 'AUTH["COOKIE"]'),
     (MfaSettings, "auth.md", 'AUTH["MFA"]'),
+    (StepUpSettings, "auth.md", 'AUTH["STEP_UP"]'),
+    (ScaSettings, "auth.md", 'AUTH["SCA"]'),
     (ClientCertSettings, "auth.md", 'AUTH["CLIENT_CERT"]'),
     (PrincipalCacheSettings, "auth.md", 'AUTH["PRINCIPAL_CACHE"]'),
     (JWTSettings, "auth.md", 'AUTH["JWT"]'),
@@ -434,10 +457,12 @@ PROSE_DEFAULTS = {
     "CacheConfig": {"KEY_PREFIX", "TLS_CA"},
     "BrokerConfig": {"URL", "PREFIX", "TLS_CA"},
     "AuthSettings": {"USER_TABLE", "PASSWORD_HASHERS", "PASSWORD_VALIDATORS"}
-    | {"JWT", "COOKIE", "MFA", "CLIENT_CERT", "PRINCIPAL_CACHE"},
+    | {"JWT", "COOKIE", "MFA", "STEP_UP", "SCA", "CLIENT_CERT", "PRINCIPAL_CACHE"},
     "CookieSettings": {"NAME", "CSRF_NAME"},
     "JWTSettings": {"SIGNING_KEY"},
     "PreviousJWTKey": {"KEY", "RETIRED_AT"},
+    "AwsKmsSettings": {"KEY_ID", "REGION"},
+    "VaultSettings": {"URL", "KEY", "TOKEN"},
     "MailSettings": {"SMTP"},
 }
 """Defaults the tables state in words (computed, required, or "see below")."""
@@ -588,7 +613,7 @@ def test_every_setting_row_states_its_default_and_bounds(
 
 AUDIT_PAGE = DOCS / "audit" / "0.9.0.md"
 _AUDIT_ID = re.compile(
-    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|1[0-4][abc]|121)-\d+|"
+    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|1[0-5][abc]|121)-\d+|"
     r"(?:PERF|FIN|AUTH|CONC|WEB|DATA|TEST|INFRA|DOCS|DSGN)-\d+)\b"
 )
 

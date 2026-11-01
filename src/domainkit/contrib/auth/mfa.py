@@ -51,6 +51,7 @@ from .api import (
     PASSWORD_MAX_LENGTH,
     MfaChallengeOut,
     TokenOut,
+    _changed_on_first_use,
     _errors,
     _no_store,
     _throttle,
@@ -117,6 +118,11 @@ class MfaLoginIn(BaseModel):
 
     mfa_token: str = Field(min_length=1, max_length=TOKEN_MAX_LENGTH, repr=False)
     code: str = Field(min_length=1, max_length=64, repr=False)
+    new_password: str | None = Field(
+        default=None, min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False
+    )
+    """The password to change to, where staff set the current one
+    (``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``): changed once the code holds."""
 
 
 class PasswordIn(BaseModel):
@@ -248,12 +254,28 @@ async def verify_challenge(request: Request, token: str, code: str) -> AbstractB
     return user
 
 
+async def first_use_after_code(
+    user: AbstractBaseUser, new_password: str | None
+) -> AbstractBaseUser:
+    """``user``, a password staff set changed now that the second factor held.
+
+    Raises:
+        APIError: 403 ``password_change_required`` without ``new_password``.
+        InvalidPassword: The new password breaks a rule.
+    """
+    if not auth_settings().PASSWORD_CHANGE_ON_FIRST_USE:
+        return user
+    return await _changed_on_first_use(user, new_password, factor_proven=True)
+
+
 async def spend_code(
-    uow: AuthUnitOfWork, user: AbstractBaseUser, code: str
+    uow: AuthUnitOfWork, user: AbstractBaseUser, code: str, *, recovery: bool = True
 ) -> Method | None:
     """Spend ``code`` of ``user``: a TOTP code, or a recovery code; None if wrong.
 
-    The caller commits. A recovery code records ``RecoveryCodeUsed``.
+    The caller commits. A recovery code records ``RecoveryCodeUsed``;
+    without ``recovery`` it is not taken (nor spent): a step-up and a
+    transaction's authorization take the authenticator's codes alone.
     """
     device = await uow.mfa.device(user.id)
     if device is None or not device.confirmed:
@@ -261,7 +283,11 @@ async def spend_code(
     entered = _normalize(code)
     if entered.isdigit():
         return "totp" if await _spend_totp(uow, user, device, entered) else None
-    if len(entered) != RECOVERY_LENGTH or not set(entered) <= set(RECOVERY_ALPHABET):
+    if (
+        not recovery
+        or len(entered) != RECOVERY_LENGTH
+        or not set(entered) <= set(RECOVERY_ALPHABET)
+    ):
         return None
     if not await uow.mfa.use_code(user.id, recovery_digest(user.id, entered)):
         return None
@@ -446,7 +472,9 @@ async def regenerate_recovery_codes(
 async def mfa_login(body: MfaLoginIn, request: Request, response: Response) -> TokenOut:
     """Finish a login with the challenge and a code; return tokens."""
     _no_store(response)
-    user = await verify_challenge(request, body.mfa_token, body.code)
+    user = await first_use_after_code(
+        await verify_challenge(request, body.mfa_token, body.code), body.new_password
+    )
     issued = await issue_login(user)
     await hand_out(request, response, user)
     return _token_out(issued)
@@ -463,7 +491,7 @@ async def _reauthenticate(
         APIError: 400 ``wrong_password``; 429 past ``AUTH.LOGIN_RATE``.
         InvalidCode: The code is wrong, or was used.
     """
-    password_counted = await _throttle(request, f"password:user:{user.id}")
+    password_counted = await _throttle(request, user)
     if not await password_holds(user, password):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,

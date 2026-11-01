@@ -41,7 +41,8 @@ shows its size.
 
 An open WebSocket or event stream has its credentials checked again while
 it lasts (``reauthenticate``, called by ``domainkit.http.live``), so a
-revoked or expired token, or a deactivated user, does not keep it open.
+revoked or expired token, or a deactivated user, does not keep it open;
+nor does a login that idled out, as the check writes no last use.
 The check reads through the principal cache, as requests do: it sees a
 change as soon as requests of this process do (``principals``).
 """
@@ -69,7 +70,9 @@ from domainkit.log import SECURITY_LOGGER, ThrottledLog
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
+from .access import PROOF
 from .authentication import (
+    RECHECK,
     AuthenticationFailed,
     BaseAuthentication,
     Credentials,
@@ -159,9 +162,13 @@ class AuthenticationMiddleware:
         afresh into the scope, for the access rules checked next, from the
         principal cache as for a request: a change that dropped the
         principal is seen at once. Why credentials failed is logged, never
-        told to the client.
+        told to the client. The check is no use of the login: it writes no
+        last use (``authentication.rechecking``), so a connection nobody
+        uses closes once its login idles out (``AUTH.IDLE_TIMEOUT``). The
+        step-up the rules read is read afresh too.
         """
         before: Credentials | None = scope.get("auth")
+        scope[RECHECK] = True
         try:
             credentials = await self._authenticate(HTTPConnection(scope))
         except _Refused as refused:
@@ -170,6 +177,8 @@ class AuthenticationMiddleware:
                 refused.error.detail,
             )
             return False
+        finally:
+            del scope[RECHECK]
         if before is None and credentials is None:
             return True
         if (
@@ -183,6 +192,7 @@ class AuthenticationMiddleware:
             return False
         scope["user"] = credentials.user
         scope["auth"] = credentials
+        scope.pop(PROOF, None)
         return True
 
     async def _authenticate(self, connection: HTTPConnection) -> Credentials | None:

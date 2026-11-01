@@ -24,7 +24,7 @@ import hmac
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import cache
 from typing import Any, ClassVar, Final, cast
 from uuid import UUID, uuid4
@@ -77,11 +77,21 @@ __all__ = [
     "BaseAuthentication",
     "Credentials",
     "JWTAuthentication",
+    "Proof",
     "TokenAuthentication",
     "active_user",
 ]
 
 security_logger = logging.getLogger(SECURITY_LOGGER)
+
+
+@dataclass(frozen=True, slots=True)
+class Proof:
+    """A step-up: when the user authenticated again, and with what."""
+
+    auth_time: datetime
+    methods: frozenset[str]
+    """RFC 8176's names: ``otp`` for an authenticator's code, ``pwd``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,10 +107,30 @@ class Credentials:
     """The login a JWT descends from, whose refresh tokens logging out revokes."""
     scopes: frozenset[str] | None = None
     """The permission keys the credentials are limited to; None: no limit."""
+    auth_time: datetime | None = None
+    """When a JSON Web Token's user last authenticated again (its
+    ``auth_time`` claim): a step-up. Opaque tokens and sessions keep theirs
+    in the table of step-ups (``proof``)."""
+    amr: frozenset[str] = frozenset()
+    """What that step-up proved (its ``amr`` claim): ``otp``, ``pwd``."""
 
     def allows(self, *perms: str) -> bool:
         """Whether the credentials' scopes cover every one of ``perms``."""
         return self.scopes is None or self.scopes.issuperset(perms)
+
+    async def proof(self) -> Proof | None:
+        """When these credentials last stepped up, and with what; None: never.
+
+        A JSON Web Token carries it (``auth_time``, ``amr``); a login token
+        or browser session is looked up, in a query of its own, each time.
+        """
+        if self.auth_time is not None:
+            return Proof(self.auth_time, self.amr)
+        if self.scheme not in STEPPING_SCHEMES or self.token_id is None:
+            return None
+        async with AuthUnitOfWork() as uow:
+            found = await uow.step_ups.last(self.token_id, self.user.id)
+        return None if found is None else Proof(*found)
 
     def __repr__(self) -> str:
         """The user's id, the scheme, and the scopes: no personal data, no digest."""
@@ -124,6 +154,11 @@ class IssuedTokens:
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+RECHECK: Final = "domainkit.auth.recheck"
+"""Set in an open connection's scope while its credentials are checked again
+(``AuthenticationMiddleware.reauthenticate``): the check writes no last use."""
+STEPPING_SCHEMES: Final = frozenset({"token", "cookie"})
+"""Schemes whose credentials keep their step-ups in the table, by digest."""
 IDLE: Final = "Session ended after inactivity; log in again."
 """Why a login unused for ``AUTH.IDLE_TIMEOUT`` is refused."""
 """``request.auth.scheme`` of requests an opaque token authenticates."""
@@ -253,7 +288,9 @@ class TokenAuthentication(BaseAuthentication):
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
-        await accept(entry, config.PRINCIPAL_CACHE, every=every)
+        await accept(
+            entry, config.PRINCIPAL_CACHE, touch=not rechecking(connection), every=every
+        )
         return Credentials(
             user, scheme=TOKEN_SCHEME, token_id=token.id, scopes=token.scopes
         )
@@ -308,12 +345,18 @@ class JWTAuthentication(BaseAuthentication):
         """The user of a valid access token whose login has not ended.
 
         The login and the user are kept as opaque tokens' are, by login
-        and user; the signature and the times are checked every time.
+        and user; the signature and the times are checked every time. With
+        ``AUTH.IDLE_TIMEOUT``, a token issued longer ago than it is refused:
+        its login was not refreshed for that long, whatever its lifetime.
         """
         raw = bearer_token(connection)
         if raw is None or raw.count(".") != 2:  # Not a JWT: header.payload.signature.
             return None
         claims = self.decode(raw)
+        if auth_settings().IDLE_TIMEOUT is not None and idle_since(
+            _issued(claims), utc_now()
+        ):
+            raise AuthenticationFailed(IDLE)
         session = _uuid(claims["sid"])
         config = auth_settings().PRINCIPAL_CACHE
         entry = await login_principal(session, _uuid(claims["sub"]), config)
@@ -323,7 +366,10 @@ class JWTAuthentication(BaseAuthentication):
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
         remember(entry, config)
-        return Credentials(user, scheme=JWT_SCHEME, session=session)
+        auth_time, amr = _proof_claims(claims)
+        return Credentials(
+            user, scheme=JWT_SCHEME, session=session, auth_time=auth_time, amr=amr
+        )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
         """An access token and a refresh token that starts a new family."""
@@ -377,8 +423,14 @@ class JWTAuthentication(BaseAuthentication):
         )
         return self._pair(user, token.family, refresh)
 
-    def encode(self, user: AbstractBaseUser, session: UUID) -> str:
-        """A signed access token for ``user`` in the login ``session``."""
+    def encode(
+        self, user: AbstractBaseUser, session: UUID, proof: Proof | None = None
+    ) -> str:
+        """A signed access token for ``user`` in the login ``session``.
+
+        With ``proof``, a step-up, it says so in ``auth_time`` and ``amr``
+        (OpenID Connect's claims). A refresh issues tokens without them.
+        """
         now = utc_now()
         claims: dict[str, Any] = {
             "sub": str(user.id),
@@ -387,6 +439,9 @@ class JWTAuthentication(BaseAuthentication):
             "jti": uuid4().hex,
             "sid": str(session),
         }
+        if proof is not None:
+            claims["auth_time"] = int(proof.auth_time.timestamp())
+            claims["amr"] = sorted(proof.methods)
         if self.config.ISSUER is not None:
             claims["iss"] = self.config.ISSUER
         if self.config.AUDIENCE is not None:
@@ -500,6 +555,16 @@ def load_authenticators(config: AuthSettings) -> tuple[BaseAuthentication, ...]:
 def get_authenticators() -> tuple[BaseAuthentication, ...]:
     """The configured authentication classes, in order."""
     return load_authenticators(auth_settings())
+
+
+def rechecking(connection: HTTPConnection) -> bool:
+    """Whether ``connection`` is an open one whose credentials are checked again.
+
+    Such a check is no use of the login: it writes no last use, so an open
+    WebSocket or event stream nobody uses lets its login idle out
+    (``AUTH.IDLE_TIMEOUT``), and then closes.
+    """
+    return connection.scope.get(RECHECK) is True
 
 
 def bearer_token(connection: HTTPConnection) -> str | None:
@@ -816,6 +881,40 @@ def _check_times(claims: dict[str, Any], leeway: timedelta) -> None:
         raise AuthenticationFailed("Invalid token.")
     if expires <= now - slack:
         raise AuthenticationFailed("Token expired.")
+
+
+def _proof_claims(claims: dict[str, Any]) -> tuple[datetime | None, frozenset[str]]:
+    """A token's ``auth_time`` and ``amr``, if it has both, well formed.
+
+    Our own key signed them; anything else reads as no step-up.
+    """
+    when, methods = claims.get("auth_time"), claims.get("amr")
+    if (
+        type(when) is not int
+        or not isinstance(methods, list)
+        or not all(isinstance(each, str) for each in methods)
+    ):
+        return None, frozenset()
+    try:
+        moment = datetime.fromtimestamp(when, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None, frozenset()
+    return moment, frozenset(methods)
+
+
+def _issued(claims: dict[str, Any]) -> datetime:
+    """When a token was issued (``iat``, which ``_check_times`` read already).
+
+    A JSON Web Token login's use is its refreshes: an access token issued
+    longer ago than ``AUTH.IDLE_TIMEOUT`` is one of a login idle that long.
+
+    Raises:
+        AuthenticationFailed: No date holds it.
+    """
+    try:
+        return datetime.fromtimestamp(int(claims["iat"]), UTC)
+    except (OverflowError, OSError, ValueError):
+        raise AuthenticationFailed("Invalid token.") from None
 
 
 def _uuid(value: object) -> UUID:

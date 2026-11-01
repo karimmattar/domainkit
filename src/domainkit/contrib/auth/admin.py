@@ -14,8 +14,11 @@ Staff hand out only what they have. Only superusers make, unmake, or
 change superusers. Other staff cannot grant permissions, or groups with
 permissions, they lack themselves, and cannot change a user or group that
 holds such a permission: setting a password is as good as becoming the
-user. Changes are recorded as events, so the audit trail shows who changed
-what.
+user. Where ``domainkit.contrib.approvals`` guards making superusers
+(``APPROVALS.SUPERUSER_APPROVALS``), no one makes one here
+(``approval_required``): an approved ``auth.grant_superuser`` request
+does. Changes are recorded as events, so the audit trail shows who
+changed what.
 """
 
 import dataclasses
@@ -35,6 +38,7 @@ from pydantic import (
     ValidationError,
 )
 
+from domainkit.apps import registry
 from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import F
 from domainkit.ddd.query import Selection as Listing
@@ -66,6 +70,7 @@ __all__ = [
 ]
 
 PAGE_SIZE: Final = 50
+APPROVALS: Final = "domainkit.contrib.approvals"
 MAX_PAGE_SIZE: Final = 200
 HIDDEN_FIELDS: Final = frozenset(
     {"id", "version", "password", "groups", "user_permissions", "last_login"}
@@ -302,10 +307,14 @@ async def create_user(
 ) -> AdminUserOut:
     """Create a user; a password is checked by ``AUTH.PASSWORD_VALIDATORS``.
 
+    With ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``, the user changes it at the
+    first login.
+
     ``fields`` are tidied by the model's ``clean_field``, as on a change.
     """
     if body.is_superuser:
         _superusers_only(actor, "Only superusers may make superusers.")
+        _approval_needed()
     model = get_user_model()
     fields = _checked(model, body.fields)
     flags: dict[str, bool] = {
@@ -325,6 +334,8 @@ async def create_user(
         )
         for name, value in fields.items():
             setattr(user, name, user.clean_field(name, value))
+        if body.password is not None:  # The user changes it at the first login.
+            await uow.passwords.require_change(user.id)
         await uow.commit()
     return AdminUserOut.of(user)
 
@@ -340,6 +351,8 @@ async def update_user(
         was_active = user.is_active
         if body.is_superuser is not None and body.is_superuser != user.is_superuser:
             _superusers_only(actor, "Only superusers may make or unmake superusers.")
+            if body.is_superuser:
+                _approval_needed()
         if (
             user.is_superuser
             and user.is_active
@@ -388,13 +401,19 @@ async def delete_user(
 async def set_password(
     user_id: UUID, body: AdminPasswordIn, actor: Annotated[AnyUser, _users("change")]
 ) -> None:
-    """Set a user's password (null: unusable); the user's sessions end."""
+    """Set a user's password (null: unusable); the user's sessions end.
+
+    With ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``, another user's password set
+    here logs in only to be changed (PCI DSS v4.0 8.3.5).
+    """
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await _may_change(actor, user)
         if body.password is not None:
             validate_password(body.password, user)
-        await uow.users.set_password(user, body.password, priority=True)
+        await uow.users.set_password(
+            user, body.password, priority=True, temporary=user.id != actor.id
+        )
         await uow.tokens.revoke_user(user.id)
         await uow.commit()
 
@@ -558,6 +577,17 @@ async def _group(uow: AuthUnitOfWork, group_id: UUID) -> Group:
     if group is None:
         raise GroupNotFound("No such group.")
     return group
+
+
+def _approval_needed() -> None:
+    """Refuse making a superuser here where ``contrib.approvals`` guards it.
+
+    With ``APPROVALS.SUPERUSER_APPROVALS``, an approved request makes them.
+    """
+    if registry.is_installed(APPROVALS):
+        from domainkit.contrib.approvals import SUPERUSERS, refuse_if_guarded
+
+        refuse_if_guarded(SUPERUSERS)
 
 
 def _superusers_only(actor: AnyUser, message: str) -> None:

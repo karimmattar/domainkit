@@ -1,0 +1,50 @@
+"""Use cases: open a unit of work, change one aggregate, commit."""
+
+from typing import Final
+
+from domainkit.contrib.approvals import requires_approval
+
+from domains.payments.application.commands import MakeTransfer, RegisterCard
+from domains.payments.application.unit_of_work import PaymentsUnitOfWork
+from domains.payments.domain.model import (
+    Card,
+    CardId,
+    CardNotFound,
+    Transfer,
+    TransferId,
+)
+
+MAKE_TRANSFER: Final = "payments.make_transfer"
+"""The guarded action: a transfer over the threshold runs once approved."""
+
+
+async def register_card(command: RegisterCard, uow: PaymentsUnitOfWork) -> Card:
+    """Register and store a card."""
+    card = Card.register(command.owner_id, command.number)
+    async with uow:
+        await uow.cards.add(card)
+        await uow.commit()
+    return card
+
+
+@requires_approval(MAKE_TRANSFER)
+async def make_transfer(command: MakeTransfer, uow: PaymentsUnitOfWork) -> Transfer:
+    """Send the amount to the maker's card, within the maker's limits.
+
+    Over the approval threshold it runs only once approved (the guard in
+    ``apps.py``); the limits count it in the same transaction, so a refused
+    one moved nothing.
+    """
+    async with uow:
+        card = await uow.cards.get(CardId(command.card_id))
+        if card.owner_id != command.maker_id:
+            raise CardNotFound(f"Card {command.card_id} does not exist.")
+        transfer = Transfer.make(TransferId(command.transfer_id), card, command.amount)
+        await uow.count_movement(
+            transfer.amount,
+            holder=str(transfer.maker_id),
+            key=f"payments.transfer:{transfer.id}",
+        )
+        await uow.transfers.add(transfer)
+        await uow.commit()
+    return transfer

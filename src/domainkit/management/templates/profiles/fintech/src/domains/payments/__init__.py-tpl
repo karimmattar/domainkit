@@ -1,0 +1,9 @@
+"""Payments: cards that receive transfers, and transfers guarded end to end.
+
+A transfer moves ``Money`` to a card its maker registered (the number is
+sealed under the maker's own key, with a blind index). The maker confirms
+it for its amount and card with a second factor (SCA); it counts against
+the maker's limits in its own transaction; and one over the approval
+threshold waits for another person, who steps up, to approve it. Requests
+that move money carry an ``Idempotency-Key``.
+"""

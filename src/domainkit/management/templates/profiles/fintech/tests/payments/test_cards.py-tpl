@@ -1,0 +1,77 @@
+"""A card number is sealed: the database, a dump, and an erasure show none."""
+
+import io
+import json
+from uuid import UUID
+
+from domainkit.db import connections
+from domainkit.management import call_command
+from domainkit.testing import TestClient
+from sqlalchemy import text
+
+from domains.payments.domain.model import CardId
+from domains.payments.infrastructure.unit_of_work import SqlAlchemyPaymentsUnitOfWork
+from tests.people import CARD, URL, Person
+
+NUMBER = CARD.replace(" ", "")
+
+
+async def stored_cards() -> list[dict[str, object]]:
+    """The rows of ``payments_cards``, as the database holds them."""
+    async with connections.engine().connect() as connection:
+        rows = await connection.execute(text("SELECT * FROM payments_cards"))
+        return [dict(row._mapping) for row in rows]
+
+
+async def number_of(card_id: str) -> str | None:
+    """The card's number, as the application reads it."""
+    async with SqlAlchemyPaymentsUnitOfWork() as uow:
+        card = await uow.cards.get(CardId(UUID(card_id)))
+    return card.number
+
+
+def test_registering_a_card_asks_for_a_step_up(maker: Person) -> None:
+    """A new payee needs a code of the authenticator app, however logged in."""
+    refused = maker.api.post(f"{URL}/cards", json={"number": CARD})
+    maker.step_up()
+    registered = maker.api.post(f"{URL}/cards", json={"number": CARD})
+    wrong = maker.api.post(f"{URL}/cards", json={"number": "4111 1111 1111 1112"})
+
+    assert (refused.status_code, refused.json()["code"]) == (401, "step_up_required")
+    assert registered.status_code == 201, registered.json()
+    assert registered.json()["last_four"] == "1111"
+    assert NUMBER not in registered.text
+    assert (wrong.status_code, wrong.json()["code"]) == (422, "invalid_card_number")
+
+
+def test_the_card_number_is_unreadable_in_the_database_and_a_dump(
+    client: TestClient, maker: Person
+) -> None:
+    """Sealed text and a blind index are stored; the dump holds them as stored."""
+    maker.register_card()
+    output = io.StringIO()
+
+    [row] = client.run(stored_cards)
+    call_command("dumpdata", "payments", stdout=output)
+
+    assert NUMBER not in json.dumps(row, default=str)
+    assert str(row["number"]).startswith("dk1:")
+    assert NUMBER not in output.getvalue()
+    assert str(row["number"]) in output.getvalue()
+
+
+def test_erasing_the_owner_shreds_their_card_number(
+    client: TestClient, maker: Person
+) -> None:
+    """Their key is destroyed: the number reads as nothing, in every copy."""
+    card = maker.register_card()
+    before = client.run(number_of, card)
+
+    call_command(
+        "privacy", "--operator", "dpo", "erase", "--subject", maker.id, "--noinput"
+    )
+
+    [row] = client.run(stored_cards)
+    assert before == NUMBER
+    assert str(row["number"]).startswith("dk1:")  # The ciphertext stays,
+    assert client.run(number_of, card) is None  # and nothing opens it.

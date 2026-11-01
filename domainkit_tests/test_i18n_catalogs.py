@@ -28,7 +28,13 @@ from domainkit.i18n.catalogs import (
 from domainkit.i18n.translation import LOCALE_DIR
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
-from domainkit.money import CurrencyMismatch, InexactAmount, MoneyError, UnknownCurrency
+from domainkit.money import (
+    AmountOutOfRange,
+    CurrencyMismatch,
+    InexactAmount,
+    MoneyError,
+    UnknownCurrency,
+)
 from domainkit_tests.conftest import ALPHA, MakePackage
 
 SRC: Final = Path(__file__).parents[1] / "src" / "domainkit"
@@ -336,12 +342,15 @@ EXTRA_MESSAGES: Final = {
     "Too many open connections; try again later.",  # http.live.TOO_MANY_CONNECTIONS
     "Another item of the batch failed, so nothing was applied.",  # resources.batches
     "Credentials limited to scopes cannot do this.",  # auth.access.IsUnscoped
+    "You are not one of the approvers of this request.",  # approvals.rules
+    "You cannot approve this request now.",  # approvals.rules
     "Too many attempts; try again later.",  # auth.mfa and auth.recovery, by keyword
     "Too many requests for mail; try again later.",  # auth.recovery and auth.signup
     MoneyError.summary,
     UnknownCurrency.summary,
     InexactAmount.summary,
     CurrencyMismatch.summary,
+    AmountOutOfRange.summary,
     "Give money as an object of an amount and a currency, and nothing else.",
     "Give the amount as text, such as 10.50, with at most 38 digits before the point.",
     "The amount has more digits than this field holds.",  # resources.schemas
@@ -352,6 +361,7 @@ SCANNED: Final = (
     "db",
     "ddd",
     "storage",
+    "contrib/approvals",
     "contrib/auth",
     "contrib/idempotency",
     "contrib/objectpermissions",

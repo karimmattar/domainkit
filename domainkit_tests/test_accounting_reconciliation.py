@@ -68,6 +68,7 @@ def test_a_csv_statement_reads_exact_amounts() -> None:
     )
     assert second.amount == Money.of("-0.0001", "CLF")
     assert (second.reference, second.description) == ("", "")
+    assert CsvStatement(HEADER).name == "statement.csv"
 
 
 def test_a_statement_maps_a_banks_own_columns() -> None:
@@ -444,6 +445,9 @@ async def test_rules_see_the_accounts_open_lines_and_postings_near_its_statement
             "m,2026-10-15,1,USD,,between\n"
         ),
     )
+    await import_statement(  # Another account's line is not offered.
+        other.id, CsvStatement(HEADER + "n,2026-10-14,1,USD,,elsewhere\n")
+    )
     Recording.seen.clear()
 
     with override_settings(ACCOUNTING={"MATCHING_RULES": [f"{RULES}.Recording"]}):
@@ -532,6 +536,53 @@ async def test_each_rule_takes_its_turn_and_breaks_name_their_rows() -> None:
     assert sorted(found, key=lambda b: str(b)) == sorted(
         done.breaks, key=lambda b: str(b)
     )
+
+
+@pytest.mark.usefixtures("books")
+async def test_breaks_are_listed_by_date_kind_reference_and_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines before postings on a day, then by reference, then by id."""
+    from domainkit.contrib.accounting import reconciliation
+
+    await period()
+    bank, other = await account("1000"), await account("4000")
+    usd7 = usd("7")
+    await book("p", 15, Line.debit(bank.id, usd7), Line.credit(other.id, usd7))
+    await import_statement(
+        bank.id,
+        CsvStatement(
+            HEADER
+            + "a,2026-10-15,-1,USD,y,\n"
+            + "b,2026-10-15,-2,USD,z,\n"
+            + "c,2026-10-15,-3,USD,z,\n"
+        ),
+    )
+    ids = iter(range(1000, 0, -1))  # Each break's id below the one before.
+    monkeypatch.setattr(reconciliation, "uuid4", lambda: uuid.UUID(int=next(ids)))
+    await reconcile(bank.id)
+    monkeypatch.undo()
+
+    found = await breaks_of(bank.id)
+
+    assert [(b.kind, b.reference, b.amount) for b in found] == [
+        ("unmatched_line", "y", Decimal("-1.0000")),
+        ("unmatched_line", "z", Decimal("-3.0000")),
+        ("unmatched_line", "z", Decimal("-2.0000")),
+        ("unmatched_posting", "p", Decimal("7.0000")),
+    ]
+
+
+@pytest.mark.usefixtures("books")
+async def test_a_statements_name_is_kept_to_128_characters() -> None:
+    """The file's name is stored with each line, cut to the column."""
+    bank = await account("1000")
+    await import_statement(
+        bank.id, CsvStatement(HEADER + "b-1,2026-10-15,1,USD,,\n", name="s" * 200)
+    )
+    async with connections.engine().connect() as connection:
+        stored = await connection.scalar(select(statement_lines.c.statement))
+    assert stored == "s" * 128
 
 
 # SEC-14b: what a statement may carry, and what a rule may pair ----------------------

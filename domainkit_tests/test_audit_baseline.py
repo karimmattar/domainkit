@@ -25,6 +25,7 @@ from domainkit.contrib.audit.protection import (
     ROW_TRIGGER,
     TRUNCATE_TRIGGER,
     protect,
+    protect_migrated,
     trigger_names,
     unprotect,
 )
@@ -35,6 +36,7 @@ from domainkit.contrib.audit.tables import (
     audit_seals,
 )
 from domainkit.db import connections
+from domainkit.db.hooks import on_migrated
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
 from domainkit_tests.conftest import (
@@ -305,9 +307,8 @@ async def test_every_audited_database_is_probed(
         ),
         (
             "The audit trail in 'reports' is not append-only: triggers "
-            "first_trigger, second_trigger are missing, disabled, or changed. Call "
-            "protect(op) and protect(op, audit_seals) from a revision "
-            "(domainkit.contrib.audit.protection) and migrate."
+            "first_trigger, second_trigger are missing, disabled, or changed. Run "
+            "'manage.py migrate', which makes them."
         ),
     ]
 
@@ -350,11 +351,77 @@ async def test_the_probe_finds_missing_and_disabled_triggers(tables: None) -> No
     assert problems == [
         (
             "The audit trail in 'default' is not append-only: triggers "
-            "domainkit_audit_log_append_only are missing, disabled, or changed. Call "
-            "protect(op) and protect(op, audit_seals) from a revision "
-            "(domainkit.contrib.audit.protection) and migrate."
+            "domainkit_audit_log_append_only are missing, disabled, or changed. Run "
+            "'manage.py migrate', which makes them."
         )
     ]
+
+
+@on_postgres
+async def test_migrate_protects_the_trail_afresh_each_time(tables: None) -> None:
+    """``protect_migrated`` (``on_migrated``) makes the four triggers.
+
+    It remakes any changed in place: no revision of the project's has to.
+    """
+    async with connections.engine().begin() as connection:
+        await protect_migrated(connection, "default")
+    made = await missing_triggers("default")
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            text(
+                "ALTER TABLE domainkit_audit_log DISABLE TRIGGER "
+                "domainkit_audit_log_append_only"
+            )
+        )
+        await connection.execute(
+            text(
+                "DROP TRIGGER domainkit_audit_seals_append_only_truncate "
+                "ON domainkit_audit_seals"
+            )
+        )
+    tampered = await missing_triggers("default")
+    for _ in range(2):  # Again and again: each run replaces what is there.
+        async with connections.engine().begin() as connection:
+            await protect_migrated(connection, "default")
+    remade = await missing_triggers("default")
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(lambda sync: protect(Migration(sync)))  # A revision.
+        await connection.run_sync(lambda sync: unprotect(Migration(sync)))
+        await connection.run_sync(lambda sync: unprotect(Migration(sync), audit_seals))
+
+    assert made == []
+    assert tampered == [
+        "domainkit_audit_log_append_only",
+        "domainkit_audit_seals_append_only_truncate",
+    ]
+    assert remade == []
+
+
+async def test_migrate_protects_only_the_tables_there_are(installed: str) -> None:
+    """Before ``makemigrations`` wrote them, and on SQLite, nothing is made.
+
+    The hook is registered when the app is ready.
+    """
+    async with connections.engine().begin() as connection:
+        await protect_migrated(connection, "default")
+        names = await connection.run_sync(
+            lambda sync: sync.dialect.has_table(sync, "domainkit_audit_log")
+        )
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(audit_log.create)
+        await protect_migrated(connection, "default")
+    lacking = await missing_triggers("default")
+    await connections.close_all()
+
+    assert names is False
+    assert [hook.call for hook in on_migrated.hooks()] == [protect_migrated]
+    if installed.startswith("postgresql"):
+        assert lacking == [
+            "domainkit_audit_seals_append_only",
+            "domainkit_audit_seals_append_only_truncate",
+        ]
+    else:
+        assert lacking == []
 
 
 def test_the_probe_expects_each_trigger_as_protect_makes_it() -> None:

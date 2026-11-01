@@ -97,6 +97,9 @@ and a server).
 - [docs/threat-model.md](https://github.com/karimmattar/domainkit/blob/main/docs/threat-model.md): what domainkit protects,
   where the trust boundaries are, what it does at each, and what is left to
   a project
+- [docs/fintech.md](https://github.com/karimmattar/domainkit/blob/main/docs/fintech.md): a bank's first review, answered: each
+  control's page, setting, and test, and `domainkit init --profile fintech`,
+  a project with them all on and wired
 - [docs/audit/0.9.0.md](https://github.com/karimmattar/domainkit/blob/main/docs/audit/0.9.0.md): the 0.9.0 audit's findings
   that the CHANGELOG names, with their status
 - [docs/api.md](https://github.com/karimmattar/domainkit/blob/main/docs/api.md): the public API, module by module, one line a name;

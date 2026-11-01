@@ -15,7 +15,7 @@ import json
 import logging
 import uuid
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
@@ -107,6 +107,7 @@ from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     remember,
     tables,
 )
+from domainkit_tests.test_messaging_ordering import step
 
 pytestmark = pytest.mark.anyio
 
@@ -2186,6 +2187,62 @@ async def test_cleanup_runs_on_its_own_schedule_and_outlives_failures(
 
 
 @pytest.mark.usefixtures("tables")
+async def test_the_first_cleanup_waits_part_of_its_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``CLEANUP_START`` times the random factor: at its lowest, half of it."""
+    monkeypatch.setattr(worker_module, "CLEANUP_START", 8.0)
+    monkeypatch.setattr(worker_module._random, "uniform", lambda low, high: low)
+    waits: list[float | None] = []
+    timeout = asyncio.timeout
+
+    def recorded(delay: float | None) -> asyncio.Timeout:
+        waits.append(delay)
+        return timeout(delay)
+
+    monkeypatch.setattr(asyncio, "timeout", recorded)
+    stop = asyncio.Event()
+    stop.set()
+
+    await Worker(MessagingSettings(**{**FAST, "CLEANUP_INTERVAL": 60})).clean_until(
+        stop
+    )
+
+    assert waits == [4.0]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_each_round_of_cleanup_stops_when_the_worker_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The outbox, the inbox, and the keys are each pruned until ``stop``."""
+    worker = Worker(MessagingSettings(**{**FAST, "CLEANUP_INTERVAL": 60}))
+    monkeypatch.setattr(worker_module, "CLEANUP_START", 0.0)
+    stop = asyncio.Event()
+    given: list[tuple[str, asyncio.Event | None]] = []
+
+    def noting(name: str) -> Callable[[asyncio.Event | None], Awaitable[int]]:
+        async def run(stopping: asyncio.Event | None) -> int:
+            given.append((name, stopping))
+            if name == "keys":
+                stop.set()
+            return 0
+
+        return run
+
+    for name, attribute in (
+        ("outbox", "_clean"),
+        ("inbox", "_prune"),
+        ("keys", "_prune_keys"),
+    ):
+        monkeypatch.setattr(worker, attribute, noting(name))
+
+    await within(worker.clean_until(stop))
+
+    assert given == [("outbox", stop), ("inbox", stop), ("keys", stop)]
+
+
+@pytest.mark.usefixtures("tables")
 async def test_a_slow_cleanup_never_holds_up_claiming(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2310,6 +2367,33 @@ async def test_rows_skipped_for_their_dedupe_key_wake_no_worker() -> None:
     notified = [tuple(parameters) for text, parameters in seen if "pg_notify" in text]
     assert notified == ([("domainkit_messages", "default")] if postgres() else [])
     assert len(await rows()) == 2
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_keyed_commit_wakes_workers_for_its_pending_message_only() -> None:
+    """The first message of a key is due; the one held behind it wakes no one."""
+    seen = statements(connections.engine())
+    await enqueue(step, key="a", label="a0")
+    await enqueue(step, key="a", label="a1")
+
+    notified = [tuple(parameters) for text, parameters in seen if "pg_notify" in text]
+    assert notified == ([("domainkit_messages", "default")] if postgres() else [])
+
+
+@pytest.mark.usefixtures("tables")
+async def test_the_next_message_of_a_key_wakes_the_workers_of_its_queue() -> None:
+    """Made pending as the one before it finishes, it is announced in that commit."""
+    await enqueue(step, key="a", label="a0")
+    await enqueue(step, key="a", label="a1")
+    worker = Worker(MessagingSettings(**FAST))
+    seen = statements(worker.engine)
+
+    for _ in range(2):  # a0 promotes a1; a1, the last, promotes nothing.
+        (claimed,) = await worker.claim(1)
+        await worker.process(claimed)
+
+    notified = [tuple(parameters) for text, parameters in seen if "pg_notify" in text]
+    assert notified == ([("domainkit_messages", "default")] if postgres() else [])
 
 
 def test_workers_wake_only_for_their_queues() -> None:

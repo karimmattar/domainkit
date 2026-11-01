@@ -89,18 +89,21 @@ class LedgerEvidenceStore(EvidenceStore):
         max_bytes: int,
         subject_key: bytes,
         previous_namespaces: Sequence[str] = (),
+        previous_subject_keys: Sequence[bytes] = (),
     ) -> None:
         """Keep records under ``namespace``, refusing ones over ``max_bytes``.
 
-        ``subject_key`` is the secret the subject digests in keys use.
-        ``get`` reads keys under ``namespace`` and ``previous_namespaces``
-        only.
+        ``subject_key`` is the secret the subject digests in new keys use;
+        ``previous_subject_keys`` made earlier records' keys, which
+        ``for_subject`` still finds. ``get`` reads keys under ``namespace``
+        and ``previous_namespaces`` only.
         """
         self.ledger = ledger
         self.namespace = namespace
         self.previous_namespaces = tuple(previous_namespaces)
         self.max_bytes = max_bytes
         self.subject_key = subject_key
+        self.previous_subject_keys = tuple(previous_subject_keys)
 
     async def record(self, evidence: Evidence) -> EvidenceReceipt:
         """Write the canonical record once; a retry of the same record is a no-op.
@@ -191,14 +194,20 @@ class LedgerEvidenceStore(EvidenceStore):
     async def for_subject(
         self, subject: str, *, limit: int = 100
     ) -> list[RecordedEvidence]:
-        """Scan the subject's key prefix and read each record.
+        """Scan the subject's key prefix under each subject key; read each record.
 
-        Every record found must be about ``subject``: one filed under the
-        subject's prefix but about someone else is tampering.
+        The current key's prefix first, then each previous key's, until
+        ``limit`` records are found. Every record found must be about
+        ``subject``: one filed under the subject's prefix but about someone
+        else is tampering.
         """
-        digest = subject_digest(subject, self.subject_key)
-        prefix = f"{self.namespace}/{digest}/".encode()
-        keys = await self.ledger.keys(prefix, limit=limit)
+        keys: list[bytes] = []
+        for secret in (self.subject_key, *self.previous_subject_keys):
+            if len(keys) >= limit:
+                break
+            digest = subject_digest(subject, secret)
+            prefix = f"{self.namespace}/{digest}/".encode()
+            keys += await self.ledger.keys(prefix, limit=limit - len(keys))
         recorded = [await self.get(key.decode()) for key in keys]
         for found in recorded:
             if found.evidence.subject != subject:

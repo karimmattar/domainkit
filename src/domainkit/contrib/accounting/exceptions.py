@@ -91,6 +91,16 @@ class ReferenceReused(Conflict):
     code = "reference_reused"
 
 
+class ReversalNotReversible(BusinessRuleViolation):
+    """Reversing a reversal: it would move the money of the entry it undid again.
+
+    Post the entry again under a reference of its own, through every check
+    a new entry takes (limits, approvals).
+    """
+
+    code = "reversal_not_reversible"
+
+
 class HoldNotActive(Conflict):
     """Capturing or releasing a hold that was captured, released, or has expired."""
 

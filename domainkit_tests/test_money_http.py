@@ -220,6 +220,34 @@ async def test_a_limit_of_more_places_than_its_column_fits_when_they_are_zeros(
     assert body["limit"] == {"amount": "1.000", "currency": "KWD"}
 
 
+async def test_an_amount_its_column_cannot_hold_is_a_422_not_a_500(
+    client: AsyncTestClient,
+) -> None:
+    """Adding to a balance past its column's digits: amount_out_of_range, at once.
+
+    It was a 500 when the session flushed it (0.14 review); the attribute
+    refuses it as it is set, so the use case stops where it computed it.
+    """
+    (full,) = (
+        await client.get(
+            "/wallets", params={"balance__gte": "1000", "balance_currency": "USD"}
+        )
+    ).json()["items"]
+
+    paid = await client.post(
+        f"/wallets/{full['id']}/pay",
+        json={"amount": {"amount": "-1", "currency": "USD"}},
+    )
+
+    assert paid.status_code == 422, paid.json()
+    assert paid.json()["code"] == "amount_out_of_range"
+    assert paid.json()["detail"] == (
+        "The amount is larger, or has more decimal places, than can be stored."
+    )
+    stored = await client.get(f"/wallets/{full['id']}")
+    assert stored.json()["balance"]["amount"] == "99999999999999.99"
+
+
 async def test_a_money_error_in_a_service_is_a_422_with_its_code(
     client: AsyncTestClient,
 ) -> None:
@@ -394,14 +422,43 @@ def test_a_currency_filter_name_cannot_be_taken() -> None:
 
 
 def test_cursors_of_money_are_bounded_by_its_digits() -> None:
-    """An amount of its column's digits and a code of eight."""
+    """Its column's whole digits, at the most places a currency has, a code of eight."""
     from domainkit.ddd.query import Ordering
 
     by_balance = cursor_length((Ordering("balance"),), Wallet)
     by_limit = cursor_length((Ordering("limit"),), Wallet)
 
-    # ["-12345678901234.5678","ABCDEFGH"] is 35 bytes; 11 more for 18 digits.
-    assert (by_balance, by_limit) == (122, 111)
+    # ["-12345678901234.123456789012345678","ABCDEFGH"]: the column's whole
+    # digits, at the most places a currency has (18), and a code of eight.
+    assert (by_balance, by_limit) == (140, 132)
+
+
+@pytest.mark.parametrize(
+    ("field", "amount"),
+    [("limit", "-9999999999.99"), ("balance", "-99999999999999.9999")],
+)
+def test_a_cursor_of_a_currency_with_more_places_than_its_column_is_in_bounds(
+    field: str, amount: str
+) -> None:
+    """A column of two places holds 1.50 of a currency of 18: its text has 18.
+
+    A row of such a currency, at the most its column holds, gave a cursor a
+    few characters over ``cursor_length``, which ``FilterSet`` checks
+    against ``MAX_CURSOR_LENGTH`` (0.14 review).
+    """
+    from uuid import uuid4
+
+    from domainkit.ddd.query import Ordering, total_ordering
+    from domainkit.http.pagination import encode_position
+    from domainkit.money import register_currency
+
+    register_currency("TOKN18", minor_units=18)
+    ordering = total_ordering((Ordering(field, descending=True),))
+    longest = Money.of(amount, "TOKN18")
+
+    cursor = encode_position((longest, uuid4()), ordering)
+
+    assert len(cursor) <= cursor_length(ordering, Wallet)
 
 
 def test_read_schemas_take_money_as_it_is() -> None:

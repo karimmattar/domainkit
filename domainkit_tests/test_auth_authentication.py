@@ -339,19 +339,30 @@ def test_logins_from_unknown_addresses_are_throttled_together(
     from fastapi import FastAPI
     from starlette.requests import Request
 
-    from domainkit.contrib.auth.api import _login_limits, _throttle
+    from domainkit.contrib.auth.api import LOGIN_THROTTLED, _login_limits
+    from domainkit.contrib.auth.throttling import attempt
     from domainkit.http.errors import APIError
 
     use_auth(LOGIN_RATE="1/minute")
     app = FastAPI()
     anonymous = Request({"type": "http", "headers": [], "app": app})
 
-    alice = [key for key, _ in _login_limits(anonymous, "alice", None)]
-    bob = [key for key, _ in _login_limits(anonymous, "bob", None)]
-    assert alice[0] == "login:ip:unknown"
-    asyncio.run(_throttle(anonymous, *alice))
+    def count(username: str) -> object:
+        limits = _login_limits(anonymous, username, None)
+        assert limits[0][0] == "login:ip:unknown"
+        return asyncio.run(
+            attempt(
+                anonymous,
+                limits,
+                action="auth.login",
+                detail=LOGIN_THROTTLED,
+                code="login_throttled",
+            )
+        )
+
+    count("alice")
     with pytest.raises(APIError, match="Too many login attempts"):
-        asyncio.run(_throttle(anonymous, *bob))
+        count("bob")
 
 
 class PartlyDown:

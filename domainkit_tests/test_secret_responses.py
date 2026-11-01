@@ -44,7 +44,9 @@ from domainkit_tests.test_auth_mfa import NOW, code_at, secret_of
 SITE: Final = "https://testserver"
 ORIGIN: Final = {"Origin": SITE}
 AUTHENTICATION: Final = "domainkit.contrib.auth"
-SECRET_FIELD: Final = re.compile(r"(?:^|_)(?:tokens?|secrets?|codes|uri|password)$")
+SECRET_FIELD: Final = re.compile(
+    r"(?:^|_)(?:tokens?|secrets?|codes|uri|password|authorization)$"
+)
 """Names of response fields that hold what only the caller may see."""
 
 router = APIRouter()
@@ -192,6 +194,20 @@ def answers(client: TestClient) -> dict[str, list[Response]]:
     finish = {"mfa_token": challenge["mfa_token"], "code": code_at(secret, clock[0])}
     call("POST", "/auth/session/mfa", json=finish, headers=ORIGIN)
     client.cookies.clear()
+    clock[0] += 30
+    call(
+        "POST", "/auth/step-up", json={"code": code_at(secret, clock[0])}, headers=root
+    )
+    transfer = {"amount": {"amount": "1.00", "currency": "EUR"}, "payee": "DE89"}
+    asked = client.post("/transfers/authorize", json=transfer, headers=root).json()
+    clock[0] += 30
+    call(
+        "POST",
+        f"/auth/sca/{asked['challenge']}/confirm",
+        "/auth/sca/{challenge_id}/confirm",
+        json={"code": code_at(secret, clock[0])},
+        headers=root,
+    )
 
     hook = {"url": "https://hooks.example.com/in", "event_types": ["*"]}
     made = call("POST", "/admin/webhooks/subscriptions", json=hook, headers=root)

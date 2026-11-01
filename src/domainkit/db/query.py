@@ -14,6 +14,10 @@ The compiled SQL keeps the semantics the in-memory repository has:
   money come bound as conditions on ``total.amount`` and ``total.currency``
   (``domainkit.ddd.query``), which name them; ``isnull`` looks at the
   amount, and ordering sorts by currency, then amount.
+- An encrypted column (``domainkit.db.encrypted``) holds ciphertext: a
+  condition may ask whether it is None, and, with a blind index, whether
+  it equals (or is in) values; anything else, and ordering by it, is
+  refused.
 - Text lookups never use the pattern characters of the text they are given:
   on PostgreSQL they become ``LIKE`` with ``%``, ``_`` and the escape
   character escaped; on SQLite, whose ``LIKE`` ignores ASCII case, they use
@@ -30,6 +34,8 @@ from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.expression import type_coerce
 from sqlalchemy.sql.schema import Column
 
+from domainkit.db.encrypted import EncryptedType
+from domainkit.db.encrypted import lookup as lookup_
 from domainkit.db.money import money_columns
 from domainkit.ddd.fields import MONEY_PARTS, InvalidQuery, UnknownField
 from domainkit.ddd.query import (
@@ -126,6 +132,11 @@ def compile_ordering(
         money = money_columns(mapper, item.field)
         columns = reversed(money) if money else [column_of(mapper, item.field)]
         for column in columns:  # Money: the currency, then the amount.
+            if isinstance(column.type, EncryptedType):
+                raise InvalidQuery(
+                    f"{mapper.class_.__name__}.{item.field} is encrypted: its "
+                    "ciphertexts do not sort as its values do."
+                )
             term = column.desc() if item.descending else column.asc()
             if column.nullable:
                 term = term.nulls_first() if item.descending else term.nulls_last()
@@ -162,11 +173,34 @@ def _condition(
         )
     else:
         column = column_of(mapper, head)
+    if isinstance(column.type, EncryptedType):
+        return _encrypted(column, lookup, value)
     expression = _compare(column, lookup, value, dialect)
     total = lookup is Lookup.ISNULL or (lookup is Lookup.EXACT and value is None)
     if column.nullable and not total:
         return and_(column.is_not(None), expression)
     return expression
+
+
+def _encrypted(
+    column: Column[Any], lookup: Lookup, value: object
+) -> ColumnElement[bool]:
+    """A condition on an encrypted column: None or not, or equality by blind index.
+
+    Raises:
+        InvalidQuery: Any other lookup, or equality without a blind index.
+    """
+    if lookup is Lookup.ISNULL:
+        return column.is_(None) if value else column.is_not(None)
+    if lookup is Lookup.EXACT and value is None:
+        return column.is_(None)
+    if lookup in {Lookup.EXACT, Lookup.IN}:
+        values = cast("tuple[object, ...]", value) if lookup is Lookup.IN else (value,)
+        return lookup_(column, values)
+    raise InvalidQuery(
+        f"{column.table.name}.{column.name} is encrypted: a query can ask only "
+        "whether it is None, or, with a blind index, whether it equals a value."
+    )
 
 
 def _within(

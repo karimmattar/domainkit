@@ -1,0 +1,107 @@
+"""Settings shared by every environment: a bank's controls, on and wired.
+
+``domainkit init --profile fintech`` wrote them; domainkit's docs/fintech.md
+maps each control to the page that explains it, its setting, and the test
+that proves it. Production adds the key service, the ledger, and the
+secrets (production.py).
+"""
+
+from datetime import timedelta
+from pathlib import Path
+
+from domainkit.conf.env import Env
+from domainkit.log import build_logging_config
+
+env = Env()
+BASE_DIR = Path(__file__).resolve().parents[3]
+
+PROJECT_NAME = "{{ project }}"
+INSTALLED_DOMAINS = [
+    "domainkit.contrib.messaging",  # The outbox, its inbox, and ordering keys.
+    "domainkit.contrib.contenttypes",
+    "domainkit.contrib.auth",  # PCI passwords, second factors, step-up, SCA.
+    # Who did what: sealed, anchored when deployed, append-only after migrate.
+    "domainkit.contrib.audit",
+    "domainkit.contrib.evidence",  # Facts on a ledger that cannot be rewritten.
+    "domainkit.contrib.idempotency",  # Retried requests run once.
+    "domainkit.contrib.keys",  # Encrypted fields under a key service.
+    "domainkit.contrib.privacy",  # Export and erasure; erasure shreds keys.
+    "domainkit.contrib.accounting",  # Double-entry books.
+    "domainkit.contrib.approvals",  # Maker-checker.
+    "domainkit.contrib.limits",  # Transaction and velocity limits.
+    "domains.payments",
+]
+ROOT_ROUTER = "config.urls.router"
+# /docs, /redoc, and /openapi.json follow DEBUG: on locally, off when
+# deployed; API_DOCS = True serves them anywhere (docs/reference/http.md).
+# Every request is authenticated; routes say who may call them (docs/auth.md).
+MIDDLEWARE = [
+    "domainkit.http.middleware.ProxyHeadersMiddleware",
+    "domainkit.http.locale.LocaleMiddleware",  # Answers in LANGUAGES (docs/i18n.md).
+    "domainkit.http.middleware.SecurityHeadersMiddleware",
+    "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.http.deadlines.DeadlineMiddleware",  # REQUEST_TIMEOUT (docs/runtime.md).
+    "domainkit.http.shedding.ConcurrencyLimitMiddleware",  # MAX_CONCURRENT_REQUESTS.
+    "domainkit.http.middleware.AllowedHostsMiddleware",
+    "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
+    "domainkit.http.ratelimit.RateLimitMiddleware",  # Off until RATE_LIMIT is set.
+    # Caps, queues, and clocks for WebSockets; re-checks their tokens (docs/live.md).
+    "domainkit.http.websockets.WebSocketLimitsMiddleware",
+    "domainkit.http.middleware.RequestBodyLimitMiddleware",
+    # Last: a keyed request's whole body is read, bounded by the limit above
+    # (docs/contrib/idempotency.md). Money routes refuse requests without one.
+    "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware",
+]
+ASGI_APPLICATION = "config.asgi:application"
+# Error messages in the caller's language; dates shown in TIME_ZONE, stored in UTC.
+LANGUAGE_CODE = "en"
+LANGUAGES = [("en", "English"), ("ar", "Arabic")]
+TIME_ZONE = "UTC"
+
+# PCI DSS v4.0's passwords (docs/auth/pci-dss.md): 12 characters with letters
+# and digits, none of the last four, staff-set passwords changed at first
+# use, 10 guesses an hour, and a 13-minute idle timeout. Acts that matter ask
+# for a fresh second factor (StepUp, config/rules.py), and transfers for one
+# confirmed for their amount and payee (docs/auth/step-up.md).
+AUTH = {
+    "PASSWORD_PRESET": "pci-dss-4",
+    "MFA": {"ISSUER": "{{ project }}"},
+    "STEP_UP": {"METHODS": ["otp"]},
+    "SCA": {"METHODS": ["otp"], "TTL": timedelta(minutes=5)},
+}
+# Maker-checker (docs/contrib/approvals.md): approving asks for a step-up
+# within five minutes; postings over these amounts need two other clerks,
+# and so does making a superuser.
+APPROVALS = {
+    "APPROVE_RULE": "config.rules.RECENT_PROOF",
+    "ENTRY_THRESHOLDS": {"USD": "10000.00", "EUR": "10000.00"},
+    "ENTRY_APPROVALS": 2,
+    "SUPERUSER_APPROVALS": 2,
+}
+# What one customer may move (docs/contrib/limits.md): change them with
+# manage.py limits set, audited, or over /api/limits.
+LIMITS = {
+    "DEFAULTS": [
+        {
+            "code": "payments.customer",
+            "kind": "holder",
+            "currency": currency,
+            "per_transaction": "10000.00",
+            "window": "day",
+            "max_amount": "25000.00",
+            "max_count": 50,
+        }
+        for currency in ("USD", "EUR")
+    ],
+}
+# Encrypted fields (docs/contrib/keys.md). Here the key that wraps the data
+# keys derives from SECRET_KEY: development and tests only. Production names
+# a key management service, and keys.E001 refuses this there.
+KEYS: dict[str, object] = {"PROVIDER": "local"}
+
+# Operation ids are route names, so generated clients keep their method
+# names when routers move (docs/reference/responses.md, "The API surface").
+OPENAPI_OPERATION_IDS = "route_name"
+# Lines leave through a bounded queue and a thread, so writing them never
+# holds the event loop (docs/runtime.md, "Logging").
+LOGGING = build_logging_config(log_format="text", level=env.str("LOG_LEVEL", "INFO"))

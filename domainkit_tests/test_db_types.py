@@ -1,7 +1,7 @@
 """``ExactDecimal`` keeps amounts exact on SQLite and PostgreSQL alike."""
 
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -17,6 +17,7 @@ from sqlalchemy import (
     bindparam,
     func,
     insert,
+    literal,
     select,
     update,
 )
@@ -250,15 +251,73 @@ async def test_factors_are_numbers_however_they_are_given(engine: AsyncEngine) -
     assert abs(third - Decimal("0.01")) < Decimal("1E-15")
 
 
+async def test_an_amount_times_or_over_an_amount_is_refused_as_it_is_built(
+    engine: AsyncEngine,
+) -> None:
+    """Two amounts multiplied or divided mean nothing for money: a ``TypeError``.
+
+    On SQLite both sides counted in minor units: 9.95 times a parameter
+    typed as the amount, of 2, was 1990.00, and 19.90 on PostgreSQL
+    (TEST-11). Refused when the expression is built, it is the same on
+    both. Sums, differences, and factors given as numbers still work.
+    """
+    await stored(engine, {"id": 1, "amount": Decimal("9.95"), "quantity": 2})
+    amount, rate, units = prices.c.amount, prices.c.rate, prices.c.units
+    typed: BindParameter[Any] = bindparam("x", type_=amount.type)
+    builds: list[Callable[[], object]] = [
+        lambda: amount * typed,
+        lambda: amount / typed,
+        lambda: typed * amount,
+        lambda: amount * rate,
+        lambda: rate / amount,
+        lambda: amount * units,
+        lambda: amount * amount,
+        lambda: amount * literal(Decimal(2), ExactDecimal(18, 2)),
+    ]
+
+    for build in builds:
+        with pytest.raises(TypeError, match="a plain Decimal or an untyped bindparam"):
+            build()
+    sums = select(
+        amount + typed,
+        amount - typed,
+        amount * bindparam("y"),
+        amount * 2,
+        amount * prices.c.quantity,
+        amount / Decimal(2),
+    ).where(prices.c.id == 1)
+    async with engine.connect() as connection:
+        found = (await connection.execute(sums, {"x": Decimal("0.05"), "y": 2})).one()
+    assert tuple(found) == (
+        Decimal("10.00"),
+        Decimal("9.90"),
+        Decimal("19.90"),
+        Decimal("19.90"),
+        Decimal("19.90"),
+        Decimal("4.975"),
+    )
+
+
 async def test_a_factor_has_at_most_nine_places(engine: AsyncEngine) -> None:
     """A finer factor is refused rather than rounded, a float rather than taken."""
     await stored(engine, {"id": 1, "amount": Decimal("9.95")})
     product = select(prices.c.amount * bindparam("factor"))
 
-    for factor, error in ((Decimal("0.0000000001"), ValueError), (0.1, TypeError)):
+    for factor, error, message in (
+        (
+            Decimal("0.0000000001"),
+            ValueError,
+            (
+                "A factor of an amount has at most 9 decimal places in SQL; round "
+                "it first, or compute in Python."
+            ),
+        ),
+        (0.1, TypeError, "ExactDecimal takes a Decimal or an int, not float"),
+    ):
         with pytest.raises(StatementError) as refused:
             await scalars_with(engine, product, {"factor": factor})
         assert isinstance(refused.value.orig, error)
+        assert str(refused.value.orig).startswith(message)
     assert await scalars_with(engine, product, {"factor": Decimal("0.000000001")}) == [
         Decimal("0.00000000995")
     ]

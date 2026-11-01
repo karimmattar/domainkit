@@ -1,0 +1,209 @@
+"""HTTP resources of the payments domain.
+
+Every route needs its permission. Registering a card asks for a step-up;
+a transfer asks for an authorization its maker confirmed for its amount
+and card (``POST /transfers/authorize``, then ``/auth/sca/{id}/confirm``),
+and an ``Idempotency-Key``, so a retried request moves the money once.
+"""
+
+from datetime import timedelta
+from typing import Annotated
+from uuid import UUID, uuid4
+
+from domainkit.contrib.approvals import ApprovalPending
+from domainkit.contrib.auth import AuthenticatedUser, StepUp
+from domainkit.contrib.auth.sca import consume_authorization, request_authorization
+from domainkit.ddd import DomainError
+from domainkit.http.access import HasPermissions, Require
+from domainkit.money import Money
+from fastapi import APIRouter, Depends, Header, Response, status
+from pydantic import BaseModel
+
+from domains.payments.application import services
+from domains.payments.application.commands import MakeTransfer, RegisterCard
+from domains.payments.domain.model import (
+    Card,
+    CardId,
+    CardNotFound,
+    Transfer,
+    TransferId,
+    TransferNotFound,
+)
+from domains.payments.infrastructure.unit_of_work import SqlAlchemyPaymentsUnitOfWork
+
+router = APIRouter(tags=["payments"])
+PURPOSE = "payments.transfer"
+"""What an authorization of a transfer is for: bound with its amount and card."""
+
+
+class IdempotencyKeyRequired(DomainError):
+    """Requests that move money carry an ``Idempotency-Key`` (400)."""
+
+
+async def get_unit_of_work() -> SqlAlchemyPaymentsUnitOfWork:
+    """A unit of work on the database; tests may override this dependency."""
+    return SqlAlchemyPaymentsUnitOfWork()
+
+
+async def idempotency_key(
+    key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+) -> str:
+    """The request's ``Idempotency-Key``; without one, the request is refused.
+
+    ``IdempotencyMiddleware`` replays a retry's response; this makes the
+    key required where money moves, so no client can leave it out.
+    """
+    if key is None:
+        raise IdempotencyKeyRequired(
+            "Send an Idempotency-Key with requests that move money."
+        )
+    return key
+
+
+UnitOfWork = Annotated[SqlAlchemyPaymentsUnitOfWork, Depends(get_unit_of_work)]
+
+
+class CardIn(BaseModel):
+    """A card to register: its number."""
+
+    number: str
+
+
+class CardOut(BaseModel):
+    """A registered card: its id and last four digits, never its number."""
+
+    id: UUID
+    last_four: str
+
+    @classmethod
+    def of(cls, card: Card) -> "CardOut":
+        """Show ``card``."""
+        return cls(id=card.id, last_four=card.last_four)
+
+
+class TransferIn(BaseModel):
+    """A transfer: how much, and to which of the caller's cards."""
+
+    card_id: UUID
+    amount: Money
+
+
+class AuthorizationOut(BaseModel):
+    """The transaction the maker confirms at ``/auth/sca/{challenge}``."""
+
+    challenge: UUID
+
+
+class TransferOut(BaseModel):
+    """A transfer made."""
+
+    id: UUID
+    card_id: UUID
+    amount: Money
+
+    @classmethod
+    def of(cls, transfer: Transfer) -> "TransferOut":
+        """Show ``transfer``."""
+        return cls(id=transfer.id, card_id=transfer.card_id, amount=transfer.amount)
+
+
+class PendingOut(BaseModel):
+    """A transfer waiting for approval: the request an approver decides."""
+
+    transfer_id: UUID
+    approval_request: UUID
+
+
+@router.post(
+    "/cards",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(
+            Require(
+                HasPermissions("payments.add_card")
+                & StepUp(max_age=timedelta(minutes=5))
+            )
+        )
+    ],
+)
+async def register_card(
+    body: CardIn, user: AuthenticatedUser, uow: UnitOfWork
+) -> CardOut:
+    """Register a card to send money to; a new payee asks for a step-up."""
+    command = RegisterCard(owner_id=user.id, number=body.number)
+    return CardOut.of(await services.register_card(command, uow))
+
+
+@router.post(
+    "/transfers/authorize",
+    dependencies=[Depends(Require(HasPermissions("payments.add_transfer")))],
+)
+async def authorize_transfer(
+    body: TransferIn, user: AuthenticatedUser, uow: UnitOfWork
+) -> AuthorizationOut:
+    """Ask the maker to confirm this amount to this card, with a second factor."""
+    async with uow:
+        card = await uow.cards.get(CardId(body.card_id))
+    if card.owner_id != user.id:
+        raise CardNotFound(f"Card {body.card_id} does not exist.")
+    challenge = await request_authorization(
+        user.id, body.amount, str(card.id), purpose=PURPOSE
+    )
+    return AuthorizationOut(challenge=challenge.id)
+
+
+@router.post(
+    "/transfers",
+    status_code=status.HTTP_201_CREATED,
+    responses={202: {"model": PendingOut}},
+    dependencies=[
+        Depends(Require(HasPermissions("payments.add_transfer"))),
+        Depends(idempotency_key),
+    ],
+)
+async def make_transfer(
+    body: TransferIn,
+    user: AuthenticatedUser,
+    uow: UnitOfWork,
+    response: Response,
+    authorization: Annotated[str, Header(alias="X-Authorization")],
+) -> TransferOut | PendingOut:
+    """Make a transfer its maker authorized: this amount, to this card, once.
+
+    The authorization is spent first: a transfer refused after it needs a
+    new one. Over the approval threshold, the transfer is submitted for
+    approval instead, and answered 202 with the request.
+    """
+    await consume_authorization(
+        authorization,
+        user_id=user.id,
+        amount=body.amount,
+        payee=str(body.card_id),
+        purpose=PURPOSE,
+    )
+    command = MakeTransfer(
+        transfer_id=uuid4(), maker_id=user.id, card_id=body.card_id, amount=body.amount
+    )
+    try:
+        transfer = await services.make_transfer(command, uow)
+    except ApprovalPending as pending:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return PendingOut(
+            transfer_id=command.transfer_id, approval_request=pending.request_id
+        )
+    return TransferOut.of(transfer)
+
+
+@router.get(
+    "/transfers/{transfer_id}",
+    dependencies=[Depends(Require(HasPermissions("payments.view_transfer")))],
+)
+async def get_transfer(
+    transfer_id: UUID, user: AuthenticatedUser, uow: UnitOfWork
+) -> TransferOut:
+    """One of the caller's transfers, by id: another's is not found."""
+    async with uow:
+        transfer = await uow.transfers.get(TransferId(transfer_id))
+    if transfer.maker_id != user.id:
+        raise TransferNotFound(f"Transfer {transfer_id} does not exist.")
+    return TransferOut.of(transfer)

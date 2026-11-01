@@ -220,6 +220,27 @@ def test_values_that_do_not_fit_their_field_are_refused(
     assert caught.value.status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "why"),
+    [
+        ("count", 2**63, "not a 64-bit integer"),
+        ("ratio", False, "not a number"),
+        ("amount", "1e5", "not an amount"),
+        ("anything", "x", "this field cannot be in a cursor"),
+    ],
+)
+def test_a_refused_value_says_why_to_the_developer(
+    field: str, value: object, why: str
+) -> None:
+    """The client gets a plain 422; the error it chains from names the reason."""
+    ordering = (Ordering(field), Ordering("id"))
+    cursor = payload(CURSOR_VERSION, f"{field},id", value, str(UUID(int=1)))
+
+    with pytest.raises(InvalidCursor) as caught:
+        decode_position(cursor, ordering, Record)
+    assert str(caught.value.__cause__) == why
+
+
 def test_cursors_hold_any_base64url_text_and_nothing_else() -> None:
     """Cursors up to the longest round-trip; a character outside base64url fails."""
     ordering = (Ordering("count"), Ordering("id"))
