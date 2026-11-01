@@ -3,30 +3,31 @@
 ``privacy export`` lists the requests a subject submitted (with the
 commands they hold) and the decisions they took. ``privacy erase`` keeps
 the record that a request was made and decided, which is the point of
-maker-checker, but no longer links it to the person: their pending
-requests are cancelled, the commands of every request they made are
-blanked (the fingerprint stays, and proves what was approved), the
-reasons they wrote are blanked, and their id is replaced, wherever it
+maker-checker and a business record the law asks a bank to keep (a
+payment's authorisation, SOX-style evidence of who checked whom): the
+commands stay as approved, and the decisions as taken, pseudonymised
+(FIN-94). Their pending requests are cancelled, and those approved but
+not run yet fail (``maker_not_allowed``) rather than run; the reasons
+they wrote, free text, are blanked; and their id is replaced, wherever it
 stands as maker or approver, by one ``erased:`` id, the same for all of
 their rows, so a request still shows that its maker and its approvers
-were different people. A request of theirs approved but not run yet no
-longer verifies, and fails rather than runs. The audit trail keeps the
-actor of each event, and its own erasure (``auditforget``) covers its
-personal data.
+were different people. Seals are made again for the pseudonym, so the
+record still verifies. The audit trail keeps the actor of each event,
+and its own erasure (``auditforget``) covers its personal data.
 """
 
 import uuid
 from collections.abc import Mapping
 from typing import Any, Final
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import or_, select
 
-from domainkit import clock
 from domainkit.db import connections
 
-from .models import RequestStatus, Verdict
+from .exceptions import MakerNotAllowed
+from .models import RequestId, RequestStatus, Verdict
 from .tables import decisions, requests
-from .uow import approvals_alias
+from .uow import ApprovalsUnitOfWork, approvals_alias
 
 ERASED: Final = "erased:"
 """The start of the id that replaces an erased subject's."""
@@ -74,44 +75,35 @@ async def export_subject(subject: str) -> Mapping[str, object]:
 
 
 async def erase_subject(subject: str) -> Mapping[str, int]:
-    """Unlink ``subject`` from the requests and decisions; how many of each."""
+    """Pseudonymise ``subject`` in the requests and decisions; how many of each."""
     pseudonym = f"{ERASED}{uuid.uuid4().hex}"
-    async with connections.engine(approvals_alias()).begin() as connection:
-        rejected = select(decisions.c.request_id).where(
-            decisions.c.approver == subject, decisions.c.verdict == Verdict.REJECT
-        )
-        cancelled = await connection.execute(
-            update(requests)
-            .where(
-                requests.c.maker == subject,
-                requests.c.status == RequestStatus.PENDING,
-            )
-            .values(
-                status=RequestStatus.CANCELLED,
-                decided_at=clock.now(),
-                version=requests.c.version + 1,
+    counts = dict.fromkeys(("requests", "cancelled", "failed", "decisions"), 0)
+    async with ApprovalsUnitOfWork() as uow:
+        decided = select(decisions.c.request_id).where(decisions.c.approver == subject)
+        found = await uow.session.scalars(
+            select(requests.c.id).where(
+                or_(requests.c.maker == subject, requests.c.id.in_(decided))
             )
         )
-        await connection.execute(
-            update(requests)
-            .where(
-                or_(requests.c.maker == subject, requests.c.id.in_(rejected)),
+        for request_id in sorted(found):
+            request = await uow.locked(RequestId(request_id))
+            mine = request.maker == subject
+            rejected = any(
+                each.approver == subject and each.verdict is Verdict.REJECT
+                for each in request.decisions
             )
-            .values(reason="", version=requests.c.version + 1)
-        )
-        made = await connection.execute(
-            update(requests)
-            .where(requests.c.maker == subject)
-            .values(arguments={}, maker=pseudonym, version=requests.c.version + 1)
-        )
-        decided = await connection.execute(
-            update(decisions)
-            .where(decisions.c.approver == subject)
-            .values(approver=pseudonym)
-        )
-    counts = {
-        "requests": made.rowcount,
-        "cancelled": cancelled.rowcount,
-        "decisions": decided.rowcount,
-    }
+            if mine and request.status is RequestStatus.PENDING and request.sealed():
+                request.cancel(subject, "")
+                counts["cancelled"] += 1
+            elif mine and request.status is RequestStatus.APPROVED:
+                request.failed(MakerNotAllowed.code)
+                counts["failed"] += 1
+            if mine or rejected:
+                request.reason = ""
+            counts["requests"] += mine
+            counts["decisions"] += sum(
+                each.approver == subject for each in request.decisions
+            )
+            request.pseudonymise(subject, pseudonym)
+        await uow.commit()
     return {kind: count for kind, count in counts.items() if count}

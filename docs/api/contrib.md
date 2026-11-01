@@ -180,8 +180,8 @@ Maker-checker: commands that run only once other people approve them.
 - `Verdict`: What one person decided about a request.
 - `approve_request`: Approve a request; the approval that completes it queues its command.
 - `approved`: Whether `command` is the approved command of `action` being run.
-- `current_run`: The approved command being run here, if any.
 - `cancel_request`: Withdraw a pending request, as its maker.
+- `current_run`: The approved command being run here, if any.
 - `execute_request`: Run an approved request's command, once (the task `EXECUTE`).
 - `expire_requests`: Expire the pending requests whose time is up; how many there were.
 - `fingerprint`: SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
@@ -580,6 +580,7 @@ Permissions on single objects (django-guardian's grants), for users or groups.
 
 Privacy requests and retention across installed domains (GDPR's rights).
 
+- `ErasureHeld`: A person's data must be kept for now: nothing of it was erased (FIN-94).
 - `PersonalDataErased`: An aggregate's personal fields were erased, at a request or by retention.
 - `PersonalModel`: An aggregate of an installed domain with fields marked `Personal`.
 - `Policy`: A domain's `Retention`, resolved to a table and its dating column.

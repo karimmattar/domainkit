@@ -7,6 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from domainkit.conf import DEFAULT_DB_ALIAS
 
+AUTH: Final = "domainkit.contrib.auth"
+PCI_DSS_4: Final = "pci-dss-4"
+
+PCI_RETENTION: Final = timedelta(days=365)
+"""The least ``MIN_RETENTION`` under ``AUTH.PASSWORD_PRESET = "pci-dss-4"``:
+PCI DSS v4.0 10.5.1 keeps audit logs twelve months (FIN-95)."""
 NAMESPACE_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,31}$"
 """Namespaces: a lower-case letter, then up to 31 letters, digits, ``_``, ``-``."""
 
@@ -72,4 +78,19 @@ class AuditSettings(BaseModel):
     )
     """How old a seal must be before ``auditprune`` may cut there; a
     checkpoint of a younger one starts nothing in ``auditverify``. Raising
-    it reports the prunes made below it before."""
+    it reports the prunes made below it before. Under the PCI preset
+    (``AUTH.PASSWORD_PRESET = "pci-dss-4"``) it is at least ``PCI_RETENTION``,
+    365 days, whatever it says (``min_retention``)."""
+
+
+def min_retention() -> timedelta:
+    """``AUDIT.MIN_RETENTION``, raised to ``PCI_RETENTION`` under the PCI preset."""
+    from domainkit.apps import registry
+
+    kept = registry.settings(AuditSettings).MIN_RETENTION
+    if registry.is_installed(AUTH):
+        from domainkit.contrib.auth import AuthSettings
+
+        if registry.settings(AuthSettings).PASSWORD_PRESET == PCI_DSS_4:
+            return max(kept, PCI_RETENTION)
+    return kept

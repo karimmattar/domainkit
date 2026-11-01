@@ -215,10 +215,13 @@ async def _stored() -> dict[str, ApprovalRequest]:
 
 
 def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> None:
-    """Their pending requests are cancelled, their commands and reasons blanked.
+    """Their pending requests are cancelled, their reasons blanked; the record kept.
 
     Their id becomes one ``erased:`` id, so a request still shows that its
-    maker and its approver were two people; what others wrote stays.
+    maker and its approver were two people; what others wrote stays. The
+    commands stay as approved, and the seals are made again for the
+    pseudonym, so the record still verifies (FIN-94: a business record
+    the law asks to keep, pseudonymised, not blanked).
     """
     pending = submitted("pending", maker="subject")
     decided = submitted("decided", maker="subject")
@@ -242,7 +245,16 @@ def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> 
     by_kind = run_async(_stored())
     first, second = by_kind[str(pending.id)], by_kind[str(decided.id)]
     assert (first.status, first.decided_at) == (RequestStatus.CANCELLED, frozen.now())
-    assert (first.arguments, second.arguments) == ({}, {})
+    assert (first.arguments, second.arguments) == (
+        pending.arguments,
+        decided.arguments,
+    )
+    assert all(each.sealed() for each in by_kind.values())
+    assert all(
+        decision.verified(request.id)
+        for request in by_kind.values()
+        for decision in request.decisions
+    )
     assert first.maker == second.maker
     assert first.maker.startswith("erased:")
     assert second.reason == ""
@@ -253,9 +265,9 @@ def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> 
     assert approvers == {first.maker, "bob"}
     assert by_kind[str(approved.id)].maker == "maker"
     changed = {key: by_kind[key].version - version for key, version in before.items()}
-    assert changed == {
-        str(pending.id): 3,
-        str(decided.id): 2,
+    assert changed == {  # One unit of work: each request changed once.
+        str(pending.id): 1,
+        str(decided.id): 1,
         str(approved.id): 0,
         str(rejected.id): 1,
         str(kept.id): 0,

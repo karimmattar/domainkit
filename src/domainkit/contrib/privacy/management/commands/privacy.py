@@ -6,6 +6,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from domainkit.contrib.privacy import (
+    ErasureHeld,
     check_reason,
     check_subject,
     erase_subject,
@@ -75,7 +76,11 @@ class Command(BaseCommand):
             await self._export(subject, output)
             return
         self._confirm(subject, noinput=noinput)
-        erased = await erase_subject(subject, reason=reason)
+        try:
+            erased = await erase_subject(subject, reason=reason)
+        except ErasureHeld as exc:
+            reasons = "; ".join(f"{domain}: {why}" for domain, why in exc.held.items())
+            raise CommandError(f"Nothing was erased. Kept by {reasons}") from None
         self.write(
             f"Erased the personal data of {subject} in {erased} "
             f"aggregate{'' if erased == 1 else 's'}, and forgot their audit keys."

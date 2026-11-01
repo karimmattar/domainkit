@@ -22,7 +22,9 @@ those of SQL commits and migrations. Each ``DomainConfig`` hook method
 - ``on_check``: raise when the domain cannot serve traffic (``/ready``).
 - ``on_seed``: add the rows a fresh database needs (``manage.py seed``).
 - ``on_erase_subject`` and ``on_export_subject``: the copies of a person's
-  data a domain keeps outside its aggregates (``domainkit.contrib.privacy``).
+  data a domain keeps outside its aggregates (``domainkit.contrib.privacy``);
+  ``on_erase_check``: why a person's data must be kept for now, before
+  any of it is erased.
 - ``on_check_application``: problems with the built application.
 - ``on_deployment_warnings``: weak but valid settings where deployed, and
   code ``check`` warns about anywhere.
@@ -63,6 +65,7 @@ __all__ = [
     "on_check",
     "on_check_application",
     "on_deployment_warnings",
+    "on_erase_check",
     "on_erase_subject",
     "on_export_subject",
     "on_seed",
@@ -287,6 +290,7 @@ def _registry() -> "DomainRegistry":
 
 type LifeHook = Callable[[], Awaitable[None]]
 type EraseHook = Callable[[str, str], Awaitable[Mapping[str, int]]]
+type EraseCheck = Callable[[str, str], Awaitable[str | None]]
 type ExportHook = Callable[[str], Awaitable[Mapping[str, object]]]
 type ApplicationCheck = Callable[["FastAPI"], Iterable[str]]
 type DeploymentCheck = Callable[[], Iterable[str]]
@@ -310,6 +314,22 @@ on_erase_subject: HookPoint[EraseHook] = HookPoint(
 
 Return counts by kind (``{"deliveries": 2}``), never the data itself: they
 are audited. Count copies left to finish first under ``pending``.
+
+The contract (FIN-94): these hooks run only once every ``on_erase_check``
+of every domain let the erasure go on, so a domain that must keep a
+person's data refuses there, before anything is erased, and never here.
+Records a law asks to keep (books, the evidence of who approved what)
+are kept, with the person's id replaced by a pseudonym, not deleted.
+"""
+on_erase_check: HookPoint[EraseCheck] = HookPoint(
+    "erase_check", arguments=2, awaited=True
+)
+"""Say why a person's data must be kept for now: ``(subject, reason)``.
+
+Return a sentence for the operator (``"Holds an account with money on
+it."``), or None to let the erasure go on. Any one holds it: nothing is
+erased, and ``domainkit.contrib.privacy`` raises ``ErasureHeld`` naming
+each domain's sentence. Never return the person's data.
 """
 on_export_subject: HookPoint[ExportHook] = HookPoint(
     "export_subject", arguments=1, awaited=True

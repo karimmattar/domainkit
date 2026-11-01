@@ -458,6 +458,28 @@ class ApprovalRequest(AggregateRoot[RequestId]):
             self._reseal()
             self.record(RequestExpired(request_id=self.id))
 
+    def pseudonymise(self, subject: str, pseudonym: str) -> None:
+        """Name ``pseudonym`` wherever ``subject`` is its maker or an approver.
+
+        The seals are made again, so the record still verifies, but only
+        those that held before: a row changed around the application stays
+        refused, rather than be laundered by an erasure (FIN-94).
+        """
+        held = self.sealed()
+        if self.maker == subject:
+            self.maker = pseudonym
+        for each in self.decisions:
+            if each.approver != subject:
+                continue
+            verified = each.verified(self.id)
+            each.approver = pseudonym
+            if verified:
+                each.seal = seal_of(
+                    self.id, pseudonym, each.verdict.value, each.fingerprint
+                )
+        if held:
+            self._reseal()
+
     def runs(self, token: str | None) -> bool:
         """Whether it is approved, sealed, and ``token`` is its run token."""
         return (

@@ -992,3 +992,21 @@ msgstr ""
 
 msgid "The request's guard or policy no longer exists; it is neither decided nor run."
 msgstr ""
+
+msgid "The amount is larger than the ledger keeps."
+msgstr ""
+
+msgid "The books are closed up to a later date than this one."
+msgstr ""
+
+msgid "A period before this one is still open: close it first."
+msgstr ""
+
+msgid "No limit names this currency for this subject: it moves none."
+msgstr ""
+
+msgid "Whoever submitted this command may no longer make it."
+msgstr ""
+
+msgid "This person's data must be kept for now: nothing was erased."
+msgstr ""

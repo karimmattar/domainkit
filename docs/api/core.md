@@ -30,6 +30,7 @@ Typed hooks a domain registers for what it takes part in.
 - `on_check`: Raise when the domain cannot serve traffic (`/ready`): `()`.
 - `on_check_application`: Problems with the built application: `(app)`, best as `CheckMessage`.
 - `on_deployment_warnings`: Weak but valid settings where deployed: `()`; none elsewhere.
+- `on_erase_check`: Say why a person's data must be kept for now: `(subject, reason)`.
 - `on_erase_subject`: Erase the copies kept of a person's data: `(subject, reason)`.
 - `on_export_subject`: What the domain keeps about a person outside its aggregates: `(subject)`.
 - `on_seed`: Add the rows a fresh database needs (`manage.py seed`): `()`.

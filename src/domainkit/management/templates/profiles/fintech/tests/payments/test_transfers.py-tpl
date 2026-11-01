@@ -123,3 +123,19 @@ def test_a_large_transfer_runs_once_another_person_approves_it(
     assert made.status_code == 200, made.json()
     assert Decimal(made.json()["amount"]["amount"]) == Decimal(5000)
     assert approver.api.get(request_url).json()["status"] == "executed"
+
+
+def test_a_transfer_in_a_currency_no_limit_names_is_refused(maker: Person) -> None:
+    """Pounds: no limit or threshold names them, so nothing is asked or moved."""
+    card = maker.register_card()
+    pounds = {"amount": "1000000.00", "currency": "GBP"}
+    body = {"card_id": card, "amount": pounds}
+
+    asked = maker.api.post(f"{URL}/transfers/authorize", json=body)
+    made = maker.api.post(
+        f"{URL}/transfers",
+        json=body,
+        headers={"X-Authorization": "none", "Idempotency-Key": "gbp"},
+    )
+
+    assert (asked.status_code, made.status_code) == (422, 422)
