@@ -235,11 +235,12 @@ async def test_no_entry_is_dated_in_a_closed_period() -> None:
         await post_entry(transfer(sales, cash, usd("1"), "r-2"), AccountingUnitOfWork())
     with refused(PeriodIsClosed):
         await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
-    with refused(PeriodIsClosed, match=r"^The books are closed up to a later date"):
-        await open_period(
-            OpenPeriod(name="2026-09", starts_on=date(2026, 9, 1), ends_on=TODAY),
-            AccountingUnitOfWork(),
-        )
+    for starts_on in (date(2026, 9, 1), TODAY):  # Its last day is closed too.
+        with refused(PeriodIsClosed, match=r"^The books are closed up to a later"):
+            await open_period(
+                OpenPeriod(name="2026-09", starts_on=starts_on, ends_on=TODAY),
+                AccountingUnitOfWork(),
+            )
     with refused(PeriodNotFound, match=r"^No accounting period has that id\.$"):
         await close_period(
             ClosePeriod(period_id=uuid.UUID(int=3)), AccountingUnitOfWork()

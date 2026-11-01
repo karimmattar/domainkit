@@ -23,6 +23,7 @@ from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
     AccountingUnitOfWork,
     AccountType,
+    CloseAccount,
     InsufficientFunds,
     Line,
     PeriodNotFound,
@@ -30,6 +31,7 @@ from domainkit.contrib.accounting import (
     PostEntry,
     ReferenceReused,
     ReleaseHold,
+    close_account,
     expire_holds,
     general_ledger,
     place_hold,
@@ -958,3 +960,35 @@ async def test_verify_finds_a_held_amount_its_holds_do_not_add_up_to() -> None:
         ("held_differs", str(card.id), "1000: held 1.0000, active holds 5.0000"),
         ("held_differs", str(other.id), "1001: held 4.0000, active holds 0.0000"),
     ]
+
+
+@pytest.mark.usefixtures("books")
+async def test_only_an_open_account_with_money_on_it_or_held_holds_an_erasure() -> None:
+    """Empty, or closed: no hold; a balance, or a hold alone: held (FIN-94)."""
+    from domainkit.contrib.accounting.personal import hold_erasure
+
+    await period()
+    bank = await account("1000")
+    empty = await account("2001", type=AccountType.LIABILITY, holder="empty")
+    held = await account("2002", type=AccountType.LIABILITY, holder="held")
+    funded = await account("2003", type=AccountType.LIABILITY, holder="funded")
+    await post_entry(
+        PostEntry(
+            source="tests",
+            reference="fund",
+            booked_on=date(2026, 10, 10),
+            lines=(Line.debit(bank.id, usd("5")), Line.credit(funded.id, usd("5"))),
+        ),
+        AccountingUnitOfWork(),
+    )
+    await place_hold(
+        PlaceHold(account_id=held.id, amount=usd("2"), source="cards", reference="h"),
+        AccountingUnitOfWork(),
+    )
+    await close_account(CloseAccount(account_id=empty.id), AccountingUnitOfWork())
+    reason = "Holds an open account with money on it or held: close it first."
+
+    assert await hold_erasure("empty") is None
+    assert await hold_erasure("nobody") is None
+    assert await hold_erasure("held") == reason
+    assert await hold_erasure("funded") == reason

@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Final
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import exists, or_, select, update
 
 from domainkit.db import connections
 
@@ -87,15 +87,15 @@ async def hold_erasure(subject: str) -> str | None:
     """Why the subject's books must stay theirs for now: an account with money on it."""
     async with connections.engine(accounting_alias()).connect() as connection:
         funded = await connection.scalar(
-            select(accounts.c.id)
-            .where(
-                accounts.c.holder == subject,
-                accounts.c.status == AccountStatus.OPEN,
-                or_(accounts.c.balance != ZERO, accounts.c.held != ZERO),
+            select(
+                exists().where(
+                    accounts.c.holder == subject,
+                    accounts.c.status == AccountStatus.OPEN,
+                    or_(accounts.c.balance != ZERO, accounts.c.held != ZERO),
+                )
             )
-            .limit(1)
         )
-    if funded is None:
+    if not funded:
         return None
     return "Holds an open account with money on it or held: close it first."
 

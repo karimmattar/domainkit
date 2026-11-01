@@ -155,7 +155,7 @@ def test_thresholds_sum_per_currency_and_never_mix_them() -> None:
     assert not threshold.exceeded_by([usd, usd])
     assert threshold.exceeded_by([usd, usd, Money.of("0.01", "USD")])
     assert threshold.exceeded_by([Money.of("0.01", "EUR")])
-    every = Threshold({"USD": "100", "*": "1000"})
+    every = Threshold({"*": "1000", "USD": "100"})  # "*" first: USD still read.
     assert not every.exceeded_by([Money.of("1000", "EUR"), usd])
     assert every.exceeded_by([Money.of("1000.01", "EUR")])
     assert every.exceeded_by([Money.of("100.01", "USD")])
