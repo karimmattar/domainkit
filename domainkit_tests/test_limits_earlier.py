@@ -239,9 +239,10 @@ async def test_an_accounts_rolling_limit_counts_its_own_postings_only() -> None:
     """A limit of one account, over the last 24 hours: that account's, back to 9:00."""
     await period()
     (first, second), (till, other) = await wallets("h-1", 2)
-    with freeze_time(MORNING):
-        await post_entry(spend(first, till, egp("70"), "p-1"), AccountingUnitOfWork())
+    with freeze_time(MORNING):  # Another account's first, then its own: both read.
         await post_entry(spend(second, other, egp("90"), "p-2"), AccountingUnitOfWork())
+        await post_entry(spend(first, till, egp("70"), "p-1"), AccountingUnitOfWork())
+        await post_entry(spend(second, other, egp("10"), "p-0"), AccountingUnitOfWork())
     with freeze_time(ELEVEN):
         await limit(
             code="rolling",
