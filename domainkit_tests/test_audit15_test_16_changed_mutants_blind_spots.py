@@ -8,9 +8,10 @@ mutant, and the job reports "none changed" or fails for the wrong reason:
   ``@classmethod`` (a route, ``@property``, ``@contextmanager``,
   ``@model_validator``, ``@cache``, a pytest fixture): mutmut 3 never
   mutates one (``file_mutation.py``, "ignore decorated functions"), yet the
-  script names it; a pull request that changes only such functions makes
-  ``mutmut run`` stop with "Filtered for specific mutants, but nothing
-  matches", and in a larger one they are dropped without a word. 363 of
+  script named it (it now lists it apart: mutmut cannot mutate it); a
+  pull request that changes only such functions made ``mutmut run``
+  stop with "Filtered for specific mutants, but nothing matches", and in
+  a larger one they were dropped without a word. 363 of
   ``src/domainkit``'s 4,466 functions (3,494 lines) are decorated so;
 - lines deleted inside a function that stays (a guard removed): a hunk
   ``+N,0`` adds no line, so the function is not named;
@@ -67,7 +68,9 @@ def changed(tmp_path: Path, edit: str) -> list[str]:
         git(tmp_path, "mv", "src/domainkit/pay.py", "src/domainkit/payments.py")
         moved = package / "payments.py"
         moved.write_text(
-            moved.read_text(encoding="utf-8").replace("(user)", "(user.id)"),
+            moved.read_text(encoding="utf-8").replace(
+                "PermissionError(user)", "PermissionError(user.id)"
+            ),
             encoding="utf-8",
         )
     else:
@@ -106,15 +109,23 @@ def mutmuts_names(source: str) -> list[str]:
 
 
 def test_every_changed_function_named_has_mutants(tmp_path: Path) -> None:
-    """A decorated function is mutated, or not named as if it were."""
+    """A decorated function mutmut never mutates is listed apart, not named.
+
+    The decision (0.15 fix wave): mutmut 3 cannot mutate it, so the script
+    names only what mutmut mutates, and lists the rest in
+    ``unmutated-functions.txt`` for the job summary; ADR 0106 says so.
+    """
     patterns = changed(tmp_path, "limit + 1|limit + 2")
     names = [
         f"domainkit.pay.{name}"
         for name in mutmuts_names(BEFORE.replace("limit + 1", "limit + 2"))
     ]
+    listed = (tmp_path / "unmutated-functions.txt").read_text(encoding="utf-8")
 
-    assert patterns == ["domainkit.pay.x_opened__mutmut_*"]
+    assert patterns == []
     assert all(any(fnmatchcase(n, p) for n in names) for p in patterns), names
+    assert listed == "domainkit.pay.x_opened\n"
+    assert not any(name.startswith("domainkit.pay.x_opened") for name in names)
 
 
 def test_a_deleted_guard_mutates_its_function(tmp_path: Path) -> None:

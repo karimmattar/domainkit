@@ -1458,13 +1458,15 @@ async def test_cached_keys_are_stable() -> None:
     assert summary.key(invoice_id) == "billing.summary:d285eadc3155161d1ecb8ec5343e73b1"
     assert report.key(a="1", b="2") == report.key(b="2", a="1")
 
+    before = time.time()
     assert (await summary(invoice_id=invoice_id, currency="USDT")).total == 40
+    after = time.time()
     (raw,) = await caches["default"].store.get_many(
         [caches["default"].make_key(summary.key(invoice_id, "USDT"))]
     )
     _, expires, _ = split(raw or b"")
     assert expires is not None
-    assert 59 < expires - time.time() <= 60
+    assert before + 60 <= expires <= after + 60  # Written then: any load (TEST-20).
     assert await summary.invalidate(invoice_id=invoice_id, currency="USDT")
     assert await report(b="2", a="1") == {"a": "1", "b": "2"}
 

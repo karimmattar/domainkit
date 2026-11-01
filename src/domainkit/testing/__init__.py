@@ -106,6 +106,15 @@ from domainkit.money import currencies_kept
 from domainkit.reporting import flush_reports
 
 from . import blocking
+from .authenticators import (
+    Authenticator,
+    UnexpectedResponse,
+    approve_request,
+    confirm_sca,
+    enrol_totp,
+    step_up,
+    totp_code,
+)
 from .clients import (
     AsyncTestClient,
     TestClient,
@@ -134,6 +143,7 @@ __all__ = [
     "IN_MEMORY",
     "AsyncClientFor",
     "AsyncTestClient",
+    "Authenticator",
     "CapturedQueries",
     "ClientFor",
     "DatabaseBlocker",
@@ -152,13 +162,19 @@ __all__ = [
     "SubFactory",
     "TestClient",
     "Trait",
+    "UnexpectedResponse",
+    "approve_request",
     "assert_max_queries",
     "assert_num_queries",
     "browser_session_for",
+    "confirm_sca",
+    "enrol_totp",
     "freeze_time",
     "migrated_database",
     "post_generation",
+    "step_up",
     "token_for",
+    "totp_code",
     "user_token",
 ]
 

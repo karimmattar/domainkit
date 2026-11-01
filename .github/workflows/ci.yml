@@ -908,6 +908,14 @@ jobs:
           if [ -z "$mutants" ]; then
             echo "### Mutation of the changed functions: none changed" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # Decorated functions (routes, validators, properties, context
+          # managers, fixtures): mutmut 3 never mutates them (ADR 0106).
+          if [ -s unmutated-functions.txt ]; then
+            {
+              echo "### Changed functions mutmut does not mutate (decorated)"
+              sed 's/^/- /' unmutated-functions.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       # The patterns are mutant names, not files: no globbing by the shell.
       # Interrupted (SIGINT) before the job's limit, mutmut stops and keeps
       # what it found and its stats, for the shards.
@@ -1203,7 +1211,7 @@ jobs:
               domainkit.contrib.audit.protection.* domainkit.contrib.audit.seals.*
               domainkit.contrib.audit.settings.* domainkit.contrib.audit.tasks.*
               domainkit.contrib.audit.checkpoints.* domainkit.contrib.audit.pruning.*
-              domainkit.contrib.audit.ledgerstates.*
+              domainkit.contrib.audit.ledgerstates.* domainkit.contrib.audit.testing.*
               domainkit.contrib.contenttypes.* domainkit.contrib.evidence.*
               domainkit.contrib.flags.* domainkit.contrib.idempotency.operations.*
               domainkit.contrib.idempotency.settings.*
