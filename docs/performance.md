@@ -89,11 +89,12 @@ What the rungs show:
 - **Plain FastAPI is slower on 0.143** than on 0.141: its own telemetry
   hooks run on every request (ADR 0065). domainkit turns its telemetry off,
   and its own rungs gained far more than that.
-- **A posting is the dearest request**: 13 statements in one
+- **A posting is the dearest request**: 14 statements in one
   transaction, and nearly six times a plain write's calls. The ledger locks its
   accounts and moves their balances (8 statements); `contrib.limits`
-  reads the limits, locks the holder's row, sums its day's usage, and
-  records each subject's movement (5 more), and builds those statements
+  takes its shared lock of the ledger's kinds as the posting commits
+  (SEC-16b-2), reads the limits, locks the holder's row, sums its day's
+  usage, and records each subject's movement (6 more), and builds those statements
   for each request. Without limits installed, a posting was 8 statements
   and about 6,000 calls (PERF-26).
 - **An encrypted field costs a few microseconds a value** (5 to 6 µs to

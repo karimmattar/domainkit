@@ -22,6 +22,7 @@ from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
     AccountingUnitOfWork,
+    AccountStatus,
     AccountType,
     CloseAccount,
     InsufficientFunds,
@@ -51,6 +52,7 @@ from domainkit.contrib.accounting.tables import accounts, postings, statement_li
 from domainkit.contrib.accounting.tasks import EXPIRE_HOLDS, POST_ENTRY
 from domainkit.contrib.messaging.registry import get_task
 from domainkit.contrib.messaging.retry import retryable
+from domainkit.contrib.privacy import ErasureHeld
 from domainkit.db import connections
 from domainkit.ddd import ConcurrentUpdate
 from domainkit.exceptions import ImproperlyConfigured
@@ -392,8 +394,9 @@ async def test_a_holders_accounts_are_exported_oldest_first_then_by_id(
 async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
     """Export lists their accounts and postings, in order; erasure keeps the books.
 
-    Erasure is held while one of their accounts has money on it; done, it
-    names one pseudonym as the holder of all of them (FIN-94).
+    Erasure is held while one of their accounts has money on it, also when
+    it erases (SEC-16b-4); done, it names one pseudonym as the holder of
+    all of them (FIN-94), and closes them.
     """
     await period()
     bank = await account("1000")
@@ -443,6 +446,18 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
 
     exported = await export.call("subject-1")
     nothing = await export.call("subject-2")
+    with refused(ErasureHeld):  # Checked again as it erases: 8.00 is owed.
+        await erase.call("subject-1", "asked")
+    with freeze_time(NOW + timedelta(minutes=5)):
+        await post_entry(
+            PostEntry(
+                source="tests",
+                reference="paid-out",
+                booked_on=date(2026, 10, 21),
+                lines=(Line.debit(wallet.id, usd("8")), Line.credit(bank.id, usd("8"))),
+            ),
+            AccountingUnitOfWork(),
+        )
     erased = await erase.call("subject-1", "asked")
     again = await erase.call("subject-1", "asked")
 
@@ -481,9 +496,10 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
     assert stored.holder.startswith("erased:")
     assert (empty.holder, stored.version, stored.balance) == (
         stored.holder,
-        5,
-        Decimal("8.0000"),
+        6,
+        Decimal("0.0000"),
     )
+    assert {stored.status, empty.status} == {AccountStatus.CLOSED}
     assert await export.call("subject-1") == {}
 
 

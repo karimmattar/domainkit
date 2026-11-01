@@ -493,20 +493,39 @@ def fingerprint(
     reverses: EntryId | None,
 ) -> str:
     """A digest of what an entry books, to tell a retry from another entry."""
-    document = {
-        "booked_on": booked_on.isoformat(),
-        "description": description,
-        "reverses": None if reverses is None else str(reverses),
-        "lines": [
-            [
+    return digest(
+        booked_on,
+        description,
+        reverses,
+        [
+            (
                 str(line.account_id),
                 line.side.value,
                 decimal_text(line.amount.amount),
                 line.amount.currency.code,
                 line.memo,
-            ]
+            )
             for line in lines
         ],
+    )
+
+
+def digest(
+    booked_on: date,
+    description: str,
+    reverses: UUID | None,
+    lines: Sequence[tuple[str, str, str, str, str]],
+) -> str:
+    """``fingerprint``, of lines as text: account, side, amount, currency, memo.
+
+    ``verify_ledger`` takes it of the stored postings, to compare with the
+    trail's ``EntryPosted`` (SEC-16b-6).
+    """
+    document = {
+        "booked_on": booked_on.isoformat(),
+        "description": description,
+        "reverses": None if reverses is None else str(reverses),
+        "lines": [list(line) for line in lines],
     }
     text = json.dumps(document, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
@@ -675,8 +694,14 @@ class Hold(AggregateRoot[HoldId]):
         source: str,
         reference: str,
         expires_at: datetime,
+        *,
+        now: datetime | None = None,
     ) -> Self:
         """Reserve ``amount`` on ``account`` until ``expires_at``; ``HoldPlaced``.
+
+        ``now`` is the present it is placed at, and checks ``expires_at``
+        against: the database's clock (``place_hold``), which decides when
+        it expires; ``domainkit.clock``'s by default.
 
         Raises:
             InvalidEntry: The source or reference is malformed, or
@@ -696,7 +721,7 @@ class Hold(AggregateRoot[HoldId]):
             raise InvalidAmount("An amount is more than zero.")
         if expires_at.utcoffset() is None:
             raise InvalidEntry("A hold's expiry needs a time zone.")
-        now = _now()
+        now = _now() if now is None else now
         if not now < expires_at <= now + LONGEST_HOLD:
             raise InvalidEntry("A hold expires in the future, within 366 days.")
         account.reserve(amount)
@@ -708,6 +733,7 @@ class Hold(AggregateRoot[HoldId]):
             source=source,
             reference=reference,
             expires_at=expires_at,
+            placed_at=now,
         )
         hold.record(
             HoldPlaced(hold_id=hold.id, account_id=account.id, expires_at=expires_at)

@@ -8,7 +8,9 @@ postings never change (FIN-87), so its general ledger is the same
 whatever the pieces saw. Each sums to zero per currency, as balanced entries must: the
 trial balance's debits equal its credits and its closing balances add up
 to zero; the general ledger's ``net`` column (debits positive, credits
-negative) adds up to zero. ``verify_ledger`` checks the books themselves.
+negative) adds up to zero. ``verify_ledger`` checks the books themselves,
+and, with the audit trail, each entry against the ``EntryPosted`` the
+trail recorded for it (SEC-16b-6).
 
 The JSON is stable: keys sorted, no spaces, amounts as fixed-point text
 at their currency's places, rows in a fixed order (accounts by code,
@@ -23,11 +25,13 @@ from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import Final, Literal
+from typing import Any, Final, Literal
+from uuid import UUID
 
 from sqlalchemy import RowMapping, case, func, literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.resources.renderers import csv_rows
 
@@ -36,11 +40,13 @@ from .models import (
     ZERO,
     AccountId,
     AccountType,
+    EntryPosted,
     HoldStatus,
     PeriodId,
     PeriodStatus,
     Side,
     amount_text,
+    digest,
 )
 from .tables import accounts, entries, holds, periods, postings
 from .uow import accounting_alias
@@ -69,7 +75,9 @@ GENERAL_LEDGER_FORMAT: Final = "domainkit.accounting.general_ledger"
 VERSION: Final = 1
 """The version of both JSON formats."""
 CHUNK: Final = 500
-"""Postings per piece of a streamed general ledger."""
+"""Postings per piece of a streamed general ledger, and entries per piece of
+the trail ``verify_ledger`` compares the books with."""
+AUDIT: Final = "domainkit.contrib.audit"
 type Format = Literal["csv", "json"]
 TRIAL_BALANCE_COLUMNS: Final = (
     "code",
@@ -451,10 +459,13 @@ async def general_ledger(period_id: PeriodId, format: Format) -> AsyncIterator[s
 class LedgerProblem:
     """Something ``verify_ledger`` found wrong with the books."""
 
-    kind: Literal["unbalanced_entry", "balance_differs", "held_differs"]
+    kind: Literal[
+        "unbalanced_entry", "balance_differs", "held_differs", "entry_differs"
+    ]
     """An entry whose debits and credits differ in a currency, an account
-    whose stored balance is not the sum of its postings, or one whose held
-    amount is not the sum of its active holds."""
+    whose stored balance is not the sum of its postings, one whose held
+    amount is not the sum of its active holds, or an entry that is not as
+    the audit trail recorded it posted (gone, or its postings changed)."""
     id: str
     """The entry's id, or the account's."""
     detail: str
@@ -474,6 +485,14 @@ async def verify_ledger() -> list[LedgerProblem]:
     accept that an entry committed between them shows as a difference. The
     database compares, and only what differs comes back, streamed, so the
     check holds no more than its problems however long the books (PERF-28).
+
+    With ``domainkit.contrib.audit``, each entry the trail recorded posted
+    (``EntryPosted``, with its amounts and digest) is compared with the
+    books, ``CHUNK`` entries at a time: an entry rewritten on both sides,
+    its balances with it, still balances, but no longer matches the trail
+    (SEC-16b-6). Entries whose trail rows were pruned, or excluded
+    (``AUDIT.EXCLUDE``), or posted before 0.15, are not compared; that the
+    trail itself is as written is ``auditverify``'s to say.
     """
     signed = case(
         (postings.c.side == Side.DEBIT, postings.c.amount), else_=-postings.c.amount
@@ -566,4 +585,93 @@ async def verify_ledger() -> list[LedgerProblem]:
                 async for each in held
             ]
         )
+    if registry.is_installed(AUDIT):
+        problems.extend([each async for each in _against_trail()])
     return problems
+
+
+async def _against_trail() -> AsyncIterator[LedgerProblem]:
+    """The entries that differ from the ``EntryPosted`` the trail recorded."""
+    from domainkit.contrib.audit import action_for, recorded
+
+    engine = connections.engine(accounting_alias())
+    async with engine.connect() as trail, engine.connect() as books:
+        action = action_for(EntryPosted)
+        async for chunk in recorded(trail, action, per=CHUNK):
+            posted: dict[UUID, Mapping[str, Any]] = {
+                UUID(details["entry_id"]): details
+                for details in chunk
+                if "digest" in details  # Not those posted before 0.15.
+            }
+            stored: defaultdict[UUID, list[Any]] = defaultdict(list)
+            for each in await _postings(books, list(posted)):
+                stored[each.entry_id].append(each)
+            for entry_id, details in posted.items():
+                if (found := _entry(entry_id, stored[entry_id], details)) is not None:
+                    yield found
+
+
+async def _postings(connection: AsyncConnection, ids: list[UUID]) -> Sequence[Any]:
+    """The postings of the entries ``ids``, with their entries', by entry and line."""
+    return (
+        await connection.execute(
+            select(
+                postings.c.entry_id,
+                entries.c.source,
+                entries.c.reference,
+                entries.c.booked_on,
+                entries.c.description,
+                entries.c.reverses,
+                postings.c.account_id,
+                postings.c.side,
+                postings.c.amount,
+                postings.c.currency,
+                postings.c.memo,
+            )
+            .join_from(entries, postings, postings.c.entry_id == entries.c.id)
+            .where(entries.c.id.in_(ids))
+            .order_by(postings.c.entry_id, postings.c.line)
+        )
+    ).all()
+
+
+def _entry(
+    entry_id: UUID, found: list[Any], details: Mapping[str, Any]
+) -> LedgerProblem | None:
+    """How the entry ``entry_id``, its postings ``found``, differs from the trail."""
+    if not found:
+        return LedgerProblem(
+            "entry_differs", str(entry_id), "in the audit trail, not in the books"
+        )
+    first = found[0]
+    moved: defaultdict[str, list[Decimal]] = defaultdict(lambda: [ZERO, ZERO])
+    lines = []
+    for row in found:
+        try:
+            text = amount_text(row.amount, row.currency)
+        except (ArithmeticError, ValueError):  # Not an amount of its currency.
+            text = str(row.amount)
+        side = Side(row.side)
+        lines.append((str(row.account_id), side.value, text, row.currency, row.memo))
+        moved[str(row.account_id)][side is Side.CREDIT] += row.amount
+    computed = digest(first.booked_on, first.description, first.reverses, lines)
+    named = (first.source, first.reference) == (details["source"], details["reference"])
+    if computed == details["digest"] and named:
+        return None
+    return LedgerProblem("entry_differs", str(entry_id), _difference(moved, details))
+
+
+def _difference(moved: dict[str, list[Decimal]], details: Mapping[str, Any]) -> str:
+    """Where the postings differ from the trail: the first account, else in words."""
+    for amount in details["amounts"]:
+        account = amount["account_id"]
+        trail = [Decimal(amount[side]["amount"]) for side in ("debits", "credits")]
+        stored = moved.pop(account, [ZERO, ZERO])
+        if stored != trail:
+            return (
+                f"{account}: debits {_shown(stored[0])}, credits {_shown(stored[1])}; "
+                f"the trail: debits {_shown(trail[0])}, credits {_shown(trail[1])}"
+            )
+    if moved:
+        return f"{min(moved)}: posted to, and not in the trail"
+    return "its date, description, memos, source, or reference differ from the trail"

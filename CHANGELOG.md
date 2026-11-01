@@ -11,6 +11,18 @@ and a status.
 
 ### Added
 
+- `accounting verify` compares each entry with the `EntryPosted` the audit
+  trail recorded for it, when audit is installed: its digest, of the
+  stored date, description, and postings, and its source and reference
+  (`entry_differs`, naming the account whose amounts differ, or an entry
+  the trail has and the books lack). A rewrite of both postings and both
+  balances, which still balances, is found (SEC-16b-6).
+- `MovementOutOfRange` (`domainkit.contrib.limits`, 422
+  `amount_out_of_range`): a movement, the sum of an entry's postings for
+  one subject, larger than usage keeps (SEC-16b-5).
+- The limits table `domainkit_limits_kept` marks reversals counted as
+  movements (booked under an approved request), purged with the usage
+  (SEC-16b-9).
 - `domainkit.apps.hooks.on_retain_subject`: a domain says why a person's
   data must be kept for now (`async def check(subject, reason) -> str |
   None`). `privacy erase` asks every check before any hook erases: one
@@ -356,6 +368,22 @@ and a status.
 
 ### Changed
 
+- The ledger's movements are counted against limits as the posting
+  commits (`count_staged`, an `on_stage` hook), under a shared lock of
+  each ledger kind that `count_earlier` takes alone on PostgreSQL; a
+  limit set while a posting is in flight counts that posting, or is read
+  by it (SEC-16b-2). One statement more a posting on PostgreSQL.
+- A held erasure is checked again as the ledger erases, with the
+  accounts locked, and the domains that may hold erasures erase first
+  (SEC-16b-4).
+- A hold's default expiry counts from the database's clock, and a given
+  one is checked against it (the SEC-16b review).
+- A reconciliation cancelled while its matching rule runs waits for the
+  rule's thread before it lets go of the account (the SEC-16b review).
+- The docs say that the ledger's and approvals' erasure is
+  pseudonymisation, not anonymisation, how to settle a held erasure, and
+  that a default added by a deploy starts with an empty window (the
+  SEC-16b review, SEC-16b-3).
 - Python 3.15 is tested: `test (3.15)` runs the suite and is a required
   check, the `newest` job runs on 3.15, and the classifiers name it;
   `requires-python` already admitted it (INFRA-17).
@@ -700,6 +728,28 @@ and a status.
 
 ### Fixed
 
+- `POST /accounts` opened an account that may go negative unless told
+  otherwise: `AccountIn.may_go_negative` defaults to `False`, as
+  `OpenAccount` does (SEC-16b-1).
+- Removing a limit (an exemption, say) gave the limit that then applies
+  an empty window; it counts the window's postings back (SEC-16b-3).
+- Money that landed between an erasure's check and the ledger's erasure
+  was left on an open account owed to `erased:…`: the erasure is held
+  then, and it closes the person's open accounts, empty, so none takes
+  money for an erased holder (SEC-16b-4).
+- An entry whose movement for one subject passed usage's columns failed
+  as a 500 (and was retried from `defer_entry`); it is refused,
+  `amount_out_of_range` (SEC-16b-5).
+- An approved request ran for a maker who no longer passed the guard's
+  `maker_rule` (a member of staff demoted after submitting); the run
+  checks it, on the maker as a user (SEC-16b-7).
+- A limit for every subject could not be set or changed once more than
+  6,553 subjects had moved in its window (asyncpg's 32,767 parameters);
+  counting back writes and reads the subjects 1,000 at a time
+  (SEC-16b-8).
+- A limit set after an approved reversal counted neither it nor the
+  payout it undid, freeing the payout to be drawn again; both count, as
+  `enforce` counted them (SEC-16b-9).
 - `release.yml` refused a tag whose CI run had passed every required
   check when the advisory `stress (3.14t)` job, which runs on the push and
   crashes now and then inside SQLAlchemy on 3.14t, failed: it judged the

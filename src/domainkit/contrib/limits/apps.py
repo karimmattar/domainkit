@@ -12,6 +12,7 @@ from domainkit.apps.hooks import (
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.db.hooks import on_stage
 from domainkit.db.routing import router
 from domainkit.ddd import DomainError
 from domainkit.money import Money, MoneyError
@@ -37,7 +38,8 @@ class LimitsConfig(DomainConfig):
         """Check the routing and the defaults; map the table; register the hooks.
 
         With the ledger installed, its postings are counted against limits
-        (``on_stage_entry``): the limits live in the ledger's database, or
+        (``on_stage_entry``, and ``on_stage`` as each posting commits): the
+        limits live in the ledger's database, or
         ``setup()`` fails (``limits.E001``). A default of ``LIMITS.DEFAULTS``
         that is not a limit fails it too (``limits.E002``). With messaging,
         old usage is purged on a schedule (``tasks``).
@@ -69,9 +71,10 @@ class LimitsConfig(DomainConfig):
         if registry.is_installed(ACCOUNTING):
             from domainkit.contrib.accounting.hooks import on_stage_entry
 
-            from .postings import enforce
+            from .postings import count_staged, enforce
 
             on_stage_entry(enforce)
+            on_stage(count_staged)
         if registry.is_installed(MESSAGING):
             from .tasks import register
 

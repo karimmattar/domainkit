@@ -67,7 +67,7 @@ from domainkit.money import Money
 from .exceptions import CurrencyNotLimited, LimitExceeded, TransactionLimitExceeded
 from .models import Direction, Limit, Movement, Window, limit_currency
 from .settings import LimitDefault, LimitsSettings
-from .tables import limits, subjects, usage
+from .tables import kept, limits, subjects, usage
 from .uow import limits_alias
 
 ANY_CURRENCY: Final = "*"
@@ -718,6 +718,8 @@ def _usage(rule: Rule, code: str, now: datetime, amount: Decimal, count: int) ->
 async def purge_usage() -> int:
     """Delete usage older than ``LIMITS.KEEP_USAGE``, and subjects idle as long.
 
+    The marks of reversals counted as movements (``kept``) go with them.
+
     Returns:
         How many movements' usage this call deleted.
     """
@@ -736,6 +738,7 @@ async def purge_usage() -> int:
             break
     async with engine.begin() as connection:
         cutoff = dbclock.at(connection.dialect.name, seconds)
+        await connection.execute(delete(kept).where(kept.c.at < cutoff))
         await connection.execute(
             delete(subjects).where(
                 subjects.c.touched_at < cutoff,

@@ -16,6 +16,7 @@ that pairs some of them; projects add their own (``MatchingRule``).
 """
 
 import asyncio
+import contextlib
 import csv
 import hashlib
 import io
@@ -639,7 +640,7 @@ async def reconcile(account_id: AccountId) -> Reconciled:
         now = clock.now()
         counts: dict[str, int] = {}
         for rule in rules:
-            paired = await asyncio.to_thread(_pairs, rule, lines, items, window)
+            paired = await _off_loop(rule, lines, items, window)
             if not paired:
                 continue
             used_lines = {line.id for line, _ in paired}
@@ -729,6 +730,30 @@ async def reconcile(account_id: AccountId) -> Reconciled:
         account.reconciled(run_id, counts, len(left))
         await uow.commit()
     return Reconciled(run_id, counts, left)
+
+
+async def _off_loop(
+    rule: MatchingRule,
+    lines: Sequence[StatementItem],
+    items: Sequence[PostingItem],
+    window: timedelta,
+) -> list[tuple[StatementItem, PostingItem]]:
+    """What ``rule`` pairs, worked out on a thread (PERF-25).
+
+    A thread cannot be stopped: a reconciliation cancelled meanwhile waits
+    for it, holding the account's lock, and only then gives up, so no
+    second run of the account starts while the first one's rule still
+    works (the SEC-16b review).
+    """
+    work = asyncio.ensure_future(asyncio.to_thread(_pairs, rule, lines, items, window))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        while not work.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait({work})
+        work.exception()  # Retrieved: cancelled, the run reports none of it.
+        raise
 
 
 def _pairs(

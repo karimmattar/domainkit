@@ -15,8 +15,8 @@ that raises refuses the entry. They differ in when they run:
   ``reverse_entry``, and ``capture_hold`` book. The transaction rolls back
   with whatever the hook wrote. Rows a hook locks come after the accounts
   in the ledger's lock order, so take them in an order of their own
-  (ADR 0116). ``domainkit.contrib.limits`` counts each entry there
-  (ADR 0123)::
+  (ADR 0116). ``domainkit.contrib.limits`` works each entry's movements
+  out there, and counts them as the posting commits (ADR 0123)::
 
       from domainkit.contrib.accounting.hooks import on_stage_entry
 

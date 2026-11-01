@@ -80,7 +80,21 @@ wallet = await open_account(
   same for all of them, so the books still show which were one person's
   (FIN-94). While the person holds an open account with money on it or
   held, the erasure is held (`erasure_held`): a business does not erase
-  someone it still owes, or who owes it; close the accounts first.
+  someone it still owes, or who owes it; close the accounts first. The
+  erasure checks again as it renames the accounts, which locks them, so
+  money that landed after the first check holds it then, before anything
+  else is erased; and it closes the person's open accounts, empty by
+  then, so none takes money for an erased holder (SEC-16b-4).
+- **Settling a held erasure.** Anyone who can credit a wallet or place a
+  hold on it can keep its holder's erasure held. Settle first: release
+  the holds (`release_hold`), pay what is owed out to the person, or to a
+  suspense account the business keeps for unclaimed money (a liability
+  of its own, `may_go_negative=False`, with no holder), with an entry the
+  business books, then close each account (`close_account`) and erase.
+  Closed accounts take no more money, so the erasure then goes through;
+  the law's deadline for answering the request (a month under the GDPR)
+  is the business's to keep, and `privacy.erase` recorded as denied, with
+  its reason, is the evidence of when it was asked.
   `holder` is the only field erasure changes:
   codes, names, descriptions, memos, references, and statement lines are
   kept as written, and a code is shown by every report and by the audit
@@ -209,7 +223,8 @@ await capture_hold(
 ```
 
 A hold reserves an amount on an account until it is captured, released,
-or expires (`expires_at`, or `HOLD_TTL` from now). `expires_at` is a
+or expires (`expires_at`, or `HOLD_TTL` from now, on the database's clock as its
+expiry is). `expires_at` is a
 time with its zone, in the future and at most 366 days away
 (`invalid_entry` otherwise; over HTTP, a time without a zone is a
 validation error, 422). It moves no balance:
@@ -288,7 +303,20 @@ async for piece in general_ledger(october.id, "csv"):  # or "json", streamed
 - `verify_ledger()` (and `manage.py accounting verify`) checks the books
   themselves: every entry balances, every balance is the sum of its
   postings, and every account's `held` the sum of its active holds. The
-  database compares, and only what differs comes back, streamed.
+  database compares, and only what differs comes back, streamed. With
+  the audit trail installed, it also compares each entry with the
+  `EntryPosted` the trail recorded for it, 500 entries at a time: the
+  digest of its stored date, description, and postings, and its source
+  and reference, must be the trail's (`entry_differs`, naming the
+  account whose amounts differ, or an entry the trail has and the books
+  do not; SEC-16b-6). Entries whose trail rows were pruned or excluded
+  (`AUDIT.EXCLUDE`), or posted before 0.15, are not compared; that the
+  trail is as written is `auditverify`'s to say.
+- An entry's `posted_at` is the host's clock, as it is drafted (reading
+  the database's would cost a round trip a posting): a limit set later
+  counts back the postings since its window began by it, so keep the
+  hosts' clocks in step with the database's (NTP); a skew of seconds
+  moves only entries posted at a window's edge.
 - The trial balance is one statement, the chart joined in it, however
   many accounts moved; the general ledger is read in pieces of 500
   postings, each in a short transaction of its own, so a slow reader
@@ -298,8 +326,8 @@ async for piece in general_ledger(october.id, "csv"):  # or "json", streamed
   account and currency, its debits and credits (`amounts`), and the
   SHA-256 of its date, description, and lines (`digest`), sealed and
   anchored with the trail (FIN-96). A rewrite of postings and balances
-  that `verify_ledger` cannot see, by whoever can drop the triggers, no
-  longer matches the trail.
+  that `verify_ledger`'s sums cannot see, by whoever can drop the
+  triggers, no longer matches the trail, and `verify_ledger` says so.
 
 ## Reconciliation
 

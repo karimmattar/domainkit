@@ -1011,6 +1011,9 @@ msgstr "لم تعد حماية الطلب أو سياسته موجودة؛ فل�
 msgid "The amount is larger than the ledger keeps."
 msgstr "المبلغ أكبر مما يحفظه الدفتر."
 
+msgid "The amount is larger than limits keep."
+msgstr "المبلغ أكبر مما تحفظه الحدود."
+
 msgid "The books are closed up to a later date than this one."
 msgstr "الدفاتر مقفلة حتى تاريخ لاحق لهذا التاريخ."
 

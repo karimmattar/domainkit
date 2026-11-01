@@ -141,9 +141,27 @@ async with PaymentsUnitOfWork() as uow:
   partway through its window (an exemption lifted, a limit that gains a
   window) counts what the ledger's postings moved since the window
   began, for accounts and holders, in the transaction that sets it:
-  every entry not reversed, once. An actor's movements, and a project's
-  own kinds counted with `consume`, are not on record: they count from
-  when a window bounds them.
+  every entry not reversed, once, and a reversal booked under an approved
+  request with the entry it reverses (SEC-16b-9). Removing a limit counts
+  back too, for the limit of its code that now applies to its subjects
+  (removing an exemption, say: the default's daily window sees the
+  morning, SEC-16b-3). An actor's movements, and a project's own kinds
+  counted with `consume`, are not on record: they count from when a
+  window bounds them. **A default added to `LIMITS.DEFAULTS` by a deploy
+  starts with an empty window**: no transaction sets it, so nothing counts
+  back. To have it see the window so far, add it as a stored limit
+  (`set_limit`) instead, and move it to the settings once a window has
+  passed. A limit for every subject counts back in pieces of
+  1,000 subjects, whatever their number (SEC-16b-8).
+- **The ledger counts at the commit.** An entry's movements are worked
+  out as it is booked and counted as its transaction commits, after the
+  rest of its work, under a shared lock of each ledger kind that counting
+  back takes alone (on PostgreSQL). A limit set while a posting is in
+  flight either waits for that commit and counts the posting, or is read
+  by it (SEC-16b-2); a refusal still rolls the whole posting back. An
+  entry whose movement for one subject, the sum of its postings for it,
+  is more than usage keeps (`NUMERIC(18, 4)`) is refused,
+  `MovementOutOfRange` (422 `amount_out_of_range`, SEC-16b-5).
 - **Currencies fail closed.** A subject some limit bounds in one currency
   is bounded in all: a movement in a currency none of its limits names
   is refused, `CurrencyNotLimited` (422 `currency_not_limited`), unless a

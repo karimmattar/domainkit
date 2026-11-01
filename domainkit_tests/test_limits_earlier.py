@@ -39,9 +39,11 @@ from domainkit.contrib.limits import (
     Limit,
     LimitExceeded,
     LimitsUnitOfWork,
+    RemoveLimit,
     SetLimit,
     Window,
     change_limit,
+    remove_limit,
     set_limit,
     usage_of,
 )
@@ -381,3 +383,59 @@ async def test_an_approved_reversal_counts_and_frees_nothing() -> None:
             await post_entry(
                 spend(wallet, till, egp("600"), "p-2"), AccountingUnitOfWork()
             )
+
+
+@pytest.mark.usefixtures("books")
+async def test_removing_a_limit_counts_back_for_the_default_that_applies() -> None:
+    """A stored limit without a window, removed: the default for every currency counts.
+
+    The default is for every currency (``"*"``), so it counts back in the
+    removed limit's; another code's default, which applies already, does not.
+    """
+    defaults = [
+        {
+            "code": "wallet.daily",
+            "kind": "holder",
+            "currency": "*",
+            "window": "day",
+            "max_amount": "1000",
+            "time_zone": "UTC",
+        },
+        {
+            "code": "wallet.cap",
+            "kind": "holder",
+            "currency": "EGP",
+            "per_transaction": "100000",
+        },
+    ]
+    with override_settings(LIMITS={"DEFAULTS": defaults}):
+        await period()
+        (wallet,), (till,) = await wallets("h-1", 1)
+        with freeze_time(MORNING):
+            single = await set_limit(
+                SetLimit(
+                    code="wallet.daily",
+                    kind="holder",
+                    currency="EGP",
+                    per_transaction=egp("5000"),
+                ),
+                LimitsUnitOfWork(),
+            )
+            await post_entry(
+                spend(wallet, till, egp("900"), "p-1"), AccountingUnitOfWork()
+            )
+        with freeze_time(ELEVEN):
+            await remove_limit(RemoveLimit(limit_id=single.id), LimitsUnitOfWork())
+        with freeze_time(NOON):
+            (daily,) = [
+                each
+                for each in await usage_of(
+                    "holder", "h-1", currency="EGP", direction=Direction.OUT
+                )
+                if each.code == "wallet.daily"
+            ]
+            assert (daily.used, daily.count) == (egp("900"), 1)
+            with refused(LimitExceeded):
+                await post_entry(
+                    spend(wallet, till, egp("900"), "p-2"), AccountingUnitOfWork()
+                )

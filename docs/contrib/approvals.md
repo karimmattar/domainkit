@@ -85,7 +85,10 @@ class PaymentsConfig(DomainConfig):
   command it approved: a guarded service called from inside it with
   another command is refused like any other.
 - `maker_rule=` is an access rule a maker must pass to submit over HTTP,
-  besides `permission` (`IsSuperuser()` for making superusers);
+  besides `permission` (`IsSuperuser()` for making superusers), and
+  again when the approved command runs, on the maker as a user then,
+  with no credentials (a rule about the submitting request's own scopes
+  or step-up is checked at submission only, and refuses at the run);
   `parties=` names, for a command, the people it is about (the payee of
   a payment, the user a grant promotes): they may not approve or reject
   it (`interested_party`, 403), and their approvals never count.
@@ -181,8 +184,9 @@ await approve_request(
   approved ones count against their maker. A currency no threshold
   names needs approval at any amount.
 - **A maker who leaves.** An approved command runs only while its maker,
-  a user, is active and holds the guard's maker permission; otherwise
-  the request fails (`maker_not_allowed`). Deactivate a person, or take
+  a user, is active, holds the guard's maker permission, and passes its
+  `maker_rule` (SEC-16b-7); otherwise the request fails
+  (`maker_not_allowed`). Deactivate a person, or take
   the permission back, and what they left waiting runs nothing.
 
 The approval that completes a request queues its command through the
@@ -419,7 +423,12 @@ again for the pseudonym, so the record still verifies (only seals that
 held: an erasure launders no row changed around the application). Their
 pending requests are cancelled, an approved one of theirs not run yet
 fails (`maker_not_allowed`) rather than runs, and the reasons they wrote,
-free text, are blanked.
+free text, are blanked. This is pseudonymisation, not anonymisation: the
+pseudonym links back to the person through what else is kept (the trail's
+actors, `request_executed`'s approvers, the business's own records), and
+a request about the person rather than by them keeps their id in its
+command (`parties`: the user `grant_superuser` promotes, a payee), so the
+record is still personal data, kept because the law asks.
 
 ## Settings
 

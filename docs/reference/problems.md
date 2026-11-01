@@ -31,7 +31,7 @@ How each status is reached, and which fields a body holds, is in
 | `account_not_empty` | 422 | `AccountNotEmpty` (contrib.accounting.exceptions): Closing an account that still has a balance, or holds. |
 | `account_not_found` | 404 | `AccountNotFound` (contrib.accounting.exceptions): No account has that id or code. |
 | `already_decided` | 409 | `AlreadyDecided` (contrib.approvals.exceptions): This person approved or rejected the request already (409). |
-| `amount_out_of_range` | 422 | `AmountOutOfRange` (money): An amount where it is kept cannot hold it: too many digits, or places. |
+| `amount_out_of_range` | 422 | `AmountOutOfRange` (money): An amount where it is kept cannot hold it: too many digits, or places. Also `MovementOutOfRange` (contrib.limits.exceptions): a movement, the sum of an entry's postings for a subject, larger than limits keep. |
 | `approval_not_needed` | 422 | `ApprovalNotNeeded` (contrib.approvals.exceptions): No policy asks for approval of this command: call it directly. |
 | `approval_pending` | 403 | `ApprovalPending` (contrib.approvals.exceptions): A guarded command called directly was submitted for approval instead (403). |
 | `approval_request_not_found` | 404 | `RequestNotFound` (contrib.approvals.exceptions): No approval request has that id. |

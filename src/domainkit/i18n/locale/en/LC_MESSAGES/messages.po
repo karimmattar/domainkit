@@ -1001,6 +1001,9 @@ msgstr ""
 msgid "The amount is larger than the ledger keeps."
 msgstr ""
 
+msgid "The amount is larger than limits keep."
+msgstr ""
+
 msgid "The books are closed up to a later date than this one."
 msgstr ""
 

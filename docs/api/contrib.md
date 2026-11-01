@@ -235,6 +235,7 @@ An append-only audit trail: who did what, when, from where.
 - `forget_anonymous`: Delete the keys of anonymous callers' days before `before`.
 - `pseudonym_of`: The pseudonym `value` of `field` has in the trail for `subject`.
 - `record`: Record an action in its own transaction (denials, failures, reads).
+- `recorded`: The details of each row of `action` in the trail, `per` rows at a time.
 - `seal`: Seal the rows of `database`'s trail not sealed yet; count them.
 - `seal_all`: Seal, then anchor, every audited database; what each one got.
 - `verify`: Check `database`'s chain against its rows, and against `ledger`.
@@ -406,6 +407,7 @@ Limits on money movements: per transaction, per window, per subject, per currenc
 - `LimitsSettings`: Default limits, and how long usage is kept; every key is optional.
 - `LimitsUnitOfWork`: One transaction on the limits, wherever `limits` is routed.
 - `Movement`: An amount of money moving, and the subjects whose limits it counts against.
+- `MovementOutOfRange`: A movement larger than usage keeps: `NUMERIC(18, 4)` (SEC-16b-5).
 - `RemoveLimit`: Remove a limit: a default of the settings with its key applies again.
 - `SetLimit`: Make the limit of this key, or set the bounds of the one there is.
 - `TransactionLimitExceeded`: A movement over the most one movement may be (`per_transaction`).

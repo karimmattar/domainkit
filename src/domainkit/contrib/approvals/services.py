@@ -27,6 +27,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from pydantic import ValidationError
+from starlette.requests import HTTPConnection
 
 from domainkit import clock
 from domainkit.apps import registry
@@ -52,6 +53,7 @@ from .models import (
     RequestId,
     RequestStatus,
 )
+from .rules import _instance
 from .settings import ApprovalsSettings
 from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias
 
@@ -63,6 +65,10 @@ EXPIRE_BATCH: Final = 500
 """Requests one round of ``expire_requests`` expires at most."""
 MAKER: Final = "A maker's id has 1 to 255 characters."
 APPROVER: Final = "An approver's id has 1 to 255 characters."
+_RUN: Final = HTTPConnection(
+    {"type": "http", "method": "POST", "path": f"/{EXECUTE}", "headers": []}
+)
+"""The connection a run checks a guard's ``maker_rule`` on: no credentials."""
 
 
 def config() -> ApprovalsSettings:
@@ -353,12 +359,17 @@ async def _check_maker(guard: Guard, maker: str) -> None:
 
     With ``domainkit.contrib.auth`` installed, a maker that is a user's id
     must still be an active user, holding the guard's maker permission if
-    it names one: a clerk dismissed, or a customer frozen, after
-    submitting runs nothing. A maker that names no user (a principal of
-    the project's own) is left to the project.
+    it names one and passing its ``maker_rule`` if it has one (SEC-16b-7):
+    a clerk dismissed, a customer frozen, or staff demoted after
+    submitting runs nothing. The rule sees the user on a connection of
+    no credentials (``_RUN``): a rule about the submitting request itself
+    (its scopes, a step-up) was checked when the request was submitted,
+    and one that needs such credentials refuses here. A maker that names
+    no user (a principal of the project's own) is left to the project.
 
     Raises:
-        MakerNotAllowed: The user is gone, inactive, or lacks the permission.
+        MakerNotAllowed: The user is gone, inactive, lacks the permission,
+            or fails the maker rule.
     """
     if not registry.is_installed(AUTH):
         return
@@ -369,8 +380,11 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     from domainkit.contrib.auth import get_user, has_perm
 
     user = await get_user(user_id)
-    if user is None or (
-        guard.permission is not None and not await has_perm(user, guard.permission)
+    rule = _instance(guard.maker_rule)
+    if (
+        user is None
+        or (guard.permission is not None and not await has_perm(user, guard.permission))
+        or (rule is not None and not await rule.has_permission(_RUN, user))
     ):
         raise MakerNotAllowed("Whoever submitted this command may no longer make it.")
 
