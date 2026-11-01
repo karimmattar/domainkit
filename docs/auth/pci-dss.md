@@ -6,7 +6,7 @@ them all, opt-in:
 
 ```python
 AUTH = {
-    "PASSWORD_PRESET": "pci-dss-4",
+    "PRESET": "pci-dss-4",
 }
 ```
 

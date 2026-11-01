@@ -28,12 +28,12 @@ Typed hooks a domain registers for what it takes part in.
 - `Hook`: One registered function, and the domain that registered it.
 - `HookPoint`: Functions installed domains registered for one purpose, in domain order.
 - `hooks_kept`: Put every hook point's registrations back as they were, when the block ends.
-- `on_check`: Raise when the domain cannot serve traffic (`/ready`): `()`.
 - `on_check_application`: Problems with the built application: `(app)`, best as `CheckMessage`.
 - `on_deployment_warnings`: Weak but valid settings where deployed: `()`; none elsewhere.
-- `on_erase_check`: Say why a person's data must be kept for now: `(subject, reason)`.
 - `on_erase_subject`: Erase the copies kept of a person's data: `(subject, reason)`.
 - `on_export_subject`: What the domain keeps about a person outside its aggregates: `(subject)`.
+- `on_ready`: Raise when the domain cannot serve traffic (`/ready`): `()`.
+- `on_retain_subject`: Say why a person's data must be kept for now: `(subject, reason)`.
 - `on_seed`: Add the rows a fresh database needs (`manage.py seed`): `()`.
 - `on_shutdown`: Release what the domain's startup hooks opened: `()`.
 - `on_startup`: Open process resources, such as clients and pools: `()`.
@@ -42,18 +42,13 @@ Typed hooks a domain registers for what it takes part in.
 
 Enforce the dependency rules of a domain-driven package layout.
 
-- `DOMAIN_ALLOWED_PREFIXES`: Non-stdlib modules a domain layer may import (besides its own layer).
 - `FORBIDDEN_LAYERS`: Layers of the same domain that each layer must not import.
 - `FORBIDDEN_LIBRARIES`: Libraries each layer must not import.
-- `FRAMEWORK_PACKAGES`: Installed framework apps (`domainkit.contrib.*`) are services, not domains: they are neither checked nor protected by the cross-domain rule.
-- `LAYERS`: Layer packages of a domain, innermost first.
 - `PUBLIC_SURFACE`: Parts of a domain that other domains may import.
 - `LayerRules`: The rules one check applies; the defaults are the tables above.
 - `Violation`: One import that breaks a rule.
 - `check_domain`: Return the rule violations in domain `package`.
 - `check_domains`: Check every domain in `installed`, under `rules` (the project's).
-- `iter_imports`: Yield `(module, imported)` for every import in `package`'s files.
-- `project_rules`: The rules of the loaded settings' `ARCHITECTURE`, or the defaults.
 
 ## `domainkit.checks`
 
@@ -87,22 +82,23 @@ Django-style settings access.
 - `DEFAULT_CACHE_ALIAS`: The alias of the cache used when none is named: `"default"`.
 - `DEFAULT_DB_ALIAS`: The alias of the database used when none is named: `"default"`.
 - `SETTINGS_MODULE_VARIABLE`: The environment variable naming the settings module, after the project's prefix.
-- `UNSET`: Pass to `override_settings` to remove a setting (Django's `del settings.X`).
+- `UNSET`: Pass to `override_settings` to remove a setting (Django's `del settings.X`); the same object as `domainkit.ddd.UNSET`.
+- `ArchitectureConfig`: `ARCHITECTURE`: what the project adds to the layer rules `check` enforces.
 - `BrokerConfig`: One `BROKERS` entry: a message broker the worker takes its work from.
 - `CacheConfig`: One `CACHES` entry: where cached values live, and for how long.
 - `DatabaseConfig`: One `DATABASES` entry: an SQLAlchemy async URL plus connection options.
+- `DebugToolbarConfig`: `DEBUG_TOOLBAR`: what `DebugToolbarMiddleware` adds while `DEBUG`.
 - `Env`: Read prefixed variables and convert them, failing with the variable name.
+- `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.http.client` clients do by default.
 - `LedgerConfig`: One `LEDGERS` entry: write once, read many, verified on the client.
 - `Settings`: Validated, read-only settings; extra names are checked at `setup()`.
 - `ShardConfig`: One `SHARDS` group: SQL databases that share a schema, split by key.
 - `StorageConfig`: One `STORAGES` entry: a `Storage` class and its arguments (Django's).
 - `configure`: Load `module_name` now instead of `<PREFIX>SETTINGS_MODULE`.
-- `describe_errors`: List failing setting paths and reasons, never the submitted values.
 - `load_settings`: Validate every public UPPERCASE name of `module_name`.
 - `override_settings`: Temporarily replace settings, re-running schema validation.
 - `reset_settings`: Forget loaded settings; the next access loads them again.
 - `settings`: Typed, lazily loaded settings for the selected module.
-- `unwrap_settings`: Return the loaded `Settings` object itself (loading it if needed).
 - `use_settings`: Temporarily load another settings module, then restore the current one.
 
 ## `domainkit.deadlines`
@@ -125,7 +121,6 @@ Development aids: SQL per request, likely N+1 queries, and profiles.
 - `DebugToolbarMiddleware`: Time the SQL of each request; warn about likely N+1 queries.
 - `QueryLog`: The statements run while it was recording.
 - `record_queries`: Record the statements run in this context (and tasks it starts).
-- `statement_shape`: `statement` without its values: literals and placeholders become `?`.
 
 ## `domainkit.deprecation`
 
@@ -133,6 +128,7 @@ How domainkit retires an API (the policy is in `docs/versioning.md`).
 
 - `DomainkitDeprecationWarning`: A domainkit API that a later release removes; the message says what to use.
 - `moved`: A module `__getattr__` for `names` that moved: name to its new module.
+- `renamed`: A module `__getattr__` for `names` that were renamed: old name to new path.
 
 ## `domainkit.encryption`
 
@@ -212,24 +208,16 @@ AWS KMS as a `KeyProvider`: data keys under a KMS key, signed with SigV4.
 
 - `AwsCredentials`: An access key, its secret, and for temporary ones a session token.
 - `AwsKmsKeyProvider`: Data keys under one AWS KMS key (see the module).
-- `container_credentials`: Credentials from the container's endpoint (ECS, EKS Pod Identity).
-- `default_credentials`: The first source the environment sets up (see the module).
-- `environment_credentials`: Credentials from the `AWS_*` variables (access key, secret, token).
-- `sign`: `headers` with SigV4's: `X-Amz-Date`, the token, `Authorization`.
-- `web_identity_credentials`: Credentials for `role_arn`, assumed with the token in `token_file`.
 
 ## `domainkit.keys.ring`
 
 The data keys a process encrypts values with, and the envelope they make.
 
-- `FORMAT`: The envelope's format: AES-256-GCM, a 96-bit nonce, the key named.
 - `Keyring`: Data keys by id, the current one, and the subjects' keys (see the module).
 - `KeysNotLoaded`: The ring's keys are not unwrapped, and cannot be here: `await ring.load()`.
 - `StoredSubjectKey`: A subject's key as stored: wrapped under the data key `wrapping_key`.
 - `SubjectKeyStore`: Where subjects' keys are kept, read on the transaction's own connection.
-- `forget_held`: Drop the keys of `subjects` from every open transaction of this process.
 - `keyring`: The process's ring.
-- `sealed_key`: The kind (`k` or `s`) and id of the key that sealed `text`, if sealed.
 - `use_keyring`: Seal and open with `ring` from now on; None forgets the ring.
 
 ## `domainkit.keys.vault`
@@ -250,7 +238,6 @@ Shutting a process down, in phases, within one budget (`SHUTDOWN_TIMEOUT`).
 - `closers`: The closers `phase` runs, as steps: each at once, the steps in turn.
 - `register`: Call `close` for the running loop when it shuts down, in `phase`.
 - `serving`: Start the installed domains; at the end, shut everything down in budget.
-- `shutdown_timeout`: `SHUTDOWN_TIMEOUT`, or its default where no settings are loaded.
 - `unregister`: Stop closing `name` at shutdown; an unknown name is ignored.
 
 ## `domainkit.log`

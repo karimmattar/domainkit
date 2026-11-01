@@ -81,7 +81,7 @@ from domainkit.utils.decimals import jsonable
 
 from . import client
 from .models import ALL_EVENTS, EVENT_TYPE, previous_signs, secret_box
-from .settings import WebhookSettings
+from .settings import WebhooksSettings
 from .signing import signed_headers
 from .tables import (
     CANCELLED,
@@ -264,7 +264,7 @@ async def queue_deliveries(
     Raises:
         PayloadTooLarge: the body is over ``MAX_PAYLOAD_BYTES``.
     """
-    config = registry.settings(WebhookSettings)
+    config = registry.settings(WebhooksSettings)
     body = body_of(event_type, data, occurred_at)
     if len(body) > config.MAX_PAYLOAD_BYTES:
         raise PayloadTooLarge(
@@ -328,7 +328,7 @@ async def deliver(delivery_id: uuid.UUID) -> None:
     Raises:
         DeliveryFailed: the attempt failed and attempts are left.
     """
-    config = registry.settings(WebhookSettings)
+    config = registry.settings(WebhooksSettings)
     engine = connections.engine(webhooks_alias())
     async with engine.connect() as connection:
         delivery = (
@@ -677,11 +677,11 @@ async def _old(connection: AsyncConnection, cutoff: datetime) -> list[uuid.UUID]
 
 async def purge_deliveries() -> None:
     """Delete finished deliveries older than ``RETENTION_SECONDS`` (hourly)."""
-    config = registry.settings(WebhookSettings)
+    config = registry.settings(WebhooksSettings)
     await purge(timedelta(seconds=config.RETENTION_SECONDS))
 
 
-def register(config: WebhookSettings) -> None:
+def register(config: WebhooksSettings) -> None:
     """Register ``deliver`` with the queue, attempts, and backoff of ``config``.
 
     And the hourly purge of old deliveries.

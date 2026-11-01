@@ -407,7 +407,7 @@ async def test_a_give_back_that_fails_is_logged_and_the_lock_runs_out(
     monkeypatch.setattr(Worker, "_give_back", refused)
     await enqueue(added_by_the_deploy_known, label="x")
     with pytest.raises(asyncio.CancelledError):
-        await CutWorker(config()).claim(1)
+        await CutWorker(config())._claim(1)
 
     assert "Could not give back a claim cut off; their locks expire" in caplog.messages
     assert (await outbox())[0]["lock_id"] is not None
@@ -418,11 +418,11 @@ async def test_a_take_over_cut_off_as_it_commits_gives_the_message_back() -> Non
     """As a claim: the consumer's lock goes, and its attempt is not spent."""
     await enqueue(added_by_the_deploy_known, label="x")
     worker = Worker(config())
-    (message,) = await worker.claim(1)  # As a relay would lease it.
+    (message,) = await worker._claim(1)  # As a relay would lease it.
     async with connections.engine().begin() as connection:
         await connection.execute(update(messages).values(attempts=0, started_at=None))
     with pytest.raises(asyncio.CancelledError):
-        await CutWorker(config()).take_over(message.id, message.lock_id)
+        await CutWorker(config())._take_over(message.id, message.lock_id)
 
     row = (await outbox())[0]
     assert (row["lock_id"], row["attempts"], row["started_at"]) == (None, 0, None)
@@ -469,7 +469,7 @@ async def test_a_failing_schedule_waits_doubling_and_says_when_it_works_again(
         if calls <= 2:
             raise ConnectionError("refused")
 
-    monkeypatch.setattr(worker, "schedule_periodic", flaky)
+    monkeypatch.setattr(worker, "_schedule_periodic", flaky)
     with (
         freeze_time("2026-11-01T09:00:00Z") as clock,
         caplog.at_level(logging.WARNING, worker_module.__name__),
@@ -543,7 +543,7 @@ async def test_rows_without_a_dedupe_key_are_cleaned_up_beside_long_slots() -> N
         with freeze_time("2026-11-01T09:00:00Z") as clock:
             await enqueue(added_by_the_deploy_known, label="plain")
             worker = Worker(config(RETENTION_SECONDS=86400))
-            (message,) = await worker.claim(1)  # Not the periodic one.
+            (message,) = await worker._claim(1)  # Not the periodic one.
             await worker._done(message, None)
             clock.tick(timedelta(days=2))
             assert await worker.cleanup() == 1
@@ -592,7 +592,7 @@ async def test_finishing_a_keyed_message_takes_its_keys_turn_first() -> None:
     await enqueue(added_by_the_deploy_known, ordering_key="k", label="one")
     await enqueue(added_by_the_deploy_known, ordering_key="k", label="two")
     worker = Worker(config())
-    (message,) = await worker.claim(5)
+    (message,) = await worker._claim(5)
     statements: list[str] = []
 
     def record(*args: Any) -> None:  # noqa: ANN401
@@ -628,7 +628,7 @@ async def test_a_retried_keyed_message_takes_no_turn() -> None:
     """It stays in its key's line: nothing to promote, no turn to take."""
     await enqueue(added_by_the_deploy_known, ordering_key="k", label="one")
     worker = Worker(config())
-    (message,) = await worker.claim(1)
+    (message,) = await worker._claim(1)
     statements: list[str] = []
 
     def record(*args: Any) -> None:  # noqa: ANN401

@@ -47,9 +47,9 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.sql.dml import Delete
 
+from domainkit.db import dbclock
 from domainkit.exceptions import ImproperlyConfigured
 
-from . import dbclock
 from .tables import HELD, KEYED, PENDING, WAITING, messages, ordering_keys
 
 type Executor = AsyncSession | AsyncConnection

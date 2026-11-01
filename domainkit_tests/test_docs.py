@@ -53,7 +53,7 @@ from domainkit.contrib.limits import LimitsSettings
 from domainkit.contrib.mail.settings import MailSettings, SmtpSettings
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.notifications.settings import NotificationsSettings
-from domainkit.contrib.webhooks.settings import WebhookSettings
+from domainkit.contrib.webhooks.settings import WebhooksSettings
 from domainkit.management import BUILTIN_COMMANDS, _find_commands
 
 DOCS = Path(__file__).parents[1] / "docs"
@@ -105,7 +105,7 @@ def documented(pages: str) -> set[str]:
         (IdempotencySettings, "contrib/idempotency.md"),
         (EvidenceSettings, "contrib/evidence.md"),
         (FlagsSettings, "contrib/flags.md"),
-        (WebhookSettings, "contrib/webhooks.md"),
+        (WebhooksSettings, "contrib/webhooks.md"),
         (AccountingSettings, "contrib/accounting.md"),
         (KeysSettings, "contrib/keys.md"),
         (AwsKmsSettings, "contrib/keys.md"),
@@ -422,7 +422,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (HttpClientConfig, REFERENCE, "HTTP_CLIENT"),
     (DebugToolbarConfig, REFERENCE, "DEBUG_TOOLBAR"),
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
-    (WebhookSettings, "contrib/webhooks.md", "WEBHOOKS"),
+    (WebhooksSettings, "contrib/webhooks.md", "WEBHOOKS"),
     (AccountingSettings, "contrib/accounting.md", "ACCOUNTING"),
     (ApprovalsSettings, "contrib/approvals.md", "APPROVALS"),
     (LimitsSettings, "contrib/limits.md", "LIMITS"),

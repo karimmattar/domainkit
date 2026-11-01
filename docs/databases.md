@@ -112,6 +112,12 @@ A unit of work on a group without a shard key fails at once, and so does a
 shard key on a plain alias. Choose a key that keeps every use case on one
 shard.
 
+A key is placed by its text, `str(key)`, and that placement is frozen
+for 1.x ([ADR 0125](adr/0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)):
+`5` and `"5"` land together, and so do a `UUID` and its canonical text
+(lower-case, with hyphens), but not its upper-case or unhyphenated text.
+Shard on the typed id the domain holds, not on text a caller sent.
+
 **How keys map.** A key hashes (BLAKE2b, so every process agrees) to one of
 `BUCKETS` buckets (4096 by default), and each bucket belongs to one alias:
 equal ranges in list order unless `RANGES` says otherwise. `PINNED` sends

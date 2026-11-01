@@ -166,7 +166,7 @@ async with PaymentsUnitOfWork() as uow:
   payment the provider declined after the commit) is given back with
   `release(uow, key)`, by the key it was counted under: it counts in no
   window any more. Releasing a key again releases nothing.
-- `check(uow, *movements)` refuses as `consume` would now, without
+- `check_movements(uow, *movements)` refuses as `consume` would now, without
   counting or locking anything, in a read-only unit of work too: to show
   a customer what is left, or to refuse an authorisation before placing
   a hold. A movement it let through may still be refused by `consume`.
@@ -177,7 +177,7 @@ async with PaymentsUnitOfWork() as uow:
 ## On the ledger
 
 With `domainkit.contrib.accounting` installed, limits registers on its
-posting path (`on_booking`), so every entry the ledger books (posted,
+posting path (`on_stage_entry`), so every entry the ledger books (posted,
 reversed, or a hold's capture) is counted in the posting's transaction,
 after its accounts are locked; a refused entry is not booked, and its
 balances do not move. Each entry is a movement:
@@ -190,7 +190,7 @@ balances do not move. Each entry is a movement:
   debits, `out`.
 
 A reversal counts nothing, and releases what the entry it reverses
-counted; the ledger reverses no reversal (`reversal_not_reversible`), so
+counted; the ledger reverses no reversal (`entry_not_reversible`), so
 the money of a reversed entry moves again only as a new entry, counted.
 A reversal booked while an approved request runs (with approvals, one
 over `ENTRY_THRESHOLDS` must be) is counted as a movement instead, and

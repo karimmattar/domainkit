@@ -120,7 +120,7 @@ Policy(
 - **A policy that is gone stays gone.** A request is decided and run
   only under the guard and the policy it was submitted under. Once a
   deploy renames or removes either, its pending requests are neither
-  approved nor rejected (`policy_not_found`, 409), never under
+  approved nor rejected (`policy_removed`, 409), never under
   `APPROVE_RULE` or no rule instead, and an approved one fails with that
   code; the maker cancels it, or it expires.
 - **Content.** `when` reads the command, so a policy may apply only to
@@ -217,7 +217,7 @@ message is delivered, after checking that it is what was approved:
 
 A request that fails a check is `failed`, with the refusal's code as its
 `reason` (`request_tampered`, `fingerprint_mismatch`,
-`invalid_arguments`, `policy_not_found` if the guard or its policy is
+`invalid_arguments`, `policy_removed` if the guard or its policy is
 gone), and runs nothing. So does one whose use case
 refuses it (a `DomainError`, such as `insufficient_funds`): the maker may
 submit it again. A use case that lost a race (`ConcurrentUpdate`) or
@@ -266,24 +266,24 @@ debits in that currency) needs `ENTRY_APPROVALS` approvals by holders of
 themselves. `post_entry` refuses it otherwise (`approval_required`),
 whether called over HTTP, from code, or from a message (`defer_entry`
 dead-letters it). Its makers submit it as the action `accounting.post_entry`
-(`ENTRIES`), with the body `POST /entries` takes, and need
+(`POST_ENTRY`), with the body `POST /entries` takes, and need
 `accounting.add_entry` to.
 
 A hold's capture is guarded the same way, as `accounting.capture_hold`
-(`CAPTURES`, policy `accounting.large_capture`): a hold reserves any
+(`CAPTURE_HOLD`, policy `accounting.large_capture`): a hold reserves any
 amount, unapproved, and its capture is what moves it, into an account
 the capture names. Captures over the threshold are refused
 (`approval_required`); submit `{"hold_id": ..., "counter_account_id":
 ..., "amount": ...}`, and the makers need `accounting.capture_hold`.
 
-Both are checked twice: before `post_entry` takes a lock (`on_posting`),
-and as every entry is booked (`on_booking`), from the entry itself, so a
+Both are checked twice: before `post_entry` takes a lock (`on_post_entry`),
+and as every entry is booked (`on_stage_entry`), from the entry itself, so a
 path around the command (a capture, lines a hook could not read) books
 nothing over the threshold unapproved. A booked entry passes only as the
 approved request being run: the posting with its source and reference,
 or the capture of its hold. `PostEntry` keeps its `lines` as a tuple,
 however they are given. A reversal is guarded the same way, as
-`accounting.reverse_entry` (`REVERSES`, policy `accounting.large_reversal`):
+`accounting.reverse_entry` (`REVERSE_ENTRY`, policy `accounting.large_reversal`):
 it moves as much as the entry it undoes, back, so undoing a payout two
 people approved takes two people too; submit `{"entry_id": ...,
 "booked_on": ...}`, and the makers need `accounting.reverse_entry`. Run
@@ -305,7 +305,7 @@ entries refused.
 With `SUPERUSER_APPROVALS` above 0 and `domainkit.contrib.auth`
 installed, the auth admin API refuses to make a user a superuser, on
 create or change (`approval_required`); unmaking one is not guarded. A
-superuser submits `auth.grant_superuser` (`SUPERUSERS`) with
+superuser submits `auth.grant_superuser` (`GRANT_SUPERUSER`) with
 `{"user_id": ...}` instead: only a superuser may submit one, as only a
 superuser makes one without approvals. `SUPERUSER_APPROVALS` other
 superusers approve it (or, with `SUPERUSER_APPROVERS` set, holders of
@@ -385,7 +385,7 @@ The maker and the approvers are the principal's id, whatever
 authenticates requests. Refusals answer with their codes:
 `maker_cannot_decide`, `interested_party`, and `not_the_maker` (403),
 `already_decided`, `fingerprint_mismatch`, `request_not_pending`,
-`request_tampered`, and `policy_not_found` (409),
+`request_tampered`, and `policy_removed` (409),
 `invalid_arguments` and `approval_not_needed` (422), `unknown_action`
 and `approval_request_not_found` (404).
 

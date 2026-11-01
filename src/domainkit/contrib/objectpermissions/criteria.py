@@ -70,7 +70,7 @@ class VisibleTo(Criteria):
             InvalidQuery: The model is not mapped in an installed domain,
                 or the permission is another model's.
         """
-        from domainkit.contrib.contenttypes import content_type_key
+        from domainkit.db.models import model_key as content_type_key
 
         try:
             domain, name = content_type_key(model)

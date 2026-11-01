@@ -71,7 +71,7 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   accounts name one `erased:` holder instead of none, and their approval
   requests keep their commands, sealed again for the pseudonym. **Fix:**
   close a customer's accounts before erasing them; register
-  `on_erase_check` in a domain whose records a law asks to keep.
+  `on_retain_subject` in a domain whose records a law asks to keep.
 - **Every 429 answers `rate_limited`** (WEB-25). A route's `Throttle` and
   auth's code, link, and signup throttles answered `throttled`, and its
   login and password throttles `login_throttled`. **Fix:** a client that
@@ -209,6 +209,84 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   amount). **Fix:** round the factor to 9 places with the rule the domain
   needs, or compute the product in Python with `Money.multiply`.
 
+- **Errors are RFC 9457 problem details by default** (DSGN-26).
+  `ERROR_FORMAT` defaults to `"problem+json"`: every error is
+  `application/problem+json` with `type`, `title`, `status`, and
+  `instance`, and keeps `detail`, `code`, `request_id`, and `errors`
+  where they were. A client that reads those fields is unaffected; one
+  that checks for `application/json` is not. **To keep the old
+  behaviour:** `ERROR_FORMAT = "domainkit"`.
+- **Operation ids are route names by default** (DSGN-26).
+  `OPENAPI_OPERATION_IDS` defaults to `"route_name"`, as every generated
+  project already set it, so a generated client's method names change for
+  a project that did not. **To keep the old behaviour:**
+  `OPENAPI_OPERATION_IDS = "fastapi"`.
+- **Internals left the public API** (DSGN-22). No longer listed, still
+  importable unchanged until 2.0, then gone: `domainkit.http.routing`
+  (it rests on FastAPI's internals; `FLATTEN_ROUTERS` is the public
+  switch), `domainkit.contrib.webhooks.guard` (`UnsafeTarget` stays in
+  `domainkit.contrib.webhooks`), `http.responses.BuiltJSONResponse`,
+  `http.CURSOR_PATTERN`, `http.middleware.request_path`,
+  `db.create_engine` and `db.mapper_registry`, `conf.describe_errors`
+  and `unwrap_settings`, `storage.check_name` and `new_name`,
+  `lifecycle.shutdown_timeout`, `debug.statement_shape`,
+  `architecture.iter_imports`, `FRAMEWORK_PACKAGES`, `LAYERS`,
+  `DOMAIN_ALLOWED_PREFIXES`, and `project_rules`, the device-proof
+  helpers of `contrib.auth.devices` but `DEVICE_COOKIE`,
+  `audit.checkpoints`' `FORMAT`, `EXPORT_FORMAT`, `key_id`,
+  `load_public_key`, and `signing_key`, and `keys.ring`'s `FORMAT`,
+  `forget_held`, `sealed_key`, and `keys.aws`' `sign` and credential
+  loaders. **Fix:** copy what a project used.
+- **`Worker`'s mechanics are private** (DSGN-22). `claim`, `relay`,
+  `relay_ids`, `take_over`, `process`, `schedule_periodic`, and
+  `relay_promoted` start with `_`. **Fix:** run a worker with `run` or
+  `run_once`; `contrib.messaging.admin` releases stalled messages.
+- **`Credentials` takes `login=`, not `session=`** (DSGN-28). The field
+  that holds a JWT login's family is `login`; reading `session` still
+  works, with a warning, until 2.0. **Fix:** a custom authentication
+  class that builds `Credentials(..., session=...)` passes `login=`.
+
+### Renamed before release
+
+Names 0.13 to 0.15 added, which no published release had, were renamed
+for 1.0 with no alias (DSGN-23, DSGN-28,
+[ADR 0125](adr/0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)):
+
+| Was | Is |
+| --- | --- |
+| `contrib.accounting.on_booking`, `accounting.hooks.on_posting` | `accounting.hooks.on_stage_entry`, `on_post_entry` |
+| `apps.hooks.on_erase_check` | `apps.hooks.on_retain_subject` |
+| `contrib.accounting.CAPTURES`, `REVERSALS` (sources) | `CAPTURE_SOURCE`, `REVERSAL_SOURCE` |
+| `contrib.approvals.ENTRIES`, `CAPTURES`, `REVERSES`, `SUPERUSERS` (actions) | `POST_ENTRY`, `CAPTURE_HOLD`, `REVERSE_ENTRY`, `GRANT_SUPERUSER` |
+| `AccountIsClosed`, `PeriodIsClosed` | `AccountNotOpen`, `PeriodNotOpen` (codes unchanged) |
+| `ReversalNotReversible` (`reversal_not_reversible`) | `EntryNotReversible` (`entry_not_reversible`) |
+| `approvals.PolicyGone` (`policy_not_found`) | `PolicyRemoved` (`policy_removed`) |
+| `approvals.on_guard` | not public: `guard()` registers |
+| `contrib.limits.check` | `check_movements` |
+| `ACCOUNTING.RETRY_ATTEMPTS` | `ACCOUNTING.MAX_ATTEMPTS` |
+| `AUTH.PASSWORD_PRESET` | `AUTH.PRESET` |
+
+### Deprecated, removed in 2.0
+
+Each old name works through 1.x, warning with
+`DomainkitDeprecationWarning` (DSGN-23, DSGN-24, DSGN-29):
+
+- `on_check` of `domainkit.apps.hooks` is `on_ready`: it is the readiness
+  probe, not `manage.py check`'s.
+- `DomainConfig.RETENTION` is `retention`, as its siblings are written.
+- `MESSAGING.SHUTDOWN_TIMEOUT` is `MESSAGING.DRAIN_TIMEOUT`, apart from
+  the process's `SHUTDOWN_TIMEOUT`.
+- `domainkit.contrib.messaging.dbclock` is `domainkit.db.dbclock`.
+- `domainkit.contrib.contenttypes`' `DEFAULT_PERMISSIONS`,
+  `InstalledModel`, `ModelOptions`, `installed_models`, and
+  `model_options` are `domainkit.db.models`' (`content_type_key` is
+  `model_key`).
+- `contrib.webhooks.WebhookSettings` is `WebhooksSettings`.
+- `Credentials.session` is `Credentials.login`.
+
+`apps.E002`, which refuses a hook method 0.13 removed, stays until 2.0
+too.
+
 ## 0.12 to 0.13
 
 ### Breaking changes
@@ -236,7 +314,7 @@ a way, how to keep the old behaviour for as long as the project needs it.
           on_erase_subject(erase_documents)  # domainkit.apps.hooks
   ```
 
-  The refusal stays until 1.0
+  The refusal stays until 2.0
   ([ADR 0111](adr/0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md)).
 - **`HookPoint` takes no `method=`** (DSGN-03). It named the
   `DomainConfig` method a point called too; `HookPoint("x", method="...")`

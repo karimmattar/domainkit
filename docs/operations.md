@@ -169,7 +169,7 @@ another once its lease expires, so handlers must be idempotent.
 - **More throughput.** Add worker processes; they share the outbox safely.
   Give a busy queue workers of its own with `--queue`.
 - **Shutdown.** A stopping worker gives running messages
-  `MESSAGING.SHUTDOWN_TIMEOUT` (20 seconds), then shuts down within
+  `MESSAGING.DRAIN_TIMEOUT` (20 seconds), then shuts down within
   `SHUTDOWN_TIMEOUT`: give worker pods a grace period of 45 seconds
   ([runtime.md](runtime.md#workers-and-the-outbox)).
 - **Metrics.** `runworker --metrics-port 9100` serves the worker's

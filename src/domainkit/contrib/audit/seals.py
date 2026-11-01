@@ -670,7 +670,7 @@ async def _database_now(connection: AsyncConnection) -> datetime:
     same clock, whatever its host's says. SQLite lives in the sealer's
     process, so its clock is the host's anyway. A frozen clock
     (``freeze_time``) decides on every database, as for the outbox
-    (``domainkit.contrib.messaging.dbclock``), so tests can move time.
+    (``domainkit.db.dbclock``), so tests can move time.
     """
     if connection.dialect.name == "postgresql" and clock.frozen() is None:
         moment = select(func.statement_timestamp(type_=UTCDateTime()))

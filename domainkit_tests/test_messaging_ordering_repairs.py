@@ -24,7 +24,6 @@ from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
     admin,
-    dbclock,
     enqueue,
     ordered,
     ordering,
@@ -32,7 +31,7 @@ from domainkit.contrib.messaging import (
     task,
 )
 from domainkit.contrib.messaging.tables import DEAD, DONE, HELD, PENDING, messages
-from domainkit.db import connections
+from domainkit.db import connections, dbclock
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit_tests.test_db import NotesUnitOfWork
@@ -92,7 +91,7 @@ async def test_stalled_keys_are_released_in_batches_and_logged(
     async def relay(promoted: ordering.Promoted) -> None:
         relayed.append(promoted.id)
 
-    worker.relay_promoted = relay
+    worker._relay_promoted = relay
     stopped = asyncio.Event()
     stopped.set()
     assert await worker._release_stalled(stopped) == 0
@@ -215,8 +214,8 @@ async def dead_then_next(*, lock: timedelta | None, started: bool) -> None:
     await enqueue(step, key="a", label="a2")
     worker = Worker(config())
     for _ in range(2):
-        (claimed,) = await worker.claim(1)
-        await worker.process(claimed)
+        (claimed,) = await worker._claim(1)
+        await worker._process(claimed)
     runs.broken.clear()
     if lock is not None or started:
         now = datetime.now(UTC)
@@ -273,14 +272,14 @@ async def test_only_the_older_dead_letter_passes_the_pending_message() -> None:
     await enqueue(doomed, key="a", label="a3")
     worker = Worker(config())
     for _ in range(2):
-        (claimed,) = await worker.claim(1)
-        await worker.process(claimed)  # a1 dies.
-    (a2,) = await worker.claim(1)
+        (claimed,) = await worker._claim(1)
+        await worker._process(claimed)  # a1 dies.
+    (a2,) = await worker._claim(1)
     with pytest.MonkeyPatch.context() as later:
         from domainkit.contrib.messaging import worker as worker_module
 
         later.setattr(worker_module, "backoff", lambda attempts, config: 3600.0)
-        await worker.process(a2)  # a2 fails, retried in an hour: waiting.
+        await worker._process(a2)  # a2 fails, retried in an hour: waiting.
     assert await statuses("a") == [DEAD, PENDING, HELD]
     async with connections.engine().begin() as connection:  # a3 dies too.
         await connection.execute(
@@ -450,8 +449,8 @@ async def test_only_a_dead_letter_takes_a_place_back() -> None:
     await enqueue(step, key="a", label="a2")
     worker = Worker(config())
     for _ in range(3):
-        (claimed,) = await worker.claim(1)
-        await worker.process(claimed)  # a0 is done; a1 dies, twice.
+        (claimed,) = await worker._claim(1)
+        await worker._process(claimed)  # a0 is done; a1 dies, twice.
     assert await statuses("a") == [DONE, DEAD, PENDING]
     runs.broken.clear()
 
@@ -499,8 +498,8 @@ async def test_the_next_message_of_a_key_starts_without_a_word(
     worker = Worker(config())
 
     with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
-        (claimed,) = await worker.claim(1)
-        await worker.process(claimed)
+        (claimed,) = await worker._claim(1)
+        await worker._process(claimed)
 
     assert await statuses("a") == [DONE, PENDING]
     assert caplog.messages == []

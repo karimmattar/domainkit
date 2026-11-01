@@ -17,7 +17,7 @@ A posting is idempotent: ``source`` and ``reference`` name one entry, so
 the same command posted again (a retried request, a message delivered
 twice) returns the entry it posted the first time; a different entry under
 them is refused (``ReferenceReused``). Each runs again, whole, when its
-transaction lost a race (``ACCOUNTING.RETRY_ATTEMPTS``).
+transaction lost a race (``ACCOUNTING.MAX_ATTEMPTS``).
 """
 
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -30,14 +30,14 @@ from domainkit.ddd import Command, Retry
 
 from .exceptions import (
     EarlierPeriodOpen,
+    EntryNotReversible,
     InvalidEntry,
     NoOpenPeriod,
-    PeriodIsClosed,
+    PeriodNotOpen,
     PeriodsOverlap,
     ReferenceReused,
-    ReversalNotReversible,
 )
-from .hooks import on_booking, on_posting
+from .hooks import on_post_entry, on_stage_entry
 from .models import (
     Account,
     AccountId,
@@ -56,7 +56,7 @@ PERIODS = "accounting.periods"
 CLOSED_BOOKS = "The books are closed up to a later date than this one."
 RESERVED = "accounting."
 """The prefix of the ledger's own sources, which ``post_entry`` refuses."""
-REVERSALS = "accounting.reversal"
+REVERSAL_SOURCE = "accounting.reversal"
 """The source of reversing entries; each one's reference is the reversed entry's id."""
 
 
@@ -125,7 +125,7 @@ def config() -> AccountingSettings:
 
 async def run[T](uow: AccountingUnitOfWork, work: Callable[[], Awaitable[T]]) -> T:
     """Run ``work`` in ``uow``, again when its transaction lost a race."""
-    return await uow.run(work, retry=Retry(attempts=config().RETRY_ATTEMPTS))
+    return await uow.run(work, retry=Retry(attempts=config().MAX_ATTEMPTS))
 
 
 async def open_account(command: OpenAccount, uow: AccountingUnitOfWork) -> Account:
@@ -174,14 +174,14 @@ async def book(
     the end of the latest closed period is refused, in a period or in a
     gap between periods (FIN-87); a date in a gap takes the periods' lock
     first, as opening and closing one do. Then the apps that registered
-    ``on_booking`` see the entry, and may refuse it.
+    ``on_stage_entry`` see the entry, and may refuse it.
 
     Raises:
         NoOpenPeriod: No period covers the date, and ``REQUIRE_PERIOD``.
-        PeriodIsClosed: The period that covers it is closed, or the date
+        PeriodNotOpen: The period that covers it is closed, or the date
             is on or before the end of a closed period.
-        AccountIsClosed, InvalidEntry, InsufficientFunds: As ``Account.post``.
-        DomainError: An ``on_booking`` hook refused the entry.
+        AccountNotOpen, InvalidEntry, InsufficientFunds: As ``Account.post``.
+        DomainError: An ``on_stage_entry`` hook refused the entry.
     """
     period = await uow.periods.covering(entry.booked_on)
     if period is not None:
@@ -191,12 +191,12 @@ async def book(
         await uow.lock(PERIODS)
     closed = await uow.periods.closed_through()
     if closed is not None and entry.booked_on <= closed:
-        raise PeriodIsClosed(CLOSED_BOOKS)
+        raise PeriodNotOpen(CLOSED_BOOKS)
     if period is None and config().REQUIRE_PERIOD:
         raise NoOpenPeriod("No open accounting period covers the entry's date.")
     for posting in entry.postings:
         accounts[posting.account_id].post(posting.side, posting.money)
-    for hook in on_booking.hooks():
+    for hook in on_stage_entry.hooks():
         await hook.call(uow, entry, accounts)
     await uow.entries.add(entry)
 
@@ -266,9 +266,9 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
             the source is one of the ledger's own.
         ReferenceReused: Another entry was posted under that reference.
         AccountNotFound: A line names no account.
-        NoOpenPeriod, PeriodIsClosed: The date is in no open period.
-        AccountIsClosed, InsufficientFunds: As ``Account.post``.
-        DomainError: An ``on_posting`` hook refused it (``approval_required``).
+        NoOpenPeriod, PeriodNotOpen: The date is in no open period.
+        AccountNotOpen, InsufficientFunds: As ``Account.post``.
+        DomainError: An ``on_post_entry`` hook refused it (``approval_required``).
     """
     lines = tuple(command.lines)
     max_lines = config().MAX_LINES
@@ -291,7 +291,7 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
         raise InvalidEntry(
             "The sources that start with 'accounting.' are the ledger's own."
         )
-    for hook in on_posting.hooks():
+    for hook in on_post_entry.hooks():
         await hook.call(command)
     return await run(
         uow,
@@ -308,18 +308,18 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
 async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Entry:
     """Post the reversal of an entry: each of its postings on the other side.
 
-    Its source is ``REVERSALS`` and its reference the entry's id, so an
+    Its source is ``REVERSAL_SOURCE`` and its reference the entry's id, so an
     entry is reversed once: reversing it again returns that reversal. A
     reversal is not reversed: that would book the entry it undid again,
     past every check a new entry takes (SEC-15b-3).
 
     Raises:
         EntryNotFound: No entry has that id.
-        ReversalNotReversible: The entry is a reversal.
+        EntryNotReversible: The entry is a reversal.
         ReferenceReused: An entry that does not reverse it was posted under
             its reference (only before ``post_entry`` refused the source).
-        NoOpenPeriod, PeriodIsClosed: The date is in no open period.
-        AccountIsClosed, InsufficientFunds: As ``Account.post``.
+        NoOpenPeriod, PeriodNotOpen: The date is in no open period.
+        AccountNotOpen, InsufficientFunds: As ``Account.post``.
     """
     entry_id = EntryId(command.entry_id)
     booked_on = command.booked_on or clock.now().date()
@@ -327,12 +327,12 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
     async def draft() -> Entry:
         original = await uow.entries.get(entry_id)
         if original.reverses is not None:
-            raise ReversalNotReversible(
+            raise EntryNotReversible(
                 "A reversal is not reversed: post the entry again instead."
             )
         lines = original.reversal_lines()
         return Entry.draft(
-            REVERSALS,
+            REVERSAL_SOURCE,
             str(entry_id),
             booked_on,
             lines,
@@ -345,7 +345,7 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
         uow,
         lambda: post(
             uow,
-            REVERSALS,
+            REVERSAL_SOURCE,
             str(entry_id),
             draft,
             same=lambda posted: posted.reverses == entry_id,
@@ -362,7 +362,7 @@ async def open_period(command: OpenPeriod, uow: AccountingUnitOfWork) -> Period:
     Raises:
         PeriodsOverlap: It ends before it starts, or another period covers
             some of its days.
-        PeriodIsClosed: It starts on or before the end of a closed period.
+        PeriodNotOpen: It starts on or before the end of a closed period.
         PeriodNameTaken: Another period has its name.
     """
     period = Period.open(command.name, command.starts_on, command.ends_on)
@@ -372,7 +372,7 @@ async def open_period(command: OpenPeriod, uow: AccountingUnitOfWork) -> Period:
             await uow.lock(PERIODS)
             closed = await uow.periods.closed_through()
             if closed is not None and period.starts_on <= closed:
-                raise PeriodIsClosed(CLOSED_BOOKS)
+                raise PeriodNotOpen(CLOSED_BOOKS)
             if await uow.periods.overlapping(period.starts_on, period.ends_on):
                 raise PeriodsOverlap("Another period covers some of these dates.")
             await uow.periods.add(period)
@@ -390,7 +390,7 @@ async def close_period(command: ClosePeriod, uow: AccountingUnitOfWork) -> Perio
 
     Raises:
         PeriodNotFound: No period has that id.
-        PeriodIsClosed: It is closed already.
+        PeriodNotOpen: It is closed already.
         EarlierPeriodOpen: A period before it is still open.
     """
 

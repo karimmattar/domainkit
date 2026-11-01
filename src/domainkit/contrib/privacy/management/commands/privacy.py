@@ -22,7 +22,7 @@ class Command(BaseCommand):
     help = (
         "Export (export --subject ID) or erase (erase --subject ID) the "
         "personal data of one person in every installed domain, or delete "
-        "and erase what each domain's RETENTION no longer keeps (purge)."
+        "and erase what each domain's retention no longer keeps (purge)."
     )
     operator_actions = True
     """Exports, erasures, and purges are audited as the operator who ran them."""
@@ -47,7 +47,9 @@ class Command(BaseCommand):
         erase.add_argument(
             "--noinput", action="store_true", help="do not ask for confirmation"
         )
-        purge_parser = actions.add_parser("purge", help="apply every RETENTION")
+        purge_parser = actions.add_parser(
+            "purge", help="apply every domain's retention"
+        )
         purge_parser.add_argument(
             "--dry-run", action="store_true", help="only count what would go"
         )
@@ -123,6 +125,6 @@ class Command(BaseCommand):
                 line += f"; refused, {result.refused}"
             self.write(line)
         if not results:
-            self.write("No domain declares a RETENTION.")
+            self.write("No domain declares a retention.")
         if refused := [result.policy for result in results if result.refused]:
             raise CommandError(f"Not purged: {', '.join(refused)}.")

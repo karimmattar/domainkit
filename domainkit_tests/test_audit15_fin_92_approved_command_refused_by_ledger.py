@@ -4,7 +4,7 @@ A bank wires its own maker-checker use case (a payout, a large
 transfer, as the fintech profile's ``payments.make_transfer``) to the
 books: the service, once approved, posts its entry. With
 ``ENTRY_THRESHOLDS`` set, as the profile sets them, the ledger's own
-guard then asks for *another* approval: ``check(ENTRIES, command)`` only
+guard then asks for *another* approval: ``check(POST_ENTRY, command)`` only
 lets through the approved command of ``accounting.post_entry``, and the
 booking check only an approved ``PostEntry`` or ``CaptureHold``. The
 payout two people approved fails (``approval_required``), so guards do

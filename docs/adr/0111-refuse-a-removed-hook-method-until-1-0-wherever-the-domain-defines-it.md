@@ -1,6 +1,6 @@
 # 0111. Refuse a removed hook method until 1.0, wherever the domain defines it
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-01 (at the end) by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)
 - Date: 2026-10-29
 - Amends: [0101](0101-register-every-domain-hook-and-check-it-when-it-registers.md)
 
@@ -87,3 +87,7 @@ meaning is the one a reader expects.
 - `HookPoint` loses `method=`, which only named one of these methods;
   a project's own point made with it fails when it is made (`TypeError`),
   and `docs/upgrading.md` says to drop the argument.
+
+## Amendment (2026-11-01, 1.0): the refusal stays until 2.0
+
+0.13 to 0.15 were never published, so 1.0 is the first release a 0.12 project meets without the hook methods. `apps.E002` keeps refusing them through 1.x, and 2.0 drops it ([0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)): without it an `erase_subject` override would silently never run. `on_check`, the point `check` names, is `on_ready` since 1.0, with `on_check` kept as a deprecated alias.

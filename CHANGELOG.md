@@ -11,7 +11,7 @@ and a status.
 
 ### Added
 
-- `domainkit.apps.hooks.on_erase_check`: a domain says why a person's
+- `domainkit.apps.hooks.on_retain_subject`: a domain says why a person's
   data must be kept for now (`async def check(subject, reason) -> str |
   None`). `privacy erase` asks every check before any hook erases: one
   reason holds the whole erasure, nothing is erased, `privacy.erase` is
@@ -28,7 +28,7 @@ and a status.
   moved on each account, per currency, and the SHA-256 of its lines (its
   `fingerprint`), so the sealed and anchored trail vouches for every
   posting (FIN-96).
-- `contrib.approvals.REVERSES` (`accounting.reverse_entry`, policy
+- `contrib.approvals.REVERSE_ENTRY` (`accounting.reverse_entry`, policy
   `accounting.large_reversal`): a reversal over `ENTRY_THRESHOLDS` waits
   for `ENTRY_APPROVALS` approvals, as the entry it undoes did; its makers
   need `accounting.reverse_entry`. `current_run` is public: the approved
@@ -115,7 +115,7 @@ and a status.
   holder), journal entries whose postings must balance per currency, and
   balances moved in the posting's own transaction. A posting locks its
   accounts by ascending id inside the unit of work and runs again when it
-  loses a race (`ACCOUNTING.RETRY_ATTEMPTS`), so 50 transfers at once
+  loses a race (`ACCOUNTING.MAX_ATTEMPTS`), so 50 transfers at once
   between overlapping pairs of accounts neither deadlock nor lose an
   update; locked in the order of their lines, 33 to 41 of the 50
   deadlocked. An entry is posted once per `source` and `reference`, so a
@@ -232,7 +232,7 @@ and a status.
   encoding of its values, chosen by a proof of concept where a signed
   token alone was replayed and a row alone was spent on an edited amount
   (ADR 0122) (FIN-29).
-- `AUTH.PASSWORD_PRESET = "pci-dss-4"`: PCI DSS v4.0's passwords, opt-in.
+- `AUTH.PRESET = "pci-dss-4"`: PCI DSS v4.0's passwords, opt-in.
   It sets the validators (12 characters, and the new
   `LettersAndDigitsValidator`), `PASSWORD_HISTORY` (new: the user's last
   passwords a new one may not repeat; 4), `PASSWORD_CHANGE_ON_FIRST_USE`
@@ -258,7 +258,7 @@ and a status.
   the use case's own commit. Each change takes the request's lock: twenty
   approvals at once count exactly, and run the command once (ADR 0121).
   Postings over `ENTRY_THRESHOLDS` (per currency, through the ledger's new
-  `accounting.hooks.on_posting`) and making superusers in the auth admin
+  `accounting.hooks.on_post_entry`) and making superusers in the auth admin
   API (`SUPERUSER_APPROVALS`) are guarded on request. The approve route
   takes any access rule (`APPROVE_RULE`, or a policy's `approve_rule`),
   such as `StepUp(max_age=...)`, whose refusal it answers with (`401
@@ -280,25 +280,25 @@ and a status.
   postings under the ledger's account locks let up to 14% more through
   ([ADR 0123](docs/adr/0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md)).
   A breach is 422 `limit_exceeded` or `transaction_limit_exceeded`;
-  `check` counts nothing, `release(uow, key)` gives a refund's usage back.
+  `check_movements` counts nothing, `release(uow, key)` gives a refund's usage back.
   Limits are rows, changed through a `ResourceRouter` by model
   permission (`limits.api.router`) or `manage.py limits set`, each change
   audited; `manage.py limits list`, `usage`, and `purge`; the usage of a
   subject over HTTP (`GET /usage`); a periodic purge with messaging, and
   `limits.W001` without it; `limits.E001` and `limits.E002` in `setup()`;
   privacy export and erasure (`docs/contrib/limits.md`) (FIN-47).
-- `contrib.accounting.on_booking`: a hook point other apps register on in
+- `contrib.accounting.hooks.on_stage_entry`: a hook point other apps register on in
   `ready()`, called for every entry as the ledger books it (posted,
   reversed, or captured) in its transaction, after its accounts are locked
   and their balances moved; raising refuses the entry. It is apart from
-  `accounting.hooks.on_posting`, which checks a command before
+  `accounting.hooks.on_post_entry`, which checks a command before
   `post_entry` takes any lock. With `contrib.limits`
   installed, every entry is counted against the limits of its accounts,
   their holders, and the actor, and a reversal gives back what its entry
   counted (FIN-47).
 - `domainkit init NAME --profile fintech`: a project with a bank's
   controls on and wired. Every control app installed and configured: auth
-  with `PASSWORD_PRESET = "pci-dss-4"`, second factors, step-up, and SCA
+  with `PRESET = "pci-dss-4"`, second factors, step-up, and SCA
   routes; the audit trail, sealed by the worker and anchored on immudb
   where deployed, made append-only in PostgreSQL after each `migrate`;
   evidence; idempotency, last in the middleware, with the key required
@@ -356,6 +356,60 @@ and a status.
 
 ### Changed
 
+- **Breaking:** errors are RFC 9457 problem details by default:
+  `ERROR_FORMAT` defaults to `"problem+json"`, a body that keeps
+  `detail`, `code`, `request_id`, and `errors` and adds `type`, `title`,
+  `status`, and `instance`, as `application/problem+json`;
+  `ERROR_FORMAT = "domainkit"` keeps the old one (DSGN-26).
+- **Breaking:** `OPENAPI_OPERATION_IDS` defaults to `"route_name"`, which
+  every generated project set; `"fastapi"` keeps FastAPI's ids. The
+  templates no longer set it (DSGN-26).
+- **Breaking:** internals no page told anyone to use left the public API:
+  `domainkit.http.routing` and `domainkit.contrib.webhooks.guard` have no
+  `__all__`, and `BuiltJSONResponse`, `http.CURSOR_PATTERN`,
+  `http.middleware.request_path`, `db.create_engine`,
+  `db.mapper_registry`, `conf.describe_errors`, `conf.unwrap_settings`,
+  `storage.check_name`, `storage.new_name`, `lifecycle.shutdown_timeout`,
+  `debug.statement_shape`, five names of `architecture`, the
+  device-proof helpers of `contrib.auth.devices`, five of
+  `contrib.audit.checkpoints`, three of `keys.ring`, and five of
+  `keys.aws` left their `__all__`. They import unchanged until 2.0
+  (DSGN-22).
+- **Breaking:** `Worker`'s mechanics are private: `claim`, `relay`,
+  `relay_ids`, `take_over`, `process`, `schedule_periodic`, and
+  `relay_promoted` start with `_` (DSGN-22).
+- **Breaking:** `Credentials` takes `login=` for a JWT login's family,
+  where it took `session=` (DSGN-28).
+- Names 0.13 to 0.15 added were renamed before any release had them
+  (DSGN-23, DSGN-28): the ledger's hook points are
+  `accounting.hooks.on_post_entry` and `on_stage_entry`, both in
+  `accounting.hooks` only (were `on_posting` and `on_booking`), and
+  erasure's refusal phase is `apps.hooks.on_retain_subject` (was
+  `on_erase_check`); accounting's sources are `CAPTURE_SOURCE` and
+  `REVERSAL_SOURCE`, and approvals' actions `POST_ENTRY`, `CAPTURE_HOLD`,
+  `REVERSE_ENTRY`, and `GRANT_SUPERUSER`, so the two `CAPTURES` no
+  longer mean two things; `AccountNotOpen`, `PeriodNotOpen`,
+  `EntryNotReversible` (`entry_not_reversible`), and `PolicyRemoved`
+  (`policy_removed`); `limits.check_movements`;
+  `ACCOUNTING.MAX_ATTEMPTS`; and `AUTH.PRESET`. Hook points are named
+  `accounting.post_entry`, `accounting.stage_entry`, `approvals.guard`,
+  `ready`, and `retain_subject` in errors. `approvals.on_guard` is no
+  longer public: `guard()` registers.
+- The public API is frozen for 1.0
+  ([ADR 0125](docs/adr/0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)):
+  settings stay flat (DSGN-08 closed); the module singletons stay, with
+  no application container in 1.x (DSGN-07 closed); `apps.E002` refuses
+  a removed hook method until 2.0. `domainkit.http.health.router`, which
+  every generated project mounts, is public, and the templates import
+  only public names, which `test_api` now checks (DSGN-16);
+  `conf.HttpClientConfig`, `DebugToolbarConfig`, and
+  `ArchitectureConfig` are public (DSGN-24); `conf.UNSET` and
+  `ddd.UNSET` are one object (DSGN-29); `deprecation.renamed` answers
+  for a renamed name as `moved` does for a moved one.
+- A `keys` extra installs what encrypted fields and their key services
+  need (`cryptography`, and `httpx2` with `httpcore2`); the fintech
+  profile depends on it, and the keys app's messages name it (INFRA-19,
+  DSGN-31).
 - **Breaking:** an account may not go negative unless it is opened so:
   `may_go_negative` defaults to `False` in `Account.open`, `OpenAccount`,
   and `POST /accounts`. An account opened without it refuses what would
@@ -404,7 +458,7 @@ and a status.
 - Every `Guard`, however it is registered (`guard()` or `on_guard`),
   must have a service decorated `@requires_approval` for its action; the
   ledger's guards run decorated services of their own (DSGN-18).
-- Under `AUTH.PASSWORD_PRESET = "pci-dss-4"`, `auditprune` keeps a year of
+- Under `AUTH.PRESET = "pci-dss-4"`, `auditprune` keeps a year of
   the trail at least, whatever `AUDIT.MIN_RETENTION` says, and
   `--profile fintech` sets `MIN_RETENTION` to 365 days (PCI DSS v4.0
   10.5.1); the default stays 30 days (FIN-95).
@@ -612,6 +666,18 @@ and a status.
   and the settings stay the same, whatever the number of installed
   domains (PERF-24).
 
+### Deprecated
+
+- Names of 0.12 renamed for 1.0 work through 1.x with a
+  `DomainkitDeprecationWarning`, and 2.0 removes them (DSGN-23, DSGN-24,
+  DSGN-29): `apps.hooks.on_check` is `on_ready`, the readiness probe,
+  apart from `manage.py check`'s points; `DomainConfig.RETENTION` is
+  `retention`; `MESSAGING.SHUTDOWN_TIMEOUT` is `MESSAGING.DRAIN_TIMEOUT`;
+  `contrib.messaging.dbclock` is `domainkit.db.dbclock`;
+  `contrib.contenttypes`' copies of `db.models`' names
+  (`content_type_key` is `model_key`); `WebhookSettings` is
+  `WebhooksSettings`; `Credentials.session` is `Credentials.login`.
+
 ### Fixed
 
 - A trial balance of more than 32,767 accounts that moved, and a
@@ -693,7 +759,7 @@ and a status.
   (`AUTH.PASSWORD_HISTORY`), so the user cannot change back to it at once
   (PCI DSS v4.0 8.3.7) (AUTH-15).
 - `createsuperuser` offers to keep a password the validators refuse only
-  without `AUTH.PASSWORD_PRESET`, and outside staging and production. With
+  without `AUTH.PRESET`, and outside staging and production. With
   `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, a password it reads from the
   environment (`--noinput`), which whoever deploys holds too, is to change
   at the first login, unless `--no-temporary` (8.3.5, 8.3.6) (AUTH-18).
@@ -801,7 +867,7 @@ and a status.
   `ENTRY_THRESHOLDS` booked the whole amount unapproved. Captures are
   guarded as `accounting.capture_hold`, and every entry posted or
   captured is checked against the thresholds as it is booked (the
-  ledger's `on_booking`), so only the approved request being run books
+  ledger's `on_stage_entry`), so only the approved request being run books
   one over them (SEC-15b-2).
 - `contrib.approvals`: a request's seal now covers its policy, approvers,
   expiry, status, and a one-time run token, made again with each change
@@ -811,14 +877,14 @@ and a status.
   nor run (`request_tampered`). Seals cannot tell a whole row restored
   from an earlier copy, which the guide says (SEC-15b-4).
 - `contrib.accounting`: `PostEntry` keeps its `lines` as a tuple. Given
-  a generator, the ledger read it before the `on_posting` hooks, which
+  a generator, the ledger read it before the `on_post_entry` hooks, which
   saw no lines, so an entry over `APPROVALS.ENTRY_THRESHOLDS` posted
   unapproved (SEC-15b-6).
 - `contrib.approvals`: an approved command runs as its maker (the request
   context's actor), not as its last approver, so actor limits and the
   audit trail charge the person who asked; `RequestExecuted` lists the
   approvers. A request whose guard or policy no longer exists is neither
-  decided nor run (`policy_not_found`), where it fell back to
+  decided nor run (`policy_removed`), where it fell back to
   `APPROVE_RULE` or no rule. The guide states what maker-checker does
   not stop: a second account made by someone who may create users and
   grant the approvers' permission, and amounts split under a threshold
@@ -899,7 +965,7 @@ and a status.
   entry that reverses the one asked, and a capture takes the entry's lock
   and looks first, as every posting does; an entry already there is
   refused (`reference_reused`). A posting from a message that lost its
-  race `RETRY_ATTEMPTS` times is retried by the worker, not dead-lettered
+  race `MAX_ATTEMPTS` times is retried by the worker, not dead-lettered
   (SEC-14b-1).
 - `contrib.accounting`: `accounting.E001` counts an append-only trigger
   only as `migrate` makes it: enabled, of its type, with no `WHEN` and no
@@ -957,8 +1023,8 @@ and a status.
   the docs say to namespace keys, never to take them raw from a request,
   and to keep personal data out of them, as erasure and export do not
   reach them (SEC-14c-2).
-- The ledger refuses to reverse a reversal (`ReversalNotReversible`, 422
-  `reversal_not_reversible`). Reversing one booked the entry it undid
+- The ledger refuses to reverse a reversal (`EntryNotReversible`, 422
+  `entry_not_reversible`). Reversing one booked the entry it undid
   again, as a reversal, which limits do not count and approvals do not
   guard: a payment reversed, then its reversal reversed, left the account
   again with nothing counted, as often as it held money, and an approved

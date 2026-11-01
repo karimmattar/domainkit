@@ -1,7 +1,7 @@
 """FIN-88: one person reverses an entry two others had to approve.
 
 ``APPROVALS.ENTRY_THRESHOLDS`` makes an entry over its amount wait for two
-approvers; the ledger's ``on_booking`` check then refuses any booking
+approvers; the ledger's ``on_stage_entry`` check then refuses any booking
 over it that no approved request makes, so a capture or a crafted command
 cannot get round it. Reversals are let through
 (``builtin.check_booking``: "reversals post what an entry posted before,
@@ -28,7 +28,7 @@ from domainkit.contrib.approvals import (
     RequestStatus,
     submit_command,
 )
-from domainkit.contrib.approvals.builtin import ENTRIES
+from domainkit.contrib.approvals.builtin import POST_ENTRY
 from domainkit.contrib.messaging.testing import drain
 from domainkit_tests.test_approvals import (  # noqa: F401 - the fixture.
     TODAY,
@@ -49,7 +49,7 @@ async def test_reversing_an_entry_over_the_threshold_needs_its_approval() -> Non
     cash, sales = await books()
     large = sale(cash, sales, "5000.00", "big")
     with acting("maker"):
-        request = await submit_command(ENTRIES, large, maker="maker")
+        request = await submit_command(POST_ENTRY, large, maker="maker")
     with acting("ann"):
         await approve(request, "ann")
     with acting("bob"):

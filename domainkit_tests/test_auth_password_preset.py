@@ -51,7 +51,7 @@ from domainkit_tests.test_auth_http import (
 from domainkit_tests.test_auth_stepup import enrol, now_code
 
 VALIDATORS = "domainkit.contrib.auth.validators"
-PCI = {"PASSWORD_PRESET": "pci-dss-4"}
+PCI = {"PRESET": "pci-dss-4"}
 STRONG = ["Kq7-zv93-Lmw2", "Pw4-tt81-Xcv9", "Rr5-yy62-Bnm3", "Ss6-uu73-Qaz4"]
 """Passwords the preset takes: 13 characters, letters and digits."""
 
@@ -92,7 +92,7 @@ def test_the_preset_sets_what_is_left_unset() -> None:
     )
     assert preset_contradictions(config) == []
     assert (
-        plain.PASSWORD_PRESET,
+        plain.PRESET,
         plain.PASSWORD_HISTORY,
         plain.PASSWORD_CHANGE_ON_FIRST_USE,
         plain.LOGIN_RATE,
@@ -106,7 +106,7 @@ def test_the_preset_sets_what_is_left_unset() -> None:
 def test_presets_are_named() -> None:
     """An unknown preset is refused; so are histories past 24."""
     with pytest.raises(ValueError, match="pci-dss-4"):
-        AuthSettings(PASSWORD_PRESET="pci-dss-3")
+        AuthSettings(PRESET="pci-dss-3")
     with pytest.raises(ValueError, match="less than or equal to 24"):
         AuthSettings(PASSWORD_HISTORY=25)
 
@@ -181,7 +181,7 @@ def test_settings_that_contradict_the_preset_are_refused(
     [problem] = refused.value.messages
     assert getattr(problem, "id", None) == "auth.E010"
     assert found in str(problem)
-    assert "AUTH.PASSWORD_PRESET 'pci-dss-4' is contradicted" in str(problem)
+    assert "AUTH.PRESET 'pci-dss-4' is contradicted" in str(problem)
 
 
 @pytest.mark.parametrize(
@@ -879,7 +879,7 @@ def test_every_contradiction_is_named_in_one_error(use_auth: UseAuth) -> None:
 
     [problem] = refused.value.messages
     assert str(problem) == (
-        "AUTH.PASSWORD_PRESET 'pci-dss-4' is contradicted: PASSWORD_HISTORY is 3, "
+        "AUTH.PRESET 'pci-dss-4' is contradicted: PASSWORD_HISTORY is 3, "
         "under 4 (8.3.7); PASSWORD_CHANGE_ON_FIRST_USE is off: passwords staff set "
         "are not changed at their first use (8.3.5). Leave these settings out for "
         "the preset's, or drop the preset."

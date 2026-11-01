@@ -31,7 +31,6 @@ from domainkit.contrib.messaging import (
     admin,
     chain,
     current_attempt,
-    dbclock,
     enqueue,
     ordered,
     task,
@@ -54,7 +53,7 @@ from domainkit.contrib.messaging.tables import (
     ordering_keys,
 )
 from domainkit.contrib.messaging.testing import Outbox, QueuedMessage
-from domainkit.db import Isolation, connections
+from domainkit.db import Isolation, connections, dbclock
 from domainkit.ddd import Retry, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
@@ -554,12 +553,12 @@ async def test_a_dead_letter_lets_the_rest_of_its_key_run() -> None:
 
     await enqueue(step, key="a", label="a4")
     await enqueue(step, key="a", label="a5")
-    (a4,) = await worker.claim(5)
+    (a4,) = await worker._claim(5)
     runs.broken.clear()
     settings = registry.settings(MessagingSettings)
     assert await admin.retry_dead(settings, None) == 1
     assert await statuses("a") == [DONE, HELD, DONE, DONE, PENDING, HELD]
-    await worker.process(a4)
+    await worker._process(a4)
     await worker.run_once()
 
     assert runs.labels("a") == ["a0", "a2", "a3", "a4", "a1", "a5"]
@@ -603,14 +602,14 @@ async def test_each_key_of_a_retry_decides_by_its_own_messages() -> None:
     worker = Worker(config())
     await worker.run_once()
     await enqueue(step, key="a", label="a-later")
-    (running,) = await worker.claim(5)
+    (running,) = await worker._claim(5)
     runs.broken.clear()
 
     settings = registry.settings(MessagingSettings)
     assert await admin.retry_dead(settings, None) == 2
     assert await statuses("a") == [HELD, PENDING]
     assert await statuses("b") == [PENDING]
-    await worker.process(running)
+    await worker._process(running)
     await worker.run_once()
     assert runs.labels("a") == ["a-later", "a-dead"]
     assert runs.labels("b") == ["b-dead"]
@@ -629,7 +628,7 @@ async def test_a_worker_that_dies_mid_message_holds_its_key_until_its_lease_ends
         await enqueue(step, key="a", label=label)
     await enqueue(step, key="b", label="b0")
     dead = Worker(config(**SLOW))
-    (a0,) = await dead.claim(1)  # Its process dies here: never finished.
+    (a0,) = await dead._claim(1)  # Its process dies here: never finished.
     assert a0.ordering_key == "a"
     alive = Worker(config(**SLOW))
     assert await alive.run_once() == 1
@@ -663,8 +662,8 @@ async def test_a_chains_steps_keep_its_key_and_its_place() -> None:
     await enqueue(chain(by_function, step), key="c", label="c0")
     await enqueue(by_function, key="c", label="between")
     worker = Worker(config())
-    (first,) = await worker.claim(5)
-    await worker.process(first)
+    (first,) = await worker._claim(5)
+    await worker._process(first)
     found = [r for r in await rows() if r["ordering_key"] == "by-function:c"]
     assert [(r["payload"].get("label"), r["status"]) for r in found] == [
         (None, DONE),
@@ -845,10 +844,10 @@ async def test_a_failed_publication_of_the_next_message_is_left_to_the_relay(
         published.append(promoted)
         raise ConnectionError("broker down")
 
-    worker.relay_promoted = fails
-    (a0,) = await worker.claim(5)
+    worker._relay_promoted = fails
+    (a0,) = await worker._claim(5)
     with caplog.at_level(logging.ERROR, "domainkit.contrib.messaging.worker"):
-        await worker.process(a0)
+        await worker._process(a0)
 
     assert await statuses("a") == [DONE, PENDING]
     assert [p.queue for p in published] == ["default"]
@@ -965,12 +964,12 @@ async def test_a_consumer_of_another_outbox_publishes_its_next_too(
         relayed.append(list(ids))
         return len(ids)
 
-    monkeypatch.setattr(worker, "relay_ids", relay_ids)
+    monkeypatch.setattr(worker, "_relay_ids", relay_ids)
     with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
         await enqueue(step, key="a", label="a0")
         await enqueue(step, key="a", label="a1")
-    (a0,) = await worker.claim(5)
-    await worker.process(a0)
+    (a0,) = await worker._claim(5)
+    await worker._process(a0)
 
     assert relayed == [[(await rows())[1]["id"]]]
 

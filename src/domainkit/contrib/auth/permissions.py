@@ -14,7 +14,8 @@ from typing import Final
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from domainkit.contrib.contenttypes import installed_models, sync_content_types
+from domainkit.contrib.contenttypes import sync_content_types
+from domainkit.db.models import installed_models
 from domainkit.exceptions import ImproperlyConfigured
 
 from .tables import permissions

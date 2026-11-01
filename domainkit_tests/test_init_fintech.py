@@ -178,7 +178,7 @@ def test_fintech_writes_the_controls_over_the_project(tmp_path: Path) -> None:
     ]
     assert output.splitlines()[3:] == [
         (
-            '  pip install "domainkit[audit,httpclient,immudb,mfa,postgres,redis,'
+            '  pip install "domainkit[audit,immudb,keys,mfa,postgres,redis,'
             'sqlite,testing]"   # or: uv sync'
         ),
         "  python manage.py check",
@@ -223,7 +223,7 @@ def test_the_profiles_extras_are_extras_of_domainkit() -> None:
     assert set(EXTRAS["fintech"]) <= offered
     assert set(EXTRAS[None]) < set(EXTRAS["fintech"])
     assert requirement("0.15.0", EXTRAS["fintech"]) == (
-        "domainkit[audit,httpclient,immudb,mfa,postgres,redis,sqlite]>=0.15.0,<0.16"
+        "domainkit[audit,immudb,keys,mfa,postgres,redis,sqlite]>=0.15.0,<0.16"
     )
     assert PROFILES["fintech"].parent.parent == TEMPLATE_DIR.parent
 

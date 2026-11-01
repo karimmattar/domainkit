@@ -16,7 +16,7 @@ A worker outlives database outages: it logs each failure, waits longer each
 time (up to ``OUTAGE_MAX_PAUSE``), and carries on. A message whose outcome
 could not be written runs again once its lock expires.
 
-A stopping worker gives running messages ``SHUTDOWN_TIMEOUT`` to finish, then
+A stopping worker gives running messages ``DRAIN_TIMEOUT`` to finish, then
 cancels the rest. A cancelled message goes back to the outbox, due at once,
 and the cut-short run does not count as an attempt.
 
@@ -71,7 +71,7 @@ from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
 from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
-from domainkit.db import connections
+from domainkit.db import connections, dbclock
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
@@ -80,7 +80,7 @@ from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
 from domainkit.utils.module_loading import import_string
 
-from . import dbclock, ordering
+from . import ordering
 from .budget import Budget
 from .outbox import CHANNEL, message_row, notifies, notify_committed, write
 from .registry import (
@@ -551,7 +551,7 @@ class Worker:
             back="Queueing the periodic tasks in %r works again",
         )
         self._schedule_after = float("-inf")
-        self.relay_promoted: Callable[[ordering.Promoted], Awaitable[None]] | None = (
+        self._relay_promoted: Callable[[ordering.Promoted], Awaitable[None]] | None = (
             None
         )
         """Called with each message made pending because the one before it
@@ -589,7 +589,7 @@ class Worker:
     async def run(self, stop: asyncio.Event) -> None:
         """Process messages until ``stop`` is set, then finish the running ones.
 
-        They get ``SHUTDOWN_TIMEOUT`` seconds; then, or when ``run`` itself is
+        They get ``DRAIN_TIMEOUT`` seconds; then, or when ``run`` itself is
         cancelled, the rest are cancelled and go back to the outbox. Old
         messages are cleaned up meanwhile, and on PostgreSQL commits wake
         the worker between polls.
@@ -612,7 +612,7 @@ class Worker:
                         break
                     wake.clear()  # A commit from here on wakes the next wait.
                     try:
-                        claimed = await self.claim(slots)
+                        claimed = await self._claim(slots)
                     except BaseException as exc:
                         self.budget.release(slots)
                         if not isinstance(exc, Exception):
@@ -634,7 +634,7 @@ class Worker:
                         await pause(wake, polls.wait(wake.listening))
                         if wake.is_set():
                             polls.reset()
-                await finish(running, self.config.SHUTDOWN_TIMEOUT)
+                await finish(running, self.config.DRAIN_TIMEOUT)
                 await wind_down(helpers, HELPER_GRACE)
             finally:
                 for helper in helpers:
@@ -651,7 +651,7 @@ class Worker:
         while True:
             slots = await self.budget.acquire(self.config.BATCH_SIZE)
             try:
-                claimed = await self.claim(slots)
+                claimed = await self._claim(slots)
             except BaseException:
                 self.budget.release(slots)
                 raise
@@ -666,7 +666,7 @@ class Worker:
     async def _process_holding(self, message: "Claimed") -> None:
         """Process ``message``, then give back the slot its claim took."""
         try:
-            await self.process(message)
+            await self._process(message)
         finally:
             self.budget.release()
 
@@ -691,7 +691,7 @@ class Worker:
             due = due.where(messages.c.queue.in_(self.queues))
         return due.scalar_subquery()
 
-    async def claim(self, limit: int) -> list[Claimed]:
+    async def _claim(self, limit: int) -> list[Claimed]:
         """Lock up to ``limit`` due messages for this worker."""
         dialect = self.dialect
         now = dbclock.now(dialect)
@@ -725,7 +725,7 @@ class Worker:
             await _shielded(self._give_back(lock_id), "give back a claim cut off")
             raise
 
-    async def relay(self, broker: Broker, limit: int) -> int:
+    async def _relay(self, broker: Broker, limit: int) -> int:
         """Publish up to ``limit`` due messages to ``broker``; return how many went.
 
         Each message is published as a pointer: its id, this database, and
@@ -735,9 +735,11 @@ class Worker:
         any reason (a refusal, its deadline, a cancellation), is unlocked
         at once, so the next round sends it again.
         """
-        return await self._relay(broker, self._due(dbclock.now(self.dialect), limit))
+        return await self._publish_due(
+            broker, self._due(dbclock.now(self.dialect), limit)
+        )
 
-    async def relay_ids(self, broker: Broker, ids: Sequence[uuid.UUID]) -> int:
+    async def _relay_ids(self, broker: Broker, ids: Sequence[uuid.UUID]) -> int:
         """Publish just-committed messages now, those due and not yet taken.
 
         They go ``BATCH_SIZE`` at a time: one lock per batch, and at most
@@ -746,10 +748,10 @@ class Worker:
         relayed = 0
         for chunk in batched(ids, self.config.BATCH_SIZE, strict=False):
             due = self._due(dbclock.now(self.dialect), None, chunk)
-            relayed += await self._relay(broker, due)
+            relayed += await self._publish_due(broker, due)
         return relayed
 
-    async def _relay(self, broker: Broker, due: Any) -> int:  # noqa: ANN401
+    async def _publish_due(self, broker: Broker, due: Any) -> int:  # noqa: ANN401
         """Lease the ``due`` messages, publish their pointers, settle the leases."""
         dialect = self.dialect
         lock_id = uuid.uuid4()
@@ -901,7 +903,7 @@ class Worker:
                 )
             )
 
-    async def take_over(
+    async def _take_over(
         self, message_id: uuid.UUID, relay_lock: uuid.UUID
     ) -> Claimed | None:
         """Claim a delivered message, unless it ran, moved on, or is running.
@@ -931,7 +933,7 @@ class Worker:
         rows = await self._claiming(statement, lock_id)
         return Claimed(**rows[0]._mapping, lock_id=lock_id) if rows else None
 
-    async def process(self, message: Claimed) -> None:
+    async def _process(self, message: Claimed) -> None:
         """Run one message under its original request id and actor; never raises.
 
         A message no request queued (a periodic task, a command's) runs as
@@ -1214,9 +1216,9 @@ class Worker:
         """
         if self._wake is not None:
             self._wake.set()
-        if self.relay_promoted is not None:
+        if self._relay_promoted is not None:
             try:
-                await self.relay_promoted(promoted)
+                await self._relay_promoted(promoted)
             except Exception:  # The relay publishes it later.
                 logger.exception(
                     "Could not publish message %s, next of its key; the relay will",
@@ -1369,13 +1371,13 @@ class Worker:
         if clock.monotonic() < self._schedule_after:
             return
         try:
-            await self.schedule_periodic()
+            await self._schedule_periodic()
         except Exception as exc:  # noqa: BLE001 - logged; claiming goes on.
             self._schedule_after = clock.monotonic() + self._scheduling.note(exc)
             return
         self._scheduling.recovered()
 
-    async def schedule_periodic(self) -> None:
+    async def _schedule_periodic(self) -> None:
         """Queue each periodic task once per interval or cron time, across workers.
 
         A cron task's next run is queued ahead, as soon as the one before is

@@ -36,7 +36,7 @@ async def test_a_running_keyed_message_is_not_cancelled_by_a_fast_clock() -> Non
     for label in ("a0", "a1"):
         await enqueue(step, key="a", label=label)
     worker = Worker(config(**SLOW))  # VISIBILITY_TIMEOUT 60 s.
-    (running,) = await worker.claim(1)  # a0 runs, locked by the database's clock.
+    (running,) = await worker._claim(1)  # a0 runs, locked by the database's clock.
     settings = registry.settings(MessagingSettings)
 
     with freeze_time(clock.now() + timedelta(minutes=5)):

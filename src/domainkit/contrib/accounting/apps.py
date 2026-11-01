@@ -6,9 +6,9 @@ from typing import Final
 from domainkit.apps import DomainConfig, registry
 from domainkit.apps.hooks import (
     on_deployment_warnings,
-    on_erase_check,
     on_erase_subject,
     on_export_subject,
+    on_retain_subject,
     on_startup,
 )
 from domainkit.checks import CheckMessage
@@ -47,7 +47,7 @@ class AccountingConfig(DomainConfig):
         start_mappers()
         on_migrated(protect)
         on_startup(check_protection)
-        on_erase_check(self.hold_erasure)
+        on_retain_subject(self.hold_erasure)
         on_erase_subject(self.erase_holder)
         on_export_subject(self.export_holder)
         on_deployment_warnings(self.weak_settings)

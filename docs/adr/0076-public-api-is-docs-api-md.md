@@ -1,6 +1,6 @@
 # 0076. The public API is what `docs/api.md` lists, which is every `__all__`
 
-- Status: Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md)
+- Status: Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md), and 2026-11-01 by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)
 - Date: 2026-10-25
 
 ## Context
@@ -52,3 +52,7 @@ and `docs/api.md` keeps the policy and links each page
 The rule is unchanged: a name is public when an `__all__` lists it, the
 pages together list every such name under its module, once, and
 `test_api.py` reads them all.
+
+## Amendment (2026-11-01, 1.0): the list is frozen, and holds the generated project too
+
+1.0 freezes what the pages list ([0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)): names never published were renamed, published ones keep a deprecated alias until 2.0, and internals no page used left their `__all__`. `test_api` now also fails when a template of `init` or the generators imports a name no `__all__` lists (DSGN-16).

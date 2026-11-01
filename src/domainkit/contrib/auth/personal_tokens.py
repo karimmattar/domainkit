@@ -296,7 +296,7 @@ def _info(token: AuthToken, request: Request) -> TokenInfo:
     """What the list shows of ``token``."""
     credentials = _credentials(request)
     current = token.id == credentials.token_id or (
-        token.family is not None and token.family == credentials.session
+        token.family is not None and token.family == credentials.login
     )
     return TokenInfo(
         id=token.id,

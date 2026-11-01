@@ -64,7 +64,7 @@ TIME_ZONE = "UTC"
 # for a fresh second factor (StepUp, config/rules.py), and transfers for one
 # confirmed for their amount and payee (docs/auth/step-up.md).
 AUTH = {
-    "PASSWORD_PRESET": "pci-dss-4",
+    "PRESET": "pci-dss-4",
     "MFA": {"ISSUER": "{{ project }}"},
     "STEP_UP": {"METHODS": ["otp"]},
     "SCA": {"METHODS": ["otp"], "TTL": timedelta(minutes=5)},
@@ -101,9 +101,6 @@ LIMITS = {
 # a key management service, and keys.E001 refuses this there.
 KEYS: dict[str, object] = {"PROVIDER": "local"}
 
-# Operation ids are route names, so generated clients keep their method
-# names when routers move (docs/reference/responses.md, "The API surface").
-OPENAPI_OPERATION_IDS = "route_name"
 # Lines leave through a bounded queue and a thread, so writing them never
 # holds the event loop (docs/runtime.md, "Logging").
 LOGGING = build_logging_config(log_format="text", level=env.str("LOG_LEVEL", "INFO"))

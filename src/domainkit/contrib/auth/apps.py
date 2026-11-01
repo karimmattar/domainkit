@@ -498,7 +498,7 @@ class AuthConfig(DomainConfig):
             errors.append(
                 CheckMessage(
                     "auth.E010",
-                    f"AUTH.PASSWORD_PRESET {config.PASSWORD_PRESET!r} is "
+                    f"AUTH.PRESET {config.PRESET!r} is "
                     f"contradicted: {'; '.join(contradictions)}. Leave these "
                     "settings out for the preset's, or drop the preset.",
                 )

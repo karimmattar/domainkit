@@ -335,7 +335,7 @@ each missing part is an error (`audit.E001` to `audit.E005`) that
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
 | `CHECKPOINT_KEY` | `None` | The Ed25519 private key, in PEM (at most 1,024 characters), that signs checkpoints: those `auditprune` prunes below, and those `auditverify --export` writes. Read by those two commands alone, so set it only where they run, not in the application's settings. `None`: neither runs. |
 | `CHECKPOINT_PUBLIC_KEY` | `None` | The public half of `CHECKPOINT_KEY`, in PEM (at most 1,024 characters): what `auditverify` checks stored checkpoints with. Checked when the application starts; signing refuses a private key it is not the half of. `None`: no stored checkpoint verifies, so a pruned trail does not. |
-| `MIN_RETENTION` | `30 days` | How old a seal must be before `auditprune` may cut there (1 day to 3,650 days): a shorter `--keep-days` is refused, and a checkpoint of a younger seal starts nothing in `auditverify`. Under `AUTH.PASSWORD_PRESET = "pci-dss-4"` it is 365 days at least, whatever it says (PCI DSS v4.0 10.5.1); `--profile fintech` sets 365 days. |
+| `MIN_RETENTION` | `30 days` | How old a seal must be before `auditprune` may cut there (1 day to 3,650 days): a shorter `--keep-days` is refused, and a checkpoint of a younger seal starts nothing in `auditverify`. Under `AUTH.PRESET = "pci-dss-4"` it is 365 days at least, whatever it says (PCI DSS v4.0 10.5.1); `--profile fintech` sets 365 days. |
 
 ## History
 

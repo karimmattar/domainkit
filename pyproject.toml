@@ -90,6 +90,14 @@ webhooks = ["httpx2 (>=2.13.0,<3.0.0)", "cryptography (>=50.0.2,<51.0.0)"]
 # request's deadline, retried, with a circuit breaker per host.
 # httpcore2 (httpx2's transport) for its pool and network backend.
 httpclient = ["httpx2 (>=2.13.0,<3.0.0)", "httpcore2 (>=2.13.0,<3.0.0)"]
+# Encrypted fields and their keys (domainkit.keys, domainkit.contrib.keys):
+# AES-GCM, and the key services (AWS KMS, Vault) reached through
+# domainkit.http.client (INFRA-19, DSGN-31).
+keys = [
+    "cryptography (>=50.0.2,<51.0.0)",
+    "httpx2 (>=2.13.0,<3.0.0)",
+    "httpcore2 (>=2.13.0,<3.0.0)",
+]
 # The IANA time zones for cron schedules where the system has none (Windows).
 tzdata = ["tzdata (>=2025.2)"]
 # uvloop's event loop for management commands and runserver (EVENT_LOOP).

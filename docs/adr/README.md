@@ -90,10 +90,10 @@ statuses, and the amendments they name.
 | [0071](0071-bind-cache-computations-to-their-owner.md) | Detach shared cache computations; bind those that borrow to their owner | Accepted |
 | [0072](0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md) | Walk proxy headers from the right, trust unix sockets by name, and name the scheme header | Accepted |
 | [0075](0075-ranges-to-the-next-major-tested-at-the-top.md) | Declare ranges to the next major, and test the newest releases they allow | Accepted |
-| [0076](0076-public-api-is-docs-api-md.md) | The public API is what docs/api.md lists, which is every `__all__` | Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) |
+| [0076](0076-public-api-is-docs-api-md.md) | The public API is what docs/api.md lists, which is every `__all__` | Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md), and 2026-11-01 by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) |
 | [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted; amended 2026-10-26 (at the end) |
-| [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted; amended 2026-10-26 (at the end) |
+| [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted; amended 2026-10-26 and 2026-11-01 (at the end), the second by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) |
 | [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted; amended 2026-10-26 (at the end) |
 | [0082](0082-signed-audit-checkpoints.md) | Prune the audit chain below signed checkpoints, in a fixed format | Accepted |
 | [0084](0084-one-exception-root-mapped-to-http-at-the-boundary.md) | Root every exception at `DomainkitError`, and map errors to HTTP at the boundary | Accepted |
@@ -101,7 +101,7 @@ statuses, and the amendments they name.
 | [0086](0086-secure-defaults-at-the-http-edge.md) | Make the HTTP edge's defaults the safe ones | Accepted; amended 2026-10-26 (at the end) |
 | [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted; amended 2026-10-26 and 2026-11-01 (at the end) |
 | [0089](0089-build-the-docs-site-with-mkdocs-and-generate-the-api-reference-from-api-md.md) | Build the docs site with MkDocs, and generate the API reference from api.md | Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) |
-| [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted |
+| [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted; amended 2026-11-01 (at the end) by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) |
 | [0092](0092-retry-units-of-work-choose-isolation-and-lock-in-order.md) | Run units of work again after a lost race, let them choose their isolation, and lock in order | Accepted; amended 2026-10-28, 2026-10-29, and 2026-10-31 (at the end) |
 | [0094](0094-an-inbox-of-handled-messages-written-with-the-handlers-commit.md) | Keep an inbox of handled messages, written with the handler's commit | Accepted |
 | [0095](0095-fence-a-runs-commits-with-its-lease-instead-of-a-heartbeat.md) | Fence a run's commits with its lease, instead of a heartbeat | Accepted |
@@ -117,7 +117,7 @@ statuses, and the amendments they name.
 | [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted; amended 2026-10-29 and 2026-11-01 (at the end) |
 | [0107](0107-make-test-users-through-the-domain-and-sign-in-through-a-protocol.md) | Make test users through the domain, and sign in as them through a protocol | Accepted |
 | [0108](0108-keep-the-full-domain-as-the-default-and-give-new-projects-an-image-and-ci.md) | Keep the full domain as `startdomain`'s default; give new projects an image and CI | Accepted; amended 2026-10-28 (at the end) |
-| [0111](0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md) | Refuse a removed hook method until 1.0, wherever the domain defines it | Accepted |
+| [0111](0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md) | Refuse a removed hook method until 1.0, wherever the domain defines it | Accepted; amended 2026-11-01 (at the end) by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) |
 | [0112](0112-refuse-the-test-databases-to-a-test-that-did-not-request-them.md) | Refuse the test databases to a test that did not request them | Accepted |
 | [0113](0113-reset-module-state-through-public-resets-the-plugin-calls.md) | Reset module state through public resets the plugin calls | Accepted |
 | [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) | Split the reference and the public API into pages by area | Accepted |
@@ -131,6 +131,7 @@ statuses, and the amendments they name.
 | [0122](0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md) | Step up in a rule, and bind authorizations with a stored row and a code | Accepted; amended 2026-11-01 (at the end) |
 | [0123](0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md) | Count movements against limits under the subject's row, in the movement's transaction | Accepted; amended 2026-10-31 and 2026-11-01 (at the end) |
 | [0124](0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md) | Write a bank's controls on and wired, as a profile over the project template | Accepted; amended 2026-10-31 (at the end) |
+| [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) | Freeze the public API for 1.0, renaming what was never published | Accepted |
 
 ### Decisions still without a record
 

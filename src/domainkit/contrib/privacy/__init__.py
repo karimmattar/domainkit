@@ -18,7 +18,7 @@ Then, with ``domainkit.contrib.audit`` installed:
 - ``manage.py privacy erase --subject <id>`` erases them through units of
   work, so versions, events, and the audit trail follow, and forgets the
   person's keys in the audit trail (``erase_subject``);
-- ``manage.py privacy purge`` applies each domain's ``RETENTION``
+- ``manage.py privacy purge`` applies each domain's ``retention``
   (``Retention`` policies): old rows are deleted, or their personal fields
   erased (``purge``).
 

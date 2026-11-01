@@ -20,9 +20,12 @@ from domainkit.conf.env import Env
 from domainkit.conf.global_settings import (
     DEFAULT_CACHE_ALIAS,
     DEFAULT_DB_ALIAS,
+    ArchitectureConfig,
     BrokerConfig,
     CacheConfig,
     DatabaseConfig,
+    DebugToolbarConfig,
+    HttpClientConfig,
     LedgerConfig,
     Settings,
     ShardConfig,
@@ -30,11 +33,13 @@ from domainkit.conf.global_settings import (
 )
 from domainkit.conf.lazy import (
     SETTINGS_MODULE_VARIABLE,
-    UNSET,
     LazySettings,
-    describe_errors,
     load_settings,
 )
+from domainkit.conf.lazy import (
+    describe_errors as describe_errors,
+)
+from domainkit.utils.unset import UNSET
 
 _lazy: Final = LazySettings(Env())
 
@@ -52,20 +57,21 @@ __all__ = [
     "DEFAULT_DB_ALIAS",
     "SETTINGS_MODULE_VARIABLE",
     "UNSET",
+    "ArchitectureConfig",
     "BrokerConfig",
     "CacheConfig",
     "DatabaseConfig",
+    "DebugToolbarConfig",
     "Env",
+    "HttpClientConfig",
     "LedgerConfig",
     "Settings",
     "ShardConfig",
     "StorageConfig",
     "configure",
-    "describe_errors",
     "load_settings",
     "override_settings",
     "reset_settings",
     "settings",
-    "unwrap_settings",
     "use_settings",
 ]

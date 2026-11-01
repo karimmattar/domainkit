@@ -213,7 +213,7 @@ GDPR's right to erasure gives way where a law asks a business to keep a
 record (Article 17(3)(b)): a bank keeps its books, a payment's
 authorisation, and who approved it, for as long as its regulator asks
 (five to ten years, as a rule). Before any data is erased, every domain's
-`on_erase_check` hooks are asked whether the person's data must be kept
+`on_retain_subject` hooks are asked whether the person's data must be kept
 for now; one sentence from any of them holds the whole erasure: nothing
 is erased, `privacy.erase` is recorded as denied with each domain's
 sentence, and `ErasureHeld` (`erasure_held`) is raised, which
@@ -221,7 +221,7 @@ sentence, and `ErasureHeld` (`erasure_held`) is raised, which
 once every check let it go on, so a domain never refuses part-way:
 
 ```python
-from domainkit.apps.hooks import on_erase_check
+from domainkit.apps.hooks import on_retain_subject
 
 
 async def hold_loans(subject: str, reason: str) -> str | None:
@@ -232,7 +232,7 @@ async def hold_loans(subject: str, reason: str) -> str | None:
 
 class LendingConfig(DomainConfig):
     def ready(self) -> None:
-        on_erase_check(hold_loans)
+        on_retain_subject(hold_loans)
 ```
 
 The ledger holds the erasure of a holder of an open account with money
@@ -254,7 +254,7 @@ from domainkit.contrib.privacy import Retention
 
 
 class ClinicConfig(DomainConfig):
-    RETENTION = (
+    retention = (
         # Delete access log rows after 90 days.
         Retention(
             table="clinic_access_log", field="accessed_at", keep=timedelta(days=90)

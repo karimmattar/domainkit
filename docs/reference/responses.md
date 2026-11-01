@@ -214,31 +214,22 @@ byte for byte. What a project can see:
   prefixes and rules of the routers above it, in its place: one whose
   class (or the router itself) has its own `matches`, `handle`, or any
   other method of `APIRouter` or Starlette's `Router` but `__init__` and
-  those that declare routes (`domainkit.http.routing.serves_itself`). An
+  those that declare routes. An
   IP gate in `handle` or a host rule in `matches` holds as under FastAPI's
   nesting; the routers around it are still flattened;
 - a route added to an included router after the application is built is
   not served: finish routers before `get_asgi_application` runs.
 
 The application's router then tries only the routes a request's path can
-reach (`domainkit.http.routing.RouteIndex`, 0.10): those whose template
+reach (0.10): those whose template
 starts with the path's first segment, and those that may match any path (a
 parameter in the first segment, a mount at the root, a host, a router left
 included), in order. It serves the route trying every route would serve,
 whatever the number of routes ahead of it; order still decides between
 routes of one segment.
 
-`FLATTEN_ROUTERS = False` keeps FastAPI's nesting, and its matching.
-`flatten_routes(app.router)` (`domainkit.http.routing`) flattens an
-application built by hand, and `index_routes(app.router)` indexes it:
-
-```python
-from fastapi import FastAPI
-
-from domainkit.http.routing import flatten_routes, index_routes
-
-app = FastAPI()
-app.include_router(router)
-flatten_routes(app.router)  # How many included routers it replaced.
-index_routes(app.router)  # Whether its routes are now indexed.
-```
+`FLATTEN_ROUTERS = False` keeps FastAPI's nesting, and its matching. Only
+the application `get_asgi_application` builds is flattened and indexed:
+the code that does it rests on FastAPI's internals, so it is not public
+(it was `domainkit.http.routing` until 1.0), and an application built by
+hand keeps FastAPI's nesting.

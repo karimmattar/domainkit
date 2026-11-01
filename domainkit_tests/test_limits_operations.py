@@ -14,7 +14,7 @@ from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.checks import CheckFailed
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
-from domainkit.contrib.accounting import on_booking
+from domainkit.contrib.accounting.hooks import on_stage_entry
 from domainkit.contrib.limits import (
     Direction,
     LimitsUnitOfWork,
@@ -566,7 +566,7 @@ def test_the_ledger_and_the_schedule_are_joined_when_installed(
     registry.clear()
     with override_settings(INSTALLED_DOMAINS=domains, DATABASES=SQLITE):
         setup()
-        hooked = [hook.domain for hook in on_booking.hooks()]
+        hooked = [hook.domain for hook in on_stage_entry.hooks()]
         scheduled = {
             spec.key: every
             for spec, every in periodic_tasks()
@@ -702,7 +702,7 @@ def test_limits_may_live_in_another_database_with_the_ledger() -> None:
         DATABASE_ROUTING={"accounting": "books", "limits": "books"},
     ):
         setup()
-        hooked = [hook.domain for hook in on_booking.hooks()]
+        hooked = [hook.domain for hook in on_stage_entry.hooks()]
     registry.clear()
     assert hooked == ["limits"]
 

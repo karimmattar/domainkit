@@ -692,13 +692,13 @@ async def test_reclaim_after_visibility_timeout(tables: None) -> None:
     """A crashed worker's message returns; its late release changes nothing."""
     await enqueue(remember, value=uuid.uuid4())
     first = Worker()
-    (claimed,) = await first.claim(10)
-    assert await Worker().claim(10) == []
+    (claimed,) = await first._claim(10)
+    assert await Worker()._claim(10) == []
 
     async with connections.engine().begin() as connection:
         past = datetime.now(UTC) - timedelta(seconds=1)
         await connection.execute(update(messages).values(locked_until=past))
-    (reclaimed,) = await Worker().claim(10)
+    (reclaimed,) = await Worker()._claim(10)
     await first._release(claimed, status=DONE)
 
     (row,) = await outbox()
@@ -714,13 +714,13 @@ async def test_cleanup_and_run_loop(tables: None) -> None:
     )
     stop = asyncio.Event()
 
-    original = worker.process
+    original = worker._process
 
     async def process_then_stop(message: Claimed) -> None:
         await original(message)
         stop.set()
 
-    worker.process = process_then_stop  # type: ignore[method-assign]
+    worker._process = process_then_stop  # type: ignore[method-assign]
     async with asyncio.timeout(5):
         await worker.run(stop)
     assert len(ran) == 1
@@ -742,14 +742,14 @@ async def test_a_busy_worker_never_waits_for_the_poll(tables: None) -> None:
         MessagingSettings(**{**FAST, "POLL_INTERVAL": 30, "CONCURRENCY": 1})
     )
     stop, all_ran = asyncio.Event(), asyncio.Event()
-    original = worker.process
+    original = worker._process
 
     async def process_and_count(message: Claimed) -> None:
         await original(message)
         if len(ran) == 5:
             all_ran.set()
 
-    worker.process = process_and_count  # type: ignore[method-assign]
+    worker._process = process_and_count  # type: ignore[method-assign]
     running = asyncio.create_task(worker.run(stop))
     try:
         async with asyncio.timeout(5):
@@ -1372,7 +1372,7 @@ async def test_periodic_tasks_keep_their_queue(tables: None) -> None:
     @periodic(timedelta(hours=1), name="tests.hourly_report", queue="reports")
     async def hourly_report() -> None: ...
 
-    await Worker().schedule_periodic()
+    await Worker()._schedule_periodic()
 
     rows = [row for row in await outbox() if row["target"] == "tests.hourly_report"]
     assert [row["queue"] for row in rows] == ["reports"]
@@ -1425,8 +1425,8 @@ async def test_commits_publish_their_messages_at_once(
     with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
         await enqueue(remember, value=uuid.uuid4())  # Due, not published.
     # No ids means nothing to publish, not "everything that is due".
-    assert await Worker().relay_ids(broker_tables, []) == 0
-    assert await Worker().relay(broker_tables, 10) == 1
+    assert await Worker()._relay_ids(broker_tables, []) == 0
+    assert await Worker()._relay(broker_tables, 10) == 1
 
 
 async def test_failed_commit_publications_leave_work_to_the_relay(
@@ -1445,7 +1445,7 @@ async def test_failed_commit_publications_leave_work_to_the_relay(
         await enqueue(remember, value=uuid.uuid4())
         await published()
         monkeypatch.undo()
-        monkeypatch.setattr(Worker, "relay_ids", database_down)
+        monkeypatch.setattr(Worker, "_relay_ids", database_down)
         await enqueue(remember, value=uuid.uuid4())
         await published()
 
@@ -1637,7 +1637,7 @@ class RecordingWorker:
         self.database = database
         self.made.append((config, database))
 
-    async def relay_ids(self, broker: object, ids: Sequence[uuid.UUID]) -> int:
+    async def _relay_ids(self, broker: object, ids: Sequence[uuid.UUID]) -> int:
         """Remember the broker and the ids."""
         self.relayed.append((self.database, broker, list(ids)))
         return len(ids)
@@ -1820,8 +1820,8 @@ async def relay_scenario(broker_tables: MemoryBroker) -> None:
     await enqueue(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
     worker = Worker()
 
-    assert await worker.relay(broker_tables, 10) == 2
-    assert await worker.relay(broker_tables, 10) == 0
+    assert await worker._relay(broker_tables, 10) == 2
+    assert await worker._relay(broker_tables, 10) == 0
     assert (broker_tables.pending("emails"), broker_tables.pending("default")) == (1, 1)
     email, *_ = await outbox()
     assert email["attempts"] == 0
@@ -1834,7 +1834,7 @@ async def relay_scenario(broker_tables: MemoryBroker) -> None:
             .where(messages.c.id == email["id"])
             .values(locked_until=past)
         )
-    assert await worker.relay(broker_tables, 10) == 1  # Lost: published again.
+    assert await worker._relay(broker_tables, 10) == 1  # Lost: published again.
     assert broker_tables.pending("emails") == 2
 
 
@@ -1864,7 +1864,7 @@ async def test_unpublished_messages_are_unlocked(
     await enqueue(remember, value=uuid.uuid4())
     worker = Worker()
     with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
-        await worker.relay(Unreachable(declare=True), 10)
+        await worker._relay(Unreachable(declare=True), 10)
     assert caplog.messages == [
         (
             "Could not publish 1 of 1 message(s) to the broker (declaring 'default': "
@@ -1873,10 +1873,10 @@ async def test_unpublished_messages_are_unlocked(
     ]
 
     for broken in (Unreachable(declare=True), Unreachable(declare=False)):
-        assert await worker.relay(broken, 10) == 0
+        assert await worker._relay(broken, 10) == 0
         (row,) = await outbox()
         assert (row["lock_id"], row["locked_until"]) == (None, None)
-    assert await worker.relay(MemoryBroker(), 10) == 1  # Due again, and sent.
+    assert await worker._relay(MemoryBroker(), 10) == 1  # Due again, and sent.
 
 
 async def test_take_over_needs_the_published_lock(tables: None) -> None:
@@ -1884,19 +1884,19 @@ async def test_take_over_needs_the_published_lock(tables: None) -> None:
     await enqueue(remember, value=uuid.uuid4())
     broker = MemoryBroker()
     worker = Worker()
-    await worker.relay(broker, 10)
+    await worker._relay(broker, 10)
     (row,) = await outbox()
     message_id, lock = row["id"], row["lock_id"]
     assert isinstance(message_id, uuid.UUID)
     assert isinstance(lock, uuid.UUID)
 
-    assert await worker.take_over(message_id, uuid.uuid4()) is None
-    claimed = await worker.take_over(message_id, lock)
+    assert await worker._take_over(message_id, uuid.uuid4()) is None
+    claimed = await worker._take_over(message_id, lock)
     assert claimed is not None
     assert claimed.attempts == 1
-    assert await worker.take_over(message_id, lock) is None  # Now running.
-    await worker.process(claimed)
-    assert await worker.take_over(message_id, lock) is None  # Done.
+    assert await worker._take_over(message_id, lock) is None  # Now running.
+    await worker._process(claimed)
+    assert await worker._take_over(message_id, lock) is None  # Done.
     (row,) = await outbox()
     assert (row["status"], row["lock_id"]) == (DONE, None)
 
@@ -1905,19 +1905,19 @@ async def test_an_expired_publication_can_still_run(tables: None) -> None:
     """A delivery whose lock expired takes the message over with a fresh lock."""
     await enqueue(remember, value=uuid.uuid4())
     worker = Worker()
-    await worker.relay(MemoryBroker(), 10)
+    await worker._relay(MemoryBroker(), 10)
     (row,) = await outbox()
     async with connections.engine().begin() as connection:
         past = datetime.now(UTC) - timedelta(seconds=1)
         await connection.execute(update(messages).values(locked_until=past))
 
-    claimed = await worker.take_over(row["id"], uuid.uuid4())  # type: ignore[arg-type]
+    claimed = await worker._take_over(row["id"], uuid.uuid4())  # type: ignore[arg-type]
 
     assert claimed is not None
     (taken,) = await outbox()
     assert taken["lock_id"] == claimed.lock_id
     assert taken["locked_until"] > datetime.now(UTC)  # type: ignore[operator]
-    await worker.process(claimed)
+    await worker._process(claimed)
     (done,) = await outbox()
     assert done["status"] == DONE
 
@@ -1967,7 +1967,7 @@ async def test_the_relay_works_in_batches_and_counts(
     )
 
     with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
-        assert await worker.relay(broker, 2) == 1
+        assert await worker._relay(broker, 2) == 1
     email, first, *rest = await outbox()
     ((body, message_id),) = broker.drain("default")
 
@@ -1992,7 +1992,7 @@ async def test_the_relay_works_in_batches_and_counts(
         == failed + 1
     )
 
-    assert await worker.relay(broker, 10) == 2
+    assert await worker._relay(broker, 10) == 2
     # "default" stays declared; "emails" failed, so it is declared again.
     assert broker.declarations == [["default", "emails"], ["emails"]]
     assert REGISTRY.get_sample_value("messaging_relayed_total", labels) == published + 3
@@ -2064,7 +2064,7 @@ async def test_deliveries_that_cannot_run_are_settled(
     async def broken(self: Worker, message_id: uuid.UUID, lock: uuid.UUID) -> None:
         raise ConnectionError("database down")
 
-    monkeypatch.setattr(Worker, "take_over", broken)
+    monkeypatch.setattr(Worker, "_take_over", broken)
     caplog.clear()
     await runner.deliver(delivery(pointer, answers=answers))
     assert answers[-1] == "requeue"
@@ -2148,7 +2148,7 @@ async def given_back(name: str) -> None:
 async def test_stopping_gives_back_what_does_not_finish_in_time(
     tables: None, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Past SHUTDOWN_TIMEOUT, running messages are cancelled and go back."""
+    """Past DRAIN_TIMEOUT, running messages are cancelled and go back."""
     graces: list[float] = []
     finish = worker_module.finish
 
@@ -2159,7 +2159,7 @@ async def test_stopping_gives_back_what_does_not_finish_in_time(
     monkeypatch.setattr(worker_module, "finish", drain)
     gates["late"] = asyncio.Event()
     await enqueue(wait_at_gate, name="late")
-    config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
+    config = MessagingSettings(**{**FAST, **SLOW, "DRAIN_TIMEOUT": 0.05})
     worker, stop, before = Worker(config), asyncio.Event(), interrupted()
     running = asyncio.create_task(worker.run(stop))
     await until(lambda: "late:started" in ran)
@@ -2173,7 +2173,7 @@ async def test_stopping_gives_back_what_does_not_finish_in_time(
     assert caplog.messages == [
         "Stopping 1 running message(s) that did not finish in time; they run again"
     ]
-    assert graces == [0.05]  # It ran until SHUTDOWN_TIMEOUT: the gate never opened.
+    assert graces == [0.05]  # It ran until DRAIN_TIMEOUT: the gate never opened.
     count, seconds = interrupted()
     assert count == before[0] + 1
     assert seconds > before[1]  # The cut-short run's time is observed too.
@@ -2185,7 +2185,7 @@ async def test_stopping_gives_back_what_does_not_finish_in_time(
 async def test_a_cancelled_worker_gives_its_messages_back_at_once(
     tables: None,
 ) -> None:
-    """Cancelling run() does not wait for SHUTDOWN_TIMEOUT."""
+    """Cancelling run() does not wait for DRAIN_TIMEOUT."""
     gates["cut"] = asyncio.Event()
     await enqueue(wait_at_gate, name="cut")
     running = asyncio.create_task(
@@ -2194,7 +2194,7 @@ async def test_a_cancelled_worker_gives_its_messages_back_at_once(
     await until(lambda: "cut:started" in ran)
 
     running.cancel()
-    await stopped(running)  # Well within SHUTDOWN_TIMEOUT's 20 seconds.
+    await stopped(running)  # Well within DRAIN_TIMEOUT's 20 seconds.
 
     assert running.cancelled()
     await given_back("cut")
@@ -2207,7 +2207,7 @@ async def test_a_message_the_outbox_cannot_take_back_waits_for_its_lock(
     gates["stuck"] = asyncio.Event()
     await enqueue(wait_at_gate, name="stuck")
     monkeypatch.setattr(worker_module, "RELEASE_TIMEOUT", 0.05)
-    worker = Worker(MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0}))
+    worker = Worker(MessagingSettings(**{**FAST, **SLOW, "DRAIN_TIMEOUT": 0}))
     release = worker._release
 
     async def hangs_when_given_back(message: Claimed, **values: object) -> None:
@@ -2241,15 +2241,15 @@ async def test_a_message_the_outbox_cannot_take_back_waits_for_its_lock(
 async def test_stopping_gives_back_deliveries_that_do_not_finish_in_time(
     broker_tables: MemoryBroker,
 ) -> None:
-    """Brokered workers drain within SHUTDOWN_TIMEOUT too, then stop the rest.
+    """Brokered workers drain within DRAIN_TIMEOUT too, then stop the rest.
 
-    "slow" holds the drain for all of SHUTDOWN_TIMEOUT, so the test lasts
+    "slow" holds the drain for all of DRAIN_TIMEOUT, so the test lasts
     that long; two seconds leave "quick" (one write) room on a slow machine.
     """
     gates.update(quick=asyncio.Event(), slow=asyncio.Event())
     await enqueue(wait_at_gate, name="quick")
     await enqueue(wait_at_gate, name="slow")
-    config = MessagingSettings(**{**BROKERED, **SLOW, "SHUTDOWN_TIMEOUT": 2})
+    config = MessagingSettings(**{**BROKERED, **SLOW, "DRAIN_TIMEOUT": 2})
     stop = asyncio.Event()
     running = asyncio.create_task(
         BrokerWorkers([Worker(config)], ["default"], config).run(stop)
@@ -2280,7 +2280,7 @@ async def test_a_stop_while_relaying_ends_the_relay_at_once(
             await asyncio.sleep(0)
         return 0  # Nothing was due.
 
-    monkeypatch.setattr(worker, "relay", relay)
+    monkeypatch.setattr(worker, "_relay", relay)
     running = asyncio.create_task(
         BrokerWorkers([worker], ["default"], config).run(stop)
     )
@@ -2305,7 +2305,7 @@ async def test_a_cancelled_brokered_worker_gives_its_deliveries_back(
     await until(lambda: "cut:started" in ran)
 
     running.cancel()
-    await stopped(running)  # Well within SHUTDOWN_TIMEOUT's 20 seconds.
+    await stopped(running)  # Well within DRAIN_TIMEOUT's 20 seconds.
 
     assert running.cancelled()
     await given_back("cut")
@@ -2410,7 +2410,7 @@ async def test_consume_only_workers_never_relay(broker_tables: MemoryBroker) -> 
         await asyncio.sleep(0.05)
         (row,) = await outbox()
         assert row["lock_id"] is None  # Nobody relayed it.
-        await Worker(config).relay(broker_tables, 10)
+        await Worker(config)._relay(broker_tables, 10)
         rows = await settled(1)
         stop.set()
         await running
@@ -2480,10 +2480,10 @@ async def test_the_worker_outlives_database_outages(
     """Polling, claiming, and cleaning up fail for a while; the worker waits."""
     await enqueue(remember, value=uuid.uuid4())
     worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 0.01}))
-    claim = Flaky(worker.claim, times=2)
-    monkeypatch.setattr(worker, "claim", claim)
+    claim = Flaky(worker._claim, times=2)
+    monkeypatch.setattr(worker, "_claim", claim)
     stop = asyncio.Event()
-    original = worker.process
+    original = worker._process
 
     async def process_then_stop(message: Claimed) -> None:
         # Stop before the poll interval ends, or a slow run claims once more.
@@ -2491,7 +2491,7 @@ async def test_the_worker_outlives_database_outages(
         stop.set()
         await original(message)
 
-    monkeypatch.setattr(worker, "process", process_then_stop)
+    monkeypatch.setattr(worker, "_process", process_then_stop)
     with caplog.at_level(logging.INFO, "domainkit.contrib.messaging.worker"):
         async with asyncio.timeout(5):
             await worker.run(stop)
@@ -2529,7 +2529,7 @@ async def test_a_stop_ends_an_outage_pause_at_once(
 ) -> None:
     """A worker waiting out an outage stops when asked, without the full pause."""
     worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 30}))
-    monkeypatch.setattr(worker, "claim", Flaky(worker.claim, times=99))
+    monkeypatch.setattr(worker, "_claim", Flaky(worker._claim, times=99))
     stop = asyncio.Event()
     running = asyncio.create_task(worker.run(stop))
     await asyncio.sleep(0.05)
@@ -2544,14 +2544,14 @@ async def test_unrecorded_outcomes_run_again_later(
     """A lost write of the outcome is logged; the message runs again after its lock."""
     await enqueue(remember, value=uuid.uuid4())
     worker = Worker(MessagingSettings(**FAST))
-    (claimed,) = await worker.claim(10)
+    (claimed,) = await worker._claim(10)
     monkeypatch.setattr(worker, "_done", Flaky(worker._done))
     before = REGISTRY.get_sample_value(
         "messaging_messages_total", {"kind": "task", "outcome": "unrecorded"}
     )
 
     with caplog.at_level(logging.ERROR, "domainkit.contrib.messaging.worker"):
-        await worker.process(claimed)
+        await worker._process(claimed)
 
     assert len(ran) == 1
     assert caplog.messages == [
@@ -2589,10 +2589,10 @@ async def test_periodic_slots_survive_a_failed_write(
     write = Flaky(outbox_module.write)
     monkeypatch.setattr(worker_module, "write", write)
     with pytest.raises(ConnectionError):
-        await worker.schedule_periodic()
+        await worker._schedule_periodic()
     assert await outbox() == []
-    await worker.schedule_periodic()
-    await worker.schedule_periodic()
+    await worker._schedule_periodic()
+    await worker._schedule_periodic()
     assert [row["target"] for row in await outbox()] == ["tests.hourly_outage"]
     assert write.calls == 2
 
@@ -2610,7 +2610,7 @@ async def test_the_relay_outlives_database_outages(
         update={"POLL_INTERVAL": 0.01}
     )
     worker = Worker(config)
-    monkeypatch.setattr(worker, "relay", Flaky(worker.relay, times=2))
+    monkeypatch.setattr(worker, "_relay", Flaky(worker._relay, times=2))
     stop = asyncio.Event()
     with caplog.at_level(logging.INFO, "domainkit.contrib.messaging.worker"):
         running = asyncio.create_task(
@@ -2626,7 +2626,7 @@ async def test_the_relay_outlives_database_outages(
         caplog.messages[-1] == "The outbox of 'default' answers again after 2 failures"
     )
     assert all(record.exc_info for record in caplog.records[:-1])
-    relay = worker.relay
+    relay = worker._relay
     assert {args[1] for args in relay.args} == {config.BATCH_SIZE}  # type: ignore[attr-defined]
 
 
@@ -2713,8 +2713,8 @@ async def test_workers_claim_only_what_they_can_run(
             **{**FAST, "POLL_INTERVAL": 0.01, "CONCURRENCY": 2, "BATCH_SIZE": 10}
         )
     )
-    claim = Flaky(worker.claim, times=0)
-    monkeypatch.setattr(worker, "claim", claim)
+    claim = Flaky(worker._claim, times=0)
+    monkeypatch.setattr(worker, "_claim", claim)
     stop = asyncio.Event()
     running = asyncio.create_task(worker.run(stop))
 
@@ -2781,7 +2781,7 @@ async def test_runs_are_timed_and_logged(
     """The debug log and the duration metric time the run; the context names it."""
     await enqueue(remember, value=uuid.uuid4())
     worker = Worker(MessagingSettings(**FAST))
-    (claimed,) = await worker.claim(1)
+    (claimed,) = await worker._claim(1)
     readings = iter([100.0, 100.5, 101.0])
     clock = SimpleNamespace(perf_counter=lambda: next(readings))
     monkeypatch.setattr(worker_module, "time", clock)
@@ -2789,7 +2789,7 @@ async def test_runs_are_timed_and_logged(
     before = REGISTRY.get_sample_value(seconds, {"kind": "task"}) or 0
 
     with caplog.at_level(logging.DEBUG, "domainkit.contrib.messaging.worker"):
-        await worker.process(claimed)
+        await worker._process(claimed)
 
     assert caplog.messages == [f"Ran task {claimed.target} in 500.0ms"]
     assert REGISTRY.get_sample_value(seconds, {"kind": "task"}) == pytest.approx(

@@ -228,8 +228,8 @@ async def drain(*, delayed: bool = False, max_rounds: int = MAX_ROUNDS) -> Drain
         for worker in workers:
             if delayed:
                 await _make_due(worker)
-            claimed = await worker.claim(worker.config.BATCH_SIZE)
-            await asyncio.gather(*(worker.process(message) for message in claimed))
+            claimed = await worker._claim(worker.config.BATCH_SIZE)
+            await asyncio.gather(*(worker._process(message) for message in claimed))
             ran += len(claimed)
         if not ran:
             return drained

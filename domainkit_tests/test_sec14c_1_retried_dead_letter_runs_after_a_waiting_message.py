@@ -40,9 +40,9 @@ async def test_a_retried_dead_letter_runs_before_the_keys_waiting_messages() -> 
     await enqueue(step, key="a", label="a2")
     worker = Worker(config())
     for _ in range(2):  # Both attempts of a1; a2 is held meanwhile.
-        (claimed,) = await worker.claim(1)
+        (claimed,) = await worker._claim(1)
         assert claimed.ordering_key == "a"
-        await worker.process(claimed)
+        await worker._process(claimed)
     assert await statuses("a") == [DEAD, PENDING]  # a2 waits, nobody runs it.
     runs.broken.clear()
 

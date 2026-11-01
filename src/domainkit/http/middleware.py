@@ -66,7 +66,6 @@ __all__ = [
     "RequestContextMiddleware",
     "SecurityHeadersMiddleware",
     "body_limit",
-    "request_path",
 ]
 
 REQUEST_ID_HEADER: Final = "X-Request-ID"

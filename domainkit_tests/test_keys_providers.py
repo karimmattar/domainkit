@@ -199,7 +199,7 @@ def test_missing_cryptography_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(
         sys.modules, "cryptography.hazmat.primitives.ciphers.aead", None
     )
-    with pytest.raises(ImproperlyConfigured, match=r"domainkit\[mfa\]"):
+    with pytest.raises(ImproperlyConfigured, match=r"domainkit\[keys\]"):
         LocalKeyProvider([b"k" * 32])
 
 
@@ -999,7 +999,7 @@ def test_missing_cryptography_is_named_in_full(
     with pytest.raises(
         ImproperlyConfigured,
         match=exactly(
-            'Envelope encryption needs cryptography: pip install "domainkit[mfa]".'
+            'Envelope encryption needs cryptography: pip install "domainkit[keys]".'
         ),
     ):
         LocalKeyProvider([b"k" * 32])

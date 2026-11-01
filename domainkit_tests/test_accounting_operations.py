@@ -16,7 +16,7 @@ from sqlalchemy.exc import OperationalError
 
 from domainkit import setup
 from domainkit.apps import registry
-from domainkit.apps.hooks import on_erase_check, on_erase_subject, on_export_subject
+from domainkit.apps.hooks import on_erase_subject, on_export_subject, on_retain_subject
 from domainkit.checks import CheckFailed
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
@@ -435,7 +435,7 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
             early = entry.id
     (export,) = on_export_subject.of("accounting")
     (erase,) = on_erase_subject.of("accounting")
-    (hold,) = on_erase_check.of("accounting")
+    (hold,) = on_retain_subject.of("accounting")
     assert await hold.call("subject-1", "asked") == (
         "Holds an open account with money on it or held: close it first."
     )

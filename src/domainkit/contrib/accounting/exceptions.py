@@ -49,7 +49,7 @@ class UnbalancedEntry(BusinessRuleViolation):
     code = "unbalanced_entry"
 
 
-class AccountIsClosed(BusinessRuleViolation):
+class AccountNotOpen(BusinessRuleViolation):
     """A posting or a hold on an account that is closed."""
 
     code = "account_closed"
@@ -73,7 +73,7 @@ class NoOpenPeriod(BusinessRuleViolation):
     code = "no_open_period"
 
 
-class PeriodIsClosed(BusinessRuleViolation):
+class PeriodNotOpen(BusinessRuleViolation):
     """An entry, or a new period, dated on or before the end of a closed period.
 
     The books are closed up to the last day of the latest closed period:
@@ -106,14 +106,14 @@ class ReferenceReused(Conflict):
     code = "reference_reused"
 
 
-class ReversalNotReversible(BusinessRuleViolation):
+class EntryNotReversible(BusinessRuleViolation):
     """Reversing a reversal: it would move the money of the entry it undid again.
 
     Post the entry again under a reference of its own, through every check
     a new entry takes (limits, approvals).
     """
 
-    code = "reversal_not_reversible"
+    code = "entry_not_reversible"
 
 
 class HoldNotActive(Conflict):

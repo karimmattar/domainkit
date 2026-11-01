@@ -14,7 +14,7 @@ from domainkit.apps.config import (
     DomainConfig,
     defined_hook_methods,
 )
-from domainkit.apps.hooks import on_check, on_shutdown, on_startup, populating
+from domainkit.apps.hooks import on_ready, on_shutdown, on_startup, populating
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import describe_errors, unwrap_settings
 from domainkit.exceptions import ImproperlyConfigured
@@ -179,12 +179,12 @@ class DomainRegistry:
             await close_in_turn(started[::-1], partial(_stop, self), within=stop_within)
 
     async def check(self, seconds: float) -> list[str]:
-        """Run the domains' ``on_check`` hooks; return the labels that failed.
+        """Run the domains' ``on_ready`` hooks; return the labels that failed.
 
         Each domain's hooks run in turn, within ``seconds`` together; the
         domains run at once. Only the domains that registered are checked.
         """
-        hooks = on_check.hooks(self)
+        hooks = on_ready.hooks(self)
         if not hooks:
             return []
         checks: dict[str, list[Callable[[], Awaitable[None]]]] = {}

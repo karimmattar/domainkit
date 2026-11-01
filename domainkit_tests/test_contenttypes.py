@@ -17,20 +17,20 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.models import Group, User
-from domainkit.contrib.contenttypes import (
-    DEFAULT_PERMISSIONS,
-    ContentType,
-    InstalledModel,
-    content_type_key,
-    installed_models,
-    model_options,
-)
+from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections, mapper_registry, metadata
 from domainkit.db import models as content_registry
 from domainkit.db.migrations import include_object
-from domainkit.db.models import _owner
+from domainkit.db.models import (
+    DEFAULT_PERMISSIONS,
+    InstalledModel,
+    _owner,
+    installed_models,
+    model_options,
+)
+from domainkit.db.models import model_key as content_type_key
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command

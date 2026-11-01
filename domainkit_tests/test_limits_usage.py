@@ -23,7 +23,7 @@ from domainkit.contrib.limits import (
     TransactionLimitExceeded,
     Usage,
     Window,
-    check,
+    check_movements,
     consume,
     purge_usage,
     release,
@@ -249,18 +249,18 @@ async def test_check_counts_nothing_and_says_what_consume_would() -> None:
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     with freeze_time(NOON):
         async with LimitsUnitOfWork(readonly=True) as uow:
-            await check(uow, paid("100"))
-            await check(uow, Movement(egp("1000"), {"merchant": "m-1"}))
+            await check_movements(uow, paid("100"))
+            await check_movements(uow, Movement(egp("1000"), {"merchant": "m-1"}))
             with refused(LimitExceeded):
-                await check(uow, paid("101"))
+                await check_movements(uow, paid("101"))
         await spend(paid("60"))
         async with LimitsUnitOfWork(readonly=True) as uow:
-            await check(uow, paid("40"))
+            await check_movements(uow, paid("40"))
             with refused(LimitExceeded):
-                await check(uow, paid("41"))
+                await check_movements(uow, paid("41"))
             # An account without limits is judged first: the holder still is.
             with refused(LimitExceeded):
-                await check(uow, paid("41", account="a-1"))
+                await check_movements(uow, paid("41", account="a-1"))
         assert await used() == [("daily", egp("60"), 1)]
 
 
@@ -268,7 +268,7 @@ async def test_a_check_of_a_subject_that_never_moved_counts_nothing_used() -> No
     """A count of one fits a subject with no row yet."""
     await limit(code="once", window=Window.DAY, max_count=1)
     async with LimitsUnitOfWork(readonly=True) as uow:
-        await check(uow, paid("1", holder="new"))
+        await check_movements(uow, paid("1", holder="new"))
 
 
 async def test_subjects_of_one_name_are_apart_by_kind_direction_and_currency() -> None:
@@ -283,7 +283,7 @@ async def test_subjects_of_one_name_are_apart_by_kind_direction_and_currency() -
         await spend(Movement(Money.of("30", "USD"), {"holder": "x"}))
         await spend(Movement(egp("40"), {"holder": "x"}))
         async with LimitsUnitOfWork(readonly=True) as uow:
-            await check(uow, Movement(egp("50"), {"holder": "x"}))
+            await check_movements(uow, Movement(egp("50"), {"holder": "x"}))
         assert await used("x", direction=Direction.OUT, currency="EGP") == [
             ("daily", egp("50"), 2)
         ]

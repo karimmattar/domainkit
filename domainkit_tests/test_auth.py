@@ -57,11 +57,11 @@ from domainkit.contrib.auth.backends import load_backends
 from domainkit.contrib.auth.permissions import declared_permissions, sync_permissions
 from domainkit.contrib.auth.tables import abstract_user_columns, permissions, users
 from domainkit.contrib.auth.users import get_user_table
-from domainkit.contrib.contenttypes import InstalledModel, ModelOptions
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections, metadata
 from domainkit.db.hooks import on_migrated
 from domainkit.db.migrations import include_object, run_migrated_hooks
+from domainkit.db.models import InstalledModel, ModelOptions
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import MemoryBackend

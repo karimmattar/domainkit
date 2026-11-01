@@ -126,7 +126,7 @@ entry = await post_entry(
   then its accounts by ascending id, so two entries that share accounts
   wait for each other in one order and never deadlock; their balances
   move in the same transaction, so no update is lost. A transaction that
-  loses a race anyway runs again, whole, up to `RETRY_ATTEMPTS` times
+  loses a race anyway runs again, whole, up to `MAX_ATTEMPTS` times
   ([databases.md](../databases.md#running-work-again)). On SQLite
   postings run one at a time.
 - **Never changed.** `reverse_entry(ReverseEntry(entry_id=...))` posts the
@@ -134,7 +134,7 @@ entry = await post_entry(
   unless `booked_on` says; an entry is reversed once (its source is
   `accounting.reversal`, its reference the entry's id), and reversing it
   again returns that reversal. A reversal is not reversed
-  (`reversal_not_reversible`, 422): that would book the entry it undid
+  (`entry_not_reversible`, 422): that would book the entry it undid
   again, past the checks a new entry meets (limits, approvals); post the
   entry again instead, under a reference of its own. On PostgreSQL,
   triggers that `migrate` makes afresh each time refuse every update,
@@ -148,13 +148,13 @@ entry = await post_entry(
   `contrib.audit` when it is installed.
 - **Checks before posting.** An app may refuse an entry before
   `post_entry` takes any lock: it registers `async def hook(command)` on
-  `domainkit.contrib.accounting.hooks.on_posting` in `ready()`, and
+  `domainkit.contrib.accounting.hooks.on_post_entry` in `ready()`, and
   raises. `domainkit.contrib.approvals` refuses there the entries over
   `APPROVALS.ENTRY_THRESHOLDS` that no approved request posts
   (`approval_required`, 403; [approvals.md](approvals.md#large-postings)).
 - **Checks as entries are booked.** An app sees every entry as it is
   booked: a function registered in its `ready()` with
-  `on_booking(hook)` (from `domainkit.contrib.accounting`) is awaited as
+  `on_stage_entry(hook)` (from `domainkit.contrib.accounting.hooks`) is awaited as
   `hook(uow, entry, accounts)` in the posting's transaction, after its
   accounts and period are locked and their balances moved, for entries
   posted, reversals, and captures. Raising refuses the entry; rows it
@@ -184,7 +184,7 @@ under the inbox (ADR 0094): a message run again after its entry
 committed is skipped, and a second message about the same entry returns
 the first one's. A refused entry (a closed period, say) is dead-lettered
 at once; `messages --retry` runs it again once the books allow it. A
-posting that lost its race `RETRY_ATTEMPTS` times (`ConcurrentUpdate`)
+posting that lost its race `MAX_ATTEMPTS` times (`ConcurrentUpdate`)
 is not refused: the worker runs it again after its backoff, and the
 source and reference book it once.
 
@@ -422,7 +422,7 @@ ACCOUNTING = {"REQUIRE_PERIOD": True, "MATCH_WINDOW_DAYS": 3}
 | --- | --- | --- |
 | `MAX_LINES` | `100` | Lines one entry may have (2 to 1000). |
 | `REQUIRE_PERIOD` | `True` | Refuse an entry dated where no period is open; `False` books it without a period, unless a closed one covers its date. |
-| `RETRY_ATTEMPTS` | `5` | Runs of a posting, the first included, when its transaction lost a race (at most 10). |
+| `MAX_ATTEMPTS` | `5` | Runs of a posting, the first included, when its transaction lost a race (at most 10). |
 | `HOLD_TTL` | 7 days | How long a hold lasts when placed without `expires_at` (at most 366 days). |
 | `EXPIRE_HOLDS_EVERY` | 1 minute | How often the worker releases expired holds, with messaging (1 second to 1 day). |
 | `MATCH_WINDOW_DAYS` | `3` | Days a statement line's date may be from its posting's (at most 31). |

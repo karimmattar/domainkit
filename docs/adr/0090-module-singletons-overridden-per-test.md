@@ -1,6 +1,6 @@
 # 0090. Keep framework state in module-level singletons, overridden per test
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-01 (at the end) by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)
 - Date: 2026-10-26
 
 This records a decision taken in 0.1.0 with
@@ -64,3 +64,7 @@ Options considered:
   proxies, remains the way to it, and would supersede this record.
 - Each new piece of shared state needs its lock and its free-threading
   test.
+
+## Amendment (2026-11-01, 1.0): no container in 1.x
+
+DSGN-07 is closed for 1.x ([0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)): the module singletons stay, and every import path with them. A container is a whole-framework branch whose gains (two configurations per process, per-thread overrides) are not what projects adopting 1.0 lack; 2.0 may revisit it.

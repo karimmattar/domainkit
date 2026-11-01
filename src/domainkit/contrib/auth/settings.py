@@ -45,7 +45,7 @@ MAX_PRINCIPAL_TTL: Final = timedelta(minutes=5)
 ROUTE_RULES: Final = "REQUIRE_ROUTE_RULES"
 """``AUTH.REQUIRE_ROUTE_RULES``: the core's since 0.10, refused here since 0.11."""
 PCI_DSS_4: Final = "pci-dss-4"
-"""``AUTH.PASSWORD_PRESET`` for PCI DSS v4.0 (requirements 8.2.8 and 8.3)."""
+"""``AUTH.PRESET`` for PCI DSS v4.0 (requirements 8.2.8 and 8.3)."""
 PCI_MIN_LENGTH: Final = 12
 """The fewest characters PCI DSS v4.0 takes in a password (8.3.6)."""
 PCI_HISTORY: Final = 4
@@ -74,9 +74,9 @@ PCI_PRESET: Final[Mapping[str, object]] = {
     # (tokens.idle_since): 13 minutes ends it by 14.3, within 8.2.8's 15.
     "IDLE_TIMEOUT": timedelta(minutes=13),
 }
-"""What ``AUTH.PASSWORD_PRESET = "pci-dss-4"`` sets, for each key left unset."""
+"""What ``AUTH.PRESET = "pci-dss-4"`` sets, for each key left unset."""
 PRESETS: Final[Mapping[str, Mapping[str, object]]] = {PCI_DSS_4: PCI_PRESET}
-"""Each ``AUTH.PASSWORD_PRESET``, and the settings it sets."""
+"""Each ``AUTH.PRESET``, and the settings it sets."""
 MAX_STEP_UP_AGE: Final = timedelta(days=1)
 """The longest ``StepUp(max_age=...)`` may be; older step-ups are deleted."""
 
@@ -335,7 +335,7 @@ class AuthSettings(BaseModel):
     def _refuse_removed(cls, data: object) -> object:
         """Name the setting that replaced ``REQUIRE_ROUTE_RULES`` (DSGN-02).
 
-        A ``PASSWORD_PRESET`` then sets each key of its own left unset.
+        A ``PRESET`` then sets each key of its own left unset.
         """
         return _with_preset(_removed_keys_refused(data))
 
@@ -374,7 +374,7 @@ class AuthSettings(BaseModel):
         PasswordValidatorConfig(NAME=f"{VALIDATORS}.NumericPasswordValidator"),
     )
     """Rules new passwords must follow; ``()`` checks nothing."""
-    PASSWORD_PRESET: Literal["pci-dss-4"] | None = None
+    PRESET: Literal["pci-dss-4"] | None = None
     """A set of settings a standard asks for: ``"pci-dss-4"`` sets
     ``PASSWORD_VALIDATORS``, ``PASSWORD_HISTORY``,
     ``PASSWORD_CHANGE_ON_FIRST_USE``, ``LOGIN_RATE``,
@@ -556,7 +556,7 @@ def _with_preset(data: object) -> object:
     """``AUTH``'s raw ``data``, with its preset's keys where it leaves them unset."""
     if not isinstance(data, Mapping):
         return data
-    preset = PRESETS.get(str(data.get("PASSWORD_PRESET")), {})
+    preset = PRESETS.get(str(data.get("PRESET")), {})
     return {**preset, **data}
 
 

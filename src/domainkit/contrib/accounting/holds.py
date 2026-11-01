@@ -4,7 +4,7 @@ What an account has available is its balance less its active holds. A
 hold is placed once per ``source`` and ``reference``, as an entry is
 posted; captured, it posts an entry taking the amount (or less: the rest
 is released) out of the account into another, under the source
-``CAPTURES`` and the hold's id. A hold expires at ``expires_at``: it can
+``CAPTURE_SOURCE`` and the hold's id. A hold expires at ``expires_at``: it can
 no longer be captured, and the worker releases it within
 ``ACCOUNTING.EXPIRE_HOLDS_EVERY`` (``expire_holds``). Whether it has
 expired is the database's clock's to say on PostgreSQL, as leases and
@@ -37,7 +37,7 @@ from .models import (
 from .tables import holds
 from .uow import AccountingUnitOfWork, accounting_alias
 
-CAPTURES = "accounting.hold"
+CAPTURE_SOURCE = "accounting.hold"
 """The source of the entries captures post; each one's reference is the hold's id."""
 EXPIRY_BATCH = 500
 """Expired holds ``expire_holds`` reads at a time."""
@@ -86,7 +86,7 @@ async def place_hold(command: PlaceHold, uow: AccountingUnitOfWork) -> Hold:
         ReferenceReused: Another hold was placed under that reference.
         AccountNotFound: No account has that id.
         InvalidEntry, InvalidAmount: As ``Hold.place``.
-        AccountIsClosed, InsufficientFunds: As ``Account.reserve``.
+        AccountNotOpen, InsufficientFunds: As ``Account.reserve``.
     """
     account_id = AccountId(command.account_id)
     expires_at = command.expires_at or clock.now() + config().HOLD_TTL
@@ -123,7 +123,7 @@ async def capture_hold(command: CaptureHold, uow: AccountingUnitOfWork) -> Hold:
         HoldNotFound, AccountNotFound: No hold, or no account, has that id.
         HoldNotActive: It was released or has expired.
         InvalidAmount: ``amount`` is more than the hold, or not more than zero.
-        NoOpenPeriod, PeriodIsClosed: The date is in no open period.
+        NoOpenPeriod, PeriodNotOpen: The date is in no open period.
         ReferenceReused: An entry was posted under the hold's capture
             reference (only before ``post_entry`` refused the source).
     """
@@ -145,11 +145,11 @@ async def capture_hold(command: CaptureHold, uow: AccountingUnitOfWork) -> Hold:
                 raise InvalidAmount("A capture takes more than zero, up to the hold.")
             # As ``post``: the entry's lock, then whether one was posted. The
             # hold is active, so no capture of it was.
-            await claim(uow, CAPTURES, str(hold_id), same=lambda posted: False)
+            await claim(uow, CAPTURE_SOURCE, str(hold_id), same=lambda posted: False)
             accounts = await lock_accounts(uow, (hold.account_id, counter))
             held = accounts[hold.account_id]
             entry = Entry.draft(
-                CAPTURES,
+                CAPTURE_SOURCE,
                 str(hold_id),
                 booked_on,
                 (

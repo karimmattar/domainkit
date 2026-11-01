@@ -27,7 +27,7 @@ the ledger's postings instead (``postings.count_earlier``, SEC-15b-5).
 A kind of subject bounded in some currency is bounded in all: a movement
 in a currency none of its limits names is refused (``currency_not_limited``),
 unless a default for every currency (``"currency": "*"``) bounds it
-(FIN-89). ``check`` says whether a movement would pass, counting nothing;
+(FIN-89). ``check_movements`` says whether a movement would pass, counting nothing;
 ``release`` gives back what was counted under a key (a refund, a
 reversal). See ADR 0123.
 """
@@ -558,7 +558,7 @@ async def consume(
         await _record(session, bounded, key)
 
 
-async def check(uow: SqlAlchemyUnitOfWork, *movements: Movement) -> None:
+async def check_movements(uow: SqlAlchemyUnitOfWork, *movements: Movement) -> None:
     """Refuse ``movements`` as ``consume`` would now, counting nothing.
 
     It takes no lock: a movement that passes may still be refused by

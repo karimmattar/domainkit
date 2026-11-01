@@ -35,12 +35,13 @@ PROFILES: Final = {"fintech": TEMPLATE_DIR.parent / "profiles" / "fintech"}
 """Each profile's files, written over the project template's (ADR 0124)."""
 EXTRAS: Final = {
     None: ("postgres", "redis", "sqlite"),
-    "fintech": ("audit", "httpclient", "immudb", "mfa", "postgres", "redis", "sqlite"),
+    "fintech": ("audit", "immudb", "keys", "mfa", "postgres", "redis", "sqlite"),
 }
 """The extras a project of each profile depends on: the fintech profile's
-fields are sealed with AES-GCM (``mfa``), under a key service reached over
-HTTP (``httpclient``); its trail is anchored and its evidence recorded on
-immudb (``immudb``), and its checkpoints signed (``audit``)."""
+fields are sealed with AES-GCM under a key service reached over HTTP
+(``keys``), its users have second factors (``mfa``), its trail is anchored
+and its evidence recorded on immudb (``immudb``), and its checkpoints
+signed (``audit``)."""
 DOTFILE: Final = "dot-"
 """Template files and top directories named ``dot-<name>`` become ``.<name>``
 (``.env``, ``.gitignore``, ``.github``)."""

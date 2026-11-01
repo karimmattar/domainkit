@@ -463,7 +463,7 @@ async def confirm_enrolment(
             )
             credentials = _credentials(request)
             await uow.tokens.revoke_user(
-                user.id, keep=credentials.token_id, keep_family=credentials.session
+                user.id, keep=credentials.token_id, keep_family=credentials.login
             )
             stored = await uow.users.get(UserId(user.id))
             stored.record(MfaEnabled(user_id=user.id))
