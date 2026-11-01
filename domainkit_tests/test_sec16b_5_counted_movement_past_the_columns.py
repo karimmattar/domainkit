@@ -18,6 +18,8 @@ The test asserts the safe behaviour (a ``DomainError``, as FIN-91 made
 the ledger's own refusals) and fails on ``675dfd6``.
 """
 
+import contextlib
+
 import pytest
 
 from domainkit.context import RequestContext, bind_request
@@ -62,8 +64,9 @@ async def test_an_entry_whose_actor_movement_overflows_is_refused_not_a_500() ->
             Line.credit(d.id, egp(LINE)),
         ),
     )
-    with bind_request(RequestContext("r-1", None, "POST", "/", actor="clerk-1")):
-        try:
-            await post_entry(entry, AccountingUnitOfWork())
-        except DomainError:
-            pass  # Refused as such: what the ledger promises (FIN-91).
+    # Refused as such: what the ledger promises (FIN-91).
+    with (
+        bind_request(RequestContext("r-1", None, "POST", "/", actor="clerk-1")),
+        contextlib.suppress(DomainError),
+    ):
+        await post_entry(entry, AccountingUnitOfWork())

@@ -64,7 +64,7 @@ def _account(number: int, type_: str, holder: str | None) -> dict[str, object]:
 
 
 async def test_a_monthly_limit_for_every_holder_is_set_and_counts_them_all(
-    books: str,
+    books: str,  # noqa: F811 - the fixture.
 ) -> None:
     """7,000 wallets each credited today; a monthly limit on what holders take in."""
     if books.startswith("sqlite"):
@@ -73,8 +73,7 @@ async def test_a_monthly_limit_for_every_holder_is_set_and_counts_them_all(
     cash = _account(0, "asset", None)
     cash["balance"] = Decimal(HOLDERS)
     wallets = [
-        _account(number, "liability", f"h-{number}")
-        for number in range(1, HOLDERS + 1)
+        _account(number, "liability", f"h-{number}") for number in range(1, HOLDERS + 1)
     ]
     entry_id = uuid.uuid4()
     lines = [

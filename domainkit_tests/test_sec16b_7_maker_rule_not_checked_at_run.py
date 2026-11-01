@@ -54,7 +54,7 @@ STAFF_ONLY = Guard(
 
 
 def test_a_maker_who_no_longer_passes_the_maker_rule_is_refused_at_run(
-    client: TestClient,
+    client: TestClient,  # noqa: F811 - the fixture.
 ) -> None:
     """An active user, not (or no longer) staff: the run is refused."""
     user("demoted")  # Active, and not staff: as one demoted since submitting.

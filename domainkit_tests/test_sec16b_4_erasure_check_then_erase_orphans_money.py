@@ -83,7 +83,9 @@ def usd(amount: str) -> Money:
 async def books() -> tuple[object, object]:
     """October, a bank account, and the customer's empty wallet."""
     await open_period(
-        OpenPeriod(name="2026-10", starts_on=date(2026, 10, 1), ends_on=date(2026, 10, 31)),
+        OpenPeriod(
+            name="2026-10", starts_on=date(2026, 10, 1), ends_on=date(2026, 10, 31)
+        ),
         AccountingUnitOfWork(),
     )
     bank = await open_account(

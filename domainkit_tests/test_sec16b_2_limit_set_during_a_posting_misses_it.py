@@ -39,7 +39,7 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_a_limit_set_while_a_payout_commits_counts_that_payout(
-    books: str,
+    books: str,  # noqa: F811 - the fixture.
 ) -> None:
     """900 staged; a daily 1,000 for the holder set; the 900 commits; another 900."""
     if books.startswith("sqlite"):

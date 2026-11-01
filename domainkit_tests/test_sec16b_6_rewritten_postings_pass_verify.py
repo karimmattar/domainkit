@@ -86,11 +86,11 @@ def test_a_payout_rewritten_on_both_sides_is_found_by_verify(project: str) -> No
                 current = await connection.scalar(
                     select(accounts.c.balance).where(accounts.c.id == each.id)  # type: ignore[attr-defined]
                 )
-                change = Decimal("4950") if current < 0 else Decimal("-4950")
+                change = Decimal("4950") if current < 0 else Decimal("-4950")  # type: ignore[operator]
                 await connection.execute(
                     update(accounts)
                     .where(accounts.c.id == each.id)  # type: ignore[attr-defined]
-                    .values(balance=current + change)
+                    .values(balance=current + change)  # type: ignore[operator]
                 )
             if postgres:
                 for table in TABLES:

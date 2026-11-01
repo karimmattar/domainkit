@@ -25,7 +25,8 @@ from domainkit_tests.test_accounting_api import (  # noqa: F401 - the fixtures.
 
 
 def test_an_account_opened_over_http_without_the_flag_may_not_go_negative(
-    client: TestClient, clerk: Headers
+    client: TestClient,  # noqa: F811 - the fixture.
+    clerk: Headers,  # noqa: F811 - the fixture.
 ) -> None:
     """A wallet opened with no ``may_go_negative``: a payout past it is refused."""
     books = open_books(client, clerk)
@@ -49,8 +50,16 @@ def test_an_account_opened_over_http_without_the_flag_may_not_go_negative(
             "reference": "p-1",
             "booked_on": "2026-10-15",
             "lines": [
-                {"account_id": wallet.json()["id"], "side": "debit", "amount": usd("500")},
-                {"account_id": books["cash"]["id"], "side": "credit", "amount": usd("500")},
+                {
+                    "account_id": wallet.json()["id"],
+                    "side": "debit",
+                    "amount": usd("500"),
+                },
+                {
+                    "account_id": books["cash"]["id"],
+                    "side": "credit",
+                    "amount": usd("500"),
+                },
             ],
         },
         headers=clerk,

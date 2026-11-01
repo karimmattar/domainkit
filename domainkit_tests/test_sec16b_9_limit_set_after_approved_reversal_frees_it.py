@@ -84,6 +84,9 @@ async def test_a_limit_set_after_an_approved_reversal_counts_the_payout() -> Non
             LimitsUnitOfWork(),
         )
     again = spend(wallet, till, egp("2000"), "p-2")
-    with freeze_time(NOON), pytest.raises(LimitExceeded):
-        with running(uuid.uuid4(), POST_ENTRY, again, "maker", 2):
-            await post_entry(again, AccountingUnitOfWork())
+    with (
+        freeze_time(NOON),
+        pytest.raises(LimitExceeded),
+        running(uuid.uuid4(), POST_ENTRY, again, "maker", 2),
+    ):
+        await post_entry(again, AccountingUnitOfWork())
