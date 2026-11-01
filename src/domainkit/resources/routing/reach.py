@@ -242,19 +242,22 @@ async def conditionally[T](
     """Run ``change``, holding the aggregate to the request's ``If-Match``.
 
     Raises:
-        PreconditionRequired: The resource requires ``If-Match``.
+        PreconditionRequired: The resource requires ``If-Match``, and the
+            request sent none, or ``*``, which names no version.
         PreconditionFailed: The aggregate is not at a version it names.
         RuntimeError: The service never loaded the aggregate, so
             ``If-Match`` could not be checked.
     """
     header = context.if_match
+    versions = None if header is None else expected_versions(header)
+    if versions is None and router.require_if_match:
+        # ``*`` names no version: under the requirement it is no If-Match (WEB-22).
+        raise PreconditionRequired
     if header is None:
-        if router.require_if_match:
-            raise PreconditionRequired
         return await change()
     id_ = context.ids[router.lookup]
     model = router.model
-    with context.uow.expect(model, id_, expected_versions(header)) as expected:
+    with context.uow.expect(model, id_, versions) as expected:
         result = await change()
     if not expected.checked:
         raise RuntimeError(

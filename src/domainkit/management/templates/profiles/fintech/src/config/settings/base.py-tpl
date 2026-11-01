@@ -79,7 +79,9 @@ APPROVALS = {
     "SUPERUSER_APPROVALS": 2,
 }
 # What one customer may move (docs/contrib/limits.md): change them with
-# manage.py limits set, audited, or over /api/limits.
+# manage.py limits set, audited, or over /api/limits. They name each
+# currency transfers are made in (domains/payments): a movement in a
+# currency no limit names is refused.
 LIMITS = {
     "DEFAULTS": [
         {

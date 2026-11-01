@@ -2,22 +2,31 @@
 
 ``privacy export`` lists a subject's accounts, their balances, and their
 postings. ``privacy erase`` keeps the books, which the law asks a business
-to keep, and are append-only besides: it unlinks the subject from their
-accounts instead, so nothing in the ledger names them any more. Entries'
-descriptions and memos, and statement lines, must not name people: they
-are kept as written.
+to keep for years (and which are append-only besides), and pseudonymises
+them: each of the subject's accounts names one ``erased:`` holder instead,
+the same for all of them, so the books still show which accounts were
+one person's, and nothing names who (FIN-94). While the subject holds an
+open account with money on it, or held, the erasure is held
+(``hold_erasure``): a business does not erase a person it still owes, or
+who still owes it; close the accounts first. Entries' descriptions and
+memos, and statement lines, must not name people: they are kept as
+written.
 """
 
+import uuid
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, or_, select, update
 
 from domainkit.db import connections
 
-from .models import amount_text
+from .models import ZERO, AccountStatus, amount_text
 from .tables import accounts, entries, postings
 from .uow import accounting_alias
+
+ERASED: Final = "erased:"
+"""The start of the holder that replaces an erased subject on their accounts."""
 
 
 async def export_subject(subject: str) -> Mapping[str, object]:
@@ -74,12 +83,30 @@ async def export_subject(subject: str) -> Mapping[str, object]:
     return {"accounts": found} if found else {}
 
 
+async def hold_erasure(subject: str) -> str | None:
+    """Why the subject's books must stay theirs for now: an account with money on it."""
+    async with connections.engine(accounting_alias()).connect() as connection:
+        funded = await connection.scalar(
+            select(
+                exists().where(
+                    accounts.c.holder == subject,
+                    accounts.c.status == AccountStatus.OPEN,
+                    or_(accounts.c.balance != ZERO, accounts.c.held != ZERO),
+                )
+            )
+        )
+    if not funded:
+        return None
+    return "Holds an open account with money on it or held: close it first."
+
+
 async def erase_subject(subject: str) -> Mapping[str, int]:
-    """Unlink the subject from their accounts; how many there were."""
+    """Name one pseudonym as the holder of the subject's accounts; how many."""
+    pseudonym = f"{ERASED}{uuid.uuid4().hex}"
     async with connections.engine(accounting_alias()).begin() as connection:
         result = await connection.execute(
             update(accounts)
             .where(accounts.c.holder == subject)
-            .values(holder=None, version=accounts.c.version + 1)
+            .values(holder=pseudonym, version=accounts.c.version + 1)
         )
     return {"accounts": result.rowcount} if result.rowcount else {}

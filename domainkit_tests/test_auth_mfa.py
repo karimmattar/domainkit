@@ -15,6 +15,7 @@ from sqlalchemy import select
 from domainkit import signing
 from domainkit.conf import UNSET, override_settings
 from domainkit.contrib.auth import AuthUnitOfWork, UserId, mfa, totp
+from domainkit.contrib.auth.management.commands import resealmfa
 from domainkit.contrib.auth.settings import MfaSettings
 from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
 from domainkit.db import connections
@@ -452,7 +453,7 @@ def test_code_checks_are_throttled_per_user(identity: Api, clock: list[float]) -
     assert finish(client, token, "000000").status_code == 401
     assert finish(elsewhere, token, "111111").status_code == 401
     throttled = finish(elsewhere, token, "222222")
-    assert (throttled.status_code, throttled.json()["code"]) == (429, "throttled")
+    assert (throttled.status_code, throttled.json()["code"]) == (429, "rate_limited")
     assert throttled.json()["detail"] == "Too many attempts; try again later."
     assert int(throttled.headers["Retry-After"]) > 0
     assert [row["details"] for row in audited("auth.mfa")] == [
@@ -508,7 +509,7 @@ def test_wrong_codes_count_per_address_too(identity: Api, clock: list[float]) ->
     clock[0] += 30
 
     assert [response.status_code for response in wrong] == [401, 401]
-    assert (refused.status_code, refused.json()["code"]) == (429, "throttled")
+    assert (refused.status_code, refused.json()["code"]) == (429, "rate_limited")
     assert finish(elsewhere, carol, "111111").status_code == 401
     assert finish(elsewhere, carol, "222222").status_code == 429  # Her count now.
 
@@ -539,7 +540,7 @@ def test_forged_challenges_use_up_no_count_of_the_user(
     # Each address still has its count.
     assert [response.status_code for response in by_address] == [400, 400, 429, 429]
     assert elsewhere == [400, 400, 429]
-    assert by_address[2].json()["code"] == "throttled"
+    assert by_address[2].json()["code"] == "rate_limited"
     assert by_address[2].json()["detail"] == "Too many attempts; try again later."
     assert int(by_address[2].headers["Retry-After"]) > 0
     assert finish(client, token, code_at(secret, clock[0])).status_code == 200
@@ -902,3 +903,166 @@ def test_codes_are_checked_against_the_real_clock() -> None:
     import time
 
     assert abs(mfa._now() - time.time()) < 5
+
+
+def test_resealmfa_moves_secrets_off_the_fallbacks(
+    identity: Api, clock: list[float]
+) -> None:
+    """``--check`` counts and fails; a run seals again; secrets no key opens fail."""
+    create_user("alice")
+    create_user("bob")
+    with override_settings(SECRET_KEY=OLD_KEY):
+        client = identity()
+        secret, _ = enrol(client, bearer(login(client, "alice")["access_token"]), clock)
+        enrol(client, bearer(login(client, "bob")["access_token"]), clock)
+
+    def reseal(*options: str) -> str:
+        out = io.StringIO()
+        call_command("resealmfa", *options, "--operator", "ops", stdout=out)
+        return out.getvalue()
+
+    with override_settings(SECRET_KEY=NEW_KEY, SECRET_KEY_FALLBACKS=[OLD_KEY]):
+        with pytest.raises(CommandError) as remaining:
+            reseal("--check")
+        assert str(remaining.value) == (
+            "2 TOTP secret(s) are still under a key of SECRET_KEY_FALLBACKS; "
+            "run 'manage.py resealmfa' before dropping it."
+        )
+        assert reseal("--batch-size", "1") == (
+            "TOTP secrets: 0 under SECRET_KEY, 2 sealed again under SECRET_KEY, "
+            "0 under no key held.\n"
+        )
+        assert reseal("--check") == (
+            "TOTP secrets: 2 under SECRET_KEY, 0 under a fallback, "
+            "0 under no key held.\n"
+        )
+    assert audited("operator.mfa_reseal")[0]["details"] == {
+        "operator_source": "option",
+        "current": 0,
+        "resealed": 2,
+        "unreadable": 0,
+    }
+    with override_settings(SECRET_KEY=NEW_KEY):
+        clock[0] += 30
+        token = log_in(client).json()["mfa_token"]
+        assert finish(client, token, code_at(secret, clock[0])).status_code == 200
+    with (
+        override_settings(SECRET_KEY=OLD_KEY),
+        pytest.raises(CommandError) as unreadable,
+    ):
+        reseal()
+    assert str(unreadable.value) == (
+        "2 TOTP secret(s) open under no key held: their users cannot use their "
+        "authenticator; turn it off with resetmfa."
+    )
+    with pytest.raises(CommandError) as refused:
+        reseal("--batch-size", "0")
+    assert str(refused.value) == "--batch-size must be at least 1."
+    parser = resealmfa.Command().create_parser("manage.py", "resealmfa")
+    text = " ".join(parser.format_help().split())
+    assert (
+        "--check change nothing; fail while a secret is under a fallback or no key"
+        in text
+    )
+    assert "--batch-size BATCH_SIZE authenticators per transaction (500)" in text
+
+
+def test_authenticators_are_read_in_pages_by_id(
+    identity: Api, clock: list[float]
+) -> None:
+    """``MfaStore.sealed``: ``limit`` of them, by id, after ``after``."""
+    create_user("alice")
+    create_user("bob")
+    client = identity()
+    for name in ("alice", "bob"):
+        enrol(client, bearer(login(client, name)["access_token"]), clock)
+
+    async def pages() -> tuple[list[UUID], list[UUID], list[UUID]]:
+        async with AuthUnitOfWork() as uow:
+            every = await uow.mfa.sealed(limit=10)
+            first = await uow.mfa.sealed(limit=1)
+            rest = await uow.mfa.sealed(after=first[0].id, limit=10)
+        ids = [device.id for device in every]
+        return ids, [device.id for device in first], [device.id for device in rest]
+
+    every, first, rest = run_async(pages())
+
+    assert every == sorted(every)
+    assert len(every) == 2
+    assert (first, rest) == (every[:1], every[1:])
+
+
+def test_a_secret_no_key_opens_is_refused_and_recorded(
+    identity: Api, clock: list[float], caplog: pytest.LogCaptureFixture
+) -> None:
+    """``409 second_factor_unreadable``, audited, at every code check (AUTH-17)."""
+    alice = create_user("alice")
+    create_user("bob")
+    with override_settings(SECRET_KEY=OLD_KEY):
+        client = identity()
+        secret, codes = enrol(
+            client, bearer(login(client, "alice")["access_token"]), clock
+        )
+        bobs = bearer(login(client, "bob")["access_token"])
+        started = client.post(
+            "/auth/mfa/totp", json={"password": PASSWORD}, headers=bobs
+        )
+    with override_settings(SECRET_KEY=NEW_KEY):
+        clock[0] += 30
+        code = code_at(secret, clock[0])
+        token = log_in(client).json()["mfa_token"]
+        logging_in = finish(client, token, code)
+        recovered = finish(client, token, codes[0])
+        session = bearer(recovered.json()["access_token"])
+        disabling = client.post(
+            "/auth/mfa/totp/disable",
+            json={"password": PASSWORD, "code": code},
+            headers=session,
+        )
+        stepping_up = client.post("/auth/step-up", json={"code": code}, headers=session)
+        bobs = bearer(login(client, "bob")["access_token"])
+        confirming = client.post(
+            "/auth/mfa/totp/confirm",
+            json={"code": code_at(secret_of(started.json()), clock[0])},
+            headers=bobs,
+        )
+
+    refused = [logging_in, disabling, stepping_up, confirming]
+    assert {(each.status_code, each.json()["code"]) for each in refused} == {
+        (409, "second_factor_unreadable")
+    }
+    assert recovered.status_code == 200  # Recovery codes still work.
+    reasons = [row["details"]["reason"] for row in audited("auth.mfa")]
+    assert reasons.count("second_factor_unreadable") == 3
+    assert logging_in.json()["detail"] == (
+        "Your authenticator can no longer be checked here; ask for your second "
+        "factor to be reset."
+    )
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "domainkit.security"
+    ]
+    assert (
+        f"The TOTP secret of user {alice} opens under no key held: SECRET_KEY "
+        "changed without it in SECRET_KEY_FALLBACKS (run resealmfa before "
+        "dropping a fallback); turn it off with resetmfa"
+    ) in lines
+    (step_up,) = audited("auth.step_up")
+    assert step_up["details"]["reason"] == "second_factor_unreadable"
+
+
+def test_turning_it_on_ends_every_other_login(
+    identity: Api, clock: list[float]
+) -> None:
+    """What logged in with the password alone, before the factor, ends; this stays."""
+    alice = create_user("alice")
+    client = identity()
+    other = bearer(login(client, "alice")["access_token"])
+    this = bearer(login(client, "alice")["access_token"])
+
+    enrol(client, this, clock)
+
+    assert client.get("/auth/me", headers=other).status_code == 401
+    assert client.get("/auth/me", headers=this).status_code == 200
+    assert len(stored_tokens(alice)) == 1

@@ -42,9 +42,13 @@ _CANONICAL_JSON: Final = json.JSONEncoder(
 class EvidenceNotFound(NotFound):
     """No evidence is stored under that key."""
 
+    code = "evidence_not_found"
+
 
 class EvidenceConflict(Conflict):
     """A different record already uses that evidence id."""
+
+    code = "evidence_conflict"
 
 
 class EvidenceTampered(DomainkitError):

@@ -64,7 +64,7 @@ def _seen(user: AnyUser, request: Request) -> dict[str, Any]:
     }
 
 
-@router.get("/whoami")
+@router.get("/whoami", dependencies=[Public])
 async def whoami(user: CurrentUser, request: Request) -> dict[str, Any]:
     """Anyone: who the request is from, and how."""
     return _seen(user, request)

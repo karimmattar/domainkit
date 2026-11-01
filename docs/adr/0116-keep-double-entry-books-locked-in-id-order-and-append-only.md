@@ -1,6 +1,6 @@
 # 0116. Keep double-entry books: post under locks taken in id order, and append only
 
-- Status: Accepted; amended 2026-10-31 (at the end)
+- Status: Accepted; amended 2026-10-31 and 2026-11-01 (at the end)
 - Date: 2026-10-30
 
 ## Context
@@ -147,3 +147,49 @@ reversal is the entry posted again, which every check meets. The ledger
 now refuses it, `ReversalNotReversible` (422 `reversal_not_reversible`),
 in the reversal's transaction, after the entry's lock; the 0.14 test that
 reversed a reversal now expects the refusal.
+
+## Amendment (2026-11-01, the 0.15 audit)
+
+- **The books are closed up to the end of the latest closed period**
+  (FIN-87). Closing refused dates inside the period only, so a period
+  opened afterwards for earlier dates, or a date in a gap between
+  periods, took entries that moved a closed period's opening and closing
+  balances. Now `book` refuses any date on or before the last day of the
+  latest closed period (`period_closed`), whatever `REQUIRE_PERIOD` says;
+  `open_period` refuses a period that starts there; and `close_period`
+  refuses while an earlier period is open (`earlier_period_open`), so
+  periods close in date order. A posting dated in no period takes the
+  periods' lock (`accounting.periods`) before it reads where the books
+  are closed, as opening and closing do, so a close and a posting into a
+  gap before it do not pass each other. Considered: a stored "closed
+  through" date; it is the maximum of the closed periods' ends, one
+  indexed read, so nothing is stored.
+- **Accounts may not go negative unless opened so** (FIN-97): the
+  default of `may_go_negative` is `False`. A default that fails open let
+  a customer's account opened without the flag be overdrawn.
+- **Amounts past the columns are refused** (FIN-91): `NUMERIC(18, 4)`
+  holds 14 digits before the point; a line, a balance, or what an
+  account holds past it is `amount_out_of_range` (422), not a flush that
+  fails as a server error. The column stays `NUMERIC(18, 4)` for 1.0;
+  widening it is a migration of every ledger table, listed for the freeze.
+- **`EntryPosted` carries what an entry moved** (FIN-96): `amounts`, one
+  `EntryAmount` (debits and credits) per account and currency, and
+  `digest`, the entry's `fingerprint`. The audit trail, sealed and
+  anchored, records the event, so it vouches for every posting: a
+  consistent rewrite of postings and balances by the schema owner, which
+  `verify_ledger` cannot see, no longer matches the trail.
+- **Holds expire by the database's clock** (FIN-99): a capture compares
+  the hold's expiry with `statement_timestamp()` on PostgreSQL, and
+  `expire_holds` selects by it, as idempotency's leases and limits'
+  windows do, so hosts whose clocks disagree agree on it.
+- **Reports and checks are bounded** (PERF-23, PERF-28): the trial
+  balance joins the chart in its one statement (no bound parameter per
+  account; PostgreSQL takes 32,767); `verify_ledger` compares in the
+  database (`HAVING`, and a filter on the stored balance and held
+  amount) and streams only what differs; the general ledger is read in
+  pieces of `CHUNK` postings after the last one sent, each in a short
+  transaction, so a slow reader holds no connection or snapshot. A
+  closed period's postings never change (above), so its report is the
+  same whatever the pieces saw. Considered and left for later: closing
+  balances stored per closed period, so a trial balance reads its period
+  and not all history.

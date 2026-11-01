@@ -1,6 +1,6 @@
 # 0106. Mutate what a pull request changes, before it merges
 
-- Status: Accepted; amended 2026-10-29 (at the end)
+- Status: Accepted; amended 2026-10-29 and 2026-11-01 (at the end)
 - Date: 2026-10-28
 
 ## Context
@@ -217,3 +217,49 @@ were the run's, not missing tests:
 The weekly run still reports what it did; the audit page lists, by
 module, what the 0.12.0 run left and why.
 
+
+## Amendment (2026-11-01, the 0.15 audit): what these runs do not measure
+
+The 0.15 audit (TEST-16, TEST-17) read what a score from these jobs
+means. The jobs stay as they are; this says plainly what they leave out,
+and the job summary now shows the first of these.
+
+- **Decorated functions are never mutated.** mutmut 3 skips a function
+  with any decorator but a lone `@staticmethod` or `@classmethod`: route
+  handlers, `@property`, `@contextmanager` and `@asynccontextmanager`,
+  `@model_validator` and `@field_validator`, `@cache`, pytest fixtures. In
+  `src/domainkit` at 0.15 that is 363 of 4,466 functions, 3,494 of 57,026
+  function lines (6.1%), among them every auth, MFA, SCA, signup and
+  step-up route. No score here covers them. `changed_mutants.py` used to
+  name them anyway, so a pull request that changed only such functions
+  stopped `mutmut run` ("nothing matches"); it now lists them apart, in
+  `unmutated-functions.txt` and the job summary.
+- **SQLite only.** Every mutation job runs without servers. Code only
+  PostgreSQL reaches (triggers, row locks, `REPEATABLE READ` retries, the
+  database's clock, `LISTEN`), and the other servers' code, reads
+  "survived" or "no tests": of the 499 mutants 0.14's changed functions
+  left, 156 (31%) die on PostgreSQL (TEST-11). A survivor in such code is
+  not evidence of a missing test until it is run there.
+- **A flaky test kills a mutant.** mutmut counts any failing run as killed
+  (a pytest internal error too) and a timeout as caught. A
+  load-dependent test failing for its own reasons counts as a kill; the
+  suite keeps such tests out (TEST-20), but a score is an upper bound.
+- **The weekly shards gate nothing on survivors.** A shard fails only when
+  it did not finish; the run on 0.12.0 was green in every shard with
+  3,078 mutants alive.
+- **No whole run since 0.12.0.** The scheduled runs of 2026-10-19
+  (cancelled) and 2026-10-26 (failed) did not finish; the dispatched run
+  of 2026-10-29 mutated 0.12.0. 0.13 to 0.15's modules were mutated only
+  by `mutation (changed)` and by hand (TEST-07, TEST-11, TEST-12).
+- **The advisory check is usually red.** The pull requests of 0.12, 0.13,
+  0.14 and 0.15 each merged with `mutation (changed)` or its summary
+  failed, their only failed job.
+
+Two gaps in the selection were bugs, and are fixed: lines deleted inside
+a function that stays now count as changing it (a `+N,0` hunk names line
+`N`), and a module moved and edited is compared with where it was
+(`--diff-filter=AMR -M`).
+
+What would change this: mutation jobs with a PostgreSQL service for the
+modules that reach a database, a recorded baseline of survivors per shard
+that a growth fails, and a run of the weekly matrix on the 1.0 candidate.

@@ -29,6 +29,7 @@ ADR 0041.
 from .events import PersonalDataErased
 from .models import PersonalModel, Policy, personal_models, problems, retention_policies
 from .operations import (
+    ErasureHeld,
     Purged,
     check_reason,
     check_subject,
@@ -39,6 +40,7 @@ from .operations import (
 from .retention import Retention
 
 __all__ = [
+    "ErasureHeld",
     "PersonalDataErased",
     "PersonalModel",
     "Policy",

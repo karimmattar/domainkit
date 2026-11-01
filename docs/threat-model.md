@@ -105,7 +105,7 @@ project" is the team that builds and runs the service.
 | **Repudiation** | Operators who retry or cancel messages are named and audited. | |
 | **Information disclosure** | Arguments blanked once a message is done, cancelled, or a sensitive task dies ([mail.md](mail.md)). | Arguments of tasks not marked `sensitive` stay in dead letters until retried. |
 | **Denial of service** | Leases, retries with backoff, timeouts per task, a circuit breaker for the broker, bounded cleanup ([contrib.md](contrib/messaging.md#messaging-outbox-durable-handlers-background-tasks)). | Alerting on a growing outbox. |
-| **Tampering** by running twice | Messages are delivered at least once. | Handlers must be idempotent: there is no inbox of processed ids yet (planned work, see below). |
+| **Tampering** by running twice | Messages are delivered at least once; a handler under `@inbox` commits its effect once, its message's id written with its commit ([contrib/messaging.md](contrib/messaging.md), [ADR 0094](adr/0094-an-inbox-of-handled-messages-written-with-the-handlers-commit.md)). | A handler not under `@inbox`, or one whose effect is outside the inbox's database, must be idempotent itself. |
 
 ### 6. The ledger
 
@@ -144,17 +144,20 @@ A transfer crosses every boundary above, so a bank reads it as one flow:
 a customer asks for it, confirms it, is counted against their limits,
 and, past a threshold, waits for someone else. Each control is a page of
 its own; `domainkit init --profile fintech` turns them all on, with a
-transfer that goes through each ([fintech.md](fintech.md)).
+sample transfer that goes through the customer's: step-up, dynamic
+linking, idempotency, limits, and maker-checker. It books nothing in the
+double-entry books, nor records evidence: wiring both in is the
+project's ([fintech.md](fintech.md)).
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
 | **Spoofing** the customer who moves money | A second factor at login, and again for the act: `StepUp(max_age=...)` on routes that add a payee or approve, and an authorization the customer confirms with a code for one amount and one payee, spent once ([auth/step-up.md](auth/step-up.md)). | Enrolling every customer in a second factor is the project's choice; a recovery code never steps up. |
 | **Tampering** with the amount or the payee | The authorization is an HMAC over the transaction's canonical values: another amount, currency, or payee is refused and voids it ([ADR 0122](adr/0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md)); an approval states the fingerprint of the command it approves, and the worker runs only that command, under seals ([contrib/approvals.md](contrib/approvals.md)); amounts are exact `Money`, never floats ([money.md](money.md)). | Showing the customer the real amount and payee is the client's. |
-| **Repudiation** of a transfer or an approval | Every change is an event the trail records with its actor, in the change's transaction, sealed and anchored ([contrib/audit.md](contrib/audit.md#tamper-evidence)); makers, approvers, and operators are named ([reference/commands.md](reference/commands.md#operators)). | Keeping the trail and the ledger as long as the regulator asks. |
+| **Repudiation** of a transfer or an approval | Every change through a unit of work is an event the trail records with its actor, in the change's transaction, sealed and anchored ([contrib/audit.md](contrib/audit.md#tamper-evidence)): an entry with what each account moved, a statement imported, a reconciliation, a limit set, a request decided; makers and approvers are named by their principal's id. Operators of commands are named as they name themselves (`--operator`, `DOMAINKIT_OPERATOR`, or the login name), which nothing verifies ([reference/commands.md](reference/commands.md#operators)). | Tying an operator's name to a person: who may run commands where deployed. Keeping the trail and the ledger as long as the regulator asks: the PCI preset and the fintech profile keep the trail a year at least, and erasure is held while an account has money on it. |
 | **Tampering** by running twice | `Idempotency-Key` replays a retried request's response and never runs a committed one again ([contrib/idempotency.md](contrib/idempotency.md)); approved commands run once, under the inbox; ledger entries are posted once per reference. | Keys are kept for days, not forever: refuse what must never happen twice with a unique column. |
-| **Information disclosure** of card numbers | Fields marked `Encrypted` are sealed under data keys a KMS or Vault wraps, bound to their row; the database, replicas, backups, and dumps hold ciphertext; erasing a person destroys their key ([contrib/keys.md](contrib/keys.md)). | A blind index tells whoever holds the data keys whether a guessed value is stored; keep them in the key service. |
-| **Denial of service** by draining an account | Limits per transaction and per window, per account, holder, or actor, counted under the subject's lock in the movement's transaction ([contrib/limits.md](contrib/limits.md)). | Choosing the limits. |
-| **Elevation of privilege** by one person | Maker-checker: guarded commands run only once others approve them, never their maker, each once, with a step-up; making a superuser can be guarded the same way ([contrib/approvals.md](contrib/approvals.md)). | Who holds the approvers' permission or group. |
+| **Information disclosure** of card numbers | Fields marked `Encrypted` are sealed under data keys a KMS or Vault wraps, bound to their row; the database, replicas, backups, and dumps hold ciphertext; erasing a person destroys their key ([contrib/keys.md](contrib/keys.md)). | A blind index tells whoever holds the data keys whether a guessed value is stored; keep them in the key service. A backup taken before an erasure still holds the person's key: bound backup retention, and apply recorded erasures again after a restore ([keys.md](contrib/keys.md#backups-taken-before-an-erasure)). |
+| **Denial of service** by draining an account | Limits per transaction and per window, per account, holder, or actor, counted under the subject's lock in the movement's transaction; a currency no limit of the subject names is refused ([contrib/limits.md](contrib/limits.md)). | Choosing the limits. |
+| **Elevation of privilege** by one person | Maker-checker: guarded commands run only once others approve them, never their maker, each once, with a step-up, and only while their maker may still make them; large postings, captures, and reversals of them alike; a currency no threshold names always needs approval; making a superuser can be guarded the same way ([contrib/approvals.md](contrib/approvals.md)). | Who holds the approvers' permission or group; thresholds judge one command, so bound what each actor moves with limits. |
 
 ## Mitigations at a glance
 

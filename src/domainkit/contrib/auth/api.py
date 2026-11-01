@@ -10,8 +10,9 @@ Mount the router where the API keeps them, ``/auth`` for example::
 returns tokens from the first ``AUTH.AUTHENTICATION_CLASSES`` class, in
 OAuth 2's token response format; a user with a second factor gets 202 and
 a challenge for ``/mfa/login`` instead (``auth.mfa``). Wrong passwords are
-limited to ``AUTH.LOGIN_RATE`` per client address and per username (logins
-that succeed are not counted), and refusals go to the audit trail when
+limited to ``AUTH.LOGIN_RATE`` per client address and per username, and to
+``AUTH.ACCOUNT_LOGIN_RATE`` (100 a day) per username (logins that succeed
+are not counted), and refusals go to the audit trail when
 ``domainkit.contrib.audit`` is installed.
 """
 
@@ -45,7 +46,6 @@ from .throttling import (
     address_key,
     attempt,
     audit_refusal,
-    throttle,
 )
 from .uow import AuthUnitOfWork
 from .validators import validate_password
@@ -59,6 +59,10 @@ LOGIN_THROTTLED = "Too many login attempts; try again later."
 """The detail of a throttled login."""
 PASSWORD_MAX_LENGTH = 4096
 """Longer passwords are refused before hashing, which they would slow down."""
+DAILY = "login-daily"
+"""The account's count of wrong passwords against ``ACCOUNT_LOGIN_RATE``."""
+PROVEN_DAILY = "proven-daily"
+"""The same, for attempts with a device proof for the account."""
 
 router = APIRouter(tags=["auth"])
 
@@ -184,7 +188,6 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
         _login_limits(request, body.username, device),
         action="auth.login",
         detail=LOGIN_THROTTLED,
-        code="login_throttled",
     )
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
@@ -390,16 +393,18 @@ async def _throttle(request: Request, user: AbstractBaseUser) -> Attempt:
     result ``succeeded()`` once the password holds: only wrong ones count.
     """
     config = auth_settings()
-    keys = [f"password:user:{user.id}"]
+    limits: list[Limit] = [(f"password:user:{user.id}", config.LOGIN_RATE)]
     if config.PASSWORD_CHECKS_COUNT_AS_LOGINS:
-        keys.append(account_key("login", user.get_username()))
-    return await throttle(
+        username = user.get_username()
+        limits += [
+            (account_key("login", username), config.LOGIN_RATE),
+            (account_key(DAILY, username), config.ACCOUNT_LOGIN_RATE),
+        ]
+    return await attempt(
         request,
-        config.LOGIN_RATE,
-        keys,
+        limits,
         action="auth.login",
         detail=LOGIN_THROTTLED,
-        code="login_throttled",
     )
 
 
@@ -415,15 +420,23 @@ def _no_store(response: Response) -> None:
 def _login_limits(request: Request, username: str, device: str | None) -> list[Limit]:
     """The counts a login is checked against: its address's and its account's.
 
-    A client with a device proof for the account: its device's, and the
-    account's ceiling of proven attempts (``devices.proven_limits``).
+    The account's twice: ``LOGIN_RATE`` for bursts, ``ACCOUNT_LOGIN_RATE``
+    for the day (AUTH-19). A client with a device proof for the account:
+    its device's, the account's ceiling of proven attempts
+    (``devices.proven_limits``), and a daily count of proven attempts of
+    its own, which strangers cannot use up.
     """
-    rate = auth_settings().LOGIN_RATE
+    config = auth_settings()
+    rate, daily = config.LOGIN_RATE, config.ACCOUNT_LOGIN_RATE
     if device is not None:
-        return proven_limits(device, username, rate)
+        return [
+            *proven_limits(device, username, rate),
+            (account_key(PROVEN_DAILY, username), daily),
+        ]
     return [
         (address_key(request, "login"), rate),
         (account_key("login", username), rate),
+        (account_key(DAILY, username), daily),
     ]
 
 

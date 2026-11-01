@@ -173,6 +173,14 @@ class _Worker(Worker):
         super().__init__(database=database)
         self.failures = failures
 
+    def _unknown_for(self, message: Claimed) -> datetime | None:
+        """None: a test's process has every task, so a missing one is a mistake.
+
+        It is dead-lettered at once and reported, whatever
+        ``UNKNOWN_TARGET_GRACE`` says.
+        """
+        return None
+
     async def _failed(
         self,
         message: Claimed,

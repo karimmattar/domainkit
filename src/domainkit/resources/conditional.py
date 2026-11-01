@@ -12,8 +12,9 @@ who asks (field policies) and in which language.
   another version is ``412 precondition_failed``. Tags are compared by
   the version they carry, so ``"3"``, built from a body's ``version``,
   works as well as the ``ETag`` itself. ``*`` matches any version.
-- A resource may require ``If-Match`` on its writes: without one they
-  are ``428 precondition_required``.
+- A resource may require ``If-Match`` on its writes: without one, or
+  with ``*``, which names no version, they are ``428
+  precondition_required``.
 """
 
 import hashlib

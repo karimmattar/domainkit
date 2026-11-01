@@ -8,11 +8,15 @@
   current data key, in batches.
 """
 
+import hashlib
+import json
+import threading
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
+from pydantic import SecretStr
 from sqlalchemy import (
     Column,
     ColumnElement,
@@ -21,6 +25,7 @@ from sqlalchemy import (
     Table,
     Text,
     and_,
+    bindparam,
     case,
     func,
     not_,
@@ -31,6 +36,8 @@ from sqlalchemy import (
     update,
 )
 
+from domainkit.apps import registry
+from domainkit.conf import unwrap_settings
 from domainkit.db import connections
 from domainkit.db.encrypted import (
     Ciphertext,
@@ -44,7 +51,7 @@ from domainkit.db.routing import router
 from domainkit.encryption import DecryptionFailed
 from domainkit.keys import KeyProvider, LocalKeyProvider
 from domainkit.keys.ring import DATA, FORMAT, SUBJECT, Keyring, forget_held, sealed_key
-from domainkit.signing import derive_keys
+from domainkit.signing import derive_keys, secret_keys
 
 from .settings import DEVELOPMENT_KEY, KeysSettings
 from .store import TableSubjectKeyStore, clear_indexes, erase
@@ -105,6 +112,66 @@ def ring_for(config: KeysSettings) -> Keyring:
         alternates=alternates,
         subject_keys=TableSubjectKeyStore(),
     )
+
+
+RINGS_KEPT: Final = 8
+"""How many rings ``SettingsKeyring`` keeps, one per ``KEYS`` value met."""
+
+
+class SettingsKeyring:
+    """The ring ``KEYS`` describes now, made again when the settings change.
+
+    ``use_keyring`` is given this, not one ring: ``override_settings`` and
+    the pytest plugin's ``settings`` fixture then reach the ring that seals
+    and opens values, as they reach ``registry.settings(KeysSettings)``
+    (TEST-15). While the settings object is the same, the answer is the
+    ring found last, in one comparison; a changed ``KEYS``, ``SECRET_KEY``
+    or ``SECRET_KEY_FALLBACKS`` makes another, and settings put back find
+    the ring they had, already unwrapped.
+    """
+
+    def __init__(self) -> None:
+        """No ring made yet."""
+        self._current: tuple[object, Keyring] | None = None
+        self._rings: dict[str, Keyring] = {}
+        self._lock = threading.Lock()
+
+    def __call__(self) -> Keyring:
+        """The ring of the current settings.
+
+        Raises:
+            ImproperlyConfigured: ``KEYS`` names a ring that cannot be made.
+        """
+        source = unwrap_settings()
+        current = self._current
+        if current is not None and current[0] is source:
+            return current[1]
+        config = registry.settings(KeysSettings)
+        fingerprint = _fingerprint(config)
+        with self._lock:
+            ring = self._rings.get(fingerprint)
+            if ring is None:
+                ring = ring_for(config)
+                if len(self._rings) >= RINGS_KEPT:
+                    del self._rings[next(iter(self._rings))]
+                self._rings[fingerprint] = ring
+            self._current = (source, ring)
+        return ring
+
+
+def _fingerprint(config: KeysSettings) -> str:
+    """A digest of what makes a ring: ``KEYS``, and the keys ``dev`` derives from."""
+    digest = hashlib.sha256(
+        json.dumps(config.model_dump(), default=_revealed, sort_keys=True).encode()
+    )
+    for key in secret_keys():
+        digest.update(b"\x00" + key)
+    return digest.hexdigest()
+
+
+def _revealed(value: SecretStr) -> str:
+    """A secret setting as text for the digest: its own value (Vault's token)."""
+    return value.get_secret_value()
 
 
 def hosting_aliases() -> tuple[str, ...]:
@@ -387,6 +454,12 @@ async def _reencrypt_column(
         if last is not None:
             query = query.where(tuple_(*keys) > tuple_(*last))
         async with connections.engine(alias).begin() as connection:
+            # The batch's rows stay as read until it commits: locked on
+            # PostgreSQL, behind the write lock on SQLite.
+            if connection.dialect.name == "postgresql":
+                query = query.with_for_update(of=table)
+            else:
+                await connection.exec_driver_sql("BEGIN IMMEDIATE")
             rows = (await connection.execute(query)).all()
             if not rows:
                 return
@@ -405,14 +478,27 @@ def _reencrypt_rows(
     rows: Sequence[Any],
     done: Reencrypted,
 ) -> None:
-    """Seal each row's value again if a retired key sealed it, and its index."""
+    """Seal each row's value again if a retired key sealed it, and its index.
+
+    The rows are locked as read (``_reencrypt_column``), so each update
+    finds its row; they are sent together, one ``executemany`` for the rows
+    that change the same columns (PERF-33), and the keys of the subjects
+    they are sealed for are read in one statement.
+    """
     keys = list(table.primary_key.columns)
+    subjects = [
+        found[1]
+        for row in rows
+        if (found := sealed_key(row[len(keys)])) is not None and found[0] == SUBJECT
+    ]
+    held = ring.subject_keys_by_id(connection, subjects) if subjects else {}
+    changes: dict[tuple[str, ...], list[dict[str, object]]] = {}
     for row in rows:
         identity = list(row)[: len(keys)]
         text = row[len(keys)]
         where = context(column, identity)
         try:
-            plaintext = ring.open(text, where, connection=connection)
+            plaintext = ring.open(text, where, connection=connection, subject_keys=held)
         except DecryptionFailed:
             done.failed += 1
             continue
@@ -427,10 +513,19 @@ def _reencrypt_rows(
                 if plaintext is None
                 else ring.blind_index(plaintext, index_context(column))
             )
-        condition = and_(
-            *(key == value for key, value in zip(keys, identity, strict=True)),
-            column == Ciphertext(text),
+        parameters = {f"_key_{n}": value for n, value in enumerate(identity)}
+        parameters["_was"] = Ciphertext(text)
+        parameters.update({f"_new_{name}": value for name, value in values.items()})
+        changes.setdefault(tuple(values), []).append(parameters)
+    for names, batch in changes.items():
+        statement = (
+            update(table)
+            .where(
+                *(key == bindparam(f"_key_{n}") for n, key in enumerate(keys)),
+                column == bindparam("_was", type_=column.type),
+            )
+            .values({name: bindparam(f"_new_{name}") for name in names})
         )
-        if connection.execute(update(table).where(condition).values(values)).rowcount:
-            done.values += column.name in values
-            done.indexes += index is not None
+        connection.execute(statement, batch)
+        done.values += len(batch) * (column.name in names)
+        done.indexes += len(batch) * (index is not None)

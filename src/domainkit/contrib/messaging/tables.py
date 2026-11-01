@@ -36,6 +36,11 @@ KEYED: Final = (PENDING, HELD, DEAD)
 """The statuses of the keyed messages ``ORDERING_INDEX`` holds."""
 BLANKED: Final = "payload_blanked"
 """The header set on a dead message whose arguments were blanked (``sensitive``)."""
+UNKNOWN_SINCE: Final = "unknown_target_since"
+"""The header of a message whose target no worker knew: when one first looked.
+
+The message waits for a worker that knows it (a deploy rolling out) until
+``UNKNOWN_TARGET_GRACE`` has passed since then."""
 SENSITIVE: Final = "sensitive"
 """The header of a chain's step that follows a ``sensitive`` one, at any distance.
 

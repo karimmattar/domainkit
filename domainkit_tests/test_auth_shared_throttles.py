@@ -59,9 +59,7 @@ def login_attempt(backend: object) -> int:
     limits = [("login:ip:unknown", "5/minute"), ("login:user:alice", "5/minute")]
     try:
         asyncio.run(
-            throttling.attempt(
-                request, limits, action="auth.login", detail="No.", code="no"
-            )
+            throttling.attempt(request, limits, action="auth.login", detail="No.")
         )
     except APIError as refused:
         return refused.status_code

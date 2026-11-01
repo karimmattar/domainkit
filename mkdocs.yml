@@ -134,6 +134,7 @@ nav:
           - reference/servers.md
           - reference/checks.md
           - reference/responses.md
+          - reference/problems.md
           - reference/signing.md
           - reference/observability.md
           - reference/test-plugin.md

@@ -605,6 +605,33 @@ async def test_subjects_are_listed_a_hundred_records_at_a_time() -> None:
     assert ledger.limits == [100, 7]
 
 
+async def test_a_full_listing_asks_no_previous_key() -> None:
+    """Once the current key's records reach the limit, the scan stops there."""
+
+    class Counting(MemoryLedger):
+        def __init__(self) -> None:
+            super().__init__()
+            self.limits: list[int] = []
+
+        async def keys(self, prefix: bytes, *, limit: int) -> list[bytes]:
+            self.limits.append(limit)
+            return await super().keys(prefix, limit=limit)
+
+    ledger = Counting()
+    rekeyed = LedgerEvidenceStore(
+        ledger,
+        namespace="evidence",
+        max_bytes=4096,
+        subject_key=SUBJECT_KEY,
+        previous_subject_keys=[b"o" * 32],
+    )
+    for _ in range(2):
+        await rekeyed.record(Evidence(kind="consent.given", subject="customer:1"))
+
+    assert len(await rekeyed.for_subject("customer:1", limit=2)) == 2
+    assert ledger.limits == [2]
+
+
 # The app -------------------------------------------------------------------------
 
 
@@ -618,6 +645,8 @@ async def test_the_configured_store_uses_the_evidence_ledger(installed: None) ->
     ).value == FIXED.canonical()
     config = registry.get_domain_config("evidence")
     assert config.databases(router) == frozenset()
+    with override_settings(EVIDENCE={"PREVIOUS_NAMESPACES": ["old"]}):
+        assert evidence_store().previous_namespaces == ("old",)  # type: ignore[attr-defined]
 
 
 def test_the_evidence_ledger_must_be_in_ledgers() -> None:

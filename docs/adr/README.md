@@ -22,7 +22,7 @@ statuses, and the amendments they name.
 | [0002](0002-django-conventions-for-ddd-services.md) | Django's conventions for domain-driven services | Accepted |
 | [0003](0003-enforced-layer-rules.md) | Layer rules enforced by `check` | Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), and 2026-10-25 (at the end) |
 | [0004](0004-async-sqlalchemy-imperative-mapping.md) | Async SQLAlchemy with imperative mapping | Accepted; amended 2026-10-25 (at the end) |
-| [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted; amended by [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md) |
+| [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted; amended by [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md), and 2026-11-01 (at the end) |
 | [0006](0006-environment-prefix-from-project-name.md) | Environment variable prefix from the project name | Accepted |
 | [0007](0007-own-repository-released-to-pypi.md) | Its own repository, released to PyPI | Accepted; amended 2026-10-26 (at the end) |
 | [0008](0008-multiple-databases-and-routing.md) | Several databases: two kinds, routed by domain | Accepted |
@@ -34,7 +34,7 @@ statuses, and the amendments they name.
 | [0014](0014-outbox-as-record-broker-for-dispatch.md) | Keep the outbox as the record; use the broker to dispatch | Accepted |
 | [0015](0015-auth-and-content-types.md) | Users, groups, and permissions modelled on Django's | Accepted |
 | [0016](0016-authenticating-requests.md) | Authenticate requests with tokens; rules decide who may call routes | Accepted; amended by [0056](0056-reauthorize-open-connections.md), [0058](0058-cache-principals-and-stamp-revocations.md), [0059](0059-read-principals-in-two-queries-without-the-hash.md), and [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md) |
-| [0017](0017-deny-by-default-and-admin-api.md) | Routes deny by default; staff manage users through an admin API | Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 (at the end) |
+| [0017](0017-deny-by-default-and-admin-api.md) | Routes deny by default; staff manage users through an admin API | Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 and 2026-11-01 (at the end) |
 | [0018](0018-evidence-subjects-are-internal-ids.md) | Evidence subjects are internal ids, keyed by a secret digest | Accepted |
 | [0019](0019-idempotency-keys-commit-with-changes.md) | Mark idempotency keys committed in the transaction of the changes | Accepted; leases added by [0020](0020-lease-idempotency-keys.md); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md); amended 2026-10-26 (at the end) by [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) |
 | [0020](0020-lease-idempotency-keys.md) | Lease idempotency keys, and write them only under the holder's token | Accepted; amended 2026-10-21 and 2026-10-26 (at the end); amended by [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) |
@@ -81,7 +81,7 @@ statuses, and the amendments they name.
 | [0061](0061-read-without-a-transaction-and-ping-once.md) | Read without a transaction where it is safe, and ping a connection once | Accepted; amended in place 2026-10-22 |
 | [0062](0062-claim-idempotency-keys-in-one-statement.md) | Claim idempotency keys in one statement, and commit the framework's short writes as they run | Accepted; amended in place 2026-10-22, and 2026-10-25 and 2026-10-26 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) and [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) |
 | [0063](0063-encode-json-with-pydantic-and-sample-the-access-log.md) | Encode JSON with pydantic where the bytes stay the same, and let projects sample the access log | Accepted |
-| [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted; amended by [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) |
+| [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted; amended by [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md), and 2026-11-01 (at the end) |
 | [0065](0065-upgrade-fastapi-sqlalchemy-asyncpg-behind-the-ladder.md) | Upgrade FastAPI, SQLAlchemy, and asyncpg behind the ladder, with FastAPI's telemetry off | Accepted; amended 2026-10-25 (at the end) |
 | [0066](0066-write-amounts-as-fixed-point-text.md) | Write amounts as fixed-point text | Accepted |
 | [0068](0068-count-failed-attempts-and-hold-back-only-guesses.md) | Count failed attempts, and hold back only what can be guessed | Accepted; amended 2026-10-25 (at the end); amended by [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) and [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) |
@@ -99,7 +99,7 @@ statuses, and the amendments they name.
 | [0084](0084-one-exception-root-mapped-to-http-at-the-boundary.md) | Root every exception at `DomainkitError`, and map errors to HTTP at the boundary | Accepted |
 | [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) | Register commit and migration hooks by type, for the domains that have them | Accepted; amended 2026-10-28 (at the end) by [0101](0101-register-every-domain-hook-and-check-it-when-it-registers.md) |
 | [0086](0086-secure-defaults-at-the-http-edge.md) | Make the HTTP edge's defaults the safe ones | Accepted; amended 2026-10-26 (at the end) |
-| [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted; amended 2026-10-26 (at the end) |
+| [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted; amended 2026-10-26 and 2026-11-01 (at the end) |
 | [0089](0089-build-the-docs-site-with-mkdocs-and-generate-the-api-reference-from-api-md.md) | Build the docs site with MkDocs, and generate the API reference from api.md | Accepted; amended 2026-10-29 (at the end) by [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) |
 | [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted |
 | [0092](0092-retry-units-of-work-choose-isolation-and-lock-in-order.md) | Run units of work again after a lost race, let them choose their isolation, and lock in order | Accepted; amended 2026-10-28, 2026-10-29, and 2026-10-31 (at the end) |
@@ -114,7 +114,7 @@ statuses, and the amendments they name.
 | [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md) | Hold `If-Match` on the unit of work that changes the aggregate | Accepted; amended 2026-10-28 and 2026-10-29 (at the end) |
 | [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) | Import what a process uses on first use, and gate the modules each rung loads | Accepted |
 | [0105](0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md) | Fingerprint keyed bodies as they arrive, and spool them past a threshold | Accepted; amended 2026-10-28 (at the end) |
-| [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted; amended 2026-10-29 (at the end) |
+| [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted; amended 2026-10-29 and 2026-11-01 (at the end) |
 | [0107](0107-make-test-users-through-the-domain-and-sign-in-through-a-protocol.md) | Make test users through the domain, and sign in as them through a protocol | Accepted |
 | [0108](0108-keep-the-full-domain-as-the-default-and-give-new-projects-an-image-and-ci.md) | Keep the full domain as `startdomain`'s default; give new projects an image and CI | Accepted; amended 2026-10-28 (at the end) |
 | [0111](0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md) | Refuse a removed hook method until 1.0, wherever the domain defines it | Accepted |
@@ -122,14 +122,14 @@ statuses, and the amendments they name.
 | [0113](0113-reset-module-state-through-public-resets-the-plugin-calls.md) | Reset module state through public resets the plugin calls | Accepted |
 | [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) | Split the reference and the public API into pages by area | Accepted |
 | [0115](0115-store-money-as-an-exact-amount-and-a-currency-code.md) | Store money as an exact amount and a currency code | Accepted |
-| [0116](0116-keep-double-entry-books-locked-in-id-order-and-append-only.md) | Keep double-entry books: post under locks taken in id order, and append only | Accepted; amended 2026-10-31 (at the end) |
-| [0117](0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md) | Reconcile statements through a port, match by rules in order, and record breaks | Accepted |
+| [0116](0116-keep-double-entry-books-locked-in-id-order-and-append-only.md) | Keep double-entry books: post under locks taken in id order, and append only | Accepted; amended 2026-10-31 and 2026-11-01 (at the end) |
+| [0117](0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md) | Reconcile statements through a port, match by rules in order, and record breaks | Accepted; amended 2026-11-01 (at the end) |
 | [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md) | Run a key's messages in commit order by holding the later ones in the outbox | Accepted; amended 2026-10-30 (at the end) |
 | [0119](0119-wrap-data-keys-under-a-kms-key-through-a-port-and-name-the-key-in-every-sealed-value.md) | Wrap data keys under a KMS key through a port, and name the key in every sealed value | Accepted; amended 2026-10-31 (at the end) |
 | [0120](0120-seal-encrypted-fields-in-the-orm-bound-to-their-row-and-shred-a-person-by-destroying-their-key.md) | Seal encrypted fields in the ORM, bound to their row, and shred a person by destroying their key | Accepted; amended 2026-10-31 (at the end) |
-| [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md) | Hold guarded commands as sealed requests, and count approvals under the request's lock | Accepted; amended 2026-10-31 (at the end) |
-| [0122](0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md) | Step up in a rule, and bind authorizations with a stored row and a code | Accepted |
-| [0123](0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md) | Count movements against limits under the subject's row, in the movement's transaction | Accepted; amended 2026-10-31 (at the end) |
+| [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md) | Hold guarded commands as sealed requests, and count approvals under the request's lock | Accepted; amended 2026-10-31 and 2026-11-01 (at the end) |
+| [0122](0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md) | Step up in a rule, and bind authorizations with a stored row and a code | Accepted; amended 2026-11-01 (at the end) |
+| [0123](0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md) | Count movements against limits under the subject's row, in the movement's transaction | Accepted; amended 2026-10-31 and 2026-11-01 (at the end) |
 | [0124](0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md) | Write a bank's controls on and wired, as a profile over the project template | Accepted; amended 2026-10-31 (at the end) |
 
 ### Decisions still without a record

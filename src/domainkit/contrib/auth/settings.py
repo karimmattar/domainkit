@@ -418,6 +418,13 @@ class AuthSettings(BaseModel):
     """Live access tokens (logins and personal tokens) a user may hold and
     still make a personal token (``POST /auth/tokens``): past it, ``409
     too_many_tokens``. It bounds what one user can make the server keep."""
+    PERSONAL_TOKEN_MAX_AGE: timedelta | None = Field(
+        default=timedelta(days=90), ge=timedelta(days=1), le=timedelta(days=3650)
+    )
+    """The longest a personal token made at ``POST /auth/tokens`` may work,
+    from a day to 3,650 days; tokens asked without ``expires_in_days`` get
+    the shorter of 90 days and this. None lets a token work until revoked
+    (``expires_in_days: null``), as before 1.0 (AUTH-16)."""
     LOGIN_RATE: str | None = "10/minute"
     """Wrong passwords allowed per client address and per username.
 
@@ -425,6 +432,13 @@ class AuthSettings(BaseModel):
     do not hold, per client address (one-time codes count against
     ``MFA.RATE``). Checks that succeed are not counted.
     """
+    ACCOUNT_LOGIN_RATE: str | None = "100/day"
+    """Wrong passwords allowed per username, from anywhere, over a longer
+    period: ``LOGIN_RATE`` bounds bursts, this the day's total, as NIST SP
+    800-63B 5.2.2 asks (100 failed attempts at most). Clients with a device
+    proof for the account have a count of their own at this rate, which
+    strangers cannot use up (ADR 0087). None: ``LOGIN_RATE`` alone, as
+    before 1.0 (AUTH-19)."""
     PASSWORD_CHECKS_COUNT_AS_LOGINS: bool = False
     """Count wrong passwords of signed-in users (``/password``, a step-up,
     the second factor's changes) against the account's count of wrong
@@ -494,7 +508,7 @@ class AuthSettings(BaseModel):
     CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ()
     """Origins of pages that may send cookie requests besides ``ALLOWED_HOSTS``'."""
 
-    @field_validator("LOGIN_RATE", "EMAIL_RATE")
+    @field_validator("LOGIN_RATE", "ACCOUNT_LOGIN_RATE", "EMAIL_RATE")
     @classmethod
     def _check_rate(cls, value: str | None) -> str | None:
         """Refuse rates ``parse_rate`` cannot read."""

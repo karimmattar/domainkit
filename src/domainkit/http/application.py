@@ -46,6 +46,8 @@ FRAMEWORK_ERRORS: Final = {
     422: "Invalid request",
     429: "Too many requests",
     500: "Internal server error",
+    503: "Busy: overloaded, past its deadline, or its database is; retry after "
+    "Retry-After",
 }
 FASTAPI_TELEMETRY: Final[TelemetryConfig] = {
     "tracing": False,

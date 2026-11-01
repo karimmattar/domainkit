@@ -29,8 +29,10 @@ from domainkit.apps import registry
 from domainkit.ddd import Command, Retry
 
 from .exceptions import (
+    EarlierPeriodOpen,
     InvalidEntry,
     NoOpenPeriod,
+    PeriodIsClosed,
     PeriodsOverlap,
     ReferenceReused,
     ReversalNotReversible,
@@ -49,6 +51,9 @@ from .models import (
 from .settings import AccountingSettings
 from .uow import AccountingUnitOfWork
 
+PERIODS = "accounting.periods"
+"""The lock opening and closing periods take, and a posting dated in no period."""
+CLOSED_BOOKS = "The books are closed up to a later date than this one."
 RESERVED = "accounting."
 """The prefix of the ledger's own sources, which ``post_entry`` refuses."""
 REVERSALS = "accounting.reversal"
@@ -63,7 +68,7 @@ class OpenAccount(Command):
     type: AccountType
     currency: str
     holder: str | None = None
-    may_go_negative: bool = True
+    may_go_negative: bool = False
 
 
 class CloseAccount(Command):
@@ -165,12 +170,16 @@ async def book(
     """Add ``entry`` to the open ``uow``, moving the ``accounts`` it posts to.
 
     The accounts are locked already (after any hold); the period the
-    entry's date falls in is locked last, for share. Then the apps that
-    registered ``on_booking`` see the entry, and may refuse it.
+    entry's date falls in is locked last, for share. A date on or before
+    the end of the latest closed period is refused, in a period or in a
+    gap between periods (FIN-87); a date in a gap takes the periods' lock
+    first, as opening and closing one do. Then the apps that registered
+    ``on_booking`` see the entry, and may refuse it.
 
     Raises:
         NoOpenPeriod: No period covers the date, and ``REQUIRE_PERIOD``.
-        PeriodIsClosed: The period that covers it is closed.
+        PeriodIsClosed: The period that covers it is closed, or the date
+            is on or before the end of a closed period.
         AccountIsClosed, InvalidEntry, InsufficientFunds: As ``Account.post``.
         DomainError: An ``on_booking`` hook refused the entry.
     """
@@ -178,7 +187,12 @@ async def book(
     if period is not None:
         period.takes()
         entry.period_id = period.id
-    elif config().REQUIRE_PERIOD:
+    else:
+        await uow.lock(PERIODS)
+    closed = await uow.periods.closed_through()
+    if closed is not None and entry.booked_on <= closed:
+        raise PeriodIsClosed(CLOSED_BOOKS)
+    if period is None and config().REQUIRE_PERIOD:
         raise NoOpenPeriod("No open accounting period covers the entry's date.")
     for posting in entry.postings:
         accounts[posting.account_id].post(posting.side, posting.money)
@@ -342,16 +356,23 @@ async def reverse_entry(command: ReverseEntry, uow: AccountingUnitOfWork) -> Ent
 async def open_period(command: OpenPeriod, uow: AccountingUnitOfWork) -> Period:
     """Open a period; one whose dates another covers is refused.
 
+    So is one that starts on or before the end of a closed period: the
+    books are closed up to that day (FIN-87).
+
     Raises:
         PeriodsOverlap: It ends before it starts, or another period covers
             some of its days.
+        PeriodIsClosed: It starts on or before the end of a closed period.
         PeriodNameTaken: Another period has its name.
     """
     period = Period.open(command.name, command.starts_on, command.ends_on)
 
     async def work() -> Period:
         async with uow:
-            await uow.lock("accounting.periods")
+            await uow.lock(PERIODS)
+            closed = await uow.periods.closed_through()
+            if closed is not None and period.starts_on <= closed:
+                raise PeriodIsClosed(CLOSED_BOOKS)
             if await uow.periods.overlapping(period.starts_on, period.ends_on):
                 raise PeriodsOverlap("Another period covers some of these dates.")
             await uow.periods.add(period)
@@ -364,14 +385,24 @@ async def open_period(command: OpenPeriod, uow: AccountingUnitOfWork) -> Period:
 async def close_period(command: ClosePeriod, uow: AccountingUnitOfWork) -> Period:
     """Close a period, once the postings dated in it so far have committed.
 
+    Periods close in date order: one is refused while a period before it
+    is open, so a closed period's opening balances never change (FIN-87).
+
     Raises:
         PeriodNotFound: No period has that id.
         PeriodIsClosed: It is closed already.
+        EarlierPeriodOpen: A period before it is still open.
     """
 
     async def work() -> Period:
         async with uow:
+            await uow.lock(PERIODS)
             period = await uow.periods.get_for_update(PeriodId(command.period_id))
+            period.takes()
+            if await uow.periods.open_before(period.starts_on):
+                raise EarlierPeriodOpen(
+                    "A period before this one is still open: close it first."
+                )
             period.close()
             await uow.commit()
         return period

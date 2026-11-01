@@ -230,7 +230,7 @@ The ledger state a client trusts, kept where a restart does not lose it.
 Money: an amount in a currency, exact, with named rounding and allocation.
 
 - `ISO_4217_PUBLISHED`: The date of the ISO 4217 list the known currencies come from (`iso4217.csv`).
-- `MAX_DIGITS`: The most digits an amount has before its point, as `NUMERIC(38)` holds.
+- `MAX_DIGITS`: The most digits an amount has before its point, in memory and in JSON.
 - `AmountOutOfRange`: An amount where it is kept cannot hold it: too many digits, or places.
 - `Currency`: A currency: its code, its ISO 4217 numeric code, and its minor units.
 - `CurrencyMismatch`: Amounts of two currencies were added, subtracted, or compared.

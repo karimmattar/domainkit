@@ -52,8 +52,8 @@ async def answer(
         return await respond(
             router, context, result, status_code=status_code, headers=headers
         )
-    shown = shown_as(router, returns, result)
-    return BuiltJSONResponse(shown.model_dump(mode="json"), status_code=status_code)
+    document = await shown_as(router, context, returns, result)
+    return BuiltJSONResponse(document, status_code=status_code)
 
 
 async def batch_result(
@@ -84,14 +84,23 @@ async def batch_result(
         return BatchResult(
             status=status_code, item=document, etag=etag, location=location
         )
-    shown = shown_as(router, returns, result)
-    return BatchResult(status=status_code, item=shown.model_dump(mode="json"))
+    document = await shown_as(router, context, returns, result)
+    return BatchResult(status=status_code, item=document)
 
 
-def shown_as(router: "ResourceRouter", returns: Returns, result: object) -> BaseModel:
-    """``result`` as the schema a write returns (the resource's, by default)."""
+async def shown_as(
+    router: "ResourceRouter", context: RouteContext, returns: Returns, result: object
+) -> dict[str, Any]:
+    """``result``'s JSON as the schema a write returns (the resource's, by default).
+
+    The fields the resource's policy hides from the caller are left out
+    of whatever schema it is, by name (WEB-20): another view of the
+    aggregate shows no more of it than a read does.
+    """
     schema = router.source_schema if returns is DEFAULT else returns
-    return presenter(schema)(result)  # type: ignore[arg-type] # Not None: 204.
+    shown = presenter(schema)(result)  # type: ignore[arg-type] # Not None: 204.
+    hidden = await hidden_fields(router, context.request)
+    return shown.model_dump(mode="json", exclude=set(hidden))
 
 
 async def tagged(

@@ -7,11 +7,13 @@ from domainkit.contrib.approvals import Policy, Threshold, guard
 
 from domains.payments.application.commands import MakeTransfer
 from domains.payments.application.services import MAKE_TRANSFER, make_transfer
+from domains.payments.domain.model import CURRENCIES
 from domains.payments.infrastructure.orm import start_mappers
 from domains.payments.infrastructure.unit_of_work import SqlAlchemyPaymentsUnitOfWork
 
-APPROVAL_THRESHOLD: Final = Threshold({"USD": "1000.00", "EUR": "1000.00"})
-"""A transfer over this amount waits for another person's approval."""
+APPROVAL_THRESHOLD: Final = Threshold({code: "1000.00" for code in CURRENCIES})
+"""A transfer over this amount waits for another person's approval; one in a
+currency it does not name always does (a threshold fails closed)."""
 
 
 def large(command: MakeTransfer) -> bool:

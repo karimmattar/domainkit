@@ -47,8 +47,9 @@ trail when an installed domain keeps one (``DenialRecorder``:
 once per actor and route each ``DENIAL_AUDIT_INTERVAL``.
 
 Every route must declare who may call it (``REQUIRE_ROUTE_RULES``): with
-``Require``, ``CurrentUser``, a dependency marked ``reads_principal``, or
-``Public``. ``open_routes`` lists those that do not.
+``Require``, a dependency marked ``reads_principal`` that refuses anonymous
+callers (``AuthenticatedUser``), or ``Public``. ``CurrentUser`` alone lets
+anyone in, so it declares nothing. ``open_routes`` lists those that do not.
 """
 
 import logging
@@ -848,7 +849,11 @@ async def acurrent_user(connection: HTTPConnection) -> Principal:
 
 
 CurrentUser = Annotated[Principal, Depends(acurrent_user)]
-"""The request's principal, or an anonymous one."""
+"""The request's principal, or an anonymous one: not an access rule."""
+
+_ANYONE_READERS: Final = frozenset({current_user, acurrent_user})
+"""Readers that let anyone in: a route that only reads the principal through
+them declares no rule (``open_routes``), since an anonymous caller passes."""
 
 
 async def public() -> None:
@@ -874,10 +879,12 @@ def mark_public[T](served: T) -> T:
 def open_routes(app: FastAPI) -> list[str]:
     """``METHOD /path`` of every route that declares no access rule.
 
-    A route declares one with ``Require``, ``CurrentUser``, a dependency
-    marked ``reads_principal`` (``AuthenticatedUser``), or ``Public``, on
-    itself or its router. The framework's own routes (``/health``,
-    ``/ready``, ``/metrics``, and the ``API_DOCS``) guard themselves.
+    A route declares one with ``Require``, a dependency marked
+    ``reads_principal`` that refuses anonymous callers
+    (``AuthenticatedUser``), or ``Public``, on itself or its router.
+    ``CurrentUser`` alone is none: anyone passes it (DSGN-17). The
+    framework's own routes (``/health``, ``/ready``, ``/metrics``, and the
+    ``API_DOCS``) guard themselves.
     Mounted FastAPI and Starlette applications are walked route by route.
     What takes no dependencies (a mounted ``StaticFiles``, Starlette's own
     ``Route``) is listed unless marked with ``mark_public``.
@@ -970,13 +977,16 @@ def _kind(route: BaseRoute) -> str:
 def _uses(dependant: Dependant, *, or_public: bool) -> bool:
     """Whether ``dependant`` depends, at any depth, on ``Require`` or a reader.
 
-    A reader is a dependency marked ``reads_principal``; with ``or_public``,
-    ``Public`` counts too.
+    A reader is a dependency marked ``reads_principal``. With ``or_public``
+    (does the route declare who may call it?), ``Public`` counts too, and
+    the core's own readers (``CurrentUser``) do not: they let anyone in,
+    so they say nothing of who may call (DSGN-17).
     """
     call = dependant.call
+    reader = getattr(call, READS_PRINCIPAL, False) is True
     if (
         isinstance(call, Require)
-        or getattr(call, READS_PRINCIPAL, False) is True
+        or (reader and not (or_public and call in _ANYONE_READERS))
         or (or_public and call is public)
     ):
         return True

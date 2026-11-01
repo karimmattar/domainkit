@@ -152,6 +152,7 @@ Pure-ASGI middleware enforcing the HTTP security baseline.
 Request rate limiting (`RATE_LIMIT = "300/minute"`).
 
 - `FALLBACK_KEYS`: Callers the local fallback of `RedisBackend` counts at most (`MemoryBackend`).
+- `RATE_LIMITED`: The code of every 429: `RATE_LIMIT`, a `Throttle`, and auth's throttles.
 - `Backend`: Where rate-limit state lives.
 - `Decision`: Whether a request may proceed, and the numbers for the headers.
 - `MemoryBackend`: GCRA state in this process, for at most `max_keys` callers.

@@ -1064,14 +1064,19 @@ lookups at least. (A lookup cannot be interrupted,
 which an asynchronous resolver will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 
-| Raised | When |
-| --- | --- |
-| `CallTimeout` (an `httpx2.TimeoutException`) | `timeout` passed, retries included |
-| `DeadlineExceeded` | no time was left when the call began |
-| `CircuitOpen` (an `httpx2.TransportError`) | the host's circuit is open |
-| `ResponseTooLarge` (an `httpx2.RequestError`) | the answer was over `MAX_RESPONSE_BYTES` |
-| `UnsafeURL` | a guarded client may not call the URL, or it leaves `base_url` |
-| `httpx2.HTTPError` | the call failed on its last try |
+| Raised | When | A request that lets it go answers |
+| --- | --- | --- |
+| `CallTimeout` (an `httpx2.TimeoutException`) | `timeout` passed, retries included | 504 `upstream_timeout` |
+| `DeadlineExceeded` | no time was left when the call began | 503 `deadline_exceeded` |
+| `CircuitOpen` (an `httpx2.TransportError`) | the host's circuit is open | 503 `upstream_unavailable`, `Retry-After` the cooldown left |
+| `ResponseTooLarge` (an `httpx2.RequestError`) | the answer was over `MAX_RESPONSE_BYTES` | 502 `upstream_response_too_large` |
+| `UnsafeURL` | a guarded client may not call the URL, or it leaves `base_url` | 422 `unsafe_url` |
+| `httpx2.HTTPError` | the call failed on its last try | 500 `internal_error`, reported |
+
+`CallTimeout`, `CircuitOpen`, and `ResponseTooLarge` are
+`domainkit.exceptions.UpstreamError`s too: the client logged them, so
+they are answered without a report to `ERROR_REPORTERS`, with a detail
+that names no host. Catch them to degrade instead.
 
 **In tests**, `stub` sends every call made in its block, from any client,
 to a handler, through httpx2's `MockTransport`:

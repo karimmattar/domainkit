@@ -22,7 +22,9 @@ those of SQL commits and migrations. Each ``DomainConfig`` hook method
 - ``on_check``: raise when the domain cannot serve traffic (``/ready``).
 - ``on_seed``: add the rows a fresh database needs (``manage.py seed``).
 - ``on_erase_subject`` and ``on_export_subject``: the copies of a person's
-  data a domain keeps outside its aggregates (``domainkit.contrib.privacy``).
+  data a domain keeps outside its aggregates (``domainkit.contrib.privacy``);
+  ``on_erase_check``: why a person's data must be kept for now, before
+  any of it is erased.
 - ``on_check_application``: problems with the built application.
 - ``on_deployment_warnings``: weak but valid settings where deployed, and
   code ``check`` warns about anywhere.
@@ -39,7 +41,8 @@ defines one (``apps.E002``).
 
 Registrations belong to the domains loaded at the time: ``registry.clear()``
 and the next ``populate`` forget them, and the domains register again in
-``ready()``.
+``ready()``. ``hooks_kept()`` puts every point's registrations back as they
+were when the block began: the pytest plugin drops what a test registered.
 """
 
 import inspect
@@ -47,8 +50,8 @@ import threading
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple
-from weakref import WeakKeyDictionary
+from typing import TYPE_CHECKING, Any, NamedTuple
+from weakref import WeakKeyDictionary, WeakSet
 
 from domainkit.exceptions import ImproperlyConfigured
 
@@ -60,9 +63,11 @@ if TYPE_CHECKING:
 __all__ = [
     "Hook",
     "HookPoint",
+    "hooks_kept",
     "on_check",
     "on_check_application",
     "on_deployment_warnings",
+    "on_erase_check",
     "on_erase_subject",
     "on_export_subject",
     "on_seed",
@@ -115,6 +120,7 @@ class HookPoint[F: Callable[..., object]]:
         )
         self._hooks: _Known[F] | None = None
         self._registry: DomainRegistry | None = None
+        _points.add(self)
 
     def __repr__(self) -> str:
         """Show the point's name."""
@@ -224,6 +230,34 @@ class HookPoint[F: Callable[..., object]]:
             for function in registered.functions.get(config.label, ()):
                 yield Hook(config.label, function)
 
+    def _kept(self, registry: "DomainRegistry") -> "_Kept[F] | None":
+        """What ``registry``'s domains registered now, to put back later."""
+        registered = self._registered.get(registry)
+        if registered is None or registered.generation != registry.generation:
+            return None
+        return _Kept(
+            registered.generation,
+            {label: list(each) for label, each in registered.functions.items()},
+        )
+
+    def _put_back(self, registry: "DomainRegistry", kept: "_Kept[F] | None") -> None:
+        """Drop what was registered since ``kept``; restore what was removed.
+
+        Registrations of a later generation (the domains loaded again) are
+        theirs, and stay.
+        """
+        with self._lock:
+            registered = self._registered.get(registry)
+            if registered is None or registered.generation != registry.generation:
+                return
+            if kept is None or kept.generation == registered.generation:
+                registered.functions = (
+                    {}
+                    if kept is None
+                    else {k: list(v) for k, v in kept.functions.items()}
+                )
+                self._hooks = None
+
     def _current(self, registry: "DomainRegistry") -> "_Registered[F]":
         """What ``registry``'s domains registered since it last changed.
 
@@ -244,12 +278,41 @@ class _Registered[F]:
     functions: dict[str, list[F]] = field(default_factory=dict)
 
 
+class _Kept[F](NamedTuple):
+    """One point's registrations, as ``hooks_kept`` found them."""
+
+    generation: int
+    functions: dict[str, list[F]]
+
+
 class _Known[F: Callable[..., object]](NamedTuple):
     """The hooks last worked out, and for which registry and generation."""
 
     registry: "DomainRegistry"
     generation: int
     hooks: tuple[Hook[F], ...]
+
+
+_points: "WeakSet[HookPoint[Any]]" = WeakSet()
+"""Every hook point made, for ``hooks_kept``."""
+
+
+@contextmanager
+def hooks_kept() -> Iterator[None]:
+    """Put every hook point's registrations back as they were, when the block ends.
+
+    A test that registers a hook for an installed domain
+    (``on_guard(check, domain="payments")``) has it dropped afterwards, and
+    one it removed comes back; the pytest plugin keeps each test in such a
+    block, as ``subscriptions_kept()`` keeps the event bus's.
+    """
+    registry = _registry()
+    kept = [(point, point._kept(registry)) for point in list(_points)]
+    try:
+        yield
+    finally:
+        for point, before in kept:
+            point._put_back(registry, before)
 
 
 _populating: "list[DomainRegistry]" = []
@@ -287,6 +350,7 @@ def _registry() -> "DomainRegistry":
 
 type LifeHook = Callable[[], Awaitable[None]]
 type EraseHook = Callable[[str, str], Awaitable[Mapping[str, int]]]
+type EraseCheck = Callable[[str, str], Awaitable[str | None]]
 type ExportHook = Callable[[str], Awaitable[Mapping[str, object]]]
 type ApplicationCheck = Callable[["FastAPI"], Iterable[str]]
 type DeploymentCheck = Callable[[], Iterable[str]]
@@ -310,6 +374,22 @@ on_erase_subject: HookPoint[EraseHook] = HookPoint(
 
 Return counts by kind (``{"deliveries": 2}``), never the data itself: they
 are audited. Count copies left to finish first under ``pending``.
+
+The contract (FIN-94): these hooks run only once every ``on_erase_check``
+of every domain let the erasure go on, so a domain that must keep a
+person's data refuses there, before anything is erased, and never here.
+Records a law asks to keep (books, the evidence of who approved what)
+are kept, with the person's id replaced by a pseudonym, not deleted.
+"""
+on_erase_check: HookPoint[EraseCheck] = HookPoint(
+    "erase_check", arguments=2, awaited=True
+)
+"""Say why a person's data must be kept for now: ``(subject, reason)``.
+
+Return a sentence for the operator (``"Holds an account with money on
+it."``), or None to let the erasure go on. Any one holds it: nothing is
+erased, and ``domainkit.contrib.privacy`` raises ``ErasureHeld`` naming
+each domain's sentence. Never return the person's data.
 """
 on_export_subject: HookPoint[ExportHook] = HookPoint(
     "export_subject", arguments=1, awaited=True

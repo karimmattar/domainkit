@@ -411,6 +411,13 @@ async def test_a_holder_or_actor_limits_cannot_name_is_counted_by_its_digest() -
     actor = "a" * 300
     digest = ledger_subject(odd)
     await limit(code="daily", subject=digest, window=Window.DAY, max_amount=egp("10"))
+    await limit(  # Only a subject a window bounds keeps its movements (PERF-26).
+        code="actor.daily",
+        kind="actor",
+        subject=ledger_subject(actor),
+        window=Window.DAY,
+        max_amount=egp("1000"),
+    )
     with (
         freeze_time(NOON),
         bind_request(RequestContext("r-1", None, "POST", "/", actor=actor)),

@@ -43,7 +43,7 @@ from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.http.errors import APIError
-from domainkit.http.ratelimit import Backend, Decision, client_group
+from domainkit.http.ratelimit import RATE_LIMITED, Backend, Decision, client_group
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -86,16 +86,15 @@ async def throttle(
     *,
     action: str,
     detail: str,
-    code: str,
 ) -> Attempt:
     """Count an attempt against each of ``keys``; refuse it past ``rate``.
 
     Raises:
-        APIError: 429, with ``detail`` and ``code``, past the rate for a key;
+        APIError: 429 ``rate_limited``, with ``detail``, past the rate for a key;
             503 if it cannot be counted, failing closed (``fails_closed``).
     """
     limits = [(key, rate) for key in keys]
-    return await attempt(request, limits, action=action, detail=detail, code=code)
+    return await attempt(request, limits, action=action, detail=detail)
 
 
 async def attempt(
@@ -104,7 +103,6 @@ async def attempt(
     *,
     action: str,
     detail: str,
-    code: str,
 ) -> Attempt:
     """Count an attempt against each ``(key, rate)``; refuse it past a rate.
 
@@ -112,7 +110,7 @@ async def attempt(
     was not made. Call ``succeeded()`` on the result once the check holds.
 
     Raises:
-        APIError: 429, with ``detail`` and ``code``, past the rate for a key;
+        APIError: 429 ``rate_limited``, with ``detail``, past the rate for a key;
             503 ``throttle_unavailable`` if the counter could not count it,
             failing closed (``fails_closed``).
     """
@@ -131,7 +129,7 @@ async def attempt(
             raise _uncounted(decision)
         if first_refusal(request, key, period):
             await audit_refusal(action, "throttled")
-        raise _throttled(decision, detail, code)
+        raise _throttled(decision, detail)
     return taken
 
 
@@ -156,7 +154,6 @@ async def count_failure(
     *,
     action: str,
     detail: str,
-    code: str,
 ) -> None:
     """Count a check that failed, after it was made; refuse past ``rate``.
 
@@ -165,7 +162,7 @@ async def count_failure(
     The count bounds the work and the audit rows failures cost.
 
     Raises:
-        APIError: 429, with ``detail`` and ``code``, past the rate.
+        APIError: 429 ``rate_limited``, with ``detail``, past the rate.
     """
     if rate is None:
         return
@@ -174,15 +171,15 @@ async def count_failure(
     if not decision.allowed:
         if first_refusal(request, key, period):
             await audit_refusal(action, "throttled")
-        raise _throttled(decision, detail, code)
+        raise _throttled(decision, detail)
 
 
-def _throttled(decision: Decision, detail: str, code: str) -> APIError:
-    """The 429 of a refused attempt."""
+def _throttled(decision: Decision, detail: str) -> APIError:
+    """The 429 of a refused attempt: ``rate_limited``, as every 429 is (WEB-25)."""
     return APIError(
         status.HTTP_429_TOO_MANY_REQUESTS,
         detail,
-        code=code,
+        code=RATE_LIMITED,
         headers={"Retry-After": str(math.ceil(decision.retry_after))},
     )
 

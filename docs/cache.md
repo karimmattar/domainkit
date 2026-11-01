@@ -483,7 +483,7 @@ mail_limit = Throttle("10/hour", key="address", scope="mail")
   the request (sync or async) counts by what it returns, hashed before it is
   stored, or by address when it returns `None`.
 - Each route counts on its own unless routes share a `scope`.
-- Over the rate, the route answers 429 `throttled`, with `Retry-After` and
+- Over the rate, the route answers 429 `rate_limited`, with `Retry-After` and
   the `RateLimit-*` headers of that throttle; a WebSocket handshake is
   closed with 1013. Requests that pass carry no headers from the throttle.
 - A throttle does not decide who may call a route: the route still needs

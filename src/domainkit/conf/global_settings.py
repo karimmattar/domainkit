@@ -55,6 +55,8 @@ LANGUAGE_PATTERN: Final = r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$"
 
 MAX_REAUTH_INTERVAL: Final = 3600.0
 """The longest an open live connection may go between re-checks, in seconds."""
+MAX_LIFETIME: Final = 86_400.0
+"""The longest a WebSocket or an event stream may stay open: a day (WEB-24)."""
 
 RATE_LIMIT_MIDDLEWARE: Final = "domainkit.http.ratelimit.RateLimitMiddleware"
 DEBUG_TOOLBAR_MIDDLEWARE: Final = "domainkit.debug.DebugToolbarMiddleware"
@@ -870,13 +872,13 @@ class Settings(BaseModel):
     """Seconds between re-checks of an open connection's credentials and rules."""
     WEBSOCKET_IDLE_TIMEOUT: float = Field(default=300.0, gt=0)
     """Seconds without a message either way before a WebSocket is closed (1001)."""
-    WEBSOCKET_MAX_LIFETIME: float = Field(default=3600.0, gt=0)
+    WEBSOCKET_MAX_LIFETIME: float = Field(default=3600.0, gt=0, le=MAX_LIFETIME)
     """Seconds a WebSocket may stay open before it is closed (1001)."""
     WEBSOCKET_MESSAGE_RATE: str | None = "20/second"
     """Messages a WebSocket client may send, such as ``"20/second"``; None: any."""
     SSE_KEEPALIVE: float = Field(default=15.0, gt=0)
     """Seconds of silence before an event stream sends a keep-alive comment."""
-    SSE_MAX_LIFETIME: float = Field(default=3600.0, gt=0)
+    SSE_MAX_LIFETIME: float = Field(default=3600.0, gt=0, le=MAX_LIFETIME)
     """Seconds an event stream may stay open; the client then reconnects."""
     ERROR_REPORTERS: tuple[str, ...] = ()
     """Callables ``(exc, context) -> None`` by dotted path, e.g. a Sentry adapter."""
@@ -915,7 +917,28 @@ class Settings(BaseModel):
         "Authorization",
         "Content-Type",
         "X-Request-ID",
+        "If-Match",
+        "If-None-Match",
+        "Idempotency-Key",
     )
+    """Request headers a browser may send: conditional and keyed writes too."""
+    CORS_EXPOSE_HEADERS: tuple[Annotated[str, Field(pattern=CORS_NAME)], ...] = (
+        "X-Request-ID",
+        "ETag",
+        "Location",
+        "Retry-After",
+        "RateLimit-Limit",
+        "RateLimit-Remaining",
+        "RateLimit-Reset",
+        "Idempotent-Replayed",
+        "Content-Language",
+        "Deprecation",
+        "Sunset",
+        "Link",
+    )
+    """Response headers a browser lets a script on an allowed origin read (WEB-19)."""
+    CORS_MAX_AGE: int = Field(default=600, ge=0, le=86_400)
+    """Seconds a browser may keep a preflight's answer."""
     CORS_ALLOW_CREDENTIALS: bool = False
 
     LANGUAGE_CODE: str = Field(default="en", pattern=LANGUAGE_PATTERN)

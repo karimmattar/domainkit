@@ -240,6 +240,13 @@ AUTH = {
 }
 ```
 
+A backend that stores grants on objects, such as one reading another
+service's access lists, also answers `object_grants(holder)`: the grants
+it holds for a user (with their groups', active or not) or a group, as
+`ObjectGrant(permission, content_type, object_id)`. The admin API bounds
+staff by them (AUTH-14). A backend like `OwnerBackend`, which grants by
+the object's own fields and stores nothing to hand out, has none to list.
+
 ### Grants on single objects
 
 `domainkit.contrib.objectpermissions` stores grants of one permission on

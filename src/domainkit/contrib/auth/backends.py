@@ -13,9 +13,15 @@ elsewhere (a directory service), or to grant object permissions::
     class OwnerBackend(BaseBackend):
         async def has_perm(self, user, perm, obj=None):
             return perm == "billing.change_invoice" and obj.owner_id == user.id
+
+A backend that stores grants on single objects also says which it holds
+for a user or a group (``object_grants``), so the admin API bounds staff
+by them as by model permissions: staff change no one, and join no group,
+holding a grant they lack (AUTH-14).
 """
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from functools import cache
 from uuid import UUID
 
@@ -24,7 +30,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
 from .hashers import amake_password, averify_password
-from .models import AbstractBaseUser, AnyUser, PasswordHash, UserId
+from .models import AbstractBaseUser, AnyUser, Group, PasswordHash, UserId
 from .settings import auth_settings
 from .uow import AuthUnitOfWork
 from .users import get_user_model
@@ -32,12 +38,30 @@ from .users import get_user_model
 __all__ = [
     "BaseBackend",
     "ModelBackend",
+    "ObjectGrant",
     "authenticate",
     "get_all_permissions",
     "get_user",
     "has_perm",
     "has_perms",
+    "object_grants",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectGrant:
+    """``permission`` granted on one object: its content type and its id."""
+
+    permission: str
+    """A permission key: ``shop.change_product``."""
+    content_type: str
+    """The object's content type: ``shop.product``."""
+    object_id: object
+    """The object's id: a UUID, an integer, or text."""
+
+    def __str__(self) -> str:
+        """``shop.change_product on shop.product 42``."""
+        return f"{self.permission} on {self.content_type} {self.object_id}"
 
 
 class BaseBackend:
@@ -64,6 +88,18 @@ class BaseBackend:
     ) -> bool:
         """Whether this backend grants ``perm`` to ``user`` (on ``obj``)."""
         return perm in await self.get_all_permissions(user, obj)
+
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """What this backend grants ``holder`` on single objects.
+
+        For a user, their own grants and their groups', whether the user is
+        active or not (what they would hold once active); for a group, its
+        own. A backend that grants on objects must answer it: the admin
+        API bounds staff by it (AUTH-14). None by default.
+        """
+        return frozenset()
 
 
 class ModelBackend(BaseBackend):
@@ -186,6 +222,14 @@ async def get_all_permissions(
     granted: set[str] = set()
     for backend in get_backends():
         granted |= await backend.get_all_permissions(user, obj)
+    return frozenset(granted)
+
+
+async def object_grants(holder: AbstractBaseUser | Group) -> frozenset[ObjectGrant]:
+    """What every backend grants ``holder`` (a user or a group) on single objects."""
+    granted: set[ObjectGrant] = set()
+    for backend in get_backends():
+        granted |= await backend.object_grants(holder)
     return frozenset(granted)
 
 
