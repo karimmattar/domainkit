@@ -5,7 +5,7 @@ runs, how to configure it, how to change its schema without downtime, what
 to watch, and how to back it up. It orders what the reference pages say,
 and links them for the detail. [runbook.md](runbook.md) is what to do when
 an alarm fires; [security.md](security.md) is the hardening checklist;
-[upgrading.md](upgrading.md) moves a project to a new minor version.
+[upgrading.md](upgrading.md) moves a project to a new version.
 
 ## What runs
 
@@ -234,6 +234,12 @@ and test restores.
   outbox's database in the same backup as the domains' tables when they
   are one database, so a restore never holds a change without its
   messages, or messages without their change.
+- **The key service.** With `domainkit.contrib.keys`, a backup opens only
+  with the data keys that sealed it: keep `KEYS.DATA_KEYS` (wrapped) with
+  the configuration's history, and never destroy a KEK version in the key
+  service while a backup still needs it. A subject's key is in the
+  backup, in the database it seals: crypto-shredding reaches a backup
+  only when its erasures are applied to it (below).
 - **The ledger.** Back up immudb as its documentation says. Its state
   must never go back: a restored ledger that is older than what the
   service verified before is what a rollback attack looks like.
@@ -320,16 +326,22 @@ starting points; tune them to the service.
 | `cache_errors_total` | it grows | [A cache fails](runbook.md#a-cache-fails) |
 | `db_pool_connections{state="checked_out"}` | at the pool's size for minutes | [Requests are shed](runbook.md#requests-are-shed) |
 | `tasks_restarted_total` | it grows | [A background task restarts](runbook.md#a-background-task-restarts) |
+| `messaging_outbox_messages{status="held"}` | it does not fall for an hour while pending messages run | [A key's messages stall](runbook.md#a-keys-messages-stall) |
 
 `auditverify` failing, and `/ready` answering `503` on every replica, are
-alarms too.
+alarms too; so are a process that fails to start with `KeyProviderError`
+([The key service is unreachable](runbook.md#the-key-service-is-unreachable)),
+and `manage.py accounting verify`, run daily where the ledger is
+installed, exiting 1 ([The ledger does not verify](runbook.md#the-ledger-does-not-verify)).
 
 ## Upgrades
 
-Upgrade one minor version at a time, reading
-[upgrading.md](upgrading.md): each **Breaking** change says how to keep
-the old behaviour, and each deprecated name works, with a warning, until
-the next minor. Run the test suite with deprecations as errors
-(`pytest -W error::DeprecationWarning`) to find the deprecated names a
-project still uses, then `makemigrations` (a contrib app's tables may have changed) and
-`check` with the production settings, before the rollout.
+Read [upgrading.md](upgrading.md) for the version, and follow its steps:
+within 1.x a minor release breaks nothing, and each deprecated name works,
+with a warning, until 2.0; from 0.12, its "0.12 to 1.0" section is one
+upgrade, applied in the order it gives. Find the deprecated names a
+project still uses with the tests and
+`-W error::domainkit.deprecation.DomainkitDeprecationWarning`, run
+`makemigrations` and `migrate` (a contrib app's tables may have changed)
+before the tests, and `check` with the production settings, before the
+rollout.
