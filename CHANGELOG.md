@@ -274,6 +274,27 @@ and a status.
   ([ADR 0124](docs/adr/0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md))
   (FIN-74).
 
+- `docs/reference/problems.md` lists every problem `code` the framework
+  answers with, its status, and what answers it; `test_problem_codes`
+  fails when the framework and the page differ. Every error class of
+  domainkit's own sets its code, and `DomainError` refuses one of
+  domainkit's that sets none, so a rename never changes a code (DSGN-20,
+  WEB-25).
+- `CORS_EXPOSE_HEADERS` (`ETag`, `Location`, `Retry-After`, the
+  `RateLimit-*` quota, `Idempotent-Replayed`, the deprecation headers,
+  `X-Request-ID`) and `CORS_MAX_AGE` (600): a script on an allowed origin
+  can read what resources answer. `CORS_ALLOWED_HEADERS` adds `If-Match`,
+  `If-None-Match`, and `Idempotency-Key` by default (WEB-19).
+- `domainkit.exceptions.UpstreamError`: an outgoing call that failed.
+  `domainkit.http.client`'s `CircuitOpen` is 503 `upstream_unavailable`
+  with `Retry-After` the cooldown left, `CallTimeout` 504
+  `upstream_timeout`, and `ResponseTooLarge` 502
+  `upstream_response_too_large`; none is reported to `ERROR_REPORTERS`, and
+  the detail names no host (WEB-23).
+- `live.W002`: `check` warns where deployed about a route with an access
+  rule whose `LiveLimits(reauth_interval=None)` keeps revoked logins
+  connected (WEB-24).
+
 ### Changed
 
 - **Breaking:** auth has three new tables, `domainkit_step_ups`,
@@ -310,6 +331,25 @@ and a status.
   clock run), 156 die on PostgreSQL already, 106 are equivalent, and
   12 run only at import; the audit page lists, by module, the 6 left
   and why (TEST-11).
+
+- **Breaking:** every 429 answers the code `rate_limited`: a route's
+  `Throttle` and auth's code, link, and signup throttles answered
+  `throttled`, and its login and password throttles `login_throttled`
+  (WEB-25).
+- **Breaking:** `WEBSOCKET_MAX_LIFETIME`, `SSE_MAX_LIFETIME`, and a
+  route's `LiveLimits(max_lifetime=...)` are at most 86,400 seconds, a
+  day (WEB-24).
+- OpenAPI declares `If-Match` required on the writes of a resource with
+  `require_if_match` (they answer 428 without it, as before), documents
+  `ETag` (and `Location` on a 201) on the answers that carry it, 408 on
+  routes that take a body, and 503 on every route (WEB-18).
+- A batch without `atomic` whose item raises a bug after earlier items ran
+  answers 207: that item 500 `internal_error`, logged and reported, the
+  rest 424 `not_applied`. A bug in the first item still fails the request
+  (WEB-17).
+- Translated messages find their catalogs in one lookup while the domains
+  and the settings stay the same, whatever the number of installed
+  domains (PERF-24).
 
 ### Fixed
 
@@ -361,6 +401,23 @@ and a status.
   in a column of two places): such a cursor was a few characters over the
   bound `FilterSet` checks. The bound now counts the most places a
   currency has (FIN-01).
+
+- Generic `PATCH` and `DELETE` (`crud=True`), and atomic batches, ask
+  rules that look at the object before the write's transaction, in a unit
+  of work of their own, as commands do: an object permission backend's
+  query no longer waits for a second connection while the request holds
+  one, which, with as many writes at once as the pool holds, failed them
+  all with 503. A generic write whose aggregate changed after the rule saw
+  it is 409 `concurrent_update` (WEB-16).
+- A `MoneyError` raised by a batch item is that item's 422, with its code,
+  as a request's is; it answered the whole request 422 after earlier
+  items committed (WEB-17).
+- A command's or a batch's answer with another schema (`returns=`) leaves
+  out the fields the resource's `FieldPolicy` hides from the caller, as
+  reads do (WEB-20).
+- An `Idempotency-Key` replay carries the answer's `ETag`,
+  `Cache-Control`, `Vary`, and deprecation headers, besides
+  `Content-Type`, `Location`, and `Content-Language` (WEB-21).
 
 ### Security
 

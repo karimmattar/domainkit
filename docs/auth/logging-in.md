@@ -7,7 +7,7 @@ error body.
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `POST /login` | `{"username", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `401 invalid_credentials`; `429 login_throttled`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
+| `POST /login` | `{"username", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `401 invalid_credentials`; `429 rate_limited`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
 | `POST /step-up` (`auth.stepup.router`) | `{"code"}`, and `"password"` where asked | `200` with when and how the credentials stepped up, for routes that ask (`StepUp`, [Stepping up](step-up.md)); `401 invalid_code`; `409 no_second_factor`. |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` | `204`: this session's tokens end, or every token of the user. |
@@ -192,7 +192,7 @@ router.include_router(mfa_router, prefix="/auth")
 | `POST /mfa/totp/confirm` | a user | `{"code"}` | `{"recovery_codes"}`, shown once: the second factor is on; `401 invalid_code`; `400 no_enrolment`. |
 | `POST /mfa/totp/disable` | a user | `{"password", "code"}` | `204`: it is off. |
 | `POST /mfa/recovery-codes` | a user | `{"password", "code"}` | `{"recovery_codes"}`: new codes replace the old ones. |
-| `POST /mfa/login` | anyone | `{"mfa_token", "code"}` | The tokens `/login` would have returned; `400 invalid_token`; `401 invalid_code`; `429 throttled`. |
+| `POST /mfa/login` | anyone | `{"mfa_token", "code"}` | The tokens `/login` would have returned; `400 invalid_token`; `401 invalid_code`; `429 rate_limited`. |
 
 Once it is on, `/login` checks the password as before, then answers `202`
 with `{"mfa_required": true, "mfa_token", "expires_in"}` instead of
@@ -261,9 +261,9 @@ router.include_router(recovery_router, prefix="/auth")
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /password-reset` | anyone | `{"email"}` | Always `202`; `429 throttled`. |
+| `POST /password-reset` | anyone | `{"email"}` | Always `202`; `429 rate_limited`. |
 | `POST /password-reset/confirm` | anyone | `{"token", "new_password"}` | `204`; `400 invalid_token`; `422` if a validator refuses the password. |
-| `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 throttled`. |
+| `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 rate_limited`. |
 | `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
 
 A reset request answers `202` whether or not an account uses the address,
@@ -316,8 +316,8 @@ until `AUTH.SIGNUP_ENABLED` is on:
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"username", "email"}` | `202`; `422` for fields that do not fit; `429 throttled`. |
-| `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 throttled`; `503 password_checks_busy`. |
+| `POST /signup` | anyone | `{"username", "email"}` | `202`; `422` for fields that do not fit; `429 rate_limited`. |
+| `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
 
 The fields are checked at once (`422`), which tells nothing about other
 accounts; no password is taken. Then the request is kept as a pending

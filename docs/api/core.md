@@ -146,6 +146,7 @@ Errors raised by the framework itself (`django.core.exceptions`).
 - `DomainkitError`: The root of every exception domainkit raises.
 - `ImproperlyConfigured`: Settings, the environment, or the installed domains are invalid.
 - `ServiceBusy`: Something the operation needs is busy now; trying again later may work.
+- `UpstreamError`: A service this one called failed it: unavailable, too slow, or too large.
 
 ## `domainkit.i18n`
 

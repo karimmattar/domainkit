@@ -27,6 +27,18 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **Every 429 answers `rate_limited`** (WEB-25). A route's `Throttle` and
+  auth's code, link, and signup throttles answered `throttled`, and its
+  login and password throttles `login_throttled`. **Fix:** a client that
+  switched on either switches on `rate_limited`, or on the status, and
+  waits as `Retry-After` says. Every code is listed in
+  [reference/problems.md](reference/problems.md).
+- **A live connection's lifetime is at most a day** (WEB-24):
+  `WEBSOCKET_MAX_LIFETIME`, `SSE_MAX_LIFETIME`, and a route's
+  `LiveLimits(max_lifetime=...)` above 86,400 seconds are refused at
+  startup. **Fix:** lower them; clients reconnect. A route that turns
+  re-authorization off (`LiveLimits(reauth_interval=None)`) is warned
+  about where deployed (`live.W002`).
 - **An open live connection no longer keeps its login alive**
   (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
   WebSocket or event stream wrote the login's last use, so a page left
