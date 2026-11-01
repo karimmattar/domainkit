@@ -66,7 +66,7 @@ sees what another one cached. Redis caches are left alone. The memory
 backends' outboxes (``mail.outbox``, ``sms_outbox``, ``push_outbox``) are
 emptied too, every ``Factory`` numbers its objects from 0 again, the
 throttled logs forget what they held back, and the principal cache is
-empty. Once the domains are loaded, the subscriptions, tasks, and metric
+empty. Once the domains are loaded, the subscriptions, hooks, tasks, and metric
 refreshers a test adds are dropped when it ends. Error reports and queued
 logs are sent before the next test starts; call
 ``domainkit.reporting.flush_reports()`` before checking what a test reported.
@@ -76,8 +76,16 @@ may call too.
 
 import os
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Iterator
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Generator,
+    Iterator,
+    Mapping,
+)
 from contextlib import ExitStack
+from types import MappingProxyType
 from typing import Any, Final
 
 import pytest
@@ -174,6 +182,7 @@ RESETS: Final = (
 _KEPT: Final = pytest.StashKey["Kept"]()
 """The registrations a test's run keeps, put back after its teardown."""
 KEPT: Final = (
+    ("domainkit.apps.hooks", "hooks_kept"),
     ("domainkit.contrib.messaging.registry", "tasks_kept"),
     ("domainkit.http.metrics", "refreshers_kept"),
     ("domainkit.money", "currencies_kept"),
@@ -190,9 +199,13 @@ class SettingsOverrides:
 
     ``settings.DEBUG = True`` overrides one, validated as
     ``override_settings`` validates it; ``del settings.CACHES`` puts its
-    default back. Reading an attribute reads the current setting. The
-    changes are undone in reverse order when the test ends, as
-    pytest-django's ``settings`` fixture undoes them.
+    default back. Reading an attribute reads the current setting, read-only:
+    a mapping changed in place would change the settings of every later
+    test, unvalidated (TEST-19), so ``settings.CACHES["x"] = ...`` raises
+    ``TypeError``; assign the whole setting instead
+    (``settings.CACHES = {**settings.CACHES, "x": ...}``). The changes are
+    undone in reverse order when the test ends, as pytest-django's
+    ``settings`` fixture undoes them.
     """
 
     def __init__(self, stack: ExitStack) -> None:
@@ -200,8 +213,8 @@ class SettingsOverrides:
         object.__setattr__(self, "_stack", stack)
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - any setting.
-        """The current value of setting ``name``."""
-        return getattr(current_settings, name)
+        """The current value of setting ``name``, its mappings and lists read-only."""
+        return _read_only(getattr(current_settings, name))
 
     def __setattr__(self, name: str, value: object) -> None:
         """Change setting ``name`` until the test ends.
@@ -214,6 +227,21 @@ class SettingsOverrides:
     def __delattr__(self, name: str) -> None:
         """Put setting ``name``'s default back until the test ends."""
         self._stack.enter_context(override_settings(**{name: UNSET}))
+
+
+def _read_only(value: object) -> Any:  # noqa: ANN401 - any setting.
+    """``value`` with its mappings, lists and sets made read-only, all the way down.
+
+    Mappings become ``MappingProxyType`` views of copies, lists tuples, and
+    sets frozensets; anything else is returned as it is.
+    """
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _read_only(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_read_only(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_read_only(item) for item in value)
+    return value
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -277,8 +305,8 @@ def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object
 
     Before the test, the throttled logs and the principal cache forget what
     they hold. Once the domains are loaded (``registry.ready``), the
-    subscriptions, tasks, and refreshers the test adds are dropped after
-    it; the test that loads them keeps what their ``ready()`` registered.
+    subscriptions, hooks, tasks, and refreshers the test adds are dropped
+    after it; the test that loads them keeps what their ``ready()`` registered.
     Currencies a test registers before then are dropped after it too.
     A test marked ``allow_database`` reaches the databases from its first
     fixture to its last teardown, as 0.12 let it; they are not put back
@@ -318,7 +346,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, object, object]:
 
 
 class Kept:
-    """The subscriptions, tasks, refreshers, and currencies kept for one test's run."""
+    """The subscriptions, hooks, tasks, refreshers, and currencies kept for a test."""
 
     def __init__(self) -> None:
         """Keep nothing yet."""

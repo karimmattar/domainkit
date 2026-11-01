@@ -14,6 +14,13 @@ The decisions behind this page are ADRs
 [0011](adr/0011-immudb-ledger-for-evidence.md). Settings are listed in
 [reference/backends.md](reference/backends.md#databases-and-migrations).
 
+**PostgreSQL 16 to 18** are supported: CI runs the suite on 18 and on 16,
+as two required checks ([versioning.md](versioning.md#supported-python-and-dependencies)).
+In production the application connects as a row-level role, and
+`migrate` as the schema owner (`MIGRATION_URL`); the test plugin grants
+that role what it needs in the test databases
+([testing.md](testing.md#test-databases)).
+
 Querying repositories, pages, filters, bulk changes, soft delete, row
 locks, and savepoints are in [queries.md](queries.md). Read replicas and
 tables derived from domain classes follow ADR

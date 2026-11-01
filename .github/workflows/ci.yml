@@ -398,6 +398,46 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  # The PostgreSQL tests again, on the oldest PostgreSQL domainkit supports
+  # (docs/databases.md: 16 to 18; integration runs the newest). Only
+  # PostgreSQL is set, so tests of the other servers skip; a test skipped for
+  # want of PostgreSQL fails the job. Required, as integration is: the range
+  # is a promise of 1.0, and a release must not break its floor unseen
+  # (TEST-18). No coverage: integration's run is the one that counts.
+  postgresql-floor:
+    name: postgresql (16)
+    needs: changes
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DOMAINKIT_TEST_POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --all-extras --with dev
+      - shell: bash
+        run: |
+          poetry run pytest -n auto --dist worksteal -p no:cov -rs | tee pytest.log
+          ! grep -E "SKIPPED.*DOMAINKIT_TEST_POSTGRES_URL" pytest.log
+
   # The benchmark ladder (docs/performance.md, ADR 0064): Python calls and
   # database round trips per request on each rung, against
   # benchmarks/budgets.toml; over budget fails. CPU time goes to the job
