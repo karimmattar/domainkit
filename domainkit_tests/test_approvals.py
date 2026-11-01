@@ -33,7 +33,7 @@ from domainkit.contrib.accounting import (
 )
 from domainkit.contrib.accounting.tables import entries
 from domainkit.contrib.approvals import (
-    ENTRIES,
+    POST_ENTRY,
     AlreadyDecided,
     ApprovalNotNeeded,
     ApprovalPending,
@@ -242,7 +242,7 @@ async def test_a_large_entry_runs_once_two_others_approve_it(project: str) -> No
     assert await count(entries) == 1
 
     with acting("maker"):
-        request = await submit_command(ENTRIES, large, maker="maker")
+        request = await submit_command(POST_ENTRY, large, maker="maker")
     assert request.status is RequestStatus.PENDING
     assert (request.policy, request.required) == ("accounting.large_entry", 2)
     with acting("ann"):
@@ -353,7 +353,7 @@ async def test_the_maker_never_decides_and_no_one_decides_twice(project: str) ->
     """Maker ≠ checker, even where the maker could approve; one person, once."""
     cash, sales = await books()
     request = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-4"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-4"), maker="maker"
     )
     with refused(MakerCannotDecide):
         await approve(request, "maker")
@@ -382,7 +382,7 @@ async def test_rejected_cancelled_and_expired_requests_never_run(project: str) -
     """One rejection ends a request, with its reason; the maker may withdraw it."""
     cash, sales = await books()
     rejected = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-5"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-5"), maker="maker"
     )
     done = await reject_request(
         RejectRequest(request_id=rejected.id, approver="ann", reason="Not ours."),
@@ -393,7 +393,7 @@ async def test_rejected_cancelled_and_expired_requests_never_run(project: str) -
         await approve(rejected, "bob")
 
     withdrawn = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-6"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-6"), maker="maker"
     )
     with refused(NotTheMaker):
         await cancel_request(
@@ -411,7 +411,7 @@ async def test_rejected_cancelled_and_expired_requests_never_run(project: str) -
         )
 
     late = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-7"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-7"), maker="maker"
     )
     with clock.freeze_time(clock.now() + timedelta(days=3)):
         with refused(RequestNotPending, "expired"):
@@ -440,7 +440,7 @@ async def test_what_runs_is_what_was_approved(project: str) -> None:
     """
     cash, sales = await books()
     request = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-8"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-8"), maker="maker"
     )
     await approve(request, "ann")
     await approve(request, "bob")
@@ -455,7 +455,7 @@ async def test_what_runs_is_what_was_approved(project: str) -> None:
         await connection.execute(
             update(requests)
             .where(requests.c.id == request.id)
-            .values(arguments=tampered, fingerprint=fingerprint(ENTRIES, tampered))
+            .values(arguments=tampered, fingerprint=fingerprint(POST_ENTRY, tampered))
         )
     await drain()
     failed = await stored(request.id)
@@ -474,20 +474,22 @@ async def test_submissions_are_checked_before_they_are_stored(project: str) -> N
         await submit_command("tests.nothing", small, maker="maker")
     with refused(InvalidArguments):
         await submit_command(
-            ENTRIES, OpenPeriod(name="x", starts_on=TODAY, ends_on=TODAY), maker="maker"
+            POST_ENTRY,
+            OpenPeriod(name="x", starts_on=TODAY, ends_on=TODAY),
+            maker="maker",
         )
     with refused(ApprovalNotNeeded):
-        await submit_command(ENTRIES, small, maker="maker")
+        await submit_command(POST_ENTRY, small, maker="maker")
     with refused(InvalidArguments):
-        await submit_command(ENTRIES, sale(cash, sales, "5000.00", "x"), maker="")
+        await submit_command(POST_ENTRY, sale(cash, sales, "5000.00", "x"), maker="")
     with refused(InvalidArguments):
         await submit_request(
-            SubmitRequest(action=ENTRIES, arguments={"source": 1}, maker="maker"),
+            SubmitRequest(action=POST_ENTRY, arguments={"source": 1}, maker="maker"),
             ApprovalsUnitOfWork(),
         )
     made = await submit_request(
         SubmitRequest(
-            action=ENTRIES,
+            action=POST_ENTRY,
             arguments={
                 "source": "shop",
                 "reference": "s-10",
@@ -706,7 +708,7 @@ async def test_a_command_that_no_longer_reads_as_approved_never_runs(
     registry.clear()
     setup()
     await execute_request(gone.id, gone.run_token)
-    assert await status_of(gone) == (RequestStatus.FAILED, "policy_not_found")
+    assert await status_of(gone) == (RequestStatus.FAILED, "policy_removed")
 
     class Wider(Command):
         """The command, with a field it did not have."""
@@ -988,7 +990,7 @@ async def test_a_maker_without_an_id_is_refused(project: str) -> None:
         await submit_command("tests.act", Act(kind="k"), maker="m" * 256)
     with refused(InvalidArguments, r"^A maker's id has 1 to 255 characters\.$"):
         await submit_request(
-            SubmitRequest(action=ENTRIES, arguments={}, maker=""),
+            SubmitRequest(action=POST_ENTRY, arguments={}, maker=""),
             ApprovalsUnitOfWork(),
         )
     with refused(InvalidArguments, r"^An approver's id has 1 to 255 characters\.$"):

@@ -16,7 +16,8 @@ import pytest
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
-from domainkit.contrib.approvals import Guard, Policy, guards, on_guard
+from domainkit.contrib.approvals import Guard, Policy, guards
+from domainkit.contrib.approvals.guards import on_guard
 from domainkit.ddd import Command
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import Money

@@ -1,7 +1,7 @@
 """How long the audit trail is kept: ``AUDIT.MIN_RETENTION``, and the PCI preset's year.
 
 PCI DSS v4.0 10.5.1 keeps audit logs twelve months: under
-``AUTH.PASSWORD_PRESET = "pci-dss-4"`` the trail is kept a year at least,
+``AUTH.PRESET = "pci-dss-4"`` the trail is kept a year at least,
 whatever ``MIN_RETENTION`` says; elsewhere its default stays 30 days (FIN-95).
 """
 
@@ -34,13 +34,13 @@ def cleared() -> Iterator[None]:
         ([CONTENTTYPES, AUTH, AUDIT, ALPHA], {}, {}, timedelta(days=30)),
         (
             [CONTENTTYPES, AUTH, AUDIT, ALPHA],
-            {"PASSWORD_PRESET": "pci-dss-4"},
+            {"PRESET": "pci-dss-4"},
             {},
             PCI_RETENTION,
         ),
         (
             [CONTENTTYPES, AUTH, AUDIT, ALPHA],
-            {"PASSWORD_PRESET": "pci-dss-4"},
+            {"PRESET": "pci-dss-4"},
             {"MIN_RETENTION": timedelta(days=400)},
             timedelta(days=400),
         ),

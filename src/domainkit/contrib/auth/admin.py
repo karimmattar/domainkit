@@ -595,9 +595,9 @@ def _approval_needed() -> None:
     With ``APPROVALS.SUPERUSER_APPROVALS``, an approved request makes them.
     """
     if registry.is_installed(APPROVALS):
-        from domainkit.contrib.approvals import SUPERUSERS, refuse_if_guarded
+        from domainkit.contrib.approvals import GRANT_SUPERUSER, refuse_if_guarded
 
-        refuse_if_guarded(SUPERUSERS)
+        refuse_if_guarded(GRANT_SUPERUSER)
 
 
 def _superusers_only(actor: AnyUser, message: str) -> None:

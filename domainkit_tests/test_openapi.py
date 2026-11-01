@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, status
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from domainkit.conf import override_settings
+from domainkit.conf import UNSET, override_settings
 from domainkit.ddd import NotFound
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
@@ -132,9 +132,17 @@ def test_operation_ids_come_from_route_names(client: TestClient) -> None:
     assert len(set(ids.values())) == len(ids)
 
 
-def test_fastapi_operation_ids_stay_the_default() -> None:
-    """Existing projects keep FastAPI's ids, path and method included."""
-    with override_settings(ROOT_ROUTER=ROUTES):
+def test_route_names_are_the_default_operation_ids() -> None:
+    """Without the setting, operation ids are route names since 1.0 (DSGN-26)."""
+    with override_settings(ROOT_ROUTER=ROUTES, OPENAPI_OPERATION_IDS=UNSET):
+        schema = get_asgi_application().openapi()
+
+    assert operation_ids(schema)["GET /both"] == "both"
+
+
+def test_fastapi_operation_ids_on_request() -> None:
+    """``"fastapi"``: FastAPI's ids, path and method included."""
+    with override_settings(ROOT_ROUTER=ROUTES, OPENAPI_OPERATION_IDS="fastapi"):
         app = get_asgi_application()
         schema = app.openapi()
 

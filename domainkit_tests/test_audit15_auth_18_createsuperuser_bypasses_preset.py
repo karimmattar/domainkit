@@ -1,7 +1,7 @@
 """AUTH-18: ``createsuperuser`` offers to bypass the validators, PCI preset or not.
 
 Asked interactively, a password the validators refuse is kept on a ``y``
-(Django's prompt), whatever ``AUTH.PASSWORD_PRESET`` says and wherever the
+(Django's prompt), whatever ``AUTH.PRESET`` says and wherever the
 command runs. Under ``"pci-dss-4"``, whose startup check (``auth.E010``)
 refuses validators that take passwords under 12 characters (8.3.6), the
 most powerful account is made with ``1234``; it is not temporary either,
@@ -33,7 +33,7 @@ def test_the_pci_preset_admits_no_bypassed_superuser_password(
         secret=["1234", "1234", "Str0ng-enough-pass", "Str0ng-enough-pass"],
     )
     with override_settings(
-        AUTH={"PASSWORD_HASHERS": [FAST_HASHER], "PASSWORD_PRESET": "pci-dss-4"}
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER], "PRESET": "pci-dss-4"}
     ):
         call_command("createsuperuser", stdout=io.StringIO(), stderr=io.StringIO())
         admin = stored("admin")

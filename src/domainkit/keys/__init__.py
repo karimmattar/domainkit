@@ -217,7 +217,7 @@ def _aesgcm() -> type:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError as exc:  # pragma: no cover - only without the [mfa] extra.
         raise ImproperlyConfigured(
-            'Envelope encryption needs cryptography: pip install "domainkit[mfa]".'
+            'Envelope encryption needs cryptography: pip install "domainkit[keys]".'
         ) from exc
     return AESGCM
 

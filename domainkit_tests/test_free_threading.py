@@ -63,7 +63,6 @@ from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.auth.models import Group, User
 from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
-from domainkit.contrib.contenttypes import InstalledModel, content_type_key
 from domainkit.contrib.idempotency import statements as idempotency_statements
 from domainkit.contrib.idempotency.middleware import PURGE_BATCH, Sweeps
 from domainkit.contrib.messaging import MessagingSettings, dispatch
@@ -85,6 +84,8 @@ from domainkit.db.connections import (
     create_engine,
     create_read_engine,
 )
+from domainkit.db.models import InstalledModel
+from domainkit.db.models import model_key as content_type_key
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import access, live, metrics, ratelimit
 from domainkit.http import client as http_client

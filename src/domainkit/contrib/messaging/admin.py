@@ -27,9 +27,8 @@ from sqlalchemy import (
 )
 
 from domainkit import clock
-from domainkit.db import UTCDateTime, connections
+from domainkit.db import UTCDateTime, connections, dbclock
 
-from . import dbclock
 from .settings import MessagingSettings
 from .tables import BLANKED, CANCELLED, DEAD, HELD, PENDING, messages
 

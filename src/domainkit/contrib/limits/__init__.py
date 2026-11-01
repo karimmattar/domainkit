@@ -54,7 +54,7 @@ from .services import (
 )
 from .settings import LimitDefault, LimitsSettings
 from .uow import LimitsUnitOfWork
-from .usage import Usage, check, consume, purge_usage, release, usage_of
+from .usage import Usage, check_movements, consume, purge_usage, release, usage_of
 
 __all__ = [
     "ACCOUNT",
@@ -81,7 +81,7 @@ __all__ = [
     "Usage",
     "Window",
     "change_limit",
-    "check",
+    "check_movements",
     "consume",
     "define_limit",
     "purge_usage",

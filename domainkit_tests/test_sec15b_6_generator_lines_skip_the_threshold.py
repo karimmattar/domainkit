@@ -4,7 +4,7 @@ The docs: over ``ENTRY_THRESHOLDS``, ``post_entry`` refuses an entry
 "whether called over HTTP, from code, or from a message". Commands are
 not validated when built in code, so ``PostEntry(lines=<generator>)``
 keeps the generator. ``post_entry`` first reads it whole
-(``lines = tuple(command.lines)``), then calls the ``on_posting`` hooks
+(``lines = tuple(command.lines)``), then calls the ``on_post_entry`` hooks
 with the command; the approvals guard sums ``command.lines`` again,
 finds the generator spent, sees no debit, and lets the entry through.
 The ledger then books the tuple it read: 5,000 dollars, no approval.

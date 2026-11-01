@@ -23,14 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.db import UTCDateTime, connections
+from domainkit.db import UTCDateTime, connections, dbclock
 from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
 from domainkit.ddd import DeferredTask, DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tracing import trace_headers
 
-from . import dbclock
 from .registry import (
     CHAIN,
     Chain,

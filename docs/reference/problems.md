@@ -26,7 +26,7 @@ How each status is reached, and which fields a body holds, is in
 
 | Code | Status | Answered by |
 | --- | --- | --- |
-| `account_closed` | 422 | `AccountIsClosed` (contrib.accounting.exceptions): A posting or a hold on an account that is closed. |
+| `account_closed` | 422 | `AccountNotOpen` (contrib.accounting.exceptions): A posting or a hold on an account that is closed. |
 | `account_code_taken` | 409 | `AccountCodeTaken` (contrib.accounting.exceptions): Another account has that code. |
 | `account_not_empty` | 422 | `AccountNotEmpty` (contrib.accounting.exceptions): Closing an account that still has a balance, or holds. |
 | `account_not_found` | 404 | `AccountNotFound` (contrib.accounting.exceptions): No account has that id or code. |
@@ -125,12 +125,12 @@ How each status is reached, and which fields a body holds, is in
 | `password_change_required` | 403 | contrib.auth.api: This password was set for you: choose a new one to log in. |
 | `password_checks_busy` | 503 | `PasswordChecksBusy` (contrib.auth.hashers): Every hashing thread is busy and the queue is full. |
 | `password_required` | 400 | contrib.auth.stepup: Enter your password as well. |
-| `period_closed` | 422 | `PeriodIsClosed` (contrib.accounting.exceptions): An entry, or a new period, dated on or before the end of a closed period. |
+| `period_closed` | 422 | `PeriodNotOpen` (contrib.accounting.exceptions): An entry, or a new period, dated on or before the end of a closed period. |
 | `period_name_taken` | 409 | `PeriodNameTaken` (contrib.accounting.exceptions): Another period has that name. |
 | `period_not_found` | 404 | `PeriodNotFound` (contrib.accounting.exceptions): No accounting period has that id. |
 | `periods_overlap` | 422 | `PeriodsOverlap` (contrib.accounting.exceptions): A new period whose dates another period covers, or that ends before it starts. |
 | `permission_denied` | 403 | `PermissionDenied` (ddd.exceptions): The actor may not perform the operation. |
-| `policy_not_found` | 409 | `PolicyGone` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
+| `policy_removed` | 409 | `PolicyRemoved` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
 | `rate_limited` | 429 | http.ratelimit: `RATE_LIMIT` or a route's `Throttle`; contrib.auth: login, password, code, link, and signup throttles. |
@@ -140,7 +140,7 @@ How each status is reached, and which fields a body holds, is in
 | `request_not_pending` | 409 | `RequestNotPending` (contrib.approvals.exceptions): The request was approved, rejected, cancelled, or has expired. |
 | `request_tampered` | 409 | `RequestTampered` (contrib.approvals.exceptions): The request was changed outside the application: its seal does not hold. |
 | `request_timeout` | 408 | http.middleware: The request body took too long to arrive. |
-| `reversal_not_reversible` | 422 | `ReversalNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
+| `entry_not_reversible` | 422 | `EntryNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
 | `scope_not_held` | 403 | contrib.auth.personal_tokens: a token asked for a scope its owner does not hold. |
 | `second_factor_unreadable` | 409 | `SecondFactorUnreadable` (contrib.auth.mfa): No key held opens the user's TOTP secret: `SECRET_KEY` changed without it in `SECRET_KEY_FALLBACKS` (`resealmfa`, `resetmfa`). |
 | `service_busy` | 503 | `ServiceBusy` (exceptions): Something the operation needs is busy now; trying again later may work. |

@@ -30,6 +30,8 @@ from domainkit.db.connections import connections
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.tasks import spawn
 
+__all__ = ["router"]
+
 READINESS_TASK: Final = "domainkit.readiness"
 """The name of a round of readiness checks' task."""
 GROUPS: Final = ("domains", "databases", "ledgers", "caches")
@@ -38,6 +40,7 @@ GROUPS: Final = ("domains", "databases", "ledgers", "caches")
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["health"])
+"""``GET /health`` and ``GET /ready``, which guard themselves; mount it at the root."""
 
 
 @router.get("/health", include_in_schema=False)

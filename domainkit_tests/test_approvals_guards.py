@@ -21,16 +21,15 @@ from domainkit.contrib.approvals import (
     GrantSuperuser,
     Guard,
     Policy,
-    PolicyGone,
+    PolicyRemoved,
     Threshold,
     UnknownAction,
     approved,
     guard,
     guards,
-    on_guard,
     requires_approval,
 )
-from domainkit.contrib.approvals.guards import check, guard_for, running
+from domainkit.contrib.approvals.guards import check, guard_for, on_guard, running
 from domainkit.ddd import Command
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsAuthenticated
@@ -625,7 +624,7 @@ async def test_approvers_by_group_and_the_rule_asked_of_them(installed: None) ->
     for gone in (request(action="tests.gone"), request(policy="tests.gone")):
         for asked in (MayApprove(), IsApprover()):
             with pytest.raises(
-                PolicyGone,
+                PolicyRemoved,
                 match=r"^The request's guard or policy no longer exists; it is "
                 r"neither decided nor run\.$",
             ):

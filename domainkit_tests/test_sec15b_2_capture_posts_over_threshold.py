@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from domainkit import clock
 from domainkit.contrib.accounting import (
-    CAPTURES,
+    CAPTURE_SOURCE,
     AccountingUnitOfWork,
     CaptureHold,
     PlaceHold,
@@ -66,7 +66,9 @@ async def test_a_capture_over_the_threshold_needs_approval() -> None:
                 await connection.execute(
                     select(postings.c.amount)
                     .join(entries, entries.c.id == postings.c.entry_id)
-                    .where(entries.c.source == CAPTURES, postings.c.side == "debit")
+                    .where(
+                        entries.c.source == CAPTURE_SOURCE, postings.c.side == "debit"
+                    )
                 )
             )
             .scalars()

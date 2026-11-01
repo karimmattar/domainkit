@@ -30,7 +30,7 @@ def test_a_browser_session_cannot_mint_a_lasting_token_unasked(
 ) -> None:
     """Minting needs the user to authenticate again, and the token ends."""
     create_user("alice")
-    client = browser(identity, PASSWORD_PRESET="pci-dss-4")
+    client = browser(identity, PRESET="pci-dss-4")
     csrf = start(client)
     headers = {**TRUSTED, "X-CSRF-Token": csrf}
 

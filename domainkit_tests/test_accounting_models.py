@@ -13,8 +13,8 @@ from domainkit.contrib.accounting import (
     Account,
     AccountClosed,
     AccountId,
-    AccountIsClosed,
     AccountNotEmpty,
+    AccountNotOpen,
     AccountOpened,
     AccountReconciled,
     AccountStatus,
@@ -34,7 +34,7 @@ from domainkit.contrib.accounting import (
     Line,
     Period,
     PeriodClosed,
-    PeriodIsClosed,
+    PeriodNotOpen,
     PeriodOpened,
     PeriodsOverlap,
     PeriodStatus,
@@ -203,9 +203,9 @@ def test_postings_are_refused_on_closed_accounts_and_in_other_currencies() -> No
     with refused(InvalidEntry, match="not in its account's currency"):
         account.reserve(Money.of("1", "EUR"))
     account.close()
-    with refused(AccountIsClosed, match="account is closed"):
+    with refused(AccountNotOpen, match="account is closed"):
         account.post(Side.DEBIT, usd("1"))
-    with refused(AccountIsClosed):
+    with refused(AccountNotOpen):
         account.reserve(usd("1"))
 
 
@@ -268,7 +268,7 @@ def test_only_an_empty_open_account_closes() -> None:
     (event,) = account.pull_events()
     assert isinstance(event, AccountClosed)
     assert event.account_id == account.id
-    with refused(AccountIsClosed):
+    with refused(AccountNotOpen):
         account.close()
 
 
@@ -626,9 +626,9 @@ def test_a_period_opens_and_closes_once() -> None:
     (closed,) = period.pull_events()
     assert isinstance(closed, PeriodClosed)
     assert closed.period_id == period.id
-    with refused(PeriodIsClosed, match="closed period"):
+    with refused(PeriodNotOpen, match="closed period"):
         period.takes()
-    with refused(PeriodIsClosed):
+    with refused(PeriodNotOpen):
         period.close()
 
 

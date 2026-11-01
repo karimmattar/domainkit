@@ -143,7 +143,7 @@ def personal_models() -> list[PersonalModel]:
 
 
 def retention_policies() -> list[Policy]:
-    """Every installed domain's ``RETENTION``, resolved.
+    """Every installed domain's ``retention``, resolved.
 
     Raises:
         ImproperlyConfigured: A policy cannot be applied (see ``problems``).
@@ -268,7 +268,7 @@ def _inspect_policies(
     policies: list[Policy] = []
     found: list[str] = []
     for config in registry:
-        for retention in config.RETENTION:
+        for retention in config.retention:
             policy, problem = _resolve(config, retention, models)
             if policy is not None:
                 policies.append(policy)

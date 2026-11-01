@@ -31,7 +31,7 @@ from domainkit.contrib.accounting import (
     post_entry,
     reverse_entry,
 )
-from domainkit.contrib.approvals import ENTRIES, REVERSES
+from domainkit.contrib.approvals import POST_ENTRY, REVERSE_ENTRY
 from domainkit.contrib.approvals.guards import running
 from domainkit.contrib.limits import (
     ChangeLimit,
@@ -367,12 +367,12 @@ async def test_an_approved_reversal_counts_and_frees_nothing() -> None:
     )
     payout = spend(wallet, till, egp("2000"), "p-1")
     with freeze_time(MORNING):
-        with running(uuid.uuid4(), ENTRIES, fund, "maker", 2):
+        with running(uuid.uuid4(), POST_ENTRY, fund, "maker", 2):
             await post_entry(fund, AccountingUnitOfWork())
-        with running(uuid.uuid4(), ENTRIES, payout, "maker", 2):
+        with running(uuid.uuid4(), POST_ENTRY, payout, "maker", 2):
             paid = await post_entry(payout, AccountingUnitOfWork())
         undo = ReverseEntry(entry_id=paid.id, booked_on=TODAY)
-        with running(uuid.uuid4(), REVERSES, undo, "maker", 2):
+        with running(uuid.uuid4(), REVERSE_ENTRY, undo, "maker", 2):
             await reverse_entry(undo, AccountingUnitOfWork())
 
     with freeze_time(NOON):

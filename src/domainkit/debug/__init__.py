@@ -6,6 +6,11 @@ while ``DEBUG`` is on, and staging and production refuse to start with it.
 """
 
 from domainkit.debug.middleware import DebugToolbarMiddleware
-from domainkit.debug.queries import QueryLog, record_queries, statement_shape
+from domainkit.debug.queries import QueryLog, record_queries
+from domainkit.debug.queries import statement_shape as statement_shape
 
-__all__ = ["DebugToolbarMiddleware", "QueryLog", "record_queries", "statement_shape"]
+__all__ = [
+    "DebugToolbarMiddleware",
+    "QueryLog",
+    "record_queries",
+]

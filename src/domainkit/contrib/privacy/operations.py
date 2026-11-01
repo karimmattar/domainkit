@@ -33,9 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domainkit import clock
 from domainkit.apps.hooks import (
     Hook,
-    on_erase_check,
     on_erase_subject,
     on_export_subject,
+    on_retain_subject,
 )
 from domainkit.contrib.audit import Outcome, forget, record
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
@@ -172,7 +172,7 @@ async def export_subject(subject: str) -> dict[str, Any]:
 class ErasureHeld(BusinessRuleViolation):
     """A person's data must be kept for now: nothing of it was erased (FIN-94).
 
-    ``held`` names, by domain, why each ``on_erase_check`` holds it (an
+    ``held`` names, by domain, why each ``on_retain_subject`` holds it (an
     account with money on it, a retention the law asks for).
     """
 
@@ -185,20 +185,20 @@ class ErasureHeld(BusinessRuleViolation):
 
 
 async def erasure_holds(subject: str, reason: str) -> dict[str, str]:
-    """What each domain's ``on_erase_check`` says holds the erasure, by domain.
+    """What each domain's ``on_retain_subject`` says holds the erasure, by domain.
 
     Raises:
         ImproperlyConfigured: A check answered something other than a
             sentence or None.
     """
     held: dict[str, str] = {}
-    for hook in on_erase_check:
+    for hook in on_retain_subject:
         found = await hook.call(subject, reason)
         if found is None:
             continue
         if not isinstance(found, str) or not _TEXT.fullmatch(found):
             raise ImproperlyConfigured(
-                f"The on_erase_check hook of {hook.domain!r} answered {found!r}: "
+                f"The on_retain_subject hook of {hook.domain!r} answered {found!r}: "
                 "a sentence of 1 to 255 printable characters, or None."
             )
         held.setdefault(hook.domain, found)
@@ -217,7 +217,7 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     (``privacy.copies_erased``, counts only). The subject's keys in the
     audit trail are then forgotten, and the erasure recorded.
 
-    First, every domain's ``on_erase_check`` is asked whether the
+    First, every domain's ``on_retain_subject`` is asked whether the
     subject's data must be kept for now: if any says so, nothing is
     erased, ``privacy.erase`` is recorded as denied with the reasons, and
     ``ErasureHeld`` is raised (FIN-94).
@@ -466,7 +466,7 @@ class _Progress:
 
 
 async def purge(*, dry_run: bool = False, now: datetime | None = None) -> list[Purged]:
-    """Apply every domain's ``RETENTION``, on every database it uses.
+    """Apply every domain's ``retention``, on every database it uses.
 
     Old rows are deleted, or their aggregates' personal fields erased, in
     transactions of ``BATCH_SIZE``, so a purge never holds a table long. A

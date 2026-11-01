@@ -36,13 +36,13 @@ from domainkit.money import AmountOutOfRange, Currency, Money, currency
 from domainkit.utils.decimals import decimal_text
 
 from .exceptions import (
-    AccountIsClosed,
     AccountNotEmpty,
+    AccountNotOpen,
     HoldNotActive,
     InsufficientFunds,
     InvalidAmount,
     InvalidEntry,
-    PeriodIsClosed,
+    PeriodNotOpen,
     PeriodsOverlap,
     UnbalancedEntry,
 )
@@ -387,7 +387,7 @@ class Account(AggregateRoot[AccountId]):
     def _checked(self, amount: Money) -> Decimal:
         """``amount``'s value, if the account is open and of its currency."""
         if self.status is AccountStatus.CLOSED:
-            raise AccountIsClosed("The account is closed.")
+            raise AccountNotOpen("The account is closed.")
         if amount.currency.code != self.currency:
             raise InvalidEntry("An amount is not in its account's currency.")
         return amount.amount
@@ -396,7 +396,7 @@ class Account(AggregateRoot[AccountId]):
         """Change the balance by ``amount`` on ``side``.
 
         Raises:
-            AccountIsClosed: The account is closed.
+            AccountNotOpen: The account is closed.
             InvalidEntry: ``amount`` is in another currency.
             InsufficientFunds: It may not go negative, and less than nothing
                 would be available.
@@ -412,7 +412,7 @@ class Account(AggregateRoot[AccountId]):
         """Hold ``amount`` back from what is available.
 
         Raises:
-            AccountIsClosed: The account is closed.
+            AccountNotOpen: The account is closed.
             InvalidEntry: ``amount`` is in another currency.
             InsufficientFunds: It may not go negative and has less available.
             AmountOutOfRange: What it holds would be larger than the ledger keeps.
@@ -452,11 +452,11 @@ class Account(AggregateRoot[AccountId]):
         """Close the account, recording ``AccountClosed``.
 
         Raises:
-            AccountIsClosed: It is closed already.
+            AccountNotOpen: It is closed already.
             AccountNotEmpty: It has a balance, or active holds.
         """
         if self.status is AccountStatus.CLOSED:
-            raise AccountIsClosed("The account is closed.")
+            raise AccountNotOpen("The account is closed.")
         if self.balance != ZERO or self.held != ZERO:
             raise AccountNotEmpty("Only an account with nothing on it can be closed.")
         self.status = AccountStatus.CLOSED
@@ -683,7 +683,7 @@ class Hold(AggregateRoot[HoldId]):
                 ``expires_at`` has no time zone, has passed, or is more than
                 ``LONGEST_HOLD`` (366 days) away.
             InvalidAmount: The amount is not more than zero.
-            AccountIsClosed, InsufficientFunds: As ``Account.reserve``.
+            AccountNotOpen, InsufficientFunds: As ``Account.reserve``.
         """
         if not SOURCE.fullmatch(source):
             raise InvalidEntry(
@@ -800,16 +800,16 @@ class Period(AggregateRoot[PeriodId]):
         """Refuse an entry dated in this period if it is closed.
 
         Raises:
-            PeriodIsClosed: The period is closed.
+            PeriodNotOpen: The period is closed.
         """
         if self.status is PeriodStatus.CLOSED:
-            raise PeriodIsClosed("The entry's date is in a closed period.")
+            raise PeriodNotOpen("The entry's date is in a closed period.")
 
     def close(self) -> None:
         """Close the period, recording ``PeriodClosed``.
 
         Raises:
-            PeriodIsClosed: It is closed already.
+            PeriodNotOpen: It is closed already.
         """
         self.takes()
         self.status = PeriodStatus.CLOSED

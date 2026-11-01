@@ -9,7 +9,6 @@ policy.
 
 FastAPI integration: application factory, middleware, and error mapping.
 
-- `CURSOR_PATTERN`: Cursors are base64url; use as `Query(pattern=CURSOR_PATTERN)`.
 - `MAX_CURSOR_LENGTH`: Longest cursor accepted; use as `Query(max_length=MAX_CURSOR_LENGTH)`.
 - `APIError`: An HTTP error outside the domain (a bad cursor, an oversized body).
 - `ErrorResponse`: Body of every error response; also the schema documented in OpenAPI.
@@ -107,6 +106,12 @@ Request deadlines over HTTP: `REQUEST_TIMEOUT`, and `RequestTimeout` per route.
 - `DeadlineMiddleware`: Cancel HTTP requests that run past their deadline, and answer 503.
 - `RequestTimeout`: A dependency that gives a route its own deadline (`Depends`).
 
+## `domainkit.http.health`
+
+The liveness and readiness endpoints every generated project mounts.
+
+- `router`: `GET /health` and `GET /ready`, which guard themselves; include it in the root router.
+
 ## `domainkit.http.live`
 
 Long-lived connections: WebSockets and event streams, bounded and re-checked.
@@ -145,7 +150,6 @@ Pure-ASGI middleware enforcing the HTTP security baseline.
 - `RequestContextMiddleware`: Bind request context, echo the request id, and write the access log.
 - `SecurityHeadersMiddleware`: Add security headers unless the endpoint already set them.
 - `body_limit`: Give a route a body limit of its own: `size` bytes, above or below the global.
-- `request_path`: The request's path within the application: without its `root_path`.
 
 ## `domainkit.http.ratelimit`
 
@@ -165,18 +169,8 @@ Request rate limiting (`RATE_LIMIT = "300/minute"`).
 
 JSON responses encoded in Rust, byte for byte as Starlette encodes them.
 
-- `BuiltJSONResponse`: JSON bodies built of JSON's own values (`model_dump(mode="json")`): no check.
 - `JSONResponse`: Starlette's `JSONResponse`, rendered by `encode_json`: the same bytes.
 - `json_native`: Whether `to_json` writes `content` as `json.dumps` does (see above).
-
-## `domainkit.http.routing`
-
-Serve the routes of included routers from the top of the application.
-
-- `RouteIndex`: Serves a router's requests trying only the routes their path can reach.
-- `flatten_routes`: Put the routes of each router included in `router` in its place.
-- `index_routes`: Serve `router`'s requests through a `RouteIndex`; whether it does.
-- `serves_itself`: Whether `router` has its own version of a method that serves requests.
 
 ## `domainkit.http.shedding`
 

@@ -1222,7 +1222,7 @@ jobs:
               domainkit.management.commands.migrate.*
               domainkit.management.commands.partitions.*
               domainkit.management.commands.showmigrations.* domainkit.utils.decimals.*
-              domainkit.utils.headers.*
+              domainkit.utils.headers.* domainkit.utils.unset.*
           - name: domain
             mutants: >-
               domainkit.resources.* domainkit.ddd.* domainkit.testing.* domainkit.i18n.*

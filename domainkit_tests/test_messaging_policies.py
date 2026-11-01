@@ -507,7 +507,7 @@ async def test_scheduled_runs_keep_their_priority() -> None:
     async def urgent_hourly() -> None: ...
 
     try:
-        await Worker().schedule_periodic()
+        await Worker()._schedule_periodic()
     finally:
         tasks._tasks.pop("tests.urgent_hourly")
 
@@ -582,8 +582,8 @@ async def test_a_workers_next_step_is_left_to_the_relay(
     published.clear()  # The enqueue's own commit publishes its first step.
     worker = Worker()
 
-    (claimed,) = await worker.claim(1)
-    await worker.process(claimed)
+    (claimed,) = await worker._claim(1)
+    await worker._process(claimed)
 
     assert published == []
     assert [row["target"] for row in await rows() if row["status"] == PENDING] == [
@@ -612,10 +612,10 @@ async def test_a_step_whose_run_is_lost_queues_nothing() -> None:
     """If another worker took the message over, its next step is theirs to write."""
     await enqueue(chain(charge, receipt), order=1)
     worker = Worker()
-    (claimed,) = await worker.claim(10)
+    (claimed,) = await worker._claim(10)
     await set_rows(lock_id=uuid.uuid4())  # Reclaimed meanwhile.
 
-    await worker.process(claimed)
+    await worker._process(claimed)
 
     (row,) = await rows()
     assert row["status"] == PENDING
@@ -753,9 +753,9 @@ async def test_cron_runs_are_queued_ahead_once(monkeypatch: pytest.MonkeyPatch) 
 
     try:
         first = Worker()
-        await first.schedule_periodic()
-        await first.schedule_periodic()  # Already queued: nothing new.
-        await Worker().schedule_periodic()  # Another worker: the same row.
+        await first._schedule_periodic()
+        await first._schedule_periodic()  # Already queued: nothing new.
+        await Worker()._schedule_periodic()  # Another worker: the same row.
         (queued,) = await rows()
         run_at = datetime(2026, 10, 20, 0, tzinfo=UTC)  # 03:00 in Cairo.
         assert (queued["target"], queued["available_at"]) == ("tests.cairo", run_at)
@@ -763,7 +763,7 @@ async def test_cron_runs_are_queued_ahead_once(monkeypatch: pytest.MonkeyPatch) 
         assert queued["headers"] == {}
 
         clock[0] = run_at
-        await first.schedule_periodic()  # Due now: the next one is queued.
+        await first._schedule_periodic()  # Due now: the next one is queued.
     finally:
         tasks._tasks.pop("tests.cairo")
 
@@ -794,11 +794,11 @@ async def test_cron_runs_survive_a_failed_write_and_a_schedule_without_runs(
     monkeypatch.setattr(worker_module, "write", flaky_write)
     try:
         with pytest.raises(ConnectionError):
-            await worker.schedule_periodic()
-        await worker.schedule_periodic()
+            await worker._schedule_periodic()
+        await worker._schedule_periodic()
         assert len(await rows()) == 1
         monkeypatch.setattr(Cron, "next_after", lambda self, instant: None)
-        await Worker().schedule_periodic()
+        await Worker()._schedule_periodic()
     finally:
         tasks._tasks.pop("tests.five")
     assert len(await rows()) == 1
@@ -816,8 +816,8 @@ async def test_messages_are_listed_by_state() -> None:
     await enqueue(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
     await enqueue(counted, number=1)
     worker = Worker()
-    (running,) = await worker.claim(1)  # The high-priority one.
-    await worker.relay(MemoryBroker(), 1)  # Publishes the next due one: counted.
+    (running,) = await worker._claim(1)  # The high-priority one.
+    await worker._relay(MemoryBroker(), 1)  # Publishes the next due one: counted.
 
     pending = await outbox_admin.list_messages(config, "pending", 10)
     locked = await outbox_admin.list_messages(config, "locked", 10)
@@ -846,9 +846,9 @@ async def test_waiting_messages_can_be_cancelled_running_ones_not() -> None:
         await enqueue(high if label == "run" else low, label=label)
     await enqueue(chain(charge, receipt), order=1, delay=timedelta(hours=1))
     worker = Worker()
-    (claimed,) = await worker.claim(1)
+    (claimed,) = await worker._claim(1)
     broker = MemoryBroker()
-    await worker.relay(broker, 1)
+    await worker._relay(broker, 1)
     by_label = {row["payload"].get("label", "chain"): row for row in await rows()}
 
     assert not await outbox_admin.cancel(config, claimed.id)
@@ -857,7 +857,7 @@ async def test_waiting_messages_can_be_cancelled_running_ones_not() -> None:
     assert not await outbox_admin.cancel(config, by_label["wait"]["id"])
     assert not await outbox_admin.cancel(config, uuid.uuid4())
 
-    await worker.process(claimed)
+    await worker._process(claimed)
     assert not await outbox_admin.cancel(config, claimed.id)  # Done.
     await set_rows(available_at=datetime.now(UTC) - timedelta(seconds=1))
     assert await Worker().run_once() == 0  # Nothing cancelled runs.
@@ -911,9 +911,9 @@ async def test_lag_is_the_age_of_the_oldest_waiting_due_message() -> None:
     assert 90 <= lag["default"] < 100
     assert 30 <= lag["other"] < 40
 
-    await Worker(queues=["default"]).claim(10)  # Running: no longer waiting.
+    await Worker(queues=["default"])._claim(10)  # Running: no longer waiting.
     assert set(await outbox_admin.queue_lag(config)) == {"other"}
-    await Worker(queues=["other"]).relay(MemoryBroker(), 10)  # Published: waits.
+    await Worker(queues=["other"])._relay(MemoryBroker(), 10)  # Published: waits.
     assert set(await outbox_admin.queue_lag(config)) == {"other"}
 
 
@@ -977,7 +977,7 @@ def test_the_messages_command_lists_and_cancels() -> None:
         # A lease that outlasts the commands below on any machine: --locked
         # must still see it, whatever the commands cost.
         worker = Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 60}))
-        (claimed,) = await worker.claim(1)
+        (claimed,) = await worker._claim(1)
         ids = [claimed.id]
         await set_rows(available_at=datetime.now(UTC) - timedelta(seconds=3))
         async with connections.engine().connect() as connection:

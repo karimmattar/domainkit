@@ -847,7 +847,7 @@ async def test_only_tokens_and_sessions_look_their_step_up_up() -> None:
         Credentials(KNOWN, scheme="certificate", token_id="digest"),
         Credentials(KNOWN, scheme="token"),
         Credentials(KNOWN, scheme="cookie"),
-        Credentials(KNOWN, scheme="jwt", session=uuid4()),
+        Credentials(KNOWN, scheme="jwt", login=uuid4()),
     ):
         assert await credentials.proof() is None
 

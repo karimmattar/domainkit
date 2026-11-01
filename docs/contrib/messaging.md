@@ -114,7 +114,7 @@ inspects any outbox.
 | `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
-| `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
+| `DRAIN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
 | `UNKNOWN_TARGET_GRACE` | `3600.0` | Seconds a message naming a task or handler no worker knows waits for one, given back with a doubling delay, before it is dead-lettered (see *Unknown tasks and handlers* above); 0 dead-letters it at once (at most 365 days). |
 | `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. A periodic task's run is kept until its slot ends, however long: it is what stops workers from queuing the slot again. |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
@@ -176,10 +176,10 @@ False` stops domainkit's notifications, and workers fall back on polling.
 
 **Stopping.** `SIGTERM` (or Ctrl+C) stops claiming (and, with a broker,
 consuming, within five seconds even if the broker does not answer) and
-gives running messages `SHUTDOWN_TIMEOUT` seconds to finish. Messages still running then
+gives running messages `DRAIN_TIMEOUT` seconds to finish. Messages still running then
 are cancelled and go back to the outbox, due at once; the cut-short run
 does not count as an attempt. A second signal stops them at once. Keep
-`SHUTDOWN_TIMEOUT` a few seconds under the time your platform waits before
+`DRAIN_TIMEOUT` a few seconds under the time your platform waits before
 it kills the process (Kubernetes' `terminationGracePeriodSeconds`, 30 by
 default), so they are given back rather than left locked until
 `VISIBILITY_TIMEOUT`. Handlers see the cancellation as

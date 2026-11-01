@@ -474,8 +474,8 @@ async def test_tasks_and_chains_use_the_inbox() -> None:
         uow.defer(chain(first_step, last_step))
         await uow.commit()
     worker = slow_worker()
-    (step,) = await worker.claim(10)
-    await worker.process(step)  # The first step, which writes the last.
+    (step,) = await worker._claim(10)
+    await worker._process(step)  # The first step, which writes the last.
     await run_twice()
 
     assert await credits() == 3  # The task, and each step of the chain.
@@ -655,7 +655,7 @@ async def test_a_run_that_finishes_after_losing_its_lease_changes_nothing(
         await within(blocked.entered.wait())
         await expire_locks()
         second = slow_worker()
-        (claimed,) = await second.claim(1)  # Taken over, not finished yet.
+        (claimed,) = await second._claim(1)  # Taken over, not finished yet.
     finally:
         blocked.release.set()
         await within(stale)
@@ -663,7 +663,7 @@ async def test_a_run_that_finishes_after_losing_its_lease_changes_nothing(
     assert outcomes("superseded") == superseded + 1
     (row,) = await events_rows()
     assert (row["status"], row["lock_id"]) == (PENDING, claimed.lock_id)
-    await second.process(claimed)
+    await second._process(claimed)
     assert effects == ["ran", "ran"]
     assert (await events_rows())[0]["status"] == DONE
 
@@ -709,7 +709,7 @@ async def test_a_commit_renews_its_own_messages_lease_only(
     await publish_note_written()
     await publish_note_written()
     worker = slow_worker()
-    first, second = await worker.claim(10)
+    first, second = await worker._claim(10)
     assert first.lock_id == second.lock_id
     past = datetime.now(UTC) - timedelta(seconds=1)
     async with connections.engine().begin() as connection:
@@ -717,7 +717,7 @@ async def test_a_commit_renews_its_own_messages_lease_only(
             update(messages).where(messages.c.id == second.id).values(locked_until=past)
         )
 
-    await worker.process(first)
+    await worker._process(first)
 
     async with connections.engine().connect() as connection:
         locked = await connection.scalar(

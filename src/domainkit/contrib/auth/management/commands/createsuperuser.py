@@ -7,7 +7,7 @@ what the options leave out from ``<PREFIX>SUPERUSER_<FIELD>`` (or a
 a password the user gets an unusable one.
 
 A password the validators refuse is kept only on request, and only where
-no ``AUTH.PASSWORD_PRESET`` holds and outside staging and production
+no ``AUTH.PRESET`` holds and outside staging and production
 (AUTH-18). A password read from the environment, which whoever deploys
 holds too, is to change at its first use under
 ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE`` (PCI DSS v4.0 8.3.5), unless
@@ -44,7 +44,7 @@ def _may_bypass() -> bool:
     and production.
     """
     return (
-        auth_settings().PASSWORD_PRESET is None
+        auth_settings().PRESET is None
         and settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS
     )
 

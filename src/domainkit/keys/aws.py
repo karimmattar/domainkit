@@ -45,11 +45,6 @@ from domainkit.keys import DataKey, KeyProvider, KeyProviderError, UnknownKey
 __all__ = [
     "AwsCredentials",
     "AwsKmsKeyProvider",
-    "container_credentials",
-    "default_credentials",
-    "environment_credentials",
-    "sign",
-    "web_identity_credentials",
 ]
 
 NAME: Final = "aws-kms"

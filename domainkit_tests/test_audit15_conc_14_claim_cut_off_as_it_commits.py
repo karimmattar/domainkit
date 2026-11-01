@@ -3,7 +3,7 @@
 The relay knows that "the driver may commit the lease as its caller is
 cancelled" (aiosqlite commits in its own thread; a PostgreSQL ``COMMIT``
 may finish on the server after the caller is cancelled), and gives such a
-lease back (``Worker._relay``, ``_unlock``, 0.12.1). The polling worker's
+lease back (``Worker._publish_due``, ``_unlock``, 0.12.1). The polling worker's
 ``claim``, and a consumer's ``take_over``, do not: a stop that lands then
 (``runworker``'s second signal, or the task running ``Worker.run`` being
 cancelled by the code that embeds it) leaves the claimed messages locked
@@ -52,7 +52,7 @@ async def test_a_claim_cancelled_as_it_commits_gives_its_messages_back(
 
     monkeypatch.setattr(AsyncTransaction, "__aexit__", committed_then_held)
     worker = Worker()
-    claiming = asyncio.create_task(worker.claim(10), name="claiming")
+    claiming = asyncio.create_task(worker._claim(10), name="claiming")
     async with asyncio.timeout(5):
         await committed.wait()
     claiming.cancel()

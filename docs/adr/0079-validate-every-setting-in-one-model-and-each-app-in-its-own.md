@@ -1,6 +1,6 @@
 # 0079. Validate every setting at startup: one model, and each app's own
 
-- Status: Accepted; amended 2026-10-26 (at the end)
+- Status: Accepted; amended 2026-10-26 and 2026-11-01 (at the end), the second by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)
 - Date: 2026-10-25
 
 This records a decision taken in 0.1.0 and extended since, which no record
@@ -97,3 +97,7 @@ hint where the message does not say how to fix it (DSGN-08, INFRA-08).
 - New warnings where deployed: `*` in `CORS_ALLOWED_ORIGINS`, a network
   database without `POOL_SIZE`, and SQLite. They are warnings, not
   refusals, so no deployment that starts today stops starting.
+
+## Amendment (2026-11-01, 1.0): the settings stay flat
+
+DSGN-08 is closed without grouping ([0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)): the framework's settings stay one flat namespace, Django's names where Django has them and prefixes (`RATE_LIMIT_*`, `ACCESS_LOG_*`, `LIVE_*`) for families. A dict group is kept for named backends (`DATABASES`, `CACHES`) and for an optional subsystem with its own model (`HTTP_CLIENT`, `DEBUG_TOOLBAR`, `ARCHITECTURE`), whose models are public in `domainkit.conf` now. Grouping would have rewritten every project's settings for a cosmetic gain.

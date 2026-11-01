@@ -298,8 +298,8 @@ async def logout(
             await uow.tokens.revoke_user(user.id)
         elif credentials.token_id is not None:
             await uow.tokens.revoke(credentials.token_id)
-        elif credentials.session is not None:
-            await uow.tokens.revoke_family(credentials.session)
+        elif credentials.login is not None:
+            await uow.tokens.revoke_family(credentials.login)
         stored.record(UserLoggedOut(user_id=user.id, everywhere=everywhere))
         await uow.commit()
 
@@ -362,7 +362,7 @@ async def change_password(
         stored = await uow.users.get(UserId(user.id))
         await uow.users.set_password(stored, body.new_password, priority=True)
         await uow.tokens.revoke_user(
-            user.id, keep=credentials.token_id, keep_family=credentials.session
+            user.id, keep=credentials.token_id, keep_family=credentials.login
         )
         await uow.commit()
 

@@ -204,8 +204,8 @@ def _issue_jwt(out: StepUpOut, credentials: Credentials, proof: Proof) -> None:
     signer = next(
         each for each in get_authenticators() if isinstance(each, JWTAuthentication)
     )
-    assert credentials.session is not None  # noqa: S101 - every JWT names its login.
-    out.access_token = signer.encode(credentials.user, credentials.session, proof)
+    assert credentials.login is not None  # noqa: S101 - every JWT names its login.
+    out.access_token = signer.encode(credentials.user, credentials.login, proof)
     out.token_type = "Bearer"  # noqa: S105 - a scheme, not a secret.
     out.expires_in = int(signer.config.ACCESS_TOKEN_TTL.total_seconds())
 

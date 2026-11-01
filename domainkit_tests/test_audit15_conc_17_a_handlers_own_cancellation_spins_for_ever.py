@@ -1,6 +1,6 @@
 """CONC-17: a CancelledError the handler raises is retried at once, uncounted, for ever.
 
-``Worker.process`` takes every ``asyncio.CancelledError`` out of a run for
+``Worker._process`` takes every ``asyncio.CancelledError`` out of a run for
 the worker stopping: the message goes back, due at once, its attempt not
 counted (``_interrupted``), and the error is re-raised. But the worker's
 task was not cancelled when the handler itself raised it: a handler that

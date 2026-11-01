@@ -11,21 +11,10 @@ from domainkit.conf.env import Env
 from domainkit.conf.global_settings import Settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
+from domainkit.utils.unset import UNSET
 
 SETTINGS_MODULE_VARIABLE: Final = "SETTINGS_MODULE"
 SETTINGS_CLASS_NAME: Final = "SETTINGS_CLASS"
-
-
-class _Unset:
-    """Sentinel type for ``override_settings(NAME=UNSET)``."""
-
-    def __repr__(self) -> str:
-        """Name the sentinel in reprs."""
-        return "UNSET"
-
-
-UNSET: Final = _Unset()
-"""Pass to ``override_settings`` to remove a setting (Django's ``del settings.X``)."""
 
 
 def describe_errors(exc: ValidationError) -> str:

@@ -23,8 +23,9 @@ no error and no lag on the ``pending`` gauges.
 import pytest
 from sqlalchemy import update
 
-from domainkit.contrib.messaging import Worker, dbclock, enqueue
+from domainkit.contrib.messaging import Worker, enqueue
 from domainkit.contrib.messaging.tables import DONE, HELD, messages
+from domainkit.db import dbclock
 from domainkit_tests.test_messaging import messaging, tables  # noqa: F401
 from domainkit_tests.test_messaging_ordering import (
     config,
@@ -39,7 +40,7 @@ pytestmark = pytest.mark.anyio
 
 async def done_by_a_0_13_worker(worker: Worker) -> None:
     """Claim the key's first message and record it as 0.13's ``_done`` did."""
-    (message,) = await worker.claim(1)
+    (message,) = await worker._claim(1)
     async with worker.engine.begin() as connection:  # 0.13.0, Worker._done.
         await connection.execute(
             update(messages)

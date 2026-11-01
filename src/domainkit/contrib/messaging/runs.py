@@ -61,9 +61,9 @@ from sqlalchemy import (
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from domainkit.db import dbclock
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
-from . import dbclock
 from .tables import DEAD, HELD, PENDING, messages
 from .tables import inbox as inbox_table
 

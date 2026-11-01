@@ -305,11 +305,11 @@ def test_slow_checks_time_out(make_package: MakePackage) -> None:
             "apps.py": """
                 import asyncio
                 from domainkit.apps import DomainConfig
-                from domainkit.apps.hooks import on_check
+                from domainkit.apps.hooks import on_ready
 
                 class SlowConfig(DomainConfig):
                     def ready(self) -> None:
-                        on_check(self.probe)
+                        on_ready(self.probe)
 
                     async def probe(self) -> None:
                         await asyncio.sleep(1)

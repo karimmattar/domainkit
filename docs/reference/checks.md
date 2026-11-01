@@ -38,7 +38,7 @@ Installed contrib apps add their own:
   `AUTH.JWT.PREVIOUS_KEYS` that is the signing key or is listed twice
   (`auth.E008`), or that retires more than a day ahead (`auth.E009`)
   ([auth.md](../auth/authentication.md#replacing-a-key)); and, in any
-  environment, a setting that contradicts `AUTH.PASSWORD_PRESET`
+  environment, a setting that contradicts `AUTH.PRESET`
   (`auth.E010`), each contradiction named with its PCI DSS requirement
   ([PCI DSS v4.0's passwords](../auth/pci-dss.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY` (nor `SUBJECT_KEYS`)

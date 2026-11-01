@@ -16,7 +16,7 @@ never guards.
 
 The test asserts the safe behaviour and fails on ``d23a2ec``. The fix
 refuses the reversal of a reversal in the ledger
-(``reversal_not_reversible``): no money moves, the window is as the
+(``entry_not_reversible``): no money moves, the window is as the
 reversal left it, and a payment of the window's 100 passes once, the
 next being refused. (As first written, the test expected the reversal
 of the reversal to pass and be counted; the ledger now books no such
@@ -30,7 +30,7 @@ import pytest
 from domainkit.clock import freeze_time
 from domainkit.contrib.accounting import (
     AccountingUnitOfWork,
-    ReversalNotReversible,
+    EntryNotReversible,
     ReverseEntry,
     post_entry,
     reverse_entry,
@@ -62,11 +62,11 @@ async def test_a_reversed_reversal_counts_against_the_window() -> None:
             ReverseEntry(entry_id=paid.id), AccountingUnitOfWork()
         )
         # Reversing the reversal would pay the 100 out of the wallet again.
-        with pytest.raises(ReversalNotReversible) as refused:
+        with pytest.raises(EntryNotReversible) as refused:
             await reverse_entry(
                 ReverseEntry(entry_id=undone.id), AccountingUnitOfWork()
             )
-        assert refused.value.code == "reversal_not_reversible"
+        assert refused.value.code == "entry_not_reversible"
         async with AccountingUnitOfWork(readonly=True) as uow:
             assert (await uow.accounts.get(wallet.id)).balance == Decimal("5000")
         (used,) = await usage_of("holder", "h-1")

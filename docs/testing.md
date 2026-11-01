@@ -60,7 +60,7 @@ project's conftest never needs a private name for it:
 
 | After each test | Through |
 | --- | --- |
-| The subscriptions, hooks (`on_guard(check, domain=...)` and every other hook point), tasks, metric refreshers, and currencies the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped; a test whose body loads them itself keeps what it registers, as its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.apps.hooks.hooks_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()`, `domainkit.money.currencies_kept()` |
+| The subscriptions, hooks (`on_ready(check, domain=...)` and every other hook point), tasks, metric refreshers, and currencies the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped; a test whose body loads them itself keeps what it registers, as its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.apps.hooks.hooks_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()`, `domainkit.money.currencies_kept()` |
 | Its error reports are sent and its logs written (below). | `flush_reports()`, `flush_logs()` |
 
 What a module- or session-scoped fixture sends is gone by the time a test

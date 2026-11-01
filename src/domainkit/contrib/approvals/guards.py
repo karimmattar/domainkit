@@ -47,7 +47,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import BasePermission, Rule
 from domainkit.money import Money, MoneyError
 
-from .exceptions import ApprovalPending, ApprovalRequired, PolicyGone, UnknownAction
+from .exceptions import ApprovalPending, ApprovalRequired, PolicyRemoved, UnknownAction
 from .settings import LONGEST_WAIT, MAX_APPROVALS
 
 type Service = Callable[[Any, Any], Awaitable[Any]]
@@ -280,8 +280,8 @@ class Guard:
         return next((each for each in self.policies if each.name == name), None)
 
 
-on_guard: HookPoint[Guard] = HookPoint("approval guard")
-"""The guards the installed domains registered: ``on_guard(Guard(...))``."""
+on_guard: HookPoint[Guard] = HookPoint("approvals.guard")
+"""The guards the installed domains registered: ``guard()`` registers here."""
 
 
 def guard(
@@ -387,14 +387,14 @@ def policy_of(request: Any) -> tuple[Guard, Policy]:  # noqa: ANN401 - a request
     """The guard of ``request``'s action, and the policy it waits under.
 
     Raises:
-        PolicyGone: The guard, or its policy of that name, no longer exists:
+        PolicyRemoved: The guard, or its policy of that name, no longer exists:
             the request is neither decided nor run, rather than fall back
             to rules it was not submitted under.
     """
     registered = guards().get(request.action)
     policy = None if registered is None else registered.policy_named(request.policy)
     if registered is None or policy is None:
-        raise PolicyGone(
+        raise PolicyRemoved(
             "The request's guard or policy no longer exists; it is neither "
             "decided nor run."
         )

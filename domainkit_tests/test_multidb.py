@@ -277,8 +277,8 @@ async def test_only_the_home_outbox_schedules_periodic_tasks(sharded: Path) -> N
     async def hourly() -> None: ...
 
     home, shard = Worker(), Worker(database="shard_a")
-    await home.schedule_periodic()
-    await shard.schedule_periodic()
+    await home._schedule_periodic()
+    await shard._schedule_periodic()
 
     assert (home.schedules, shard.schedules) == (True, False)
     for alias, expected in (("default", 1), ("shard_a", 0)):

@@ -216,7 +216,7 @@ async def approve_request(
     Raises:
         RequestNotFound: No request has that id.
         RequestTampered: Its seal does not hold.
-        PolicyGone: Its guard or policy no longer exists.
+        PolicyRemoved: Its guard or policy no longer exists.
         RequestNotPending: It is decided already, or has expired.
         MakerCannotDecide: The approver submitted it.
         InterestedParty: The command is about the approver.
@@ -238,7 +238,7 @@ def _parties(request: ApprovalRequest) -> frozenset[str]:
     """The people the request's command is about, who may not decide it.
 
     Raises:
-        PolicyGone: The request's guard or policy no longer exists.
+        PolicyRemoved: The request's guard or policy no longer exists.
         InvalidArguments: Its arguments no longer make its command.
     """
     guard, _ = policy_of(request)
@@ -256,7 +256,7 @@ async def reject_request(
     Raises:
         RequestNotFound: As for ``approve_request``.
         RequestTampered: As for ``approve_request``.
-        PolicyGone: As for ``approve_request``.
+        PolicyRemoved: As for ``approve_request``.
         RequestNotPending: As for ``approve_request``.
         MakerCannotDecide: As for ``approve_request``.
         InterestedParty: As for ``approve_request``.

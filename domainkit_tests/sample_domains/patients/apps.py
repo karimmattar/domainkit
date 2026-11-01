@@ -12,7 +12,7 @@ from .tables import start_mappers
 class PatientsConfig(DomainConfig):
     """Map the aggregates; keep the access log 30 days and visit notes a year."""
 
-    RETENTION = (
+    retention = (
         Retention(
             table="patients_access_log", field="accessed_at", keep=timedelta(days=30)
         ),

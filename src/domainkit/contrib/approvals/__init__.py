@@ -32,10 +32,10 @@ records with its actor. See ``docs/contrib/approvals.md`` and ADR 0121.
 """
 
 from .builtin import (
-    CAPTURES,
-    ENTRIES,
-    REVERSES,
-    SUPERUSERS,
+    CAPTURE_HOLD,
+    GRANT_SUPERUSER,
+    POST_ENTRY,
+    REVERSE_ENTRY,
     GrantSuperuser,
     refuse_if_guarded,
 )
@@ -50,7 +50,7 @@ from .exceptions import (
     MakerCannotDecide,
     MakerNotAllowed,
     NotTheMaker,
-    PolicyGone,
+    PolicyRemoved,
     RequestNotFound,
     RequestNotPending,
     RequestTampered,
@@ -64,7 +64,6 @@ from .guards import (
     current_run,
     guard,
     guards,
-    on_guard,
     requires_approval,
 )
 from .models import (
@@ -100,10 +99,10 @@ from .settings import ApprovalsSettings
 from .uow import ApprovalsUnitOfWork
 
 __all__ = [
-    "CAPTURES",
-    "ENTRIES",
-    "REVERSES",
-    "SUPERUSERS",
+    "CAPTURE_HOLD",
+    "GRANT_SUPERUSER",
+    "POST_ENTRY",
+    "REVERSE_ENTRY",
     "AlreadyDecided",
     "ApprovalGiven",
     "ApprovalNotNeeded",
@@ -124,7 +123,7 @@ __all__ = [
     "MakerNotAllowed",
     "NotTheMaker",
     "Policy",
-    "PolicyGone",
+    "PolicyRemoved",
     "RejectRequest",
     "RequestApproved",
     "RequestCancelled",
@@ -151,7 +150,6 @@ __all__ = [
     "fingerprint",
     "guard",
     "guards",
-    "on_guard",
     "refuse_if_guarded",
     "reject_request",
     "requires_approval",

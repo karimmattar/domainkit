@@ -29,9 +29,9 @@ KEYS = {
 }
 ```
 
-The cloud providers call through `domainkit.http.client`
-(`pip install "domainkit[httpclient]"`); AES-GCM needs `cryptography`
-(`domainkit[mfa]`).
+`pip install "domainkit[keys]"` installs what they need: `cryptography`
+for AES-GCM, and `domainkit.http.client`, through which the cloud
+providers call.
 
 ## Encrypting a field
 

@@ -277,7 +277,10 @@ class BasePermission:
         None, the default, answers 403 with ``message``. A rule whose
         refusal tells the client what to do (``StepUp``: authenticate
         again) returns its own error; it is not recorded as a denial.
-        Called only once the rule refused ``request``.
+        Called only once the rule refused ``request``, and possibly more
+        than once for one request (by ``AllOf`` and then by the route), so
+        keep it cheap and free of side effects. ``AnyOf`` and ``Not`` never
+        pass a named refusal on: what they refuse is answered 403.
         """
         return None
 

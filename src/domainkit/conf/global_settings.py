@@ -786,10 +786,10 @@ class Settings(BaseModel):
     """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
     API_DOCS: bool | None = None
     """Serve ``/docs``, ``/redoc``, and ``/openapi.json``; None: with ``DEBUG`` only."""
-    OPENAPI_OPERATION_IDS: Literal["fastapi", "route_name"] = "fastapi"
-    """Operation ids: FastAPI's (name, path, and method), or the route's name."""
-    ERROR_FORMAT: Literal["domainkit", "problem+json"] = "domainkit"
-    """Error bodies: ``{"detail", "code", ...}``, or RFC 9457 problem details."""
+    OPENAPI_OPERATION_IDS: Literal["fastapi", "route_name"] = "route_name"
+    """Operation ids: the route's name (since 1.0), or FastAPI's (name, path, verb)."""
+    ERROR_FORMAT: Literal["domainkit", "problem+json"] = "problem+json"
+    """Error bodies: RFC 9457 problem details (since 1.0), or ``{"detail", "code"}``."""
     ERROR_TYPE_BASE_URL: str | None = Field(default=None, pattern=ABSOLUTE_URI)
     """Problem details: each code's ``type`` is this URL plus the code."""
     DEBUG_TOOLBAR: DebugToolbarConfig = Field(default_factory=DebugToolbarConfig)
