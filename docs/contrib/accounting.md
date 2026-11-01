@@ -66,13 +66,22 @@ wallet = await open_account(
   places than its currency, is refused as `domainkit.money` refuses it
   (`unknown_currency`, `inexact_amount`, 422).
 - `held` is what its active holds reserve, and `available` the balance
-  less that. An account that `may_go_negative=False` refuses a posting or
-  a hold that would leave less than nothing available
-  (`insufficient_funds`); others may be overdrawn.
+  less that. An account refuses a posting or a hold that would leave
+  less than nothing available (`insufficient_funds`), unless it is
+  opened with `may_go_negative=True`, as a clearing, settlement, or
+  external account is: no account is overdrawn by default (FIN-97).
+- A line, a balance, or what an account holds is at most 14 digits
+  before the point (the columns are `NUMERIC(18, 4)`); past that it is
+  refused, `amount_out_of_range` (422).
 - `holder` names the person the account is kept for: `privacy export`
   lists their accounts and postings; `privacy erase` keeps the books (the
-  law asks for them, and they are append-only) and unlinks the person
-  from them, clearing `holder`. It is the only field erasure clears:
+  law asks a business to keep them for years, and they are append-only)
+  and pseudonymises them: their accounts name one `erased:` holder, the
+  same for all of them, so the books still show which were one person's
+  (FIN-94). While the person holds an open account with money on it or
+  held, the erasure is held (`erasure_held`): a business does not erase
+  someone it still owes, or who owes it; close the accounts first.
+  `holder` is the only field erasure changes:
   codes, names, descriptions, memos, references, and statement lines are
   kept as written, and a code is shown by every report and by the audit
   trail's `AccountOpened`. Keep personal data out of all of them, as the
@@ -209,7 +218,9 @@ entry is. A capture posts an entry out of the account (the side that
 lowers its balance) and into `counter_account_id`, of the whole hold or
 less, and releases the rest; capturing again returns the captured hold.
 `release_hold` gives it back. An expired hold cannot be captured
-(`hold_not_active`); with messaging, the worker releases expired holds
+(`hold_not_active`); whether it has expired is the database's clock's to
+say on PostgreSQL, so hosts whose clocks disagree agree on it (FIN-99).
+With messaging, the worker releases expired holds
 every `EXPIRE_HOLDS_EVERY`, and `manage.py accounting expireholds` does
 the same on demand. Until then an expired hold still counts against
 `available`. Without messaging, `check` warns in staging and production
@@ -242,6 +253,13 @@ in the period that are under way, and every posting after it is refused.
 A closed period stays closed: corrections go in an open one, as
 reversals.
 
+The books are closed up to the last day of the latest closed period
+(FIN-87): no entry is dated there, in a period or in a gap between
+periods, whatever `REQUIRE_PERIOD` says (`period_closed`); no period is
+opened that starts there; and a period closes only once every period
+before it is closed (`earlier_period_open`). So a closed period's report
+reads the same for good: no later entry moves its opening balances.
+
 ## Reports
 
 ```python
@@ -269,7 +287,19 @@ async for piece in general_ledger(october.id, "csv"):  # or "json", streamed
   apostrophe.
 - `verify_ledger()` (and `manage.py accounting verify`) checks the books
   themselves: every entry balances, every balance is the sum of its
-  postings, and every account's `held` the sum of its active holds.
+  postings, and every account's `held` the sum of its active holds. The
+  database compares, and only what differs comes back, streamed.
+- The trial balance is one statement, the chart joined in it, however
+  many accounts moved; the general ledger is read in pieces of 500
+  postings, each in a short transaction of its own, so a slow reader
+  holds no connection. A closed period's never changes, so its pieces
+  read as one.
+- The audit trail vouches for each entry: `EntryPosted` carries, per
+  account and currency, its debits and credits (`amounts`), and the
+  SHA-256 of its date, description, and lines (`digest`), sealed and
+  anchored with the trail (FIN-96). A rewrite of postings and balances
+  that `verify_ledger` cannot see, by whoever can drop the triggers, no
+  longer matches the trail.
 
 ## Reconciliation
 
@@ -312,7 +342,15 @@ await breaks_of(bank.id)  # what is still unmatched
   candidate. Matches are recorded with their rule. What is left is
   recorded as **breaks**: lines without a posting, and postings without a
   line dated within the days the statements cover. Each run replaces the
-  account's breaks.
+  account's breaks. `ByAmountAndDate` looks for a line's postings by
+  amount, and every rule runs on a thread, so a long statement stalls no
+  request.
+- Every import and every run is recorded on the account, over HTTP as
+  from `manage.py accounting`: `StatementImported` (the statement's
+  name, the lines imported and skipped, and a SHA-256 of its lines) and
+  `AccountReconciled` (the run, the matches by rule, the breaks left), so
+  the audit trail names who imported a statement and who reconciled
+  (FIN-90).
 - A project's own rule is a class with a `name` and `match(lines,
   postings, window)` returning pairs (`MatchingRule`), added by path:
   `ACCOUNTING = {"MATCHING_RULES": [..., "payments.reconciliation.BySettlementId"]}`.

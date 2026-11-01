@@ -52,8 +52,8 @@ router.include_router(tokens_router, prefix="/auth")
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `GET /tokens` | `?limit=50&cursor=` | The user's tokens, newest first: `id` (the digest), `name`, `kind` (`access`, `session`, `refresh`), `scopes`, `created_at`, `expires_at`, `last_used_at`, and `current` for the one this request uses; `next_cursor`. |
-| `POST /tokens` | `{"name", "scopes", "expires_in_days"}` | `201`, with `token`: the value, shown this once and marked `Cache-Control: no-store`, so no cache or idempotency key keeps it (a retry with the key gets `409`). `expires_in_days` is 90 by default (1 to 3650), `null` for no end. `403 scope_not_held` for a scope the user lacks. |
+| `GET /tokens` | `?limit=50&cursor=` | The user's tokens, newest first: `id` (the digest), `name`, `kind` (`access`, `session`, `refresh`, `certificate`), `scopes`, `created_at`, `expires_at`, `last_used_at`, and `current` for the one this request uses; `next_cursor`. |
+| `POST /tokens` | `{"name", "scopes", "expires_in_days", "password"}` | `201`, with `token`: the value, shown this once and marked `Cache-Control: no-store`, so no cache or idempotency key keeps it (a retry with the key gets `409`). The user authenticates again first: a user with a second factor steps up (`POST /step-up`) within 5 minutes before, or gets `401 step_up_required`; one without sends `password` (`400 password_required`, `400 wrong_password`, counted with their other password checks). `expires_in_days` is 90 by default (1 to 3650), or `AUTH.PERSONAL_TOKEN_MAX_AGE` if shorter; more than that, or `null` for no end, is `422 token_lifetime_too_long`, unless the setting is `None`. `name` may not be `login`, the name of logins' tokens. `403 scope_not_held` for a scope the user lacks. |
 | `DELETE /tokens/{id}` | | `204`; `404 token_not_found` for a token that is not the user's. A refresh token takes its JWT login with it. |
 
 A token's scopes are permission keys (`shop.view_product`), at most 100,
@@ -71,6 +71,17 @@ so a scoped token can neither make a token with more, grant anything,
 nor change or lock its account. `/me` with a scoped token lists, in
 `permissions`, only those both the user and the scopes allow.
 `createtoken --scope KEY` makes scoped tokens from the command line.
+
+Making a token asks the user to authenticate again, as GitHub's sudo mode
+does, since a token outlives the login that made it: a page script that
+drives a browser session, or a login left open, would otherwise turn it
+into a credential that never idles out (AUTH-16). A personal token is no
+login: `IDLE_TIMEOUT` and `MAX_LOGINS` do not end it, nor does logging
+out of the session that made it (`DELETE /session`, `/logout` without
+`everywhere`). A password change or reset, turning on a second factor,
+`/logout` with `everywhere`, and an admin's change end it, as they end
+every token of the user. `createtoken` is the operator's way, and takes
+any lifetime.
 Creating and revoking are audited (`auth.token_created` with the scopes,
 `auth.token_revoked`).
 
@@ -273,8 +284,9 @@ without the prefix where it could hold.
 
 A single-page app on another origin needs CORS with credentials:
 `CORS_ALLOWED_ORIGINS = ["https://app.example.com"]`,
-`CORS_ALLOW_CREDENTIALS = True`, and `X-CSRF-Token` in
-`CORS_ALLOWED_HEADERS`. `check` reports the router mounted without
+`CORS_ALLOW_CREDENTIALS = True`, and `X-CSRF-Token` added to
+`CORS_ALLOWED_HEADERS`, keeping its defaults (`If-Match` and
+`Idempotency-Key` among them). `check` reports the router mounted without
 `CookieAuthentication` in `AUTHENTICATION_CLASSES`. List it after the
 classes that read headers: it issues no tokens for `/login`.
 

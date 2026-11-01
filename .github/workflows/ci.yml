@@ -90,7 +90,7 @@ jobs:
           poetry run pytest -n auto --junitxml=junit.xml
           domainkit_tests/test_api.py domainkit_tests/test_ci.py
           domainkit_tests/test_docs.py domainkit_tests/test_fintech_docs.py
-          domainkit_tests/test_recipes.py
+          domainkit_tests/test_problem_codes.py domainkit_tests/test_recipes.py
           domainkit_tests/test_sec13c_1_upgrade_guide_skips_removals.py
           domainkit_tests/test_sec14b_5_erase_leaves_documented_code.py
           domainkit_tests/test_walkthroughs.py
@@ -398,16 +398,58 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  # The PostgreSQL tests again, on the oldest PostgreSQL domainkit supports
+  # (docs/databases.md: 16 to 18; integration runs the newest). Only
+  # PostgreSQL is set, so tests of the other servers skip; a test skipped for
+  # want of PostgreSQL fails the job. Required, as integration is: the range
+  # is a promise of 1.0, and a release must not break its floor unseen
+  # (TEST-18). No coverage: integration's run is the one that counts.
+  postgresql-floor:
+    name: postgresql (16)
+    needs: changes
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DOMAINKIT_TEST_POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --all-extras --with dev
+      - shell: bash
+        run: |
+          poetry run pytest -n auto --dist worksteal -p no:cov -rs | tee pytest.log
+          ! grep -E "SKIPPED.*DOMAINKIT_TEST_POSTGRES_URL" pytest.log
+
   # The benchmark ladder (docs/performance.md, ADR 0064): Python calls and
   # database round trips per request on each rung, against
   # benchmarks/budgets.toml; over budget fails. CPU time goes to the job
   # summary, beside the base branch's on pull requests, and is never gated:
-  # a shared runner's timings are too noisy for that.
+  # a shared runner's timings are too noisy for that. Its Python is pinned
+  # to the patch release benchmarks/budgets.toml was written on: counts
+  # written on one did not hold on another (PERF-32).
   bench:
     needs: changes
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
@@ -435,7 +477,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.13.16"
       - run: pipx install "poetry==${POETRY_VERSION}"
       # Every extra, as make install: the modules each rung loads depend on
       # what is installed (prometheus_client, opentelemetry), and are gated.
@@ -868,6 +910,14 @@ jobs:
           if [ -z "$mutants" ]; then
             echo "### Mutation of the changed functions: none changed" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # Decorated functions (routes, validators, properties, context
+          # managers, fixtures): mutmut 3 never mutates them (ADR 0106).
+          if [ -s unmutated-functions.txt ]; then
+            {
+              echo "### Changed functions mutmut does not mutate (decorated)"
+              sed 's/^/- /' unmutated-functions.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       # The patterns are mutant names, not files: no globbing by the shell.
       # Interrupted (SIGINT) before the job's limit, mutmut stops and keeps
       # what it found and its stats, for the shards.
@@ -1163,7 +1213,7 @@ jobs:
               domainkit.contrib.audit.protection.* domainkit.contrib.audit.seals.*
               domainkit.contrib.audit.settings.* domainkit.contrib.audit.tasks.*
               domainkit.contrib.audit.checkpoints.* domainkit.contrib.audit.pruning.*
-              domainkit.contrib.audit.ledgerstates.*
+              domainkit.contrib.audit.ledgerstates.* domainkit.contrib.audit.testing.*
               domainkit.contrib.contenttypes.* domainkit.contrib.evidence.*
               domainkit.contrib.flags.* domainkit.contrib.idempotency.operations.*
               domainkit.contrib.idempotency.settings.*

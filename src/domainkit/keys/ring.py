@@ -30,7 +30,7 @@ import hmac
 import secrets
 import threading
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Protocol
 from weakref import WeakKeyDictionary
@@ -100,6 +100,11 @@ class SubjectKeyStore(Protocol):
     def find(self, connection: Connection, key_id: str) -> StoredSubjectKey | None:
         """The key ``key_id``; None once destroyed."""
 
+    def find_many(
+        self, connection: Connection, key_ids: Collection[str]
+    ) -> list[StoredSubjectKey]:
+        """The keys of ``key_ids`` still stored, read together (in few statements)."""
+
     def of_subject(
         self, connection: Connection, subject: str
     ) -> StoredSubjectKey | None:
@@ -165,6 +170,8 @@ class Keyring:
             key: tuple(keys) for key, keys in (alternates or {}).items()
         }
         self._keys: dict[str, bytes] | None = None
+        self._index_keys: dict[bytes, bytes] = {}
+        """The blind index's key derived from each data key, by data key."""
         ids = {*self.data_keys, *self._known}
         if current not in ids:
             raise ImproperlyConfigured(
@@ -266,9 +273,17 @@ class Keyring:
         return _seal(key, SUBJECT, key_id, plaintext, context)
 
     def open(
-        self, text: str, context: bytes, *, connection: Connection | None = None
+        self,
+        text: str,
+        context: bytes,
+        *,
+        connection: Connection | None = None,
+        subject_keys: Mapping[str, bytes | None] | None = None,
     ) -> bytes | None:
         """The plaintext ``text`` sealed for ``context``; None if its subject key went.
+
+        ``subject_keys`` are subjects' keys read already (``subject_keys_by_id``),
+        by id: a value sealed under one of them is opened without a read.
 
         Raises:
             DecryptionFailed: It is not a sealed value, it was sealed for
@@ -281,7 +296,12 @@ class Keyring:
         if kind == DATA:
             keys = self._every(key_id)
         else:
-            subject_key = self._subject_key_by_id(self._connection(connection), key_id)
+            if subject_keys is not None and key_id in subject_keys:
+                subject_key = subject_keys[key_id]
+            else:
+                subject_key = self._subject_key_by_id(
+                    self._connection(connection), key_id
+                )
             if subject_key is None:
                 return None
             keys = (subject_key,)
@@ -321,8 +341,14 @@ class Keyring:
         context: bytes,
         data_key: bytes | None = None,
     ) -> str:
-        """HMAC-SHA256 under a key derived from data key ``key_id``, cut to 128 bits."""
-        key = hkdf(data_key or self.data_key(key_id), info=_INDEX_INFO)
+        """HMAC-SHA256 under a key derived from data key ``key_id``, cut to 128 bits.
+
+        The derived key is made once per data key and kept (PERF-33).
+        """
+        base = data_key or self.data_key(key_id)
+        key = self._index_keys.get(base)
+        if key is None:
+            key = self._index_keys[base] = hkdf(base, info=_INDEX_INFO)
         digest = hmac.new(
             key, _INDEX_AAD + context + b"\x00" + plaintext, hashlib.sha256
         )
@@ -358,6 +384,34 @@ class Keyring:
         key = self.unwrap_subject_key(stored)
         _hold(held, stored, key)
         return key
+
+    def subject_keys_by_id(
+        self, connection: Connection, key_ids: Collection[str]
+    ) -> dict[str, bytes | None]:
+        """Subjects' keys ``key_ids``, unwrapped; None for those destroyed.
+
+        Those the transaction holds are not read again; the others are read
+        together, so a page of rows sealed for as many people costs one
+        statement, not one each (PERF-22), and the transaction holds them
+        from then on.
+        """
+        held = _kept(connection)
+        found: dict[str, bytes | None] = {}
+        missing: list[str] = []
+        for key_id in dict.fromkeys(key_ids):
+            kept = held.get(f"#{key_id}")
+            if kept is None:
+                missing.append(key_id)
+            else:
+                found[key_id] = kept[2]
+        if missing:
+            for stored in self._store().find_many(connection, missing):
+                key = self.unwrap_subject_key(stored)
+                _hold(held, stored, key)
+                found[stored.id] = key
+            for key_id in missing:
+                found.setdefault(key_id, None)
+        return found
 
     def wrap_subject_key(
         self, key_id: str, subject: str, key: bytes
@@ -410,12 +464,17 @@ class Keyring:
         return connection
 
 
-_ring: Keyring | None = None
-"""The process's ring, which ``domainkit.contrib.keys`` sets up."""
+_ring: Keyring | Callable[[], Keyring] | None = None
+"""The process's ring, or what gives it, which ``domainkit.contrib.keys`` sets up."""
 
 
-def use_keyring(ring: Keyring | None) -> None:
-    """Seal and open with ``ring`` from now on; None forgets the ring."""
+def use_keyring(ring: Keyring | Callable[[], Keyring] | None) -> None:
+    """Seal and open with ``ring`` from now on; None forgets the ring.
+
+    ``ring`` may be a function that returns the ring to use each time it
+    is asked: ``domainkit.contrib.keys`` gives one that follows the
+    settings (TEST-15).
+    """
     global _ring
     _ring = ring
 
@@ -432,7 +491,7 @@ def keyring() -> Keyring:
             "Encrypted fields need keys: install domainkit.contrib.keys, which "
             "reads them from KEYS (docs/contrib/keys.md)."
         )
-    return _ring
+    return _ring if isinstance(_ring, Keyring) else _ring()
 
 
 def forget_held(subjects: Collection[str]) -> None:

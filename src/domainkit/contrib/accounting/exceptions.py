@@ -74,9 +74,24 @@ class NoOpenPeriod(BusinessRuleViolation):
 
 
 class PeriodIsClosed(BusinessRuleViolation):
-    """An entry dated in a period that is closed."""
+    """An entry, or a new period, dated on or before the end of a closed period.
+
+    The books are closed up to the last day of the latest closed period:
+    no entry is dated there, in a period or in a gap between periods, and
+    no period is opened there (FIN-87).
+    """
 
     code = "period_closed"
+
+
+class EarlierPeriodOpen(BusinessRuleViolation):
+    """Closing a period while one before it is still open.
+
+    Periods close in date order, so a closed period's figures, its opening
+    balances included, never change afterwards (FIN-87).
+    """
+
+    code = "earlier_period_open"
 
 
 class PeriodsOverlap(BusinessRuleViolation):

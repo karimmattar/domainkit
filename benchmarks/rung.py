@@ -131,6 +131,16 @@ def domainkit_app(
     }
     if database is not None:
         overrides["DATABASES"] = {"default": database}
+    if rung.project == "money":
+        from benchmarks.project import money_settings
+        from domainkit.conf import settings
+
+        overrides["INSTALLED_DOMAINS"] = [
+            *settings.INSTALLED_DOMAINS,
+            *money_settings.DOMAINS,
+        ]
+        overrides["ROOT_ROUTER"] = "benchmarks.project.money_routes.router"
+        overrides.update(money_settings.SETTINGS)
     if rung.json_log:
         from domainkit.log import build_logging_config
 
@@ -145,6 +155,13 @@ def domainkit_app(
     return app
 
 
+def _filled(text: str, fixture: dict[str, str]) -> str:
+    """``text`` with each ``{name}`` of ``fixture`` replaced by its value."""
+    for name, value in fixture.items():
+        text = text.replace(f"{{{name}}}", value)
+    return text
+
+
 class Driver:
     """Send the rung's request to ``app``, again and again, and check the answers."""
 
@@ -155,7 +172,7 @@ class Driver:
         # A plain dict: a Counter's first miss would cost a call more.
         self.statuses: dict[int, int] = {}
         self.unexpected: list[str] = []
-        path = rung.path.replace("{item}", fixture.get("item", ""))
+        path = _filled(rung.path, fixture)
         headers = [
             (b"host", HOST.encode()),
             (b"user-agent", b"Mozilla/5.0 (X11; Linux x86_64) domainkit-bench/1.0"),
@@ -165,7 +182,9 @@ class Driver:
         ]
         if rung.token:
             headers.append((b"authorization", f"Bearer {fixture['token']}".encode()))
-        self.body = BODY if rung.method == "POST" else b""
+        self.body = b""
+        if rung.method == "POST":
+            self.body = _filled(rung.body, fixture).encode() if rung.body else BODY
         if self.body:
             headers.append((b"content-type", b"application/json"))
             headers.append((b"content-length", str(len(self.body)).encode()))

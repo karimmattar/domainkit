@@ -154,6 +154,7 @@ class IssuedTokens:
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+"""``request.auth.scheme`` of requests an opaque token authenticates."""
 RECHECK: Final = "domainkit.auth.recheck"
 """Set in an open connection's scope while its credentials are checked again
 (``AuthenticationMiddleware.reauthenticate``): the check writes no last use."""
@@ -161,7 +162,6 @@ STEPPING_SCHEMES: Final = frozenset({"token", "cookie"})
 """Schemes whose credentials keep their step-ups in the table, by digest."""
 IDLE: Final = "Session ended after inactivity; log in again."
 """Why a login unused for ``AUTH.IDLE_TIMEOUT`` is refused."""
-"""``request.auth.scheme`` of requests an opaque token authenticates."""
 JWT_SCHEME: Final = "jwt"
 """``request.auth.scheme`` of requests a JSON Web Token authenticates."""
 KEY_ID_LABEL: Final = b"domainkit:jwt-key-id"

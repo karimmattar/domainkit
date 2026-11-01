@@ -17,6 +17,9 @@ from domainkit.money import Money
 
 CardId = NewType("CardId", UUID)
 TransferId = NewType("TransferId", UUID)
+CURRENCIES: Final = ("USD", "EUR")
+"""The currencies transfers are made in: the limits and the approval threshold
+name each one (config/settings/base.py, apps.py), so none moves unbounded."""
 SHORTEST_NUMBER: Final = 12
 LONGEST_NUMBER: Final = 19
 
@@ -34,7 +37,7 @@ class InvalidCardNumber(BusinessRuleViolation):
 
 
 class InvalidAmount(BusinessRuleViolation):
-    """Amounts are more than zero."""
+    """Amounts are more than zero, in a currency transfers are made in."""
 
 
 class CardRegistered(DomainEvent):
@@ -97,6 +100,8 @@ class Transfer(AggregateRoot[TransferId]):
         """Send ``amount`` to ``card``, for its owner."""
         if amount.amount <= 0:
             raise InvalidAmount("An amount must be more than zero.")
+        if amount.currency.code not in CURRENCIES:
+            raise InvalidAmount("Transfers are not made in this currency.")
         transfer = cls(
             id=transfer_id, maker_id=card.owner_id, card_id=card.id, amount=amount
         )

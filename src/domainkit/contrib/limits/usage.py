@@ -18,12 +18,18 @@ commits with the movement, or rolls back with it::
 of one subject that a window bounds are counted one after the other:
 each locks the subject's row (``subjects``), then sums its usage in each
 window, on the database's clock. Locks are taken in the order of the
-subjects' keys; take them after the rows of the use case's own. Every
-movement is counted, a subject no window bounds too, without a lock: so
-a limit set, or an exemption lifted, partway through a window counts
-what moved earlier in it (SEC-15b-5). ``check`` says whether a movement would
-pass, counting nothing; ``release`` gives back what was counted under a
-key (a refund, a reversal). See ADR 0123.
+subjects' keys; take them after the rows of the use case's own. Only
+the movements of subjects a window bounds are kept: a subject no limit
+bounds over a window costs no row (PERF-26). A limit set, changed, or
+enabled partway through a window counts what moved earlier in it from
+the ledger's postings instead (``postings.count_earlier``, SEC-15b-5).
+
+A kind of subject bounded in some currency is bounded in all: a movement
+in a currency none of its limits names is refused (``currency_not_limited``),
+unless a default for every currency (``"currency": "*"``) bounds it
+(FIN-89). ``check`` says whether a movement would pass, counting nothing;
+``release`` gives back what was counted under a key (a refund, a
+reversal). See ADR 0123.
 """
 
 from collections import defaultdict
@@ -58,12 +64,14 @@ from domainkit.ddd import ReadOnlyError
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import Money
 
-from .exceptions import LimitExceeded, TransactionLimitExceeded
+from .exceptions import CurrencyNotLimited, LimitExceeded, TransactionLimitExceeded
 from .models import Direction, Limit, Movement, Window, limit_currency
 from .settings import LimitDefault, LimitsSettings
 from .tables import limits, subjects, usage
 from .uow import limits_alias
 
+ANY_CURRENCY: Final = "*"
+"""A default's currency that bounds every currency no other limit of its key names."""
 LOCK: Final = "domainkit.limits"
 """On SQLite, the name of the lock a count takes: the database's write lock."""
 PURGE_BATCH: Final = 5000
@@ -109,19 +117,21 @@ class Rule:
             stored=True,
         )
 
+    def names(self, key: SubjectKey) -> bool:
+        """Whether this limit is of the kind, direction, and subject of ``key``."""
+        kind, direction, _, subject = key
+        return (self.kind, self.direction) == (kind, direction) and (
+            self.subject in ("", subject)
+        )
+
     def covers(self, key: SubjectKey) -> bool:
-        """Whether this limit bounds the subject of ``key``."""
-        kind, direction, currency, subject = key
-        return (self.kind, self.direction, self.currency) == (
-            kind,
-            direction,
-            currency,
-        ) and self.subject in ("", subject)
+        """Whether this limit bounds the subject of ``key``, in its currency."""
+        return self.names(key) and self.currency in (key[2], ANY_CURRENCY)
 
     @property
-    def rank(self) -> tuple[bool, bool]:
-        """What wins among limits of one code: for one subject, then stored."""
-        return self.subject != "", self.stored
+    def rank(self) -> tuple[bool, bool, bool]:
+        """What wins among limits of one code: for one subject, its currency, stored."""
+        return self.subject != "", self.currency != ANY_CURRENCY, self.stored
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +237,11 @@ def _code(rule: Rule) -> str:
 
 
 async def _rules(session: AsyncSession, keys: Iterable[SubjectKey]) -> list[Rule]:
-    """The stored limits and the defaults that may bound the subjects of ``keys``."""
+    """The stored limits and the defaults of the subjects of ``keys``, any currency.
+
+    Every currency's, so a kind bounded in one is known to be bounded
+    (``_unnamed``).
+    """
     keys = list(keys)
     found = await session.execute(
         select(limits).where(
@@ -236,10 +250,9 @@ async def _rules(session: AsyncSession, keys: Iterable[SubjectKey]) -> list[Rule
                     and_(
                         limits.c.kind == kind,
                         limits.c.direction == direction,
-                        limits.c.currency == currency,
                         limits.c.subject.in_(("", subject)),
                     )
-                    for kind, direction, currency, subject in keys
+                    for kind, direction, _, subject in keys
                 )
             )
         )
@@ -249,9 +262,28 @@ async def _rules(session: AsyncSession, keys: Iterable[SubjectKey]) -> list[Rule
     defaults = [
         rule
         for rule in map(default_rule, config().DEFAULTS)
-        if _key_of(rule) not in shadowed and any(rule.covers(key) for key in keys)
+        if _key_of(rule) not in shadowed and any(rule.names(key) for key in keys)
     ]
     return stored + defaults
+
+
+def _unnamed(tallies: dict[SubjectKey, list[Decimal]], rules: list[Rule]) -> None:
+    """Refuse a movement in a currency no limit of its subject's names (FIN-89).
+
+    A subject some limit bounds, in any currency, is bounded in every
+    one: a limit (or a default for every currency, ``"*"``) of the
+    movement's currency must name it. A limit disabled for the subject
+    names its currency too: the exemption is in that currency only.
+
+    Raises:
+        CurrencyNotLimited: One is not named.
+    """
+    for key in tallies:
+        named = [rule for rule in rules if rule.names(key)]
+        if named and not any(rule.covers(key) for rule in named):
+            raise CurrencyNotLimited(
+                "No limit names this currency for this subject: it moves none."
+            )
 
 
 def _key_of(rule: Rule) -> tuple[str, str, Direction, str, str]:
@@ -413,13 +445,11 @@ async def _lock(session: AsyncSession, key: SubjectKey) -> tuple[UUID, datetime]
 
 
 async def _ensure(session: AsyncSession, keys: list[SubjectKey]) -> None:
-    """Make the rows of the subjects of ``keys`` that have none, locking none.
+    """Make the rows of the subjects of ``keys`` (at least one) that have none.
 
-    One statement; a row that is there stays as it is, unlocked: no window
-    bounds these subjects, so their movements need not wait for each other.
+    One statement, locking none: a row that is there stays as it is.
+    ``postings.count_earlier`` counts earlier movements under them.
     """
-    if not keys:
-        return
     dialect = session.get_bind().dialect.name
     now = dbclock.now(dialect)
     statement = _upsert(dialect)(subjects).values(
@@ -496,10 +526,12 @@ async def consume(
     Call it inside ``uow``, on the limits' database, before its commit: the
     count commits with the use case's changes, or rolls back with them. A
     movement within every limit is counted under ``key``, which ``release``
-    gives back; every movement is counted, whether a window bounds its
-    subject now or not.
+    gives back, for each subject a window bounds now; a subject none bounds
+    is counted nothing (PERF-26).
 
     Raises:
+        CurrencyNotLimited: A movement's subject is bounded in other
+            currencies, and nothing names the movement's (FIN-89).
         TransactionLimitExceeded: A movement is more than one may be.
         LimitExceeded: A window cannot take a movement: its amount, or one
             more of them.
@@ -512,17 +544,18 @@ async def consume(
     if session.get_bind().dialect.name != "postgresql":
         await uow.lock(LOCK)
     rules = await _rules(session, tallies)
+    _unnamed(tallies, rules)
     _transactions(tallies, rules)
-    unbounded: list[SubjectKey] = []
+    bounded: dict[SubjectKey, list[Decimal]] = {}
     for subject_key, amounts in tallies.items():
         windowed = _windowed(subject_key, rules)
         if not windowed:
-            unbounded.append(subject_key)
             continue
         subject_id, now = await _lock(session, subject_key)
         _judge(windowed, await _used(session, subject_id, now, windowed), amounts)
-    await _ensure(session, unbounded)
-    await _record(session, tallies, key)
+        bounded[subject_key] = amounts
+    if bounded:
+        await _record(session, bounded, key)
 
 
 async def check(uow: SqlAlchemyUnitOfWork, *movements: Movement) -> None:
@@ -539,6 +572,7 @@ async def check(uow: SqlAlchemyUnitOfWork, *movements: Movement) -> None:
     session = _session(uow, writes=False)
     tallies = _tally(movements)
     rules = await _rules(session, tallies)
+    _unnamed(tallies, rules)
     _transactions(tallies, rules)
     for subject_key, amounts in tallies.items():
         windowed = _windowed(subject_key, rules)
@@ -608,12 +642,13 @@ async def usage_of(
     """What ``subject`` of ``kind`` used of each limit that bounds it, now.
 
     By currency, direction, and code; ``currency`` and ``direction`` keep
-    to one of each.
+    to one of each. A default for every currency (``"*"``) is listed only
+    for the ``currency`` asked, in that currency.
     """
     async with connections.session(limits_alias(), readonly=True) as session:
         conditions = [limits.c.kind == kind, limits.c.subject.in_(("", subject))]
         if currency is not None:
-            conditions.append(limits.c.currency == currency)
+            conditions.append(limits.c.currency.in_((currency, ANY_CURRENCY)))
         if direction is not None:
             conditions.append(limits.c.direction == direction)
         found = await session.execute(select(limits).where(*conditions))
@@ -625,11 +660,15 @@ async def usage_of(
             if _key_of(rule) not in shadowed
             and rule.kind == kind
             and rule.subject in ("", subject)
-            and currency in (None, rule.currency)
+            and (rule.currency == ANY_CURRENCY or currency in (None, rule.currency))
             and direction in (None, rule.direction)
         ]
         keys = sorted(
-            {(kind, rule.direction, rule.currency, subject) for rule in rules}
+            {
+                (kind, rule.direction, currency or rule.currency, subject)
+                for rule in rules
+                if ANY_CURRENCY not in (currency or rule.currency)
+            }
         )
         return [each async for each in _usages(session, keys, rules)]
 
@@ -651,14 +690,14 @@ async def _usages(
         spent = dict(zip(map(_code, windowed), used, strict=True))
         for rule in bounding:
             amount, count = spent.get(rule.code, (Decimal(0), 0))
-            yield _usage(rule, now, amount, count)
+            yield _usage(rule, key[2], now, amount, count)
 
 
-def _usage(rule: Rule, now: datetime, amount: Decimal, count: int) -> Usage:
-    """``rule``'s usage, ``amount`` and ``count`` in its window at ``now``."""
+def _usage(rule: Rule, code: str, now: datetime, amount: Decimal, count: int) -> Usage:
+    """``rule``'s usage in the currency ``code``, its window read at ``now``."""
 
     def money(value: Decimal | None) -> Money | None:
-        return None if value is None else Money.of(value, rule.currency)
+        return None if value is None else Money.of(value, code)
 
     return Usage(
         code=rule.code,
@@ -667,7 +706,7 @@ def _usage(rule: Rule, now: datetime, amount: Decimal, count: int) -> Usage:
         subject=rule.subject,
         window=rule.window,
         since=None if rule.window is None else rule.window.start(now, rule.time_zone),
-        used=Money.of(amount, rule.currency),
+        used=Money.of(amount, code),
         count=count,
         per_transaction=money(rule.per_transaction),
         max_amount=money(rule.max_amount),

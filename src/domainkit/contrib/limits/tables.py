@@ -75,10 +75,17 @@ subjects = Table(
     Column("subject", String(255), nullable=False),
     Column("touched_at", UTCDateTime, nullable=False),
     UniqueConstraint("kind", "direction", "currency", "subject"),
-    Index("ix_domainkit_limits_subjects_touched_at", "touched_at"),
     info=USAGE,
 )
-"""One row per subject, direction, and currency that moved money: the lock."""
+"""One row per subject, direction, and currency a window bounds: the lock.
+
+Only the subjects a window bounds have one (PERF-26): a subject no limit
+bounds moves without a row, a lock, or usage.
+
+``touched_at`` has no index: the lock writes it on every movement, and an
+indexed column would make each of those writes a new index entry in every
+index (no HOT update). The hourly purge reads the subjects whole (PERF-30).
+"""
 
 usage = Table(
     "domainkit_limits_usage",
@@ -87,13 +94,18 @@ usage = Table(
     Column("subject_id", Uuid, ForeignKey(subjects.c.id), nullable=False),
     Column("amount", ExactDecimal(PRECISION, SCALE), nullable=False),
     Column("at", UTCDateTime, nullable=False),
-    Column("key", String(MAX_KEY), index=True),
+    Column("key", String(MAX_KEY)),
     Column("released_at", UTCDateTime),
     Index("ix_domainkit_limits_usage_subject", "subject_id", "at"),
     Index("ix_domainkit_limits_usage_at", "at"),
+    Index("ix_domainkit_limits_usage_key_hash", "key", postgresql_using="hash"),
     info=USAGE,
 )
-"""Each movement counted against a subject's limits; released ones count no more."""
+"""Each movement counted against a subject's limits; released ones count no more.
+
+``key`` is only ever looked up by equality (``release``): on PostgreSQL its
+index is a hash, a third of the B-tree's size (PERF-30).
+"""
 
 
 def start_mappers() -> None:

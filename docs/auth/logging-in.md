@@ -7,7 +7,7 @@ error body.
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `POST /login` | `{"username", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `401 invalid_credentials`; `429 login_throttled`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
+| `POST /login` | `{"username", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `401 invalid_credentials`; `429 rate_limited`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
 | `POST /step-up` (`auth.stepup.router`) | `{"code"}`, and `"password"` where asked | `200` with when and how the credentials stepped up, for routes that ask (`StepUp`, [Stepping up](step-up.md)); `401 invalid_code`; `409 no_second_factor`. |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` | `204`: this session's tokens end, or every token of the user. |
@@ -86,6 +86,13 @@ holds, and what does not:
 - At most `LOGIN_RATE` wrong passwords a period are checked for one
   account, from however many addresses, and at most `LOGIN_RATE` from one
   address (an IPv6 network), for however many accounts.
+- At most `AUTH.ACCOUNT_LOGIN_RATE` (100 a day) wrong passwords are
+  checked for one account over the day, however slowly they come: NIST SP
+  800-63B 5.2.2 limits an account to 100 failed attempts, and
+  `"10/minute"` alone allowed 14,400 a day (AUTH-19). Proven clients
+  count apart at the same rate (below), so a stranger who fills the day's
+  count holds back the user's new browsers until the day frees places,
+  not the browsers they logged in from before.
 - Logins that work never use a count up, so many users behind one address,
   or one that logs in often, are never refused for their own logins.
 - Wrong passwords use the counts up whoever sends them. `LOGIN_RATE` wrong
@@ -125,7 +132,9 @@ address's:
   One copied proof fills only its own device's count, half the ceiling.
 - Guessing stays bounded per account: at most `LOGIN_RATE` wrong
   passwords a period without proofs, and twice as many with proofs,
-  however many proofs one holds. Proofs come only from logins that held,
+  however many proofs one holds; over a day, `ACCOUNT_LOGIN_RATE` without
+  proofs and as many again with them (200 a day in all, by default, of
+  which a stranger without a proof gets 100). Proofs come only from logins that held,
   second factor included, and end with the password. A proof made for
   another account, forged, or of a device that ended counts as none.
   Each login that works renews its device.
@@ -189,10 +198,10 @@ router.include_router(mfa_router, prefix="/auth")
 | --- | --- | --- | --- |
 | `GET /mfa` | a user | | `{"enabled", "recovery_codes_left"}`. |
 | `POST /mfa/totp` | a user | `{"password"}` | `{"secret", "otpauth_uri"}`: the secret in base 32, and the URI for a QR code; `400 wrong_password`; `409 mfa_enabled`. |
-| `POST /mfa/totp/confirm` | a user | `{"code"}` | `{"recovery_codes"}`, shown once: the second factor is on; `401 invalid_code`; `400 no_enrolment`. |
+| `POST /mfa/totp/confirm` | a user | `{"code"}` | `{"recovery_codes"}`, shown once: the second factor is on, and every other login and token of the user ends; `401 invalid_code`; `400 no_enrolment`. |
 | `POST /mfa/totp/disable` | a user | `{"password", "code"}` | `204`: it is off. |
 | `POST /mfa/recovery-codes` | a user | `{"password", "code"}` | `{"recovery_codes"}`: new codes replace the old ones. |
-| `POST /mfa/login` | anyone | `{"mfa_token", "code"}` | The tokens `/login` would have returned; `400 invalid_token`; `401 invalid_code`; `429 throttled`. |
+| `POST /mfa/login` | anyone | `{"mfa_token", "code"}` | The tokens `/login` would have returned; `400 invalid_token`; `401 invalid_code`; `429 rate_limited`. |
 
 Once it is on, `/login` checks the password as before, then answers `202`
 with `{"mfa_required": true, "mfa_token", "expires_in"}` instead of
@@ -218,15 +227,22 @@ tokens. Browser sessions do the same: `POST /session` answers `202`, and
   checked, and never hold a valid one back. Anyone with the password can
   use up the user's count, and hold the user's logins back for the hour.
   The audited `throttled` refusals show it.
+- Turning it on ends every other login and token of the user (personal
+  tokens, devices, and certificates included), as a new password does:
+  what logged in with the password alone may not be the user's. The
+  request's own login stays.
 - Turning it off, and new recovery codes, need the password and a code:
   a stolen session cannot remove the factor.
 - Secrets are stored encrypted with AES-256-GCM under a key derived from
   `SECRET_KEY`, bound to the user's id ([ADR 0030](../adr/0030-encrypt-totp-secrets-under-a-derived-key.md)).
   Recovery codes (10 of 80 random bits, `MFA.RECOVERY_CODES`) are stored
   as digests. When `SECRET_KEY` is replaced, keep the old key in
-  `SECRET_KEY_FALLBACKS` until every user with a second factor has logged
-  in: each login moves their secret to the new key. Without it, those
-  users cannot log in.
+  `SECRET_KEY_FALLBACKS`: each login moves its user's secret to the new
+  key. Before dropping it, run `manage.py resealmfa`, which moves every
+  secret still under a fallback, and `resealmfa --check`, which fails
+  while one is (AUTH-17). A secret no key held opens is refused with
+  `409 second_factor_unreadable`, audited and logged, wherever a code is
+  checked; recovery codes still work, and `resetmfa` turns the factor off.
 - `resetmfa <username>` turns it off for a user who lost the app and the
   codes, and ends their sessions; check who is asking first.
 
@@ -261,9 +277,9 @@ router.include_router(recovery_router, prefix="/auth")
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /password-reset` | anyone | `{"email"}` | Always `202`; `429 throttled`. |
+| `POST /password-reset` | anyone | `{"email"}` | Always `202`; `429 rate_limited`. |
 | `POST /password-reset/confirm` | anyone | `{"token", "new_password"}` | `204`; `400 invalid_token`; `422` if a validator refuses the password. |
-| `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 throttled`. |
+| `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 rate_limited`. |
 | `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
 
 A reset request answers `202` whether or not an account uses the address,
@@ -316,8 +332,8 @@ until `AUTH.SIGNUP_ENABLED` is on:
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"username", "email"}` | `202`; `422` for fields that do not fit; `429 throttled`. |
-| `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 throttled`; `503 password_checks_busy`. |
+| `POST /signup` | anyone | `{"username", "email"}` | `202`; `422` for fields that do not fit; `429 rate_limited`. |
+| `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
 
 The fields are checked at once (`422`), which tells nothing about other
 accounts; no password is taken. Then the request is kept as a pending

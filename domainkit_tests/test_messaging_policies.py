@@ -51,6 +51,7 @@ from domainkit.management import CommandError
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     FAST,
+    NO_GRACE,
     broker_tables,
     brokered,
     delivery,
@@ -640,7 +641,7 @@ async def test_a_step_no_longer_registered_dead_letters() -> None:
     async with connections.engine().begin() as connection:
         await connection.execute(messages.insert().values([row, event]))
 
-    await Worker().run_once()
+    await Worker(NO_GRACE).run_once()
 
     by_target = {r["target"]: r for r in await rows()}
     assert set(by_target) == {"tests.charge", "tests.gone", "missing.handler"}

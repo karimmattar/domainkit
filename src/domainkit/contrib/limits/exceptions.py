@@ -41,6 +41,16 @@ class LimitExceeded(BusinessRuleViolation):
         self.window = window
 
 
+class CurrencyNotLimited(LimitExceeded):
+    """A movement in a currency none of its subject's limits names (FIN-89).
+
+    A subject bounded in one currency is bounded in all: name the
+    currency in a limit, or give a default for every currency (``"*"``).
+    """
+
+    code = "currency_not_limited"
+
+
 class TransactionLimitExceeded(LimitExceeded):
     """A movement over the most one movement may be (``per_transaction``).
 

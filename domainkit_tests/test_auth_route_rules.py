@@ -38,6 +38,7 @@ ROUTES = "domainkit_tests.sample_open_routes"
 FIX = "add Depends(Require(...)), or dependencies=[Public] if anyone may call it."
 OPEN = [
     f"GET /open declares no access rule: {FIX}",
+    f"GET /current declares no access rule: {FIX}",
     f"GET POST /both declares no access rule: {FIX}",
     f"WEBSOCKET /socket declares no access rule: {FIX}",
 ]
@@ -77,7 +78,10 @@ mounted.mount("/static", StaticFiles(directory="static", check_dir=False))
 
 
 def test_routes_without_rules_are_listed() -> None:
-    """``Require``, the user dependencies, and ``Public`` count, at any depth."""
+    """``Require``, ``AuthenticatedUser``, and ``Public`` count, at any depth.
+
+    ``CurrentUser`` alone does not: anyone passes it (DSGN-17).
+    """
     app = FastAPI()
     app.include_router(sample_open_routes.router, prefix="/v1")
     app.add_api_route("/direct", sample_open_routes.open_route)
@@ -86,6 +90,7 @@ def test_routes_without_rules_are_listed() -> None:
 
     assert open_routes(app) == [
         "GET /v1/open",
+        "GET /v1/current",
         "GET POST /v1/both",
         "WEBSOCKET /v1/socket",
         "GET /direct",
@@ -216,12 +221,17 @@ ALONE: dict[str, tuple[APIRouter, bool]] = {
 
 @pytest.mark.parametrize("kind", ALONE)
 def test_each_way_of_reading_the_user(kind: str) -> None:
-    """Each route alone: does it need ``AuthenticationMiddleware``?"""
+    """Each route alone: does it need ``AuthenticationMiddleware``, and a rule?
+
+    ``CurrentUser`` reads the user, so it needs the middleware, but lets
+    anyone in, so it declares no rule (DSGN-17).
+    """
     router, needs = ALONE[kind]
     app = app_of(router)
 
     assert routes_need_users(app) is needs
-    assert open_routes(app) == (["GET /alone"] if kind == "open" else [])
+    declared = kind not in {"open", "current"}
+    assert open_routes(app) == ([] if declared else ["GET /alone"])
 
 
 @pytest.fixture

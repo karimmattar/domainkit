@@ -40,6 +40,8 @@ from domainkit.http.access import HasPermissions, current_user
 class FieldNotEditable(PermissionDenied):
     """A partial change sets a field the caller may not change."""
 
+    code = "field_not_editable"
+
 
 class FieldPolicy:
     """Who sees and who changes each field of a resource (see the module)."""

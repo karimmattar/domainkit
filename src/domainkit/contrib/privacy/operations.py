@@ -31,9 +31,15 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import clock
-from domainkit.apps.hooks import Hook, on_erase_subject, on_export_subject
+from domainkit.apps.hooks import (
+    Hook,
+    on_erase_check,
+    on_erase_subject,
+    on_export_subject,
+)
 from domainkit.contrib.audit import Outcome, forget, record
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
+from domainkit.ddd import BusinessRuleViolation
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import sqlstate
 from domainkit.utils.decimals import jsonable
@@ -163,6 +169,42 @@ async def export_subject(subject: str) -> dict[str, Any]:
     }
 
 
+class ErasureHeld(BusinessRuleViolation):
+    """A person's data must be kept for now: nothing of it was erased (FIN-94).
+
+    ``held`` names, by domain, why each ``on_erase_check`` holds it (an
+    account with money on it, a retention the law asks for).
+    """
+
+    code = "erasure_held"
+
+    def __init__(self, message: str, *, held: Mapping[str, str]) -> None:
+        """Store the message, and each domain's reason."""
+        super().__init__(message)
+        self.held = dict(held)
+
+
+async def erasure_holds(subject: str, reason: str) -> dict[str, str]:
+    """What each domain's ``on_erase_check`` says holds the erasure, by domain.
+
+    Raises:
+        ImproperlyConfigured: A check answered something other than a
+            sentence or None.
+    """
+    held: dict[str, str] = {}
+    for hook in on_erase_check:
+        found = await hook.call(subject, reason)
+        if found is None:
+            continue
+        if not isinstance(found, str) or not _TEXT.fullmatch(found):
+            raise ImproperlyConfigured(
+                f"The on_erase_check hook of {hook.domain!r} answered {found!r}: "
+                "a sentence of 1 to 255 printable characters, or None."
+            )
+        held.setdefault(hook.domain, found)
+    return held
+
+
 async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     """Erase every field marked ``Personal`` about ``subject``; return how many changed.
 
@@ -175,7 +217,13 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     (``privacy.copies_erased``, counts only). The subject's keys in the
     audit trail are then forgotten, and the erasure recorded.
 
+    First, every domain's ``on_erase_check`` is asked whether the
+    subject's data must be kept for now: if any says so, nothing is
+    erased, ``privacy.erase`` is recorded as denied with the reasons, and
+    ``ErasureHeld`` is raised (FIN-94).
+
     Raises:
+        ErasureHeld: A domain holds the erasure.
         ValueError: ``subject`` or ``reason`` is not 1 to 255 printable
             characters, or ``subject`` is an id not written as it prints
             (see ``check_subject``).
@@ -184,6 +232,18 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     """
     check_subject(subject)
     check_reason(reason)
+    if held := await erasure_holds(subject, reason):
+        await record(
+            "privacy.erase",
+            Outcome.DENIED,
+            target=subject,
+            held=held,
+            reason=reason,
+        )
+        raise ErasureHeld(
+            "This person's data must be kept for now: nothing was erased.",
+            held=held,
+        )
     erased = 0
     for model in personal_models():
         for of, fields in model.subjects.items():

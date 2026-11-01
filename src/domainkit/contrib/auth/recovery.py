@@ -307,7 +307,6 @@ async def _limit_mail(request: Request, scope: str, recipient: str) -> None:
         [address_key(request, scope), recipient],
         action=f"auth.{scope.replace('-', '_')}",
         detail="Too many requests for mail; try again later.",
-        code="throttled",
     )
 
 
@@ -323,7 +322,6 @@ async def _count_failed_check(request: Request, scope: str) -> None:
         address_key(request, f"{scope}-confirm"),
         action=f"auth.{scope.replace('-', '_')}",
         detail="Too many attempts; try again later.",
-        code="throttled",
     )
 
 

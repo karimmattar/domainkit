@@ -14,9 +14,17 @@ test settings point at:
 - Any other URL is used as it is.
 
 Every database is then migrated up, down to base, and up again, which
-proves each revision reversible. With ``keepdb``, PostgreSQL test databases
-are kept for the next run, which reuses them, migrations only go up, and
-the rows are put back as ``migrate`` left them when the run ends.
+proves each revision reversible. Where an entry's ``URL`` names another
+role than its ``MIGRATION_URL`` (the application's row-level role beside
+the schema owner, as ``docs/deploying.md`` asks), the owner then grants that
+role what the application needs on the test database: ``USAGE`` on its
+schemas, ``SELECT``, ``INSERT``, ``UPDATE``, ``DELETE`` on their tables, and
+``USAGE``, ``SELECT``, ``UPDATE`` on their sequences; nothing more, so a
+test that needs more fails as production would (TEST-13).
+
+With ``keepdb``, PostgreSQL test databases are kept for the next run,
+which reuses them, migrations only go up, and the rows are put back as
+``migrate`` left them when the run ends.
 
 Only test settings are accepted (``ENVIRONMENT = "test"``): the databases
 are emptied, and the configured ones must never be the ones touched.
@@ -68,6 +76,15 @@ MAINTENANCE_DATABASE: Final = "postgres"
 URL_FIELDS: Final = ("URL", "MIGRATION_URL")
 _WORKER: Final = re.compile(r"\w{1,32}", re.ASCII)
 _EXISTS: Final = text("SELECT 1 FROM pg_database WHERE datname = :name")
+_SCHEMAS: Final = text(
+    "SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' "
+    "AND nspname <> 'information_schema' ORDER BY nspname"
+)
+"""The test database's own schemas, which the application's role is granted."""
+TABLE_PRIVILEGES: Final = "SELECT, INSERT, UPDATE, DELETE"
+"""What a row-level application role may do to a table."""
+SEQUENCE_PRIVILEGES: Final = "USAGE, SELECT, UPDATE"
+"""What it may do to a sequence: draw the next id."""
 REFUSAL: Final = (
     "This test reached the database without requesting it, so it would see "
     "whatever earlier tests left there. Request the db fixture (a client "
@@ -268,6 +285,7 @@ def migrated_database(
         try:
             run_async(_each(created, TestDatabase.create, keep=keepdb))
             migrate(round_trip=not keepdb)
+            run_async(grant_application_roles(settings.DATABASES))
             snapshot = run_async(take_snapshot()) if keepdb else None
             try:
                 yield settings.DATABASES[DEFAULT_DB_ALIAS].URL.get_secret_value()
@@ -277,6 +295,73 @@ def migrated_database(
         finally:
             if not keepdb:
                 run_async(_each(created, TestDatabase.drop))
+
+
+def application_role(config: DatabaseConfig) -> tuple[str, str] | None:
+    """``URL``'s role and the owner's URL, when ``MIGRATION_URL`` names another role.
+
+    None on other databases than PostgreSQL, without ``MIGRATION_URL``, or
+    when both name the same role (or ``URL`` none).
+    """
+    if config.MIGRATION_URL is None:
+        return None
+    owner = config.MIGRATION_URL.get_secret_value()
+    url = make_url(config.URL.get_secret_value())
+    if url.get_backend_name() != "postgresql" or not url.username:
+        return None
+    if url.username == make_url(owner).username:
+        return None
+    return url.username, owner
+
+
+async def grant_application_roles(databases: Mapping[str, DatabaseConfig]) -> None:
+    """Grant each entry's application role DML on its test database, as the owner.
+
+    Raises:
+        pytest.UsageError: The role does not exist on the server.
+    """
+    for alias, config in databases.items():
+        if (found := application_role(config)) is None:
+            continue
+        role, owner = found
+        engine = create_async_engine(
+            owner,
+            isolation_level="AUTOCOMMIT",
+            poolclass=NullPool,
+            connect_args=connect_args(config, owner, timeouts=False),
+        )
+        try:
+            async with engine.connect() as connection:
+                await _grant(connection, alias, role)
+        finally:
+            await engine.dispose()
+
+
+async def _grant(connection: AsyncConnection, alias: str, role: str) -> None:
+    """Grant ``role`` DML on every table and sequence of the database's schemas.
+
+    Raises:
+        pytest.UsageError: The role does not exist on the server.
+    """
+    quote = connection.dialect.identifier_preparer.quote
+    grantee = quote(role)
+    exists = text("SELECT 1 FROM pg_roles WHERE rolname = :role")
+    if await connection.scalar(exists, {"role": role}) is None:
+        raise pytest.UsageError(
+            f"DATABASES[{alias!r}]: URL connects as {role!r}, which does not exist "
+            f"on the server; create it (the application's row-level role)."
+        )
+    for schema in (await connection.execute(_SCHEMAS)).scalars():
+        name = quote(schema)
+        for statement in (
+            f"GRANT USAGE ON SCHEMA {name} TO {grantee}",
+            f"GRANT {TABLE_PRIVILEGES} ON ALL TABLES IN SCHEMA {name} TO {grantee}",
+            (
+                f"GRANT {SEQUENCE_PRIVILEGES} ON ALL SEQUENCES IN SCHEMA {name} "
+                f"TO {grantee}"
+            ),
+        ):
+            await connection.exec_driver_sql(statement)
 
 
 def migrate(*, round_trip: bool) -> None:

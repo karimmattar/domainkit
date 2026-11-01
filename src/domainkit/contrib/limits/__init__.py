@@ -24,6 +24,7 @@ over HTTP, by model permission. See ``docs/contrib/limits.md`` and ADR 0123.
 """
 
 from .exceptions import (
+    CurrencyNotLimited,
     InvalidLimit,
     LimitExceeded,
     LimitNotFound,
@@ -60,6 +61,7 @@ __all__ = [
     "ACTOR",
     "HOLDER",
     "ChangeLimit",
+    "CurrencyNotLimited",
     "Direction",
     "InvalidLimit",
     "Limit",

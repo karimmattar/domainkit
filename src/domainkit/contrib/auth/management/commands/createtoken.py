@@ -8,6 +8,7 @@ from domainkit.management.base import BaseCommand, CommandError, run_async
 from ...backends import get_all_permissions
 from ...events import TokenCreated
 from ...settings import AUTHENTICATION, auth_settings
+from ...tokens import LOGIN_NAME
 from ...uow import AuthUnitOfWork
 
 TOKEN_AUTHENTICATION = f"{AUTHENTICATION}.TokenAuthentication"
@@ -56,6 +57,10 @@ class Command(BaseCommand):
             raise CommandError("--days must be at least 1.")
         if len(name) > NAME_MAX_LENGTH:
             raise CommandError(f"--name has at most {NAME_MAX_LENGTH} characters.")
+        if name == LOGIN_NAME:
+            raise CommandError(
+                f"--name {LOGIN_NAME!r} names logins' tokens; choose another."
+            )
         if TOKEN_AUTHENTICATION not in auth_settings().AUTHENTICATION_CLASSES:
             self.stderr.write(
                 f"Note: AUTH.AUTHENTICATION_CLASSES does not list "

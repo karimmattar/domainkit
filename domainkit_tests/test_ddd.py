@@ -4,7 +4,7 @@ import asyncio
 import dataclasses
 import functools
 import logging
-from typing import NewType
+from typing import Any, NewType
 from uuid import UUID, uuid4
 
 import pytest
@@ -414,3 +414,21 @@ async def test_pages_know_whether_more_follow() -> None:
 async def test_new_aggregates_start_unversioned() -> None:
     """Storage assigns version 1 on insert; new objects start at 0."""
     assert new_order().version == 0
+
+
+def test_a_framework_error_without_its_code_is_refused() -> None:
+    """A class of domainkit's own that sets no code cannot be defined."""
+    namespace = {"__module__": "domainkit.contrib.example", "__doc__": "An error."}
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"^domainkit\.contrib\.example\.ExampleNotFound must set its code: "
+            r"domainkit's problem codes are pinned, never derived\.$"
+        ),
+    ):
+        type("ExampleNotFound", (DomainError,), namespace)
+    project: type[Any] = type(
+        "ExampleNotFound", (DomainError,), {"__module__": "shop.errors"}
+    )
+    assert project.code == "example_not_found"

@@ -135,6 +135,12 @@ pull request and weekly. When an upstream release breaks the newest, the
 next patch release fixes domainkit or lowers that range's top.
 Renovate widens a range when a new major appears, once CI passes with it.
 
+Each release supports PostgreSQL 16 to 18 (TEST-18). CI runs the
+suite against the newest (`integration`, on 18) and the oldest
+(`postgresql (16)`); both are required checks. Dropping a version is a
+minor-release change and appears in the changelog; a new major is added
+once both jobs pass with it. SQLite is for development and tests.
+
 Every package the code imports is declared, even one that another
 dependency already installs (anyio through Starlette, pydantic-core through
 pydantic): in the dependencies when the core imports it, otherwise in the
@@ -192,8 +198,8 @@ One-time setup, before the first release:
   - `main.json`: changes reach `main` only as squash-merged pull requests,
     up to date with it, with these checks from GitHub Actions passing:
     `changes`, `docs`, `lint`, `test (3.13)`, `test (3.14)`, `test (3.14t)`,
-    `integration`, `bench`, `coverage`, `build`, `sbom`, `semgrep`, `docs-site`,
-    and `audit`. A pull request that changes only `docs/**` and the Markdown at
+    `integration`, `postgresql (16)`, `bench`, `coverage`, `build`, `sbom`,
+    `semgrep`, `docs-site`, and `audit`. A pull request that changes only `docs/**` and the Markdown at
     the top of the repository runs `docs` (the tests that read the docs),
     `docs-site`, `lint`, `semgrep` and `audit`; the others are skipped, which reports
     success, and the test matrix skips its steps. Any other pull request

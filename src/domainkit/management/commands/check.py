@@ -26,6 +26,7 @@ from domainkit.ddd import event_bus
 from domainkit.http import websockets
 from domainkit.http.application import application_problems, build_application
 from domainkit.http.blocking import awaited_sync, sync_calls
+from domainkit.http.live import unchecked_routes
 from domainkit.http.servers import unix_socket_warnings
 from domainkit.management.base import BaseCommand, CommandError
 
@@ -107,6 +108,7 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("live.W001", websockets.deployment_warnings(app))
     warnings += [found for hook in on_deployment_warnings for found in hook.call()]
     if deployed:
+        warnings += _tagged("live.W002", unchecked_routes(app.routes))
         warnings += _tagged("servers.W001", websockets.server_warnings(app))
         warnings += _tagged(
             "servers.W002", unix_socket_warnings(settings.TRUSTED_PROXIES)

@@ -11,11 +11,13 @@ tree is migrated by its own code::
 drop. It writes the project's migrations (to ``DOMAINKIT_BENCH_MIGRATIONS``)
 and applies them, then adds a user (without a usable password) in a group
 that may view and add items, an opaque token for them that expires within
-``TOKEN_TTL``, and an item. ``FIXTURE`` then gets the token and the item's
-id, as JSON. Only schemas named ``domainkit_bench_...`` are ever created or
-dropped, and ``python -m benchmarks`` names each run's with a random suffix
-and drops only that one. A failure is printed with the URL's password
-masked.
+``TOKEN_TTL``, and an item. With the money rungs' domains (a tree that has
+them), it also installs those, and adds a card, a cash account and a
+customer's account, a period, and a step-up of the token. ``FIXTURE`` then
+gets the token and the ids, as JSON. Only schemas named
+``domainkit_bench_...`` are ever created or dropped, and ``python -m
+benchmarks`` names each run's with a random suffix and drops only that one.
+A failure is printed with the URL's password masked.
 """
 
 import asyncio
@@ -26,6 +28,7 @@ import re
 import sys
 import traceback
 from datetime import timedelta
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Final
 from uuid import uuid4
@@ -101,6 +104,71 @@ async def seed() -> dict[str, str]:
     return {"token": token, "item": str(item.id)}
 
 
+async def seed_money(token: str) -> dict[str, str]:
+    """Add the money rungs' card, accounts, period, and the token's step-up."""
+    from datetime import date
+
+    from benchmarks.project.vault.models import Card, CardId
+    from benchmarks.project.vault.uow import VaultUnitOfWork
+    from domainkit.contrib.accounting import (
+        AccountingUnitOfWork,
+        AccountType,
+        OpenAccount,
+        OpenPeriod,
+        open_account,
+        open_period,
+    )
+    from domainkit.contrib.auth import AuthUnitOfWork
+    from domainkit.contrib.auth.tokens import token_digest, utc_now
+    from domainkit.db import connections
+
+    card = Card(id=CardId(uuid4()), holder="bench", number="4111111111111111")
+    async with VaultUnitOfWork() as vault:
+        await vault.cards.add(card)
+        await vault.commit()
+    cash = await open_account(
+        OpenAccount(
+            code="bench-cash",
+            name="Cash",
+            type=AccountType.ASSET,
+            currency="USD",
+            may_go_negative=True,
+        ),
+        AccountingUnitOfWork(),
+    )
+    wallet = await open_account(
+        OpenAccount(
+            code="bench-wallet",
+            name="Bench's wallet",
+            type=AccountType.LIABILITY,
+            currency="USD",
+            holder="bench",
+        ),
+        AccountingUnitOfWork(),
+    )
+    await open_period(
+        OpenPeriod(
+            name="bench", starts_on=date(2000, 1, 1), ends_on=date(2099, 12, 31)
+        ),
+        AccountingUnitOfWork(),
+    )
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.get_by_natural_key("bench")
+        assert user is not None  # noqa: S101 - seed() made it.
+        await uow.step_ups.record(token_digest(token), user.id, utc_now(), ["otp"])
+        await uow.commit()
+    await connections.close_all()
+    return {"card": str(card.id), "cash": str(cash.id), "wallet": str(wallet.id)}
+
+
+def money_rungs() -> bool:
+    """Whether the tree measured has what the money rungs install."""
+    return all(
+        find_spec(name) is not None
+        for name in ("domainkit.money", "domainkit.contrib.limits")
+    )
+
+
 def create(url: str, schema: str, fixture: Path) -> None:
     """Make ``schema`` on ``url`` ready for the database rungs.
 
@@ -114,12 +182,23 @@ def create(url: str, schema: str, fixture: Path) -> None:
     from domainkit.management import call_command
 
     configure("benchmarks.project.settings")
-    with override_settings(DATABASES={"default": database(url, schema)}):
+    overrides: dict[str, Any] = {"DATABASES": {"default": database(url, schema)}}
+    money = money_rungs()
+    if money:
+        from benchmarks.project import money_settings
+        from domainkit.conf import settings
+
+        domains = [*settings.INSTALLED_DOMAINS, *money_settings.DOMAINS]
+        overrides |= {"INSTALLED_DOMAINS": domains, **money_settings.SETTINGS}
+    with override_settings(**overrides):
         setup()
         output = io.StringIO()
         call_command("makemigrations", "-m", "bench", stdout=output)
         call_command("migrate", stdout=output)
-        fixture.write_text(json.dumps(asyncio.run(seed())))
+        seeded = asyncio.run(seed())
+        if money:
+            seeded |= asyncio.run(seed_money(seeded["token"]))
+        fixture.write_text(json.dumps(seeded))
 
 
 def main(argv: list[str] | None = None) -> int:

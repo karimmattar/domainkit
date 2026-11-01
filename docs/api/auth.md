@@ -21,7 +21,7 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `Credentials`: Who sent a request, and with what (`request.auth`).
 - `CurrentUser`: The request's user, or `AnonymousUser`: the core's dependency, typed so.
 - `Group`: A named set of permissions; every member has them all.
-- `GroupId`: NewType creates simple unique types with almost zero runtime overhead.
+- `GroupId`: A group's id: a UUID typed apart from other ids.
 - `GroupNameTaken`: Another group has that name.
 - `GroupNotFound`: No group has that id.
 - `InvalidEmail`: The email address is not one plain address mail can go to.
@@ -46,7 +46,7 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `UnknownPermission`: No permission has that key (`<domain>.<codename>`).
 - `UnknownUserField`: The user model has no such field, or it changes another way.
 - `User`: The default user; `AUTH.USER_MODEL` swaps in a project's own.
-- `UserId`: NewType creates simple unique types with almost zero runtime overhead.
+- `UserId`: A user's id: a UUID typed apart from other ids.
 - `UserNotFound`: No user has that id.
 - `UsernameTaken`: Another user has that username.
 - `acheck_password`: `check_password` on a hashing thread; raises `PasswordChecksBusy`.
@@ -96,11 +96,13 @@ Who a user is, and what they may do (Django's authentication backends).
 
 - `BaseBackend`: A backend that knows no one and grants nothing; override what you need.
 - `ModelBackend`: Passwords from the user table; permissions of users and their groups.
+- `ObjectGrant`: `permission` granted on one object: its content type and its id.
 - `authenticate`: The user the credentials prove, by the first backend that accepts them.
 - `get_all_permissions`: Keys of every permission any backend grants `user` (on `obj`).
 - `get_user`: The user with `user_id`, from the first backend that has it.
 - `has_perm`: Whether `user` has `perm` (on `obj`).
 - `has_perms`: Whether `user` has every one of `perms` (on `obj`).
+- `object_grants`: What every backend grants `holder` (a user or a group) on single objects.
 
 ## `domainkit.contrib.auth.certificates`
 
@@ -159,11 +161,11 @@ Users, groups, and permissions: the domain model of `domainkit.contrib.auth`.
 - `AnonymousUser`: Whoever sends a request without credentials: no id, no permissions.
 - `AnyUser`: A user that logged in, or the anonymous one.
 - `Group`: A named set of permissions; every member has them all.
-- `GroupId`: NewType creates simple unique types with almost zero runtime overhead.
+- `GroupId`: A group's id: a UUID typed apart from other ids.
 - `PasswordHash`: A stored password: a hasher's `<algorithm>$...`, or unusable (`!...`).
 - `Permission`: Permission to do something to one content type: `<domain>.<codename>`.
 - `User`: The default user; `AUTH.USER_MODEL` swaps in a project's own.
-- `UserId`: NewType creates simple unique types with almost zero runtime overhead.
+- `UserId`: A user's id: a UUID typed apart from other ids.
 
 ## `domainkit.contrib.auth.personal_tokens`
 

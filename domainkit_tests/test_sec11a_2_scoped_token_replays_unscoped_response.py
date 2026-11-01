@@ -14,7 +14,7 @@ it the key is taken (``idempotency_key_reused``).
 from typing import Any, Final
 
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import bearer, create_user, grant, login
+from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, grant, login
 
 VIEW: Final = "shop.view_product"
 KEY: Final = {"Idempotency-Key": "note-2026-11-02"}
@@ -32,7 +32,9 @@ def test_a_scoped_token_is_not_replayed_what_its_scopes_refuse(identity: Api) ->
     client = identity()
     session = bearer(login(client, "alice")["access_token"])
     made = client.post(
-        "/auth/tokens", json={"name": "integration", "scopes": [VIEW]}, headers=session
+        "/auth/tokens",
+        json={"name": "integration", "scopes": [VIEW], "password": PASSWORD},
+        headers=session,
     )
     scoped = bearer(made.json()["token"])
 

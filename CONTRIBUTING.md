@@ -60,6 +60,12 @@ to `.ci/`. `make services-down` stops them and drops their data.
   mutation runs leave such tests out. Under mutmut's stats run the suite
   empties domainkit's `functools` caches before each test, so a function
   behind a cache is mapped to every test that reaches it, not the first.
+  What a score leaves out: decorated functions (routes, validators,
+  properties, context managers, fixtures), which mutmut never mutates and
+  the job lists apart; code only a server reaches, as the runs are on
+  SQLite (a survivor there needs a run on PostgreSQL before it means a
+  missing test); and a flaky test counts as a kill (ADR 0106's 0.15
+  amendment).
 - **The public API** is what `docs/api.md` lists ([ADR 0076](docs/adr/0076-public-api-is-docs-api-md.md)).
   A new public name goes in its module's `__all__` and on its package's
   page of `docs/api/`, with a docstring (Google style, the repository's

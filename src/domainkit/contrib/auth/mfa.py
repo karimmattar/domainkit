@@ -10,7 +10,8 @@ one that logs in::
 - ``POST /mfa/totp`` (a user, with the password) starts enrolment: a new
   secret, in base 32 and as an ``otpauth://`` URI for a QR code.
 - ``POST /mfa/totp/confirm`` with a first code from the app turns the
-  second factor on, and returns recovery codes, shown once.
+  second factor on, and returns recovery codes, shown once; every other
+  login and token of the user ends.
 - From then on, ``/login`` (and ``/session``) answer 202 with an
   ``mfa_token``: a signed challenge that works for ``AUTH.MFA.CHALLENGE_TTL``
   and ends once the login is done. ``POST /mfa/login`` with it and a code
@@ -31,7 +32,10 @@ used ones, and refusals are audited.
 """
 
 import hashlib
+import logging
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Final, Literal
 from uuid import UUID
@@ -41,9 +45,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit import clock
 from domainkit.conf import settings
-from domainkit.encryption import SecretBox
+from domainkit.encryption import DecryptionFailed, SecretBox
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError
+from domainkit.log import SECURITY_LOGGER
 
 from . import totp
 from .access import AuthenticatedUser
@@ -52,6 +57,7 @@ from .api import (
     MfaChallengeOut,
     TokenOut,
     _changed_on_first_use,
+    _credentials,
     _errors,
     _no_store,
     _throttle,
@@ -89,6 +95,7 @@ TOO_MANY: Final = "Too many attempts; try again later."
 
 type Method = Literal["totp", "recovery"]
 
+security_logger = logging.getLogger(SECURITY_LOGGER)
 router = APIRouter(tags=["auth"])
 UNSCOPED: Final = [Depends(Require(IsUnscoped()))]
 """Changes to the factors need credentials that scopes do not limit."""
@@ -193,6 +200,53 @@ class InvalidCode(APIError):
         )
 
 
+class SecondFactorUnreadable(APIError):
+    """No key held opens the user's TOTP secret (409): ``SECRET_KEY`` changed.
+
+    The secret was sealed under a key since dropped from
+    ``SECRET_KEY_FALLBACKS`` (``resealmfa`` moves secrets before that).
+    The user's authenticator cannot work again: staff turn it off
+    (``resetmfa``), or the user starts an enrolment never confirmed again.
+    """
+
+    def __init__(self) -> None:
+        """Use status 409 and the code ``second_factor_unreadable``."""
+        super().__init__(
+            status.HTTP_409_CONFLICT,
+            "Your authenticator can no longer be checked here; ask for your "
+            "second factor to be reset.",
+            code="second_factor_unreadable",
+        )
+
+
+@asynccontextmanager
+async def audited_unreadable(action: str) -> AsyncIterator[None]:
+    """Audit a ``SecondFactorUnreadable`` raised inside under ``action``."""
+    try:
+        yield
+    except SecondFactorUnreadable:
+        await audit_refusal(action, "second_factor_unreadable")
+        raise
+
+
+def open_secret(device: TotpDevice) -> tuple[bytes, bool]:
+    """The device's TOTP secret, and whether ``SECRET_KEY`` sealed it.
+
+    Raises:
+        SecondFactorUnreadable: No key held opens it (logged).
+    """
+    try:
+        return secret_box().decrypt(device.secret, associated=device.user_id.bytes)
+    except DecryptionFailed:
+        security_logger.warning(
+            "The TOTP secret of user %s opens under no key held: SECRET_KEY "
+            "changed without it in SECRET_KEY_FALLBACKS (run resealmfa before "
+            "dropping a fallback); turn it off with resetmfa",
+            device.user_id,
+        )
+        raise SecondFactorUnreadable from None
+
+
 async def challenge(user: AbstractBaseUser) -> MfaChallengeOut | None:
     """A challenge, if ``user`` has a second factor; None if not."""
     async with AuthUnitOfWork() as uow:
@@ -218,10 +272,11 @@ async def verify_challenge(request: Request, token: str, code: str) -> AbstractB
     Raises:
         InvalidChallenge: The challenge is wrong, used, or expired.
         InvalidCode: The code is wrong, or was used.
+        SecondFactorUnreadable: No key held opens the user's secret.
         APIError: 429, past a rate for the address or the user.
     """
     user_id = challenges.user_id(token)
-    async with AuthUnitOfWork() as uow:
+    async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
         user = None if user_id is None else await uow.users.find(user_id)
         held = challenges.check_token(user, token)  # As long without a user.
         method = None
@@ -244,7 +299,6 @@ async def verify_challenge(request: Request, token: str, code: str) -> AbstractB
             address_key(request, "mfa-challenge"),
             action="auth.mfa",
             detail=TOO_MANY,
-            code="throttled",
         )
         await audit_refusal("auth.mfa", "invalid_token")
         raise InvalidChallenge
@@ -276,6 +330,10 @@ async def spend_code(
     The caller commits. A recovery code records ``RecoveryCodeUsed``;
     without ``recovery`` it is not taken (nor spent): a step-up and a
     transaction's authorization take the authenticator's codes alone.
+
+    Raises:
+        SecondFactorUnreadable: A TOTP code, and no key held opens the
+            secret (AUTH-17); wrap the call in ``audited_unreadable``.
     """
     device = await uow.mfa.device(user.id)
     if device is None or not device.confirmed:
@@ -377,11 +435,16 @@ async def start_enrolment(
 async def confirm_enrolment(
     body: CodeIn, request: Request, response: Response, user: AuthenticatedUser
 ) -> RecoveryCodesOut:
-    """Turn the second factor on with a first code; return recovery codes."""
+    """Turn the second factor on with a first code; return recovery codes.
+
+    Every other login and token of the user ends, as a new password ends
+    them: what logged in with the password alone, before the factor, may
+    not be the user's.
+    """
     _no_store(response)
     counted = await _limit_user(request, user)
     codes = new_recovery_codes(auth_settings().MFA.RECOVERY_CODES)
-    async with AuthUnitOfWork() as uow:
+    async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
         device = await uow.mfa.device(user.id)
         if device is None or device.confirmed:
             raise APIError(
@@ -389,7 +452,7 @@ async def confirm_enrolment(
                 "No enrolment is waiting for a code; start one first.",
                 code="no_enrolment",
             )
-        secret, _ = secret_box().decrypt(device.secret, associated=user.id.bytes)
+        secret, _ = open_secret(device)
         step = totp.match(
             secret, _normalize(body.code), _now(), window=auth_settings().MFA.WINDOW
         )
@@ -397,6 +460,10 @@ async def confirm_enrolment(
         if confirmed:
             await uow.mfa.replace_codes(
                 user.id, [recovery_digest(user.id, code) for code in codes]
+            )
+            credentials = _credentials(request)
+            await uow.tokens.revoke_user(
+                user.id, keep=credentials.token_id, keep_family=credentials.session
             )
             stored = await uow.users.get(UserId(user.id))
             stored.record(MfaEnabled(user_id=user.id))
@@ -502,7 +569,7 @@ async def _reauthenticate(
     if code is None:
         return
     counted = await _limit_user(request, user)
-    async with AuthUnitOfWork() as uow:
+    async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         method = await spend_code(uow, stored, code)
         if method is not None:
@@ -516,22 +583,24 @@ async def _reauthenticate(
 async def _spend_totp(
     uow: AuthUnitOfWork, user: AbstractBaseUser, device: TotpDevice, code: str
 ) -> bool:
-    """Spend a TOTP code; a secret under a fallback key is sealed again."""
-    box = secret_box()
-    secret, current = box.decrypt(device.secret, associated=user.id.bytes)
+    """Spend a TOTP code; a secret under a fallback key is sealed again.
+
+    Raises:
+        SecondFactorUnreadable: No key held opens the secret.
+    """
+    secret, current = open_secret(device)
     step = totp.match(secret, code, _now(), window=auth_settings().MFA.WINDOW)
     if step is None or not await uow.mfa.use_step(device.id, step):
         return False
     if not current:
-        await uow.mfa.reseal(device.id, box.encrypt(secret, associated=user.id.bytes))
+        sealed = secret_box().encrypt(secret, associated=user.id.bytes)
+        await uow.mfa.reseal(device.id, sealed)
     return True
 
 
 async def _limit(request: Request, limits: list[Limit]) -> Attempt:
     """Count a code check against each ``(key, rate)``."""
-    return await attempt(
-        request, limits, action="auth.mfa", detail=TOO_MANY, code="throttled"
-    )
+    return await attempt(request, limits, action="auth.mfa", detail=TOO_MANY)
 
 
 async def _limit_user(request: Request, user: AbstractBaseUser) -> Attempt:

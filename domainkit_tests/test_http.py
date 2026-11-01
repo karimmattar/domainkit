@@ -668,7 +668,7 @@ def test_cors_preflight(make_client: MakeClient) -> None:
 
 
 def test_cors_answers_with_every_setting(make_client: MakeClient) -> None:
-    """Methods, headers, and credentials come from ``CORS_*``; the request id shows."""
+    """Methods, headers, exposed headers, age, credentials: ``CORS_*`` (WEB-19)."""
     client = make_client(
         MIDDLEWARE=[
             "domainkit.http.middleware.CORSMiddleware",
@@ -677,6 +677,8 @@ def test_cors_answers_with_every_setting(make_client: MakeClient) -> None:
         CORS_ALLOWED_ORIGINS=["https://app.example"],
         CORS_ALLOWED_METHODS=["GET", "PATCH"],
         CORS_ALLOWED_HEADERS=["Authorization", "X-Trace"],
+        CORS_EXPOSE_HEADERS=["X-Request-ID", "ETag"],
+        CORS_MAX_AGE=120,
         CORS_ALLOW_CREDENTIALS=True,
     )
     origin = {"Origin": "https://app.example"}
@@ -695,7 +697,8 @@ def test_cors_answers_with_every_setting(make_client: MakeClient) -> None:
     assert preflight.headers["Access-Control-Allow-Credentials"] == "true"
     assert "x-trace" in preflight.headers["Access-Control-Allow-Headers"].lower()
     assert simple.headers["Access-Control-Allow-Credentials"] == "true"
-    assert simple.headers["Access-Control-Expose-Headers"] == "X-Request-ID"
+    assert preflight.headers["Access-Control-Max-Age"] == "120"
+    assert simple.headers["Access-Control-Expose-Headers"] == "X-Request-ID, ETag"
 
 
 @pytest.mark.usefixtures("database_access")
