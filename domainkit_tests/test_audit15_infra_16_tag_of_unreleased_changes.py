@@ -10,13 +10,15 @@ entries still under ``[Unreleased]``. ``docs/versioning.md`` step 1 moves
 those entries under the version; nothing checks that it was done.
 
 Here the tag job's own steps run on this commit's ``pyproject.toml``
-and a changelog laid out as this commit's is, with ``poetry`` and
-``pipx`` stood in for: the tag must be refused while ``[Unreleased]`` holds
-entries, and pass once the changelog's newest section is the version's.
+and CI scripts, and a changelog laid out as ``d126394``'s was, with
+``poetry`` and ``pipx`` stood in for: the tag must be refused while
+``[Unreleased]`` holds entries, and pass once the changelog's newest
+section is the version's.
 """
 
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -67,6 +69,7 @@ def repository(path: Path, notes: str) -> Path:
     path.mkdir()
     (path / "pyproject.toml").write_text((ROOT / "pyproject.toml").read_text())
     (path / "CHANGELOG.md").write_text(notes)
+    shutil.copytree(ROOT / ".github" / "scripts", path / ".github" / "scripts")
     git(path, "init", "-q", "-b", "main")
     git(path, "add", ".")
     git(path, "commit", "-q", "-m", "release")

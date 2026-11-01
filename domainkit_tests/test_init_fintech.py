@@ -234,8 +234,9 @@ def test_the_profiles_extras_are_extras_of_domainkit() -> None:
 )
 @pytest.mark.timeout(func_only=True)
 def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
-    """Every step of its test job but the install: lint, types, check, tests.
+    """Every step of its test job but install and audit: lint, types, check, tests.
 
+    Install and audit reach the package index, which a test does not.
     The steps that read the database run one after another, as CI runs
     them; ruff, mypy, and the tests (on a database of their own) depend on
     nothing else and run beside them, as test_generators runs its checks.
@@ -254,7 +255,7 @@ def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
     lines = [
         line
         for step in job["steps"]
-        if "run" in step and step["name"] != "Install"
+        if "run" in step and step["name"] not in {"Install", "Audit"}
         for line in step["run"].splitlines()
     ]
     sequential = [line for line in lines if line.startswith("python ")]
@@ -428,6 +429,11 @@ def test_the_fintech_workflow_is_the_projects_with_its_types_checked(
         step for step in expected["test"]["steps"] if step.get("name") == "Lint"
     )
     lint["run"] += "mypy\n"
+    # immudb's ecdsa advisory, which does not apply (SECURITY.md).
+    audit = next(
+        step for step in expected["test"]["steps"] if step.get("name") == "Audit"
+    )
+    audit["run"] += " --ignore-vuln PYSEC-2026-1325"
     assert yaml.safe_load(fintech)["jobs"] == expected
     uses = re.findall(r"uses: (\S+@\S+ # \S+)", fintech)
     assert len(uses) == 3

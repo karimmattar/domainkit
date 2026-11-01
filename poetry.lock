@@ -5289,4 +5289,4 @@ webhooks = ["cryptography", "httpx2"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4"
-content-hash = "71a83d6e2f725d9cae03d83b3ffdd7e9f7b511968fa089b8154ee9e1fab1879a"
+content-hash = "42ebd0062fed063e98a70fd4734bb7c108cb4ee8e695f91e441efcb7e8f06603"

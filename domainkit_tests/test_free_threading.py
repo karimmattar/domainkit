@@ -1106,6 +1106,7 @@ def test_throttled_logs_lose_no_count_to_sweeps_and_flushes_on_threads(
     assert counting.events == THREADS * 2_000
 
 
+@pytest.mark.engines_on_threads
 @pytest.mark.usefixtures("database_access")
 def test_loops_on_threads_get_their_own_engines(
     monkeypatch: pytest.MonkeyPatch,
@@ -1134,6 +1135,7 @@ def test_loops_on_threads_get_their_own_engines(
         assert len(list(engines)) <= THREADS * LOOPS // 2 + 1  # Unclosed loops'.
 
 
+@pytest.mark.engines_on_threads
 @pytest.mark.usefixtures("database_access")
 def test_loops_on_threads_keep_their_own_isolated_engines(
     monkeypatch: pytest.MonkeyPatch,
@@ -1525,6 +1527,7 @@ def read_only_bind(reads: Reads = Reads.TRANSACTION) -> AsyncEngine:
 
 
 @pytest.mark.usefixtures("database_access")
+@pytest.mark.engines_on_threads
 def test_loops_on_threads_keep_their_own_read_only_binds() -> None:
     """Each loop's read-only sessions share one bind per engine; closing drops it."""
     network = "postgresql+asyncpg://app@db.invalid/app"  # Never connected to.

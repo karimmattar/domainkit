@@ -499,7 +499,9 @@ free-threading tests 30 times more, each in a new random order (`stress
 (3.14t)`, not a required check), so a race that shows in some runs only
 fails the job. On 3.14.6t some of those runs crash inside SQLAlchemy's
 compiled extensions while loops on threads make engines at once (seen at
-0.9.2 too), which waits for a fix there. The whole
+0.9.2 too), which waits for a fix there: the required `test (3.14t)`
+leaves those three tests (marked `engines_on_threads`) to the stress job,
+and a release does not wait on that job. The whole
 suite does not run there yet: on 3.14.6t it crashes the interpreter now
 and then (a segmentation fault inside the allocator, at a different test
 each time), as it did before any of this was added, so that waits for a

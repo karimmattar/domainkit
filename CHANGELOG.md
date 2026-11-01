@@ -356,6 +356,26 @@ and a status.
 
 ### Changed
 
+- Python 3.15 is tested: `test (3.15)` runs the suite and is a required
+  check, the `newest` job runs on 3.15, and the classifiers name it;
+  `requires-python` already admitted it (INFRA-17).
+- The support statement is final: the latest minor of the current major
+  gets every fix, as patch releases; once 2.0 ships, the last 1.x minor
+  gets fixes for critical and high severity vulnerabilities for 12 months;
+  other minors, and every 0.x release, get nothing. The supported Python
+  versions are those `requires-python` admits (`SECURITY.md`,
+  `docs/versioning.md`) (INFRA-18).
+- Extras (`domainkit[postgres]`, ...) and the `domainkit` command are
+  public API: `docs/versioning.md` lists them, and an extra is deprecated
+  before it is removed (INFRA-19).
+- The workflow `domainkit init` writes audits the installed packages with
+  pip-audit, after installing them, and new projects' dev group has
+  `pip-audit`; the fintech profile's ignores the ecdsa advisory that does
+  not apply to the `immudb` extra (INFRA-21).
+- The PyPI page's links to this repository's files name the release's tag
+  instead of `main`: CI's build job points the README's and the project
+  URLs' links at `vX.Y.Z` before building (INFRA-22).
+
 - **Breaking:** an account may not go negative unless it is opened so:
   `may_go_negative` defaults to `False` in `Account.open`, `OpenAccount`,
   and `POST /accounts`. An account opened without it refuses what would
@@ -614,6 +634,29 @@ and a status.
 
 ### Fixed
 
+- `release.yml` refused a tag whose CI run had passed every required
+  check when the advisory `stress (3.14t)` job, which runs on the push and
+  crashes now and then inside SQLAlchemy on 3.14t, failed: it judged the
+  run by its own conclusion. It now requires each check the `main` ruleset
+  names, and `attest` (`.github/scripts/required_jobs.py`). The required
+  `test (3.14t)` leaves the three tests that make engines on several
+  threads at once (`engines_on_threads`) to the stress job: on a 4-core
+  machine 13 of 28 runs of the file crashed or hung with them, and 12 of 12
+  passed without (INFRA-14).
+- `release.yml` accepted any tag matching `pyproject.toml`'s version: `main`
+  kept `0.13.0` through two untagged milestones, so `v0.13.0` would have
+  published 0.15's code. A tag now needs the release commit (the version
+  or its changelog section changed in it), a dated changelog section that
+  is the newest, an empty **Unreleased**, and a version newer than every
+  tag of its line (`.github/scripts/release_check.py`) (INFRA-16).
+- CI gaps: the required `build` job smoke-tested the wheel on whatever
+  upstream had released that day, and now uses the locked versions
+  (`.github/scripts/lock_constraints.py`); a release also audits what its
+  published ranges resolve to, not only the lock; CodeQL is a required
+  check, and the ruleset refuses a pull request with a new high or
+  critical alert; each tag gets a release run of its own, where a third
+  tag pushed while one waited for approval cancelled the second (INFRA-21).
+
 - A trial balance of more than 32,767 accounts that moved, and a
   reconciliation that matched as many lines, failed on PostgreSQL: the
   chart is joined in the report's statement, and lines are marked in
@@ -775,6 +818,11 @@ and a status.
   `Content-Type`, `Location`, and `Content-Language` (WEB-21).
 
 ### Security
+
+- The `immudb` extra's protobuf floor is 6.33.5, past PYSEC-2026-1805
+  (CVE-2026-0994) and PYSEC-2026-1806 (CVE-2025-4565), which 5.27.0, the
+  floor before, had; the `oldest` job now runs pip-audit over the floors
+  it installs (INFRA-15).
 
 - The admin API bounded staff by model permissions alone: a staff member
   with `auth.change_user` set the password, or the address, of a user

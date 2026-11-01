@@ -208,6 +208,10 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   they used to compute with it (and on SQLite counted a bound one as an
   amount). **Fix:** round the factor to 9 places with the rule the domain
   needs, or compute the product in Python with `Money.multiply`.
+- **The `immudb` extra needs protobuf 6.33.5 or later** (INFRA-15). The
+  floor was 5.27.0, which has two advisories. **Fix:** a project that pins
+  protobuf below 6.33.5 lifts the pin; immudb's SDK works with 6.33.5 to
+  7.x.
 
 ## 0.12 to 0.13
 

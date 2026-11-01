@@ -196,6 +196,10 @@ def test_projects_get_the_ruff_the_templates_are_checked_with() -> None:
     own_dev = own["dependency-groups"]["dev"]
     assert ruff_in(project_dev) == ruff_in(own_dev)
     assert "domainkit[testing]" in project_dev
+    # The workflow's audit, in the range domainkit's own CI audits with.
+    own_audit = next(each for each in own_dev if each.startswith("pip-audit"))
+    assert "pip-audit>=2.9.0,<3" in project_dev
+    assert own_audit == "pip-audit (>=2.9.0,<3.0.0)"
 
 
 def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
@@ -608,7 +612,8 @@ def test_the_projects_workflow_passes_on_a_new_project(tmp_path: Path) -> None:
 
     ran = []
     for step in job["steps"]:
-        if "run" not in step or step["name"] == "Install":
+        # Both reach the package index: pip and pip-audit's advisories.
+        if "run" not in step or step["name"] in {"Install", "Audit"}:
             continue
         for line in step["run"].splitlines():
             program, *args = shlex.split(line)
@@ -625,6 +630,10 @@ def test_the_projects_workflow_passes_on_a_new_project(tmp_path: Path) -> None:
         'python manage.py makemigrations --check -m "unused"',
         "pytest",
     ]
+    audit = next(step for step in job["steps"] if step.get("name") == "Audit")
+    assert audit["run"] == "pip-audit --progress-spinner off"  # INFRA-21
+    names = [step.get("name") for step in job["steps"]]
+    assert names.index("Audit") == names.index("Install") + 1
     install = next(step for step in job["steps"] if step.get("name") == "Install")
     listing = re.search(r'(python -c ".*") > requirements.txt', install["run"])
     assert listing is not None
