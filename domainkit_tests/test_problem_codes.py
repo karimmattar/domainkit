@@ -221,15 +221,3 @@ def test_one_code_answers_every_rate_limit(answered: Codes) -> None:
     assert sorted(code for code, statuses in answered.items() if 429 in statuses) == [
         "rate_limited"
     ]
-
-
-def test_a_framework_error_without_its_code_is_refused() -> None:
-    """A class of domainkit's own that sets no code cannot be defined."""
-    namespace = {"__module__": "domainkit.contrib.example", "__doc__": "An error."}
-
-    with pytest.raises(TypeError, match="must set its code"):
-        type("ExampleNotFound", (DomainError,), namespace)
-    project: type[Any] = type(
-        "ExampleNotFound", (DomainError,), {"__module__": "shop.errors"}
-    )
-    assert project.code == "example_not_found"

@@ -1418,6 +1418,9 @@ def test_failed_calls_are_answered_as_upstream_problems_not_bugs() -> None:
         "slow": (504, "upstream_timeout"),
         "large": (502, "upstream_response_too_large"),
     }
+    assert {kind: each.json()["detail"] for kind, each in answers.items()} == {
+        kind: type(failure).detail for kind, failure in failures.items()
+    }
     assert answers["open"].headers["retry-after"] == "7"
     assert "retry-after" not in answers["slow"].headers
     assert all("rates.example.com" not in each.text for each in answers.values())

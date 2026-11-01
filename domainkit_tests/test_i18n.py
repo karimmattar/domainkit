@@ -592,3 +592,33 @@ def test_vary_lists_each_header_once(
     patch_vary(headers, names)
 
     assert headers.get("Vary") == expected
+
+
+def test_catalogs_are_merged_once_and_follow_the_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One merge per language while nothing changes; new domains, new dirs (PERF-24)."""
+    from domainkit.i18n import translation
+
+    registry.clear()
+    with override_settings(INSTALLED_DOMAINS=[ALPHA]):
+        setup()
+        merges = 0
+        merge = translation._catalog
+
+        def counted(language: str, directories: tuple[Path, ...]) -> Any:  # noqa: ANN401
+            nonlocal merges
+            merges += 1
+            return merge(language, directories)
+
+        translation.reset_catalogs()
+        monkeypatch.setattr(translation, "_catalog", counted)
+        for _ in range(3):
+            translation.gettext("Invalid token.")
+        with_alpha = translation.locale_dirs()
+        registry.clear()  # The same settings, other domains.
+        without = translation.locale_dirs()
+    registry.clear()
+
+    assert merges == 1
+    assert len(with_alpha) == len(without) + 1

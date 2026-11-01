@@ -282,8 +282,7 @@ def _unchanged(aggregate: Aggregate, seen: int | None) -> None:
     """
     if seen is not None and aggregate.version != seen:
         raise ConcurrentUpdate(
-            "This record changed while it was being checked; read it again and retry.",
-            model=f"{type(aggregate).__module__}.{type(aggregate).__qualname__}",
+            "This record changed while it was being checked; read it again and retry."
         )
 
 

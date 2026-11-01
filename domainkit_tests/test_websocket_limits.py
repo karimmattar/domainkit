@@ -1232,7 +1232,7 @@ def test_routes_that_turn_rechecks_off_are_named() -> None:
     async def stream() -> None:
         """Nothing."""
 
-    app.router.routes.append(Route("/plain", stream))
+    app.router.routes.insert(0, Route("/plain", stream))  # Takes no rule: passed.
 
     assert unchecked_routes(app.routes) == [
         (

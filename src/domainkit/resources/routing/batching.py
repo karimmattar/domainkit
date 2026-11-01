@@ -355,7 +355,7 @@ async def _one_by_one(
 def _report(context: RouteContext, exc: Exception) -> None:
     """Log and report an item's error, as ``RequestContextMiddleware`` would."""
     request = current_request()
-    method = context.request.scope.get("method", "POST")
+    method = context.request.method
     path = request.path if request is not None else UNMATCHED_PATH
     logger.error("Unhandled error in a batch item of %s %s", method, path, exc_info=exc)
     report_error(

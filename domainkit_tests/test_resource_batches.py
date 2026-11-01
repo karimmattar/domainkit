@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.requests import HTTPConnection
@@ -13,9 +14,11 @@ from starlette.requests import HTTPConnection
 from domainkit.conf import override_settings
 from domainkit.ddd import Command, NotFound, Retry
 from domainkit.ddd.query import F
+from domainkit.exceptions import ServiceBusy
 from domainkit.http.access import BasePermission
 from domainkit.http.client import CallTimeout
 from domainkit.http.errors import APIError
+from domainkit.http.middleware import RequestContextMiddleware
 from domainkit.reporting import flush_reports
 from domainkit.resources import PatchModel
 from domainkit.resources.batches import Enlisted, failure, not_applied
@@ -405,12 +408,14 @@ async def breaks_on_b(command: RenameGadget, uow: FakeGadgetsUnitOfWork) -> Gadg
         raise ZeroDivisionError
     if command.name == "slow":
         raise CallTimeout("The rates service took too long.")
+    if command.name == "busy":
+        raise ServiceBusy("Every hashing thread is busy.", retry_after=2)
     return await rename(command, uow)
 
 
 @pytest.mark.usefixtures("reports_sent")
 def test_a_bug_past_the_first_item_answers_each_item(
-    store: InMemoryGadgets, use_auth: UseAuth
+    store: InMemoryGadgets, use_auth: UseAuth, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Items before it committed: 207, the item 500 and reported, the rest 424.
 
@@ -419,7 +424,7 @@ def test_a_bug_past_the_first_item_answers_each_item(
     use_auth()
     resource = gadgets(store)
     resource.batch_route(RenameGadget, service=breaks_on_b, body=RenameIn)
-    client = client_of(resource)
+    client = TestClient(RequestContextMiddleware(client_of(resource).app))
     known = ids(store)
     reported.clear()
 
@@ -432,6 +437,7 @@ def test_a_bug_past_the_first_item_answers_each_item(
                 "items": [
                     {"gadget_id": str(known["a"]), "name": "x"},
                     {"gadget_id": str(known["b"]), "name": "slow"},
+                    {"gadget_id": str(known["b"]), "name": "busy"},
                     {"gadget_id": str(known["b"]), "name": "boom"},
                     {"gadget_id": str(known["c"]), "name": "y"},
                 ]
@@ -442,18 +448,38 @@ def test_a_bug_past_the_first_item_answers_each_item(
 
     results = answer.json()["results"]
     assert answer.status_code == 207
-    assert [each["status"] for each in results] == [200, 504, 500, 424]
+    assert [each["status"] for each in results] == [200, 504, 503, 500, 424]
     assert [each.get("error", {}).get("code") for each in results] == [
         None,
         "upstream_timeout",
+        "service_busy",
         "internal_error",
         "not_applied",
     ]
+    assert results[2]["error"]["detail"] == "Every hashing thread is busy."
     assert store.items[GadgetId(known["a"])].name == "x"
     assert store.items[GadgetId(known["c"])].name == "c"
-    assert [(name, context["method"]) for name, context in reported] == [
-        ("ZeroDivisionError", "POST")
+    assert results[3]["error"]["detail"] == "Internal server error."
+    assert reported == [
+        (
+            "ZeroDivisionError",
+            {
+                "request_id": answer.headers["x-request-id"],
+                "method": "POST",
+                "path": "/gadgets/batch",
+            },
+        )
     ]
+    logged = [
+        each
+        for each in caplog.records
+        if each.name == "domainkit.resources.routing.batching"
+    ]
+    assert [each.getMessage() for each in logged] == [
+        "Unhandled error in a batch item of POST /gadgets/batch"
+    ]
+    assert logged[0].exc_info is not None
+    assert logged[0].exc_info[0] is ZeroDivisionError
 
 
 OPEN: set[int] = set()
@@ -486,7 +512,12 @@ def test_atomic_batches_ask_object_rules_before_their_transaction(
     use_auth()
     known = ids(store)
     rule = OnlyA(known["a"])
-    resource = gadgets(store)
+
+    async def everything(request: HTTPConnection) -> None:
+        """No narrower reach, read from the request as a scope does."""
+        assert request.scope["user"] is not None
+
+    resource = gadgets(store, scope=everything)
     resource.batch_route(RenameGadget, service=rename, body=RenameIn, rule=rule)
     client = client_of(resource)
     enter, leave = FakeGadgetsUnitOfWork.__aenter__, FakeGadgetsUnitOfWork.__aexit__

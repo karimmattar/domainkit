@@ -133,10 +133,13 @@ def _require_headers(operation: dict[str, Any], names: Sequence[str]) -> None:
 
     A route that answers a request without one 428 itself, rather than
     FastAPI's 422, declares them optional to FastAPI and names them here
-    (``REQUIRED_HEADERS``, as ``ResourceRouter`` does for ``If-Match``).
+    (``REQUIRED_HEADERS``, as ``ResourceRouter`` does for ``If-Match``);
+    header names compare without case.
     """
+    required = {name.lower() for name in names}
     for parameter in operation.get("parameters", ()):
-        if parameter.get("in") == "header" and parameter.get("name") in names:
+        name = str(parameter.get("name", "")).lower()
+        if parameter.get("in") == "header" and name in required:
             parameter["required"] = True
 
 
