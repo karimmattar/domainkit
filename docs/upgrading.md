@@ -27,6 +27,28 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **SQLite checks foreign keys** (DATA-18). Every connection runs
+  `PRAGMA foreign_keys = ON`: a row naming no parent is refused, as on
+  PostgreSQL, and `ON DELETE CASCADE` deletes children. `migrate` checks
+  the rows already stored and refuses, naming the tables, rows that name
+  a missing parent. **Fix:** delete or repair those rows (`PRAGMA
+  foreign_key_check` lists them), then migrate again; a test that stored
+  a child without its parent stores the parent first.
+- **Derived schemas leave `Encrypted` fields out** (DSGN-19). `schema_for`
+  without `include`, `crud=True` with `writable=ALL_FIELDS`, and the admin
+  no longer show or take a field stored encrypted. **Fix:** name it where
+  it should be served: `schema_for(Card, include=["id", "number"])`,
+  `writable=[..., "number"]`, or the admin's `schema=`; a create body that
+  needs it names it in `writable`.
+- **Revisions are rendered in batch mode** (DATA-13), on PostgreSQL too,
+  so they apply on SQLite. Nothing to do; a revision written before is
+  unchanged.
+- **A missing money check is added** (DATA-20). `makemigrations` writes the
+  both-or-neither check of every nullable money pair the database lacks,
+  also of a pair made optional, or added before 0.14. **Fix:** run
+  `makemigrations` and `migrate`; a row holding half a pair fails the
+  check: repair it first.
+
 - **An open live connection no longer keeps its login alive**
   (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
   WebSocket or event stream wrote the login's last use, so a page left
