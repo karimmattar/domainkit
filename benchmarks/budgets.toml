@@ -154,8 +154,9 @@ checkouts = 1
 pings = 1
 modules = 882
 
+# The 429 is a problem+json body by default since 1.0 (ADR 0125): +20.
 [rungs.throttled]
-calls = 482
+calls = 502
 statements = 0
 transactions = 0
 checkouts = 0

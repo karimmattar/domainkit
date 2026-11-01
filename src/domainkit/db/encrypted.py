@@ -732,7 +732,8 @@ def _open_together(state: ORMExecuteState) -> Result[Any] | None:
     """
     options = state.execution_options
     if (
-        not state.is_select
+        not _FOR_SUBJECTS  # No model seals for subjects: every query is free of it.
+        or not state.is_select
         or options.get("stream_results")  # yield_per sets it too.
         or not any(
             mapper.class_ in _FOR_SUBJECTS
