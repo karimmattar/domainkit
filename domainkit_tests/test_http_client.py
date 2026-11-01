@@ -26,6 +26,7 @@ from domainkit import deadlines, lifecycle, tracing
 from domainkit.clock import freeze_time
 from domainkit.conf import Settings, override_settings, settings
 from domainkit.context import RequestContext, bind_request
+from domainkit.exceptions import UpstreamError
 from domainkit.http import client as client_module
 from domainkit.http import guard
 from domainkit.http.client import (
@@ -1390,12 +1391,12 @@ def test_failed_calls_are_answered_as_upstream_problems_not_bugs() -> None:
     from domainkit.http.middleware import RequestContextMiddleware
     from domainkit.reporting import flush_reports
 
-    failures: dict[str, Exception] = {
+    failures: dict[str, UpstreamError] = {
         "open": CircuitOpen("Calls to https://rates.example.com:443 fail at once."),
         "slow": CallTimeout("GET https://rates.example.com/v1 took longer than 3s."),
         "large": ResponseTooLarge("The answer was over 10485760 bytes."),
     }
-    failures["open"].retry_after = 7  # type: ignore[attr-defined]
+    failures["open"].retry_after = 7
     app = FastAPI()
     install_exception_handlers(app)
 
