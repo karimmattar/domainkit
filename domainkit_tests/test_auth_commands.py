@@ -4,6 +4,7 @@ import asyncio
 import getpass
 import io
 from collections.abc import Callable, Iterable
+from types import SimpleNamespace
 
 import pytest
 
@@ -336,16 +337,23 @@ def test_createsuperuser_bypasses_nothing_where_deployed(
     auth_project: str,
     prompts: Prompts,
     output: tuple[io.StringIO, io.StringIO],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In staging and production, a refused password is asked again (AUTH-18)."""
+    """In staging and production, a refused password is asked again (AUTH-18).
+
+    The command reads the environment alone: the deployment checks, which a
+    database without TLS fails, are not what this test is about.
+    """
     asked = prompts(
         createsuperuser.Command,
         plain=["admin", "admin@example.com"],
         secret=["1234", "1234", STRONG, STRONG],
     )
     stdout, stderr = output
-    with override_settings(ENVIRONMENT="production"):
-        call_command("createsuperuser", stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(
+        createsuperuser, "settings", SimpleNamespace(ENVIRONMENT="production")
+    )
+    call_command("createsuperuser", stdout=stdout, stderr=stderr)
 
     admin = stored("admin")
     assert admin is not None
