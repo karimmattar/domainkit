@@ -63,6 +63,8 @@ class TaskSpec:
     """Higher runs first, among the due messages of a queue."""
     rate: tuple[int, int] | None = None
     """At most ``(count, seconds)`` runs, enforced by the workers."""
+    named: bool = False
+    """Registered with ``name=``: its key does not follow its module's path."""
     sensitive: bool = False
     """Its arguments hold secrets or personal data (a link, a code, an
     address): the worker blanks them once it dies, as it does for every
@@ -70,6 +72,9 @@ class TaskSpec:
 
 
 _tasks: dict[str, TaskSpec] = {}
+
+MAX_NAME_LENGTH: Final = 255
+"""The longest task name: the outbox's ``target`` column (CONC-16)."""
 
 
 def qualified_name(obj: object) -> str:
@@ -94,6 +99,11 @@ def _register(spec: TaskSpec) -> None:
     A key the task declares by name (``ordered``) must name one of its
     arguments (SEC-14c-2).
     """
+    if len(spec.key) > MAX_NAME_LENGTH:
+        raise ImproperlyConfigured(
+            f"Task names have at most {MAX_NAME_LENGTH} characters, as the outbox "
+            f"stores them; {spec.key[:60]!r}... has {len(spec.key)}."
+        )
     existing = _tasks.get(spec.key)
     if existing is not None and existing.function is not spec.function:
         raise ImproperlyConfigured(f"Two tasks are registered as {spec.key!r}.")
@@ -232,7 +242,9 @@ def task(
 
     def register(func: Task) -> Task:
         key = name or qualified_name(func)
-        _register(TaskSpec(key, func, sensitive=sensitive, **options))
+        _register(
+            TaskSpec(key, func, named=name is not None, sensitive=sensitive, **options)
+        )
         return func
 
     return register(function) if function is not None else register
@@ -283,7 +295,10 @@ def periodic(
 
     def register(func: Task) -> Task:
         key = name or qualified_name(func)
-        _register(TaskSpec(key, func, every=every, cron=schedule, **options))
+        spec = TaskSpec(
+            key, func, every=every, cron=schedule, named=name is not None, **options
+        )
+        _register(spec)
         return func
 
     return register

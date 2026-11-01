@@ -23,6 +23,8 @@ BUCKETS: Final = 100
 class InvalidFlag(BusinessRuleViolation):
     """A flag's rules are out of range."""
 
+    code = "invalid_flag"
+
 
 def bucket(name: str, user_id: str) -> int:
     """The user's bucket for flag ``name``: 0 to 99, the same in every process."""

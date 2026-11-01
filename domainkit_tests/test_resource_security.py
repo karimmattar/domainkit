@@ -5,6 +5,7 @@ keep to the field policy and the caller's scope; a stale ``If-Match``
 writes nothing; fields hidden from a caller are not theirs to change.
 """
 
+import copy
 from decimal import Decimal
 from typing import Any
 
@@ -340,3 +341,44 @@ def test_write_bodies_name_every_permission_a_field_needs() -> None:
     assert described.model_fields["stock"].description == (
         "Changed only by users granted shop.change_stock and shop.view_cost."
     )
+
+
+class ChangedMeanwhile(BasePermission):
+    """Allows the gadget, while another client stores a new version of it."""
+
+    def __init__(self, store: InMemoryGadgets) -> None:
+        """Change gadgets of ``store``."""
+        self.store = store
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: AnyUser, obj: object
+    ) -> bool:
+        """Allow, and store the gadget again at the next version."""
+        assert isinstance(obj, Gadget)
+        newer = copy.copy(obj)
+        newer.version = obj.version + 1
+        self.store.items[obj.id] = newer
+        return True
+
+
+def test_generic_writes_refuse_what_changed_after_the_rule_saw_it(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The rule is asked outside the write (WEB-16); a change between is 409."""
+    use_auth()
+    resource = gadgets(
+        store, crud=True, writable=ALL_FIELDS, rule=ChangedMeanwhile(store)
+    )
+    client = client_of(resource)
+    known = names(store)
+
+    patched = client.patch(f"{LOCATION}{known['a']}", json={"stock": 9})
+    deleted = client.delete(f"{LOCATION}{known['b']}")
+
+    assert (patched.status_code, patched.json()["code"]) == (409, "concurrent_update")
+    assert (deleted.status_code, deleted.json()["code"]) == (409, "concurrent_update")
+    assert patched.json()["detail"] == (
+        "This record changed while it was being checked; read it again and retry."
+    )
+    assert store.items[known["a"]].stock != 9
+    assert known["b"] in store.items

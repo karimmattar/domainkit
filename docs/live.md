@@ -104,16 +104,19 @@ async def cursor(websocket: WebSocket) -> None: ...
 Its keys are `max_lifetime`, `idle_timeout` (None: never idle),
 `message_rate` (None: any), `send_queue`, `send_timeout`, `reauth_interval`
 (at most 3,600 seconds, as `LIVE_REAUTH_INTERVAL`; None: never), and, for
-event streams, `keepalive`. They are checked when the route is defined.
+event streams, `keepalive`. They are checked when the route is defined;
+`max_lifetime`, as `WEBSOCKET_MAX_LIFETIME` and `SSE_MAX_LIFETIME`, is at
+most 86,400 seconds.
 
 ### What re-checks cannot do
 
 - **A route that opts out keeps what was revoked.** With
   `LiveLimits(reauth_interval=None)`, a connection keeps a revoked or
   expired token, a deactivated user, or a removed permission until it
-  closes, at `max_lifetime` at the latest. `check` warns about
-  `LIVE_REAUTH_INTERVAL = None`, not about a route that opts out, so keep
-  such routes few, and their lifetime short.
+  closes, at `max_lifetime` at the latest (a day at most). `check` warns
+  about `LIVE_REAUTH_INTERVAL = None` (`security.W005`), and, where
+  deployed, about a route with an access rule that opts out
+  (`live.W002`): keep such routes few, and their lifetime short.
 - **Credentials that work once fail their first re-check.** A re-check
   presents the handshake's credentials again. An authenticator built on
   single-use credentials (a one-time ticket in the URL, a nonce it

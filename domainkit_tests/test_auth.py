@@ -1066,7 +1066,15 @@ def test_logins_that_rehash_at_once_never_conflict(auth_project: str) -> None:
 def test_rehashing_skips_users_deleted_meanwhile(auth_project: str) -> None:
     """A user gone before the new hash is stored is left alone."""
     old = PasswordHash(make_password(PASSWORD))
+
+    async def count() -> int:
+        async with connections.engine().connect() as connection:
+            return len((await connection.execute(select(users.c.id))).all())
+
+    before = run(count())
     run(ModelBackend()._rehash(UserId(uuid4()), old, make_password(PASSWORD)))
+
+    assert run(count()) == before  # Nothing written: no user made, none changed.
 
 
 def test_rehashing_touches_only_the_user_who_logged_in(auth_project: str) -> None:

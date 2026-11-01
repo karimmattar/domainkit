@@ -62,7 +62,11 @@ exponent), and the currency as a `Currency` or its code. A float is a
 sign. More places than the currency has are refused, `InexactAmount`,
 unless a rounding is named: `Money.of("2.675", "USD",
 rounding=Rounding.HALF_UP)` is 2.68. An amount has at most `MAX_DIGITS`
-(38) digits before its point.
+(38) digits before its point. That bounds money in memory and in JSON;
+a column holds fewer: an `ExactDecimal` has at most 18 digits in all
+(`STORED_DIGITS`, what SQLite's 64-bit integers hold), 14 of them before
+the point in a money column's default `(18, 4)`, and a mapped money
+attribute refuses more as it is set (`AmountOutOfRange`, below).
 
 - `Money.zero("USD")`, `Money.from_minor(1050, "USD")` (10.50), and
   `price.minor` (1050) count in minor units.

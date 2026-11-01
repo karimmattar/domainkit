@@ -15,7 +15,9 @@ money is ``{"amount": "10.50", "currency": "USD"}``, and a write schema
 refuses an amount its columns cannot hold; ids
 (``NewType`` over ``UUID``) and ``Reference[XId]`` become their id type;
 enums keep their values; other value objects and child entities nest. A
-read schema lists every field, required, and gets ``from_domain``; a write
+field stored ``Encrypted`` (a card number) is in a schema only where
+``include`` names it, so a derived schema never serves it by default. A
+read schema lists every other field, required, and gets ``from_domain``; a write
 schema leaves out ``id``, ``version``, and ``deleted_at``, takes the
 domain's defaults, forbids unknown fields, accepts only aware datetimes,
 and bounds integers to 64 bits. ``partial=True`` makes a ``PatchModel``.
@@ -160,10 +162,12 @@ def schema_for(
 ) -> type[BaseModel]:
     """A pydantic schema of ``model``'s fields (see the module).
 
-    ``include`` lists the fields to keep, in that order (default: all);
-    ``exclude`` drops some. ``write`` makes a request body, ``partial`` a
-    ``PatchModel``. ``name`` defaults to ``<Model>Out``, ``<Model>In``, or
-    ``<Model>Patch``. ``descriptions`` document fields in OpenAPI.
+    ``include`` lists the fields to keep, in that order (default: all but
+    those stored ``Encrypted``, which leave or enter only where ``include``
+    names them, DSGN-19); ``exclude`` drops some. ``write`` makes a request
+    body, ``partial`` a ``PatchModel``. ``name`` defaults to ``<Model>Out``,
+    ``<Model>In``, or ``<Model>Patch``. ``descriptions`` document fields in
+    OpenAPI.
 
     Raises:
         TypeError: A field named is not one of the model's, its type has
@@ -173,7 +177,11 @@ def schema_for(
     """
     fields = fields_of(model)
     writing = write or partial
-    names = list(fields) if include is None else list(include)
+    names = (
+        [each for each, field in fields.items() if not field.encrypted]
+        if include is None
+        else list(include)
+    )
     unknown = sorted({*names, *exclude} - set(fields))
     if unknown:
         raise TypeError(f"{model.__name__} has no field {', '.join(unknown)}.")

@@ -356,7 +356,6 @@ def test_logins_from_unknown_addresses_are_throttled_together(
                 limits,
                 action="auth.login",
                 detail=LOGIN_THROTTLED,
-                code="login_throttled",
             )
         )
 
@@ -412,9 +411,7 @@ def test_counts_taken_are_given_back_only_when_an_attempt_is_refused(
 
     def attempt() -> throttling.Attempt:
         return asyncio.run(
-            throttling.attempt(
-                request, limits, action="auth.login", detail="No.", code="no"
-            )
+            throttling.attempt(request, limits, action="auth.login", detail="No.")
         )
 
     if closed:

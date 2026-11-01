@@ -1,17 +1,24 @@
-"""The guards approvals brings: large postings and captures, and making superusers.
+"""The guards approvals brings: large postings, captures, reversals; superusers.
 
 ``ENTRIES`` guards ``accounting.post_entry`` once ``ENTRY_THRESHOLDS``
 names amounts: an entry that moves more than its currency's amount (its
-debits, per currency) needs ``ENTRY_APPROVALS`` approvals by holders of
-``ENTRY_APPROVERS``, and ``post_entry`` refuses it otherwise
-(``approval_required``), through the ledger's ``on_posting`` hook. Its
-makers need ``accounting.add_entry``, as posting does. ``CAPTURES``
-guards ``accounting.capture_hold`` the same way: a hold reserves any
-amount, unguarded, and its capture is what moves it. The ledger's
-``on_booking`` hook checks every entry posted or captured, as it is
-booked, against the thresholds, so no path around ``post_entry`` (a
-capture, a command built so ``on_posting`` cannot read it) books more
-unapproved.
+debits, per currency; a currency the thresholds do not name, unless
+``"*"`` does, is always more: FIN-89) needs ``ENTRY_APPROVALS`` approvals
+by holders of ``ENTRY_APPROVERS``, and ``post_entry`` refuses it
+otherwise (``approval_required``), through the ledger's ``on_posting``
+hook. Its makers need ``accounting.add_entry``, as posting does.
+``CAPTURES`` guards ``accounting.capture_hold`` the same way: a hold
+reserves any amount, unguarded, and its capture is what moves it.
+``REVERSES`` guards ``accounting.reverse_entry``: a reversal moves as
+much as the entry it undoes, so it needs the approval that entry needed
+(FIN-88). The ledger's ``on_booking`` hook checks every entry posted,
+captured, or reversed, as it is booked, against the thresholds, so no
+path around ``post_entry`` books more unapproved.
+
+The run of any approved request whose policy asked at least
+``ENTRY_APPROVALS`` approvals passes the thresholds for the entries it
+books: a project's own guarded payout, approved by enough people, posts
+its entry without a second request (FIN-92).
 
 ``SUPERUSERS`` guards making a user a superuser once
 ``SUPERUSER_APPROVALS`` is more than 0: the auth admin API refuses to
@@ -25,12 +32,14 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
+from domainkit.apps import registry
 from domainkit.ddd import Command
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
 from .guards import (
     Guard,
     Policy,
+    Running,
     Threshold,
     check,
     current_run,
@@ -40,40 +49,97 @@ from .guards import (
 from .settings import ApprovalsSettings
 
 if TYPE_CHECKING:
-    from domainkit.contrib.accounting import Entry, PostEntry
+    from domainkit.contrib.accounting import (
+        AccountingUnitOfWork,
+        CaptureHold,
+        Entry,
+        Hold,
+        PostEntry,
+        ReverseEntry,
+    )
     from domainkit.contrib.auth import AuthUnitOfWork
 
 ENTRIES: Final = "accounting.post_entry"
 """The guarded action of postings over their currency's threshold."""
 CAPTURES: Final = "accounting.capture_hold"
 """The guarded action of a hold's capture over its currency's threshold."""
+REVERSES: Final = "accounting.reverse_entry"
+"""The guarded action of a reversal over its currency's threshold."""
 SUPERUSERS: Final = "auth.grant_superuser"
 """The guarded action of making a user a superuser."""
 
 
+@requires_approval(ENTRIES)
+async def approved_entry(command: "PostEntry", uow: "AccountingUnitOfWork") -> "Entry":
+    """Post an approved entry: the service ``ENTRIES`` runs (``post_entry``)."""
+    from domainkit.contrib.accounting import post_entry
+
+    return await post_entry(command, uow)
+
+
+@requires_approval(CAPTURES)
+async def approved_capture(
+    command: "CaptureHold", uow: "AccountingUnitOfWork"
+) -> "Hold":
+    """Capture an approved hold: the service ``CAPTURES`` runs (``capture_hold``)."""
+    from domainkit.contrib.accounting import capture_hold
+
+    return await capture_hold(command, uow)
+
+
+@requires_approval(REVERSES)
+async def approved_reversal(
+    command: "ReverseEntry", uow: "AccountingUnitOfWork"
+) -> "Entry":
+    """Post an approved reversal: the service ``REVERSES`` runs (``reverse_entry``)."""
+    from domainkit.contrib.accounting import reverse_entry
+
+    return await reverse_entry(command, uow)
+
+
+_threshold: tuple[ApprovalsSettings, Threshold] | None = None
+"""The thresholds last read, with the settings they were read from."""
+
+
+def current_threshold() -> Threshold:
+    """``ENTRY_THRESHOLDS`` of the settings now, read again when they change.
+
+    A test that changes them through ``override_settings`` or the
+    ``settings`` fixture is held to the new amounts (TEST-15).
+    """
+    global _threshold
+    config = registry.settings(ApprovalsSettings)
+    kept = _threshold
+    if kept is None or kept[0] is not config:
+        kept = _threshold = (config, Threshold(config.ENTRY_THRESHOLDS))
+    return kept[1]
+
+
 def guard_entries(config: ApprovalsSettings) -> None:
-    """Guard postings and captures over ``ENTRY_THRESHOLDS``; refuse them unapproved.
+    """Guard postings, captures, and reversals over ``ENTRY_THRESHOLDS``.
+
+    Each refuses what is over them unapproved. The guards' services are
+    the ledger's, decorated here (``approved_entry`` and the others), so
+    every registered guard is decorated (DSGN-18); the ledger itself is
+    held by its hooks.
 
     Raises:
         ImproperlyConfigured: A threshold is not an amount of its currency.
     """
-    from domainkit.contrib.accounting import (
-        CAPTURES as CAPTURED,
-    )
+    from domainkit.contrib.accounting import CAPTURES as CAPTURE_SOURCE
     from domainkit.contrib.accounting import (
         AccountingUnitOfWork,
         CaptureHold,
         PostEntry,
+        ReverseEntry,
         Side,
-        capture_hold,
-        post_entry,
     )
     from domainkit.contrib.accounting.hooks import on_booking, on_posting
 
-    threshold = Threshold(config.ENTRY_THRESHOLDS)
+    Threshold(config.ENTRY_THRESHOLDS)  # A wrong amount fails setup().
 
     def large(command: PostEntry) -> bool:
-        return threshold.exceeded_by(
+        return current_threshold().exceeded_by(
             line.amount for line in command.lines if line.side is Side.DEBIT
         )
 
@@ -89,7 +155,7 @@ def guard_entries(config: ApprovalsSettings) -> None:
         Guard(
             ENTRIES,
             PostEntry,
-            post_entry,
+            approved_entry,
             AccountingUnitOfWork,
             (policy("accounting.large_entry", when=large),),
             permission="accounting.add_entry",
@@ -99,52 +165,83 @@ def guard_entries(config: ApprovalsSettings) -> None:
         Guard(
             CAPTURES,
             CaptureHold,
-            capture_hold,
+            approved_capture,
             AccountingUnitOfWork,
             (policy("accounting.large_capture"),),
             permission="accounting.capture_hold",
+        )
+    )
+    on_guard(
+        Guard(
+            REVERSES,
+            ReverseEntry,
+            approved_reversal,
+            AccountingUnitOfWork,
+            (policy("accounting.large_reversal"),),
+            permission="accounting.reverse_entry",
         )
     )
 
     async def check_booking(uow: object, entry: "Entry", accounts: object) -> None:
         """Refuse an entry over its threshold that no approved request books.
 
-        Every entry ``post_entry`` and ``capture_hold`` book comes here,
-        whatever the command looked like; reversals post what an entry
-        posted before, and are left to the limits.
+        Every entry ``post_entry``, ``capture_hold``, and ``reverse_entry``
+        book comes here, whatever the command looked like: a reversal
+        moves what its entry moved, back (FIN-88).
         """
-        if entry.source != CAPTURED and entry.source.startswith("accounting."):
-            return
         moved = (line.amount for line in entry.lines() if line.side is Side.DEBIT)
-        if not threshold.exceeded_by(moved) or _approved_booking(entry):
+        if not current_threshold().exceeded_by(moved) or _approved_booking(entry):
             return
         raise ApprovalRequired("This command needs approval: submit it for approval.")
 
     def _approved_booking(entry: "Entry") -> bool:
-        """Whether ``entry`` is what the approved request being run books."""
+        """Whether ``entry`` is what the approved request being run books.
+
+        A run of the ledger's own guards books what it approved: the
+        posting of its source and reference, the capture of its hold, the
+        reversal of its entry. A run of another guard books what its
+        command posts, if its policy asked enough approvals (FIN-92).
+        """
         run = current_run()
         if run is None:
             return False
         command = run.command
-        if isinstance(command, PostEntry):
-            return run.action == ENTRIES and (command.source, command.reference) == (
+        if run.action == ENTRIES and isinstance(command, PostEntry):
+            return (command.source, command.reference) == (
                 entry.source,
                 entry.reference,
             )
-        return (
-            isinstance(command, CaptureHold)
-            and run.action == CAPTURES
-            and entry.source == CAPTURED
-            and entry.reference == str(command.hold_id)
-        )
+        if run.action == CAPTURES and isinstance(command, CaptureHold):
+            return (entry.source, entry.reference) == (
+                CAPTURE_SOURCE,
+                str(command.hold_id),
+            )
+        if run.action == REVERSES and isinstance(command, ReverseEntry):
+            return entry.reverses == command.entry_id
+        return run.action not in LEDGER_ACTIONS and approved_run(run)
+
+    async def check_entry(command: PostEntry) -> None:
+        """Refuse a posting over its threshold that no approved request runs."""
+        run = current_run()
+        if run is None or run.action in LEDGER_ACTIONS or not approved_run(run):
+            await check(ENTRIES, command)
 
     on_posting(check_entry)
     on_booking(check_booking)
 
 
-async def check_entry(command: "PostEntry") -> None:
-    """Refuse a posting over its threshold that no approved request runs."""
-    await check(ENTRIES, command)
+LEDGER_ACTIONS: Final = frozenset({ENTRIES, CAPTURES, REVERSES})
+"""The ledger's own guarded actions, whose runs book only what they approved."""
+
+
+def approved_run(run: Running) -> bool:
+    """Whether the approved request ``run`` had as many approvals as entries need.
+
+    Its policy asked at least ``ENTRY_APPROVALS`` approvals (of the settings
+    now, as the thresholds are read: TEST-15): what another guard's command
+    books passes the thresholds (FIN-92).
+    """
+    return run.required >= registry.settings(ApprovalsSettings).ENTRY_APPROVALS
 
 
 class GrantSuperuser(Command):

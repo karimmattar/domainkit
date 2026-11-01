@@ -146,11 +146,23 @@ async def books() -> tuple[Account, Account]:
         AccountingUnitOfWork(),
     )
     cash = await open_account(
-        OpenAccount(code="1000", name="Cash", type=AccountType.ASSET, currency="USD"),
+        OpenAccount(
+            code="1000",
+            name="Cash",
+            type=AccountType.ASSET,
+            currency="USD",
+            may_go_negative=True,  # Holds are placed on it unfunded.
+        ),
         AccountingUnitOfWork(),
     )
     sales = await open_account(
-        OpenAccount(code="4000", name="Sales", type=AccountType.INCOME, currency="USD"),
+        OpenAccount(
+            code="4000",
+            name="Sales",
+            type=AccountType.INCOME,
+            currency="USD",
+            may_go_negative=True,  # Captures are debited to it.
+        ),
         AccountingUnitOfWork(),
     )
     return cash, sales
@@ -912,9 +924,58 @@ async def test_the_executed_event_names_the_request(
         await execute_request(request.id, request.run_token)
     finally:
         event_bus.unsubscribe(RequestExecuted, keep)
-    assert [(event.request_id, event.action) for event in seen] == [
-        (request.id, "tests.act")
+    assert [(event.request_id, event.action, event.approvers) for event in seen] == [
+        (request.id, "tests.act", ("ann",))
     ]
+
+
+async def test_a_request_holds_its_commands_fingerprint_and_a_run_token(
+    project: str,
+) -> None:
+    """The fingerprint a client works out; 128 random bits to run it, spent once."""
+    from domainkit.contrib.approvals import fingerprint
+
+    guard_acts()
+    request = await approved_act("fp")
+    assert request.fingerprint == fingerprint("tests.act", request.arguments)
+    assert request.run_token is not None
+    assert len(request.run_token) == 32
+    await execute_request(request.id, request.run_token)
+    assert (await stored(request.id)).run_token is None
+
+
+async def test_a_failed_request_keeps_no_run_token(project: str) -> None:
+    """Failing spends the token as running does."""
+    guard_acts()
+    money = await approved_act("money")
+    await execute_request(money.id, money.run_token)
+    found = await stored(money.id)
+    assert (found.status, found.run_token) == (RequestStatus.FAILED, None)
+
+
+async def test_a_message_without_the_run_token_runs_nothing_and_says_so(
+    project: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A warning names the request; it stays approved."""
+    guard_acts()
+    request = await approved_act("untokened")
+    await execute_request(request.id, "not-the-token")
+    assert (
+        f"A message to run approval request {request.id} holds no run token of it"
+        in [record.getMessage() for record in caplog.records]
+    )
+    assert await status_of(request) == (RequestStatus.APPROVED, "")
+
+
+async def test_a_commit_whose_token_no_longer_runs_says_so(project: str) -> None:
+    """The use case's unit of work refuses to commit for a request not waiting."""
+    from domainkit.contrib.approvals.services import _Marking
+
+    guard_acts()
+    request = await approved_act("stale")
+    async with _Marking(AccountingUnitOfWork(), request.id, "not-the-token") as uow:
+        with refused(RequestNotPending, r"^The request is not waiting to run\.$"):
+            await uow.commit()
 
 
 async def test_a_maker_without_an_id_is_refused(project: str) -> None:

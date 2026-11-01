@@ -37,6 +37,8 @@ Logs are JSON lines on stdout, at {{ prefix }}LOG_LEVEL (INFO unless set);
 unless set), always those answered 400 and up, and slow ones.
 """
 
+from datetime import timedelta
+
 from domainkit.log import build_logging_config
 
 from config.settings.base import *
@@ -113,7 +115,14 @@ LEDGERS = {
         "SERVER_SIGNING_KEY": env.path("LEDGER_SIGNING_KEY"),
     },
 }
-AUDIT = {"LEDGER": "evidence", "NAMESPACE": "{{ namespace }}"}
+# The trail is kept a year at least: auditprune refuses to cut younger
+# (PCI DSS v4.0 10.5.1; the PCI preset holds it there too). A bank keeps it
+# as long as its regulator asks: raise it.
+AUDIT = {
+    "LEDGER": "evidence",
+    "NAMESPACE": "{{ namespace }}",
+    "MIN_RETENTION": timedelta(days=365),
+}
 EVIDENCE = {
     "NAMESPACE": "{{ namespace }}",
     "SUBJECT_KEY": env.str("EVIDENCE_SUBJECT_KEY"),

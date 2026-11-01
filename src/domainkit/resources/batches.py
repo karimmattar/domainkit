@@ -8,7 +8,10 @@ holds one result per item, in order: its status, and the aggregate or
 the error, as a single request would have answered.
 
 Without ``atomic``, each item is a use case of its own: those that fail
-leave the others done. With ``atomic``, all run in one transaction, each
+leave the others done. An unexpected error fails the request if the first
+item raised it; past it, that item answers 500, logged and reported, and
+the items after it are not run (``424``).
+With ``atomic``, all run in one transaction, each
 service's own commit deferred to the end; the first failure undoes them
 all, and every other item answers ``424 not_applied``.
 """
@@ -22,18 +25,22 @@ from starlette.exceptions import HTTPException
 
 from domainkit.ddd.exceptions import DomainError
 from domainkit.ddd.uow import UnitOfWork
-from domainkit.exceptions import DomainkitError, ServiceBusy
+from domainkit.exceptions import DomainkitError, ServiceBusy, UpstreamError
 from domainkit.http.errors import (
     APIError,
     busy_refusal,
     database_refusal,
     status_code_for,
+    upstream_refusal,
 )
 from domainkit.i18n import gettext
+from domainkit.money import MoneyError
 
 MAX_ITEMS: Final = 100
 """The most items a batch takes, unless its route says otherwise."""
 NOT_APPLIED: Final = "not_applied"
+INTERNAL_ERROR: Final = "internal_error"
+"""The code of an item that raised an unexpected error (``crashed``)."""
 
 
 class BatchError(BaseModel):
@@ -104,8 +111,12 @@ def failure(exc: Exception) -> BatchResult | None:
     """The result of an item that raised ``exc``; None if it is a bug, not a refusal."""
     if isinstance(exc, DomainError):
         return _failed(status_code_for(exc), exc.code, exc.message)
+    if isinstance(exc, MoneyError):  # As money_error_handler answers it (WEB-17).
+        return _failed(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.summary)
     if isinstance(exc, ServiceBusy):
         exc = busy_refusal(exc)
+    elif isinstance(exc, UpstreamError):
+        exc = upstream_refusal(exc)
     refused = exc if isinstance(exc, HTTPException) else database_refusal(exc)
     if refused is None:
         return None
@@ -113,12 +124,26 @@ def failure(exc: Exception) -> BatchResult | None:
     return _failed(refused.status_code, code, str(refused.detail))
 
 
+def crashed() -> BatchResult:
+    """An item of a batch that raised an unexpected error: 500, as a request would.
+
+    Without ``atomic`` the items before it may have committed, so the batch
+    still answers 207 with each one's result, never a 500 for the whole
+    request that would hide what was done (WEB-17).
+    """
+    return _failed(
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        code=INTERNAL_ERROR,
+        detail="Internal server error.",
+    )
+
+
 def not_applied() -> BatchResult:
     """An item of an atomic batch that another item's failure undid or stopped."""
     return _failed(
         status.HTTP_424_FAILED_DEPENDENCY,
-        NOT_APPLIED,
-        "Another item of the batch failed, so nothing was applied.",
+        code=NOT_APPLIED,
+        detail="Another item of the batch failed, so nothing was applied.",
     )
 
 

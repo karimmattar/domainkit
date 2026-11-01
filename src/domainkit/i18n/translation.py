@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Final
 
 from domainkit.apps import registry
-from domainkit.conf import settings
+from domainkit.conf import settings, unwrap_settings
 from domainkit.conf.global_settings import LANGUAGE_PATTERN
 
 DOMAIN: Final = "messages"
@@ -145,14 +145,60 @@ def _supported(tag: str, languages: Sequence[str]) -> str | None:
 
 
 def catalog(language: str | None = None) -> gnu.NullTranslations:
-    """The merged catalogs of ``language`` (default: the active one)."""
-    return _catalog(check_language(language or get_language()), locale_dirs())
+    """The merged catalogs of ``language`` (default: the active one).
+
+    Found in one lookup while the domains and the settings are those they
+    were merged for (``_Catalogs``): a translated message costs the same
+    whatever the number of installed domains (PERF-24).
+    """
+    code = language or get_language()
+    found = _catalogs()
+    merged = found.merged.get(code)
+    if merged is None:
+        merged = found.merged[code] = _catalog(check_language(code), found.dirs)
+    return merged
 
 
 def locale_dirs() -> tuple[Path, ...]:
     """Where catalogs are looked for, first match first (see the module's notes)."""
-    domains = (config.path / "locale" for config in registry)
-    return (*settings.LOCALE_PATHS, *domains, LOCALE_DIR)
+    return _catalogs().dirs
+
+
+class _Catalogs:
+    """The catalog directories of one set of domains and settings, and their merges.
+
+    Replaced whole when the registry's ``generation`` or the settings
+    object changes, so loops on several threads read one consistent
+    instance; a merge two of them make at once is the same object either
+    way (``_catalog`` is cached).
+    """
+
+    __slots__ = ("dirs", "generation", "merged", "source")
+
+    def __init__(self, generation: int, source: object) -> None:
+        """Work the directories out for ``generation`` and the settings ``source``."""
+        self.generation = generation
+        self.source = source
+        domains = (config.path / "locale" for config in registry)
+        self.dirs: tuple[Path, ...] = (*settings.LOCALE_PATHS, *domains, LOCALE_DIR)
+        self.merged: dict[str, gnu.NullTranslations] = {}
+        """The merged catalogs of each language asked for, by its code."""
+
+
+_current: _Catalogs | None = None
+
+
+def _catalogs() -> _Catalogs:
+    """The catalogs of the installed domains and the current settings."""
+    global _current
+    found, source = _current, unwrap_settings()
+    if (
+        found is None
+        or found.generation != registry.generation
+        or found.source is not source
+    ):
+        found = _current = _Catalogs(registry.generation, source)
+    return found
 
 
 @cache
@@ -175,6 +221,8 @@ def _catalog(language: str, directories: tuple[Path, ...]) -> gnu.NullTranslatio
 
 def reset_catalogs() -> None:
     """Forget loaded catalogs, so recompiled ``.mo`` files are read again (tests)."""
+    global _current
+    _current = None
     _catalog.cache_clear()
 
 

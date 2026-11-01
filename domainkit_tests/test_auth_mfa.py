@@ -453,7 +453,7 @@ def test_code_checks_are_throttled_per_user(identity: Api, clock: list[float]) -
     assert finish(client, token, "000000").status_code == 401
     assert finish(elsewhere, token, "111111").status_code == 401
     throttled = finish(elsewhere, token, "222222")
-    assert (throttled.status_code, throttled.json()["code"]) == (429, "throttled")
+    assert (throttled.status_code, throttled.json()["code"]) == (429, "rate_limited")
     assert throttled.json()["detail"] == "Too many attempts; try again later."
     assert int(throttled.headers["Retry-After"]) > 0
     assert [row["details"] for row in audited("auth.mfa")] == [
@@ -509,7 +509,7 @@ def test_wrong_codes_count_per_address_too(identity: Api, clock: list[float]) ->
     clock[0] += 30
 
     assert [response.status_code for response in wrong] == [401, 401]
-    assert (refused.status_code, refused.json()["code"]) == (429, "throttled")
+    assert (refused.status_code, refused.json()["code"]) == (429, "rate_limited")
     assert finish(elsewhere, carol, "111111").status_code == 401
     assert finish(elsewhere, carol, "222222").status_code == 429  # Her count now.
 
@@ -540,7 +540,7 @@ def test_forged_challenges_use_up_no_count_of_the_user(
     # Each address still has its count.
     assert [response.status_code for response in by_address] == [400, 400, 429, 429]
     assert elsewhere == [400, 400, 429]
-    assert by_address[2].json()["code"] == "throttled"
+    assert by_address[2].json()["code"] == "rate_limited"
     assert by_address[2].json()["detail"] == "Too many attempts; try again later."
     assert int(by_address[2].headers["Retry-After"]) > 0
     assert finish(client, token, code_at(secret, clock[0])).status_code == 200

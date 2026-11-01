@@ -257,7 +257,7 @@ def test_wrong_codes_count_against_the_users_code_rate(
     held = step_up(client, headers, now_code(secret, frozen))
 
     assert answers == [401, 401]
-    assert (held.status_code, held.json()["code"]) == (429, "throttled")
+    assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
 
 
 def test_scoped_credentials_cannot_step_up(identity: Api, frozen: FrozenClock) -> None:
@@ -276,7 +276,7 @@ def test_scoped_credentials_cannot_step_up(identity: Api, frozen: FrozenClock) -
 
     refused = step_up(client, bearer(scoped), now_code(secret, frozen))
 
-    assert refused.status_code == 403
+    assert (refused.status_code, refused.json()["code"]) == (403, "permission_denied")
 
 
 # The password too -----------------------------------------------------------------
@@ -326,7 +326,7 @@ def test_wrong_passwords_count_against_the_login_rate(
         headers=headers,
     )
 
-    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
     assert changing.status_code == 429  # The user's own count of password checks.
 
 
@@ -392,9 +392,10 @@ def test_step_ups_that_no_step_up_proves_are_found(use_auth: UseAuth) -> None:
         ("GET /twice", frozenset({"pwd"})),
     ]
     assert len(problems) == 3
-    assert str(problems[0]).startswith(
+    assert str(problems[0]) == (
         "GET /both asks StepUp for pwd, which no step-up proves "
-        "(AUTH.STEP_UP.METHODS is ['otp']): it refuses everyone."
+        "(AUTH.STEP_UP.METHODS is ['otp']): it refuses everyone. Add the methods "
+        "to AUTH.STEP_UP.METHODS, or leave methods out."
     )
 
 
@@ -749,6 +750,20 @@ def test_old_step_ups_are_cleared_by_the_hour_and_by_command(
     assert step_up_rows() == []
 
 
+def test_cleartokens_keeps_a_step_up_a_rule_may_still_take(
+    identity: Api, frozen: FrozenClock
+) -> None:
+    """One taken a moment ago stays."""
+    create_user("alice")
+    client = identity()
+    headers = bearer(login(client, "alice")["access_token"])
+    step_up(client, headers, now_code(enrol(client, headers, frozen), frozen))
+    frozen.tick(1)
+    call_command("cleartokens", stdout=None)
+
+    assert len(step_up_rows()) == 1
+
+
 def test_step_ups_go_with_the_users_credentials(
     identity: Api, frozen: FrozenClock
 ) -> None:
@@ -880,6 +895,22 @@ def test_a_step_up_is_kept_for_its_own_user(identity: Api) -> None:
     assert mine is not None
     assert mine[1] == {"otp", "pwd"}  # type: ignore[index]
     assert theirs is None
+
+
+def test_a_step_up_at_the_same_moment_replaces_the_one_kept(identity: Api) -> None:
+    """Of two proofs of one moment, the one written last is kept."""
+    alice = create_user("alice")
+    moment = datetime(2026, 10, 31, 12, tzinfo=UTC)
+
+    async def check() -> object:
+        for methods in (["otp"], ["pwd"]):
+            async with AuthUnitOfWork() as uow:
+                await uow.step_ups.record("e" * 64, alice, moment, methods)
+                await uow.commit()
+        async with AuthUnitOfWork() as uow:
+            return await uow.step_ups.last("e" * 64, alice)
+
+    assert run_async(check()) == (moment, {"pwd"})
 
 
 def test_concurrent_step_ups_of_one_login_keep_the_latest(identity: Api) -> None:

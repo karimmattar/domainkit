@@ -15,8 +15,11 @@ A rule is a class with a ``name`` and ``match(lines, postings, window)``
 that pairs some of them; projects add their own (``MatchingRule``).
 """
 
+import asyncio
 import csv
+import hashlib
 import io
+import json
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -36,6 +39,7 @@ from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import Money
+from domainkit.utils.decimals import decimal_text
 from domainkit.utils.module_loading import import_string
 
 from .exceptions import AccountNotFound, InvalidAmount, InvalidStatement
@@ -76,7 +80,8 @@ EXTERNAL_ID: Final = re.compile(r"[^\x00-\x1f\x7f-\x9f]{1,128}")
 CONTROL: Final = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 """What a line's reference and description may not have: control characters."""
 CHECK_BATCH: Final = 500
-"""Stored lines ``import_statement`` reads back at a time."""
+"""Stored lines ``import_statement`` reads back, or ``reconcile`` marks, at a time:
+bound parameters stay far below the 32,767 a statement takes (PERF-23)."""
 UNMATCHED_LINE: Final = "unmatched_line"
 UNMATCHED_POSTING: Final = "unmatched_posting"
 DEFAULT_COLUMNS: Final = {
@@ -237,6 +242,7 @@ async def import_statement(account_id: AccountId, source: StatementSource) -> Im
     async with AccountingUnitOfWork(readonly=True) as uow:
         account = await uow.accounts.get(account_id)
     rows: dict[str, dict[str, object]] = {}
+    digest = hashlib.sha256()
     now = clock.now()
     for line in source.lines():
         if len(rows) == limit:
@@ -261,9 +267,12 @@ async def import_statement(account_id: AccountId, source: StatementSource) -> Im
             "status": UNMATCHED,
             "imported_at": now,
         }
+        digest.update(_line_text(line).encode())
     if not rows:
         return Imported(0, 0)
-    async with connections.engine(accounting_alias()).begin() as connection:
+    async with AccountingUnitOfWork() as uow:
+        account = await uow.accounts.get(account_id)
+        connection = await uow.session.connection()
         before = await _count_lines(connection, account_id)
         await connection.execute(_insert_new(connection), list(rows.values()))
         stored = await _count_lines(connection, account_id) - before
@@ -273,7 +282,29 @@ async def import_statement(account_id: AccountId, source: StatementSource) -> Im
             raise InvalidStatement(
                 "A statement line differs from the line imported before under its id."
             )
+        account.imported(
+            source.name[:128], stored, len(rows) - stored, digest.hexdigest()
+        )
+        await uow.commit()
     return Imported(stored, len(rows) - stored)
+
+
+def _line_text(line: StatementLine) -> str:
+    """One line, as the statement's digest reads it: a JSON list and a newline."""
+    return (
+        json.dumps(
+            [
+                line.external_id,
+                line.booked_on.isoformat(),
+                decimal_text(line.amount.amount),
+                line.reference,
+                line.description,
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
 
 
 def _check(line: StatementLine) -> None:
@@ -427,7 +458,9 @@ class ByAmountAndDate:
     """A line and a posting of the same amount and currency, near in date, alone.
 
     Only when each is the other's one candidate: two payments of the same
-    amount on the same days are left for a person to tell apart.
+    amount on the same days are left for a person to tell apart. Postings
+    are found by amount and currency, so the work grows with the lines and
+    postings, not their product (PERF-25).
     """
 
     name = "amount_and_date"
@@ -439,8 +472,17 @@ class ByAmountAndDate:
         window: timedelta,
     ) -> Iterator[tuple[StatementItem, PostingItem]]:
         """Pair the lines and postings that have exactly one candidate each."""
+        by_amount: defaultdict[tuple[str, Decimal], list[PostingItem]] = defaultdict(
+            list
+        )
+        for posting in postings:
+            by_amount[posting.currency, posting.amount].append(posting)
         for_line = {
-            line.id: [posting for posting in postings if _near(line, posting, window)]
+            line.id: [
+                posting
+                for posting in by_amount.get((line.currency, line.amount), ())
+                if _near(line, posting, window)
+            ]
             for line in lines
         }
         for_posting: defaultdict[UUID, int] = defaultdict(int)
@@ -576,7 +618,10 @@ async def reconcile(account_id: AccountId) -> Reconciled:
 
     One reconciliation of an account at a time (a lock of it). The
     breaks it records replace the account's earlier ones: postings without
-    a line count only within the dates its statements cover.
+    a line count only within the dates its statements cover. The rules
+    run on a thread, off the event loop (PERF-25); the run is recorded on
+    the account (``AccountReconciled``), so the audit trail names who ran
+    it and what it found (FIN-90).
 
     Raises:
         AccountNotFound: No account has that id.
@@ -588,13 +633,13 @@ async def reconcile(account_id: AccountId) -> Reconciled:
     run_id = uuid4()
     async with AccountingUnitOfWork() as uow:
         await uow.lock(f"accounting.reconcile:{account_id}")
-        await uow.accounts.get(account_id)
+        account = await uow.accounts.get(account_id)
         connection = await uow.session.connection()
         lines, items, span = await _unmatched(connection, account_id)
         now = clock.now()
         counts: dict[str, int] = {}
         for rule in rules:
-            paired = list(rule.match(lines, items, window))
+            paired = await asyncio.to_thread(_pairs, rule, lines, items, window)
             if not paired:
                 continue
             used_lines = {line.id for line, _ in paired}
@@ -623,11 +668,14 @@ async def reconcile(account_id: AccountId) -> Reconciled:
                     for line, posting in paired
                 ],
             )
-            await connection.execute(
-                update(statement_lines)
-                .where(statement_lines.c.id.in_(used_lines))
-                .values(status=MATCHED)
-            )
+            marked = sorted(used_lines)
+            for start in range(0, len(marked), CHECK_BATCH):
+                batch = marked[start : start + CHECK_BATCH]
+                await connection.execute(
+                    update(statement_lines)
+                    .where(statement_lines.c.id.in_(batch))
+                    .values(status=MATCHED)
+                )
             counts[rule.name] = len(paired)
             lines = [line for line in lines if line.id not in used_lines]
             items = [item for item in items if item.id not in used_postings]
@@ -678,8 +726,19 @@ async def reconcile(account_id: AccountId) -> Reconciled:
                     for each in left
                 ],
             )
+        account.reconciled(run_id, counts, len(left))
         await uow.commit()
     return Reconciled(run_id, counts, left)
+
+
+def _pairs(
+    rule: MatchingRule,
+    lines: Sequence[StatementItem],
+    items: Sequence[PostingItem],
+    window: timedelta,
+) -> list[tuple[StatementItem, PostingItem]]:
+    """What ``rule`` pairs, as a list (run on a thread)."""
+    return list(rule.match(lines, items, window))
 
 
 async def breaks_of(account_id: AccountId) -> list[Break]:

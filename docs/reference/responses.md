@@ -25,6 +25,8 @@ included, is RFC 9457 problem details, as `application/problem+json`:
 }
 ```
 
+[problems.md](problems.md) lists every code the framework answers with.
+
 `instance` is the request's path, without its query. `code`, `request_id`,
 and `errors` are extension members, so clients can switch on `code` either
 way. With `ERROR_TYPE_BASE_URL` each code is a problem type of its own:
@@ -41,6 +43,8 @@ See ADR 0032.
 | other `DomainError` | 400 | from the class |
 | `domainkit.http.APIError(status, detail, code=…)` | as given | as given |
 | `domainkit.exceptions.ServiceBusy(message, retry_after=…)`: something the operation needs is busy, raised below the HTTP layer (a full hashing queue is `PasswordChecksBusy`) | 503 | from the class (`password_checks_busy`), with `Retry-After` |
+| `domainkit.exceptions.UpstreamError`: an outgoing call failed (`domainkit.http.client`'s `CircuitOpen`, `CallTimeout`, `ResponseTooLarge`) | 503, 504, 502 | `upstream_unavailable` with `Retry-After`, `upstream_timeout`, `upstream_response_too_large`; the detail names no host, and nothing is reported ([runtime.md](../runtime.md#outgoing-http-calls)) |
+| over `RATE_LIMIT`, a route's `Throttle`, or a throttle of `domainkit.contrib.auth` | 429 | `rate_limited`, with `Retry-After` |
 | `domainkit.money.MoneyError`: amounts of two currencies added or compared, an amount with more places than its currency, an unknown currency, money set on an attribute whose column cannot hold it | 422 | `currency_mismatch`, `inexact_amount`, `unknown_currency`, `amount_out_of_range`; the detail names no amount ([money.md](../money.md#over-http)) |
 | request validation | 422 | `validation_error` |
 | a cursor this API did not issue for the request's ordering, or one that was altered | 422 | `invalid_cursor` ([queries.md](../queries.md#pages)) |

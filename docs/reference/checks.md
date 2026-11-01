@@ -105,6 +105,7 @@ an unsafe or broken configuration, refused until it changes.
 | `servers.W001` | an application that serves WebSockets under a server that reads larger messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or `GUNICORN_CMD_ARGS`; a deployed application also logs it at start) ([live.md](../live.md#message-size)) |
 | `servers.W002` | a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no caller has an address ([Server limits](servers.md); a deployed application also logs it at start) |
 | `live.W001` | WebSockets served without `WebSocketLimitsMiddleware` ([live.md](../live.md#message-size)) |
+| `live.W002` | a route with an access rule turns re-authorization off (`LiveLimits(reauth_interval=None)`): its open connections keep a revoked token |
 | `blocking.W001` | a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](../runtime.md#finding-blocking-code)); in every environment |
 | `blocking.W002` | an event handler (in-process or durable) or a messaging task written as `def`: it is awaited on the event loop itself, so its work holds every request and message of the process, and the keys of the messages waiting behind it, then it fails, as it returns nothing to await ([runtime.md](../runtime.md#finding-blocking-code)); in every environment. `allow_sync` marks one that returns an awaitable on purpose |
 | `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](../auth/authentication.md#the-principal-cache)) |
@@ -114,6 +115,7 @@ an unsafe or broken configuration, refused until it changes.
 | `auth.W006` | `AUTH.ACCOUNT_LOGIN_RATE` set to `None`, or to more than 100 wrong passwords a day at one account: past NIST SP 800-63B 5.2.2 ([auth.md](../auth/logging-in.md#wrong-passwords-and-device-proofs)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
+| `messaging.W001` | a task registered without `name=` (in staging and production): its name is its module's path, so moving or renaming the function renames its messages, which then wait for a task of the old name and are dead-lettered after `MESSAGING.UNKNOWN_TARGET_GRACE` ([messaging.md](../contrib/messaging.md)) |
 | `limits.W001` | limits without `domainkit.contrib.messaging`: no worker purges old usage, and its table grows with every movement; silence it once `manage.py limits purge` runs on the project's own schedule ([limits.md](../contrib/limits.md#settings)) |
 | `accounting.W003` | the ledger without `domainkit.contrib.messaging`: no worker releases expired holds, which keep counting against what is available; silence it once `manage.py accounting expireholds` runs on the project's own schedule ([accounting.md](../contrib/accounting.md#holds)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |

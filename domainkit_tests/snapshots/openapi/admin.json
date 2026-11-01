@@ -996,7 +996,15 @@
         }
        }
       },
-      "description": "Successful Response"
+      "description": "Successful Response",
+      "headers": {
+       "ETag": {
+        "description": "The version of the aggregate answered: send it back as If-Match to change it, or If-None-Match to read it again.",
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
      },
      "304": {
       "description": "The ETag sent is still current."
@@ -1213,7 +1221,15 @@
         "schema": {}
        }
       },
-      "description": "Successful Response"
+      "description": "Successful Response",
+      "headers": {
+       "ETag": {
+        "description": "The version of the aggregate answered: send it back as If-Match to change it, or If-None-Match to read it again.",
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
      },
      "401": {
       "content": {
@@ -1244,6 +1260,16 @@
        }
       },
       "description": "Not Found"
+     },
+     "408": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Request Timeout"
      },
      "409": {
       "content": {

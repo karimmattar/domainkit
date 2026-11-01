@@ -27,20 +27,20 @@ pings = 0
 modules = 393
 
 [rungs.bare]
-calls = 305
+calls = 304
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 786
+modules = 782
 
 [rungs.nested]
-calls = 305
+calls = 304
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 786
+modules = 782
 
 [rungs.default]
 calls = 414
@@ -48,84 +48,116 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 787
+modules = 783
 
 [rungs.default-json]
-calls = 546
+calls = 561
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 787
+modules = 783
 
 [rungs.template]
-calls = 538
+calls = 529
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 789
+modules = 785
 
 [rungs.template-json]
-calls = 661
+calls = 675
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 789
+modules = 785
 
 [rungs.me]
-calls = 780
+calls = 774
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 818
+modules = 813
 
 [rungs.read]
-calls = 1839
+calls = 1842
 statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
-modules = 818
+modules = 813
 
 [rungs.write]
-calls = 2173
+calls = 2162
 statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
-modules = 818
+modules = 813
 
 [rungs.resource-read]
-calls = 2606
+calls = 2622
 statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
-modules = 818
+modules = 813
 
 [rungs.resource-command]
-calls = 3329
+calls = 3357
 statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
-modules = 818
+modules = 813
 
 [rungs.keyed-write]
-calls = 3636
+calls = 3647
 statements = 4
 transactions = 3
 checkouts = 3
 pings = 3
-modules = 819
+modules = 814
+
+[rungs.money-write]
+calls = 2267
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+modules = 882
+
+[rungs.posting]
+calls = 11764
+statements = 13
+transactions = 1
+checkouts = 1
+pings = 1
+modules = 882
+
+[rungs.encrypted-read]
+calls = 1885
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+modules = 882
+
+[rungs.step-up]
+calls = 1710
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+modules = 882
 
 [rungs.throttled]
-calls = 778
+calls = 482
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 818
+modules = 813

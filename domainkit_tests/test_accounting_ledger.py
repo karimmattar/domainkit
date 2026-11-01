@@ -1,6 +1,7 @@
 """The ledger's use cases on a database: accounts, entries, periods, and holds."""
 
 import asyncio
+import dataclasses
 import os
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -26,6 +27,7 @@ from domainkit.contrib.accounting import (
     CaptureHold,
     CloseAccount,
     ClosePeriod,
+    EarlierPeriodOpen,
     EntryId,
     EntryNotFound,
     HoldFinished,
@@ -171,6 +173,43 @@ async def test_entries_need_an_open_period_by_default() -> None:
     assert entry.period_id is None
 
 
+async def test_a_date_in_a_gap_before_a_closed_period_is_closed_too() -> None:
+    """Without REQUIRE_PERIOD, a date no period covers, before one closed: refused."""
+    october = await period()
+    cash, sales = await account("1000"), await account("4000")
+    await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    early = transfer(sales, cash, usd("1"), "gap")
+
+    with (
+        override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}),
+        refused(PeriodIsClosed, match=r"^The books are closed up to a later date"),
+    ):
+        await post_entry(
+            dataclasses.replace(early, booked_on=date(2026, 9, 30)),
+            AccountingUnitOfWork(),
+        )
+    with override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}):
+        later = await post_entry(
+            dataclasses.replace(early, booked_on=date(2026, 11, 1)),
+            AccountingUnitOfWork(),
+        )
+
+    assert later.period_id is None
+
+
+async def test_periods_close_in_date_order() -> None:
+    """A period is not closed while one before it is open (FIN-87)."""
+    september = await period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+    october = await period()
+
+    with refused(EarlierPeriodOpen, match=r"^A period before this one is still open"):
+        await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    await close_period(ClosePeriod(period_id=september), AccountingUnitOfWork())
+    closed = await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+
+    assert closed.status is PeriodStatus.CLOSED
+
+
 async def test_no_entry_is_dated_in_a_closed_period() -> None:
     """Closed, a period refuses entries, with or without ``REQUIRE_PERIOD``."""
     october = await period()
@@ -196,6 +235,12 @@ async def test_no_entry_is_dated_in_a_closed_period() -> None:
         await post_entry(transfer(sales, cash, usd("1"), "r-2"), AccountingUnitOfWork())
     with refused(PeriodIsClosed):
         await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    for starts_on in (date(2026, 9, 1), TODAY):  # Its last day is closed too.
+        with refused(PeriodIsClosed, match=r"^The books are closed up to a later"):
+            await open_period(
+                OpenPeriod(name="2026-09", starts_on=starts_on, ends_on=TODAY),
+                AccountingUnitOfWork(),
+            )
     with refused(PeriodNotFound, match=r"^No accounting period has that id\.$"):
         await close_period(
             ClosePeriod(period_id=uuid.UUID(int=3)), AccountingUnitOfWork()

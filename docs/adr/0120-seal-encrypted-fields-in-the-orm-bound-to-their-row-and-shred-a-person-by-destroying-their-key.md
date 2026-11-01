@@ -111,12 +111,17 @@ key must be random and stored, wrapped, in one place.
 ## Consequences
 
 - A database dump, a replica or a backup shows no encrypted value; a
-  person erased can no longer be read in any of them.
+  person erased can no longer be read in any taken after the erasure. A
+  backup taken before it holds their key, wrapped under a data key the
+  service keeps, so it opens them until it expires, or until it is
+  restored and the erasure applied again (amended for the 0.15 audit,
+  DOCS-14: the guide gives the procedure).
 - Encrypted columns are sealed only through the ORM (or fixtures, or
   `seal_row`): hand-written SQL that writes one must seal it. Columns are
   text whatever the field's type; numbers and dates cannot be encrypted.
 - Opening a subject's value costs one query for their key, once per
-  transaction. Streaming results (`yield_per`) on a connection that must
+  transaction; since the 0.15 audit (PERF-22), the keys a query's rows
+  need are read together, one statement for a page of people. Streaming results (`yield_per`) on a connection that must
   also read keys is not supported.
 - Renaming a table, a column, or a primary key's values makes its sealed
   values unreadable: re-encrypt them under the new names first (export

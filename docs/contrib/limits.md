@@ -134,11 +134,26 @@ async with PaymentsUnitOfWork() as uow:
   the code and a translated detail, as problem details where
   `ERROR_FORMAT = "problem+json"`. Several movements in one call are
   judged together, and each counts once toward `max_count`.
-- **Every movement is counted**, under each of its subjects, whether a
-  window bounds the subject or not: a limit set partway through its
-  window, a limit that gains a window, or an exemption lifted counts what
-  moved earlier in the window. A subject no window bounds is counted
-  without a lock, so its movements do not wait for each other.
+- **The subjects a window bounds keep their movements**, and only they:
+  a subject no window bounds keeps nothing, and takes no lock, so a
+  bank's clearing and fee accounts cost no row a posting (PERF-26). With
+  the ledger installed, a limit with a window set, changed, or enabled
+  partway through its window (an exemption lifted, a limit that gains a
+  window) counts what the ledger's postings moved since the window
+  began, for accounts and holders, in the transaction that sets it:
+  every entry not reversed, once. An actor's movements, and a project's
+  own kinds counted with `consume`, are not on record: they count from
+  when a window bounds them.
+- **Currencies fail closed.** A subject some limit bounds in one currency
+  is bounded in all: a movement in a currency none of its limits names
+  is refused, `CurrencyNotLimited` (422 `currency_not_limited`), unless a
+  default for every currency (`"currency": "*"` in `LIMITS.DEFAULTS`)
+  bounds it, its amounts read in that currency's units (FIN-89). A limit
+  disabled for one subject (an exemption) names its currency only.
+- **A busy subject.** A window is a sum over its movements, under the
+  subject's lock: a limit on a subject that moves thousands of times a
+  window (a merchant's incoming payments, a service's actor) sums them
+  all for each movement, and its movements queue for it (PERF-27).
 - **Concurrency.** Before reading a subject's usage, `consume` locks the
   subject's row, made on its first movement, so two movements of one
   subject are judged one after the other: of fifty payments of 25.00
@@ -177,6 +192,10 @@ balances do not move. Each entry is a movement:
 A reversal counts nothing, and releases what the entry it reverses
 counted; the ledger reverses no reversal (`reversal_not_reversible`), so
 the money of a reversed entry moves again only as a new entry, counted.
+A reversal booked while an approved request runs (with approvals, one
+over `ENTRY_THRESHOLDS` must be) is counted as a movement instead, and
+releases nothing: undoing a payout two people approved does not free
+the holder's limit to draw it again (FIN-88).
 A hold moves nothing: it is counted when captured. The entry's key is
 `accounting.entry:<id>`.
 
@@ -226,7 +245,7 @@ LIMITS = {"KEEP_USAGE": timedelta(days=62)}
 
 | `LIMITS` key | Default | Meaning |
 | --- | --- | --- |
-| `DEFAULTS` | `()` | Limits in the settings (above), each a stored limit's fields, its amounts text. |
+| `DEFAULTS` | `()` | Limits in the settings (above), each a stored limit's fields, its amounts text; `"currency": "*"` bounds every currency no other limit of its key names, its amounts read in each currency's units. |
 | `KEEP_USAGE` | 35 days | How long a movement's usage is kept: at least 32 days (longer than any window), at most 3,660 days. |
 | `PURGE_EVERY` | 1 hour | How often the worker purges older usage, with messaging (1 minute to 1 day). |
 

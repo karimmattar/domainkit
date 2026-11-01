@@ -188,7 +188,7 @@ binding the actor, or by putting an authenticated principal in
 `scope["user"]`. A caller with neither has only its address, which every caller
 behind one NAT or proxy shares: keyed by it, one that sends the same key
 and body as another would be replayed the other's response (its status,
-`Location`, and body), and a different body would learn that the key is
+`Location`, `ETag`, and body), and a different body would learn that the key is
 taken. Random keys make this unlikely, but predictable ones (counters,
 order numbers) do not. So by default (`ANONYMOUS = "refuse"`, since
 0.11) such a key is answered 400 `idempotency_key_needs_caller`, nothing

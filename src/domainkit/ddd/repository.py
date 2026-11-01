@@ -50,6 +50,8 @@ LOCK_TIMEOUT: Final = 10.0
 class LockNotAvailable(Conflict):
     """Another transaction holds the row's lock, and the caller would not wait."""
 
+    code = "lock_not_available"
+
 
 class SoftDeletable(metaclass=EntityMeta):
     """Mixin for aggregates that are marked deleted rather than removed.

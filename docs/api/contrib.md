@@ -19,6 +19,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `AccountNotEmpty`: Closing an account that still has a balance, or holds.
 - `AccountNotFound`: No account has that id or code.
 - `AccountOpened`: An account was opened.
+- `AccountReconciled`: An account's statement lines were matched to its postings (FIN-90).
 - `AccountStatus`: Whether an account takes postings.
 - `AccountType`: What an account counts, which decides its normal balance.
 - `AccountingSettings`: How the ledger posts, holds, and reconciles; every key is optional.
@@ -26,7 +27,9 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `CaptureHold`: Post the hold's amount (or `amount`, less) out of its account into another.
 - `CloseAccount`: Close an account with nothing on it.
 - `ClosePeriod`: Close a period: no entry may be dated in it afterwards.
+- `EarlierPeriodOpen`: Closing a period while one before it is still open.
 - `Entry`: A posted journal entry: balanced lines, never changed once posted.
+- `EntryAmount`: What one entry moved on one account: its debits and its credits there.
 - `EntryId`: A journal entry's id (a `UUID`).
 - `EntryNotFound`: No journal entry has that id.
 - `EntryPosted`: A journal entry was posted; `reverses` names the entry it undoes.
@@ -48,7 +51,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `Period`: Dates entries may be booked on, from `starts_on` to `ends_on` included.
 - `PeriodClosed`: An accounting period was closed: no entry may be dated in it any more.
 - `PeriodId`: An accounting period's id (a `UUID`).
-- `PeriodIsClosed`: An entry dated in a period that is closed.
+- `PeriodIsClosed`: An entry, or a new period, dated on or before the end of a closed period.
 - `PeriodNameTaken`: Another period has that name.
 - `PeriodNotFound`: No accounting period has that id.
 - `PeriodOpened`: An accounting period was opened.
@@ -62,6 +65,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `ReversalNotReversible`: Reversing a reversal: it would move the money of the entry it undid again.
 - `ReverseEntry`: Post the entry that undoes another, dated `booked_on` (default: today).
 - `Side`: A posting's side.
+- `StatementImported`: A statement's lines were imported for an account (FIN-90).
 - `TrialBalance`: Every account with a balance or movements in a period, and the totals.
 - `UnbalancedEntry`: An entry whose debits and credits differ in some currency.
 - `capture_hold`: Capture a hold into an entry; capturing it again returns it as captured.
@@ -136,6 +140,7 @@ Maker-checker: commands that run only once other people approve them.
 
 - `CAPTURES`: The guarded action of a hold's capture over its currency's threshold.
 - `ENTRIES`: The guarded action of postings over their currency's threshold.
+- `REVERSES`: The guarded action of a reversal over its currency's threshold.
 - `SUPERUSERS`: The guarded action of making a user a superuser.
 - `AlreadyDecided`: This person approved or rejected the request already (409).
 - `ApprovalGiven`: One person approved a request; `approvals` of `required` so far.
@@ -178,6 +183,7 @@ Maker-checker: commands that run only once other people approve them.
 - `approve_request`: Approve a request; the approval that completes it queues its command.
 - `approved`: Whether `command` is the approved command of `action` being run.
 - `cancel_request`: Withdraw a pending request, as its maker.
+- `current_run`: The approved command being run here, if any.
 - `execute_request`: Run an approved request's command, once (the task `EXECUTE`).
 - `expire_requests`: Expire the pending requests whose time is up; how many there were.
 - `fingerprint`: SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
@@ -283,6 +289,13 @@ Retention that keeps the chain: prune below a signed checkpoint; export checkpoi
 - `Pruned`: What `prune` did to one database's trail.
 - `export`: Every audited database's checkpoints, and one of its head, signed.
 - `prune`: Prune `database`'s trail below a checkpoint of its last seal before `before`.
+
+## `domainkit.contrib.audit.testing`
+
+The audit trail as tests read it: its rows, as records.
+
+- `RecordedEntry`: One row of the audit trail, as it was written.
+- `audit_entries`: The trail's entries, oldest first, those matching every filter given.
 
 ## `domainkit.contrib.audit.tables`
 
@@ -392,6 +405,7 @@ Limits on money movements: per transaction, per window, per subject, per currenc
 - `ACTOR`: The kind of subject that is who acts: the request's actor.
 - `HOLDER`: The kind of subject that is the holder an account is kept for.
 - `ChangeLimit`: Set a limit's bounds, all of them: one left out is None (no bound).
+- `CurrencyNotLimited`: A movement in a currency none of its subject's limits names (FIN-89).
 - `Direction`: Which movements of a subject a limit counts.
 - `InvalidLimit`: A limit, or a movement checked against limits, that cannot be as written.
 - `Limit`: What one kind of subject may move in one currency and direction.
@@ -575,6 +589,7 @@ Permissions on single objects (django-guardian's grants), for users or groups.
 
 Privacy requests and retention across installed domains (GDPR's rights).
 
+- `ErasureHeld`: A person's data must be kept for now: nothing of it was erased (FIN-94).
 - `PersonalDataErased`: An aggregate's personal fields were erased, at a request or by retention.
 - `PersonalModel`: An aggregate of an installed domain with fields marked `Personal`.
 - `Policy`: A domain's `Retention`, resolved to a table and its dating column.

@@ -314,6 +314,17 @@ async def test_imports_and_reconciliations_need_an_account() -> None:
         await breaks_of(nobody)
 
 
+def test_a_statements_digest_reads_each_line_as_json() -> None:
+    """Its id, date, amount, reference, and description, as stored (FIN-90)."""
+    from domainkit.contrib.accounting.reconciliation import StatementLine, _line_text
+
+    line = StatementLine(
+        "b-1", date(2026, 10, 15), Money.of("-12.5", "USD"), "r:1", "Café"
+    )
+
+    assert _line_text(line) == '["b-1","2026-10-15","-12.50","r:1","Café"]\n'
+
+
 @pytest.mark.usefixtures("books")
 async def test_reconciliation_matches_and_records_breaks() -> None:
     """Rules match in order; what is left is a break, within the statements' dates."""

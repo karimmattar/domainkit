@@ -188,7 +188,6 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
         _login_limits(request, body.username, device),
         action="auth.login",
         detail=LOGIN_THROTTLED,
-        code="login_throttled",
     )
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
@@ -406,7 +405,6 @@ async def _throttle(request: Request, user: AbstractBaseUser) -> Attempt:
         limits,
         action="auth.login",
         detail=LOGIN_THROTTLED,
-        code="login_throttled",
     )
 
 

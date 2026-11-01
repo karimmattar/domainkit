@@ -86,7 +86,7 @@ from datetime import UTC
 from email.utils import parsedate_to_datetime
 from functools import cache, partial
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, ClassVar, Final, cast
 from urllib.parse import unquote_to_bytes
 from weakref import WeakSet
 
@@ -97,7 +97,7 @@ from domainkit import clock, deadlines
 from domainkit.conf import settings
 from domainkit.conf.global_settings import HttpClientConfig
 from domainkit.context import current_request
-from domainkit.exceptions import DomainkitError
+from domainkit.exceptions import UpstreamError
 from domainkit.http import guard as guards
 from domainkit.http.guard import Network, UnsafeURL, checked_host, checked_url
 from domainkit.tracing import trace_headers
@@ -149,16 +149,42 @@ type Handler = (
 logger = logging.getLogger(__name__)
 
 
-class CircuitOpen(httpx2.TransportError, DomainkitError):
-    """Calls to a host fail at once while its circuit is open."""
+class CircuitOpen(httpx2.TransportError, UpstreamError):
+    """Calls to a host fail at once while its circuit is open.
+
+    A request that lets it go is answered 503 ``upstream_unavailable``,
+    with ``Retry-After`` the seconds left of the cooldown.
+    """
+
+    status_code: ClassVar[int] = 503
+    code: ClassVar[str] = "upstream_unavailable"
+    detail: ClassVar[str] = (
+        "A service this one depends on is unavailable; try again later."
+    )
 
 
-class CallTimeout(httpx2.TimeoutException, DomainkitError):
-    """A call took longer than its ``timeout``, retries included."""
+class CallTimeout(httpx2.TimeoutException, UpstreamError):
+    """A call took longer than its ``timeout``, retries included.
+
+    A request that lets it go is answered 504 ``upstream_timeout``.
+    """
+
+    status_code: ClassVar[int] = 504
+    code: ClassVar[str] = "upstream_timeout"
+    detail: ClassVar[str] = "A service this one depends on took too long to answer."
 
 
-class ResponseTooLarge(httpx2.RequestError, DomainkitError):
-    """An answer was longer than ``MAX_RESPONSE_BYTES``, as sent or decompressed."""
+class ResponseTooLarge(httpx2.RequestError, UpstreamError):
+    """An answer was longer than ``MAX_RESPONSE_BYTES``, as sent or decompressed.
+
+    A request that lets it go is answered 502 ``upstream_response_too_large``.
+    """
+
+    status_code: ClassVar[int] = 502
+    code: ClassVar[str] = "upstream_response_too_large"
+    detail: ClassVar[str] = (
+        "A service this one depends on answered with more than can be read."
+    )
 
 
 @dataclass(slots=True)
@@ -205,6 +231,15 @@ class CircuitBreaker:
                 return False
             circuit.trying = True
             return True
+
+    def retry_after(self, host: str, cooldown: float) -> int:
+        """Whole seconds until ``host``'s circuit lets a trial through, at least 1."""
+        with self._lock:
+            circuit = self._circuits.get(host)
+            opened = None if circuit is None else circuit.opened
+        if opened is None:
+            return 1
+        return max(1, math.ceil(opened + cooldown - clock.monotonic()))
 
     def succeeded(self, host: str) -> None:
         """Forget the host's failures: its circuit closes."""
@@ -422,10 +457,14 @@ class HttpClient:
             if breaker is not None and not breaker.admits(
                 call.origin, config.BREAKER_COOLDOWN
             ):
-                raise CircuitOpen(
+                refused = CircuitOpen(
                     f"Calls to {call.origin} fail at once: its circuit is open.",
                     request=request,
                 )
+                refused.retry_after = breaker.retry_after(
+                    call.origin, config.BREAKER_COOLDOWN
+                )
+                raise refused
             started = clock.monotonic()
             try:
                 response = await self._attempt(call, pool, request, config)
