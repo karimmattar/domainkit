@@ -44,6 +44,7 @@ from domainkit.testing.databases import application_role, grant_application_role
 from domainkit.testing.kms import SECRETS, FakeKms, FakeVault
 from domainkit_tests.conftest import Api, UseAuth
 from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
+from domainkit_tests.test_auth_sca import _user_id as user_id
 
 START = "2027-01-04T10:00:00Z"
 RFC_SECRET = b"12345678901234567890"
@@ -67,6 +68,15 @@ def test_codes_are_rfc_6238s() -> None:
     assert totp_code(RFC_SECRET, datetime.fromtimestamp(59, UTC)) == "287082"
     assert totp_code(encoded, datetime.fromtimestamp(1111111109, UTC)) == "081804"
     assert totp_code(encoded.lower(), "2033-05-18T03:33:20Z") == "279037"
+
+
+def test_secrets_of_any_length_are_read_in_base_32() -> None:
+    """A 16-byte secret is 26 characters, padded back to 32 to decode."""
+    secret = bytes(range(16))
+    encoded = base64.b32encode(secret).decode().rstrip("=")
+
+    assert len(encoded) == 26
+    assert totp_code(encoded, START) == totp_code(secret, START)
 
 
 def test_codes_are_the_services(frozen: FrozenClock) -> None:
@@ -137,7 +147,10 @@ def test_the_trail_is_read_as_records(alice: TestClient) -> None:
     [enrolled] = run_async(audit_entries(action="auth.mfa_enabled"))
 
     assert isinstance(enrolled, RecordedEntry)
-    assert enrolled.outcome == "success"
+    assert (enrolled.action, enrolled.outcome) == ("auth.mfa_enabled", "success")
+    assert enrolled.actor == str(run_async(user_id("alice")))
+    assert enrolled.request_id
+    assert isinstance(enrolled.details, dict)
     assert enrolled in everything
     assert [e.occurred_at for e in everything] == sorted(
         e.occurred_at for e in everything

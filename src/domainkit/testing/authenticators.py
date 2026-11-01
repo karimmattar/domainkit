@@ -63,9 +63,7 @@ def totp_code(secret: bytes | str, at: Moment | None = None) -> str:
     ``secret`` is the raw key, or its base-32 text as the enrolment route
     answers it (with or without ``=`` padding).
     """
-    key = _key(secret)
-    when = clock.now() if at is None else moment(at)
-    return _hotp(key, int(when.timestamp() // STEP))
+    return _hotp(_key(secret), int(moment(at).timestamp() // STEP))
 
 
 @dataclass
