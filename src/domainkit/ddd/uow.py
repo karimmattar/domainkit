@@ -225,6 +225,10 @@ class UnitOfWork(ABC):
     _expected: list[Expectation] | tuple[()] = ()
     """What ``expect`` holds the repositories to. Set on the instance only
     while it holds something, for the same reason as ``_commits``."""
+    _begun: list[tuple[Repository[Any, Any], Mark]] | tuple[()] = ()
+    """What each repository held when the block began, or last committed:
+    what ``rollback`` puts back (``_run_marks``; none in SQL, whose
+    database rolls back)."""
 
     def __init__(
         self, *, events: EventBus | None = None, readonly: bool | None = None
@@ -277,6 +281,7 @@ class UnitOfWork(ABC):
             for expected in self._expected:
                 expected.renew()
             self._lend_expectations()
+        self._begun = self._run_marks()
         return self
 
     @contextmanager
@@ -359,13 +364,21 @@ class UnitOfWork(ABC):
         if self._expected:
             self._accept_committed()
         self._finish()
+        self._begun = self._run_marks()  # What is committed stays.
         await self._committed()
         await self.events.publish_all(events)
 
     async def rollback(self) -> None:
-        """Discard changes and deferred tasks that were not committed."""
+        """Discard changes and deferred tasks that were not committed.
+
+        In-memory repositories are put back as they were when the block
+        began, or last committed: the aggregates added since are gone, and
+        those changed hold their values again (DATA-16).
+        """
         self._deferred.clear()
         await self._rollback()
+        for repository, mark in self._begun:
+            repository._rewind(mark)
         self._finish()
 
     @asynccontextmanager

@@ -30,6 +30,7 @@ from alembic import command, context
 from alembic.autogenerate import comparators
 from alembic.autogenerate.api import AutogenContext
 from alembic.config import Config
+from alembic.ddl.base import AddColumn, visit_add_column
 from alembic.operations.ops import (
     CreateCheckConstraintOp,
     MigrationScript,
@@ -42,6 +43,8 @@ from alembic.util.exc import CommandError as AlembicCommandError
 from sqlalchemy import URL, CheckConstraint, Connection, Table, make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.compiler import DDLCompiler
 from sqlalchemy.types import TypeDecorator
 
 from domainkit import setup
@@ -52,12 +55,22 @@ from domainkit.db.money import CHECK
 from domainkit.db.orm import metadata
 from domainkit.db.partitioning import existing_partitions, maintain
 from domainkit.db.routing import router
+from domainkit.db.types import default_in_minor_units
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.utils.formatting import format_python
 
 ENV_DIR: Final = Path(__file__).with_name("migration_env")
 _DATABASE: Final = "database"
 _TARGET: Final = "target"
+
+
+class ForeignKeyViolation(DomainkitError):
+    """Rows on SQLite name parents that do not exist, found once migrations ran.
+
+    SQLite checked no foreign key before 0.15 (DATA-18); ``migrate`` checks
+    them all after running revisions there, and the message names the
+    tables to repair.
+    """
 
 
 class DatabaseUnreachable(DomainkitError):
@@ -361,13 +374,25 @@ async def _migrated(database: DatabaseConfig, alias: str) -> None:
 
 
 def upgrade(target: str = "head", database: str = DEFAULT_DB_ALIAS) -> None:
-    """Apply revisions up to ``target`` on the alias ``database``."""
+    """Apply revisions up to ``target`` on the alias ``database``.
+
+    Raises:
+        ForeignKeyViolation: On SQLite, a row names a parent that does not
+            exist, once the revisions ran.
+    """
     command.upgrade(alembic_config(_single_alias(database)), target)
+    _run(_check_foreign_keys(connections.config(database)))
 
 
 def downgrade(target: str, database: str = DEFAULT_DB_ALIAS) -> None:
-    """Revert alias ``database`` down to ``target`` (``base`` reverts everything)."""
+    """Revert alias ``database`` down to ``target`` (``base`` reverts everything).
+
+    Raises:
+        ForeignKeyViolation: On SQLite, a row names a parent that does not
+            exist, once the revisions ran.
+    """
     command.downgrade(alembic_config(_single_alias(database)), target)
+    _run(_check_foreign_keys(connections.config(database)))
 
 
 def _single_alias(database: str) -> str:
@@ -522,37 +547,65 @@ def _money_checks(
     conn_table: Table | None,
     metadata_table: Table | None,
 ) -> None:
-    """Add the both-or-neither check of a money pair added to an existing table.
+    """Add the both-or-neither check of a money pair the database table lacks.
 
     Alembic compares no check constraints, so a nullable money field added
     later would get its two columns and not the check that keeps them a
-    pair (SEC-14a-3). A pair's check names its field (``info``); when the
-    database table lacks that field's amount column, the revision adds the
-    columns and then the check (in batch mode on SQLite).
+    pair (SEC-14a-3), and a field made optional (``Money`` to ``Money |
+    None``) would get nullable columns without it (DATA-20). A pair's check
+    names its field (``info``); when the database table has no check of
+    that name, the revision adds it, after any columns it adds (in batch
+    mode, which recreates the table on SQLite).
     """
     if conn_table is None or metadata_table is None:
         return
+    present = {
+        constraint.name
+        for constraint in conn_table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
     for constraint in metadata_table.constraints:
         if not isinstance(constraint, CheckConstraint):
             continue
-        name = constraint.info.get(CHECK)
-        if name is not None and name not in conn_table.c:
+        if constraint.info.get(CHECK) is not None and constraint.name not in present:
             modify_table_ops.ops.append(
                 CreateCheckConstraintOp.from_constraint(constraint)
             )
 
 
+@compiles(AddColumn, "sqlite")
+def _add_column_on_sqlite(
+    element: AddColumn,
+    compiler: DDLCompiler,
+    **kwargs: Any,  # noqa: ANN401 - the compiler's options.
+) -> str:
+    """``ALTER TABLE ... ADD COLUMN``, an amount's default in minor units (DATA-15)."""
+    statement = visit_add_column(element, compiler, **kwargs)
+    return default_in_minor_units(element.column, statement, compiler)
+
+
 def _configure_and_run(connection: Connection) -> None:
-    """Configure Alembic for ``connection`` and run the migrations."""
+    """Configure Alembic for ``connection`` and run the migrations.
+
+    On SQLite, foreign keys are not checked while revisions run: batch mode
+    recreates a table (copy, drop, rename), and dropping a parent would
+    cascade into, or be refused by, its children. ``upgrade`` and
+    ``downgrade`` check every row once they ran.
+    """
     partitions = existing_partitions(connection)
     if connection.in_transaction():
         # The lookup began a transaction; end it so Alembic's own transaction,
         # not this read, decides what commits.
         connection.commit()
+    if connection.dialect.name == "sqlite":  # Outside a transaction, as it must.
+        connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
+        connection.commit()
     context.configure(
         connection=connection,
         target_metadata=metadata,
-        render_as_batch=connection.dialect.name == "sqlite",
+        # Batch mode on every database, so a revision written against
+        # PostgreSQL applies on SQLite too; elsewhere it is plain ALTER.
+        render_as_batch=True,
         render_item=render_item,
         include_object=partial(
             include_object,
@@ -562,6 +615,30 @@ def _configure_and_run(connection: Connection) -> None:
     )
     with context.begin_transaction():
         context.run_migrations()
+
+
+async def _check_foreign_keys(database: DatabaseConfig) -> None:
+    """Refuse rows of a SQLite database that break a foreign key.
+
+    Raises:
+        ForeignKeyViolation: A row names a parent that does not exist.
+    """
+    engine = create_owner_engine(database)
+    try:
+        async with _connected(engine) as connection:
+            if connection.dialect.name != "sqlite":
+                return
+            found = await connection.exec_driver_sql("PRAGMA foreign_key_check")
+            broken = found.all()
+    finally:
+        await engine.dispose()
+    if broken:
+        tables = sorted({str(row[0]) for row in broken})
+        raise ForeignKeyViolation(
+            f"{len(broken)} row(s) of {', '.join(tables)} name a parent that "
+            "does not exist; SQLite now checks foreign keys, as PostgreSQL "
+            "does. Repair or delete them, then migrate again."
+        )
 
 
 def _skip_empty(
