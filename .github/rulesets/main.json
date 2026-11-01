@@ -77,6 +77,10 @@
             "integration_id": 15368
           },
           {
+            "context": "postgresql (16)",
+            "integration_id": 15368
+          },
+          {
             "context": "bench",
             "integration_id": 15368
           },

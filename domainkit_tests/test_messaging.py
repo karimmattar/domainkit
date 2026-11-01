@@ -17,6 +17,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -192,21 +193,28 @@ def immediate_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_module, "backoff", lambda attempts, config: 0.0)
 
 
-@pytest.fixture
-def messaging(database_url: str) -> Iterator[None]:
-    """Install messaging on an empty database."""
+@contextmanager
+def installed(database: dict[str, object]) -> Iterator[None]:
+    """Install messaging on the empty database ``database`` describes."""
     ran.clear()
     reported.clear()
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[MESSAGING, ALPHA],
-        DATABASES={"default": {"URL": database_url}},
+        DATABASES={"default": database},
         MESSAGING=FAST,
         ERROR_REPORTERS=["domainkit_tests.test_messaging.reporter"],
     ):
         setup()
         yield
     registry.clear()
+
+
+@pytest.fixture
+def messaging(database_url: str) -> Iterator[None]:
+    """Install messaging on an empty database."""
+    with installed({"URL": database_url}):
+        yield
 
 
 @pytest.fixture

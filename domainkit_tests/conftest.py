@@ -708,7 +708,9 @@ def identity(migrated: Migrated) -> Iterator[Api]:
 # Property tests in CI (GitHub sets CI): a failing example prints the
 # @reproduce_failure blob that replays it, since a runner keeps no example
 # database between runs; the seed alone needs the same code to replay.
-hypothesis_settings.register_profile("ci", print_blob=True)
+# No deadline: a loaded runner made the 200 ms default fail examples that
+# pass alone (TEST-20); slowness is the benchmarks' to judge.
+hypothesis_settings.register_profile("ci", print_blob=True, deadline=None)
 if os.environ.get("CI"):
     hypothesis_settings.load_profile("ci")
 

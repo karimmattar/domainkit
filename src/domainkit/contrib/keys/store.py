@@ -41,6 +41,8 @@ from domainkit.keys.ring import StoredSubjectKey
 
 from .tables import erasures, subject_keys
 
+CHUNK: Final = 500
+"""Subjects' keys read in one statement, at most."""
 ATTEMPTS: Final = 3
 """How many times ``add`` tries before giving up on a subject being erased."""
 ERASURE_MEMORY: Final = timedelta(days=1)
@@ -71,6 +73,17 @@ class TableSubjectKeyStore:
     def find(self, connection: Connection, key_id: str) -> StoredSubjectKey | None:
         """The key ``key_id``; None once destroyed."""
         return _stored(connection, subject_keys.c.id == key_id)
+
+    def find_many(
+        self, connection: Connection, key_ids: Collection[str]
+    ) -> list[StoredSubjectKey]:
+        """The keys of ``key_ids`` still stored, ``CHUNK`` ids to a statement."""
+        wanted = list(key_ids)
+        found: list[StoredSubjectKey] = []
+        for start in range(0, len(wanted), CHUNK):
+            chunk = wanted[start : start + CHUNK]
+            found.extend(_all_stored(connection, subject_keys.c.id.in_(chunk)))
+        return found
 
     def of_subject(
         self, connection: Connection, subject: str
@@ -156,7 +169,9 @@ def erase(connection: Connection, subject: str) -> int:
     """Destroy ``subject``'s keys in the connection's database; how many.
 
     Under the subject's lock: leave a tombstone first, for a transaction
-    making their first key meanwhile, and forget tombstones a day old.
+    making their first key meanwhile, and forget tombstones a day old, by
+    the clock that dated them (the database's on PostgreSQL), so a host
+    whose clock runs ahead never forgets the one just left (DATA-22).
     """
     subject_lock(connection, [subject])
     insert = (
@@ -169,8 +184,8 @@ def erase(connection: Connection, subject: str) -> int:
             index_elements=["subject"], set_={"erased_at": now}
         )
     )
-    connection.execute(
-        delete(erasures).where(erasures.c.erased_at < clock.now() - ERASURE_MEMORY)
+    connection.execute(  # On the clock that dated them: the database's (DATA-22).
+        delete(erasures).where(erasures.c.erased_at < _now(connection) - ERASURE_MEMORY)
     )
     result = connection.execute(
         delete(subject_keys).where(subject_keys.c.subject == subject)
@@ -228,14 +243,25 @@ def _stored(
     connection: Connection, condition: ColumnElement[bool]
 ) -> StoredSubjectKey | None:
     """The one key ``condition`` selects."""
-    row = connection.execute(
-        select(
-            subject_keys.c.id,
-            subject_keys.c.subject,
-            subject_keys.c.wrapping_key,
-            subject_keys.c.key,
-        ).where(condition)
-    ).first()
-    if row is None:
-        return None
+    row = connection.execute(_KEYS.where(condition)).first()
+    return None if row is None else _key(row)
+
+
+def _all_stored(
+    connection: Connection, condition: ColumnElement[bool]
+) -> list[StoredSubjectKey]:
+    """The keys ``condition`` selects."""
+    return [_key(row) for row in connection.execute(_KEYS.where(condition))]
+
+
+_KEYS: Final = select(
+    subject_keys.c.id,
+    subject_keys.c.subject,
+    subject_keys.c.wrapping_key,
+    subject_keys.c.key,
+)
+
+
+def _key(row: Any) -> StoredSubjectKey:  # noqa: ANN401 - a row of _KEYS.
+    """The key a row of ``_KEYS`` holds."""
     return StoredSubjectKey(row.id, row.subject, row.wrapping_key, bytes(row.key))

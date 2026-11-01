@@ -451,7 +451,13 @@ def test_the_database_rungs_schema_is_never_replaced_and_its_token_expires(
     gone = tool("drop", schema)
 
     assert first.returncode == 0, first.stderr
-    assert set(json.loads((tmp_path / "first.json").read_text())) == {"token", "item"}
+    assert set(json.loads((tmp_path / "first.json").read_text())) == {
+        "token",
+        "item",
+        "card",
+        "cash",
+        "wallet",
+    }
     assert again.returncode == 1
     assert "already exists" in again.stderr
     assert not (tmp_path / "again.json").exists()

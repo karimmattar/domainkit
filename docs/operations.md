@@ -244,6 +244,13 @@ and test restores.
   do not try to make it go away. Messages that ran after the restore point
   run again (handlers are idempotent), and messages written after it are
   lost with their changes.
+- **Erasures after a restore.** A backup from before an erasure still
+  holds the person's keys and their values (crypto-shredding reaches only
+  copies made afterwards). Before restoring, list the erasures made since
+  the backup's time (`manage.py auditlog --action privacy.erase`), keep the
+  list outside the databases being restored, and run `manage.py privacy
+  erase --subject <id>` for each once restored
+  ([contrib/keys.md](contrib/keys.md#backups-taken-before-an-erasure)).
 - **SQLite** is for development and tests: one file, on one host.
 - **Fixtures are not backups.** `loaddata` only adds rows (`--replace`
   replaces stored ones), and writes no guarded table (users, permissions,

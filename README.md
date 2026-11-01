@@ -224,6 +224,7 @@ suite on every core of the runner (`pytest -n auto`):
 - the tests again against PostgreSQL 18, immudb with TLS and a signing key,
   Redis 8 (plain and TLS), Valkey 9, and RabbitMQ 4 (plain and TLS); no test
   may be skipped there
+- the PostgreSQL tests on PostgreSQL 16, the oldest supported
 - coverage of both runs combined, which must be 100%
 - the benchmark ladder: Python calls and database round trips per request,
   against budgets (`python -m benchmarks`; docs/performance.md)

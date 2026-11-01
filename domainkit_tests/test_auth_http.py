@@ -1611,3 +1611,19 @@ def test_requests_without_a_token_read_no_settings(
 
     assert run_async(anonymous()) == (None, None)
     assert read == []
+
+
+def test_wrong_old_passwords_are_throttled_as_logins_are(api: Api) -> None:
+    """Past ``LOGIN_RATE``, a password change is refused as a login is, and says so."""
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    headers = bearer(login(client, "alice")["access_token"])
+    wrong = {"old_password": "nope", "new_password": "n3w-Passw0rd!"}
+    answers = [
+        client.post("/auth/password", headers=headers, json=wrong) for _ in range(3)
+    ]
+    assert [answer.status_code for answer in answers] == [400, 400, 429]
+    assert (answers[2].json()["code"], answers[2].json()["detail"]) == (
+        "login_throttled",
+        "Too many login attempts; try again later.",
+    )

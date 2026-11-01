@@ -426,7 +426,7 @@ def test_wildcard_hosts_alone_never_trust_an_origin(identity: Api) -> None:
             "/notes", headers={"Origin": "https://evil.example", "X-CSRF-Token": csrf}
         )
 
-    assert response.status_code == 403
+    assert (response.status_code, response.json()["code"]) == (403, "csrf_failed")
 
 
 def test_plain_http_in_development_needs_only_the_token(identity: Api) -> None:

@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import re
 import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -947,3 +948,301 @@ def test_a_kms_endpoint_with_a_trailing_slash_signs_the_root() -> None:
         KEY_ARN, region="eu-west-1", credentials=static, endpoint="https://kms.test/"
     )
     assert provider.endpoint == "https://kms.test"
+
+
+# What the providers say, word for word, and what they send ---------------------------
+
+
+def exactly(message: str) -> str:
+    """A pattern matching ``message`` and nothing else."""
+    return f"^{re.escape(message)}$"
+
+
+def test_the_local_provider_says_why_it_refuses() -> None:
+    """A short KEK, a key it did not wrap, a key changed: each said in full."""
+    provider = LocalKeyProvider([b"k" * 32])
+    wrapped = provider.wrap_now(b"d" * 32)
+    kek_id = wrapped.split(":")[1]
+    with pytest.raises(
+        ValueError,
+        match=exactly("LocalKeyProvider takes one or more KEKs of 32 bytes."),
+    ):
+        LocalKeyProvider([b"short"])
+    not_ours = (
+        "The local provider did not wrap that key, or not under SECRET_KEY or one "
+        "of SECRET_KEY_FALLBACKS."
+    )
+    for other in ("local:nokek:AAAA", f"vault:{kek_id}:{wrapped.split(':')[2]}"):
+        with pytest.raises(UnknownKey, match=exactly(not_ours)):
+            provider.unwrap_now(other)
+    with pytest.raises(
+        UnknownKey, match=exactly("The wrapped key was changed, or cut short.")
+    ):
+        provider.unwrap_now(wrapped[:-4])
+
+
+def test_a_wrapped_key_is_base64_without_padding() -> None:
+    """URL-safe base64 with its ``=`` cut, and read back without it."""
+    provider = LocalKeyProvider([b"k" * 32])
+    wrapped = provider.wrap_now(b"d" * 16)
+    assert len(wrapped.split(":")[2]) == 59  # 12 + 16 + 16 bytes, unpadded.
+    assert provider.unwrap_now(wrapped) == b"d" * 16
+
+
+def test_missing_cryptography_is_named_in_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The extra to install, said once."""
+    monkeypatch.setitem(
+        sys.modules, "cryptography.hazmat.primitives.ciphers.aead", None
+    )
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly(
+            'Envelope encryption needs cryptography: pip install "domainkit[mfa]".'
+        ),
+    ):
+        LocalKeyProvider([b"k" * 32])
+
+
+def test_sigv4_encodes_a_slash_in_a_query_name() -> None:
+    """Names are encoded as values are: ``/`` too."""
+    from domainkit.keys.aws import _canonical_query
+
+    assert _canonical_query("a/b=1") == "a%2Fb=1"
+
+
+@pytest.mark.anyio
+async def test_aws_refusals_say_what_is_wrong(no_aws: None, tmp_path: Path) -> None:
+    """Each refusal of the credentials and of KMS, in full."""
+    from domainkit.keys.aws import _container_url
+
+    with pytest.raises(
+        KeyProviderError,
+        match=exactly(
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI must be a path, such as "
+            "/v2/credentials/<id>."
+        ),
+    ):
+        _container_url("v2/x", None)
+    with pytest.raises(
+        KeyProviderError,
+        match=exactly(
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI must use https, or http to a "
+            "loopback address or the container agent's (169.254.170.2, "
+            "169.254.170.23)."
+        ),
+    ):
+        _container_url(None, "http://10.0.0.1/c")
+    with pytest.raises(
+        KeyProviderError,
+        match=exactly(
+            "AWS credentials: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are unset."
+        ),
+    ):
+        await environment_credentials()()
+    with pytest.raises(UnknownKey, match=exactly("AWS KMS did not wrap that key.")):
+        await aws().unwrap("vault:v1:abc")
+    with pytest.raises(
+        UnknownKey, match=exactly("The wrapped key was changed, or cut short.")
+    ):
+        await aws().unwrap("aws-kms:QUJD!")
+    token = tmp_path / "token"
+    token.write_text("jwt")
+    with (
+        stub(lambda request: httpx2.Response(200, text="<Nothing/>")),
+        pytest.raises(
+            KeyProviderError, match=exactly("AWS STS answered without credentials.")
+        ),
+    ):
+        await web_identity_credentials("arn:role", token, region="eu-west-1")()
+
+
+@pytest.mark.anyio
+async def test_unreachable_credential_endpoints_say_so_in_full(
+    tmp_path: Path,
+) -> None:
+    """STS, or the container's endpoint, could not be reached: said in full."""
+
+    def down(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("refused", request=request)
+
+    token = tmp_path / "token"
+    token.write_text("jwt")
+    with override_settings(HTTP_CLIENT={"RETRIES": 0}), stub(down):
+        with pytest.raises(
+            KeyProviderError, match=exactly("AWS STS could not be reached.")
+        ):
+            await web_identity_credentials("arn:role", token, region="eu-west-1")()
+        with pytest.raises(
+            KeyProviderError,
+            match=exactly("The container's credentials endpoint could not be reached."),
+        ):
+            await container_credentials("http://169.254.170.2/creds")()
+
+
+CONTAINER_ANSWER: Final = {
+    "AccessKeyId": "ASIA2",
+    "SecretAccessKey": "s2",
+    "Expiration": "2026-10-31T13:00:00Z",
+}
+
+
+@pytest.mark.anyio
+async def test_credential_endpoints_get_no_request_id(tmp_path: Path) -> None:
+    """Inside a request, STS and the container's endpoint get neither id nor trace."""
+    from domainkit.context import RequestContext, bind_request
+
+    seen: list[httpx2.Request] = []
+
+    def anywhere(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.host.startswith("sts."):
+            return httpx2.Response(200, text=STS_ANSWER)
+        return httpx2.Response(200, json=CONTAINER_ANSWER)
+
+    token = tmp_path / "token"
+    token.write_text("jwt")
+    context = RequestContext(
+        request_id="r-1", client_ip=None, method="GET", path="/", actor=None
+    )
+    with stub(anywhere), bind_request(context), freeze_time(NOW):
+        await web_identity_credentials("arn:role", token, region="eu-west-1")()
+        await container_credentials("http://169.254.170.2/creds")()
+    assert [request.headers.get("x-request-id") for request in seen] == [None, None]
+
+
+@pytest.mark.anyio
+async def test_credential_endpoints_are_retried_past_any_circuit(
+    no_waits: None, tmp_path: Path
+) -> None:
+    """STS is retried though it is a POST; the container's endpoint keeps no circuit."""
+    failed: set[str] = set()
+
+    def flaky(request: httpx2.Request) -> httpx2.Response:
+        host = request.url.host
+        if host not in failed:
+            failed.add(host)
+            return httpx2.Response(503)
+        if host.startswith("sts."):
+            return httpx2.Response(200, text=STS_ANSWER)
+        return httpx2.Response(200, json=CONTAINER_ANSWER)
+
+    token = tmp_path / "token"
+    token.write_text("jwt")
+    with override_settings(HTTP_CLIENT={"RETRIES": 1}), stub(flaky), freeze_time(NOW):
+        sts = await web_identity_credentials("arn:role", token, region="eu-west-1")()
+    with (
+        override_settings(HTTP_CLIENT={"RETRIES": 1, "BREAKER_FAILURES": 1}),
+        stub(flaky),
+        freeze_time(NOW),
+    ):
+        container = await container_credentials("http://169.254.170.2/creds")()
+    assert (sts.access_key_id, container.access_key_id) == ("ASIA1", "ASIA2")
+    assert failed == {"sts.eu-west-1.amazonaws.com", "169.254.170.2"}
+
+
+@pytest.mark.anyio
+async def test_kms_assumes_the_role_in_its_own_region(
+    no_aws: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without a source, a web identity asks the region's STS for the role."""
+    identity = tmp_path / "identity"
+    identity.write_text("jwt")
+    monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::1:role/app")
+    monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", str(identity))
+    asked: list[httpx2.Request] = []
+
+    def sts(request: httpx2.Request) -> httpx2.Response:
+        asked.append(request)
+        return httpx2.Response(200, text=STS_ANSWER)
+
+    provider = AwsKmsKeyProvider(KEY_ARN, region="eu-central-1")
+    with stub(sts), freeze_time(NOW):
+        assert (await provider.credentials()).access_key_id == "ASIA1"
+    assert asked[0].url == "https://sts.eu-central-1.amazonaws.com/"
+    form = dict(item.split("=", 1) for item in asked[0].content.decode().split("&"))
+    assert form["RoleArn"] == "arn%3Aaws%3Aiam%3A%3A1%3Arole%2Fapp"
+
+
+def test_a_kms_endpoint_keeps_all_but_its_trailing_slashes() -> None:
+    """Only ``/`` is cut from its end."""
+    provider = AwsKmsKeyProvider(
+        KEY_ARN, region="eu-west-1", credentials=static, endpoint="https://kms.X//"
+    )
+    assert provider.endpoint == "https://kms.X"
+
+
+@pytest.mark.anyio
+async def test_kms_calls_say_what_they_send(kms: FakeKms) -> None:
+    """KMS's JSON content type, and the operation as its target."""
+    seen: list[httpx2.Request] = []
+
+    def recording(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return kms(request)
+
+    with stub(recording):
+        await aws().generate_data_key()
+    assert seen[0].headers["content-type"] == "application/x-amz-json-1.1"
+    assert seen[0].headers["x-amz-target"] == "TrentService.GenerateDataKey"
+
+
+@pytest.mark.anyio
+async def test_a_kms_error_type_is_read_after_its_last_hash() -> None:
+    """``ns#ns#InvalidCiphertextException`` is that exception: the key is unknown."""
+    answer = httpx2.Response(
+        400, json={"__type": "com.amazonaws#kms#InvalidCiphertextException"}
+    )
+    with (
+        stub(lambda request: answer),
+        pytest.raises(
+            UnknownKey,
+            match=exactly(
+                "AWS KMS cannot unwrap that key (InvalidCiphertextException)."
+            ),
+        ),
+    ):
+        await aws().unwrap("aws-kms:QUJD")
+
+
+@pytest.mark.anyio
+async def test_vault_refusals_say_what_is_wrong() -> None:
+    """Each refusal of Vault's provider, in full."""
+    for key, mount in (("", "transit"), ("k", "")):
+        with pytest.raises(
+            ValueError,
+            match=exactly("A Vault transit key needs a key name and a mount."),
+        ):
+            VaultTransitKeyProvider("https://v", key, token="t", mount=mount)
+    with pytest.raises(UnknownKey, match=exactly("Vault did not wrap that key.")):
+        await transit().rewrap("local:abc:def")
+    for data, message in (
+        (
+            {"plaintext": "!!", "ciphertext": "vault:v1:x"},
+            "Vault answered without the key.",
+        ),
+        ({"plaintext": "AAAA"}, "Vault answered without the wrapped key."),
+    ):
+        answer = httpx2.Response(200, json={"data": data})
+        with (
+            stub(lambda request, answer=answer: answer),
+            pytest.raises(KeyProviderError, match=exactly(message)),
+        ):
+            await transit().generate_data_key()
+
+
+@pytest.mark.anyio
+async def test_vault_paths_encode_the_key_name_whole(vault: FakeVault) -> None:
+    """A ``/`` in a key's name stays in its path segment; the mount loses its ends'."""
+    seen: list[httpx2.Request] = []
+
+    def recording(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(400, json={"errors": []})
+
+    provider = transit(mount="/secretX/")
+    provider.key = "team/payments"
+    with stub(recording), pytest.raises(KeyProviderError):
+        await provider.generate_data_key()
+    assert seen[0].url.raw_path == b"/v1/secretX/datakey/plaintext/team%2Fpayments"
