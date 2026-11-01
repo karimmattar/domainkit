@@ -98,7 +98,7 @@ def test_a_default_with_more_places_than_the_column_is_refused() -> None:
 
 
 def test_a_check_compares_amounts_in_their_own_units() -> None:
-    """Bare, quoted, and qualified names of amounts are divided; the rest stay."""
+    """Numbers beside amounts are in minor units; comparisons without stay."""
     table = Table(
         "fees",
         MetaData(),
@@ -115,13 +115,63 @@ def test_a_check_compares_amounts_in_their_own_units() -> None:
 
     written = ddl(table)
 
-    assert "CHECK ((fee / 100.0) >= 0)" in written
+    assert "CHECK (fee >= 0)" in written
     assert (
-        """CHECK (("Cap" / 1000.0) <= 100 AND (fees.fee / 100.0) < 5 """
+        """CHECK ("Cap" <= 100000 AND fees.fee < 500 """
         """AND note > 0 AND 'fee' <> 'x')"""
     ) in written
     assert "CHECK (note < 10)" in written
     assert "CHECK (fee >= 0)" in ddl(table, POSTGRES)
+
+
+def test_amounts_of_two_scales_are_counted_in_the_larger_one() -> None:
+    """Never divided: the smaller scale is multiplied up, numbers written in it."""
+    table = Table(
+        "fees",
+        MetaData(),
+        Column("id", Integer, primary_key=True),
+        Column("fee", ExactDecimal(12, 2)),
+        Column("rate", ExactDecimal(12, 4)),
+        Column("whole", ExactDecimal(12, 0)),
+        Column('odd"fee', ExactDecimal(12, 2)),
+        Column("note", Integer),
+        CheckConstraint(
+            "fee + rate BETWEEN 0.5 AND 1.25 AND note > 5 OR whole IN (1, 2e1) "
+            'OR "odd""fee" >= 1',
+            name="mixed",
+        ),
+    )
+
+    assert (
+        "CHECK ((fee * 100) + rate BETWEEN 5000 AND 12500 AND note > 5 "
+        'OR whole IN (1, 20) OR "odd""fee" >= 100)'
+    ) in ddl(table)
+
+
+@pytest.mark.parametrize(
+    ("check", "refusal"),
+    [
+        ("fee <= 0.005", "more than 2 decimal places"),
+        ("fee <= note", "another column"),
+        ("fee * 2 <= 10", "multiplies or divides"),
+        ("fee / 2 <= 10", "multiplies or divides"),
+    ],
+)
+def test_a_check_that_cannot_be_counted_in_minor_units_is_refused(
+    check: str, refusal: str
+) -> None:
+    """A number needing rounding, another column, or a factor beside an amount."""
+    table = Table(
+        "fees",
+        MetaData(),
+        Column("id", Integer, primary_key=True),
+        Column("fee", ExactDecimal(12, 2)),
+        Column("note", Integer),
+        CheckConstraint(check, name="refused"),
+    )
+
+    with pytest.raises(CompileError, match=refusal):
+        ddl(table)
 
 
 def test_a_check_built_as_an_expression_binds_its_value() -> None:

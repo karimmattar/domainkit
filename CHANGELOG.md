@@ -889,6 +889,20 @@ and a status.
 
 ### Security
 
+- On SQLite, a check written as SQL around amounts compares them as
+  integers of minor units: each comparison naming an amount is counted in
+  the largest scale it names, smaller ones multiplied up and numbers
+  written in it, where DATA-15's fix divided each amount into a float, so
+  `CHECK (subtotal + tax = total)` refused 0.10 + 0.20 = 0.30, and past
+  2**53 minor units `refunded <= paid` let one minor unit over through. A
+  number with more places than that unit, another column, or `*`, `/`,
+  `%` beside an amount is refused as the table is made (`CompileError`)
+  (SEC-16c-1).
+- A `FilterSet` may filter an `Encrypted` field only where the resource's
+  schema shows it: a filter of a field with a blind index answers whether
+  a guessed value is stored, an oracle on what the derived schema now
+  hides (DSGN-19).
+
 - The `immudb` extra's protobuf floor is 6.33.5, past PYSEC-2026-1805
   (CVE-2026-0994) and PYSEC-2026-1806 (CVE-2025-4565), which 5.27.0, the
   floor before, had; the `oldest` job now runs pip-audit over the floors
