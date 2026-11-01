@@ -284,3 +284,16 @@ def test_a_rehashed_password_still_logs_in(identity: Api) -> None:
 
     assert answer.status_code == 200, answer.json()
     assert loaded("alice").password.value != before  # Moved to the preferred one.
+
+
+def test_a_live_jwt_login_makes_a_personal_token(identity: Api) -> None:
+    """Its login (family) is the one looked for: no other token stands in for it."""
+    create_user("alice")
+    client = identity(**JWT, DEVICE_TTL=None)
+    session = bearer(login(client, "alice")["access_token"])
+
+    made = client.post(
+        "/auth/tokens", json={"name": "ci", "password": PASSWORD}, headers=session
+    )
+
+    assert made.status_code == 201, made.json()
