@@ -830,17 +830,18 @@ def test_key_ids_are_matched_as_written_not_as_patterns(
         )
 
 
-@pytest.mark.skipif(
-    bool(os.environ.get("DOMAINKIT_TEST_POSTGRES_URL")),
-    reason="staging asks PostgreSQL for TLS, which the tests' server lacks",
-)
+@pytest.mark.usefixtures("database_access")
 def test_a_decrypted_dump_names_its_operator_where_deployed(
-    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """In staging, ``--decrypt`` is what the refusal says needs a named operator."""
+    """In staging, ``--decrypt`` is what the refusal says needs a named operator.
+
+    On a SQLite database of its own, on every run: staging asks PostgreSQL
+    for TLS, which the tests' server lacks.
+    """
     monkeypatch.delenv("DOMAINKIT_OPERATOR", raising=False)
     with (
-        project(database_url, tmp_path, AUDIT),
+        project(f"sqlite+aiosqlite:///{tmp_path / 'staging.sqlite3'}", tmp_path, AUDIT),
         override_settings(ENVIRONMENT="staging"),
         pytest.raises(
             CommandError,

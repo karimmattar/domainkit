@@ -8,6 +8,7 @@ holds (SEC-16a-6).
 
 import os
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -182,29 +183,30 @@ def test_a_bare_token_store_takes_no_lock_and_ends_unknown_logins(
 ON_POSTGRESQL = bool(os.environ.get("DOMAINKIT_TEST_POSTGRES_URL"))
 
 
-@pytest.mark.skipif(ON_POSTGRESQL, reason="SQLite's lock is the unit of work's")
 def test_every_change_and_issue_holds_the_users_credentials_lock(
     identity: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Login, refresh, a personal token, logout, a password change: each locks."""
-    from domainkit.contrib.auth.repositories import CREDENTIALS_LOCK
+    """Login, refresh, a personal token, logout, a password change: each locks.
 
+    Spied on ``TokenStore.lock_user``, which both databases take: what it
+    holds on each is the next test's (PostgreSQL) and the unit of work's
+    write lock (SQLite).
+    """
     alice = create_user("alice")
     client = identity(**JWT)
-    taken: list[str] = []
-    original = AuthUnitOfWork.lock
+    taken: list[UUID] = []
+    original = TokenStore.lock_user
 
-    async def spied(self: AuthUnitOfWork, name: str, **options: Any) -> None:  # noqa: ANN401
-        taken.append(name)
-        await original(self, name, **options)
+    async def spied(self: TokenStore, user_id: UUID) -> None:
+        taken.append(user_id)
+        await original(self, user_id)
 
-    monkeypatch.setattr(AuthUnitOfWork, "lock", spied)
-    mine = CREDENTIALS_LOCK.format(user_id=alice)
+    monkeypatch.setattr(TokenStore, "lock_user", spied)
 
-    def locked(action: Any) -> list[str]:  # noqa: ANN401 - a call.
+    def locked(action: Any) -> list[UUID]:  # noqa: ANN401 - a call.
         taken.clear()
         action()
-        return [name for name in taken if name == mine]
+        return [user_id for user_id in taken if user_id == alice]
 
     tokens: dict[str, Any] = {}
     assert locked(lambda: tokens.update(login(client, "alice")))

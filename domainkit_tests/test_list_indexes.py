@@ -13,6 +13,7 @@ import io
 import os
 import uuid
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -121,6 +122,13 @@ def test_the_value_is_written_into_the_sql_on_postgresql() -> None:
 @pytest.fixture
 def trail(database_url: str, tmp_path: Path) -> Iterator[Path]:
     """The audit trail migrated, with two history fields; the migrations' directory."""
+    with migrated_trail(database_url, tmp_path) as migrations:
+        yield migrations
+
+
+@contextmanager
+def migrated_trail(database_url: str, tmp_path: Path) -> Iterator[Path]:
+    """``trail`` on the database at ``database_url``."""
     registry.clear()
     migrations = tmp_path / "migrations"
     with override_settings(
@@ -152,10 +160,12 @@ def indexes() -> set[str]:
     return asyncio.run(read())
 
 
-def test_sqlite_gets_no_history_index(trail: Path) -> None:
-    """History indexes are PostgreSQL's; SQLite reads by scanning."""
-    if os.environ.get(POSTGRES_VARIABLE):
-        pytest.skip("SQLite's case")
+@pytest.mark.usefixtures("database_access")
+def test_sqlite_gets_no_history_index(tmp_path: Path) -> None:
+    """History indexes are PostgreSQL's; SQLite reads by scanning.
+
+    On a SQLite database of its own, whichever database the run tests.
+    """
 
     async def read() -> list[str]:
         async with connections.engine().connect() as connection:
@@ -166,7 +176,10 @@ def test_sqlite_gets_no_history_index(trail: Path) -> None:
         await connections.close_all()
         return names
 
-    assert not [name for name in asyncio.run(read()) if name.startswith(HISTORY_INDEX)]
+    url = f"sqlite+aiosqlite:///{tmp_path / 'trail.sqlite3'}"
+    with migrated_trail(url, tmp_path):
+        names = asyncio.run(read())
+    assert not [name for name in names if name.startswith(HISTORY_INDEX)]
 
 
 @on_postgres
