@@ -1551,12 +1551,19 @@ class SilentBackend(BaseBackend):
         return obj is not None and getattr(obj, "owner_id", None) == user.id
 
 
+class QuietBackend(SilentBackend):
+    """Another backend that does not list its grants."""
+
+
 def test_a_backend_that_lists_no_object_grants_leaves_users_to_superusers(
     api: Api,
 ) -> None:
     """Only superusers change users and groups then, and ``check`` warns (SEC-16a-5)."""
     silent = f"{__name__}.SilentBackend"
-    client = api(BACKENDS=["domainkit.contrib.auth.backends.ModelBackend", silent])
+    quiet = f"{__name__}.QuietBackend"
+    client = api(
+        BACKENDS=["domainkit.contrib.auth.backends.ModelBackend", silent, quiet]
+    )
     headers = staff("helpdesk", *ADMIN_PERMISSIONS)
     plain = create_user("plain")
     crew = make_group("crew")
@@ -1574,16 +1581,17 @@ def test_a_backend_that_lists_no_object_grants_leaves_users_to_superusers(
 
     only = (
         "Only superusers may change users and groups while a backend does not "
-        f"list its grants on objects (object_grants): {silent}."
+        f"list its grants on objects (object_grants): {silent}, {quiet}."
     )
     assert error(refused, 403) == ("permission_denied", only)
     assert error(renamed, 403) == ("permission_denied", only)
     assert allowed.status_code == 204
     assert [str(warning) for warning in domain_warnings("auth")] == [
         (
-            f"AUTH.BACKENDS {silent} does not list its grants on objects "
+            f"AUTH.BACKENDS {backend} does not list its grants on objects "
             "(object_grants), so only superusers change users and groups "
             "through the admin API; override object_grants, with an empty set "
             "if it grants on no object."
         )
+        for backend in (silent, quiet)
     ]

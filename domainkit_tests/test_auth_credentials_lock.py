@@ -6,6 +6,7 @@ issue theirs under it too, after checking that what was checked still
 holds (SEC-16a-6).
 """
 
+import os
 from typing import Any
 
 import pytest
@@ -176,3 +177,110 @@ def test_a_bare_token_store_takes_no_lock_and_ends_unknown_logins(
             return await uow.tokens.revoke_family(uuid4())
 
     assert run_async(bare()) == 0
+
+
+ON_POSTGRESQL = bool(os.environ.get("DOMAINKIT_TEST_POSTGRES_URL"))
+
+
+@pytest.mark.skipif(ON_POSTGRESQL, reason="SQLite's lock is the unit of work's")
+def test_every_change_and_issue_holds_the_users_credentials_lock(
+    identity: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Login, refresh, a personal token, logout, a password change: each locks."""
+    from domainkit.contrib.auth.repositories import CREDENTIALS_LOCK
+
+    alice = create_user("alice")
+    client = identity(**JWT)
+    taken: list[str] = []
+    original = AuthUnitOfWork.lock
+
+    async def spied(self: AuthUnitOfWork, name: str, **options: Any) -> None:  # noqa: ANN401
+        taken.append(name)
+        await original(self, name, **options)
+
+    monkeypatch.setattr(AuthUnitOfWork, "lock", spied)
+    mine = CREDENTIALS_LOCK.format(user_id=alice)
+
+    def locked(action: Any) -> list[str]:  # noqa: ANN401 - a call.
+        taken.clear()
+        action()
+        return [name for name in taken if name == mine]
+
+    tokens: dict[str, Any] = {}
+    assert locked(lambda: tokens.update(login(client, "alice")))
+    headers = bearer(tokens["access_token"])
+    assert locked(
+        lambda: client.post(
+            "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+        )
+    )
+    made = client.post(
+        "/auth/tokens", json={"name": "ci", "password": PASSWORD}, headers=headers
+    )
+    assert made.status_code == 201  # A live JSON Web Token login makes one.
+    assert locked(
+        lambda: client.post(
+            "/auth/tokens", json={"name": "ci2", "password": PASSWORD}, headers=headers
+        )
+    )
+    assert locked(lambda: client.post("/auth/logout", headers=headers))
+    other = bearer(login(client, "alice")["access_token"])
+    change = {"old_password": PASSWORD, "new_password": NEW_PASSWORD}
+    assert locked(lambda: client.post("/auth/password", json=change, headers=other))
+
+
+@pytest.mark.skipif(
+    not ON_POSTGRESQL, reason="set DOMAINKIT_TEST_POSTGRES_URL: row locks are its"
+)
+def test_the_lock_is_the_users_row_on_postgresql(identity: Api) -> None:
+    """The user's row, and no other, until the transaction ends."""
+    from sqlalchemy import select
+
+    from domainkit.contrib.auth.users import get_user_table
+    from domainkit.db import connections
+
+    alice = create_user("alice")
+    bob = create_user("bob")
+    identity()
+    table = get_user_table()
+
+    async def contended() -> tuple[bool, bool]:
+        async with AuthUnitOfWork() as uow:
+            await uow.tokens.lock_user(alice)
+            results = []
+            for user_id in (alice, bob):
+                async with connections.engine().connect() as other:
+                    try:
+                        await other.execute(
+                            select(table.c.id)
+                            .where(table.c.id == user_id)
+                            .with_for_update(nowait=True)
+                        )
+                    except Exception:  # noqa: BLE001 - the driver's lock error.
+                        results.append(True)
+                    else:
+                        results.append(False)
+            return results[0], results[1]
+
+    assert run_async(contended()) == (True, False)
+
+
+def test_a_rehashed_password_still_logs_in(identity: Api) -> None:
+    """The login is held to the hash it stored, not the one it read."""
+    from domainkit_tests.conftest import FAST_HASHER
+
+    create_user("alice")
+    client = identity(
+        PASSWORD_HASHERS=[
+            "domainkit.contrib.auth.hashers.ScryptPasswordHasher",
+            FAST_HASHER,
+        ]
+    )
+    before = loaded("alice").password.value
+
+    answer = client.post(
+        "/auth/login", json={"username": "alice", "password": PASSWORD}
+    )
+
+    assert answer.status_code == 200, answer.json()
+    assert loaded("alice").password.value != before  # Moved to the preferred one.

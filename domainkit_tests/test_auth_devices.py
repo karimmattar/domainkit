@@ -405,3 +405,19 @@ def test_without_a_days_bound_proven_clients_count_by_the_minute(api: Api) -> No
     answers = [alice.post("/auth/login", json=wrong).status_code for _ in range(3)]
 
     assert answers == [401, 401, 429]
+
+
+def test_proven_devices_share_a_days_ceiling_of_twice_the_rate(api: Api) -> None:
+    """Each device its day's count; all of them twice it (SEC-16a-7)."""
+    create_user("alice")
+    client = api(LOGIN_RATE="100/minute", ACCOUNT_LOGIN_RATE="1/day")
+    wrong = {"username": "alice", "password": "wrong"}
+    with freeze_time("2026-11-01T08:00:00Z"):
+        devices = [browser(client.app, f"203.0.113.{n}") for n in (50, 51, 52)]
+        for device in devices:
+            assert device.post("/auth/login", json=RIGHT).status_code == 200
+        answers = [
+            device.post("/auth/login", json=wrong).status_code for device in devices
+        ]
+
+    assert answers == [401, 401, 429]
