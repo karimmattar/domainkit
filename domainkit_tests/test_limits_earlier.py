@@ -20,11 +20,14 @@ from domainkit.apps import registry
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
+    Account,
     AccountingUnitOfWork,
     AccountType,
     Line,
+    OpenAccount,
     PostEntry,
     ReverseEntry,
+    open_account,
     post_entry,
     reverse_entry,
 )
@@ -45,6 +48,7 @@ from domainkit.contrib.limits import (
 from domainkit.contrib.limits.postings import count_earlier
 from domainkit.contrib.limits.services import _count_earlier
 from domainkit.db import connections
+from domainkit.money import Money
 from domainkit_tests.conftest import ALPHA, Migrated, Shape
 from domainkit_tests.test_approvals import FAST
 from domainkit_tests.test_limits import (  # noqa: F401 - the fixture.
@@ -83,6 +87,27 @@ APPROVED: Final = Shape(
 pytestmark = pytest.mark.anyio
 
 
+async def used_out(holder: str) -> tuple[object, int]:
+    """What ``holder`` used of its one limit of money out, and how many movements."""
+    (each,) = await usage_of("holder", holder, direction=Direction.OUT)
+    return each.used, each.count
+
+
+async def account_in(currency: str, code: str, holder: str | None = None) -> Account:
+    """An account in ``currency`` that may be overdrawn: a holder's is a wallet."""
+    return await open_account(
+        OpenAccount(
+            code=code,
+            name=code,
+            type=AccountType.LIABILITY if holder else AccountType.ASSET,
+            currency=currency,
+            holder=holder,
+            may_go_negative=True,
+        ),
+        AccountingUnitOfWork(),
+    )
+
+
 async def used(kind: str, subject: str) -> tuple[object, int]:
     """What ``subject`` used of its one limit, and how many movements."""
     (each,) = await usage_of(kind, subject)
@@ -91,12 +116,31 @@ async def used(kind: str, subject: str) -> tuple[object, int]:
 
 @pytest.mark.usefixtures("books")
 async def test_a_limit_set_at_eleven_counts_every_holders_morning() -> None:
-    """Each holder's payouts count; reversed ones, top-ups, other tills do not."""
+    """Each holder's payouts count, summed per entry, and nothing else.
+
+    Not an entry reversed, money in, a reversal, another currency, nor what
+    a limit of another direction counted.
+    """
     await period()
-    (first,), (till,) = await wallets("h-1", 1)
+    (first, spare), (till, _) = await wallets("h-1", 2)
     (second,), (other,) = await wallets("h-2", 1)
+    dollars = await account_in("USD", "wallet-usd", "h-1")
+    dollar_till = await account_in("USD", "till-usd")
     with freeze_time(MORNING):
         await post_entry(spend(first, till, egp("300"), "p-1"), AccountingUnitOfWork())
+        await post_entry(
+            PostEntry(  # Out of two of h-1's wallets at once: 50 in all.
+                source="payments",
+                reference="p-8",
+                booked_on=TODAY,
+                lines=(
+                    Line.debit(first.id, egp("30")),
+                    Line.debit(spare.id, egp("20")),
+                    Line.credit(till.id, egp("50")),
+                ),
+            ),
+            AccountingUnitOfWork(),
+        )
         undone = await post_entry(
             spend(first, till, egp("200"), "p-2"), AccountingUnitOfWork()
         )
@@ -106,7 +150,7 @@ async def test_a_limit_set_at_eleven_counts_every_holders_morning() -> None:
         await post_entry(
             spend(second, other, egp("100"), "p-3"), AccountingUnitOfWork()
         )
-        await post_entry(  # Money in: another direction.
+        topped = await post_entry(  # Money in: another direction.
             PostEntry(
                 source="topups",
                 reference="t-1",
@@ -118,22 +162,76 @@ async def test_a_limit_set_at_eleven_counts_every_holders_morning() -> None:
             ),
             AccountingUnitOfWork(),
         )
+        await reverse_entry(  # Money out, but a reversal: it counts nothing.
+            ReverseEntry(entry_id=topped.id, booked_on=TODAY), AccountingUnitOfWork()
+        )
+        await post_entry(  # Dollars: another currency.
+            PostEntry(
+                source="payments",
+                reference="p-usd",
+                booked_on=TODAY,
+                lines=(
+                    Line.debit(dollars.id, Money.of("70", "USD")),
+                    Line.credit(dollar_till.id, Money.of("70", "USD")),
+                ),
+            ),
+            AccountingUnitOfWork(),
+        )
+    with freeze_time(datetime(2026, 10, 30, 10, 30, tzinfo=UTC)):
+        await limit(  # Money in, bounded first: a subject of its own.
+            code="daily.in",
+            direction=Direction.IN,
+            window=Window.DAY,
+            max_amount=egp("100000"),
+        )
     with freeze_time(ELEVEN):
         await limit(code="daily", window=Window.DAY, max_amount=egp("500"))
         await limit(code="daily", window=Window.DAY, max_amount=egp("500"))  # Again.
 
     with freeze_time(NOON):
-        assert await used("holder", "h-1") == (egp("300"), 1)
-        assert await used("holder", "h-2") == (egp("100"), 1)
+        assert await used_out("h-1") == (egp("350"), 2)
+        assert await used_out("h-2") == (egp("100"), 1)
         with refused(LimitExceeded):
             await post_entry(
-                spend(first, till, egp("201"), "p-4"), AccountingUnitOfWork()
+                spend(first, till, egp("151"), "p-4"), AccountingUnitOfWork()
             )
-        await post_entry(spend(first, till, egp("200"), "p-5"), AccountingUnitOfWork())
+        await post_entry(spend(first, till, egp("150"), "p-5"), AccountingUnitOfWork())
         with refused(LimitExceeded):
             await post_entry(
                 spend(second, other, egp("401"), "p-6"), AccountingUnitOfWork()
             )
+
+
+@pytest.mark.usefixtures("books")
+@pytest.mark.parametrize(
+    ("window", "outside", "inside"),
+    [
+        (
+            Window.DAY,
+            datetime(2026, 10, 29, 23, 59, 59, tzinfo=UTC),
+            datetime(2026, 10, 30, tzinfo=UTC),  # Midnight: the day's own.
+        ),
+        (
+            Window.ROLLING_DAY,
+            datetime(2026, 10, 29, 11, tzinfo=UTC),  # 24 hours ago: gone.
+            datetime(2026, 10, 29, 11, 0, 1, tzinfo=UTC),
+        ),
+    ],
+)
+async def test_a_window_counted_back_starts_where_it_starts(
+    window: Window, outside: datetime, inside: datetime
+) -> None:
+    """A calendar day holds its midnight; the last 24 hours do not hold their start."""
+    await period()
+    (wallet,), (till,) = await wallets("h-1", 1)
+    with freeze_time(outside):
+        await post_entry(spend(wallet, till, egp("7"), "out"), AccountingUnitOfWork())
+    with freeze_time(inside):
+        await post_entry(spend(wallet, till, egp("5"), "in"), AccountingUnitOfWork())
+    with freeze_time(ELEVEN):
+        await limit(code="daily", window=window, max_amount=egp("500"))
+
+        assert await used_out("h-1") == (egp("5"), 1)
 
 
 @pytest.mark.usefixtures("books")

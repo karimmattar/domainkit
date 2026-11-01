@@ -681,7 +681,10 @@ def test_a_check_holds_the_whole_erasure_before_anything_is_erased(clinic: str) 
     run_async(fill())
     erased: list[str] = []
 
+    asked: list[str] = []
+
     async def owed(subject: str, reason: str) -> str | None:
+        asked.append(reason)
         return "Holds an account with money on it." if subject == str(ANN) else None
 
     async def fine(subject: str, reason: str) -> str | None:
@@ -704,6 +707,10 @@ def test_a_check_holds_the_whole_erasure_before_anything_is_erased(clinic: str) 
         )
 
     assert held.value.code == "erasure_held"
+    assert str(held.value) == (
+        "This person's data must be kept for now: nothing was erased."
+    )
+    assert asked[0] == "ticket 7"
     assert held.value.held == {"alpha": "Holds an account with money on it."}
     assert (erased, run_async(rows_of(tables.visits))) == ([], before)
     (denied, _) = run_async(audited("privacy.erase"))
@@ -724,10 +731,13 @@ def test_a_check_that_answers_other_than_a_sentence_is_named(clinic: str) -> Non
 
     on_erase_check(counts, domain="alpha")  # type: ignore[arg-type]
 
-    with pytest.raises(
-        ImproperlyConfigured, match=r"^The on_erase_check hook of 'alpha' answered "
-    ):
+    with pytest.raises(ImproperlyConfigured) as refused:
         run_async(erase_subject("nobody"))
+
+    assert str(refused.value) == (
+        "The on_erase_check hook of 'alpha' answered {'accounts': 1}: a sentence "
+        "of 1 to 255 printable characters, or None."
+    )
 
 
 # Retention -------------------------------------------------------------------------
