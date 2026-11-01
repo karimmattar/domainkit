@@ -1349,3 +1349,76 @@ def test_guarded_connections_go_through_httpcore2() -> None:
     assert isinstance(pool, httpcore2.AsyncConnectionPool)
     assert isinstance(pool._network_backend, GuardedBackend)
     assert pool._network_backend.allowed == LOCAL
+
+
+async def test_a_refused_call_says_when_the_circuit_lets_a_trial_through() -> None:
+    """``retry_after``: the cooldown left, in whole seconds, at least one."""
+    api = HttpClient(retries=0)
+    with (
+        options(BREAKER_FAILURES=1, BREAKER_COOLDOWN=30.0),
+        freeze_time("2026-01-01") as clock,
+        stub(Upstream(status(503))),
+    ):
+        await api.get(URL)
+        clock.tick(12.5)
+        with pytest.raises(CircuitOpen) as refused:
+            await api.get(URL)
+        breaker = CircuitBreaker()
+        breaker.failed("late", 1)
+        clock.tick(31)
+        late = breaker.retry_after("late", 30.0)
+    assert refused.value.retry_after == 18
+    assert late == 1
+    assert CircuitBreaker().retry_after("nobody", 30.0) == 1
+
+
+calls_reported: list[str] = []
+
+
+def call_reporter(exc: BaseException, context: object) -> None:
+    """Collect reported errors."""
+    calls_reported.append(type(exc).__name__)
+
+
+@pytest.mark.usefixtures("reports_sent")
+def test_failed_calls_are_answered_as_upstream_problems_not_bugs() -> None:
+    """502, 503 with Retry-After, and 504, with stable codes; nothing reported."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from domainkit.http.errors import install_exception_handlers
+    from domainkit.http.middleware import RequestContextMiddleware
+    from domainkit.reporting import flush_reports
+
+    failures: dict[str, Exception] = {
+        "open": CircuitOpen("Calls to https://rates.example.com:443 fail at once."),
+        "slow": CallTimeout("GET https://rates.example.com/v1 took longer than 3s."),
+        "large": ResponseTooLarge("The answer was over 10485760 bytes."),
+    }
+    failures["open"].retry_after = 7  # type: ignore[attr-defined]
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/rates/{kind}")
+    async def rates(kind: str) -> None:
+        raise failures[kind]
+
+    calls_reported.clear()
+    with override_settings(
+        ERROR_REPORTERS=["domainkit_tests.test_http_client.call_reporter"]
+    ):
+        client = TestClient(RequestContextMiddleware(app))
+        answers = {kind: client.get(f"/rates/{kind}") for kind in failures}
+        flush_reports()
+
+    assert {
+        kind: (each.status_code, each.json()["code"]) for kind, each in answers.items()
+    } == {
+        "open": (503, "upstream_unavailable"),
+        "slow": (504, "upstream_timeout"),
+        "large": (502, "upstream_response_too_large"),
+    }
+    assert answers["open"].headers["retry-after"] == "7"
+    assert "retry-after" not in answers["slow"].headers
+    assert all("rates.example.com" not in each.text for each in answers.values())
+    assert calls_reported == []

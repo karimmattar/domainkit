@@ -14,9 +14,11 @@ The domain layer raises ``DomainError`` subclasses and never mentions HTTP;
 this module is the only place that maps them to status codes. Modules below
 the HTTP layer raise errors of their own, never an HTTP exception, and are
 mapped here too: ``ServiceBusy`` is 503 with ``Retry-After``
-(``busy_refusal``), database refusals that are not bugs are mapped by
-``database_refusal``, and a ``MoneyError`` (two currencies added, an amount
-with too many places) is 422 with its code and its summary.
+(``busy_refusal``), an ``UpstreamError`` (an outgoing call that failed) is
+its own 502, 503, or 504 (``upstream_refusal``), database refusals that are
+not bugs are mapped by ``database_refusal``, and a ``MoneyError`` (two
+currencies added, an amount with too many places) is 422 with its code and
+its summary.
 
 Details and validation messages are translated into the request's language
 here, as the body is built (``gettext`` and ``validation_message``, see
@@ -56,7 +58,7 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
-from domainkit.exceptions import DomainkitError, ServiceBusy
+from domainkit.exceptions import DomainkitError, ServiceBusy, UpstreamError
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
 from domainkit.money import MoneyError
@@ -266,6 +268,27 @@ def busy_refusal(error: ServiceBusy) -> APIError:
         code=error.code,
         headers={"Retry-After": str(error.retry_after)},
     )
+
+
+def upstream_refusal(error: UpstreamError) -> APIError:
+    """The answer to ``error``: its status, code, and detail; ``Retry-After`` if known.
+
+    The detail is the class's, which names no host or URL: the message,
+    for logs, may.
+    """
+    headers = None
+    if error.retry_after is not None:
+        headers = {"Retry-After": str(error.retry_after)}
+    return APIError(error.status_code, error.detail, code=error.code, headers=headers)
+
+
+async def upstream_error_handler(request: Request, exc: UpstreamError) -> Response:
+    """Answer ``UpstreamError`` as ``upstream_refusal`` makes it: not a bug (WEB-23).
+
+    The client logged the failure where it happened; the request is not
+    reported to ``ERROR_REPORTERS`` as an unhandled error would be.
+    """
+    return await http_error_handler(request, upstream_refusal(exc))
 
 
 async def money_error_handler(request: Request, exc: MoneyError) -> JSONResponse:
@@ -486,9 +509,10 @@ def _busy() -> APIError:
 
 
 def install_exception_handlers(app: FastAPI) -> None:
-    """Register the error handlers on ``app``: domain, HTTP, busy, money, validation."""
+    """Register the error handlers on ``app``: domain, HTTP, busy, upstream, money."""
     app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(ServiceBusy, service_busy_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(UpstreamError, upstream_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(MoneyError, money_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(HTTPException, http_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(

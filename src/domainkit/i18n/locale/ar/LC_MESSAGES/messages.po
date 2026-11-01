@@ -1002,3 +1002,21 @@ msgstr "عُدّل الطلب خارج التطبيق؛ فلا يُبتّ فيه
 
 msgid "The request's guard or policy no longer exists; it is neither decided nor run."
 msgstr "لم تعد حماية الطلب أو سياسته موجودة؛ فلا يُبتّ فيه ولا يُنفّذ."
+
+#. domainkit.resources and domainkit.http.client: races and outgoing calls
+msgid ""
+"This record changed while it was being checked; read it again and "
+"retry."
+msgstr "تغيّر هذا السجل أثناء التحقق منه؛ اقرأه مرة أخرى ثم أعد المحاولة."
+
+msgid "A service this one depends on failed; try again later."
+msgstr "تعطّلت خدمة تعتمد عليها هذه الخدمة؛ أعد المحاولة لاحقًا."
+
+msgid "A service this one depends on is unavailable; try again later."
+msgstr "خدمة تعتمد عليها هذه الخدمة غير متاحة؛ أعد المحاولة لاحقًا."
+
+msgid "A service this one depends on took too long to answer."
+msgstr "استغرقت خدمة تعتمد عليها هذه الخدمة وقتًا طويلًا للرد."
+
+msgid "A service this one depends on answered with more than can be read."
+msgstr "ردّت خدمة تعتمد عليها هذه الخدمة بأكثر مما يمكن قراءته."

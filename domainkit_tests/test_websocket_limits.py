@@ -11,7 +11,7 @@ from typing import Any, Final
 import anyio
 import anyio.lowlevel
 import pytest
-from fastapi import APIRouter, FastAPI, WebSocket
+from fastapi import APIRouter, Depends, FastAPI, WebSocket
 from pydantic import ValidationError
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
@@ -26,6 +26,7 @@ from domainkit.conf.global_settings import Settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, live, websockets
+from domainkit.http.access import Public, Require
 from domainkit.http.live import (
     LIMITS,
     REAUTHENTICATE,
@@ -37,6 +38,7 @@ from domainkit.http.live import (
     send_queue,
     sleep_until,
     stream_limits,
+    unchecked_routes,
     websocket_limits,
 )
 from domainkit.http.middleware import utf8_size
@@ -973,6 +975,7 @@ def test_route_limits_keep_what_they_were_given() -> None:
     bad: list[dict[str, Any]] = [
         {"idle_timeout": 0},
         {"max_lifetime": -1},
+        {"max_lifetime": 86_400.5},
         {"send_queue": 0},
         {"send_queue": 10_001},
         {"send_timeout": math.inf},
@@ -1204,3 +1207,41 @@ def test_deployments_are_warned_without_rechecks() -> None:
 
     assert warning in off.deployment_warnings()
     assert warning not in on.deployment_warnings()
+
+
+def test_routes_that_turn_rechecks_off_are_named() -> None:
+    """A guarded route with ``LiveLimits(reauth_interval=None)`` is warned (WEB-24).
+
+    One without a rule (nothing to re-check), or with an interval, is not.
+    """
+    app = FastAPI()
+    unchecked = LiveLimits(reauth_interval=None)
+
+    @app.websocket("/guarded", dependencies=[Depends(Require()), Depends(unchecked)])
+    async def guarded(websocket: WebSocket) -> None:
+        """Nothing."""
+
+    @app.websocket("/open", dependencies=[Public, Depends(unchecked)])
+    async def anyone(websocket: WebSocket) -> None:
+        """Nothing."""
+
+    @app.get(
+        "/stream",
+        dependencies=[Depends(Require()), Depends(LiveLimits(reauth_interval=30))],
+    )
+    async def stream() -> None:
+        """Nothing."""
+
+    app.router.routes.append(Route("/plain", stream))
+
+    assert unchecked_routes(app.routes) == [
+        (
+            "WEBSOCKET /guarded turns re-authorization off (LiveLimits("
+            "reauth_interval=None)): its open connections keep a revoked token or "
+            "a removed permission until they close. Give it an interval."
+        )
+    ]
+    with pytest.raises(ValueError, match="less than or equal to 86400"):
+        Settings(WEBSOCKET_MAX_LIFETIME=86_401)
+    with pytest.raises(ValueError, match="less than or equal to 86400"):
+        Settings(SSE_MAX_LIFETIME=86_401)

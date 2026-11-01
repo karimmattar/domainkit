@@ -14,7 +14,7 @@ details. ``breaking_changes`` compares two schemas, for ``manage.py openapi
 """
 
 import json
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -32,6 +32,12 @@ from domainkit.http.errors import (
 )
 from domainkit.http.versioning import Deprecation
 
+REQUIRED_HEADERS: Final = "__domainkit_required_headers__"
+"""The endpoint attribute naming headers a route refuses requests without.
+
+FastAPI would answer a missing required header 422; a route that answers
+428 itself (``ResourceRouter``'s ``If-Match``) declares the header optional
+to FastAPI and names it here, so OpenAPI says it is required."""
 METHODS: Final = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
 """The operations of an OpenAPI path item."""
 JSON: Final = "application/json"
@@ -68,9 +74,12 @@ def finish_schema(app: FastAPI, schema: dict[str, Any]) -> dict[str, Any]:
     paths: dict[str, Any] = schema.get("paths", {})
     for path, method, dependant in _operations(app):
         operation = paths.get(path, {}).get(method)
+        if operation is None:
+            continue
         deprecation = _deprecation(dependant)
-        if operation is not None and deprecation is not None:
+        if deprecation is not None:
             _deprecate(operation, deprecation)
+        _require_headers(operation, getattr(dependant.call, REQUIRED_HEADERS, ()))
     if settings.ERROR_FORMAT == PROBLEM_FORMAT:
         _document_problems(schema)
     return schema
@@ -117,6 +126,18 @@ def _deprecation(dependant: Dependant) -> Deprecation | None:
             found = dependency.call
         found = _deprecation(dependency) or found
     return found
+
+
+def _require_headers(operation: dict[str, Any], names: Sequence[str]) -> None:
+    """Mark the header parameters ``names`` required (WEB-18).
+
+    A route that answers a request without one 428 itself, rather than
+    FastAPI's 422, declares them optional to FastAPI and names them here
+    (``REQUIRED_HEADERS``, as ``ResourceRouter`` does for ``If-Match``).
+    """
+    for parameter in operation.get("parameters", ()):
+        if parameter.get("in") == "header" and parameter.get("name") in names:
+            parameter["required"] = True
 
 
 def _deprecate(operation: dict[str, Any], deprecation: Deprecation) -> None:

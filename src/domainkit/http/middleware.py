@@ -467,7 +467,14 @@ class SecurityHeadersMiddleware:
 
 
 class CORSMiddleware(cors.CORSMiddleware):
-    """Starlette's CORS middleware configured from ``CORS_*`` settings."""
+    """Starlette's CORS middleware configured from ``CORS_*`` settings.
+
+    Scripts on an allowed origin may read the headers ``CORS_EXPOSE_HEADERS``
+    lists (by default ``ETag``, ``Location``, ``Retry-After``, the quota,
+    ...), and send those ``CORS_ALLOWED_HEADERS`` lists (by default
+    ``If-Match`` and ``Idempotency-Key`` among them): a single-page app on
+    another origin can make conditional and keyed writes (WEB-19).
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app`` with the configured origins, methods, and headers."""
@@ -477,7 +484,8 @@ class CORSMiddleware(cors.CORSMiddleware):
             allow_methods=settings.CORS_ALLOWED_METHODS,
             allow_headers=settings.CORS_ALLOWED_HEADERS,
             allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
-            expose_headers=[REQUEST_ID_HEADER],
+            expose_headers=settings.CORS_EXPOSE_HEADERS,
+            max_age=settings.CORS_MAX_AGE,
         )
 
 
