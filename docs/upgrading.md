@@ -27,6 +27,51 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **Accounts may not go negative unless opened so** (FIN-97).
+  `may_go_negative` defaults to `False` (`Account.open`, `OpenAccount`,
+  `POST /accounts`): an account opened without it refuses what would
+  leave less than nothing available. **Fix:** open clearing, settlement,
+  and external accounts with `may_go_negative=True`; those already stored
+  keep the flag they were opened with.
+- **A currency a threshold or a limit does not name is refused**
+  (FIN-89). With `APPROVALS.ENTRY_THRESHOLDS` set, an entry in another
+  currency needs approval; a subject bounded by limits in some currency
+  is refused (`currency_not_limited`) a movement in another. **Fix:**
+  name every currency the ledger or the project moves, or give an amount
+  for all of them: `"*": "10000"` in `ENTRY_THRESHOLDS`, `"currency": "*"`
+  in a default of `LIMITS.DEFAULTS`.
+- **The books are closed up to the latest closed period's end** (FIN-87).
+  No entry is dated on or before it, in a period or in a gap, whatever
+  `REQUIRE_PERIOD` says; no period is opened there; and a period closes
+  only once those before it are closed (`earlier_period_open`). **Fix:**
+  close periods in date order; date corrections in an open period, as
+  reversals.
+- **Reversals over the thresholds need approval** (FIN-88). With
+  `ENTRY_THRESHOLDS`, reversing an entry over them is refused
+  (`approval_required`): submit `accounting.reverse_entry` with
+  `{"entry_id": ..., "booked_on": ...}`; its makers need
+  `accounting.reverse_entry`. An approved reversal is counted against
+  limits and frees nothing. **Fix:** route large corrections through
+  approvals.
+- **Limits keep the movements of bounded subjects only** (PERF-26,
+  revising SEC-15b-5). A
+  subject no window bounds keeps no usage; a limit set, changed, or
+  enabled mid-window counts the ledger's postings since its start, for
+  accounts and holders. An actor's movements, and those a project counts
+  with `consume` outside the ledger, count from when a window bounds
+  them. **Fix:** set limits before their window starts where it matters
+  for actors and a project's own kinds; old usage rows of unbounded
+  subjects age out with `KEEP_USAGE`.
+- **`EntryPosted` has `amounts` and `digest`** (FIN-96), both required.
+  **Fix:** code that builds an `EntryPosted` itself passes them; the
+  ledger does.
+- **Erasure keeps the books and the approvals, pseudonymised** (FIN-94).
+  `privacy erase` is held (`ErasureHeld`; the command names why) while
+  the person holds an open account with money on it or held; done, their
+  accounts name one `erased:` holder instead of none, and their approval
+  requests keep their commands, sealed again for the pseudonym. **Fix:**
+  close a customer's accounts before erasing them; register
+  `on_erase_check` in a domain whose records a law asks to keep.
 - **An open live connection no longer keeps its login alive**
   (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
   WebSocket or event stream wrote the login's last use, so a page left

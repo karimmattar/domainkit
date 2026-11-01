@@ -1,6 +1,6 @@
 # 0123. Count movements against limits under the subject's row, in the movement's transaction
 
-- Status: Accepted; amended 2026-10-31 (at the end)
+- Status: Accepted; amended 2026-10-31 and 2026-11-01 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -174,3 +174,36 @@ A holder or an actor that limits cannot take as a subject (a control
 character, more than 255 characters) refused every posting to its
 accounts once limits were installed; it is counted under its digest
 instead (`ledger_subject`).
+
+## Amendment (2026-11-01, the 0.15 audit)
+
+- **Only bounded subjects keep their movements** (PERF-26, revising
+  SEC-15b-5). Counting every movement of every subject, to keep the
+  promise that a limit set mid-window sees what moved before it, wrote
+  three usage rows per two-line entry for subjects no limit names (a
+  bank's clearing and fee accounts: tens of gigabytes a month at a
+  million entries a day) and taxed every posting. Now `consume` keeps the
+  movements of the subjects a window bounds only. The promise is kept
+  where the movements are on record: when a limit with a window is set,
+  changed, or enabled for accounts or holders, `count_earlier` counts
+  the ledger's postings since the window began, in the transaction that
+  sets it, entry by entry, skipping reversed entries and what was
+  counted already. An actor's movements are not in the ledger, nor are a
+  project's own kinds counted through `consume`: they count from when a
+  window bounds them. Considered: a per-kind switch (`COUNT_KINDS`), and
+  daily totals per subject; both still write for subjects no limit names.
+- **Currencies fail closed** (FIN-89): a subject some limit bounds in one
+  currency is refused a movement in another (`currency_not_limited`),
+  unless a default for every currency (`"currency": "*"`) bounds it,
+  its amounts read in each currency's units. A limit disabled for a
+  subject (an exemption) names its currency only.
+- **An approved reversal counts** (FIN-88). A reversal releases what its
+  entry counted, a refund's semantics; one booked while an approved
+  request runs (a reversal over the thresholds, now guarded) is counted
+  as a movement instead and releases nothing, so undoing an approved
+  payout does not free the holder's limit to draw it again.
+- **What stays open** (PERF-27): a window is still a sum over its
+  movements, under the subject's lock; a limit on a busy subject (a
+  merchant's incoming payments, a service actor) costs a sum over every
+  movement of its window. Running totals per subject and bucket would
+  bound it; the usage table's shape allows adding them after 1.0.

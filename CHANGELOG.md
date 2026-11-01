@@ -11,6 +11,34 @@ and a status.
 
 ### Added
 
+- `domainkit.apps.hooks.on_erase_check`: a domain says why a person's
+  data must be kept for now (`async def check(subject, reason) -> str |
+  None`). `privacy erase` asks every check before any hook erases: one
+  reason holds the whole erasure, nothing is erased, `privacy.erase` is
+  recorded as denied with the reasons, and `ErasureHeld`
+  (`erasure_held`, in `domainkit.contrib.privacy`) is raised. The
+  contract of `on_erase_subject` says so: a domain refuses there, never
+  part-way (FIN-94).
+- The ledger records statement imports and reconciliations as events,
+  `StatementImported` (its digest, the lines imported and skipped) and
+  `AccountReconciled` (the run, the matches by rule, the breaks left), so
+  the audit trail names who imported and reconciled, over HTTP as from
+  `manage.py accounting` (FIN-90, FIN-100).
+- `EntryAmount`, and `EntryPosted.amounts` and `digest`: what an entry
+  moved on each account, per currency, and the SHA-256 of its lines (its
+  `fingerprint`), so the sealed and anchored trail vouches for every
+  posting (FIN-96).
+- `contrib.approvals.REVERSES` (`accounting.reverse_entry`, policy
+  `accounting.large_reversal`): a reversal over `ENTRY_THRESHOLDS` waits
+  for `ENTRY_APPROVALS` approvals, as the entry it undoes did; its makers
+  need `accounting.reverse_entry`. `current_run` is public: the approved
+  command being run here, if any (FIN-88).
+- `"*"` in `APPROVALS.ENTRY_THRESHOLDS`, `Threshold`, and a default of
+  `LIMITS.DEFAULTS` (`"currency": "*"`): an amount for every currency the
+  others do not name, read in each one's own units (FIN-89).
+- `EarlierPeriodOpen` (`earlier_period_open`), `CurrencyNotLimited`
+  (`currency_not_limited`, a `LimitExceeded`), and
+  `contrib.audit.settings.min_retention` (FIN-87, FIN-89, FIN-95).
 - `domainkit.money`: `Money`, an amount with exactly its currency's
   places and the currency, immutable and exact: `Money.of("10.5", "USD")`
   is 10.50, more places are refused (`InexactAmount`) and never rounded,
@@ -276,6 +304,63 @@ and a status.
 
 ### Changed
 
+- **Breaking:** an account may not go negative unless it is opened so:
+  `may_go_negative` defaults to `False` in `Account.open`, `OpenAccount`,
+  and `POST /accounts`. An account opened without it refuses what would
+  leave less than nothing available (`insufficient_funds`) (FIN-97).
+- **Breaking:** a currency an approval threshold or a limit does not name
+  fails closed. With `ENTRY_THRESHOLDS` set, an entry in a currency it
+  does not name needs approval, unless `"*"` gives an amount for all;
+  a subject bounded by limits in some currency is refused a movement in
+  another (`currency_not_limited`), unless a default for every currency
+  (`"*"`) bounds it. `--profile fintech`'s transfer takes only the
+  currencies its limits and threshold name, USD and EUR (FIN-89).
+- **Breaking:** the books are closed up to the end of the latest closed
+  period: an entry dated on or before it is refused (`period_closed`), in
+  a period or in a gap between them, with or without `REQUIRE_PERIOD`; a
+  period that starts on or before it is not opened; and periods close in
+  date order (`earlier_period_open`). A closed period's figures never
+  change afterwards (FIN-87).
+- **Breaking:** a reversal of an entry over `ENTRY_THRESHOLDS` needs
+  approval (`approval_required`; submit `accounting.reverse_entry`), and,
+  run as an approved request, limits count it as a movement and free
+  nothing; a reversal on one person's say still releases what its entry
+  counted (FIN-88).
+- **Breaking:** limits keep the movements of the subjects a window
+  bounds only, not of every subject of every posting (SEC-15b-5's model).
+  A limit set, changed, or enabled partway through its window counts the
+  ledger's postings since the window began, for accounts and holders; an
+  actor's, and those `consume` counted outside the ledger, count from
+  when a window bounds them. ADR 0123 is amended (PERF-26).
+- **Breaking:** `EntryPosted` has two new fields, `amounts` and `digest`,
+  required: code that builds one passes them (FIN-96).
+- **Breaking:** `privacy erase` keeps the ledger's and approvals' records
+  pseudonymised: an erased holder's accounts name one `erased:` holder
+  instead of none, and erasure is held while one of them has money on it
+  or held; the commands of an erased person's requests are kept and their
+  seals made again, an approved request of theirs not run yet fails
+  (`maker_not_allowed`), and only the reasons they wrote are blanked
+  (FIN-94).
+- An approved request whose policy asked at least `ENTRY_APPROVALS`
+  approvals passes the ledger's thresholds for the entries its command
+  books: a project's guarded payout, approved, posts its entry without a
+  second request. A run of the ledger's own guards books only what it
+  approved (FIN-92).
+- An approved command runs only while its maker, a user, is active and
+  holds the guard's maker permission; otherwise it fails
+  (`maker_not_allowed`) (FIN-93).
+- Every `Guard`, however it is registered (`guard()` or `on_guard`),
+  must have a service decorated `@requires_approval` for its action; the
+  ledger's guards run decorated services of their own (DSGN-18).
+- Under `AUTH.PASSWORD_PRESET = "pci-dss-4"`, `auditprune` keeps a year of
+  the trail at least, whatever `AUDIT.MIN_RETENTION` says, and
+  `--profile fintech` sets `MIN_RETENTION` to 365 days (PCI DSS v4.0
+  10.5.1); the default stays 30 days (FIN-95).
+- Holds expire by the database's clock on PostgreSQL, as leases and
+  limits' windows do (FIN-99).
+- `verify_ledger` compares in the database and streams what differs; the
+  general ledger is read in pieces of `CHUNK` postings, each in a short
+  transaction, so a slow reader holds no connection (PERF-28).
 - **Breaking:** auth has three new tables, `domainkit_step_ups`,
   `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
   new features use them, but deleting or erasing a user deletes the
@@ -313,6 +398,21 @@ and a status.
 
 ### Fixed
 
+- A trial balance of more than 32,767 accounts that moved, and a
+  reconciliation that matched as many lines, failed on PostgreSQL: the
+  chart is joined in the report's statement, and lines are marked in
+  batches (PERF-23).
+- Reconciliation by amount and date compared every line with every
+  posting, on the event loop: postings are found by amount, and the rules
+  run on a thread (PERF-25).
+- An amount or a balance past the ledger's `NUMERIC(18, 4)` failed at the
+  flush as a server error (500); it is refused as `amount_out_of_range`
+  (422), and a deferred posting dead-letters it (FIN-91).
+- `docs/fintech.md`, the threat model, and the approvals guide claimed
+  what the code did not do: a sample transfer said to go "through all"
+  the controls that posts nothing to the books, an operator identity that
+  is self-asserted, an inbox said not to exist, and reversals the limits
+  were said to count (FIN-101).
 - `migrate` makes the audit trail append-only on PostgreSQL itself:
   `domainkit.contrib.audit` registers `protect_migrated` on
   `on_migrated`, which makes the triggers of `domainkit_audit_log` and
