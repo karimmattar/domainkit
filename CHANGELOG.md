@@ -310,6 +310,12 @@ and a status.
   clock run), 156 die on PostgreSQL already, 106 are equivalent, and
   12 run only at import; the audit page lists, by module, the 6 left
   and why (TEST-11).
+- The 642 mutants 0.15's changed functions left (605 alive, 37 that no
+  test reached) are settled: 303 are killed by new tests (13 of them
+  on PostgreSQL, where the database's clock and the erasure race run),
+  69 die on PostgreSQL already, 233 are equivalent, and 25 run only at
+  import; the audit page lists, by module, the 12 left and why
+  (TEST-12).
 
 ### Fixed
 

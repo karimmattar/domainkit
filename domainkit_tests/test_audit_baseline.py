@@ -1,5 +1,6 @@
 """What staging and production need for a tamper-evident audit trail (N5)."""
 
+import asyncio
 import io
 import logging
 import os
@@ -300,7 +301,12 @@ async def test_every_audited_database_is_probed(
     )
     monkeypatch.setattr(baseline, "missing_triggers", probe)
 
-    assert await protection_problems() == [
+    problems = await protection_problems()
+    assert [getattr(each, "id", None) for each in problems] == [
+        "audit.E004",
+        "audit.E005",
+    ]
+    assert problems == [
         (
             "Could not check the audit trail's triggers in 'default' "
             "(TimeoutError); run 'manage.py auditverify' once it answers."
@@ -310,6 +316,26 @@ async def test_every_audited_database_is_probed(
             "first_trigger, second_trigger are missing, disabled, or changed. Run "
             "'manage.py migrate', which makes them."
         ),
+    ]
+
+
+async def test_a_probe_that_hangs_is_given_up_on(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past ``PROBE_TIMEOUT``, the database is named as one that did not answer."""
+
+    async def hangs(database: str) -> list[str]:
+        await asyncio.sleep(60)
+        return []
+
+    monkeypatch.setattr(baseline, "missing_triggers", hangs)
+    monkeypatch.setattr(baseline, "PROBE_TIMEOUT", 0.01)
+
+    assert await protection_problems() == [
+        (
+            "Could not check the audit trail's triggers in 'default' "
+            "(TimeoutError); run 'manage.py auditverify' once it answers."
+        )
     ]
 
 

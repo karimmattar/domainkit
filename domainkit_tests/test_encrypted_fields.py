@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -347,7 +348,11 @@ async def test_other_queries_on_an_encrypted_field_are_refused(bank: str) -> Non
 
 def test_the_sql_compiler_refuses_what_the_domain_query_would() -> None:
     """Compiled directly, ordering and other lookups are refused too."""
-    with pytest.raises(InvalidQuery, match="do not sort"):
+    with pytest.raises(
+        InvalidQuery,
+        match=r"^Payment\.pan is encrypted: its ciphertexts do not sort as its "
+        r"values do\.$",
+    ):
         compile_ordering((Ordering("pan"),), Payment)
     with pytest.raises(InvalidQuery, match="ask only whether it is None"):
         compile_criteria(Condition("pan", Lookup.GT, PAN), Payment, "sqlite")
@@ -631,6 +636,36 @@ def test_deriving_refuses_what_cannot_be_sealed_or_shredded() -> None:
             table_for(cls, f"t_{cls.__name__}", metadata=metadata)
 
 
+def test_a_derived_column_is_sealed_for_its_subject_and_nullable_as_hinted() -> None:
+    """``subject=``, else a ``Personal`` marker's; ``None`` only where hinted."""
+    from domainkit.ddd import Personal
+
+    class Holder(AggregateRoot[uuid.UUID]):
+        name: Annotated[str | None, Personal(of="id"), Encrypted()] = None
+        number: Annotated[str | None, Encrypted(subject="id")] = None
+        secret: Annotated[bytes, Encrypted()]
+
+    table = table_for(Holder, "subject_holders", metadata=MetaData())
+    assert [
+        (column.name, cast(EncryptedType, column.type).subject, column.nullable)
+        for column in (table.c.name, table.c.number, table.c.secret)
+    ] == [("name", "id", True), ("number", "id", True), ("secret", None, False)]
+
+
+def test_a_subjects_value_that_cannot_be_none_says_why_in_full() -> None:
+    """Erasing the person destroys the key: the value then reads as None."""
+
+    class Kept(AggregateRoot[uuid.UUID]):
+        a: Annotated[str, Encrypted(subject="id")]
+
+    with pytest.raises(TypeError) as refused:
+        table_for(Kept, "t_kept", metadata=MetaData())
+    assert str(refused.value).endswith(
+        " is sealed under the key of the person 'id' names, which erasing them "
+        "destroys; it then reads as None, so hint it as allowing None."
+    )
+
+
 def test_given_columns_replace_the_derived_ones() -> None:
     """A hand-written value or index column is used as it is."""
 
@@ -736,6 +771,21 @@ def test_a_subject_or_index_column_must_be_mapped() -> None:
         _fields(class_mapper(Lonely))
 
 
+def test_a_mapping_keeps_its_own_properties_beside_the_blind_index() -> None:
+    """Properties given to the mapper stay; the index is mapped as well."""
+    from domainkit.db import map_imperatively
+
+    class Indexed(AggregateRoot[uuid.UUID]):
+        number: Annotated[str | None, Encrypted(blind_index=True)] = None
+        code: str = ""
+
+    table = table_for(Indexed, "indexed_props", metadata=MetaData())
+    map_imperatively(Indexed, table, properties={"label": table.c.code})
+    mapper = class_mapper(Indexed)
+    assert mapper.get_property("label").columns == [table.c.code]
+    assert mapper.get_property("_number_index").columns == [table.c.number_index]
+
+
 def test_lookup_needs_a_blind_index() -> None:
     """``lookup`` on a column without one says so."""
     with pytest.raises(InvalidQuery, match="without a blind index"):
@@ -809,3 +859,81 @@ def test_the_admin_api_reads_and_finds_encrypted_fields(staffed_bank: str) -> No
     assert [item["pan"] for item in listed.json()["items"]] == [PAN, OTHER_PAN]
     assert [item["id"] for item in found.json()["items"]] == [str(uuid.UUID(int=1))]
     assert read.json()["pan"] == PAN
+
+
+# Refusals, word for word --------------------------------------------------------------
+
+
+def exactly(message: str) -> str:
+    """A pattern matching ``message`` and nothing else."""
+    return f"^{re.escape(message)}$"
+
+
+@pytest.mark.anyio
+async def test_encrypted_fields_say_why_they_refuse(bank: str) -> None:
+    """A row without its key, a lookup without an index, a value in clear."""
+    from domainkit.db.encrypted import lookup
+
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly(
+            "Payment has encrypted fields, which are bound to the row's primary "
+            "key: give it its id before saving it, rather than letting the "
+            "database number it."
+        ),
+    ):
+        await save(
+            Payment(id=cast(uuid.UUID, None), holder_id=ANN, pan=CardNumber(PAN))
+        )
+    with pytest.raises(
+        InvalidQuery,
+        match=exactly(
+            "cards_cardholders.api_secret is encrypted without a blind index: a "
+            "query can only ask whether it is None."
+        ),
+    ):
+        lookup(tables.cardholders.c.api_secret, [b"x"])
+    with pytest.raises(
+        TypeError,
+        match=exactly(
+            "An encrypted column holds sealed values only: the ORM seals what an "
+            "aggregate holds, and a query can compare it only with None, or by "
+            "equality through its blind index (domainkit.db.encrypted.lookup)."
+        ),
+    ):
+        EncryptedType().process_bind_param("4111", sqlite.dialect())
+    async with connections.engine("default").begin() as connection:
+        with pytest.raises(
+            ImproperlyConfigured,
+            match=exactly(
+                "cards_payments.pan is bound to its row's primary key, which this "
+                "row lacks."
+            ),
+        ):
+            await connection.run_sync(
+                seal_row, tables.payments, {"pan": Plaintext(PAN)}
+            )
+    with pytest.raises(
+        fixture_io.FixtureError,
+        match=exactly(
+            "cards_payments.pan is encrypted: it takes a sealed value, or "
+            '{"plaintext": ...} to seal.'
+        ),
+    ):
+        fixture_io._decoded_row(tables.payments, {"pan": "4111"})
+
+
+@pytest.mark.anyio
+async def test_a_value_the_ring_never_sealed_does_not_load(bank: str) -> None:
+    """Text in no sealed format, where a sealed value belongs: refused as such."""
+    await save(pay(1))
+    async with connections.engine("default").begin() as connection:
+        await connection.execute(
+            update(tables.payments).values(pan=Ciphertext("not sealed"))
+        )
+    async with CardsUnitOfWork() as uow:
+        with pytest.raises(
+            DecryptionFailed,
+            match=exactly("The value is not one the key ring sealed."),
+        ):
+            await uow.payments.get(uuid.UUID(int=1))

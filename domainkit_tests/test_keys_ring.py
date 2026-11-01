@@ -1,6 +1,7 @@
 """The key ring: data keys by id, sealed values that name their key, subjects' keys."""
 
 import gc
+import re
 from collections.abc import Iterator
 from typing import Any, Final, cast
 
@@ -347,3 +348,94 @@ def test_alternates_open_and_index_but_never_seal() -> None:
         Keyring(LocalKeyProvider([KEK]), {}, "dev", known={"dev": b"n" * 32}).open(
             sealed, CONTEXT
         )
+
+
+def exactly(message: str) -> str:
+    """A pattern matching ``message`` and nothing else."""
+    return f"^{re.escape(message)}$"
+
+
+def test_a_blind_index_is_the_same_in_every_version() -> None:
+    """Rows indexed before an upgrade are still found after it."""
+    assert ring().blind_index(b"4111", b"cards\x00number") == (
+        "k1:3809397bbe6ea3f2b0beca8b667392ec"
+    )
+
+
+def test_a_subject_is_bound_as_its_text_whatever_it_holds() -> None:
+    """A lone surrogate in a subject's name still seals and opens."""
+    keys = ring()
+    on = connection()
+    sealed = keys.seal(b"P", CONTEXT, connection=on, subject="\ud800")
+    assert keys.open(sealed, CONTEXT, connection=on) == b"P"
+
+
+def test_a_ring_of_the_local_provider_stays_loaded() -> None:
+    """Its keys are unwrapped once, in the process, and kept."""
+    keys = ring()
+    keys.data_key("k1")
+    assert keys.loaded
+
+
+@pytest.mark.anyio
+async def test_loading_names_a_data_key_of_the_wrong_size() -> None:
+    """The id of the key that unwraps to the wrong size, and its size."""
+    provider = LocalKeyProvider([KEK])
+    keys = Keyring(provider, {"short": provider.wrap_now(b"s" * 16)}, "short")
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly("KEYS.DATA_KEYS['short'] unwraps to 16 bytes, not 32."),
+    ):
+        await keys.load()
+
+
+@pytest.mark.anyio
+async def test_the_ring_says_why_it_refuses(no_ring: None, vault: FakeVault) -> None:
+    """Each refusal of the ring, in full."""
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly(
+            "Encrypted fields need keys: install domainkit.contrib.keys, which "
+            "reads them from KEYS (docs/contrib/keys.md)."
+        ),
+    ):
+        keyring()
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly(
+            "Values sealed for a subject need a store of subjects' keys: "
+            "install domainkit.contrib.keys."
+        ),
+    ):
+        ring(subject_keys=None).seal(
+            b"P", CONTEXT, connection=connection(), subject="ann"
+        )
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly(
+            "A value sealed for a subject is sealed and opened on a connection."
+        ),
+    ):
+        ring().seal(b"P", CONTEXT, subject="ann")
+    with pytest.raises(
+        DecryptionFailed, match=exactly("The value is not one the key ring sealed.")
+    ):
+        ring().open("plain", CONTEXT)
+    with pytest.raises(
+        DecryptionFailed,
+        match=exactly(
+            "The value does not open here: it was sealed for another row or "
+            "column, or changed."
+        ),
+    ):
+        ring().open(ring().seal(b"x", CONTEXT), b"other")
+    keys = await vault_ring()
+    with pytest.raises(
+        KeysNotLoaded,
+        match=exactly(
+            "The data keys are not unwrapped yet, and the key service cannot be "
+            "called here: await the ring's load() first (startup does)."
+        ),
+    ):
+        keys.seal(b"x", CONTEXT)
+    gc.collect()
