@@ -58,6 +58,8 @@ __all__ = [
     "verify_ledger",
 ]
 
+NOTHING: Final = Decimal("0.0000")
+"""What an account with no postings or holds sums to, at the columns' scale."""
 DEBIT_NORMAL: Final = tuple(
     kind for kind in AccountType if kind.normal_balance is Side.DEBIT
 )
@@ -458,6 +460,11 @@ class LedgerProblem:
     detail: str
 
 
+def _shown(value: Decimal) -> str:
+    """``value`` at the columns' scale, as both databases' sums give it alike."""
+    return str(value.quantize(NOTHING))
+
+
 async def verify_ledger() -> list[LedgerProblem]:
     """Check the books: entries balance, balances and held amounts add up.
 
@@ -475,12 +482,12 @@ async def verify_ledger() -> list[LedgerProblem]:
     async with connections.engine(accounting_alias()).connect() as connection:
         debits = func.coalesce(
             func.sum(postings.c.amount).filter(postings.c.side == Side.DEBIT),
-            0,
+            NOTHING,
             type_=postings.c.amount.type,
         )
         credits = func.coalesce(
             func.sum(postings.c.amount).filter(postings.c.side == Side.CREDIT),
-            0,
+            NOTHING,
             type_=postings.c.amount.type,
         )
         unbalanced = await connection.stream(
@@ -499,7 +506,8 @@ async def verify_ledger() -> list[LedgerProblem]:
                 LedgerProblem(
                     "unbalanced_entry",
                     str(row.entry_id),
-                    f"{row.currency}: debits {row.debits}, credits {row.credits}",
+                    f"{row.currency}: debits {_shown(row.debits)}, "
+                    f"credits {_shown(row.credits)}",
                 )
                 async for row in unbalanced
             ]
@@ -509,7 +517,7 @@ async def verify_ledger() -> list[LedgerProblem]:
             .group_by(postings.c.account_id)
             .subquery()
         )
-        moved = func.coalesce(net.c.net, 0, type_=postings.c.amount.type)
+        moved = func.coalesce(net.c.net, NOTHING, type_=postings.c.amount.type)
         expected = case((accounts.c.type.in_(DEBIT_NORMAL), moved), else_=-moved).label(
             "expected"
         )
@@ -524,7 +532,8 @@ async def verify_ledger() -> list[LedgerProblem]:
                 LedgerProblem(
                     "balance_differs",
                     str(each.id),
-                    f"{each.code}: balance {each.balance}, postings {each.expected}",
+                    f"{each.code}: balance {_shown(each.balance)}, "
+                    f"postings {_shown(each.expected)}",
                 )
                 async for each in balances
             ]
@@ -535,7 +544,7 @@ async def verify_ledger() -> list[LedgerProblem]:
             .group_by(holds.c.account_id)
             .subquery()
         )
-        total = func.coalesce(active.c.total, 0, type_=holds.c.amount.type).label(
+        total = func.coalesce(active.c.total, NOTHING, type_=holds.c.amount.type).label(
             "total"
         )
         held = await connection.stream(
@@ -551,7 +560,8 @@ async def verify_ledger() -> list[LedgerProblem]:
                 LedgerProblem(
                     "held_differs",
                     str(each.id),
-                    f"{each.code}: held {each.held}, active holds {each.total}",
+                    f"{each.code}: held {_shown(each.held)}, "
+                    f"active holds {_shown(each.total)}",
                 )
                 async for each in held
             ]
