@@ -56,7 +56,12 @@ chose the last.
   headers, and counts the outcome `unknown`. Pending, it keeps its
   ordering key's place. Once the grace has passed it is dead-lettered as
   before; `0` dead-letters at once, the old behaviour. The time is the
-  worker's host's clock: an hour's grace does not need the database's.
+  claim's, on the clock that decides on the outbox (PostgreSQL's), as its
+  due times are: a worker whose host runs ahead would otherwise end the
+  grace early (SEC-16c-2). The sighting belongs to one stay of the
+  message: it is dropped once the message runs, fails, or dies another
+  way, and a chain's next step does not inherit it, so a retried dead
+  letter or a next step found unknown gets a grace of its own.
   The test plugin's `drain` dead-letters at once: a test's process has
   every task.
 - **The deploy order.** Workers first when a release adds tasks or
@@ -66,7 +71,7 @@ chose the last.
 - **Names.** A task's name is its messages' key; `@task(name=...)` keeps it
   whatever the code does, and `check` warns where deployed about tasks
   without one (`messaging.W001`). Names are at most 255 characters, the
-  outbox's column (CONC-16).
+  outbox's column, for tasks and durable handlers alike (CONC-16).
 
 Two smaller changes to this decision came with the same audit. A periodic
 task is still deduplicated per interval through its row's `dedupe_key`,

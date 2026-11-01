@@ -184,8 +184,10 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   deployed (`messaging.W001`).
 - **Task names are at most 255 characters** (CONC-16): `@task` and
   `@periodic` refuse a longer `name=` (or module path) with
-  `ImproperlyConfigured`. PostgreSQL refused its messages anyway.
-  **Fix:** a shorter `name=`.
+  `ImproperlyConfigured`, and `event_bus.subscribe(..., durable=True)` a
+  durable handler whose `module.QualName` is longer, with `ValueError`.
+  PostgreSQL refused their messages anyway. **Fix:** a shorter `name=`, or
+  a shorter module or name for the handler.
 - **A handler's own `CancelledError` is a failure** (CONC-17). One raised
   while the worker is not stopping (a cancelled task or future awaited)
   is retried with backoff, counts as an attempt, and dead-letters the
