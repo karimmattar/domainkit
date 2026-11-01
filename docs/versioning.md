@@ -253,6 +253,13 @@ One-time setup, before the first release:
   replace. With the GitHub CLI, `gh api --method POST
   repos/OWNER/REPO/rulesets --input .github/rulesets/main.json` creates
   one, and `--method PUT repos/OWNER/REPO/rulesets/ID` replaces one.
+  Import `main.json` again whenever a change edits it (a check added,
+  renamed, or removed): the release judges main's CI run by the
+  `main.json` of the tagged commit, since its token cannot read the live
+  ruleset, so a ruleset left behind gates pull requests on other checks
+  than the release requires. `test_ci.py`, in the required test jobs,
+  checks that the file names every check CI gates a push on, and that a
+  run with two jobs of a required check's name is refused.
   - `main.json`: changes reach `main` only as squash-merged pull requests,
     up to date with it, with these checks from GitHub Actions passing:
     `changes`, `docs`, `lint`, `test (3.13)`, `test (3.14)`, `test (3.15)`,

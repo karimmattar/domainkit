@@ -722,6 +722,10 @@ and a status.
   check, and the ruleset refuses a pull request with a new high or
   critical alert; each tag gets a release run of its own, where a third
   tag pushed while one waited for approval cancelled the second (INFRA-21).
+- The release refuses a CI run holding two jobs of a required check's
+  name, where the last one listed decided, and `test_ci.py` checks that the
+  tagged `main.json` the release reads names every check CI gates a push
+  on; the owner imports `main.json` again when it changes (INFRA-14).
 
 - A trial balance of more than 32,767 accounts that moved, and a
   reconciliation that matched as many lines, failed on PostgreSQL: the

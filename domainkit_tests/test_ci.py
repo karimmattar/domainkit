@@ -1631,6 +1631,45 @@ def test_a_release_judges_mains_run_by_the_checks_the_ruleset_requires() -> None
     assert going.returncode == 1
 
 
+def test_a_release_refuses_a_run_with_two_jobs_of_a_judged_name() -> None:
+    """Two jobs of one name would leave the verdict to the last one read.
+
+    A failed ``build`` listed before a passed one passed; the name's jobs
+    are counted first, and an advisory job's name may repeat.
+    """
+    for first, second in (("failure", "success"), ("success", "success")):
+        run = push_run(build=first)
+        run["jobs"].append({"name": "build", "conclusion": second})
+        done = judge(run)
+        assert (done.returncode, done.stdout) == (1, "build: 2 jobs of that name\n")
+    run = push_run()
+    run["jobs"].append({"name": "stress (3.14t)", "conclusion": "failure"})
+    assert judge(run).returncode == 0
+
+
+def test_the_release_judges_every_check_ci_gates_a_push_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tagged main.json covers each required job a push to main runs.
+
+    The release reads the ruleset from the tagged commit, not the live one,
+    which its token cannot read; this test runs in the required test jobs,
+    so a ruleset that drifted from the workflow fails CI before a release
+    reuses that run. The owner imports main.json again when it changes
+    (docs/versioning.md).
+    """
+    judging = load_script("required_jobs", monkeypatch)
+    ruleset = json.loads((RULESETS / "main.json").read_text())
+    judged = set(judging.required(ruleset))
+    gated = {
+        check
+        for name in running("push") - ADVISORY
+        for check in check_names(name, jobs()[name])
+    }
+    assert judged >= gated, sorted(gated - judged)
+    assert judged - gated == {"changes", "docs"}  # Pull requests only: skipped.
+
+
 def test_releases_get_a_run_of_their_own_per_tag() -> None:
     """No pending release is cancelled by a third tag (INFRA-21)."""
     release: dict[str, Any] = yaml.safe_load((WORKFLOWS / "release.yml").read_text())

@@ -14,7 +14,14 @@ request had to pass, and whose push runs a later push may cancel), and a
 check a push never runs: ``changes`` and ``docs`` (pull requests only)
 must have been skipped by their conditions. A required job skipped otherwise means a job
 it needs failed, and that one is required too; failing it here as well is
-the safe side. The run must have completed.
+the safe side. The run must have completed, and hold one job of each name
+judged: two of a name would leave the verdict to whichever came last, so
+they are refused.
+
+The ruleset read is the tagged commit's file, not the repository's live
+ruleset, which this token cannot read; ``test_ci.py`` checks in the
+required test jobs that the file covers every check CI gates, and
+docs/versioning.md has the owner import it again whenever it changes.
 
 Reads ``gh run view <id> --json status,jobs`` from standard input and the
 ruleset named, prints one line per check that did not pass, and exits 1
@@ -56,7 +63,14 @@ def failures(run: dict[str, Any], checks: list[str]) -> list[str]:
     if run["status"] != "completed":
         return [f"the run is {run['status']}, not completed"]
     concluded = {job["name"]: job["conclusion"] for job in run["jobs"]}
-    found: list[str] = []
+    names = [job["name"] for job in run["jobs"]]
+    found = [
+        f"{check}: {names.count(check)} jobs of that name"
+        for check in dict.fromkeys(checks)
+        if names.count(check) > 1
+    ]
+    if found:
+        return found
     for check in checks:
         expected = "skipped" if check in PULL_REQUEST_ONLY else "success"
         conclusion = concluded.get(check)
