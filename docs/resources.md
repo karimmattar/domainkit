@@ -317,7 +317,8 @@ tags.
   from a body's `version`. `*` takes any version. A tag this API did not
   make carries no version, so it never matches.
 - `ResourceRouter(..., require_if_match=True)` refuses writes to one
-  aggregate that send no `If-Match`: `428 precondition_required`.
+  aggregate that send no `If-Match`, or `If-Match: *`, which names no
+  version: `428 precondition_required`.
 
 The check needs nothing from the service. The route hands the service a
 unit of work that holds the request's expectation

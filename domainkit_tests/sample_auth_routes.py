@@ -36,7 +36,7 @@ router.include_router(health_router)
 counted: list[str] = []
 
 
-@router.get("/whoami")
+@router.get("/whoami", dependencies=[Public])
 async def whoami(user: CurrentUser, request: Request) -> dict[str, Any]:
     """Anyone: who the request is from."""
     context = current_request()
@@ -129,7 +129,7 @@ async def open_route() -> dict[str, bool]:
     return {"ok": True}
 
 
-@router.get("/products/{owner}")
+@router.get("/products/{owner}", dependencies=[Public])
 async def product(owner: str, request: Request, user: CurrentUser) -> dict[str, str]:
     """Object permissions: owners may change their products."""
     item = Product(id=None, name=owner)  # type: ignore[arg-type]
