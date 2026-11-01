@@ -59,7 +59,7 @@ class PlaceHold(Command):
     source: str
     reference: str
     expires_at: datetime | None = None
-    """When it expires; None: ``ACCOUNTING.HOLD_TTL`` from now."""
+    """When it expires; None: ``ACCOUNTING.HOLD_TTL`` from now, the database's now."""
 
 
 class CaptureHold(Command):
@@ -82,6 +82,9 @@ class ReleaseHold(Command):
 async def place_hold(command: PlaceHold, uow: AccountingUnitOfWork) -> Hold:
     """Reserve an amount on an account, or return the hold placed under its reference.
 
+    The present it is placed at, which ``HOLD_TTL`` counts from and a given
+    expiry is checked against, is the database's, as the expiry is.
+
     Raises:
         ReferenceReused: Another hold was placed under that reference.
         AccountNotFound: No account has that id.
@@ -89,7 +92,6 @@ async def place_hold(command: PlaceHold, uow: AccountingUnitOfWork) -> Hold:
         AccountNotOpen, InsufficientFunds: As ``Account.reserve``.
     """
     account_id = AccountId(command.account_id)
-    expires_at = command.expires_at or clock.now() + config().HOLD_TTL
 
     async def work() -> Hold:
         async with uow:
@@ -102,8 +104,14 @@ async def place_hold(command: PlaceHold, uow: AccountingUnitOfWork) -> Hold:
                     )
                 return placed
             account = await uow.accounts.get_for_update(account_id)
+            now = await database_now(uow.session)
             hold = Hold.place(
-                account, command.amount, command.source, command.reference, expires_at
+                account,
+                command.amount,
+                command.source,
+                command.reference,
+                command.expires_at or now + config().HOLD_TTL,
+                now=now,
             )
             await uow.holds.add(hold)
             await uow.commit()

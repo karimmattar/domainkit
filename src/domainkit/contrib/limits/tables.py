@@ -26,10 +26,8 @@ from domainkit.db import EnumValue, ExactDecimal, MoneyColumns, UTCDateTime, met
 from domainkit.db.orm import map_imperatively
 
 from .exceptions import LimitTaken
-from .models import MAX_NOTE, MAX_ZONE, SCALE, Direction, Limit, Window
+from .models import MAX_NOTE, MAX_ZONE, PRECISION, SCALE, Direction, Limit, Window
 
-PRECISION: Final = 18
-"""Digits an amount column holds, ``SCALE`` of them decimal."""
 MAX_KEY: Final = 200
 """The longest key a movement is counted under."""
 USAGE: Final = {"domain": "limits", "fixtures": False, "flush": False}
@@ -105,6 +103,22 @@ usage = Table(
 
 ``key`` is only ever looked up by equality (``release``): on PostgreSQL its
 index is a hash, a third of the B-tree's size (PERF-30).
+"""
+
+kept = Table(
+    "domainkit_limits_kept",
+    metadata,
+    Column("entry_id", Uuid, primary_key=True),
+    Column("at", UTCDateTime, nullable=False),
+    Index("ix_domainkit_limits_kept_at", "at"),
+    info=USAGE,
+)
+"""The ledger's reversals counted as movements, which free nothing (SEC-16b-9).
+
+A reversal booked while an approved request runs is counted, and the
+entry it reverses stays counted (FIN-88): its id is kept here, at the
+time it was counted, so ``postings.count_earlier`` counts both for a
+limit set later. Purged with the usage.
 """
 
 

@@ -6,6 +6,7 @@ the code that caught it; the answer to a client carries the code alone.
 """
 
 from domainkit.ddd import BusinessRuleViolation, DuplicateValue, NotFound
+from domainkit.money import AmountOutOfRange
 
 
 class LimitNotFound(NotFound):
@@ -18,6 +19,17 @@ class InvalidLimit(BusinessRuleViolation):
     """A limit, or a movement checked against limits, that cannot be as written."""
 
     code = "invalid_limit"
+
+
+class MovementOutOfRange(BusinessRuleViolation, AmountOutOfRange):
+    """A movement larger than usage keeps: ``NUMERIC(18, 4)`` (SEC-16b-5).
+
+    A movement sums an entry's postings for its subject, so it can be past
+    the columns when each posting fits. Refused as the ledger refuses an
+    amount it cannot keep, and a ``DomainError`` as the ledger's are.
+    """
+
+    code = "amount_out_of_range"
 
 
 class LimitTaken(DuplicateValue):

@@ -16,6 +16,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Final, NewType, Self
 from uuid import UUID, uuid4
@@ -25,12 +26,14 @@ from domainkit import clock
 from domainkit.ddd import AggregateRoot, DomainEvent, MaxLength, ValueObject
 from domainkit.money import Currency, Money, currency
 
-from .exceptions import InvalidLimit
+from .exceptions import InvalidLimit, MovementOutOfRange
 
 LimitId = NewType("LimitId", UUID)
 
 SCALE: Final = 4
 """The most decimal places an amount may have: the columns' scale."""
+PRECISION: Final = 18
+"""Digits an amount column holds, ``SCALE`` of them decimal."""
 CODE: Final = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,63}")
 """A limit's code: what it is, such as ``wallet.daily``."""
 KIND: Final = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -45,6 +48,20 @@ HOLDER: Final = "holder"
 """The kind of subject that is the holder an account is kept for."""
 ACTOR: Final = "actor"
 """The kind of subject that is who acts: the request's actor."""
+
+
+def fits(value: Decimal) -> Decimal:
+    """``value``, if the amount columns hold it: ``PRECISION - SCALE`` digits.
+
+    A movement sums an entry's postings for its subject, so it can be
+    past the columns when no posting is (SEC-16b-5).
+
+    Raises:
+        MovementOutOfRange: It has more digits before the point.
+    """
+    if value and value.adjusted() >= PRECISION - SCALE:
+        raise MovementOutOfRange("The amount is larger than limits keep.")
+    return value
 
 
 def _now() -> datetime:
@@ -362,9 +379,12 @@ class Movement(ValueObject):
 
         Raises:
             InvalidLimit: As said.
+            MovementOutOfRange: The amount is past the columns usage keeps
+                it in (``fits``).
         """
         if self.amount.amount <= 0:
             raise InvalidLimit("A movement's amount is more than zero.")
+        fits(self.amount.amount)
         if not self.subjects:
             raise InvalidLimit("A movement names at least one subject.")
         for kind, subject in self.subjects.items():

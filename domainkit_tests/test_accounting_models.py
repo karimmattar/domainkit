@@ -547,6 +547,18 @@ def test_a_hold_reserves_until_it_finishes() -> None:
         hold.finish(account, HoldStatus.EXPIRED)
 
 
+def test_a_hold_is_placed_at_the_present_it_is_given() -> None:
+    """The database's present, a day behind the host's: its expiry checks by it."""
+    account = an_account()
+    account.post(Side.DEBIT, usd("10"))
+    earlier = NOW - timedelta(days=1)
+    with freeze_time(NOW):
+        hold = Hold.place(
+            account, usd("4"), "shop", "h-1", earlier + timedelta(hours=1), now=earlier
+        )
+    assert (hold.placed_at, hold.expires_at) == (earlier, earlier + timedelta(hours=1))
+
+
 def test_an_expired_hold_is_not_captured_but_is_released() -> None:
     """At its expiry a hold can no longer be captured."""
     account = an_account()

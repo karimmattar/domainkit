@@ -422,6 +422,37 @@ had them.
   requests keep their commands, sealed again for the pseudonym. **Fix:**
   close a customer's accounts before erasing them; register
   `on_retain_subject` in a domain whose records a law asks to keep.
+- **Erasure closes the person's accounts, and checks again as it erases**
+  (SEC-16b-4). The ledger's `on_erase_subject` hook raises `ErasureHeld`
+  when money landed after the check, and closes the open accounts it
+  pseudonymises (all empty by then); the hooks of the domains that hold
+  erasures run before anything else is erased. **Fix:** nothing, unless
+  an `on_erase_subject` hook of a domain with an `on_retain_subject`
+  relied on running after the aggregates were erased.
+- **The ledger's movements are counted against limits at the commit**
+  (SEC-16b-2). `enforce` works an entry's movements out as it is booked;
+  `count_staged` (an `on_stage` hook) counts them as the posting commits,
+  after its other `on_stage_entry` hooks and its own work, under a
+  shared lock of each ledger kind that counting back takes alone. A
+  refusal (`limit_exceeded`) is still raised by `post_entry` and the
+  other services, and still rolls the posting back. **Fix:** an
+  `on_stage_entry` hook that read the entry's usage in the same
+  transaction reads it after the commit. Limits add the table
+  `domainkit_limits_kept` (SEC-16b-9): run `makemigrations` and `migrate`.
+- **Removing a limit counts back** (SEC-16b-3) for the limit of its code
+  that then applies; a movement of more than usage keeps (14 digits) is
+  refused, `MovementOutOfRange` (422 `amount_out_of_range`, SEC-16b-5).
+- **`maker_rule` is checked again when an approved request runs**
+  (SEC-16b-7), on the maker with no credentials. **Fix:** a guard whose
+  `maker_rule` reads the submitting request (scopes, a step-up) checks
+  that in its route instead.
+- **`accounting verify` compares the books with the trail** (SEC-16b-6):
+  with `domainkit.contrib.audit`, an entry not as its `EntryPosted`
+  recorded it is `entry_differs`, and fails the command. **Fix:** nothing;
+  investigate what it names.
+- **A hold's default expiry is on the database's clock**: `HOLD_TTL`
+  counts from the database's present on PostgreSQL, and a given
+  `expires_at` is checked against it, as its expiry is (FIN-99).
 - **Derived schemas leave `Encrypted` fields out** (DSGN-19). `schema_for`
   without `include`, `crud=True` with `writable=ALL_FIELDS`, and the admin
   no longer show or take a field stored encrypted. **Fix:** name it where

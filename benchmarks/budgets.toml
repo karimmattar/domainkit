@@ -131,8 +131,8 @@ pings = 1
 modules = 882
 
 [rungs.posting]
-calls = 11764
-statements = 13
+calls = 11973
+statements = 14
 transactions = 1
 checkouts = 1
 pings = 1

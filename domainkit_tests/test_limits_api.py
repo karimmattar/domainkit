@@ -213,6 +213,7 @@ def test_a_breach_on_the_ledger_is_a_422_problem_and_usage_shows_it(
                 "type": kind,
                 "currency": "EGP",
                 "holder": holder,
+                "may_go_negative": True,  # No top-up first (SEC-16b-1).
             },
             headers=clerk,
         )

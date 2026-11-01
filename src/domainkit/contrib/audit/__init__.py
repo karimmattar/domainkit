@@ -19,7 +19,7 @@ changed or removed even by the table's owner (see ``seals``).
 """
 
 from .personal import forget, forget_anonymous, pseudonym_of
-from .recorder import Outcome, action_for, record
+from .recorder import Outcome, action_for, record, recorded
 from .seals import seal, seal_all, verify
 from .settings import AuditSettings
 
@@ -31,6 +31,7 @@ __all__ = [
     "forget_anonymous",
     "pseudonym_of",
     "record",
+    "recorded",
     "seal",
     "seal_all",
     "verify",

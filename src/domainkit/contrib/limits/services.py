@@ -16,7 +16,8 @@ move says who made it::
     )
 """
 
-from typing import Final
+from dataclasses import replace
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from domainkit.apps import registry
@@ -26,21 +27,52 @@ from domainkit.money import Money
 
 from .models import Direction, Limit, LimitId, Window, check_kind, limit_currency
 from .uow import LimitsUnitOfWork
+from .usage import LOCK, Rule, _rules, applicable
+
+if TYPE_CHECKING:
+    from .postings import Scope
 
 ACCOUNTING: Final = "domainkit.contrib.accounting"
 
 
-async def _count_earlier(uow: LimitsUnitOfWork, limit: Limit) -> None:
+async def _count_earlier(uow: LimitsUnitOfWork, limit: "Scope") -> None:
     """With the ledger, count what moved earlier in the limit's window (SEC-15b-5).
 
     Only the subjects a window bounds keep their movements (PERF-26), so a
     limit set, changed, or enabled partway through its window counts the
-    ledger's postings since it began, in the transaction that sets it.
+    ledger's postings since it began, in the transaction that sets it. On
+    SQLite the transaction takes the database's write lock first, as a
+    posting's count does (``usage.LOCK``).
     """
     if registry.is_installed(ACCOUNTING):
         from .postings import count_earlier
 
+        if uow.session.get_bind().dialect.name != "postgresql":
+            await uow.lock(LOCK)
         await count_earlier(uow.session, limit)
+
+
+async def _count_after_removal(uow: LimitsUnitOfWork, removed: Limit) -> None:
+    """Count back for the limit of ``removed``'s code that applies in its place.
+
+    Removing a limit for one subject (an exemption, often) lets the limit
+    of its code for every subject, stored or a default, bound the subject
+    again; removing one for every subject lets a default of its key apply.
+    Either counts the ledger's postings of its window, for the subjects
+    the removed limit named, in its currency (SEC-16b-3).
+    """
+    key = (removed.kind, removed.direction, removed.currency, removed.subject)
+    for rule in applicable(key, await _rules(uow.session, [key])):
+        if rule.code == removed.code:
+            await _count_earlier(uow, _named(rule, removed))
+
+
+def _named(rule: Rule, removed: Limit) -> Rule:
+    """``rule``, for the subjects and the currency ``removed`` named.
+
+    The rule names that currency, or every currency (``"*"``).
+    """
+    return replace(rule, subject=removed.subject, currency=removed.currency)
 
 
 class SetLimit(Command):
@@ -169,7 +201,7 @@ async def change_limit(command: ChangeLimit, uow: LimitsUnitOfWork) -> Limit:
 
 
 async def remove_limit(command: RemoveLimit, uow: LimitsUnitOfWork) -> None:
-    """Remove a limit.
+    """Remove a limit; what applies in its place counts back its window.
 
     Raises:
         LimitNotFound: No limit has that id.
@@ -178,4 +210,5 @@ async def remove_limit(command: RemoveLimit, uow: LimitsUnitOfWork) -> None:
         limit = await uow.limits.get(LimitId(command.limit_id))
         limit.remove()
         await uow.limits.remove(limit)
+        await _count_after_removal(uow, limit)
         await uow.commit()

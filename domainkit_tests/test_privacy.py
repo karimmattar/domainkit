@@ -653,6 +653,68 @@ def test_a_domains_hooks_are_audited_as_one_and_exported_merged(
     }
 
 
+def test_a_domain_that_holds_erasures_erases_first_and_may_hold_it_then(
+    clinic: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Held as alpha erases (money arrived): nothing else erased, the denial recorded.
+
+    Once let go, alpha erases before patients, which holds no erasure.
+    """
+    calls: list[tuple[str, str, str]] = []
+    late = [False, True]  # Held the first time, let go the second.
+
+    async def fine(subject: str, reason: str) -> str | None:
+        return None
+
+    async def erase(subject: str, reason: str) -> dict[str, int]:
+        calls.append(("alpha", subject, reason))
+        if late.pop():
+            raise ErasureHeld("Money arrived.", held={"alpha": "Money arrived."})
+        return {"copies": 1, "pending": 1}
+
+    async def others(subject: str, reason: str) -> dict[str, int]:
+        calls.append(("patients", subject, reason))
+        return {"copies": 0}
+
+    on_retain_subject(fine, domain="alpha")
+    on_erase_subject(erase, domain="alpha")
+    on_erase_subject(others, domain="patients")
+
+    with pytest.raises(ErasureHeld):
+        run_async(erase_subject("nobody", reason="ticket 5"))
+    held = list(calls)
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.privacy.operations"):
+        run_async(erase_subject("nobody", reason="ticket 5"))
+
+    assert held == [("alpha", "nobody", "ticket 5")]
+    assert calls[1:] == [
+        ("alpha", "nobody", "ticket 5"),
+        ("patients", "nobody", "ticket 5"),
+    ]
+    denied, done = run_async(audited("privacy.erase"))
+    assert (denied["outcome"], denied["target"], denied["details"]) == (
+        "denied",
+        "nobody",
+        {"held": {"alpha": "Money arrived."}, "reason": "ticket 5"},
+    )
+    assert (done["outcome"], done["target"]) == ("success", "nobody")
+    (copies,) = run_async(audited("privacy.copies_erased"))
+    assert (copies["target"], copies["details"]) == (
+        "nobody",
+        {
+            "domain": "alpha",
+            "copies": {"copies": 1, "pending": 1},
+            "reason": "ticket 5",
+        },
+    )
+    assert caplog.messages == [
+        (
+            "alpha keeps 1 copy of a subject's data still to finish (queued "
+            "work); they are erased once it ends: erase the subject again then"
+        )
+    ]
+
+
 def test_a_hook_that_answers_more_than_counts_is_named(clinic: str) -> None:
     """The refusal names the domain and the function, which may be no function."""
 

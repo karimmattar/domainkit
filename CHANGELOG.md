@@ -48,6 +48,18 @@ step-up) matter only to projects that ran 0.13 to 0.15 from source.
 
 ### Added
 
+- `accounting verify` compares each entry with the `EntryPosted` the audit
+  trail recorded for it, when audit is installed: its digest, of the
+  stored date, description, and postings, and its source and reference
+  (`entry_differs`, naming the account whose amounts differ, or an entry
+  the trail has and the books lack). A rewrite of both postings and both
+  balances, which still balances, is found (SEC-16b-6).
+- `MovementOutOfRange` (`domainkit.contrib.limits`, 422
+  `amount_out_of_range`): a movement, the sum of an entry's postings for
+  one subject, larger than usage keeps (SEC-16b-5).
+- The limits table `domainkit_limits_kept` marks reversals counted as
+  movements (booked under an approved request), purged with the usage
+  (SEC-16b-9).
 - `live_server` in the pytest plugin: the project's application served by
   uvicorn on a port of the test process, for browsers and other
   processes, on the `db` databases, with `127.0.0.1` in `ALLOWED_HOSTS`.
@@ -431,6 +443,22 @@ step-up) matter only to projects that ran 0.13 to 0.15 from source.
 
 ### Changed
 
+- The ledger's movements are counted against limits as the posting
+  commits (`count_staged`, an `on_stage` hook), under a shared lock of
+  each ledger kind that `count_earlier` takes alone on PostgreSQL; a
+  limit set while a posting is in flight counts that posting, or is read
+  by it (SEC-16b-2). One statement more a posting on PostgreSQL.
+- A held erasure is checked again as the ledger erases, with the
+  accounts locked, and the domains that may hold erasures erase first
+  (SEC-16b-4).
+- A hold's default expiry counts from the database's clock, and a given
+  one is checked against it (the SEC-16b review).
+- A reconciliation cancelled while its matching rule runs waits for the
+  rule's thread before it lets go of the account (the SEC-16b review).
+- The docs say that the ledger's and approvals' erasure is
+  pseudonymisation, not anonymisation, how to settle a held erasure, and
+  that a default added by a deploy starts with an empty window (the
+  SEC-16b review, SEC-16b-3).
 - **Breaking:** the pytest plugin refuses the test databases to a test
   that did not request `db` (or a fixture that does: `client`,
   `async_client`, `live_server`, ...), as pytest-django does: it raises
@@ -1063,6 +1091,28 @@ lead to the finding on [docs/audit/0.9.0.md](docs/audit/0.9.0.md).
   the clock that decides on the outbox (PostgreSQL's), not the worker
   host's, so a host whose clock runs ahead no longer ends it early
   (SEC-16c-2).
+- `POST /accounts` opened an account that may go negative unless told
+  otherwise: `AccountIn.may_go_negative` defaults to `False`, as
+  `OpenAccount` does (SEC-16b-1).
+- Removing a limit (an exemption, say) gave the limit that then applies
+  an empty window; it counts the window's postings back (SEC-16b-3).
+- Money that landed between an erasure's check and the ledger's erasure
+  was left on an open account owed to `erased:…`: the erasure is held
+  then, and it closes the person's open accounts, empty, so none takes
+  money for an erased holder (SEC-16b-4).
+- An entry whose movement for one subject passed usage's columns failed
+  as a 500 (and was retried from `defer_entry`); it is refused,
+  `amount_out_of_range` (SEC-16b-5).
+- An approved request ran for a maker who no longer passed the guard's
+  `maker_rule` (a member of staff demoted after submitting); the run
+  checks it, on the maker as a user (SEC-16b-7).
+- A limit for every subject could not be set or changed once more than
+  6,553 subjects had moved in its window (asyncpg's 32,767 parameters);
+  counting back writes and reads the subjects 1,000 at a time
+  (SEC-16b-8).
+- A limit set after an approved reversal counted neither it nor the
+  payout it undid, freeing the payout to be drawn again; both count, as
+  `enforce` counted them (SEC-16b-9).
 - A command on one aggregate and an atomic batch hold the aggregate to the
   version their object rules saw: since WEB-16 the rules are asked
   outside the write's transaction, and an aggregate changed in between

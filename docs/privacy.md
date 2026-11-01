@@ -218,7 +218,13 @@ for now; one sentence from any of them holds the whole erasure: nothing
 is erased, `privacy.erase` is recorded as denied with each domain's
 sentence, and `ErasureHeld` (`erasure_held`) is raised, which
 `privacy erase` reports, naming them (FIN-94). The erasing hooks run only
-once every check let it go on, so a domain never refuses part-way:
+once every check let it go on. A check and the erasure are two
+transactions, so what changed between them may hold it after all: the
+`on_erase_subject` hooks of the domains that hold erasures run first,
+before anything else is erased, and one may raise `ErasureHeld` itself,
+having checked again under its own locks (the ledger does, SEC-16b-4),
+recorded as denied the same way. Only a second holding domain that holds
+it then leaves what the first erased:
 
 ```python
 from domainkit.apps.hooks import on_retain_subject
@@ -236,11 +242,20 @@ class LendingConfig(DomainConfig):
 ```
 
 The ledger holds the erasure of a holder of an open account with money
-on it or held. What the law asks to keep after the relationship ends,
-the ledger and approvals keep pseudonymised, not deleted: the books and
-the evidence of who checked whom, with the person's id replaced by one
-`erased:` id. A sentence is shown to the operator and recorded: never
-put the person's data in it.
+on it or held, and closes their open accounts as it erases, so none
+takes money for an erased holder; [accounting.md](contrib/accounting.md#accounts)
+says how to settle one held. What the law asks to keep after the
+relationship ends, the ledger and approvals keep pseudonymised, not
+deleted: the books and the evidence of who checked whom, with the
+person's id replaced by one `erased:` id. **That is pseudonymisation,
+not anonymisation**: the record still links to the person through what
+else is kept (the trail's actors and `request_executed`'s approvers,
+the accounts' history, the business's own records), and the ids of
+others a request is about (`parties`: a payee, the user a grant
+promotes) stay as written in its command, so the erased data is still
+personal data under the GDPR, kept for the reason the law gives. A
+sentence is shown to the operator and recorded: never put the person's
+data in it.
 
 ## Retention: `privacy purge`
 

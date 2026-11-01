@@ -163,7 +163,7 @@ class AccountIn(BaseModel):
     type: AccountType
     currency: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9]{2,7}$")]
     holder: Annotated[str, Field(min_length=1, max_length=MAX_TEXT)] | None = None
-    may_go_negative: bool = True
+    may_go_negative: bool = False
 
 
 class EntryIn(BaseModel):

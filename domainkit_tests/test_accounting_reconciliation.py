@@ -1,5 +1,7 @@
 """Reconciliation: statements read, imported once, and matched to postings."""
 
+import asyncio
+import threading
 import uuid
 from collections.abc import Iterable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -388,6 +390,27 @@ async def test_a_rule_that_pairs_twice_is_refused() -> None:
     assert (await reconcile(bank)).matched == {}
 
 
+@pytest.mark.usefixtures("books")
+async def test_a_cancelled_reconciliation_waits_for_its_rule() -> None:
+    """Cancelled twice while its rule runs, it ends only once the rule's thread did."""
+    bank = await sales(("s-1", "1.00", TODAY))
+    await import_statement(bank, CsvStatement(HEADER + "b-1,2026-10-30,1,USD,,\n"))
+    with override_settings(ACCOUNTING={"MATCHING_RULES": [f"{RULES}.Slow"]}):
+        running = asyncio.create_task(reconcile(bank))
+        assert await asyncio.to_thread(Slow.started.wait, 10)
+        running.cancel()
+        await asyncio.sleep(0.05)
+        running.cancel()
+        await asyncio.sleep(0.05)
+        waited = not running.done()
+        Slow.go.set()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert (waited, Slow.done.is_set()) == (True, True)
+    # It recorded nothing, and let go of the account: the line is still open.
+    assert (await reconcile(bank)).matched == {"amount_and_date": 1}
+
+
 class Recording:
     """A rule that pairs nothing, and keeps what it was shown."""
 
@@ -402,6 +425,28 @@ class Recording:
     ) -> Iterator[tuple[StatementItem, PostingItem]]:
         """Nothing, once it noted the arguments."""
         Recording.seen.append((list(lines), list(postings), window))
+        yield from ()
+
+
+class Slow:
+    """A rule that works until ``go`` is set, then fails: a thread runs it."""
+
+    name = "slow"
+    started: ClassVar[threading.Event] = threading.Event()
+    go: ClassVar[threading.Event] = threading.Event()
+    done: ClassVar[threading.Event] = threading.Event()
+
+    def match(
+        self,
+        lines: Sequence[StatementItem],
+        postings: Sequence[PostingItem],
+        window: timedelta,
+    ) -> Iterator[tuple[StatementItem, PostingItem]]:
+        """Nothing: it waits, then fails, as a rule cut short may."""
+        Slow.started.set()
+        Slow.go.wait(10)
+        Slow.done.set()
+        raise RuntimeError("cut short")
         yield from ()
 
 

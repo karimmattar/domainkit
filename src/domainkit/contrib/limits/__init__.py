@@ -29,6 +29,7 @@ from .exceptions import (
     LimitExceeded,
     LimitNotFound,
     LimitTaken,
+    MovementOutOfRange,
     TransactionLimitExceeded,
 )
 from .models import (
@@ -75,6 +76,7 @@ __all__ = [
     "LimitsSettings",
     "LimitsUnitOfWork",
     "Movement",
+    "MovementOutOfRange",
     "RemoveLimit",
     "SetLimit",
     "TransactionLimitExceeded",
