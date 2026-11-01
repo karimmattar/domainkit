@@ -29,12 +29,16 @@ def test_a_copied_proof_leaves_the_owners_other_browsers_in(api: Api) -> None:
     """The copy's 100 wrong passwords fill its own count, not the laptop's."""
     create_user("alice")
     client = api(LOGIN_RATE="10/minute", ACCOUNT_LOGIN_RATE="100/day")
-    with freeze_time("2026-11-01T08:00:00Z") as clock:
-        laptop = browser(client.app, "203.0.113.50")
-        old_pc = browser(client.app, "203.0.113.51")
+    # Each client runs its requests on one loop, so on one pool: a client
+    # outside ``with`` starts a loop, and an engine, for every request.
+    with (
+        freeze_time("2026-11-01T08:00:00Z") as clock,
+        browser(client.app, "203.0.113.50") as laptop,
+        browser(client.app, "203.0.113.51") as old_pc,
+        browser(client.app, "198.51.100.7") as copy,
+    ):
         assert laptop.post("/auth/login", json=RIGHT).status_code == 200
         assert old_pc.post("/auth/login", json=RIGHT).status_code == 200
-        copy = browser(client.app, "198.51.100.7")
         copy.cookies = old_pc.cookies  # The old computer's proof, copied.
 
         wrong = {"username": "alice", "password": "guess"}
