@@ -280,7 +280,7 @@ def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
         'python manage.py makemigrations --check -m "unused"',
         "pytest",
     ]
-    assert "16 passed" in ended["pytest"].stdout
+    assert "17 passed" in ended["pytest"].stdout
     assert "--strict" not in ended["mypy"].args  # pyproject.toml's strict = true.
 
 
