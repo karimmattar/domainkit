@@ -816,6 +816,26 @@ def test_key_ids_are_matched_as_written_not_as_patterns(
         )
 
 
+@pytest.mark.skipif(
+    bool(os.environ.get("DOMAINKIT_TEST_POSTGRES_URL")),
+    reason="staging asks PostgreSQL for TLS, which the tests' server lacks",
+)
+def test_a_decrypted_dump_names_its_operator_where_deployed(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In staging, ``--decrypt`` is what the refusal says needs a named operator."""
+    monkeypatch.delenv("DOMAINKIT_OPERATOR", raising=False)
+    with (
+        project(database_url, tmp_path, AUDIT),
+        override_settings(ENVIRONMENT="staging"),
+        pytest.raises(
+            CommandError,
+            match=r"^Name the operator who runs dumpdata --decrypt in staging: ",
+        ),
+    ):
+        call_command("dumpdata", "cards", "--decrypt", stdout=io.StringIO())
+
+
 def test_a_decrypted_dump_is_recorded_with_its_tables(
     database_url: str, tmp_path: Path
 ) -> None:
@@ -824,14 +844,6 @@ def test_a_decrypted_dump_is_recorded_with_its_tables(
         run_async(save(Cardholder(id=ANN, name="Ann", card_number=PAN)))
         call_command("dumpdata", "cards", "--decrypt", stdout=io.StringIO())
         call_command("dumpdata", "cards", stdout=io.StringIO())
-        with (
-            override_settings(ENVIRONMENT="staging"),
-            pytest.raises(
-                CommandError,
-                match=r"^Name the operator who runs dumpdata --decrypt in staging: ",
-            ),
-        ):
-            call_command("dumpdata", "cards", "--decrypt", stdout=io.StringIO())
         recorded = run_async(
             rows(
                 "SELECT details FROM domainkit_audit_log "
