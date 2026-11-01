@@ -310,6 +310,40 @@ and a status.
   clock run), 156 die on PostgreSQL already, 106 are equivalent, and
   12 run only at import; the audit page lists, by module, the 6 left
   and why (TEST-11).
+- The new list endpoints read their default order through an index: the
+  ledger's entries (`posted_at`) and holds (`placed_at`), and approval
+  requests (`submitted_at`); each page scanned and sorted the table
+  before (107 ms a page at 500,000 entries). Run `makemigrations` and
+  `migrate` (PERF-29).
+- `AUDIT.HISTORY_FIELDS`: the fields of `details` a project reads
+  histories by (`history(aggregate=(field, id))`, `GET /history?field=`).
+  On PostgreSQL, `migrate` keeps an index of each,
+  `ix_domainkit_audit_log_history_<field>`, and drops those of fields no
+  longer named; revisions leave them alone. Without one a history by
+  aggregate scans the whole trail (555 ms a page at 500,000 rows). The
+  query writes the field into the SQL there, so prepared statements use
+  the index (PERF-29).
+- Fewer index writes on the books: postings lose their own index of
+  `entry_id` (the unique `(entry_id, line)` serves it), the limits'
+  subjects lose the index of `touched_at`, so the lock each movement
+  takes is a HOT update, and usage's `key` index is a hash on PostgreSQL
+  (40 MB instead of 111 MB at 1.5 million rows), renamed
+  `ix_domainkit_limits_usage_key_hash`. Run `makemigrations` and
+  `migrate` (PERF-30).
+- A process that encrypts no field and handles no money no longer
+  imports the key ring or `csv`: `domainkit.db.encrypted` loads the ring
+  on first use, and money `csv` when it first reads its currencies, four
+  modules fewer in every process (`bare` 786 to 782). `domainkit.money`,
+  `domainkit.db.money` and `domainkit.db.encrypted` stay on the import
+  path, about 5 ms (`docs/performance.md`) (PERF-31).
+- The benchmark ladder measures money: `money-write`, `posting` (a
+  posting counted against a limit), `encrypted-read`, and `step-up`
+  rungs, with budgets. CI's `bench` job runs on Python 3.13.16, the
+  release its budgets were written on, as the counts moved between 3.13
+  patch releases; the bench project keeps principals for the run, so a
+  counted pass no longer reads one again now and then; the JSON-log rungs
+  are budgeted at the highest of three runs. `docs/performance.md`'s
+  table is this release's (ADR 0064's amendment) (PERF-32).
 
 ### Fixed
 

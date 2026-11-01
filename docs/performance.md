@@ -10,48 +10,54 @@ logging and servers in [runtime.md](runtime.md).
 
 ## What a request costs
 
-The ladder measures fifteen rungs, from a bare ASGI application to a keyed
-write. Requests go straight into the application, one at a time, with no
-server or socket; the database rungs run against PostgreSQL. Each rung runs
-in a process of its own.
+The ladder measures nineteen rungs, from a bare ASGI application to a
+ledger posting counted against a limit. Requests go straight into the
+application, one at a time, with no server or socket; the database rungs
+run against PostgreSQL. Each rung runs in a process of its own.
 
 Measured on this release (FastAPI 0.143.1, Starlette 1.8.0, SQLAlchemy
-2.1.4, asyncpg 0.32.0, Pydantic 2.14.1) and on 0.8.0 with its own pins
-(FastAPI 0.141.1, SQLAlchemy 2.0.54, asyncpg 0.31.0), side by side in one
-ladder run (`--baseline`): Python 3.13.16 on uvloop, and PostgreSQL 16 on
-the same 4-vCPU Linux machine, which other work shared. Per request; the
-round trips are statements, transactions, checkouts and pings.
+2.1.4, asyncpg 0.32.0, Pydantic 2.14.1; Python 3.13.16 on uvloop, the
+version CI's `bench` job is pinned to; PostgreSQL 16), the highest calls
+and the best CPU of three ladder runs on a shared 4-vCPU machine. Per
+request; the round trips are statements, transactions, checkouts and
+pings; modules are what the rung's process holds once it served.
+"0.8.0" is that release's calls on its own pins, where a rung existed.
 
-| Rung | Stack and request | Calls, 0.8.0 → now | Round trips, 0.8.0 → now | CPU µs, 0.8.0 → now |
-| --- | --- | ---: | ---: | ---: |
-| `asgi` | A bare ASGI application: `GET /hello` | 5 → 5 | 0/0/0/0 → 0/0/0/0 | 1.1 → 1.1 |
-| `fastapi` | Plain FastAPI: `GET /hello` | 168 → 234 | 0/0/0/0 → 0/0/0/0 | 58 → 64 |
-| `bare` | domainkit, no middleware: `GET /hello` | 1,653 → 481 | 0/0/0/0 → 0/0/0/0 | 169 → 84 |
-| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 1,889 → 489 | 0/0/0/0 → 0/0/0/0 | 198 → 82 |
-| `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 1,825 → 601 | 0/0/0/0 → 0/0/0/0 | 237 → 132 |
-| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 1,965 → 746 | 0/0/0/0 → 0/0/0/0 | 304 → 207 |
-| `template` | The `init` template's stack: `GET /hello` | 2,018 → 714 | 0/0/0/0 → 0/0/0/0 | 422 → 179 |
-| `template-json` | The template's stack, JSON access log: `GET /hello` | 2,158 → 859 | 0/0/0/0 → 0/0/0/0 | 389 → 224 |
-| `me` | Template stack, opaque token: `GET /me` | 5,892 → 1,181 | 5/1/1/1 → 0/0/0/0 | 5,007 → 341 |
-| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 7,359 → 2,261 | 6/2/2/2 → 1/1/1/1 | 6,481 → 2,087 |
-| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 7,648 → 2,595 | 6/2/2/2 → 1/1/1/1 | 7,567 → 2,167 |
-| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 3,063 → 3,043 | 1/1/1/1 → 1/1/1/1 | 2,188 → 2,137 |
-| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 4,546 → 3,766 | 2/2/2/2 → 1/1/1/1 | 3,782 → 2,880 |
-| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 10,977 → 4,044 | 10/5/5/5 → 4/3/3/3 | 11,839 → 5,829 |
-| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me` | 4,401 → 1,013 | 5/1/1/1 → 0/0/0/0 | 4,842 → 391 |
+| Rung | Stack and request | Calls (0.8.0) | Round trips | Modules | CPU µs |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `asgi` | A bare ASGI application: `GET /hello` | 5 (5) | 0/0/0/0 | 166 | 0.9 |
+| `fastapi` | Plain FastAPI: `GET /hello` | 234 (168) | 0/0/0/0 | 393 | 48 |
+| `bare` | domainkit, no middleware: `GET /hello` | 304 (1,653) | 0/0/0/0 | 782 | 60 |
+| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 304 (1,889) | 0/0/0/0 | 782 | 59 |
+| `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 414 (1,825) | 0/0/0/0 | 783 | 105 |
+| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 560 (1,965) | 0/0/0/0 | 783 | 171 |
+| `template` | The `init` template's stack: `GET /hello` | 529 (2,018) | 0/0/0/0 | 785 | 135 |
+| `template-json` | The template's stack, JSON access log: `GET /hello` | 675 (2,158) | 0/0/0/0 | 785 | 207 |
+| `me` | Template stack, opaque token: `GET /me` | 774 (5,892) | 0/0/0/0 | 813 | 226 |
+| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,842 (7,359) | 1/1/1/1 | 813 | 1,484 |
+| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,162 (7,648) | 1/1/1/1 | 813 | 1,725 |
+| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 2,622 | 1/1/1/1 | 813 | 1,854 |
+| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 3,357 | 1/1/1/1 | 813 | 2,427 |
+| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,647 (10,977) | 4/3/3/3 | 814 | 3,548 |
+| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,267 | 1/1/1/1 | 882 | 1,777 |
+| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 12,566 | 13/1/1/1 | 882 | 10,884 |
+| `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,885 | 1/1/1/1 | 882 | 1,584 |
+| `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,710 | 1/1/1/1 | 882 | 1,348 |
+| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me` | 799 (4,401) | 0/0/0/0 | 813 | 276 |
 
-The calls of `me` to `throttled` are 0.9.2's
-([work done once](#092-work-done-once-instead-of-per-request)); the CPU
-times are 0.9.1's. The two `resource-` rungs came with 0.10: their "before"
-is 0.9.2, measured beside it in one ladder run.
+The four money rungs came with the 0.15 audit (PERF-32). They install
+money's ledger, limits, keys, and a small domain of their own beside the
+catalog's (`benchmarks/project/money_routes.py`), so they hold 69 modules
+more than the other database rungs; those rungs install none of it.
 
 - **Calls** are the Python function calls cProfile counts per request,
   built-in ones included, in every thread: the JSON access log is
   formatted on the logging thread, and counts. A coroutine resumed after a
   wait counts again, so each layer of `await` adds a call per wait for the
   database. Every rung counts the same calls in every run, but for the two
-  with a JSON access log, which can vary by under 1% (the logging thread
-  waits on its queue more or less often).
+  with a JSON access log, which can vary by up to 2.5% (the logging thread
+  waits on its queue more or less often); their budgets are the highest
+  of three runs.
 - **Round trips** are what reaches the database, per request: statements
   sent to the driver, transactions begun, connections taken from the pool,
   and the check that a pooled connection still answers (`POOL_PRE_PING`).
@@ -83,6 +89,19 @@ What the rungs show:
 - **Plain FastAPI is slower on 0.143** than on 0.141: its own telemetry
   hooks run on every request (ADR 0065). domainkit turns its telemetry off,
   and its own rungs gained far more than that.
+- **A posting is the dearest request**: 13 statements in one
+  transaction, and nearly six times a plain write's calls. The ledger locks its
+  accounts and moves their balances (8 statements); `contrib.limits`
+  reads the limits, locks the holder's row, sums its day's usage, and
+  records each subject's movement (5 more), and builds those statements
+  for each request. Without limits installed, a posting was 8 statements
+  and about 6,000 calls (PERF-26).
+- **An encrypted field costs a few microseconds a value** (5 to 6 µs to
+  seal or open one, `timeit`): the `encrypted-read` rung costs 43 calls
+  more than `read`. A value sealed for a person (`Encrypted(subject=...)`)
+  also reads that person's key, a statement more per person.
+- **A step-up route reads the token's last step-up**: one statement, a
+  transaction and a checkout per request, where `me` makes none.
 
 ## Running the ladder
 
@@ -171,13 +190,18 @@ pings = 1
   on pull requests.
 
 The `bench` job in `.github/workflows/ci.yml` runs the ladder on Python
-3.13 against a PostgreSQL service on every push and pull request, with
+3.13.16 against a PostgreSQL service on every push and pull request, with
 `--strict`: a rung that did not run, or a measure without a budget, fails
-too.
+too. The job's Python is pinned to the patch release the budgets were
+written on: at the 0.15 milestone, budgets written on another 3.13 counted
+`throttled` 21 calls under what 3.13.16 counts, on 0.15 and on 0.12.1
+alike, so the gate failed on code that had not changed (PERF-32). Moving
+the pin is a change of its own, with `--write-budgets` run on the new
+release.
 
-**Updating the budgets.** Budgets hold for CI's Python (3.13) and the lock
+**Updating the budgets.** Budgets hold for CI's Python (3.13.16) and the lock
 file: an upgrade that changes FastAPI's or SQLAlchemy's calls moves them.
-After a change that should move them, run on Python 3.13 with the locked
+After a change that should move them, run on Python 3.13.16 with the locked
 dependencies:
 
 ```bash
@@ -194,17 +218,18 @@ above. These are lower bounds: the HTTP server's own work comes on top
 (about 34 µs a request for uvicorn on uvloop with httptools, as the
 re-audit measured it on this machine class), and so does the database's.
 
-| 500 million requests per… | Requests/s | Light: `default-json`, 207 µs | Authenticated read: `read`, 2,087 µs | 0.8.0, 304 µs / 6,481 µs: light / read |
+| 500 million requests per… | Requests/s | Light: `default-json`, 171 µs | Authenticated read: `read`, 1,484 µs | 0.8.0, 304 µs / 6,481 µs: light / read |
 | --- | ---: | ---: | ---: | ---: |
-| Day (average) | 5,787 | 2 | 13 | 2 / 38 |
-| Day (3× peak) | 17,361 | 4 | 37 | 6 / 113 |
-| Hour | 138,889 | 29 | 290 | 43 / 901 |
-| Minute | 8,333,333 | 1,724 | 17,389 | 2,534 / 54,009 |
+| Day (average) | 5,787 | 1 | 9 | 2 / 38 |
+| Day (3× peak) | 17,361 | 3 | 26 | 6 / 113 |
+| Hour | 138,889 | 24 | 207 | 43 / 901 |
+| Minute | 8,333,333 | 1,425 | 12,367 | 2,534 / 54,009 |
 | Second | 500,000,000 | not a framework's question (2 ns a request): edge caches and CDNs | | |
 
-A core now serves about 4,800 light requests a second, or 480 authenticated
-reads whose principal is kept: about three times the reads of 0.8.0
-(2.5 times on the same dependencies, where 0.8.0 read in 5,325 µs).
+A core now serves about 5,800 light requests a second, or 670
+authenticated reads whose principal is kept: more than four times the
+reads of 0.8.0. A posting counted against a limit takes about 11 ms: 90 a
+second per core.
 
 ## Making requests cheaper
 
@@ -913,3 +938,47 @@ Measured on Python 3.13.17, against 0.11.1 (`--baseline`), PostgreSQL 18.
   that hold it, at its next iteration: about 4.4 KB a request, bounded by
   that purge under a server.
 
+
+### The 0.15 audit: list indexes, startup, and the money rungs
+
+Measured on Python 3.13.16 and PostgreSQL 16, against `d126394` (the 0.15
+milestone).
+
+- **Lists read through an index** (PERF-29). The default order of each new
+  list endpoint, newest first, had no index, so every page scanned and
+  sorted the table: the ledger's entries 107 ms a page at 500,000 rows,
+  approval requests 78 ms at 300,000, holds 17 ms at 100,000 (EXPLAIN
+  ANALYZE, `LIMIT 51`). Entries (`posted_at`), holds (`placed_at`), and
+  approval requests (`submitted_at`) have one now. An aggregate's history
+  in the audit trail scanned the whole trail (555 ms a page at 500,000
+  rows); the fields named in `AUDIT.HISTORY_FIELDS` get an index that
+  `migrate` keeps on PostgreSQL ([audit.md](contrib/audit.md#history)).
+- **Fewer index writes** (PERF-30). A posting wrote two indexes of
+  `entry_id`: the unique `(entry_id, line)` serves the look-ups alone. The
+  limits' subject lock updates `touched_at` on every movement, which was
+  indexed, so no lock was a HOT update (1,857 updates, none HOT); it is
+  not indexed now, and the hourly purge reads the subjects whole. Usage's
+  `key`, looked up only by equality, has a hash index on PostgreSQL: 40 MB
+  instead of 111 MB at 1.5 million rows.
+- **Startup** (PERF-31). 0.14 and 0.15 added seven modules to every
+  process, whether it used money or encryption or not: `domainkit.db`
+  imported the key ring, and money the `csv` module. Those four now load
+  on first use (`bare` holds 782 modules, 786 before). Three remain, in
+  every process that imports `domainkit.db`: `domainkit.money`,
+  `domainkit.db.money` and `domainkit.db.encrypted`, about 5 ms of import
+  (`-X importtime`, best of five), and every ORM statement runs one check
+  that refuses bulk updates of encrypted fields. Keeping them off the
+  import path would take a lazy `domainkit.db` namespace and mappers that
+  look for encrypted columns without their type: more tangle than 5 ms
+  is worth, so they stay. A project of `domainkit init --profile fintech`
+  starts with 913 modules, 1.4 s of CPU and 106 MB; the default template
+  with 777, 0.8 s and 84 MB.
+- **The money rungs and a stable gate** (PERF-32). `money-write`,
+  `posting`, `encrypted-read` and `step-up` measure what 0.14 and 0.15
+  added (the table at the top of the page). The bench project keeps a
+  principal for the whole run (`AUTH.PRINCIPAL_CACHE.TTL` of 5 minutes):
+  with 5 seconds, a counted pass that outlasted it read the principal
+  again now and then, and `keyed-write` counted 4.02 statements in one run
+  of three. CI's `bench` job is pinned to Python 3.13.16, which the
+  budgets were written on; the JSON-log rungs' budgets are the highest of
+  three runs (560 and 675: they vary by up to 2.5%, not 1%).
