@@ -19,6 +19,7 @@ the pseudonyms the trail holds, also for people who were forgotten: nothing
 here reads keys.
 """
 
+import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -26,12 +27,24 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, String, and_, cast, or_, select
-from sqlalchemy.engine import RowMapping
+from sqlalchemy import (
+    ColumnElement,
+    String,
+    and_,
+    cast,
+    inspect,
+    literal_column,
+    or_,
+    select,
+)
+from sqlalchemy.engine import Connection, RowMapping
+from sqlalchemy.ext.asyncio import AsyncConnection
 
+from domainkit.apps import registry
 from domainkit.db import connections
 
 from .personal import audited_databases
+from .settings import AuditSettings
 from .tables import audit_log
 
 __all__ = [
@@ -41,6 +54,10 @@ __all__ = [
 MAX_LIMIT: Final = 200
 FIELD: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 """A field of ``details`` that names an aggregate."""
+HISTORY_INDEX: Final = "ix_domainkit_audit_log_history_"
+"""The names of the indexes of ``AUDIT.HISTORY_FIELDS`` start so (``tables``)."""
+MAX_NAME: Final = 63
+"""The longest name PostgreSQL keeps for an index."""
 
 type Position = tuple[datetime, UUID]
 """Where an entry sits in a history: newest first, by time then id."""
@@ -126,22 +143,25 @@ async def history_page(
         raise ValueError("Name a target, or an aggregate's field and id.")
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f"A history page holds 1 to {MAX_LIMIT} entries.")
-    condition = _about(target, aggregate)
-    if before is not None:
-        at, entry = before
-        condition &= or_(
-            audit_log.c.occurred_at < at,
-            and_(audit_log.c.occurred_at == at, audit_log.c.id < entry),
-        )
-    query = (
-        select(audit_log)
-        .where(condition)
-        .order_by(audit_log.c.occurred_at.desc(), audit_log.c.id.desc())
-        .limit(limit + 1)
-    )
+    if aggregate is not None:
+        aggregate_value(aggregate[0], "")  # A field name, or ValueError now.
     rows: list[tuple[str, RowMapping]] = []
     for alias in databases or audited_databases():
-        async with connections.engine(alias).connect() as connection:
+        engine = connections.engine(alias)
+        condition = _about(target, aggregate, engine.dialect.name)
+        if before is not None:
+            at, entry = before
+            condition &= or_(
+                audit_log.c.occurred_at < at,
+                and_(audit_log.c.occurred_at == at, audit_log.c.id < entry),
+            )
+        query = (
+            select(audit_log)
+            .where(condition)
+            .order_by(audit_log.c.occurred_at.desc(), audit_log.c.id.desc())
+            .limit(limit + 1)
+        )
+        async with engine.connect() as connection:
             found = (await connection.execute(query)).mappings().all()
         rows.extend((alias, row) for row in found)
     rows.sort(key=lambda item: (item[1]["occurred_at"], item[1]["id"]), reverse=True)
@@ -154,16 +174,80 @@ async def history_page(
 
 
 def _about(
-    target: str | None, aggregate: tuple[str, str] | None
+    target: str | None, aggregate: tuple[str, str] | None, dialect: str
 ) -> ColumnElement[bool]:
     """The rows about ``target``, or about the aggregate ``(field, id)``."""
     if aggregate is None:
         return audit_log.c.target == target
     field, identifier = aggregate
+    return aggregate_value(field, dialect) == identifier
+
+
+def aggregate_value(field: str, dialect: str) -> ColumnElement[str]:
+    """``details[field]`` as text, written as its history index is on PostgreSQL.
+
+    There the field is written into the SQL, not bound, so a prepared
+    statement's plan can use the index ``migrate`` keeps for it
+    (``index_history``); only a ``FIELD`` is.
+
+    Raises:
+        ValueError: ``field`` is not a field name.
+    """
     if not FIELD.fullmatch(field):
         raise ValueError(f"{field!r} is not a field name.")
-    value = cast(audit_log.c.details[field].as_string(), String)
-    return value == identifier
+    if dialect == "postgresql":
+        return audit_log.c.details.op("->>", return_type=String)(
+            literal_column(f"'{field}'")
+        )
+    return cast(audit_log.c.details[field].as_string(), String)
+
+
+def _indexes(connection: Connection) -> set[str] | None:
+    """The names of the trail's indexes; None where it has no table yet."""
+    inspector = inspect(connection)
+    if not inspector.has_table(audit_log.name):
+        return None
+    return {
+        index["name"]
+        for index in inspector.get_indexes(audit_log.name)
+        if index["name"] is not None
+    }
+
+
+def history_index_name(field: str) -> str:
+    """The name of the index of ``details[field]``; a digest for a long field."""
+    name = HISTORY_INDEX + field
+    if len(name) <= MAX_NAME:
+        return name
+    return HISTORY_INDEX + hashlib.sha256(field.encode()).hexdigest()[:16]
+
+
+async def index_history(connection: AsyncConnection, database: str) -> None:
+    """After ``migrate``: one index per ``AUDIT.HISTORY_FIELDS``, the rest dropped.
+
+    Only on PostgreSQL, and where the trail is (``on_migrated``). Each is
+    ``((details ->> 'field'), occurred_at, id)``, so a page of an
+    aggregate's history reads its rows alone, newest first. Revisions leave
+    them alone (``unmanaged_indexes``). Building one locks the trail
+    against writes while it runs: on a large trail, make it beforehand
+    with ``CREATE INDEX CONCURRENTLY`` under the same name (PERF-29).
+    """
+    if connection.dialect.name != "postgresql":
+        return
+    present = await connection.run_sync(_indexes)
+    if present is None:
+        return
+    fields = registry.settings(AuditSettings).HISTORY_FIELDS
+    wanted = {history_index_name(field): field for field in fields}
+    for name in sorted(present):
+        if name.startswith(HISTORY_INDEX) and name not in wanted:
+            await connection.exec_driver_sql(f'DROP INDEX "{name}"')
+    for name, field in sorted(wanted.items()):
+        if name not in present:
+            await connection.exec_driver_sql(
+                f'CREATE INDEX "{name}" ON {audit_log.name} '
+                f"((details ->> '{field}'), occurred_at, id)"
+            )
 
 
 def _entry(

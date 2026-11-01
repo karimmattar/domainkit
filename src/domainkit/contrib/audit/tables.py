@@ -46,7 +46,13 @@ audit_log = Table(
     Index("ix_domainkit_audit_log_actor", "actor", "occurred_at"),
     Index("ix_domainkit_audit_log_action", "action", "occurred_at"),
     Index("ix_domainkit_audit_log_target", "target", "occurred_at"),
-    info={"domain": "audit", "append_only": True, "fixtures": False},
+    info={
+        "domain": "audit",
+        "append_only": True,
+        "fixtures": False,
+        # migrate makes these, one per AUDIT.HISTORY_FIELDS (history.py).
+        "unmanaged_indexes": ("ix_domainkit_audit_log_history_",),
+    },
 )
 
 audit_keys = Table(
