@@ -57,4 +57,4 @@ def test_the_pci_preset_keeps_the_trail_a_year_at_least(
     with override_settings(INSTALLED_DOMAINS=domains, AUDIT=audit, **given):
         setup()
         assert min_retention() == kept
-    assert PCI_RETENTION == timedelta(days=365)
+    assert timedelta(days=365) == PCI_RETENTION

@@ -33,12 +33,12 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
-from typing import Final
+from typing import Final, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import exists, insert, select
+from sqlalchemy import FromClause, exists, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import class_mapper
 
 from domainkit.apps import registry
 from domainkit.context import current_request
@@ -145,32 +145,39 @@ async def count_earlier(session: AsyncSession, limit: Limit) -> int:
     """
     if limit.window is None or not limit.enabled or limit.kind not in LEDGER_KINDS:
         return 0
-    dialect = session.get_bind().dialect.name
-    now = dbclock.now(dialect)
-    if not isinstance(now, datetime):
-        now = await session.scalar(select(now))
+    moment = dbclock.now(session.get_bind().dialect.name)
+    now = (
+        moment
+        if isinstance(moment, datetime)
+        else cast(datetime, await session.scalar(select(moment)))
+    )
     start = limit.window.start(now, limit.time_zone)
-    reversal = aliased(Entry)
+    # The ledger's tables, as its mapped classes name them (its public names).
+    posting_rows, entry_rows, account_rows = map(_table, (Posting, Entry, Account))
+    postings, entries, accounts = posting_rows.c, entry_rows.c, account_rows.c
+    reversal = entry_rows.alias("reversal").c
     after = (
-        Entry.posted_at > start if limit.window.rolling else Entry.posted_at >= start
+        entries.posted_at > start
+        if limit.window.rolling
+        else entries.posted_at >= start
     )
     statement = (
         select(
-            Posting.entry_id,
-            Entry.posted_at,
-            Posting.account_id,
-            Posting.side,
-            Posting.amount,
-            Account.type,
-            Account.holder,
+            postings.entry_id,
+            entries.posted_at,
+            postings.account_id,
+            postings.side,
+            postings.amount,
+            accounts.type,
+            accounts.holder,
         )
-        .join(Entry, Entry.id == Posting.entry_id)
-        .join(Account, Account.id == Posting.account_id)
+        .join_from(posting_rows, entry_rows, entries.id == postings.entry_id)
+        .join(account_rows, accounts.id == postings.account_id)
         .where(
             after,
-            Posting.currency == limit.currency,
-            Entry.reverses.is_(None),
-            ~exists().where(reversal.reverses == Entry.id),
+            postings.currency == limit.currency,
+            entries.reverses.is_(None),
+            ~exists().where(reversal.reverses == entries.id),
         )
     )
     moved: defaultdict[tuple[UUID, str], Decimal] = defaultdict(Decimal)
@@ -192,6 +199,11 @@ async def count_earlier(session: AsyncSession, limit: Limit) -> int:
         moved[row.entry_id, name] += row.amount
         when[row.entry_id] = row.posted_at
     return await _count(session, limit, moved, when)
+
+
+def _table(kind: type) -> FromClause:
+    """The table the ledger maps ``kind`` to."""
+    return class_mapper(kind).local_table
 
 
 async def _count(

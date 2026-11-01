@@ -12,6 +12,7 @@ limits' windows are, so hosts whose clocks disagree agree on it (FIN-99).
 """
 
 from datetime import date, datetime
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -47,8 +48,7 @@ async def database_now(session: AsyncSession) -> datetime:
     moment = dbclock.now(session.get_bind().dialect.name)
     if isinstance(moment, datetime):
         return moment
-    found: datetime = await session.scalar(select(moment))
-    return found
+    return cast(datetime, await session.scalar(select(moment)))
 
 
 class PlaceHold(Command):

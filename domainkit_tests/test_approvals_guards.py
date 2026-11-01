@@ -779,5 +779,5 @@ async def test_without_auth_a_runs_maker_is_left_to_the_project(
 
     registered = register(permission="tests.add_refund")
 
-    assert await _check_maker(registered, str(uuid.uuid4())) is None
-    assert await _check_maker(registered, "a-service") is None
+    await _check_maker(registered, str(uuid.uuid4()))  # Not refused.
+    await _check_maker(registered, "a-service")
