@@ -812,7 +812,7 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
     )
     password = admin.AdminPasswordIn(password="Zq8!wL-d4#Kp7v")
     rename = admin.GroupPatch(name="keepers")
-    lacking = "shop.change_product on shop.product"
+    lacking = "of its grants on single objects"
 
     with pytest.raises(PermissionDenied, match=lacking) as refused:
         run(admin.set_password(owner.id, password, helper))
@@ -823,14 +823,14 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
             admin.set_user_groups(helper.id, admin.GroupsIn(groups=["keepers"]), helper)
         )
     assert str(refused.value) == (
-        "You can only change users whose permissions you have; you lack "
-        f"shop.change_product on shop.product {vault.id}, "
-        f"shop.view_product on shop.product {vault.id}."
+        "You can only change users whose permissions you have; you lack 2 of "
+        "its grants on single objects."
     )
     assert str(joining.value) == (
-        "You can only grant permissions you have; you lack "
-        f"shop.change_product on shop.product {vault.id}."
+        "You can only grant permissions you have; you lack 1 of its grants on "
+        "single objects."
     )
+    assert str(vault.id) not in str(refused.value)  # Not where, only how many.
     # The same grant on the object, the permission on the model, or a superuser.
     run(grant_permission(root, VIEW, vault, user=peer.id))
     peer = reload("peer")

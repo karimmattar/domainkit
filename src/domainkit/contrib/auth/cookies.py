@@ -63,7 +63,9 @@ from .api import (
     _credentials,
     _errors,
     _no_store,
+    audited_changes,
     check_password,
+    held_login,
 )
 from .authentication import (
     AuthenticationFailed,
@@ -279,7 +281,9 @@ async def log_in(
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
         return pending  # The device proof waits for the second factor.
-    started = await start_session(user, response, previous=_session_of(request))
+    started = await start_session(
+        user, response, previous=_session_of(request), factor_proven=False
+    )
     await hand_out(request, response, user)
     return started
 
@@ -356,19 +360,24 @@ async def log_out(request: Request, response: Response) -> None:
 
 
 async def start_session(
-    user: AbstractBaseUser, response: Response, *, previous: str | None = None
+    user: AbstractBaseUser,
+    response: Response,
+    *,
+    previous: str | None = None,
+    factor_proven: bool = True,
 ) -> CsrfOut:
     """Record the login, store a session token, and set both cookies.
 
     The session ``previous`` names (the token of the cookie this browser
     sent) ends, with ``COOKIE.END_PREVIOUS_SESSION``; past
-    ``AUTH.MAX_LOGINS``, the user's oldest logins end.
+    ``AUTH.MAX_LOGINS``, the user's oldest logins end. The login is held
+    to what was checked (``api.held_login``).
     """
     configured = auth_settings()
     config = configured.COOKIE
     with _acting_as(user):
-        async with AuthUnitOfWork() as uow:
-            stored = await uow.users.get(UserId(user.id))
+        async with audited_changes(), AuthUnitOfWork() as uow:
+            stored = await held_login(uow, user, factor_proven=factor_proven)
             if previous is not None and config.END_PREVIOUS_SESSION:
                 await uow.tokens.revoke(previous)
             await uow.tokens.end_oldest_logins(

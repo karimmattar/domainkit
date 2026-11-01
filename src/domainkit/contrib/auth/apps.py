@@ -38,7 +38,7 @@ from domainkit.utils.rates import PERIODS, parse_rate
 
 from .access import StepUp
 from .authentication import get_authenticators
-from .backends import get_backends
+from .backends import backends_without_object_grants, get_backends
 from .hashers import insecure_hashers
 from .models import AbstractBaseUser, AbstractUser, User
 from .permissions import declared_permissions, sync_permissions
@@ -340,13 +340,24 @@ class AuthConfig(DomainConfig):
         (with ``AUTH.REQUIRE_SHARED_THROTTLES = False``; refused otherwise),
         cookies without ``__Host-`` where it could hold, and principals
         kept longer than ``PRINCIPAL_TTL`` where nothing tells other
-        processes of changes.
+        processes of changes. Anywhere, a backend that does not list its
+        grants on objects (``auth.W007``).
         """
+        unlisted: list[str] = [
+            CheckMessage(
+                "auth.W007",
+                f"AUTH.BACKENDS {backend} does not list its grants on objects "
+                "(object_grants), so only superusers change users and groups "
+                "through the admin API; override object_grants, with an empty "
+                "set if it grants on no object.",
+            )
+            for backend in backends_without_object_grants()
+        ]
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
-            return []
+            return unlisted
         config = auth_settings()
         cookie = config.COOKIE
-        warnings: list[str] = []
+        warnings: list[str] = list(unlisted)
         principals = config.PRINCIPAL_CACHE
         if (
             principals.ENABLED

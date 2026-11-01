@@ -87,12 +87,22 @@ holds, and what does not:
   account, from however many addresses, and at most `LOGIN_RATE` from one
   address (an IPv6 network), for however many accounts.
 - At most `AUTH.ACCOUNT_LOGIN_RATE` (100 a day) wrong passwords are
-  checked for one account over the day, however slowly they come: NIST SP
-  800-63B 5.2.2 limits an account to 100 failed attempts, and
-  `"10/minute"` alone allowed 14,400 a day (AUTH-19). Proven clients
-  count apart at the same rate (below), so a stranger who fills the day's
-  count holds back the user's new browsers until the day frees places,
-  not the browsers they logged in from before.
+  checked for one account in each UTC day, however slowly or quickly they
+  come: NIST SP 800-63B 5.2.2 limits an account to 100 failed attempts,
+  and `"10/minute"` alone allowed 14,400 a day (AUTH-19). The count is a
+  fixed window, not a bucket that refills: a bucket of 100 a day let a
+  burst of 100 and then one every 14.4 minutes, 199 within 24 hours
+  (SEC-16a-2). Across midnight two windows meet, so 200 can come within
+  minutes at most. Proven clients count apart, per device (below), so a
+  stranger who fills the day's count holds back the user's new browsers
+  until the next day, or a password reset, not the browsers they logged in
+  from before.
+- A signed-in user's password checks (`/auth/password`, a step-up, the
+  second factor's changes, `POST /auth/tokens`) count at `LOGIN_RATE` and
+  at `ACCOUNT_LOGIN_RATE` per user, so a session (or a script riding one)
+  holds no more guesses at the password than a stranger (SEC-16a-4).
+  `PASSWORD_CHECKS_COUNT_AS_LOGINS` decides whether they also count
+  against the account's login counts.
 - Logins that work never use a count up, so many users behind one address,
   or one that logs in often, are never refused for their own logins.
 - Wrong passwords use the counts up whoever sends them. `LOGIN_RATE` wrong
@@ -133,8 +143,9 @@ address's:
 - Guessing stays bounded per account: at most `LOGIN_RATE` wrong
   passwords a period without proofs, and twice as many with proofs,
   however many proofs one holds; over a day, `ACCOUNT_LOGIN_RATE` without
-  proofs and as many again with them (200 a day in all, by default, of
-  which a stranger without a proof gets 100). Proofs come only from logins that held,
+  proofs, the same per proven device, and twice it for all proven devices
+  together (300 a day in all, by default, of which a stranger without a
+  proof gets 100, and one with a copied proof 100 more). Proofs come only from logins that held,
   second factor included, and end with the password. A proof made for
   another account, forged, or of a device that ended counts as none.
   Each login that works renews its device.

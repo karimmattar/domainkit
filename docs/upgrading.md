@@ -27,6 +27,13 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **A backend that does not list its grants on objects leaves users to
+  superusers** (SEC-16a-5). While a backend of `AUTH.BACKENDS` other than
+  `ModelBackend` keeps `BaseBackend.object_grants`, only superusers change
+  users and groups through the admin API, and `check` warns
+  (`auth.W007`). **Fix:** answer `object_grants(holder)` in each such
+  backend: with the grants it holds, or an empty set if it grants on no
+  object.
 - **Accounts may not go negative unless opened so** (FIN-97).
   `may_go_negative` defaults to `False` (`Account.open`, `OpenAccount`,
   `POST /accounts`): an account opened without it refuses what would

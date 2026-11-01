@@ -16,8 +16,8 @@ are not counted), and refusals go to the audit trail when
 ``domainkit.contrib.audit`` is installed.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from datetime import datetime
 from typing import Annotated, Literal
@@ -30,11 +30,23 @@ from domainkit.context import bind_request, current_request
 from domainkit.ddd import PermissionDenied
 from domainkit.http.access import AllowScoped, IsUnscoped, Public, Require
 from domainkit.http.errors import APIError, error_responses
+from domainkit.utils.rates import PERIODS, parse_rate
 
 from .access import AuthenticatedUser
-from .authentication import Credentials, IssuedTokens, get_authenticators
+from .authentication import (
+    AuthenticationFailed,
+    Credentials,
+    IssuedTokens,
+    get_authenticators,
+)
 from .backends import authenticate, get_all_permissions
-from .devices import hand_out, proven_device, proven_limits
+from .devices import (
+    PROVEN_CEILING,
+    device_key,
+    hand_out,
+    proven_device,
+    proven_limits,
+)
 from .events import UserLoggedOut
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
@@ -42,6 +54,7 @@ from .settings import auth_settings
 from .throttling import (
     Attempt,
     Limit,
+    Window,
     account_key,
     address_key,
     attempt,
@@ -56,13 +69,20 @@ __all__ = [
 ]
 
 LOGIN_THROTTLED = "Too many login attempts; try again later."
+CREDENTIALS_CHANGED = (
+    "Your password or second factor changed while you logged in; log in again."
+)
+"""Why a login whose check no longer holds is refused (``held_login``)."""
 """The detail of a throttled login."""
 PASSWORD_MAX_LENGTH = 4096
 """Longer passwords are refused before hashing, which they would slow down."""
+PERIOD_NAMES = {seconds: unit for unit, seconds in PERIODS.items()}
+"""``86400``: ``day``, to write a rate back."""
 DAILY = "login-daily"
 """The account's count of wrong passwords against ``ACCOUNT_LOGIN_RATE``."""
 PROVEN_DAILY = "proven-daily"
-"""The same, for attempts with a device proof for the account."""
+"""The account's ceiling of proven attempts over the day: ``PROVEN_CEILING``
+devices' worth of ``ACCOUNT_LOGIN_RATE``."""
 
 router = APIRouter(tags=["auth"])
 
@@ -166,7 +186,7 @@ async def login(
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
         return pending  # The device proof waits for the second factor.
-    issued = await issue_login(user)
+    issued = await issue_login(user, factor_proven=False)
     await hand_out(request, response, user)
     return _token_out(issued)
 
@@ -241,14 +261,17 @@ async def _changed_on_first_use(
     return stored
 
 
-async def issue_login(user: AbstractBaseUser) -> IssuedTokens:
+async def issue_login(
+    user: AbstractBaseUser, *, factor_proven: bool = True
+) -> IssuedTokens:
     """Record the user's login, and issue them tokens (the first class's).
 
-    Past ``AUTH.MAX_LOGINS``, the user's oldest logins end.
+    Past ``AUTH.MAX_LOGINS``, the user's oldest logins end. The login is
+    held to what was checked (``held_login``).
     """
     with _acting_as(user):
-        async with AuthUnitOfWork() as uow:
-            stored = await uow.users.get(UserId(user.id))
+        async with audited_changes(), AuthUnitOfWork() as uow:
+            stored = await held_login(uow, user, factor_proven=factor_proven)
             await uow.tokens.end_oldest_logins(
                 stored.id, keep=auth_settings().MAX_LOGINS - 1
             )
@@ -256,6 +279,48 @@ async def issue_login(user: AbstractBaseUser) -> IssuedTokens:
             await uow.users.record_login(stored)
             await uow.commit()
     return tokens
+
+
+async def held_login(
+    uow: AuthUnitOfWork, user: AbstractBaseUser, *, factor_proven: bool
+) -> AbstractBaseUser:
+    """``user`` as stored, under their credentials lock, if the login still holds.
+
+    The password checked is still the user's, and, unless the second factor
+    was proven (``factor_proven``), none was turned on since the login
+    found none. Checked under the lock that a password change and turning
+    a factor on hold, so a login checked before them and issued after
+    never survives them (SEC-16a-6).
+
+    Raises:
+        AuthenticationFailed: The password changed, or a factor was turned
+            on, since the check: the login starts again.
+    """
+    await uow.tokens.lock_user(user.id)
+    stored = await uow.users.get(UserId(user.id))
+    if stored.password != user.password or (
+        not factor_proven and await uow.mfa.enabled(user.id)
+    ):
+        raise CredentialsChanged(CREDENTIALS_CHANGED)
+    return stored
+
+
+class CredentialsChanged(AuthenticationFailed):
+    """A login's check no longer holds when it is issued (401)."""
+
+
+@asynccontextmanager
+async def audited_changes() -> AsyncIterator[None]:
+    """Audit a ``CredentialsChanged`` raised inside, once its lock is let go.
+
+    The audit trail writes in a transaction of its own, which SQLite's lock
+    would keep waiting: the refusal is recorded after the unit of work.
+    """
+    try:
+        yield
+    except CredentialsChanged:
+        await _audit_refusal("credentials_changed")
+        raise
 
 
 @router.post(
@@ -385,20 +450,27 @@ async def password_holds(
 async def _throttle(request: Request, user: AbstractBaseUser) -> Attempt:
     """Refuse a signed-in user's password check past ``AUTH.LOGIN_RATE``.
 
-    Counted per user; with ``AUTH.PASSWORD_CHECKS_COUNT_AS_LOGINS`` (the
-    PCI preset's), against the account's count of wrong logins too, so the
-    rate bounds every guess at the password, from wherever it comes. The
+    Counted per user, at ``LOGIN_RATE`` and over each day at
+    ``ACCOUNT_LOGIN_RATE`` (SEC-16a-4): a session holds no more guesses at
+    the password than a stranger does. With
+    ``AUTH.PASSWORD_CHECKS_COUNT_AS_LOGINS`` (the PCI preset's), against the
+    account's count of wrong logins too, so the rate bounds every guess at
+    the password, from wherever it comes. The
     first refusal of each key in a period is audited, not every one, so a
     flood of attempts writes no rows to the append-only trail. Give the
     result ``succeeded()`` once the password holds: only wrong ones count.
     """
     config = auth_settings()
-    limits: list[Limit] = [(f"password:user:{user.id}", config.LOGIN_RATE)]
+    daily = _daily(config.ACCOUNT_LOGIN_RATE)
+    limits: list[Limit] = [
+        (f"password:user:{user.id}", config.LOGIN_RATE),
+        (f"password-daily:user:{user.id}", daily),
+    ]
     if config.PASSWORD_CHECKS_COUNT_AS_LOGINS:
         username = user.get_username()
         limits += [
             (account_key("login", username), config.LOGIN_RATE),
-            (account_key(DAILY, username), config.ACCOUNT_LOGIN_RATE),
+            (account_key(DAILY, username), daily),
         ]
     return await attempt(
         request,
@@ -421,23 +493,39 @@ def _login_limits(request: Request, username: str, device: str | None) -> list[L
     """The counts a login is checked against: its address's and its account's.
 
     The account's twice: ``LOGIN_RATE`` for bursts, ``ACCOUNT_LOGIN_RATE``
-    for the day (AUTH-19). A client with a device proof for the account:
-    its device's, the account's ceiling of proven attempts
-    (``devices.proven_limits``), and a daily count of proven attempts of
-    its own, which strangers cannot use up.
+    for each day, held in a window (AUTH-19, SEC-16a-2). A client with a
+    device proof for the account: its device's counts, at ``LOGIN_RATE``
+    and over the day, and the account's ceilings of proven attempts
+    (``devices.proven_limits``, and ``PROVEN_CEILING`` days' worth over the
+    day), which strangers cannot use up and one copied proof fills half of
+    (SEC-16a-7).
     """
     config = auth_settings()
-    rate, daily = config.LOGIN_RATE, config.ACCOUNT_LOGIN_RATE
+    rate, daily = config.LOGIN_RATE, _daily(config.ACCOUNT_LOGIN_RATE)
     if device is not None:
         return [
             *proven_limits(device, username, rate),
-            (account_key(PROVEN_DAILY, username), daily),
+            (device_key(device) + ":daily", daily),
+            (account_key(PROVEN_DAILY, username), _ceiling(config.ACCOUNT_LOGIN_RATE)),
         ]
     return [
         (address_key(request, "login"), rate),
         (account_key("login", username), rate),
         (account_key(DAILY, username), daily),
     ]
+
+
+def _daily(rate: str | None) -> Window | None:
+    """``ACCOUNT_LOGIN_RATE`` as a window, which no day passes (SEC-16a-2)."""
+    return None if rate is None else Window(rate)
+
+
+def _ceiling(rate: str | None) -> Window | None:
+    """The account's daily ceiling of proven attempts: ``PROVEN_CEILING`` devices'."""
+    if rate is None:
+        return None
+    limit, period = parse_rate(rate)
+    return Window(f"{limit * PROVEN_CEILING}/{PERIOD_NAMES[period]}")
 
 
 async def _audit_refusal(reason: str) -> None:

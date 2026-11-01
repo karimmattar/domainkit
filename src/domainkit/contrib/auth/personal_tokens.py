@@ -48,6 +48,7 @@ from domainkit.http.pagination import (
 
 from .access import StepUp
 from .api import PASSWORD_MAX_LENGTH, _credentials, _errors, _no_store
+from .authentication import AuthenticationFailed, Credentials
 from .backends import get_all_permissions
 from .events import TokenCreated, TokenRevoked
 from .models import AbstractBaseUser, UserId
@@ -198,6 +199,7 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
     await reauthenticate(request, user, body.password)
     limit = auth_settings().MAX_LIVE_TOKENS
     async with AuthUnitOfWork() as uow:
+        await held_credentials(uow, _credentials(request))
         stored = await uow.users.get(UserId(user.id))
         if await uow.tokens.live_count(user.id) >= limit:
             raise APIError(
@@ -242,6 +244,28 @@ async def revoke_token(
         stored = await uow.users.get(UserId(user.id))
         stored.record(TokenRevoked(user_id=user.id, name=token.name))
         await uow.commit()
+
+
+async def held_credentials(uow: AuthUnitOfWork, credentials: Credentials) -> None:
+    """Hold the user's credentials lock, and check the request's still live.
+
+    The password or step-up was checked before, in units of work of their
+    own: a password change, or a second factor turned on, may have ended
+    these credentials since. Under the lock those hold, a token made here
+    never outlives them (SEC-16a-6).
+
+    Raises:
+        AuthenticationFailed: The credentials ended meanwhile.
+    """
+    await uow.tokens.lock_user(credentials.user.id)
+    if credentials.token_id is not None:
+        live = await uow.tokens.stored(credentials.token_id)
+    elif credentials.login is not None:
+        live = await uow.tokens.family_active(credentials.login)
+    else:
+        live = True  # Credentials no token row holds: a gateway's header.
+    if not live:
+        raise AuthenticationFailed("Session ended; log in again.")
 
 
 def lifetime(body: TokenIn) -> timedelta | None:

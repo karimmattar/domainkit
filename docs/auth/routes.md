@@ -248,10 +248,13 @@ Staff hand out only what they have:
 - Grants on single objects count too (AUTH-14): staff change no user or
   group holding a grant on an object, and add no one to a group holding
   one, unless they hold the permission on the whole model or the same
-  grant on that object (`403`, naming each grant they lack). Every
-  backend says what it grants on objects through
-  `BaseBackend.object_grants(holder)` (`ObjectPermissionBackend` does);
-  a backend of the project's own that grants on objects must answer it. What every backend
+  grant on that object (`403`, saying how many they lack, not on which
+  objects). Every backend says what it grants on objects through
+  `BaseBackend.object_grants(holder)` (`ObjectPermissionBackend` does).
+  While a backend of `AUTH.BACKENDS` other than `ModelBackend` leaves it
+  as `BaseBackend`'s, only superusers change users and groups here, since
+  what it grants is unknown, and `check` warns (`auth.W007`, SEC-16a-5);
+  a backend that grants on no object answers it with an empty set. What every backend
   in `AUTH.BACKENDS` grants counts, and so does what a change would grant
   (a field a backend reads, a user made active again). Inactive users count
   with every grant they keep; while other backends are configured, only

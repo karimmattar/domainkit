@@ -392,3 +392,16 @@ def test_signed_in_password_checks_count_on_the_day_too(api: Api) -> None:
     assert guess(client.app, "198.51.100.1") == 429
     refused = client.post("/auth/password", json=wrong, headers=bearer(login))
     assert refused.json()["detail"] == "Too many login attempts; try again later."
+
+
+def test_without_a_days_bound_proven_clients_count_by_the_minute(api: Api) -> None:
+    """``ACCOUNT_LOGIN_RATE = None``: no daily count, per device nor for the account."""
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute", ACCOUNT_LOGIN_RATE=None)
+    alice = browser(client.app, "203.0.113.50")
+    assert alice.post("/auth/login", json=RIGHT).status_code == 200
+    wrong = {"username": "alice", "password": "wrong"}
+
+    answers = [alice.post("/auth/login", json=wrong).status_code for _ in range(3)]
+
+    assert answers == [401, 401, 429]
