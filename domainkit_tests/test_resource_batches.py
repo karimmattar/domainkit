@@ -525,3 +525,38 @@ def test_atomic_batches_ask_object_rules_before_their_transaction(
     names = {name: store.items[GadgetId(known[name])].name for name in "ab"}
     assert names == {"a": "x", "b": "b"}
     assert rule.asked == [False, False, False]
+
+
+class BrokenRule(BasePermission):
+    """A rule on objects with a bug."""
+
+    async def has_object_permission(
+        self,
+        request: HTTPConnection,
+        user: Any,  # noqa: ANN401 - a principal.
+        obj: object,
+    ) -> bool:
+        """Fail as a bug does."""
+        raise ZeroDivisionError
+
+
+def test_a_bug_in_an_object_rule_fails_an_atomic_batch(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Asked before the transaction, a rule's bug is not an item's refusal."""
+    use_auth()
+    resource = gadgets(store)
+    resource.batch_route(RenameGadget, service=rename, body=RenameIn, rule=BrokenRule())
+    client = client_of(resource)
+    known = ids(store)
+
+    with pytest.raises(ZeroDivisionError):
+        client.post(
+            BATCH,
+            json={
+                "atomic": True,
+                "items": [{"gadget_id": str(known["a"]), "name": "x"}],
+            },
+            headers=as_("changer"),
+        )
+    assert store.items[GadgetId(known["a"])].name == "a"
