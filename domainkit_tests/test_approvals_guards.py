@@ -144,13 +144,22 @@ def test_a_policy_takes_rules_and_their_classes() -> None:
 
 
 def test_thresholds_sum_per_currency_and_never_mix_them() -> None:
-    """Over means more than the limit, in that currency; others are never over."""
+    """Over means more than the limit, in that currency; others are always over.
+
+    A currency no amount names fails closed (FIN-89), unless ``"*"`` gives
+    one for all of them, read in each one's own units.
+    """
     threshold = Threshold({"USD": "100", "EGP": Money.of("5000", "EGP")})
     usd = Money.of("50", "USD")
 
     assert not threshold.exceeded_by([usd, usd])
     assert threshold.exceeded_by([usd, usd, Money.of("0.01", "USD")])
-    assert not threshold.exceeded_by([Money.of("1000000", "EUR")])
+    assert threshold.exceeded_by([Money.of("0.01", "EUR")])
+    every = Threshold({"USD": "100", "*": "1000"})
+    assert not every.exceeded_by([Money.of("1000", "EUR"), usd])
+    assert every.exceeded_by([Money.of("1000.01", "EUR")])
+    assert every.exceeded_by([Money.of("100.01", "USD")])
+    assert every.any == Decimal(1000)
     assert not threshold.exceeded_by([Money.of("5000", "EGP")])
     assert threshold.exceeded_by([Money.of("5000.01", "EGP")])
     assert threshold.limits["USD"].amount == Decimal("100.00")
@@ -164,6 +173,9 @@ def test_thresholds_sum_per_currency_and_never_mix_them() -> None:
         {"USD": "-1"},
         {"USD": 1.5},
         {"USD": Money.of("1", "EUR")},
+        {"*": "-1"},
+        {"*": "1e3"},
+        {"*": 1000},
     ],
 )
 def test_a_threshold_is_an_exact_amount_of_its_currency(
@@ -246,7 +258,7 @@ def test_two_guards_of_one_name_and_none_without_policies_are_refused(
     with pytest.raises(ImproperlyConfigured, match="Two guards"):
         guards()
     with pytest.raises(ImproperlyConfigured, match="at least one policy"):
-        Guard("tests.empty", Refund, refund, object, ())
+        Guard("tests.refund", Refund, refund, object, ())
     with pytest.raises(
         ImproperlyConfigured,
         match=r"^A guarded action's name is dotted lower-case words "

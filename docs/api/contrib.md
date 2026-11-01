@@ -26,7 +26,9 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `CaptureHold`: Post the hold's amount (or `amount`, less) out of its account into another.
 - `CloseAccount`: Close an account with nothing on it.
 - `ClosePeriod`: Close a period: no entry may be dated in it afterwards.
+- `EarlierPeriodOpen`: Closing a period while one before it is still open.
 - `Entry`: A posted journal entry: balanced lines, never changed once posted.
+- `EntryAmount`: What one entry moved on one account: its debits and its credits there.
 - `EntryId`: A journal entry's id (a `UUID`).
 - `EntryNotFound`: No journal entry has that id.
 - `EntryPosted`: A journal entry was posted; `reverses` names the entry it undoes.
@@ -48,7 +50,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `Period`: Dates entries may be booked on, from `starts_on` to `ends_on` included.
 - `PeriodClosed`: An accounting period was closed: no entry may be dated in it any more.
 - `PeriodId`: An accounting period's id (a `UUID`).
-- `PeriodIsClosed`: An entry dated in a period that is closed.
+- `PeriodIsClosed`: An entry, or a new period, dated on or before the end of a closed period.
 - `PeriodNameTaken`: Another period has that name.
 - `PeriodNotFound`: No accounting period has that id.
 - `PeriodOpened`: An accounting period was opened.
@@ -136,6 +138,7 @@ Maker-checker: commands that run only once other people approve them.
 
 - `CAPTURES`: The guarded action of a hold's capture over its currency's threshold.
 - `ENTRIES`: The guarded action of postings over their currency's threshold.
+- `REVERSES`: The guarded action of a reversal over its currency's threshold.
 - `SUPERUSERS`: The guarded action of making a user a superuser.
 - `AlreadyDecided`: This person approved or rejected the request already (409).
 - `ApprovalGiven`: One person approved a request; `approvals` of `required` so far.
@@ -177,6 +180,7 @@ Maker-checker: commands that run only once other people approve them.
 - `Verdict`: What one person decided about a request.
 - `approve_request`: Approve a request; the approval that completes it queues its command.
 - `approved`: Whether `command` is the approved command of `action` being run.
+- `current_run`: The approved command being run here, if any.
 - `cancel_request`: Withdraw a pending request, as its maker.
 - `execute_request`: Run an approved request's command, once (the task `EXECUTE`).
 - `expire_requests`: Expire the pending requests whose time is up; how many there were.
@@ -392,6 +396,7 @@ Limits on money movements: per transaction, per window, per subject, per currenc
 - `ACTOR`: The kind of subject that is who acts: the request's actor.
 - `HOLDER`: The kind of subject that is the holder an account is kept for.
 - `ChangeLimit`: Set a limit's bounds, all of them: one left out is None (no bound).
+- `CurrencyNotLimited`: A movement in a currency none of its subject's limits names (FIN-89).
 - `Direction`: Which movements of a subject a limit counts.
 - `InvalidLimit`: A limit, or a movement checked against limits, that cannot be as written.
 - `Limit`: What one kind of subject may move in one currency and direction.

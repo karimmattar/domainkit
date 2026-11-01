@@ -146,11 +146,23 @@ async def books() -> tuple[Account, Account]:
         AccountingUnitOfWork(),
     )
     cash = await open_account(
-        OpenAccount(code="1000", name="Cash", type=AccountType.ASSET, currency="USD"),
+        OpenAccount(
+            code="1000",
+            name="Cash",
+            type=AccountType.ASSET,
+            currency="USD",
+            may_go_negative=True,  # Holds are placed on it unfunded.
+        ),
         AccountingUnitOfWork(),
     )
     sales = await open_account(
-        OpenAccount(code="4000", name="Sales", type=AccountType.INCOME, currency="USD"),
+        OpenAccount(
+            code="4000",
+            name="Sales",
+            type=AccountType.INCOME,
+            currency="USD",
+            may_go_negative=True,  # Captures are debited to it.
+        ),
         AccountingUnitOfWork(),
     )
     return cash, sales

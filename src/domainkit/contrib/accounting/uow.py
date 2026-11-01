@@ -9,7 +9,7 @@ database's write lock, so changes run one at a time there.
 
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
@@ -26,6 +26,7 @@ from .models import (
     HoldId,
     Period,
     PeriodId,
+    PeriodStatus,
 )
 from .tables import entries, holds, periods
 
@@ -114,6 +115,24 @@ class PeriodRepository(SqlAlchemyRepository[Period, PeriodId]):
         if found is not None:
             self._track(found)
         return found
+
+    async def closed_through(self) -> date | None:
+        """The last day of the latest closed period: the books are closed up to it."""
+        found: date | None = await self.session.scalar(
+            select(func.max(periods.c.ends_on)).where(
+                periods.c.status == PeriodStatus.CLOSED
+            )
+        )
+        return found
+
+    async def open_before(self, day: date) -> bool:
+        """Whether an open period starts before ``day``."""
+        found = await self.session.scalar(
+            select(periods.c.id)
+            .where(periods.c.status == PeriodStatus.OPEN, periods.c.starts_on < day)
+            .limit(1)
+        )
+        return found is not None
 
     async def overlapping(self, starts_on: date, ends_on: date) -> bool:
         """Whether a period covers any day from ``starts_on`` to ``ends_on``."""

@@ -9,7 +9,18 @@ movement per subject, direction, and currency: of each account (by id)
 and each account's holder, the sum of the entry's postings for it; of the
 request's actor, the entry's size, its debits, out. A reversal counts
 nothing, and gives back what the entry it reverses counted; the ledger
-reverses no reversal (SEC-15b-3).
+reverses no reversal (SEC-15b-3). A reversal booked while an approved
+request runs (one that needed approval, as a reversal over
+``APPROVALS.ENTRY_THRESHOLDS`` does) is counted as a movement instead,
+and gives back nothing: undoing a payout two people approved does not
+free the payer's limits to draw it again (FIN-88).
+
+Only the subjects a window bounds keep their movements (PERF-26). When a
+limit with a window is set, changed, or enabled for accounts or holders,
+``count_earlier`` counts what their postings moved since the window
+began, so a limit set at 11:00 sees the 900 moved at 10:00 (SEC-15b-5).
+An actor's movements are not in the ledger: they count from when a limit
+bounds them.
 
 A holder or an actor that is not a subject limits take (a control
 character, more than 255 characters) is counted under its digest,
@@ -20,26 +31,42 @@ takes is counted, and none is refused for its holder's name.
 import hashlib
 from collections import defaultdict
 from collections.abc import Mapping
+from datetime import datetime
+from decimal import Decimal
 from typing import Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from sqlalchemy import exists, insert, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
+
+from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.contrib.accounting import (
     Account,
     AccountId,
     AccountingUnitOfWork,
+    AccountType,
     Entry,
+    Posting,
     Side,
 )
+from domainkit.db import dbclock
 from domainkit.money import Money
 
-from .models import ACCOUNT, ACTOR, HOLDER, SUBJECT, Direction, Movement
-from .usage import consume, release
+from .models import ACCOUNT, ACTOR, HOLDER, SUBJECT, Direction, Limit, Movement
+from .tables import subjects, usage
+from .usage import SubjectKey, _ensure, consume, release
 
+APPROVALS: Final = "domainkit.contrib.approvals"
 DIGEST: Final = "sha256:"
 """What the subject of a holder or actor limits cannot take begins with."""
 KEY: Final = "accounting.entry:"
 """What an entry's movements are counted under, before the entry's id."""
+
+
+LEDGER_KINDS: Final = frozenset({ACCOUNT, HOLDER})
+"""The kinds of subject whose earlier movements the ledger's postings show."""
 
 
 def entry_key(entry_id: UUID) -> str:
@@ -89,7 +116,128 @@ async def enforce(
     Raises:
         LimitExceeded, TransactionLimitExceeded: A movement is over a limit.
     """
-    if entry.reverses is not None:
+    if entry.reverses is not None and not approved():
         await release(uow, entry_key(entry.reverses))
         return
     await consume(uow, *movements(entry, accounts), key=entry_key(entry.id))
+
+
+def approved() -> bool:
+    """Whether an approved request of ``domainkit.contrib.approvals`` runs here."""
+    if not registry.is_installed(APPROVALS):
+        return False
+    from domainkit.contrib.approvals import current_run
+
+    return current_run() is not None
+
+
+async def count_earlier(session: AsyncSession, limit: Limit) -> int:
+    """Count what the ledger moved for ``limit``'s subjects since its window began.
+
+    For a limit with a window, enabled, of accounts or holders: every entry
+    posted in the window and not reversed, in its currency and direction,
+    is counted against its subjects as ``enforce`` would have counted it,
+    unless it was counted already. Run in the transaction that sets the
+    limit, on the ledger's database (``limits.E001``).
+
+    Returns:
+        How many movements it counted.
+    """
+    if limit.window is None or not limit.enabled or limit.kind not in LEDGER_KINDS:
+        return 0
+    dialect = session.get_bind().dialect.name
+    now = dbclock.now(dialect)
+    if not isinstance(now, datetime):
+        now = await session.scalar(select(now))
+    start = limit.window.start(now, limit.time_zone)
+    reversal = aliased(Entry)
+    after = (
+        Entry.posted_at > start if limit.window.rolling else Entry.posted_at >= start
+    )
+    statement = (
+        select(
+            Posting.entry_id,
+            Entry.posted_at,
+            Posting.account_id,
+            Posting.side,
+            Posting.amount,
+            Account.type,
+            Account.holder,
+        )
+        .join(Entry, Entry.id == Posting.entry_id)
+        .join(Account, Account.id == Posting.account_id)
+        .where(
+            after,
+            Posting.currency == limit.currency,
+            Entry.reverses.is_(None),
+            ~exists().where(reversal.reverses == Entry.id),
+        )
+    )
+    moved: defaultdict[tuple[UUID, str], Decimal] = defaultdict(Decimal)
+    when: dict[UUID, datetime] = {}
+    for row in await session.execute(statement):
+        normal = AccountType(row.type).normal_balance
+        direction = Direction.IN if row.side is normal else Direction.OUT
+        name = (
+            str(row.account_id)
+            if limit.kind == ACCOUNT
+            else None
+            if row.holder is None
+            else ledger_subject(row.holder)
+        )
+        if direction is not limit.direction or name is None:
+            continue
+        if limit.subject not in ("", name):
+            continue
+        moved[row.entry_id, name] += row.amount
+        when[row.entry_id] = row.posted_at
+    return await _count(session, limit, moved, when)
+
+
+async def _count(
+    session: AsyncSession,
+    limit: Limit,
+    moved: Mapping[tuple[UUID, str], Decimal],
+    when: Mapping[UUID, datetime],
+) -> int:
+    """Write the usage of ``moved`` not written yet, one row per entry and subject."""
+    keys: list[SubjectKey] = sorted(
+        {(limit.kind, limit.direction, limit.currency, name) for _, name in moved}
+    )
+    if not keys:
+        return 0
+    await _ensure(session, keys)
+    ids = {
+        row.subject: row.id
+        for row in await session.execute(
+            select(subjects.c.id, subjects.c.subject).where(
+                subjects.c.kind == limit.kind,
+                subjects.c.direction == limit.direction,
+                subjects.c.currency == limit.currency,
+                subjects.c.subject.in_([name for *_, name in keys]),
+            )
+        )
+    }
+    counted = {
+        (row.subject_id, row.key)
+        for row in await session.execute(
+            select(usage.c.subject_id, usage.c.key).where(
+                usage.c.subject_id.in_(ids.values()),
+                usage.c.at >= min(when.values()),
+            )
+        )
+    }
+    rows = [
+        {
+            "id": uuid4(),
+            "subject_id": ids[name],
+            "amount": amount,
+            "at": when[entry_id],
+            "key": entry_key(entry_id),
+        }
+        for (entry_id, name), amount in sorted(moved.items())
+        if (ids[name], entry_key(entry_id)) not in counted
+    ]
+    if rows:
+        await session.execute(insert(usage), rows)
+    return len(rows)

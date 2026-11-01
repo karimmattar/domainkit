@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.limits import (
+    CurrencyNotLimited,
     Direction,
     LimitExceeded,
     LimitsUnitOfWork,
@@ -131,7 +132,10 @@ async def test_a_month_and_a_count_bound_together() -> None:
 
 
 async def test_per_transaction_bounds_each_movement_and_needs_no_window() -> None:
-    """Over the most one may be, refused; at it, taken, and counted all the same."""
+    """Over the most one may be, refused; at it, taken, and kept nowhere.
+
+    No window bounds the subject, so nothing of its movements is kept (PERF-26).
+    """
     await limit(code="each", per_transaction=egp("50"))
     with refused(TransactionLimitExceeded):
         await spend(paid("50.01"))
@@ -146,16 +150,21 @@ async def test_per_transaction_bounds_each_movement_and_needs_no_window() -> Non
         None,
     )
     async with connections.engine().connect() as connection:
-        assert await connection.scalar(select(func.count()).select_from(usage)) == 2
+        assert await connection.scalar(select(func.count()).select_from(usage)) == 0
 
 
 async def test_only_the_subjects_limits_in_its_currency_and_direction_count() -> None:
-    """Another holder, currency, or direction is bounded by its own limits only."""
+    """Another holder or direction is bounded by its own limits only.
+
+    Another currency is bounded too: no limit of the holder names dollars,
+    so dollars out of it are refused (FIN-89).
+    """
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     with freeze_time(NOON):
         await spend(paid("100"))
         await spend(paid("100", holder="h-2"))
-        await spend(Movement(Money.of("500", "USD"), {"holder": "h-1"}))
+        with refused(CurrencyNotLimited):
+            await spend(Movement(Money.of("500", "USD"), {"holder": "h-1"}))
         await spend(Movement(egp("500"), {"holder": "h-1"}, Direction.IN))
         await spend(Movement(egp("500"), {"merchant": "m-1"}))
         with refused(LimitExceeded):
@@ -428,21 +437,31 @@ async def test_counting_needs_an_open_unit_of_work_that_writes_on_their_database
     )
 
 
-async def test_a_limit_set_partway_through_a_window_counts_what_moved_before() -> None:
-    """Every movement is counted: a limit made later sees the morning's (SEC-15b-5)."""
+async def test_a_limit_set_partway_through_a_window_counts_from_then_here() -> None:
+    """Counted by ``consume`` alone, a subject no window bounded kept nothing.
+
+    Only a subject a window bounds keeps its movements (PERF-26): the
+    morning's 60, outside the ledger, is not there to count, and a limit
+    set at noon counts from then. The ledger's postings are counted back
+    (``test_limits_earlier``; SEC-15b-5's proof).
+    """
     with freeze_time(datetime(2026, 10, 30, 9, tzinfo=UTC)):
         await spend(paid("60"))
         await spend(paid("10", holder="h-2"))
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     with freeze_time(NOON):
+        await spend(paid("100"))
         with refused(LimitExceeded):
-            await spend(paid("41"))
-        await spend(paid("40"))
-        assert await used() == [("daily", egp("100"), 2)]
+            await spend(paid("1"))
+        assert await used() == [("daily", egp("100"), 1)]
 
 
 async def test_lifting_an_exemption_counts_what_the_subject_moved_meanwhile() -> None:
-    """Exempt, then not: the exempt movements of the window count again."""
+    """Exempt, then not: outside the ledger, the exempt movements were not kept.
+
+    The ledger's postings are counted back when an exemption is lifted
+    (``test_limits_earlier``); ``consume``'s alone are not kept (PERF-26).
+    """
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     await limit(
         code="daily",
@@ -454,15 +473,19 @@ async def test_lifting_an_exemption_counts_what_the_subject_moved_meanwhile() ->
     with freeze_time(datetime(2026, 10, 30, 9, tzinfo=UTC)):
         await spend(paid("90"))
     await limit(code="daily", subject="h-1", window=Window.DAY, max_amount=egp("100"))
-    with freeze_time(NOON), refused(LimitExceeded):
-        await spend(paid("11"))
+    with freeze_time(NOON):
+        await spend(paid("100"))
+        with refused(LimitExceeded):
+            await spend(paid("1"))
 
 
 async def test_a_limit_that_gains_a_window_counts_the_windows_movements() -> None:
-    """Per transaction alone, then also a day: the day's movements count."""
+    """Per transaction alone, then also a day: counted from then, off the ledger."""
     await limit(code="each", per_transaction=egp("80"))
     with freeze_time(datetime(2026, 10, 30, 9, tzinfo=UTC)):
         await spend(paid("80"))
     await limit(code="each", per_transaction=egp("80"), window=Window.DAY, max_count=1)
-    with freeze_time(NOON), refused(LimitExceeded):
+    with freeze_time(NOON):
         await spend(paid("1"))
+        with refused(LimitExceeded):
+            await spend(paid("1"))

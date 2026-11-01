@@ -106,7 +106,8 @@ def usd(amount: str) -> Money:
 
 
 async def account(code: str, currency: str = "USD", **options: object) -> Account:
-    """Open an asset account ``code``."""
+    """Open an asset account ``code``, which may go negative unless told otherwise."""
+    options.setdefault("may_go_negative", True)
     return await open_account(
         OpenAccount(
             code=code,

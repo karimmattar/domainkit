@@ -146,18 +146,26 @@ class Threshold:
 
     ``Threshold({"USD": "10000", "EGP": "500000"}).exceeded_by(amounts)``
     sums ``amounts`` per currency and says whether any sum is more than
-    its currency's amount. A currency without an amount is never over.
+    its currency's amount. A currency without an amount is always over: a
+    control fails closed for the currencies it does not name (FIN-89),
+    unless ``ANY_CURRENCY`` (``"*"``) gives an amount for all of them,
+    read in each one's own units (``{"USD": "10000", "*": "1000"}``).
     """
 
     def __init__(self, amounts: Mapping[str, str | Money]) -> None:
-        """Read each amount as ``Money`` of its currency.
+        """Read each amount as ``Money`` of its currency; ``"*"``'s as a number.
 
         Raises:
             ImproperlyConfigured: A currency is unknown, or an amount is not
                 exact in it, or is less than zero.
         """
         limits: dict[str, Money] = {}
+        self.any: Decimal | None = None
+        """The amount of every currency not named, if ``"*"`` gives one."""
         for code, amount in amounts.items():
+            if code == ANY_CURRENCY:
+                self.any = _any_amount(amount)
+                continue
             try:
                 limit = amount if isinstance(amount, Money) else Money.of(amount, code)
             except (MoneyError, ArithmeticError, TypeError, ValueError):
@@ -179,10 +187,32 @@ class Threshold:
         for amount in amounts:
             code = amount.currency.code
             totals[code] = totals.get(code, Decimal(0)) + amount.amount
-        return any(
-            code in self.limits and total > self.limits[code].amount
-            for code, total in totals.items()
+        return any(self._over(code, total) for code, total in totals.items())
+
+    def _over(self, code: str, total: Decimal) -> bool:
+        """Whether ``total`` of ``code`` is more than its amount, or it has none."""
+        if code in self.limits:
+            return total > self.limits[code].amount
+        return self.any is None or total > self.any
+
+
+ANY_CURRENCY: Final = "*"
+"""The key of a threshold's amount for every currency it does not name."""
+_ANY_AMOUNT: Final = re.compile(r"\d{1,38}(\.\d{1,18})?")
+
+
+def _any_amount(amount: object) -> Decimal:
+    """``"*"``'s amount: a number of at least zero, as text.
+
+    Raises:
+        ImproperlyConfigured: It is not.
+    """
+    if not (isinstance(amount, str) and _ANY_AMOUNT.fullmatch(amount)):
+        raise ImproperlyConfigured(
+            f"A threshold for every currency ('*') is a number of at least zero, "
+            f"as text: {amount!r}."
         )
+    return Decimal(amount)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -210,8 +240,14 @@ class Guard:
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Check the name and the policies; build the command's adapter."""
+        """Check the name, the service, and the policies; build the command's adapter.
+
+        However the guard is registered (``guard()``, or ``on_guard``), its
+        service must be decorated ``@requires_approval`` for its action:
+        without it, calling the service directly would skip approval (DSGN-18).
+        """
         _checked_name(self.action, "A guarded action's name")
+        _check_decorated(self.action, self.service)
         if not self.policies:
             raise ImproperlyConfigured(
                 f"Guard {self.action!r} needs at least one policy."
@@ -272,12 +308,7 @@ def guard(
             (calling it directly would skip approval), its command cannot be
             told, or a policy or the name is malformed.
     """
-    if getattr(service, ACTION_MARK, None) != action:
-        raise ImproperlyConfigured(
-            f"Decorate the service of {action!r} with "
-            f"@requires_approval({action!r}): without it, calling the service "
-            "directly would skip approval."
-        )
+    _check_decorated(action, service)
     if command is None:
         command = _command_of(action, service)
     registered = Guard(
@@ -293,6 +324,20 @@ def guard(
     )
     on_guard(registered, domain=domain)
     return registered
+
+
+def _check_decorated(action: str, service: Service) -> None:
+    """Refuse a service not decorated ``@requires_approval(action)``.
+
+    Raises:
+        ImproperlyConfigured: It is not: calling it directly would skip approval.
+    """
+    if getattr(service, ACTION_MARK, None) != action:
+        raise ImproperlyConfigured(
+            f"Decorate the service of {action!r} with "
+            f"@requires_approval({action!r}): without it, calling the service "
+            "directly would skip approval."
+        )
 
 
 def _command_of(action: str, service: Service) -> type:
@@ -365,6 +410,10 @@ class Running:
     command: object
     maker: str | None = None
     """Who submitted it: the run acts as them."""
+    required: int = 0
+    """How many approvals its policy asked for: the ledger's threshold lets
+    the entries it books through when that is at least ``ENTRY_APPROVALS``
+    (FIN-92)."""
 
 
 _running: ContextVar[Running | None] = ContextVar(
@@ -374,10 +423,17 @@ _running: ContextVar[Running | None] = ContextVar(
 
 @contextmanager
 def running(
-    request_id: object, action: str, command: object, maker: str | None = None
+    request_id: object,
+    action: str,
+    command: object,
+    maker: str | None = None,
+    required: int = 0,
 ) -> Iterator[Running]:
-    """Let ``command`` through ``action``'s guard while the block runs."""
-    current = Running(request_id, action, command, maker)
+    """Let ``command`` through ``action``'s guard while the block runs.
+
+    ``required`` is how many approvals the request had to have.
+    """
+    current = Running(request_id, action, command, maker, required)
     token = _running.set(current)
     try:
         yield current

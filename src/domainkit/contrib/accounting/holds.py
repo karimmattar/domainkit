@@ -6,16 +6,19 @@ posted; captured, it posts an entry taking the amount (or less: the rest
 is released) out of the account into another, under the source
 ``CAPTURES`` and the hold's id. A hold expires at ``expires_at``: it can
 no longer be captured, and the worker releases it within
-``ACCOUNTING.EXPIRE_HOLDS_EVERY`` (``expire_holds``).
+``ACCOUNTING.EXPIRE_HOLDS_EVERY`` (``expire_holds``). Whether it has
+expired is the database's clock's to say on PostgreSQL, as leases and
+limits' windows are, so hosts whose clocks disagree agree on it (FIN-99).
 """
 
 from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import clock
-from domainkit.db import connections
+from domainkit.db import connections, dbclock
 from domainkit.ddd import Command
 from domainkit.money import Money
 
@@ -37,6 +40,15 @@ CAPTURES = "accounting.hold"
 """The source of the entries captures post; each one's reference is the hold's id."""
 EXPIRY_BATCH = 500
 """Expired holds ``expire_holds`` reads at a time."""
+
+
+async def database_now(session: AsyncSession) -> datetime:
+    """The present on the database's clock (``domainkit.clock``'s on SQLite)."""
+    moment = dbclock.now(session.get_bind().dialect.name)
+    if isinstance(moment, datetime):
+        return moment
+    found: datetime = await session.scalar(select(moment))
+    return found
 
 
 class PlaceHold(Command):
@@ -147,7 +159,8 @@ async def capture_hold(command: CaptureHold, uow: AccountingUnitOfWork) -> Hold:
                 description=command.description,
                 max_lines=max_lines,
             )
-            hold.finish(held, HoldStatus.CAPTURED, entry.id)
+            now = await database_now(uow.session)
+            hold.finish(held, HoldStatus.CAPTURED, entry.id, now=now)
             await book(uow, entry, accounts)
             # The hold refers to its entry once the entry's row is written:
             # PostgreSQL checks the reference at each statement.
@@ -188,7 +201,7 @@ async def finish(
                     raise HoldNotActive("The hold was captured.")
                 return hold, False
             (account,) = (await lock_accounts(uow, (hold.account_id,))).values()
-            hold.finish(account, status)
+            hold.finish(account, status, now=await database_now(uow.session))
             await uow.commit()
         return hold, True
 
@@ -198,19 +211,24 @@ async def finish(
 async def expire_holds(now: datetime | None = None) -> int:
     """Release every active hold whose time is up, each in its own transaction.
 
+    Whose time is up is the database's clock's to say (``dbclock``), unless
+    ``now`` is given.
+
     Returns:
         How many holds this call expired.
     """
-    moment = now or clock.now()
-    statement = (
-        select(holds.c.id)
-        .where(holds.c.status == HoldStatus.ACTIVE, holds.c.expires_at <= moment)
-        .order_by(holds.c.expires_at, holds.c.id)
-        .limit(EXPIRY_BATCH)
-    )
     expired = 0
     while True:
         async with connections.engine(accounting_alias()).connect() as connection:
+            moment = now or dbclock.now(connection.dialect.name)
+            statement = (
+                select(holds.c.id)
+                .where(
+                    holds.c.status == HoldStatus.ACTIVE, holds.c.expires_at <= moment
+                )
+                .order_by(holds.c.expires_at, holds.c.id)
+                .limit(EXPIRY_BATCH)
+            )
             due = list(await connection.scalars(statement))
         for hold_id in due:
             _, done = await finish(

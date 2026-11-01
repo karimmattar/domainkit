@@ -14,10 +14,13 @@ the ledger's threshold for the entries it books (its policy asked at
 least as many approvers), or the docs should say how the two meet.
 """
 
+from uuid import UUID
+
 import pytest
 
 from domainkit.contrib.accounting import (
     Account,
+    AccountId,
     AccountingUnitOfWork,
     Line,
     PostEntry,
@@ -66,8 +69,8 @@ async def payout(command: Payout, uow: AccountingUnitOfWork) -> None:
             reference=command.reference,
             booked_on=TODAY,
             lines=(
-                Line.debit(command.bank, amount),  # type: ignore[arg-type]
-                Line.credit(command.till, amount),  # type: ignore[arg-type]
+                Line.debit(AccountId(UUID(command.till)), amount),
+                Line.credit(AccountId(UUID(command.bank)), amount),
             ),
         ),
         uow,

@@ -59,7 +59,8 @@ def usd(amount: str) -> Money:
 
 
 def an_account(type: AccountType = AccountType.ASSET, **options: object) -> Account:
-    """A new USD account."""
+    """A new USD account, which may go negative unless ``options`` say otherwise."""
+    options.setdefault("may_go_negative", True)
     account = Account.open("1000", "Cash", type, "USD", **options)  # type: ignore[arg-type]
     account.pull_events()
     return account
@@ -121,7 +122,7 @@ def test_an_account_opens_with_nothing_on_it() -> None:
     )
     assert (account.holder, account.may_go_negative, account.opened_at) == (
         "user-1",
-        True,
+        False,  # Only an account opened so may go negative (FIN-97).
         NOW,
     )
     assert account.closed_at is None
@@ -227,11 +228,21 @@ def test_an_account_that_may_not_go_negative_keeps_something_available() -> None
 
 
 def test_an_account_that_may_go_negative_does() -> None:
-    """By default an account may be overdrawn, held amounts included."""
-    account = an_account()
+    """Opened so, an account may be overdrawn, held amounts included."""
+    account = an_account(may_go_negative=True)
     account.reserve(usd("5"))
     account.post(Side.CREDIT, usd("5"))
     assert (account.balance, account.available) == (Decimal("-5.00"), Decimal("-10.00"))
+
+
+def test_an_account_may_not_go_negative_by_default() -> None:
+    """Opened without the flag, nothing takes it below zero (FIN-97)."""
+    account = Account.open("1000", "Cash", AccountType.ASSET, "USD")
+    with refused(InsufficientFunds):
+        account.post(Side.CREDIT, usd("0.01"))
+    with refused(InsufficientFunds):
+        account.reserve(usd("0.01"))
+    assert (account.balance, account.held) == (Decimal(0), Decimal(0))
 
 
 def test_only_an_empty_open_account_closes() -> None:
