@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from pydantic import AliasChoices, AliasPath, BaseModel, Field
 from starlette.requests import HTTPConnection
 
 from domainkit.contrib.auth import AnyUser, current_user
@@ -382,3 +383,36 @@ def test_generic_writes_refuse_what_changed_after_the_rule_saw_it(
     )
     assert store.items[known["a"]].stock != 9
     assert known["b"] in store.items
+
+
+class Renamed(BaseModel):
+    """A command's answer that reads the hidden price under other names."""
+
+    name: str
+    shown: Decimal = Field(validation_alias="price")
+    either: Decimal = Field(validation_alias=AliasChoices("missing", "price"))
+    path: Decimal = Field(validation_alias=AliasPath("price"))
+    stock: int | None = Field(default=None, validation_alias=AliasPath("stock"))
+
+
+def test_a_returns_schema_cannot_rename_a_hidden_field_into_view(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Fields read from a hidden attribute are left out, whatever they are called."""
+    use_auth()
+    resource = gadgets(store, policy=FieldPolicy(visible={"price": "shop.view_cost"}))
+    resource.command_route(
+        RenameGadget, service=rename, body=RenameIn, path="/rename", returns=Renamed
+    )
+    client = client_of(resource)
+    known = names(store)
+
+    hidden = client.post(
+        f"{LOCATION}{known['a']}/rename", json={"name": "x"}, headers=as_("changer")
+    ).json()
+    seen = client.post(
+        f"{LOCATION}{known['a']}/rename", json={"name": "y"}, headers=as_("root")
+    ).json()
+
+    assert set(hidden) == {"name", "stock"}
+    assert set(seen) == {"name", "shown", "either", "path", "stock"}

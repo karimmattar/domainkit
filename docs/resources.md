@@ -414,10 +414,13 @@ rule
 looks at the aggregate, the check has a unit of work of its own, closed
 before the rule runs, and the service another: a rule may query the
 database itself (object permission grants) without waiting for a second
-connection while the request holds one. Generic writes do the same, and
-refuse with `409 concurrent_update` an aggregate that changed after the
-rule saw it; an atomic batch asks the rules about every item before its
-transaction begins, and the first refused undoes the batch.
+connection while the request holds one. The service is then held to the
+version the rule saw: an aggregate another request changed in between is
+`409 concurrent_update` (or the request's `412` with `If-Match`), never
+written past the rule. Generic writes do the same; an atomic batch asks
+the rules about every item before its transaction begins, the first
+refused undoes the batch, and each aggregate is held to its version at
+the first item that acts on it.
 
 The rules are the core's (`domainkit.http.access`): a resource needs no
 `domainkit.contrib.auth`, only a middleware that puts who sent the request

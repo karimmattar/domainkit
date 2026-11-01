@@ -11,7 +11,8 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Response, status
-from pydantic import BaseModel, Field, create_model
+from pydantic import AliasChoices, BaseModel, Field, create_model
+from pydantic.fields import FieldInfo
 from starlette.requests import HTTPConnection
 
 from domainkit.ddd.model import AggregateRoot
@@ -94,13 +95,38 @@ async def shown_as(
     """``result``'s JSON as the schema a write returns (the resource's, by default).
 
     The fields the resource's policy hides from the caller are left out
-    of whatever schema it is, by name (WEB-20): another view of the
-    aggregate shows no more of it than a read does.
+    of whatever schema it is (WEB-20), by the attribute each field is read
+    from, so a field that renames a hidden one (``validation_alias``) is
+    left out too: another view of the aggregate shows no more of it than a
+    read does.
     """
     schema = router.source_schema if returns is DEFAULT else returns
     shown = presenter(schema)(result)  # type: ignore[arg-type] # Not None: 204.
     hidden = await hidden_fields(router, context.request)
-    return shown.model_dump(mode="json", exclude=set(hidden))
+    if not hidden:
+        return shown.model_dump(mode="json")
+    left_out = {
+        name
+        for name, field in type(shown).model_fields.items()
+        if sources(name, field) & hidden
+    }
+    return shown.model_dump(mode="json", exclude=left_out)
+
+
+def sources(name: str, field: FieldInfo) -> set[str]:
+    """The attributes a schema's field ``name`` may be read from.
+
+    Its name, and its ``validation_alias``'s, or, for a path or choices,
+    the first attribute of each.
+    """
+    alias = field.validation_alias  # An ``alias`` sets it too.
+    if alias is None or isinstance(alias, str):
+        return {name, alias or name}
+    paths = alias.choices if isinstance(alias, AliasChoices) else [alias]
+    return {
+        name,
+        *(str(path if isinstance(path, str) else path.path[0]) for path in paths),
+    }
 
 
 async def tagged(

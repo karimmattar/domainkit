@@ -281,9 +281,7 @@ def _unchanged(aggregate: Aggregate, seen: int | None) -> None:
         ConcurrentUpdate: Its version is not ``seen`` (None: nothing to hold).
     """
     if seen is not None and aggregate.version != seen:
-        raise ConcurrentUpdate(
-            "This record changed while it was being checked; read it again and retry."
-        )
+        raise ConcurrentUpdate(reach.CHANGED_SINCE_CHECKED)
 
 
 def _check_plain(
