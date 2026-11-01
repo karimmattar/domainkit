@@ -41,10 +41,16 @@ def browser(app: Any, address: str) -> TestClient:  # noqa: ANN401 - an applicat
 
 
 def guess(app: Any, address: str, username: str = "alice") -> int:  # noqa: ANN401 - an application.
-    """A wrong password for ``username`` from ``address``, without a proof."""
-    response = browser(app, address).post(
-        "/auth/login", json={"username": username, "password": f"x-{address}"}
-    )
+    """A wrong password for ``username`` from ``address``, without a proof.
+
+    The client is closed after its one request: open, its loop's engine
+    keeps a connection, and a test of hundreds of guesses runs PostgreSQL
+    out of them.
+    """
+    with browser(app, address) as client:
+        response = client.post(
+            "/auth/login", json={"username": username, "password": f"x-{address}"}
+        )
     return response.status_code
 
 
