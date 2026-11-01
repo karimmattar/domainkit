@@ -49,7 +49,7 @@ class UnbalancedEntry(BusinessRuleViolation):
     code = "unbalanced_entry"
 
 
-class AccountIsClosed(BusinessRuleViolation):
+class AccountNotOpen(BusinessRuleViolation):
     """A posting or a hold on an account that is closed."""
 
     code = "account_closed"
@@ -73,10 +73,25 @@ class NoOpenPeriod(BusinessRuleViolation):
     code = "no_open_period"
 
 
-class PeriodIsClosed(BusinessRuleViolation):
-    """An entry dated in a period that is closed."""
+class PeriodNotOpen(BusinessRuleViolation):
+    """An entry, or a new period, dated on or before the end of a closed period.
+
+    The books are closed up to the last day of the latest closed period:
+    no entry is dated there, in a period or in a gap between periods, and
+    no period is opened there (FIN-87).
+    """
 
     code = "period_closed"
+
+
+class EarlierPeriodOpen(BusinessRuleViolation):
+    """Closing a period while one before it is still open.
+
+    Periods close in date order, so a closed period's figures, its opening
+    balances included, never change afterwards (FIN-87).
+    """
+
+    code = "earlier_period_open"
 
 
 class PeriodsOverlap(BusinessRuleViolation):
@@ -91,14 +106,14 @@ class ReferenceReused(Conflict):
     code = "reference_reused"
 
 
-class ReversalNotReversible(BusinessRuleViolation):
+class EntryNotReversible(BusinessRuleViolation):
     """Reversing a reversal: it would move the money of the entry it undid again.
 
     Post the entry again under a reference of its own, through every check
     a new entry takes (limits, approvals).
     """
 
-    code = "reversal_not_reversible"
+    code = "entry_not_reversible"
 
 
 class HoldNotActive(Conflict):

@@ -57,7 +57,7 @@ from domainkit.ledger import Ledger, LedgerChanged, LedgerKeyNotFound, ledgers
 
 from .checkpoints import Checkpoint, Stored, configured_public_key, stored
 from .personal import audited_databases, prepare_anonymous_keys
-from .settings import AuditSettings
+from .settings import AuditSettings, min_retention
 from .tables import audit_log, audit_seals
 
 try:
@@ -670,7 +670,7 @@ async def _database_now(connection: AsyncConnection) -> datetime:
     same clock, whatever its host's says. SQLite lives in the sealer's
     process, so its clock is the host's anyway. A frozen clock
     (``freeze_time``) decides on every database, as for the outbox
-    (``domainkit.contrib.messaging.dbclock``), so tests can move time.
+    (``domainkit.db.dbclock``), so tests can move time.
     """
     if connection.dialect.name == "postgresql" and clock.frozen() is None:
         moment = select(func.statement_timestamp(type_=UTCDateTime()))
@@ -710,7 +710,7 @@ async def starting_points(
     the ledger records it (``pruned_key``), so a checkpoint signed outside
     ``auditprune`` starts nothing either (SEC-10b-3).
     """
-    floor = registry.settings(AuditSettings).MIN_RETENTION
+    floor = min_retention()
     recorded = None if ledger is None else await _recorded(database, ledger)
     accepted: dict[int, Checkpoint] = {}
     refused: list[int] = []

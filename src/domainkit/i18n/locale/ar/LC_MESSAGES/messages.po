@@ -189,6 +189,11 @@ msgstr "انتهت مهلة تسجيل الدخول؛ سجّل الدخول مر
 msgid "The code is wrong, or was used already."
 msgstr "الرمز غير صحيح، أو استُخدم من قبل."
 
+msgid ""
+"Your authenticator can no longer be checked here; ask for your second "
+"factor to be reset."
+msgstr "لم يعد ممكنًا التحقق من تطبيق المصادقة هنا؛ اطلب إعادة ضبط التحقق بخطوتين."
+
 msgid "No such token."
 msgstr "لا يوجد رمز كهذا."
 
@@ -1002,3 +1007,39 @@ msgstr "عُدّل الطلب خارج التطبيق؛ فلا يُبتّ فيه
 
 msgid "The request's guard or policy no longer exists; it is neither decided nor run."
 msgstr "لم تعد حماية الطلب أو سياسته موجودة؛ فلا يُبتّ فيه ولا يُنفّذ."
+
+msgid "The amount is larger than the ledger keeps."
+msgstr "المبلغ أكبر مما يحفظه الدفتر."
+
+msgid "The books are closed up to a later date than this one."
+msgstr "الدفاتر مقفلة حتى تاريخ لاحق لهذا التاريخ."
+
+msgid "A period before this one is still open: close it first."
+msgstr "ما زالت فترة سابقة لهذه مفتوحة: أقفلها أولًا."
+
+msgid "No limit names this currency for this subject: it moves none."
+msgstr "لا يسمّي أي حدّ هذه العملة لهذه الجهة: فلا تُحرّك منها شيئًا."
+
+msgid "Whoever submitted this command may no longer make it."
+msgstr "لم يعد يحق لمن قدّم هذا الأمر أن يجريه."
+
+msgid "This person's data must be kept for now: nothing was erased."
+msgstr "يجب حفظ بيانات هذا الشخص الآن: لم يُمحَ شيء منها."
+
+#. domainkit.resources and domainkit.http.client: races and outgoing calls
+msgid ""
+"This record changed while it was being checked; read it again and "
+"retry."
+msgstr "تغيّر هذا السجل أثناء التحقق منه؛ اقرأه مرة أخرى ثم أعد المحاولة."
+
+msgid "A service this one depends on failed; try again later."
+msgstr "تعطّلت خدمة تعتمد عليها هذه الخدمة؛ أعد المحاولة لاحقًا."
+
+msgid "A service this one depends on is unavailable; try again later."
+msgstr "خدمة تعتمد عليها هذه الخدمة غير متاحة؛ أعد المحاولة لاحقًا."
+
+msgid "A service this one depends on took too long to answer."
+msgstr "استغرقت خدمة تعتمد عليها هذه الخدمة وقتًا طويلًا للرد."
+
+msgid "A service this one depends on answered with more than can be read."
+msgstr "ردّت خدمة تعتمد عليها هذه الخدمة بأكثر مما يمكن قراءته."

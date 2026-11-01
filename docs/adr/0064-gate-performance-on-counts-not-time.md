@@ -1,6 +1,6 @@
 # 0064. Gate performance in CI on counts, and report time
 
-- Status: Accepted; amended by [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md)
+- Status: Accepted; amended by [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md), and 2026-11-01 (at the end)
 - Date: 2026-10-21
 
 ## Context
@@ -76,3 +76,26 @@ The options:
   the ladder's own time when the base branch is measured too.
 - The coordinator of each performance change lowers the budgets it beats;
   a raised budget is a reviewed decision in the diff of `budgets.toml`.
+
+## Amendment (2026-11-01, the 0.15 audit)
+
+- **The rungs cover money** (PERF-32): `money-write` (a `Money` field
+  written through a unit of work), `posting` (a two-line `post_entry`
+  that `contrib.limits` counts against a daily limit), `encrypted-read`
+  (an `Encrypted()` field read through a unit of work), and `step-up` (a
+  route behind `StepUp`). Nineteen rungs in all. They install money's
+  domains beside the catalog's (`benchmarks/project/money_settings.py`),
+  so the other rungs import, and count, none of it.
+- **The gate's Python is pinned to a patch release**, the one the budgets
+  were written on (3.13.16): at the 0.15 milestone the same code counted
+  21 calls more on `throttled` than budgets written on another 3.13
+  allowed, and CI's floating `3.13` could fail any pull request, or hide
+  a regression, the day a runner's Python moved.
+- **A principal is kept for the whole run** (`AUTH.PRINCIPAL_CACHE.TTL`
+  of 5 minutes in the bench project): with the default 5 seconds, a
+  counted pass that outlasted it read the principal again, and round
+  trips, gated exactly, came out 1.01 or 4.02 now and then.
+- **The JSON-log rungs vary by up to 2.5%** between runs, not 1%; their
+  budgets are the highest of three runs, within the 2% tolerance of the
+  others.
+

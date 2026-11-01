@@ -45,11 +45,12 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](../privacy.md), [operators](#operators)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
 | `keys` | `generate [--id ID]`, `rewrap`, `status [--check]`, `reencrypt [--batch-size N]`, `--operator` | Print a new data key wrapped by `KEYS.PROVIDER`, or `KEYS.DATA_KEYS` wrapped under the KEK's newest version; count what each data key seals (`--check` fails while a retired one still does, `keys.W001`); or seal everything under a retired key again under `CURRENT_KEY`, in batches, audited (keys; see [keys.md](../contrib/keys.md#rotating), [operators](#operators)). |
-| `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](../auth.md)). |
+| `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput`, `--temporary`/`--no-temporary` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>`, and with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` the password it reads is to change at the first login, unless `--no-temporary`. A password the validators refuse is kept on request only without `AUTH.PRESET` and outside staging and production (auth; see [auth.md](../auth.md)). |
 | `changepassword` | `[username] [--temporary/--no-temporary]` | Set a user's password, asked twice and validated; the user's tokens end (auth). With `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, the password of a user named is to change at the first login, unless `--no-temporary`; `--temporary` asks it for any. |
-| `createtoken` | `username`, `--name`, `--days`, `--no-expiry`, `--scope` | Print a new token for a user's scripts, shown once, limited to the `--scope` permissions if given (auth). |
+| `createtoken` | `username`, `--name`, `--days`, `--no-expiry`, `--scope` | Print a new token for a user's scripts, shown once, limited to the `--scope` permissions if given; `--name login` is refused, the name of logins' tokens (auth). |
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
+| `resealmfa` | `--check`, `--batch-size` | Encrypt every TOTP secret again under `SECRET_KEY`, so a key of `SECRET_KEY_FALLBACKS` can be dropped; `--check` changes nothing and fails while a secret is under a fallback or under no key held. Run it before dropping a fallback (auth; see [Two-factor logins](../auth/logging-in.md#two-factor-logins)). |
 | `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate log in as a user, by its SHA-256 (auth). |
 | `flags` | `list`, `set NAME [--everyone {on,off,rules}] [--percentage N] [--users USER_ID ...] [--groups GROUP ...] [--note TEXT]`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](../contrib/flags.md#flags-feature-flags-and-dynamic-settings)). |
 
@@ -62,7 +63,7 @@ application, say who runs them and leave a row in the audit trail (with
 and `keys reencrypt`; `dumpdata --include-guarded`, which copies credentials out (0.12),
 and `dumpdata --decrypt`, which copies encrypted values out in clear;
 and so do those that change credentials, flags, settings, and deliveries:
-`resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
+`resetmfa`, `resealmfa`, `createtoken`, `changepassword`, `createsuperuser`,
 `addcertificate`, `cleartokens`, `flags`, `webhooks`, `accounting`
 (its `import`, `reconcile`, and `expireholds`), `approvals` (its
 `expire`), and `limits` (its `set` and `purge`). Their listings

@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Typing :: Typed",
 ]
@@ -64,9 +65,10 @@ immudb = [
     # 1.66.2 is the first grpcio with wheels for Python 3.13.
     "grpcio (>=1.66.2,<2.0.0)",
     "ecdsa (>=0.19.2,<1.0.0)",
-    # 5.27.0 is the first protobuf whose C extension imports on Python 3.13
-    # without a DeprecationWarning (a metaclass with a custom tp_new).
-    "protobuf (>=5.27.0,<8.0.0)",
+    # 6.33.5 is the first protobuf past PYSEC-2026-1805 (CVE-2026-0994) and
+    # -1806 (CVE-2025-4565), and imports on Python 3.13 without the
+    # DeprecationWarning of releases before 5.27.0 (INFRA-15).
+    "protobuf (>=6.33.5,<8.0.0)",
 ]
 # A message broker for the worker: RabbitMQ, through aio-pika.
 # aiormq, which aio-pika installs, for the one error it does not re-export.
@@ -90,6 +92,14 @@ webhooks = ["httpx2 (>=2.13.0,<3.0.0)", "cryptography (>=50.0.2,<51.0.0)"]
 # request's deadline, retried, with a circuit breaker per host.
 # httpcore2 (httpx2's transport) for its pool and network backend.
 httpclient = ["httpx2 (>=2.13.0,<3.0.0)", "httpcore2 (>=2.13.0,<3.0.0)"]
+# Encrypted fields and their keys (domainkit.keys, domainkit.contrib.keys):
+# AES-GCM, and the key services (AWS KMS, Vault) reached through
+# domainkit.http.client (INFRA-19, DSGN-31).
+keys = [
+    "cryptography (>=50.0.2,<51.0.0)",
+    "httpx2 (>=2.13.0,<3.0.0)",
+    "httpcore2 (>=2.13.0,<3.0.0)",
+]
 # The IANA time zones for cron schedules where the system has none (Windows).
 tzdata = ["tzdata (>=2025.2)"]
 # uvloop's event loop for management commands and runserver (EVENT_LOOP).
@@ -229,6 +239,7 @@ addopts = "-ra --strict-markers --strict-config -p pytester"
 filterwarnings = ["error"]
 markers = [
     "reads_own_source: reads domainkit's source text, the frames of its calls, or the modules importing it loads, which mutmut rewrites; mutation runs leave it out",
+    "engines_on_threads: makes and closes SQLAlchemy engines on several threads at once, which crashes 3.14t inside SQLAlchemy's compiled extensions now and then; the required test (3.14t) job leaves it to stress (3.14t)",
 ]
 # The slowest test takes seconds; one that runs two minutes hangs. The thread
 # method stops even a hang inside C code or another thread: it prints every
@@ -265,6 +276,7 @@ also_copy = [
     "CHANGELOG.md",
     "SECURITY.md",
     "renovate.json",
+    "poetry.lock",
     "LICENSE",
     "CONTRIBUTING.md",
     ".pre-commit-config.yaml",

@@ -1,21 +1,15 @@
-"""DOCS-14: crypto-shredding does not reach a backup taken before the erasure.
+"""DOCS-14: crypto-shredding reaches a backup only once the erasure is applied to it.
 
-``docs/contrib/keys.md`` promises that erasing a person destroys their key
-so that "every copy of what it sealed, backups included, is then
-unreadable", and that "every value sealed under those keys reads as None,
-in the database and in every backup or dump of it"; ``docs/privacy.md``
-repeats it ("in backups, replicas, and dumps too"). But a subject's key is
-stored in ``domainkit_keys_subject_keys``, "in the same database and
-transaction as the row", wrapped under a data key that stays in
-``KEYS.DATA_KEYS`` (and in the KMS). A backup taken before the erasure
-holds the ciphertext and the key that opens it, and the data keys still
-unwrap that key: restoring it, or reading it with the service's keys,
-gives the person's card number back.
-
-The test takes such a backup the way point-in-time recovery would give it
-back: the rows the erasure deleted (the subject's key) are put back as they
-were, nothing else changes, and the card number is read through the
-domain. What the docs promise is that it reads as None.
+A subject's key is stored in ``domainkit_keys_subject_keys``, "in the same
+database and transaction as the row", wrapped under a data key that stays
+in ``KEYS.DATA_KEYS``. A backup taken before the erasure holds the
+ciphertext and the key that opens it. The 0.15 audit found the docs
+promising that erasure reached "every backup"; the owner decided that the
+docs state the limit instead, and that a restore applies the recorded
+erasures again (``docs/contrib/keys.md``, "Backups taken before an
+erasure"). This test pins both: restored, the backup opens the person's
+card number; erased again, as the guide says to after a restore, it reads
+as None.
 """
 
 from pathlib import Path
@@ -48,10 +42,10 @@ async def restore_keys(rows: list[dict[str, Any]]) -> None:
 
 
 @pytest.mark.anyio
-async def test_a_backup_from_before_an_erasure_does_not_open_the_persons_values(
+async def test_a_backup_from_before_an_erasure_opens_until_the_erasure_is_applied(
     database_url: str, tmp_path: Path
 ) -> None:
-    """keys.md: once erased, a value "reads as None ... in every backup"."""
+    """keys.md: a backup from before an erasure opens; erasing again shreds it."""
     with project(database_url, tmp_path):
         await save(Cardholder(id=ANN, name="Ann", card_number=PAN))
         backup = await backup_of_keys()
@@ -64,9 +58,8 @@ async def test_a_backup_from_before_an_erasure_does_not_open_the_persons_values(
         await restore_keys(backup)  # The database as the backup holds it.
         async with CardsUnitOfWork() as uow:
             restored = await uow.cardholders.get(ANN)
+        assert restored.card_number == PAN  # The documented limit.
 
-        assert restored.card_number is None, (
-            "a backup taken before the erasure still opens the erased person's "
-            "card number: their key is in it, wrapped under a data key the "
-            "service still holds"
-        )
+        assert await shred_subject(str(ANN)) == 1  # The recorded erasure, again.
+        async with CardsUnitOfWork() as uow:
+            assert (await uow.cardholders.get(ANN)).card_number is None

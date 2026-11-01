@@ -16,14 +16,31 @@ move says who made it::
     )
 """
 
+from typing import Final
 from uuid import UUID
 
+from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.ddd import Command
 from domainkit.money import Money
 
 from .models import Direction, Limit, LimitId, Window, check_kind, limit_currency
 from .uow import LimitsUnitOfWork
+
+ACCOUNTING: Final = "domainkit.contrib.accounting"
+
+
+async def _count_earlier(uow: LimitsUnitOfWork, limit: Limit) -> None:
+    """With the ledger, count what moved earlier in the limit's window (SEC-15b-5).
+
+    Only the subjects a window bounds keep their movements (PERF-26), so a
+    limit set, changed, or enabled partway through its window counts the
+    ledger's postings since it began, in the transaction that sets it.
+    """
+    if registry.is_installed(ACCOUNTING):
+        from .postings import count_earlier
+
+        await count_earlier(uow.session, limit)
 
 
 class SetLimit(Command):
@@ -98,6 +115,7 @@ async def define_limit(command: SetLimit, uow: LimitsUnitOfWork) -> Limit:
     )
     async with uow:
         await uow.limits.add(limit)
+        await _count_earlier(uow, limit)
         await uow.commit()
     return limit
 
@@ -130,6 +148,7 @@ async def set_limit(command: SetLimit, uow: LimitsUnitOfWork) -> Limit:
             await uow.limits.add(limit)
         else:
             limit.change(**_bounds(command, limit.time_zone))  # type: ignore[arg-type]
+        await _count_earlier(uow, limit)
         await uow.commit()
     return limit
 
@@ -144,6 +163,7 @@ async def change_limit(command: ChangeLimit, uow: LimitsUnitOfWork) -> Limit:
     async with uow:
         limit = await uow.limits.get(LimitId(command.limit_id))
         limit.change(**_bounds(command, limit.time_zone))  # type: ignore[arg-type]
+        await _count_earlier(uow, limit)
         await uow.commit()
     return limit
 

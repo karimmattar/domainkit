@@ -69,11 +69,19 @@
             "integration_id": 15368
           },
           {
+            "context": "test (3.15)",
+            "integration_id": 15368
+          },
+          {
             "context": "test (3.14t)",
             "integration_id": 15368
           },
           {
             "context": "integration",
+            "integration_id": 15368
+          },
+          {
+            "context": "postgresql (16)",
             "integration_id": 15368
           },
           {
@@ -103,6 +111,22 @@
           {
             "context": "audit",
             "integration_id": 15368
+          },
+          {
+            "context": "codeql",
+            "integration_id": 15368
+          }
+        ]
+      }
+    },
+    {
+      "type": "code_scanning",
+      "parameters": {
+        "code_scanning_tools": [
+          {
+            "tool": "CodeQL",
+            "security_alerts_threshold": "high_or_higher",
+            "alerts_threshold": "errors"
           }
         ]
       }

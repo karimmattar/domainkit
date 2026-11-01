@@ -20,7 +20,7 @@ from sqlalchemy.types import TypeDecorator
 
 from domainkit import setup
 from domainkit.apps import registry
-from domainkit.apps.hooks import on_erase_subject, on_export_subject
+from domainkit.apps.hooks import on_erase_subject, on_export_subject, on_retain_subject
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import record
@@ -28,6 +28,7 @@ from domainkit.contrib.audit.personal import pseudonym_of
 from domainkit.contrib.audit.protection import statements
 from domainkit.contrib.audit.tables import audit_keys, audit_log
 from domainkit.contrib.privacy import (
+    ErasureHeld,
     PersonalModel,
     Retention,
     check_reason,
@@ -671,6 +672,74 @@ def test_a_hook_that_answers_more_than_counts_is_named(clinic: str) -> None:
     )
 
 
+def test_a_check_holds_the_whole_erasure_before_anything_is_erased(clinic: str) -> None:
+    """One domain's reason holds it: no hook erases, and the denial is audited.
+
+    The contract of ``on_erase_subject`` (FIN-94): erasing hooks run only
+    once every ``on_retain_subject`` let the erasure go on.
+    """
+    run_async(fill())
+    erased: list[str] = []
+
+    asked: list[str] = []
+
+    async def owed(subject: str, reason: str) -> str | None:
+        asked.append(reason)
+        return "Holds an account with money on it." if subject == str(ANN) else None
+
+    async def fine(subject: str, reason: str) -> str | None:
+        return None
+
+    async def erase(subject: str, reason: str) -> dict[str, int]:
+        erased.append(subject)
+        return {"copies": 1}
+
+    on_retain_subject(owed, domain="alpha")
+    on_retain_subject(fine, domain="patients")
+    on_erase_subject(erase, domain="alpha")
+    before = run_async(rows_of(tables.visits))
+
+    with pytest.raises(ErasureHeld) as held:
+        run_async(erase_subject(str(ANN), reason="ticket 7"))
+    with pytest.raises(CommandError, match=r"^Nothing was erased\. Kept by alpha: "):
+        call_command(
+            "privacy", "erase", "--subject", str(ANN), "--noinput", stdout=io.StringIO()
+        )
+
+    assert held.value.code == "erasure_held"
+    assert str(held.value) == (
+        "This person's data must be kept for now: nothing was erased."
+    )
+    assert asked[0] == "ticket 7"
+    assert held.value.held == {"alpha": "Holds an account with money on it."}
+    assert (erased, run_async(rows_of(tables.visits))) == ([], before)
+    (denied, _) = run_async(audited("privacy.erase"))
+    assert (denied["outcome"], denied["target"], denied["details"]) == (
+        "denied",
+        str(ANN),
+        {"held": {"alpha": "Holds an account with money on it."}, "reason": "ticket 7"},
+    )
+    run_async(erase_subject(str(BOB)))
+    assert erased == [str(BOB)]
+
+
+def test_a_check_that_answers_other_than_a_sentence_is_named(clinic: str) -> None:
+    """A check answers a printable sentence, or None: anything else is refused."""
+
+    async def counts(subject: str, reason: str) -> object:
+        return {"accounts": 1}
+
+    on_retain_subject(counts, domain="alpha")  # type: ignore[arg-type]
+
+    with pytest.raises(ImproperlyConfigured) as refused:
+        run_async(erase_subject("nobody"))
+
+    assert str(refused.value) == (
+        "The on_retain_subject hook of 'alpha' answered {'accounts': 1}: a sentence "
+        "of 1 to 255 printable characters, or None."
+    )
+
+
 # Retention -------------------------------------------------------------------------
 
 
@@ -860,7 +929,7 @@ def test_retention_of_an_aggregate_deletes_its_old_rows(
     from domainkit_tests.sample_domains.patients.models import Appointment
 
     retention = Retention(aggregate=Appointment, field="booked_at", keep=timedelta(1))
-    monkeypatch.setattr(PatientsConfig, "RETENTION", (retention,))
+    monkeypatch.setattr(PatientsConfig, "retention", (retention,))
 
     async def apply() -> list[Any]:
         await fill()
@@ -964,8 +1033,8 @@ def ann_on_shards(clinic_shards: None, monkeypatch: pytest.MonkeyPatch) -> None:
 
     The domain keeps two policies: the access log's, and the visits'.
     """
-    log = PatientsConfig.RETENTION[0]
-    monkeypatch.setattr(PatientsConfig, "RETENTION", (log, PatientsConfig.RETENTION[2]))
+    log = PatientsConfig.retention[0]
+    monkeypatch.setattr(PatientsConfig, "retention", (log, PatientsConfig.retention[2]))
     patient = {
         "id": ANN,
         "name": "Ann",
@@ -1140,7 +1209,7 @@ def test_retention_policies_are_checked(
     problem: str,
 ) -> None:
     """Every policy names a table of its own domain, dated, and not append-only."""
-    monkeypatch.setattr(PatientsConfig, "RETENTION", (retention,))
+    monkeypatch.setattr(PatientsConfig, "retention", (retention,))
 
     assert problems() == [problem]
     with pytest.raises(ImproperlyConfigured, match="Privacy cannot be applied"):
@@ -1163,7 +1232,7 @@ def test_erasing_retention_needs_fields_that_become_none(
         keep=timedelta(days=1),
         erase=True,
     )
-    monkeypatch.setattr(PatientsConfig, "RETENTION", (retention,))
+    monkeypatch.setattr(PatientsConfig, "retention", (retention,))
 
     assert problems() == [
         (
@@ -1341,8 +1410,8 @@ def test_the_command_purges(clinic: str, monkeypatch: pytest.MonkeyPatch) -> Non
         f"{(NOW - timedelta(days=30)).isoformat()}; refused, other rows still "
         "refer to them"
     )
-    monkeypatch.setattr(PatientsConfig, "RETENTION", ())
-    assert run("purge") == "No domain declares a RETENTION.\n"
+    monkeypatch.setattr(PatientsConfig, "retention", ())
+    assert run("purge") == "No domain declares a retention.\n"
 
 
 def test_the_command_runs_as_its_operator(

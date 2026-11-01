@@ -17,7 +17,7 @@ from domainkit.management import call_command
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import create_user
 
-PCI = {"PASSWORD_PRESET": "pci-dss-4"}
+PCI = {"PRESET": "pci-dss-4"}
 OWN = "Kq7-zv93-Lmw2"
 SET_BY_OPERATOR = "Pw4-tt81-Xcv9"
 

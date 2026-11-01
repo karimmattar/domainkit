@@ -56,6 +56,20 @@ services:
       timeout: 5s
       retries: 30
 
+  # The oldest PostgreSQL domainkit supports, as CI's postgresql (16) job
+  # runs it: DOMAINKIT_TEST_POSTGRES_URL=postgresql+asyncpg://postgres:postgres@localhost:5433/postgres
+  postgres-16:
+    image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 127.0.0.1:5433:5432
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   immudb:
     image: codenotary/immudb:1.11.2@sha256:f2efcf6a3de73b31691e0afb8dfec972642aaf0699b93387d1ec6074aedb2953
     command:

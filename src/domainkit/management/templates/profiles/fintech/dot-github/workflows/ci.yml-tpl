@@ -1,8 +1,9 @@
-# The project's checks on every push and pull request: the code as ruff
-# formats it, its types (mypy --strict), the layer rules and settings
-# (check), every model change in a migration, the tests, and the image
-# built. Actions are pinned to commit SHAs, as domainkit's own CI pins
-# them; Renovate or Dependabot keep them new.
+# The project's checks on every push and pull request: its dependencies
+# against the advisories (pip-audit), the code as ruff formats it, its
+# types (mypy --strict), the layer rules and settings (check), every model
+# change in a migration, the tests, and the image built. Actions are
+# pinned to commit SHAs, as domainkit's own CI pins them; Renovate or
+# Dependabot keep them new.
 name: ci
 
 on:
@@ -33,6 +34,12 @@ jobs:
           python -m pip install --upgrade pip
           python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt
           python -m pip install --group dev -r requirements.txt
+      - name: Audit
+        # What was installed, against the advisories (pip-audit): the
+        # project's dependencies, domainkit's, and theirs. PYSEC-2026-1325,
+        # a timing attack on ecdsa's signing, does not apply: the immudb
+        # extra's SDK only verifies with ecdsa (domainkit's SECURITY.md).
+        run: pip-audit --progress-spinner off --ignore-vuln PYSEC-2026-1325
       - name: Lint
         run: |
           ruff check .

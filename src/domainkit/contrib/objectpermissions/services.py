@@ -24,6 +24,8 @@ from .uow import ObjectPermissionsUnitOfWork, about
 class InvalidGrant(BusinessRuleViolation):
     """A grant names a permission of another model, or no one or two at once."""
 
+    code = "invalid_grant"
+
 
 def describe(obj: object) -> tuple[str, ObjectId]:
     """``(content type, id)`` of a stored object: ``("catalog.product", id)``.
@@ -32,7 +34,7 @@ def describe(obj: object) -> tuple[str, ObjectId]:
         LookupError: Its class is not mapped in an installed domain.
         TypeError: Its id is not a UUID, an integer, or text.
     """
-    from domainkit.contrib.contenttypes import content_type_key
+    from domainkit.db.models import model_key as content_type_key
 
     content_type = ".".join(content_type_key(type(obj)))
     object_id = getattr(obj, "id", None)

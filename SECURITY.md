@@ -13,17 +13,24 @@ The maintainers aim to:
 | Acknowledge the report | 2 business days |
 | Confirm it and rate its severity | 5 business days |
 | Release a fix for critical and high issues | 14 days |
-| Release a fix for medium and low issues | the next minor release |
+| Release a fix for medium and low issues | the next patch release of the latest minor |
 
 Fixes are published as a GitHub security advisory and a patch release, and
 reporters are credited unless they ask not to be.
 
 ## Supported versions
 
-Only the latest minor release gets fixes. Before 1.0 there are no backports.
-See [docs/versioning.md](docs/versioning.md), which drafts a longer support
-statement for the owner to confirm
-([Security fixes and support](docs/versioning.md#security-fixes-and-support)).
+| Release line | Gets | For how long |
+| --- | --- | --- |
+| The latest minor of the current major (`1.X`, until 2.0 is released) | Every fix, of every severity, as patch releases | Until the next minor is released |
+| The last 1.x minor, once 2.0 is released | Fixes for critical and high severity vulnerabilities | 12 months from the release of 2.0.0 |
+| Every other 1.x minor, and every 0.x release | Nothing | |
+
+Only the newest patch release of a supported line is supported. The Python
+versions supported are those `requires-python` admits, each of which CI
+tests. [docs/versioning.md](docs/versioning.md#security-fixes-and-support)
+gives the details: what a fix that cannot be backported safely becomes, and
+when a Python version is dropped.
 
 ## What domainkit does for you, and what it doesn't
 
@@ -55,12 +62,12 @@ boundary by boundary, and what is left to a project.
 | Control | Where |
 | --- | --- |
 | Lint with bandit rules (ruff `S`), strict typing (mypy) | `pyproject.toml`, CI |
-| Dependency audit (pip-audit) and secret scan (gitleaks) on every push, and weekly | `.github/workflows/ci.yml` |
+| Dependency audit (pip-audit) and secret scan (gitleaks) on every push, and weekly; pip-audit also over the floors of the ranges and their newest releases, and at each release over what the published ranges resolve to | `.github/workflows/ci.yml`, `.github/workflows/release.yml` |
 | Static analysis with Semgrep's Python and OWASP Top 10 rules on every push, and weekly | `.github/workflows/ci.yml` |
-| CodeQL's security queries, which follow values across functions and modules, on pushes to `main`, pull requests, and weekly | `.github/workflows/codeql.yml` |
+| CodeQL's security queries, which follow values across functions and modules, on pushes to `main`, pull requests, and weekly; a required check, and a pull request with a new high or critical alert does not merge | `.github/workflows/codeql.yml`, `.github/rulesets/main.json` |
 | The workflows themselves audited by zizmor (injection, persisted credentials, unpinned actions, excessive permissions) on every push, and weekly | `.github/workflows/ci.yml` |
 | A CycloneDX bill of materials for every wheel CI builds: the packages the lock resolves for it | `.github/workflows/ci.yml` |
 | Actions pinned to commit SHAs and CI's images to digests; dependencies updated by Renovate after 14 days, security fixes at once | `.github/workflows/`, `renovate.json` |
 | `main` changes only through pull requests that pass CI; release tags are never moved or deleted (once the rulesets are imported, see `docs/versioning.md`) | `.github/rulesets/` |
-| Releases only from commits on `main` that pass the whole CI workflow, built in CI, attested by GitHub (SLSA build provenance, and the bill of materials), approved in the `pypi` environment by the maintainer (there is one today), and published to PyPI with trusted publishing (no API tokens) and attestations | `.github/workflows/ci.yml` (`attest`), `.github/workflows/release.yml` |
+| Releases only of the release commit of a version (its changelog section dated, newer than the tags before it), on `main`, whose push run passed every check the ruleset requires, built in CI, attested by GitHub (SLSA build provenance, and the bill of materials), approved in the `pypi` environment by the maintainer (there is one today), and published to PyPI with trusted publishing (no API tokens) and attestations | `.github/workflows/ci.yml` (`attest`), `.github/workflows/release.yml` |
 | Property-based tests, random test order, and a weekly mutation run whose score each shard reports | `domainkit_tests/`, `.github/workflows/ci.yml` |

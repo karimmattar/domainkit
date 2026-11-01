@@ -60,7 +60,7 @@ project's conftest never needs a private name for it:
 
 | After each test | Through |
 | --- | --- |
-| The subscriptions, tasks, metric refreshers, and currencies the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped; a test whose body loads them itself keeps what it registers, as its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()`, `domainkit.money.currencies_kept()` |
+| The subscriptions, hooks (`on_ready(check, domain=...)` and every other hook point), tasks, metric refreshers, and currencies the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped; a test whose body loads them itself keeps what it registers, as its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.apps.hooks.hooks_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()`, `domainkit.money.currencies_kept()` |
 | Its error reports are sent and its logs written (below). | `flush_reports()`, `flush_logs()` |
 
 What a module- or session-scoped fixture sends is gone by the time a test
@@ -120,6 +120,29 @@ of `DATABASES`:
 
 Each is then migrated up, down to base, and up again, which proves every
 revision reversible.
+
+When an entry's `URL` connects as another role than its `MIGRATION_URL`
+(the application's row-level role beside the schema owner, as
+[deploying.md](deploying.md) asks), the owner then grants that role, on the
+test database, `USAGE` on its schemas, `SELECT`, `INSERT`, `UPDATE`,
+`DELETE` on their tables, and `USAGE`, `SELECT`, `UPDATE` on their
+sequences: what a row-level role needs, and nothing more, so a test that
+needs more fails as production would. The role must exist on the server;
+a missing one stops the run, naming it. Without this, every test of such
+a project failed with "permission denied" (TEST-13). For example:
+
+```python
+# config/settings/test.py
+DATABASES = {
+    "default": {
+        "URL": env.str("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:"),
+        "MIGRATION_URL": env.str("TEST_DATABASE_OWNER_URL", None),
+    }
+}
+```
+
+`domainkit init --profile fintech` writes these settings; domainkit's CI
+runs that project's tests on PostgreSQL this way.
 
 `pytest --keepdb` keeps the PostgreSQL test databases for the next run. That
 run reuses them and only migrates up, which is faster; each run puts the
@@ -553,8 +576,61 @@ def test_debug_pages(settings, client: TestClient) -> None:
 
 Each change is validated with the whole settings, as at startup: a value
 they refuse fails the assignment with `ImproperlyConfigured`. Reading
-`settings.DEBUG` reads the current setting. Changes are undone in reverse
-order when the test ends.
+`settings.DEBUG` reads the current setting, read-only: mappings are
+`MappingProxyType`s and lists tuples, all the way down, so
+`settings.CACHES["reports"] = {...}` raises `TypeError` instead of
+changing the settings of every later test unvalidated (TEST-19). Assign
+the whole setting: `settings.CACHES = {**settings.CACHES, "reports": {...}}`.
+Changes are undone in reverse order when the test ends.
+
+## Moving money: second factors, approvals, the trail, key services
+
+A project that moves money tests flows a person completes with an
+authenticator app. `domainkit.testing` does each step through the
+application's own routes, with a sync client, as the person would; the
+routes are where `domainkit init` mounts them (`/auth`), or `prefix=`:
+
+```python
+from domainkit.testing import (
+    approve_request,
+    confirm_sca,
+    enrol_totp,
+    step_up,
+)
+
+
+def test_a_large_transfer(client_for, freeze_time):
+    freeze_time("2027-01-04T10:00:00Z")
+    maker = client_for("payments.add_transfer")
+    app = enrol_totp(maker, "correct-horse-battery-42")  # The password is set.
+    step_up(maker, app)
+    asked = maker.post("/api/v1/payments/transfers/authorize", json=...)
+    authorization = confirm_sca(maker, asked.json()["challenge"], app)
+    ...
+    approve_request(approver, "/api/approvals/requests/<id>")
+```
+
+- `totp_code(secret, at=None)`: the code an authenticator app shows, RFC
+  6238 as `domainkit.contrib.auth` checks it (HMAC-SHA1, 30 seconds, six
+  digits); `secret` raw or in base 32.
+- `enrol_totp(client, password)` turns the app on and returns an
+  `Authenticator`, whose `code()` never gives a step twice: the service
+  refuses a step it has seen, so a second code in one step moves a frozen
+  clock to the next step's start (it refuses without a frozen clock).
+- `step_up(client, app)`, `confirm_sca(client, challenge, app)` (returns
+  the authorization), and `approve_request(client, url)` (reads the
+  request's fingerprint, then approves that version). A refused step
+  raises `UnexpectedResponse`, an `AssertionError` naming the step, the
+  status, and the body.
+- `domainkit.contrib.audit.testing.audit_entries(action=, actor=, target=)`
+  reads the trail as `RecordedEntry` records, oldest first:
+  `client.run(audit_entries, action="payments.transfer_made")`.
+- `domainkit.testing.kms`: `FakeKms` (AWS KMS's JSON API, checking each
+  request's SigV4 signature) and `FakeVault` (Vault's transit engine), as
+  handlers for `domainkit.http.client.stub`, so `KEYS["PROVIDER"] =
+  "aws-kms"` or `"vault"` can be tested without the service.
+
+The fintech profile's tests are written with these (TEST-21).
 
 ## Counting queries
 
@@ -645,6 +721,7 @@ marked 0.12 and 0.13 were added for the 0.9.0 audit's TEST-08.
 | DRF's `APIClient.credentials` | `client.another(headers)` |
 | Litestar's `create_test_client`, `AsyncTestClient` | `TestClient(app)`, `AsyncTestClient(app)` for any ASGI application |
 | freezegun, time-machine | `freeze_time`, which the application, tokens, and the outbox follow |
+| pyotp in tests; moto for KMS | `totp_code`, `enrol_totp`, `step_up`, `confirm_sca`, `approve_request`; `domainkit.testing.kms` (0.15) |
 | factory_boy's `Factory`, `Sequence`, `LazyFunction`, `LazyAttribute`, `SubFactory`, `build_batch`, `create_batch` | the same names |
 | factory_boy's `Trait`, `post_generation`, `RelatedFactory`, `SelfAttribute`, `Maybe`, `stub()` | the same names, run through the unit of work before its commit (0.13) |
 

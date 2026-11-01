@@ -13,3 +13,7 @@ SECRET_KEY = "tests-only-6Zq3b1Jw8RkV0yXc5MnHf2LpT9sDg4AeU7oKiWx3N"
 # The framework's tests read /docs and /openapi.json; deployments leave them
 # off (API_DOCS follows DEBUG unless set), which test_api_docs covers.
 API_DOCS = True
+# The framework's tests read the bodies and operation ids 0.x defaulted to;
+# test_problem_details and test_openapi check the 1.0 defaults (DSGN-26).
+ERROR_FORMAT = "domainkit"
+OPENAPI_OPERATION_IDS = "fastapi"

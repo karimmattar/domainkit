@@ -28,19 +28,21 @@ import logging
 import math
 import random
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, TypedDict, Unpack
 
 import anyio
 from fastapi import status
+from fastapi.dependencies.models import Dependant
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.requests import HTTPConnection
+from starlette.routing import BaseRoute
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.clock import frozen, monotonic
 from domainkit.conf import settings
-from domainkit.conf.global_settings import MAX_REAUTH_INTERVAL
+from domainkit.conf.global_settings import MAX_LIFETIME, MAX_REAUTH_INTERVAL
 from domainkit.context import current_request
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.http.errors import error_response
@@ -152,7 +154,7 @@ class _Overrides(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
-    max_lifetime: float = Field(default=1.0, gt=0)
+    max_lifetime: float = Field(default=1.0, gt=0, le=MAX_LIFETIME)
     send_queue: int = Field(default=1, ge=1, le=10_000)
     send_timeout: float = Field(default=1.0, gt=0)
     reauth_interval: float | None = Field(default=None, gt=0, le=MAX_REAUTH_INTERVAL)
@@ -227,6 +229,43 @@ def _shared(given: dict[str, Any]) -> dict[str, Any]:
         "send_timeout": given.get("send_timeout", settings.LIVE_SEND_TIMEOUT),
         "reauth_interval": given.get("reauth_interval", settings.LIVE_REAUTH_INTERVAL),
     }
+
+
+def unchecked_routes(routes: Sequence[BaseRoute]) -> list[str]:
+    """Routes that keep live connections open without re-checking who holds them.
+
+    A route with an access rule whose ``LiveLimits(reauth_interval=None)``
+    turns re-authorization off keeps a revoked token, a deactivated user,
+    or a removed permission connected for its whole lifetime, unseen by
+    ``security.W005``, which reads ``LIVE_REAUTH_INTERVAL`` alone (WEB-24).
+    ``check`` warns where deployed (``live.W002``).
+    """
+    from domainkit.http.access import Require, served_routes  # They import this.
+
+    found = []
+    for name, dependant in served_routes(routes):
+        if dependant is None:
+            continue
+        limits = [call for call in _calls(dependant) if isinstance(call, LiveLimits)]
+        guarded = any(isinstance(call, Require) for call in _calls(dependant))
+        if guarded and any(
+            "reauth_interval" in each.overrides
+            and each.overrides["reauth_interval"] is None
+            for each in limits
+        ):
+            found.append(
+                f"{name} turns re-authorization off (LiveLimits(reauth_interval="
+                "None)): its open connections keep a revoked token or a removed "
+                "permission until they close. Give it an interval."
+            )
+    return found
+
+
+def _calls(dependant: Dependant) -> Iterator[object]:
+    """What ``dependant`` and its dependencies, at any depth, call."""
+    yield dependant.call
+    for each in dependant.dependencies:
+        yield from _calls(each)
 
 
 # Caps --------------------------------------------------------------------------------

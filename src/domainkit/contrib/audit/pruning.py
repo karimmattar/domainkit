@@ -59,7 +59,7 @@ from .seals import (
     starting_points,
     verify,
 )
-from .settings import AuditSettings
+from .settings import AuditSettings, min_retention
 from .tables import audit_checkpoints, audit_log, audit_seals
 
 __all__ = [
@@ -118,10 +118,11 @@ async def prune(
     public = key.public_key()
     now = now or clock.now()
     config = registry.settings(AuditSettings)
-    if before > now - config.MIN_RETENTION:
+    kept = min_retention()
+    if before > now - kept:
         raise PruneRefused(
-            f"AUDIT.MIN_RETENTION keeps every row for {config.MIN_RETENTION}: "
-            f"prune before {(now - config.MIN_RETENTION).isoformat()} at the "
+            f"AUDIT.MIN_RETENTION keeps every row for {kept}: "
+            f"prune before {(now - kept).isoformat()} at the "
             "latest. Nothing was pruned."
         )
     history = [] if ledger is None else await _history(database, ledger)
@@ -143,7 +144,7 @@ async def prune(
     last = accepted[points[-1].seq] if points else None
     left = 0 if last is None else await _left_below(database, last, ledger)
     if cut is not None and ledger is not None:
-        oldest = now - config.MIN_RETENTION
+        oldest = now - kept
         cut = max(
             (
                 written.seq

@@ -668,7 +668,7 @@ def test_settings_numbers_are_finite(value: float) -> None:
 @pytest.mark.parametrize(
     ("schema", "field"),
     [
-        (MessagingSettings, "SHUTDOWN_TIMEOUT"),
+        (MessagingSettings, "DRAIN_TIMEOUT"),
         (IdempotencySettings, "LEASE_SECONDS"),
     ],
 )
@@ -700,7 +700,7 @@ def refused_above(
         ("POLL_INTERVAL", 3600),
         ("BATCH_SIZE", 10_000),
         ("CONCURRENCY", 65_535),  # RabbitMQ's prefetch is a 16-bit count.
-        ("SHUTDOWN_TIMEOUT", 3600),
+        ("DRAIN_TIMEOUT", 3600),
         ("REPUBLISH_AFTER", 7 * 24 * 3600),
         ("RETENTION_SECONDS", 365 * 24 * 3600),
         ("CLEANUP_INTERVAL", 24 * 3600),

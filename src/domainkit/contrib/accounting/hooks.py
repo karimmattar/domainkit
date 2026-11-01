@@ -3,12 +3,12 @@
 Register in ``DomainConfig.ready()``; each is called in turn, and a hook
 that raises refuses the entry. They differ in when they run:
 
-- ``on_posting`` checks an entry before ``post_entry`` posts it:
+- ``on_post_entry`` checks an entry before ``post_entry`` posts it:
   ``async def hook(command: PostEntry)``, before any lock is taken and only
   for ``post_entry``. ``domainkit.contrib.approvals`` refuses there the
   entries over ``APPROVALS.ENTRY_THRESHOLDS`` that no approved request
   posts.
-- ``on_booking`` sees every entry as it is booked:
+- ``on_stage_entry`` sees every entry as it is booked:
   ``async def hook(uow, entry, accounts)``, inside the posting's
   transaction, after its accounts and period are locked and their balances
   moved, before the entry is added, for every entry ``post_entry``,
@@ -18,11 +18,11 @@ that raises refuses the entry. They differ in when they run:
   (ADR 0116). ``domainkit.contrib.limits`` counts each entry there
   (ADR 0123)::
 
-      from domainkit.contrib.accounting import on_booking
+      from domainkit.contrib.accounting.hooks import on_stage_entry
 
       class LimitsConfig(DomainConfig):
           def ready(self) -> None:
-              on_booking(enforce_limits)
+              on_stage_entry(enforce_limits)
 """
 
 from collections.abc import Awaitable, Callable, Mapping
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from .models import Account, AccountId, Entry
     from .uow import AccountingUnitOfWork
 
-__all__ = ["on_booking", "on_posting"]
+__all__ = ["on_post_entry", "on_stage_entry"]
 
 type PostingHook = Callable[["PostEntry"], Awaitable[None]]
 type BookingHook = Callable[
@@ -43,10 +43,12 @@ type BookingHook = Callable[
     Awaitable[None],
 ]
 
-on_posting: HookPoint[PostingHook] = HookPoint("posting", arguments=1, awaited=True)
+on_post_entry: HookPoint[PostingHook] = HookPoint(
+    "accounting.post_entry", arguments=1, awaited=True
+)
 """Check an entry before ``post_entry`` posts it: ``(command)``; raising refuses it."""
-on_booking: HookPoint[BookingHook] = HookPoint(
-    "accounting.booking", arguments=3, awaited=True
+on_stage_entry: HookPoint[BookingHook] = HookPoint(
+    "accounting.stage_entry", arguments=3, awaited=True
 )
 """See every entry as it is booked: ``(uow, entry, accounts)``; raise to refuse it.
 

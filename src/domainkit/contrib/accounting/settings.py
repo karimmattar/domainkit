@@ -25,7 +25,7 @@ class AccountingSettings(BaseModel):
     REQUIRE_PERIOD: bool = True
     """Refuse an entry dated where no period is open (``no_open_period``);
     False books it without a period, unless a closed one covers its date."""
-    RETRY_ATTEMPTS: int = Field(default=5, ge=1, le=10)
+    MAX_ATTEMPTS: int = Field(default=5, ge=1, le=10)
     """Runs of a posting, the first included, when its transaction lost a
     race (a deadlock or a serialization failure; ``UnitOfWork.run``)."""
     HOLD_TTL: timedelta = Field(

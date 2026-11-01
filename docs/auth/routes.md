@@ -13,7 +13,7 @@ to log in; a refused user gets `403`.
 
 ```python
 from domainkit.contrib.auth import AuthenticatedUser, CurrentUser
-from domainkit.http.access import HasPermissions, ModelPermissions, Require
+from domainkit.http.access import HasPermissions, ModelPermissions, Public, Require
 
 @router.post("/invoices", dependencies=[Depends(Require(HasPermissions("billing.add_invoice")))])
 async def create_invoice(...): ...
@@ -24,7 +24,7 @@ async def products(user: Annotated[AnyUser, Depends(Require(ModelPermissions(Pro
 @router.get("/me/invoices")
 async def my_invoices(user: AuthenticatedUser): ...      # 401 for anonymous callers
 
-@router.get("/greeting")
+@router.get("/greeting", dependencies=[Public])
 async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser if so
 ```
 
@@ -81,9 +81,11 @@ await check_object_permissions(request, invoice, IsOwner())
 
 ### Deny by default
 
-Every route must say who may call it: a `Require(...)` dependency, a
-`CurrentUser` or `AuthenticatedUser` parameter, or `Public` for a route
-anyone may call. Each can sit on the route, on a dependency it uses, or on
+Every route must say who may call it: a `Require(...)` dependency, an
+`AuthenticatedUser` parameter, or `Public` for a route anyone may call.
+A `CurrentUser` parameter alone says nothing: it lets anyone in, an
+anonymous caller as `AnonymousUser`, so such a route is listed until it
+adds `Public` (since 1.0, DSGN-17). Each can sit on the route, on a dependency it uses, or on
 a router it is included through. Routes that say nothing are listed by
 `manage.py check`, logged when the application starts in development and
 tests, and refused in staging and production, where the application does
@@ -182,7 +184,9 @@ class GatewayAuthentication:
 
 A dependency of the project's own that reads the principal counts as a
 rule for deny by default once marked with `reads_principal`, as
-`CurrentUser` and `AuthenticatedUser` are.
+`AuthenticatedUser` is: mark only one that refuses anonymous callers.
+`CurrentUser` is marked too, so scoped credentials are held to the route's
+rules where it reads them, but it never counts as a rule.
 
 ## The admin API
 
@@ -240,7 +244,14 @@ Staff hand out only what they have:
 - Other staff cannot grant a permission they lack, directly or through a
   group (`403`).
 - Nor can they change a user or a group that holds such a permission:
-  setting a user's password is as good as becoming them. What every backend
+  setting a user's password is as good as becoming them.
+- Grants on single objects count too (AUTH-14): staff change no user or
+  group holding a grant on an object, and add no one to a group holding
+  one, unless they hold the permission on the whole model or the same
+  grant on that object (`403`, naming each grant they lack). Every
+  backend says what it grants on objects through
+  `BaseBackend.object_grants(holder)` (`ObjectPermissionBackend` does);
+  a backend of the project's own that grants on objects must answer it. What every backend
   in `AUTH.BACKENDS` grants counts, and so does what a change would grant
   (a field a backend reads, a user made active again). Inactive users count
   with every grant they keep; while other backends are configured, only

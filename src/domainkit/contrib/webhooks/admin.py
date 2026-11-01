@@ -35,7 +35,7 @@ from domainkit.http import error_responses
 from .delivery import replay, webhooks_alias
 from .guard import MAX_URL_LENGTH, checked_url
 from .models import MAX_DESCRIPTION, MAX_EVENT_TYPES, Subscription, SubscriptionId
-from .settings import WebhookSettings
+from .settings import WebhooksSettings
 from .tables import ERASED, attempts, deliveries
 from .uow import WebhooksUnitOfWork
 
@@ -210,7 +210,7 @@ def _no_store(response: Response) -> None:
 
 def _checked(url: str) -> str:
     """The host of ``url``, once the guard accepts it (else 422)."""
-    config = registry.settings(WebhookSettings)
+    config = registry.settings(WebhooksSettings)
     parsed = checked_url(
         url, allow_http=settings.DEBUG, allowed=config.ALLOWED_PRIVATE_NETWORKS
     )
@@ -305,7 +305,7 @@ async def rotate_secret(
     """
     _no_store(response)
     overlap = timedelta(
-        seconds=registry.settings(WebhookSettings).SECRET_OVERLAP_SECONDS
+        seconds=registry.settings(WebhooksSettings).SECRET_OVERLAP_SECONDS
     )
     async with WebhooksUnitOfWork() as uow:
         subscription = await _subscription(uow, subscription_id)

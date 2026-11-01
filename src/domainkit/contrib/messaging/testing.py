@@ -173,6 +173,14 @@ class _Worker(Worker):
         super().__init__(database=database)
         self.failures = failures
 
+    def _unknown_for(self, message: Claimed) -> datetime | None:
+        """None: a test's process has every task, so a missing one is a mistake.
+
+        It is dead-lettered at once and reported, whatever
+        ``UNKNOWN_TARGET_GRACE`` says.
+        """
+        return None
+
     async def _failed(
         self,
         message: Claimed,
@@ -220,8 +228,8 @@ async def drain(*, delayed: bool = False, max_rounds: int = MAX_ROUNDS) -> Drain
         for worker in workers:
             if delayed:
                 await _make_due(worker)
-            claimed = await worker.claim(worker.config.BATCH_SIZE)
-            await asyncio.gather(*(worker.process(message) for message in claimed))
+            claimed = await worker._claim(worker.config.BATCH_SIZE)
+            await asyncio.gather(*(worker._process(message) for message in claimed))
             ran += len(claimed)
         if not ran:
             return drained

@@ -21,8 +21,12 @@ from domainkit.storage.base import (
     Storage,
     StorageError,
     StoredFile,
-    check_name,
-    new_name,
+)
+from domainkit.storage.base import (
+    check_name as check_name,
+)
+from domainkit.storage.base import (
+    new_name as new_name,
 )
 from domainkit.storage.filesystem import FileSystemStorage
 from domainkit.storage.handler import StorageHandler, storages
@@ -37,7 +41,5 @@ __all__ = [
     "StorageError",
     "StorageHandler",
     "StoredFile",
-    "check_name",
-    "new_name",
     "storages",
 ]

@@ -27,9 +27,8 @@ from sqlalchemy import (
 )
 
 from domainkit import clock
-from domainkit.db import UTCDateTime, connections
+from domainkit.db import UTCDateTime, connections, dbclock
 
-from . import dbclock
 from .settings import MessagingSettings
 from .tables import BLANKED, CANCELLED, DEAD, HELD, PENDING, messages
 
@@ -122,16 +121,24 @@ async def queue_lag(
     published ones do, as they wait on the broker.
     """
     engine = connections.engine(database or config.DATABASE)
-    moment = lease_now(engine.dialect.name)
-    now = _now()
+    dialect = engine.dialect.name
+    moment = lease_now(dialect)
+    now = dbclock.now(dialect)
+    oldest = func.min(messages.c.available_at)
+    if isinstance(now, datetime):
+        waited: Any = oldest
+    else:  # The database's clock wrote the times: it measures the wait (CONC-18).
+        waited = func.extract("epoch", now - oldest)
     statement = (
-        select(messages.c.queue, func.min(messages.c.available_at))
+        select(messages.c.queue, waited)
         .where(waiting(moment), messages.c.available_at <= moment)
         .group_by(messages.c.queue)
     )
     async with engine.connect() as connection:
         rows = (await connection.execute(statement)).all()
-    return {queue: (now - oldest).total_seconds() for queue, oldest in rows}
+    if isinstance(now, datetime):
+        return {queue: (now - since).total_seconds() for queue, since in rows}
+    return {queue: float(seconds) for queue, seconds in rows}
 
 
 async def list_messages(
@@ -288,7 +295,7 @@ async def cancel(
             await ordering.take_turns(connection, dialect, {key: 0})
         cancelled = bool((await connection.execute(statement)).rowcount)
         if cancelled and key is not None:
-            await ordering.promote(connection, dialect, key)
+            await ordering.promote(connection, dialect, key, turn_taken=True)
     return cancelled
 
 

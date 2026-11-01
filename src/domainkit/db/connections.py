@@ -330,6 +330,7 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
     else:
         _listen(engine.sync_engine, "begin", _begin_snapshot)
         _listen(engine.sync_engine, "savepoint", _begin_before_savepoint)
+        _listen(engine.sync_engine, "connect", _enforce_foreign_keys)
     if backend.get_driver_name() == "asyncpg" and not config.PGBOUNCER:
         engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
         _keep_settled(engine.sync_engine)
@@ -817,6 +818,21 @@ def _set_local(config: DatabaseConfig, connection: Connection) -> None:
         )
 
 
+def _enforce_foreign_keys(dbapi_connection: Any, record: object = None) -> None:  # noqa: ANN401 - the driver's.
+    """Make SQLite check foreign keys on a new connection, as PostgreSQL does.
+
+    SQLite checks them only on a connection that ran ``PRAGMA foreign_keys
+    = ON`` (outside a transaction, so as it connects): without it a child
+    naming no parent commits, and ``ON DELETE CASCADE`` does nothing
+    (DATA-18). Migrations turn it off while they run (``migrations``).
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys = ON")
+    finally:
+        cursor.close()
+
+
 def _begin_snapshot(connection: Connection) -> None:
     """Begin the transaction now for a read-only session, outside PostgreSQL.
 
@@ -876,15 +892,15 @@ def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:
     if (refusal := connections.refusal) is not None:
         raise DatabaseAccessRefused(refusal)
     url = (config.MIGRATION_URL or config.URL).get_secret_value()
-    return _hiding_details(
-        create_async_engine(
-            url,
-            poolclass=NullPool,
-            hide_parameters=not config.LOG_PARAMETERS,
-            connect_args=connect_args(config, url, timeouts=False),
-        ),
-        config,
+    engine = create_async_engine(
+        url,
+        poolclass=NullPool,
+        hide_parameters=not config.LOG_PARAMETERS,
+        connect_args=connect_args(config, url, timeouts=False),
     )
+    if make_url(url).get_backend_name() == "sqlite":
+        _listen(engine.sync_engine, "connect", _enforce_foreign_keys)
+    return _hiding_details(engine, config)
 
 
 def _hiding_details(engine: AsyncEngine, config: DatabaseConfig) -> AsyncEngine:

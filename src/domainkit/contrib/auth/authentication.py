@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import logging
+import warnings
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import cache
@@ -33,6 +34,7 @@ from fastapi import status
 from starlette.requests import HTTPConnection
 
 from domainkit.checks import CheckFailed, CheckMessage
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
 from domainkit.log import SECURITY_LOGGER
@@ -103,7 +105,7 @@ class Credentials:
     """The kind of credentials: ``token``, ``jwt``, or a custom class's."""
     token_id: str | None = None
     """The digest of the opaque token used, which logging out revokes."""
-    session: UUID | None = None
+    login: UUID | None = None
     """The login a JWT descends from, whose refresh tokens logging out revokes."""
     scopes: frozenset[str] | None = None
     """The permission keys the credentials are limited to; None: no limit."""
@@ -113,6 +115,15 @@ class Credentials:
     in the table of step-ups (``proof``)."""
     amr: frozenset[str] = frozenset()
     """What that step-up proved (its ``amr`` claim): ``otp``, ``pwd``."""
+
+    @property
+    @warnings.deprecated(
+        "Credentials.session is now Credentials.login; removed in domainkit 2.0.",
+        category=DomainkitDeprecationWarning,
+    )
+    def session(self) -> UUID | None:
+        """``login``, under its 0.12 name."""
+        return self.login
 
     def allows(self, *perms: str) -> bool:
         """Whether the credentials' scopes cover every one of ``perms``."""
@@ -154,6 +165,7 @@ class IssuedTokens:
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+"""``request.auth.scheme`` of requests an opaque token authenticates."""
 RECHECK: Final = "domainkit.auth.recheck"
 """Set in an open connection's scope while its credentials are checked again
 (``AuthenticationMiddleware.reauthenticate``): the check writes no last use."""
@@ -161,7 +173,6 @@ STEPPING_SCHEMES: Final = frozenset({"token", "cookie"})
 """Schemes whose credentials keep their step-ups in the table, by digest."""
 IDLE: Final = "Session ended after inactivity; log in again."
 """Why a login unused for ``AUTH.IDLE_TIMEOUT`` is refused."""
-"""``request.auth.scheme`` of requests an opaque token authenticates."""
 JWT_SCHEME: Final = "jwt"
 """``request.auth.scheme`` of requests a JSON Web Token authenticates."""
 KEY_ID_LABEL: Final = b"domainkit:jwt-key-id"
@@ -368,7 +379,7 @@ class JWTAuthentication(BaseAuthentication):
         remember(entry, config)
         auth_time, amr = _proof_claims(claims)
         return Credentials(
-            user, scheme=JWT_SCHEME, session=session, auth_time=auth_time, amr=amr
+            user, scheme=JWT_SCHEME, login=session, auth_time=auth_time, amr=amr
         )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:

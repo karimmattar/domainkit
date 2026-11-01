@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException
 
-from domainkit.conf import override_settings
+from domainkit.conf import UNSET, override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
@@ -140,9 +140,19 @@ def test_framework_refusals_are_problems_too(make_client: MakeClient) -> None:
     assert crash.json()["title"] == "Internal Server Error"
 
 
-def test_the_default_format_is_unchanged(make_client: MakeClient) -> None:
-    """Without the setting, errors are the usual JSON body."""
-    response = make_client().get("/errors/not_found")
+def test_problem_details_are_the_default(make_client: MakeClient) -> None:
+    """Without the setting, errors are problem details since 1.0 (DSGN-26)."""
+    response = make_client(ERROR_FORMAT=UNSET).get("/errors/not_found")
+
+    assert response.headers["content-type"] == PROBLEM_MEDIA_TYPE
+    assert {"type", "title", "status", "detail", "code", "request_id"} <= set(
+        response.json()
+    )
+
+
+def test_the_domainkit_format_keeps_the_old_body(make_client: MakeClient) -> None:
+    """``ERROR_FORMAT = "domainkit"`` keeps the body of 0.x."""
+    response = make_client(ERROR_FORMAT="domainkit").get("/errors/not_found")
 
     assert response.headers["content-type"] == "application/json"
     assert set(response.json()) == {"detail", "code", "request_id"}

@@ -1,7 +1,8 @@
 """The key ring: data keys by id, sealed values that name their key, subjects' keys."""
 
 import gc
-from collections.abc import Iterator
+import re
+from collections.abc import Collection, Iterator
 from typing import Any, Final, cast
 
 import pytest
@@ -56,6 +57,13 @@ class MemoryStore:
         """The key ``key_id``."""
         self.reads += 1
         return self.keys.get(key_id)
+
+    def find_many(
+        self, connection: Connection, key_ids: Collection[str]
+    ) -> list[StoredSubjectKey]:
+        """The keys of ``key_ids``, in one read."""
+        self.reads += 1
+        return [self.keys[key_id] for key_id in key_ids if key_id in self.keys]
 
     def of_subject(
         self, connection: Connection, subject: str
@@ -247,6 +255,42 @@ def test_a_subjects_key_is_made_once_and_seals_their_values() -> None:
     assert len(store.keys) == 1
 
 
+def test_subjects_keys_are_read_together_and_held() -> None:
+    """Held keys are not read again; the rest in one read; a missing one is None."""
+    store = MemoryStore()
+    keys = ring(subject_keys=store)
+    first = connection()
+    held = sealed_key(keys.seal(b"A", CONTEXT, connection=first, subject="ann"))
+    stored = sealed_key(
+        keys.seal(b"B", CONTEXT, connection=connection(), subject="bob")
+    )
+    assert held is not None
+    assert stored is not None
+    reads = store.reads
+
+    found = keys.subject_keys_by_id(first, [held[1], stored[1], "gone", stored[1]])
+
+    assert store.reads == reads + 1
+    assert set(found) == {held[1], stored[1], "gone"}
+    assert found["gone"] is None
+    sealed = keys.seal(b"C", CONTEXT, connection=connection(), subject="bob")
+    assert keys.open(sealed, CONTEXT, subject_keys=found) == b"C"  # No connection.
+    elsewhere = connection()
+    assert keys.open(sealed, CONTEXT, connection=elsewhere, subject_keys={}) == b"C"
+    reads = store.reads
+    keys.subject_keys_by_id(first, [stored[1]])
+    assert store.reads == reads  # Held by the transaction since.
+
+
+def test_blind_index_keys_are_derived_once_per_data_key() -> None:
+    """The index's key is kept by data key: the same value, the same index."""
+    keys = ring()
+    first = keys.blind_index(b"4111", CONTEXT)
+    assert len(keys._index_keys) == 1
+    assert keys.blind_index(b"4111", CONTEXT) == first
+    assert len(keys._index_keys) == 1
+
+
 def test_a_destroyed_subjects_key_opens_nothing() -> None:
     """Once the key is gone, the value reads as None."""
     store = MemoryStore()
@@ -347,3 +391,94 @@ def test_alternates_open_and_index_but_never_seal() -> None:
         Keyring(LocalKeyProvider([KEK]), {}, "dev", known={"dev": b"n" * 32}).open(
             sealed, CONTEXT
         )
+
+
+def exactly(message: str) -> str:
+    """A pattern matching ``message`` and nothing else."""
+    return f"^{re.escape(message)}$"
+
+
+def test_a_blind_index_is_the_same_in_every_version() -> None:
+    """Rows indexed before an upgrade are still found after it."""
+    assert ring().blind_index(b"4111", b"cards\x00number") == (
+        "k1:3809397bbe6ea3f2b0beca8b667392ec"
+    )
+
+
+def test_a_subject_is_bound_as_its_text_whatever_it_holds() -> None:
+    """A lone surrogate in a subject's name still seals and opens."""
+    keys = ring()
+    on = connection()
+    sealed = keys.seal(b"P", CONTEXT, connection=on, subject="\ud800")
+    assert keys.open(sealed, CONTEXT, connection=on) == b"P"
+
+
+def test_a_ring_of_the_local_provider_stays_loaded() -> None:
+    """Its keys are unwrapped once, in the process, and kept."""
+    keys = ring()
+    keys.data_key("k1")
+    assert keys.loaded
+
+
+@pytest.mark.anyio
+async def test_loading_names_a_data_key_of_the_wrong_size() -> None:
+    """The id of the key that unwraps to the wrong size, and its size."""
+    provider = LocalKeyProvider([KEK])
+    keys = Keyring(provider, {"short": provider.wrap_now(b"s" * 16)}, "short")
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly("KEYS.DATA_KEYS['short'] unwraps to 16 bytes, not 32."),
+    ):
+        await keys.load()
+
+
+@pytest.mark.anyio
+async def test_the_ring_says_why_it_refuses(no_ring: None, vault: FakeVault) -> None:
+    """Each refusal of the ring, in full."""
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly(
+            "Encrypted fields need keys: install domainkit.contrib.keys, which "
+            "reads them from KEYS (docs/contrib/keys.md)."
+        ),
+    ):
+        keyring()
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly(
+            "Values sealed for a subject need a store of subjects' keys: "
+            "install domainkit.contrib.keys."
+        ),
+    ):
+        ring(subject_keys=None).seal(
+            b"P", CONTEXT, connection=connection(), subject="ann"
+        )
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=exactly(
+            "A value sealed for a subject is sealed and opened on a connection."
+        ),
+    ):
+        ring().seal(b"P", CONTEXT, subject="ann")
+    with pytest.raises(
+        DecryptionFailed, match=exactly("The value is not one the key ring sealed.")
+    ):
+        ring().open("plain", CONTEXT)
+    with pytest.raises(
+        DecryptionFailed,
+        match=exactly(
+            "The value does not open here: it was sealed for another row or "
+            "column, or changed."
+        ),
+    ):
+        ring().open(ring().seal(b"x", CONTEXT), b"other")
+    keys = await vault_ring()
+    with pytest.raises(
+        KeysNotLoaded,
+        match=exactly(
+            "The data keys are not unwrapped yet, and the key service cannot be "
+            "called here: await the ring's load() first (startup does)."
+        ),
+    ):
+        keys.seal(b"x", CONTEXT)
+    gc.collect()

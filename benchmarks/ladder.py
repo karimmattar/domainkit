@@ -46,6 +46,7 @@ def masked(text: str, url: str = "") -> str:
 
 type App = Literal["asgi", "fastapi", "domainkit"]
 type Stack = Literal["none", "default", "template", "template+idempotency"]
+type Project = Literal["catalog", "money"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +59,7 @@ class Rung:
     stack: Stack = "none"
     """``default``: ``DEFAULT_MIDDLEWARE``; ``template``: what ``init`` writes."""
     path: str = "/hello"
-    """``{item}`` stands for the id of an item made with the database."""
+    """``{name}`` stands for the fixture's ``name``: ``{item}``, an item's id."""
     method: str = "GET"
     token: bool = False
     """Send the opaque token of a user who may view and add items."""
@@ -71,6 +72,10 @@ class Rung:
     """The status every measured request must get."""
     database: bool = False
     """Needs PostgreSQL."""
+    project: Project = "catalog"
+    """``money``: also money, the ledger, limits and keys (``money_routes``)."""
+    body: str = ""
+    """The JSON body of a POST, ``{name}`` as in ``path``; empty: an item's."""
 
 
 LADDER: Final = (
@@ -135,6 +140,51 @@ LADDER: Final = (
         idempotency_key=True,
         status=201,
         database=True,
+    ),
+    Rung(
+        "money-write",
+        "Write of an amount (Money), unit of work",
+        stack="template",
+        path="/wallets",
+        method="POST",
+        token=True,
+        status=201,
+        database=True,
+        project="money",
+        body='{"owner": "ann", "balance": {"amount": "10.50", "currency": "USD"}}',
+    ),
+    Rung(
+        "posting",
+        "Ledger posting, counted against a limit",
+        stack="template",
+        path="/postings",
+        method="POST",
+        token=True,
+        status=201,
+        database=True,
+        project="money",
+        body=(
+            '{"debit": "{cash}", "credit": "{wallet}", '
+            '"amount": {"amount": "1.00", "currency": "USD"}}'
+        ),
+    ),
+    Rung(
+        "encrypted-read",
+        "Read of an encrypted field, unit of work",
+        stack="template",
+        path="/cards/{card}",
+        token=True,
+        database=True,
+        project="money",
+    ),
+    Rung(
+        "step-up",
+        "Route behind StepUp, token stepped up",
+        stack="template",
+        path="/stepped",
+        token=True,
+        database=True,
+        project="money",
     ),
     Rung(
         "throttled",

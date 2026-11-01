@@ -48,7 +48,7 @@ from .authentication import (
     get_authenticators,
 )
 from .events import SteppedUp
-from .mfa import InvalidCode, _limit_user, spend_code
+from .mfa import InvalidCode, _limit_user, audited_unreadable, spend_code
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
 from .throttling import audit_refusal
@@ -126,14 +126,15 @@ async def verify_factors[T](
         APIError: 400 ``password_required`` or ``wrong_password``; 429 past
             a rate.
         InvalidCode: The code is wrong, or was used.
+        SecondFactorUnreadable: No key held opens the user's secret.
     """
     async with AuthUnitOfWork() as uow:
         if not await uow.mfa.enabled(user.id):
             raise NoSecondFactor
     if "pwd" in methods:
-        await _check_password(request, user, password, action)
+        await check_password_again(request, user, password, action)
     counted = await _limit_user(request, user)
-    async with AuthUnitOfWork() as uow:
+    async with audited_unreadable(action), AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         spent = await spend_code(uow, stored, code, recovery=False)
         if spent is not None:
@@ -203,13 +204,13 @@ def _issue_jwt(out: StepUpOut, credentials: Credentials, proof: Proof) -> None:
     signer = next(
         each for each in get_authenticators() if isinstance(each, JWTAuthentication)
     )
-    assert credentials.session is not None  # noqa: S101 - every JWT names its login.
-    out.access_token = signer.encode(credentials.user, credentials.session, proof)
+    assert credentials.login is not None  # noqa: S101 - every JWT names its login.
+    out.access_token = signer.encode(credentials.user, credentials.login, proof)
     out.token_type = "Bearer"  # noqa: S105 - a scheme, not a secret.
     out.expires_in = int(signer.config.ACCESS_TOKEN_TTL.total_seconds())
 
 
-async def _check_password(
+async def check_password_again(
     request: Request, user: AbstractBaseUser, password: str | None, action: str
 ) -> None:
     """Check the user's password again, counted with their other password checks.

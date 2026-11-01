@@ -1,6 +1,7 @@
 """The ledger's use cases on a database: accounts, entries, periods, and holds."""
 
 import asyncio
+import dataclasses
 import os
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -15,19 +16,21 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
-    CAPTURES,
-    REVERSALS,
+    CAPTURE_SOURCE,
+    REVERSAL_SOURCE,
     AccountCodeTaken,
     AccountId,
     AccountingUnitOfWork,
-    AccountIsClosed,
     AccountNotFound,
+    AccountNotOpen,
     AccountType,
     CaptureHold,
     CloseAccount,
     ClosePeriod,
+    EarlierPeriodOpen,
     EntryId,
     EntryNotFound,
+    EntryNotReversible,
     HoldFinished,
     HoldId,
     HoldNotActive,
@@ -39,16 +42,15 @@ from domainkit.contrib.accounting import (
     Line,
     NoOpenPeriod,
     OpenPeriod,
-    PeriodIsClosed,
     PeriodNameTaken,
     PeriodNotFound,
+    PeriodNotOpen,
     PeriodsOverlap,
     PeriodStatus,
     PlaceHold,
     PostEntry,
     ReferenceReused,
     ReleaseHold,
-    ReversalNotReversible,
     ReverseEntry,
     capture_hold,
     close_account,
@@ -107,7 +109,7 @@ async def test_an_account_closes_only_when_empty() -> None:
             CloseAccount(account_id=AccountId(uuid.UUID(int=1))),
             AccountingUnitOfWork(),
         )
-    with refused(AccountIsClosed):
+    with refused(AccountNotOpen):
         await post_entry(transfer(other, cash, usd("1"), "t"), AccountingUnitOfWork())
     assert await count(entries) == 0
 
@@ -171,6 +173,43 @@ async def test_entries_need_an_open_period_by_default() -> None:
     assert entry.period_id is None
 
 
+async def test_a_date_in_a_gap_before_a_closed_period_is_closed_too() -> None:
+    """Without REQUIRE_PERIOD, a date no period covers, before one closed: refused."""
+    october = await period()
+    cash, sales = await account("1000"), await account("4000")
+    await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    early = transfer(sales, cash, usd("1"), "gap")
+
+    with (
+        override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}),
+        refused(PeriodNotOpen, match=r"^The books are closed up to a later date"),
+    ):
+        await post_entry(
+            dataclasses.replace(early, booked_on=date(2026, 9, 30)),
+            AccountingUnitOfWork(),
+        )
+    with override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}):
+        later = await post_entry(
+            dataclasses.replace(early, booked_on=date(2026, 11, 1)),
+            AccountingUnitOfWork(),
+        )
+
+    assert later.period_id is None
+
+
+async def test_periods_close_in_date_order() -> None:
+    """A period is not closed while one before it is open (FIN-87)."""
+    september = await period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+    october = await period()
+
+    with refused(EarlierPeriodOpen, match=r"^A period before this one is still open"):
+        await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    await close_period(ClosePeriod(period_id=september), AccountingUnitOfWork())
+    closed = await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+
+    assert closed.status is PeriodStatus.CLOSED
+
+
 async def test_no_entry_is_dated_in_a_closed_period() -> None:
     """Closed, a period refuses entries, with or without ``REQUIRE_PERIOD``."""
     october = await period()
@@ -191,11 +230,17 @@ async def test_no_entry_is_dated_in_a_closed_period() -> None:
     )
     with (
         override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}),
-        refused(PeriodIsClosed),
+        refused(PeriodNotOpen),
     ):
         await post_entry(transfer(sales, cash, usd("1"), "r-2"), AccountingUnitOfWork())
-    with refused(PeriodIsClosed):
+    with refused(PeriodNotOpen):
         await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    for starts_on in (date(2026, 9, 1), TODAY):  # Its last day is closed too.
+        with refused(PeriodNotOpen, match=r"^The books are closed up to a later"):
+            await open_period(
+                OpenPeriod(name="2026-09", starts_on=starts_on, ends_on=TODAY),
+                AccountingUnitOfWork(),
+            )
     with refused(PeriodNotFound, match=r"^No accounting period has that id\.$"):
         await close_period(
             ClosePeriod(period_id=uuid.UUID(int=3)), AccountingUnitOfWork()
@@ -251,7 +296,7 @@ async def test_a_reversal_undoes_an_entry_once() -> None:
 
     assert again.id == reversal.id
     assert (reversal.source, reversal.reference, reversal.reverses) == (
-        REVERSALS,
+        REVERSAL_SOURCE,
         str(entry.id),
         entry.id,
     )
@@ -260,12 +305,12 @@ async def test_a_reversal_undoes_an_entry_once() -> None:
     with (
         freeze_time(NOW),  # Booked today: inside the period whatever the date.
         refused(
-            ReversalNotReversible,
+            EntryNotReversible,
             match=r"^A reversal is not reversed: post the entry again instead\.$",
         ) as raised,
     ):
         await reverse_entry(ReverseEntry(entry_id=reversal.id), AccountingUnitOfWork())
-    assert raised.value.code == "reversal_not_reversible"
+    assert raised.value.code == "entry_not_reversible"
     assert set((await balances()).values()) == {Decimal(0)}
     with refused(EntryNotFound, match=r"^No journal entry has that id\.$"):
         await reverse_entry(
@@ -408,7 +453,7 @@ async def test_a_capture_posts_its_entry_and_releases_the_rest() -> None:
         stored = await uow.accounts.get(wallet.id)
     assert entry.description == "buy"
     assert (entry.source, entry.reference, entry.booked_on) == (
-        CAPTURES,
+        CAPTURE_SOURCE,
         str(hold.id),
         NOW.date(),
     )
@@ -676,7 +721,7 @@ async def test_another_source_may_post_under_the_same_reference() -> None:
 
 
 async def test_a_posting_runs_as_often_as_retry_attempts_says() -> None:
-    """``ACCOUNTING.RETRY_ATTEMPTS`` runs in all, not ``UnitOfWork.run``'s default."""
+    """``ACCOUNTING.MAX_ATTEMPTS`` runs in all, not ``UnitOfWork.run``'s default."""
     from domainkit.contrib.accounting.ledger import run
     from domainkit_tests.test_transactions import conflict
 
@@ -687,7 +732,7 @@ async def test_a_posting_runs_as_often_as_retry_attempts_says() -> None:
         raise conflict()
 
     with (
-        override_settings(ACCOUNTING={"RETRY_ATTEMPTS": 4}),
+        override_settings(ACCOUNTING={"MAX_ATTEMPTS": 4}),
         freeze_time(NOW),
         pytest.raises(DBAPIError),
     ):

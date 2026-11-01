@@ -50,7 +50,7 @@ from .admin import (
 )
 from .delivery import webhooks_alias
 from .models import MAX_OWNER, Subscription, SubscriptionId, SubscriptionNotFound
-from .settings import WebhookSettings
+from .settings import WebhooksSettings
 from .tables import deliveries
 from .uow import WebhooksUnitOfWork
 
@@ -132,7 +132,7 @@ def owned_router(owner: OwnerOf = user_owner) -> APIRouter:
         """
         _no_store(response)
         host = _checked(body.url)
-        limit = registry.settings(WebhookSettings).MAX_SUBSCRIPTIONS_PER_OWNER
+        limit = registry.settings(WebhooksSettings).MAX_SUBSCRIPTIONS_PER_OWNER
         subscription, secret = Subscription.create(
             body.url,
             host,
@@ -190,7 +190,7 @@ def owned_router(owner: OwnerOf = user_owner) -> APIRouter:
         """Give one of your subscriptions a new secret, shown once."""
         _no_store(response)
         overlap = timedelta(
-            seconds=registry.settings(WebhookSettings).SECRET_OVERLAP_SECONDS
+            seconds=registry.settings(WebhooksSettings).SECRET_OVERLAP_SECONDS
         )
         async with WebhooksUnitOfWork() as uow:
             subscription = await mine(uow, subscription_id, me)

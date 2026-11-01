@@ -1,6 +1,6 @@
 # 0017. Routes deny by default; staff manage users through an admin API
 
-- Status: Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 (at the end)
+- Status: Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 and 2026-11-01 (at the end)
 - Date: 2026-10-15
 
 ## Context
@@ -81,3 +81,35 @@ declares none serves the request as before, with a
 `SCOPED_CREDENTIALS = "refuse"` refuses it with 403, and 0.11 makes that
 the default. [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md)
 records why the check is the route's and not each rule's.
+
+## Amendment (2026-11-01, 1.0): reading the user is no rule; grants on objects count
+
+The audit of 0.15 found two places where this record's decisions said
+less than they meant.
+
+- **`CurrentUser` declared nothing** (DSGN-17). It counted as a rule, yet
+  lets anyone in, an anonymous caller as `AnonymousUser`: a developer who
+  reaches for the user, expecting a login, shipped a route anyone could
+  call, and `check` stayed silent. `Public` and `Require(AllowAny())`
+  already say "anyone" on purpose. From 1.0 a route declares who may call
+  it with `Require(...)`, a `reads_principal` dependency that refuses
+  anonymous callers (`AuthenticatedUser`), or `Public`; `CurrentUser`
+  alone is listed by `open_routes`, and refused where deployed
+  (`security.E101`). It still reads the principal, so the route still
+  needs the authentication middleware, and scoped credentials are still
+  held to the route's rules where it reads them. Renaming it instead
+  (`OptionalUser`) was weighed: the name would say it, but the check
+  would still count a route nobody meant to open. Turning it into a
+  refusal after 1.0 would stop deployed applications, so it is done now.
+- **Grants on single objects were not counted** (AUTH-14). Staff were
+  bounded by what `get_all_permissions(user)` answers, which asks each
+  backend about no object, and `ObjectPermissionBackend` answers nothing
+  then. A staff member with `auth.change_user` alone set the password of
+  a user holding object grants and became them, or joined a group
+  holding them. Backends now say what they grant on objects
+  (`BaseBackend.object_grants(holder)`, none by default), and staff
+  change no user or group, and add no one to a group, holding a grant
+  they lack: through its permission on the model, or the same grant on
+  the object. Refusing every change to a holder of object grants but by
+  superusers was the smaller change, and was weighed: it would have kept
+  a helpdesk that holds the same grants from serving its own users.

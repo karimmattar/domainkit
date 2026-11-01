@@ -18,7 +18,7 @@ from domainkit.management import BaseCommand, CommandError
 class Command(BaseCommand):
     """Process durable handlers and tasks; SIGTERM finishes running work first.
 
-    Running messages get ``MESSAGING.SHUTDOWN_TIMEOUT`` to finish; a second
+    Running messages get ``MESSAGING.DRAIN_TIMEOUT`` to finish; a second
     signal stops them at once. Either way, stopped messages run again.
 
     One worker runs per outbox (each database that hosts domains has one),

@@ -8,8 +8,8 @@ What the application accepts and answers, and the middleware that holds it to th
 | --- | --- | --- |
 | `ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` | Accepted `Host` values; `*.example.com` matches subdomains. A `Host` that is not a name, an IPv4 address, or a bracketed IPv6 address (with an optional port) is refused before matching. A wildcard `*` is refused in staging and production. |
 | `API_DOCS` | `None` | Serve `/docs`, `/redoc`, and `/openapi.json`; `None` follows `DEBUG`, so a deployment serves them only with `API_DOCS = True`. The pages load Swagger UI and ReDoc from domainkit's own copies under `/docs/assets/`, never a CDN, with a Content-Security-Policy of their own ([Security headers](#security-headers)). `check` warns when it is on in staging and production. |
-| `OPENAPI_OPERATION_IDS` | `"fastapi"` | `"route_name"`: each operation id is the route's name, stable when routers move (see [The API surface](responses.md#the-api-surface)). `init` sets it for new projects. |
-| `ERROR_FORMAT` | `"domainkit"` | `"problem+json"`: errors are RFC 9457 problem details (see [Errors](responses.md#errors)). |
+| `OPENAPI_OPERATION_IDS` | `"route_name"` | Each operation id is the route's name, stable when routers move (see [The API surface](responses.md#the-api-surface)); `"fastapi"`: FastAPI's ids (name, path, and method), the default until 1.0. |
+| `ERROR_FORMAT` | `"problem+json"` | Errors are RFC 9457 problem details (see [Errors](responses.md#errors)); `"domainkit"`: the `{"detail", "code", "request_id"}` body alone, `application/json`, the default until 1.0. |
 | `ERROR_TYPE_BASE_URL` | `None` | With problem details, each code's `type` is this absolute URL plus the code (`https://errors.example.com/` gives `https://errors.example.com/not_found`); unset, it is `about:blank`. |
 | `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. A larger WebSocket message, text counted in UTF-8 bytes, closes the connection with 1009. A route with `body_limit(size)` (1 byte to 1 GiB) is held to its own limit instead, above or below this one ([uploads.md](../uploads.md#body-limits-per-route)). |
 | `REQUEST_BODY_TIMEOUT` | `10.0` | Seconds (at most 3600) the application may wait for a request's body, all its chunks together (`RequestBodyLimitMiddleware`); past it the request is answered 408 `request_timeout` and the connection closed. Time spent working between chunks, or after the response starts, does not count. |
@@ -47,7 +47,9 @@ What the application accepts and answers, and the middleware that holds it to th
 | `SECURE_CROSS_ORIGIN_OPENER_POLICY` | `"same-origin"` | `Cross-Origin-Opener-Policy`; or `"same-origin-allow-popups"`, `"unsafe-none"`; `None` omits it. |
 | `CORS_ALLOWED_ORIGINS` | `()` | Origins allowed to call the API from a browser: `*`, or a scheme and host (and port), without a path, a space, or a comma. |
 | `CORS_ALLOWED_METHODS` | `GET POST PUT PATCH DELETE` | Methods, or `*`: HTTP tokens of at most 64 characters, no space or line break. |
-| `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | Header names, or `*`: HTTP tokens of at most 64 characters, no space or line break. |
+| `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID If-Match If-None-Match Idempotency-Key` | Request headers a browser may send: header names, or `*`: HTTP tokens of at most 64 characters, no space or line break. Add the CSRF header (`X-CSRF-Token`) for cookie sessions. |
+| `CORS_EXPOSE_HEADERS` | `X-Request-ID ETag Location Retry-After RateLimit-Limit RateLimit-Remaining RateLimit-Reset Idempotent-Replayed Content-Language Deprecation Sunset Link` | Response headers a script on an allowed origin may read; browsers hide the others. Header names, bounded as above. |
+| `CORS_MAX_AGE` | `600` | Seconds a browser may keep a preflight's answer, 0 to 86,400. |
 | `CORS_ALLOW_CREDENTIALS` | `False` | Cannot be combined with origin `*`. |
 
 ## Outgoing HTTP calls
@@ -84,10 +86,10 @@ re-authorized while they stay open; see [live.md](../live.md).
 | `LIVE_SEND_TIMEOUT` | `10.0` | Seconds one message may take to reach the client; a slower client is closed (1013). |
 | `LIVE_REAUTH_INTERVAL` | `60.0` | Seconds between re-checks of an open connection's credentials and its route's rules (each between three quarters of it and all of it; at most 3,600); closed with 1008 when they fail. `None` turns them off; `check` warns about that in staging and production. What re-checks cannot do: [live.md](../live.md#what-re-checks-cannot-do). |
 | `WEBSOCKET_IDLE_TIMEOUT` | `300.0` | Seconds without a message either way before a WebSocket is closed (1001). |
-| `WEBSOCKET_MAX_LIFETIME` | `3600.0` | Seconds a WebSocket may stay open (1001). |
+| `WEBSOCKET_MAX_LIFETIME` | `3600.0` | Seconds a WebSocket may stay open (1001); at most 86,400. |
 | `WEBSOCKET_MESSAGE_RATE` | `"20/second"` | Messages a client may send per connection, counted in the process; one more closes it (1008). `None`: any. |
 | `SSE_KEEPALIVE` | `15.0` | Seconds without an event before an event stream sends a keep-alive comment. |
-| `SSE_MAX_LIFETIME` | `3600.0` | Seconds an event stream may stay open. |
+| `SSE_MAX_LIFETIME` | `3600.0` | Seconds an event stream may stay open; at most 86,400. |
 
 ## Middleware
 

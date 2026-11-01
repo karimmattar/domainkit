@@ -1,6 +1,6 @@
 # 0121. Hold guarded commands as sealed requests, and count approvals under the request's lock
 
-- Status: Accepted; amended 2026-10-31 (at the end)
+- Status: Accepted; amended 2026-10-31 and 2026-11-01 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -171,3 +171,40 @@ decisions; each is closed where it happened.
   the maker now, and `RequestExecuted` names the approvers. A request
   whose guard or policy no longer exists is neither decided nor run
   (`policy_not_found`), where it fell back to `APPROVE_RULE`.
+
+## Amendment (2026-11-01, the 0.15 audit)
+
+- **Reversals are guarded** (FIN-88). The booking check let every
+  `accounting.*` entry but a capture through, so one person reversed a
+  payout two had approved, crediting the customer again. The ledger's
+  third guard, `REVERSES` (`accounting.reverse_entry`, policy
+  `accounting.large_reversal`), takes the thresholds' approvals, and
+  `check_booking` checks every entry booked, reversals included.
+- **Thresholds fail closed** (FIN-89): a currency a `Threshold` does not
+  name is always over it, unless `"*"` gives an amount for every currency
+  not named, read in each one's units. A control that passes the
+  currencies it forgets is no control in a multi-currency ledger.
+- **Guards compose** (FIN-92). A guarded service called inside a run is
+  still refused unless it is the approved command; but the ledger's
+  thresholds let through what a run books when the run's request needed
+  at least `ENTRY_APPROVALS` approvals (`Running.required`): a project's
+  payout, approved by enough people, posts its entry without a second
+  request. A run of the ledger's own guards books only what it approved.
+  Considered: matching the run's approver permission too; the project's
+  policy names its approvers, and asking it to repeat the ledger's
+  permission would only make the two disagree.
+- **The maker is checked when the command runs** (FIN-93): with auth, a
+  maker that is a user must still be active and hold the guard's maker
+  permission (`maker_not_allowed` otherwise), as `grant_superuser`
+  already checked for itself. A maker that names no user is the
+  project's to judge.
+- **Every guard is decorated** (DSGN-18): `Guard` checks its service is
+  decorated `@requires_approval` for its action, however it is
+  registered, so `on_guard` no longer skips what `guard()` checks. The
+  ledger's guards run decorated services of approvals' own
+  (`approved_entry`, `approved_capture`, `approved_reversal`), which call
+  the ledger's.
+- **Erasure keeps the record** (FIN-94): an erased maker's or approver's
+  id becomes one `erased:` pseudonym, the command and the decisions are
+  kept, and the seals are made again for it, but only those that held:
+  an erasure launders no row changed around the application.

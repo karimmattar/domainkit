@@ -1,11 +1,15 @@
-# Push a tag "vX.Y.Z" on a commit of main, matching pyproject.toml's
-# version, to publish it to PyPI. The tagged commit's own CI run, the one
-# its push to main started, must have passed the whole CI workflow (lint,
-# types, tests, integration, coverage, benchmarks, build, bill of
-# materials, Semgrep, audit): this workflow finds it, waits for it if it is
-# still running, and refuses the tag unless it succeeded. Nothing is run
-# again, and the package published is the one that run built and
-# smoke-tested, downloaded from it.
+# Push a tag "vX.Y.Z" on the release commit of main: the one that set
+# pyproject.toml's version to X.Y.Z, or added CHANGELOG.md's dated section
+# for it, with [Unreleased] emptied (.github/scripts/release_check.py).
+# The tagged commit's own CI run, the one its push to main started, must
+# have passed the checks the main branch ruleset requires (lint, types,
+# tests, integration, coverage, benchmarks, build, bill of materials,
+# Semgrep, audit) and attested what it built: this workflow finds it, waits
+# for it if it is still running, and refuses the tag unless each of those
+# succeeded (.github/scripts/required_jobs.py). The run's own conclusion
+# counts advisory jobs too, such as stress (3.14t), and is not used
+# (INFRA-14). Nothing is run again, and the package published is the one
+# that run built and smoke-tested, downloaded from it.
 # That run attested what it built: SLSA build provenance for the wheel and
 # sdist, naming ci.yml and that run, and its CycloneDX bill of materials for
 # the wheel ("gh attestation verify <file> --repo karimmattar/domainkit").
@@ -21,10 +25,12 @@ on:
 permissions:
   contents: read
 
-# One release at a time, and never cancelled halfway: two tags pushed
-# together publish one after the other.
+# A run of its own for each tag, never cancelled: one group for every tag
+# kept a single pending run, so a third tag pushed while one waited for
+# approval cancelled the second, silently (INFRA-21). Tags pushed together
+# each get their verdict; the older of two in one line is refused.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -63,11 +69,18 @@ jobs:
             echo "Tag $TAG is not on a commit of main" >&2
             exit 1
           fi
+      # Newer than the tags before it, the changelog's dated section, and
+      # the commit that made the release (docs/versioning.md, step 1-2).
+      - name: Check that the tagged commit is the release of that version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 .github/scripts/release_check.py "$TAG"
 
   # The CI run of the push to main that made the tagged commit, by a
   # maintainer (pushes to main come only from merged pull requests): its
-  # id, once it has succeeded. Its dist and sbom artifacts, and the
-  # attestations it made of them, are what the jobs below check and publish.
+  # id, once the checks main.json requires, and attest, have succeeded in
+  # it. Its dist and sbom artifacts, and the attestations it made of them,
+  # are what the jobs below check and publish.
   ci:
     needs: tag
     runs-on: ubuntu-24.04
@@ -79,7 +92,12 @@ jobs:
     outputs:
       run-id: ${{ steps.run.outputs.id }}
     steps:
-      - name: Find main's CI run for the tagged commit, and require it green
+      # The ruleset and the script that reads it, at the tagged commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Find main's CI run for the tagged commit, and require its checks
         id: run
         env:
           GH_TOKEN: ${{ github.token }}
@@ -94,9 +112,9 @@ jobs:
             exit 1
           fi
           gh run watch "$id" --repo "$REPO" --interval 30 > /dev/null || true
-          conclusion="$(gh run view "$id" --repo "$REPO" --json conclusion --jq .conclusion)"
-          if [ "$conclusion" != "success" ]; then
-            echo "::error::CI run $id for $SHA ended with '$conclusion'; re-run it or fix main." >&2
+          gh run view "$id" --repo "$REPO" --json status,jobs > run.json
+          if ! python3 .github/scripts/required_jobs.py .github/rulesets/main.json < run.json; then
+            echo "::error::CI run $id for $SHA did not pass the checks main.json requires; re-run them or fix main." >&2
             exit 1
           fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
@@ -104,7 +122,8 @@ jobs:
 
   # The audit again, on the tagged commit: an advisory or a leaked secret
   # can come to light after main's run. The same steps as CI's audit job
-  # (domainkit_tests/test_ci.py checks that).
+  # (domainkit_tests/test_ci.py checks that), then the ranges this release
+  # publishes.
   audit:
     needs: tag
     runs-on: ubuntu-24.04
@@ -128,6 +147,20 @@ jobs:
           docker run --rm -v "$PWD:/repo"
           zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
           git /repo --redact --no-banner --verbose
+      # The lock above is the set CI tested; "pip install domainkit[...]"
+      # resolves the newest releases the published ranges allow, which only
+      # CI's advisory newest job audits. Audited here too, before they are
+      # published (INFRA-21): the wheel with every extra, in an environment
+      # of its own, without the dev group.
+      - name: Audit what the published ranges resolve to today
+        shell: bash
+        run: |
+          poetry build --format wheel
+          extras="$(python -c 'import tomllib; print(",".join(tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]))')"
+          python -m venv .ranges
+          .ranges/bin/python -m pip install "$(ls dist/*.whl)[$extras]"
+          poetry run pip-audit --progress-spinner off --ignore-vuln PYSEC-2026-1325 \
+            --path "$(ls -d .ranges/lib/python3*/site-packages)"
 
   publish:
     needs: [ci, audit]

@@ -4,7 +4,7 @@ import dataclasses
 from collections.abc import Iterator, Sequence
 from http.cookies import SimpleCookie
 from importlib import import_module
-from typing import Any
+from typing import Any, Final
 from uuid import uuid4
 
 from fastapi import FastAPI, Response
@@ -34,6 +34,7 @@ from domainkit.http.access import (
 )
 from domainkit.http.ratelimit import MemoryBackend
 from domainkit.utils.module_loading import import_string
+from domainkit.utils.rates import PERIODS, parse_rate
 
 from .access import StepUp
 from .authentication import get_authenticators
@@ -372,6 +373,16 @@ class AuthConfig(DomainConfig):
                     'limit; set it, such as "10/minute".',
                 )
             )
+        if _over_a_day(config.ACCOUNT_LOGIN_RATE):
+            warnings.append(
+                CheckMessage(
+                    "auth.W006",
+                    f"AUTH.ACCOUNT_LOGIN_RATE {config.ACCOUNT_LOGIN_RATE!r} lets more "
+                    f"than {NIST_DAILY_GUESSES} wrong passwords a day at one account, "
+                    "past NIST SP 800-63B 5.2.2; set it to "
+                    f'"{NIST_DAILY_GUESSES}/day" or less.',
+                )
+            )
         if config.MFA.RATE is None:
             warnings.append(
                 CheckMessage(
@@ -487,7 +498,7 @@ class AuthConfig(DomainConfig):
             errors.append(
                 CheckMessage(
                     "auth.E010",
-                    f"AUTH.PASSWORD_PRESET {config.PASSWORD_PRESET!r} is "
+                    f"AUTH.PRESET {config.PRESET!r} is "
                     f"contradicted: {'; '.join(contradictions)}. Leave these "
                     "settings out for the preset's, or drop the preset.",
                 )
@@ -547,6 +558,18 @@ class AuthConfig(DomainConfig):
                 )
             )
         return errors
+
+
+NIST_DAILY_GUESSES: Final = 100
+"""Wrong passwords NIST SP 800-63B 5.2.2 lets one account take: 100 at most."""
+
+
+def _over_a_day(rate: str | None) -> bool:
+    """Whether ``rate`` lets more than ``NIST_DAILY_GUESSES`` through in a day."""
+    if rate is None:
+        return True
+    limit, period = parse_rate(rate)
+    return limit * (PERIODS["day"] // period) > NIST_DAILY_GUESSES
 
 
 def unprovable_step_ups(app: FastAPI) -> list[tuple[str, frozenset[str]]]:

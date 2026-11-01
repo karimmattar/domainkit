@@ -51,7 +51,6 @@ from domainkit.contrib.idempotency.operations import (
 from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
-    dbclock,
     dispatch,
     enqueue,
     task,
@@ -83,7 +82,7 @@ from domainkit.contrib.messaging.tables import (
     messages,
 )
 from domainkit.contrib.messaging.worker import LEASE_MARGIN, Claimed
-from domainkit.db import connections
+from domainkit.db import connections, dbclock
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.lifecycle import Budget as ShutdownBudget
@@ -408,13 +407,13 @@ async def test_workers_of_one_process_share_one_budget() -> None:
 async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages() -> (
     None
 ):
-    """The wait for a slot ends at the stop; running ones get SHUTDOWN_TIMEOUT.
+    """The wait for a slot ends at the stop; running ones get DRAIN_TIMEOUT.
 
     Then they are given back to wait again, no longer started.
     """
     await enqueue(at_gate, name="held")
     budget = WatchedBudget(1)
-    config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
+    config = MessagingSettings(**{**FAST, **SLOW, "DRAIN_TIMEOUT": 0.05})
     stop = asyncio.Event()
     running = asyncio.create_task(Worker(config, budget=budget).run(stop))
     await gate.until(lambda: gate.started == ["held"])
@@ -438,15 +437,15 @@ async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages()
 
 @pytest.mark.usefixtures("tables")
 async def test_a_running_message_may_finish_within_a_short_shutdown_timeout() -> None:
-    """A SHUTDOWN_TIMEOUT under a second is waited for: what ends in it is done."""
+    """A DRAIN_TIMEOUT under a second is waited for: what ends in it is done."""
     await enqueue(at_gate, name="ending")
-    config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.9})
+    config = MessagingSettings(**{**FAST, **SLOW, "DRAIN_TIMEOUT": 0.9})
     stop = asyncio.Event()
     running = asyncio.create_task(Worker(config).run(stop))
     await gate.until(lambda: gate.started == ["ending"])
 
     stop.set()
-    await asyncio.sleep(0.1)  # The worker is waiting for it to finish.
+    await asyncio.sleep(0.01)  # The worker starts to wait; 0.89 s of slack.
     gate.open()
     await within(running)
 
@@ -490,7 +489,7 @@ async def test_a_failed_schedule_is_logged_with_its_error(
         stop.set()
         raise failure
 
-    monkeypatch.setattr(worker, "schedule_periodic", broken)
+    monkeypatch.setattr(worker, "_schedule_periodic", broken)
     with caplog.at_level(logging.ERROR, logger=worker_module.__name__):
         await within(worker.run(stop))
 
@@ -530,7 +529,7 @@ async def test_a_failed_claim_gives_its_slots_back(
     async def broken(limit: int) -> list[Claimed]:
         raise ConnectionError("database down")
 
-    monkeypatch.setattr(worker, "claim", broken)
+    monkeypatch.setattr(worker, "_claim", broken)
     with pytest.raises(ConnectionError):
         await worker.run_once()
 
@@ -602,21 +601,21 @@ async def test_hosts_with_skewed_clocks_neither_steal_nor_delay_work(
     config = MessagingSettings(**{**FAST, **SLOW})
 
     await enqueue(remember, value=uuid.uuid4())
-    await Worker(config).claim(10)
+    await Worker(config)._claim(10)
     skew = timedelta(hours=1)  # A host an hour ahead does not take it over.
-    assert len(await Worker(config).claim(10)) == (0 if on_postgres else 1)
+    assert len(await Worker(config)._claim(10)) == (0 if on_postgres else 1)
 
     await all_done()
     skew = timedelta(0)
     await enqueue(remember, value=uuid.uuid4())
     skew = timedelta(hours=-1)  # A host an hour behind still sees due work.
-    assert len(await Worker(config).claim(10)) == (1 if on_postgres else 0)
+    assert len(await Worker(config)._claim(10)) == (1 if on_postgres else 0)
 
     await all_done()
     skew = timedelta(hours=1)  # A writer an hour ahead writes work due now.
     await enqueue(remember, value=uuid.uuid4())
     skew = timedelta(0)
-    assert len(await Worker(config).claim(10)) == (1 if on_postgres else 0)
+    assert len(await Worker(config)._claim(10)) == (1 if on_postgres else 0)
 
 
 async def all_done() -> None:
@@ -673,7 +672,7 @@ async def test_a_cut_short_publication_gives_its_messages_back_at_once() -> None
     """
     await enqueue(remember, value=uuid.uuid4())
     broker = Holding()
-    relaying = asyncio.create_task(Worker().relay(broker, 10))
+    relaying = asyncio.create_task(Worker()._relay(broker, 10))
     await within(broker.arrived.wait())
 
     (row,) = await rows()
@@ -686,7 +685,7 @@ async def test_a_cut_short_publication_gives_its_messages_back_at_once() -> None
 
     (row,) = await rows()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
-    assert await Worker().relay(MemoryBroker(), 10) == 1
+    assert await Worker()._relay(MemoryBroker(), 10) == 1
 
 
 @pytest.mark.usefixtures("tables")
@@ -700,10 +699,10 @@ async def test_a_round_never_unlocks_a_message_a_consumer_took_over() -> None:
         async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
             pointer = json.loads(body)
             message, lock = uuid.UUID(pointer["id"]), uuid.UUID(pointer["lock"])
-            taken.append(await worker.take_over(message, lock))  # A fast consumer.
+            taken.append(await worker._take_over(message, lock))  # A fast consumer.
             raise BrokerUnavailable("no confirmation")
 
-    assert await within(worker.relay(Unconfirmed(), 10)) == 0
+    assert await within(worker._relay(Unconfirmed(), 10)) == 0
 
     (claimed,) = taken
     assert claimed is not None
@@ -722,10 +721,10 @@ async def test_a_confirmed_message_a_consumer_took_over_keeps_its_lease() -> Non
         async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
             pointer = json.loads(body)
             message, lock = uuid.UUID(pointer["id"]), uuid.UUID(pointer["lock"])
-            taken.append(await worker.take_over(message, lock))  # A fast consumer.
+            taken.append(await worker._take_over(message, lock))  # A fast consumer.
             await super().publish(queue, body, message_id=message_id)
 
-    assert await within(worker.relay(Confirming(), 10)) == 1
+    assert await within(worker._relay(Confirming(), 10)) == 1
 
     (claimed,) = taken
     assert claimed is not None
@@ -742,7 +741,7 @@ async def test_a_failed_declaration_names_every_new_queue(
     await enqueue(remember, value=uuid.uuid4())
     await enqueue(at_gate_emails, name="e")
     with caplog.at_level(logging.WARNING, worker_module.__name__):
-        assert await Worker().relay(Down(), 10) == 0
+        assert await Worker()._relay(Down(), 10) == 0
 
     assert "(declaring 'default', 'emails': down)" in caplog.messages[0]
 
@@ -760,7 +759,7 @@ async def test_each_failed_publication_is_logged_for_debugging(
             raise BrokerUnavailable("down")
 
     with caplog.at_level(logging.DEBUG, worker_module.__name__):
-        assert await Worker().relay(Refusing(), 10) == 0
+        assert await Worker()._relay(Refusing(), 10) == 0
 
     assert f"Could not publish {row['id']} to 'default': down" in caplog.messages
 
@@ -780,7 +779,7 @@ async def test_every_failed_publication_is_counted() -> None:
         return REGISTRY.get_sample_value("messaging_relayed_total", labels) or 0.0
 
     before = failed()
-    assert await Worker().relay(Refusing(), 10) == 0
+    assert await Worker()._relay(Refusing(), 10) == 0
 
     assert failed() - before == 2
 
@@ -869,9 +868,9 @@ async def test_a_cron_task_queued_ahead_holds_back_no_other() -> None:
 
     worker = Worker()
     with clock.freeze_time("2040-01-01T12:00:30Z") as frozen:
-        await worker.schedule_periodic()
+        await worker._schedule_periodic()
         frozen.tick(timedelta(minutes=1))
-        await worker.schedule_periodic()
+        await worker._schedule_periodic()
 
     mine = {"tests.runtime.daily", "tests.runtime.minutely"}
     assert sorted(row["target"] for row in await rows() if row["target"] in mine) == [
@@ -886,7 +885,7 @@ async def test_confirmed_publications_are_locked_for_republish_after() -> None:
     """The lease becomes REPUBLISH_AFTER once the broker confirms."""
     await enqueue(remember, value=uuid.uuid4())
     broker = Holding()
-    relaying = asyncio.create_task(Worker().relay(broker, 10))
+    relaying = asyncio.create_task(Worker()._relay(broker, 10))
     await within(broker.arrived.wait())
     (leased,) = await rows()
     broker.release.set()
@@ -905,7 +904,7 @@ async def test_a_round_past_its_deadline_gives_back_what_was_not_confirmed(
     await enqueue(remember, value=uuid.uuid4())
 
     with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
-        assert await within(Worker().relay(Holding(publish_timeout=0.05), 10)) == 0
+        assert await within(Worker()._relay(Holding(publish_timeout=0.05), 10)) == 0
 
     (row,) = await rows()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
@@ -934,7 +933,7 @@ async def test_a_second_cancellation_cannot_stop_the_give_back(
 
     monkeypatch.setattr(worker, "_settle", slow_settle)
     broker = Holding()
-    relaying = asyncio.create_task(worker.relay(broker, 10))
+    relaying = asyncio.create_task(worker._relay(broker, 10))
     await within(broker.arrived.wait())
     relaying.cancel()
     await within(settling.wait())
@@ -1002,7 +1001,7 @@ async def test_a_give_back_that_fails_leaves_the_lease_to_expire(
 
     monkeypatch.setattr(worker, "_settle", broken)
     with caplog.at_level(logging.ERROR, "domainkit.contrib.messaging.worker"):
-        assert await within(worker.relay(MemoryBroker(), 10)) == 1
+        assert await within(worker._relay(MemoryBroker(), 10)) == 1
 
     assert caplog.messages == [
         "Could not settle 1 published message(s); their locks expire"
@@ -1043,14 +1042,14 @@ async def test_rounds_lock_and_publish_a_batch_at_a_time(
 ) -> None:
     """Committed ids go BATCH_SIZE per lock, at most a batch in flight (N11)."""
     rounds: list[int] = []
-    relay = Worker._relay
+    relay = Worker._publish_due
 
     async def counting(self: Worker, broker: Broker, due: object) -> int:
         sent = await relay(self, broker, due)
         rounds.append(sent)
         return sent
 
-    monkeypatch.setattr(Worker, "_relay", counting)
+    monkeypatch.setattr(Worker, "_publish_due", counting)
     with override_settings(
         MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False, "BATCH_SIZE": 2}
     ):
@@ -1060,9 +1059,9 @@ async def test_rounds_lock_and_publish_a_batch_at_a_time(
         broker = Counting()
         ids = [row["id"] for row in await rows()]
 
-        assert await Worker(config).relay_ids(broker, ids) == 5
+        assert await Worker(config)._relay_ids(broker, ids) == 5
         assert (rounds, broker.peak) == ([2, 2, 1], 2)
-        assert await Worker(config).relay_ids(broker, []) == 0
+        assert await Worker(config)._relay_ids(broker, []) == 0
 
         rounds.clear()
         async with connections.engine().begin() as connection:  # Not published.
@@ -1205,13 +1204,13 @@ async def test_a_failing_broker_trips_the_publishers_breaker(
     current: list[Broker] = [Down()]
     monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: current[0])
     rounds: list[object] = []
-    relay = Worker._relay
+    relay = Worker._publish_due
 
     async def counting(self: Worker, broker: Broker, due: object) -> int:
         rounds.append(due)
         return await relay(self, broker, due)
 
-    monkeypatch.setattr(Worker, "_relay", counting)
+    monkeypatch.setattr(Worker, "_publish_due", counting)
     with (
         override_settings(MESSAGING={**BROKERED, "BREAKER_FAILURES": 2}),
         caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.breaker"),
@@ -1286,13 +1285,13 @@ async def test_the_publisher_never_runs_in_a_requests_context(
     """The first committing request's id, actor, and idempotency key stay with it."""
     memory = work_broker()
     seen: list[tuple[object, object]] = []
-    relay_ids = Worker.relay_ids
+    relay_ids = Worker._relay_ids
 
     async def spy(self: Worker, broker: Broker, ids: Any) -> int:  # noqa: ANN401
         seen.append((current_request(), running_operation()))
         return await relay_ids(self, broker, ids)
 
-    monkeypatch.setattr(Worker, "relay_ids", spy)
+    monkeypatch.setattr(Worker, "_relay_ids", spy)
     request = RequestContext("req-first", None, "POST", "/a", actor="alice")
     with bind_request(request), run_operation(Operation("keyhash", "token")):
         await enqueue(remember, value=uuid.uuid4())
@@ -1689,7 +1688,7 @@ async def test_a_failed_answer_ends_neither_the_worker_nor_other_deliveries(
 async def test_a_stop_that_outlasts_shutdown_timeout_leaves_no_grace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SHUTDOWN_TIMEOUT counts from the stop: a stop that used it all leaves none."""
+    """DRAIN_TIMEOUT counts from the stop: a stop that used it all leaves none."""
     broker = Unstoppable(None)
     monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
     monkeypatch.setattr(dispatch, "STOP_CONSUMING_TIMEOUT", 0.2)
@@ -1702,7 +1701,7 @@ async def test_a_stop_that_outlasts_shutdown_timeout_leaves_no_grace(
 
     monkeypatch.setattr(dispatch, "finish", spy)
     await enqueue(at_gate, name="running")
-    config = MessagingSettings(**{**BROKERED, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
+    config = MessagingSettings(**{**BROKERED, **SLOW, "DRAIN_TIMEOUT": 0.05})
     stop = asyncio.Event()
     running = asyncio.create_task(
         BrokerWorkers([Worker(config)], ["default"], config).run(stop)
@@ -2389,8 +2388,8 @@ async def test_the_next_message_of_a_key_wakes_the_workers_of_its_queue() -> Non
     seen = statements(worker.engine)
 
     for _ in range(2):  # a0 promotes a1; a1, the last, promotes nothing.
-        (claimed,) = await worker.claim(1)
-        await worker.process(claimed)
+        (claimed,) = await worker._claim(1)
+        await worker._process(claimed)
 
     notified = [tuple(parameters) for text, parameters in seen if "pg_notify" in text]
     assert notified == ([("domainkit_messages", "default")] if postgres() else [])
@@ -2492,7 +2491,7 @@ async def test_an_idle_worker_claims_only_when_woken(
     if not postgres():
         return  # Only a poll or the stop wakes it; see the PostgreSQL run.
     claims = 0
-    claim = Worker.claim
+    claim = Worker._claim
     listening = asyncio.Event()
     recovered = worker_module.Outage.recovered
 
@@ -2506,7 +2505,7 @@ async def test_an_idle_worker_claims_only_when_woken(
             listening.set()  # Then the listener wakes the worker once.
         recovered(self)
 
-    monkeypatch.setattr(Worker, "claim", counting)
+    monkeypatch.setattr(Worker, "_claim", counting)
     monkeypatch.setattr(worker_module.Outage, "recovered", heard)
     worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 120}))
     stop = asyncio.Event()
@@ -2547,7 +2546,7 @@ async def test_an_idle_relay_publishes_a_commit_at_once(
     """
     rounds = 0
     relayed = asyncio.Event()
-    relay = Worker.relay
+    relay = Worker._relay
 
     async def counting(self: Worker, broker: Broker, limit: int) -> int:
         nonlocal rounds
@@ -2556,7 +2555,7 @@ async def test_an_idle_relay_publishes_a_commit_at_once(
         relayed.set()
         return sent
 
-    monkeypatch.setattr(Worker, "relay", counting)
+    monkeypatch.setattr(Worker, "_relay", counting)
     poll = 120 if postgres() else 0.01
     settings = {**BROKERED, **SLOW, "PUBLISH_ON_COMMIT": False, "POLL_INTERVAL": poll}
     with override_settings(MESSAGING=settings):
@@ -2638,7 +2637,7 @@ class VirtualPolls:
 
     def install(self, monkeypatch: pytest.MonkeyPatch, *, listening: bool) -> None:
         """Use these waits, and a listener that hears nothing (or none at all)."""
-        claim = Worker.claim
+        claim = Worker._claim
 
         async def claiming(worker: Worker, limit: int) -> list[Claimed]:
             claimed = await claim(worker, limit)
@@ -2655,7 +2654,7 @@ class VirtualPolls:
             await stop.wait()
 
         monkeypatch.setattr(worker_module, "pause", self.pause)
-        monkeypatch.setattr(Worker, "claim", claiming)
+        monkeypatch.setattr(Worker, "_claim", claiming)
         monkeypatch.setattr(Worker, "listen", deaf)
 
     async def until(self, condition: Callable[[], bool]) -> None:
@@ -3104,9 +3103,9 @@ async def test_a_flush_that_gives_up_leaves_the_others_waiting() -> None:
 async def test_a_worker_outlives_failing_schedules(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Queueing periodic tasks may fail too; the worker waits and goes on."""
+    """Queueing periodic tasks may fail too; the worker logs it and goes on."""
     worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 0.01}))
-    schedule = worker.schedule_periodic
+    schedule = worker._schedule_periodic
     failed = False
 
     async def flaky() -> None:
@@ -3116,7 +3115,7 @@ async def test_a_worker_outlives_failing_schedules(
             raise ConnectionError("database down")
         await schedule()
 
-    monkeypatch.setattr(worker, "schedule_periodic", flaky)
+    monkeypatch.setattr(worker, "_schedule_periodic", flaky)
     await enqueue(at_gate, name="after the outage")
     gate.open()
     stop = asyncio.Event()
@@ -3127,7 +3126,8 @@ async def test_a_worker_outlives_failing_schedules(
         await within(running)
 
     assert logged(caplog, "domainkit.contrib.messaging.worker")[0].startswith(
-        "Could not reach the outbox of 'default' (1 failure in a row)"
+        "Could not queue the periodic tasks in 'default' (1 failure in a row); "
+        "messages still run; queueing them again in 0.01s"
     )
 
 
@@ -3267,7 +3267,7 @@ async def test_a_delivery_takes_over_its_own_message_at_its_moment() -> None:
         now = clock.now()
         for _ in range(2):
             await enqueue(remember, value=uuid.uuid4())
-        await worker.relay(MemoryBroker(), 10)
+        await worker._relay(MemoryBroker(), 10)
         first, second = await rows()
         async with connections.engine().begin() as connection:
             await connection.execute(
@@ -3276,8 +3276,8 @@ async def test_a_delivery_takes_over_its_own_message_at_its_moment() -> None:
                 .values(locked_until=now)
             )
 
-        stale = await worker.take_over(first["id"], uuid.uuid4())
-        claimed = await worker.take_over(first["id"], first["lock_id"])
+        stale = await worker._take_over(first["id"], uuid.uuid4())
+        claimed = await worker._take_over(first["id"], first["lock_id"])
 
     assert stale is None
     assert claimed is not None
@@ -3312,7 +3312,7 @@ async def test_an_idle_relay_waits_for_its_next_poll(
         await asyncio.sleep(0)
         return 0
 
-    monkeypatch.setattr(worker, "relay", nothing_to_relay)
+    monkeypatch.setattr(worker, "_relay", nothing_to_relay)
     stop = asyncio.Event()
     relaying = asyncio.create_task(
         BrokerWorkers([worker], ["default"], config)._relay_until(

@@ -16,9 +16,11 @@ import tomllib
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 import yaml
+from sqlalchemy import make_url
 from sqlalchemy.exc import DBAPIError
 
 import domainkit
@@ -176,7 +178,7 @@ def test_fintech_writes_the_controls_over_the_project(tmp_path: Path) -> None:
     ]
     assert output.splitlines()[3:] == [
         (
-            '  pip install "domainkit[audit,httpclient,immudb,mfa,postgres,redis,'
+            '  pip install "domainkit[audit,immudb,keys,mfa,postgres,redis,'
             'sqlite,testing]"   # or: uv sync'
         ),
         "  python manage.py check",
@@ -221,7 +223,7 @@ def test_the_profiles_extras_are_extras_of_domainkit() -> None:
     assert set(EXTRAS["fintech"]) <= offered
     assert set(EXTRAS[None]) < set(EXTRAS["fintech"])
     assert requirement("0.15.0", EXTRAS["fintech"]) == (
-        "domainkit[audit,httpclient,immudb,mfa,postgres,redis,sqlite]>=0.15.0,<0.16"
+        "domainkit[audit,immudb,keys,mfa,postgres,redis,sqlite]>=0.15.0,<0.16"
     )
     assert PROFILES["fintech"].parent.parent == TEMPLATE_DIR.parent
 
@@ -232,8 +234,9 @@ def test_the_profiles_extras_are_extras_of_domainkit() -> None:
 )
 @pytest.mark.timeout(func_only=True)
 def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
-    """Every step of its test job but the install: lint, types, check, tests.
+    """Every step of its test job but install and audit: lint, types, check, tests.
 
+    Install and audit reach the package index, which a test does not.
     The steps that read the database run one after another, as CI runs
     them; ruff, mypy, and the tests (on a database of their own) depend on
     nothing else and run beside them, as test_generators runs its checks.
@@ -252,7 +255,7 @@ def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
     lines = [
         line
         for step in job["steps"]
-        if "run" in step and step["name"] != "Install"
+        if "run" in step and step["name"] not in {"Install", "Audit"}
         for line in step["run"].splitlines()
     ]
     sequential = [line for line in lines if line.startswith("python ")]
@@ -280,7 +283,7 @@ def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
         'python manage.py makemigrations --check -m "unused"',
         "pytest",
     ]
-    assert "16 passed" in ended["pytest"].stdout
+    assert "17 passed" in ended["pytest"].stdout
     assert "--strict" not in ended["mypy"].args  # pyproject.toml's strict = true.
 
 
@@ -426,7 +429,72 @@ def test_the_fintech_workflow_is_the_projects_with_its_types_checked(
         step for step in expected["test"]["steps"] if step.get("name") == "Lint"
     )
     lint["run"] += "mypy\n"
+    # immudb's ecdsa advisory, which does not apply (SECURITY.md).
+    audit = next(
+        step for step in expected["test"]["steps"] if step.get("name") == "Audit"
+    )
+    audit["run"] += " --ignore-vuln PYSEC-2026-1325"
     assert yaml.safe_load(fintech)["jobs"] == expected
     uses = re.findall(r"uses: (\S+@\S+ # \S+)", fintech)
     assert len(uses) == 3
     assert all(f"uses: {use}" in ours for use in uses)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DOMAINKIT_TEST_POSTGRES_URL"),
+    reason="set DOMAINKIT_TEST_POSTGRES_URL to a PostgreSQL server",
+)
+@pytest.mark.timeout(func_only=True)
+def test_the_fintech_tests_pass_on_postgresql_as_the_applications_role(
+    bank: Project,
+) -> None:
+    """The tests docs/fintech.md names, on PostgreSQL, as production runs them.
+
+    The application connects as a row-level role and ``migrate`` as the
+    schema owner, as docs/deploying.md asks; the plugin grants the role DML
+    on the test database, and nothing more (TEST-13, TEST-18).
+    """
+    server = make_url(os.environ["DOMAINKIT_TEST_POSTGRES_URL"])
+    suffix = uuid4().hex[:12]
+    role, database = f"bank_app_{suffix}", f"bank_{suffix}"
+    on_server(
+        server.render_as_string(hide_password=False),
+        f"CREATE ROLE \"{role}\" LOGIN PASSWORD 'app' NOSUPERUSER NOCREATEDB",
+    )
+    on_postgres = {
+        "BANK_API_TEST_DATABASE_URL": server.set(
+            username=role, password="app", database=database
+        ).render_as_string(hide_password=False),
+        "BANK_API_TEST_DATABASE_OWNER_URL": server.set(
+            database=database
+        ).render_as_string(hide_password=False),
+    }
+    try:
+        tested = bank.run(
+            "-m", "pytest", "-q", "-p", "no:cacheprovider", env=on_postgres
+        )
+    finally:
+        on_server(
+            server.render_as_string(hide_password=False),
+            f'DROP DATABASE IF EXISTS "test_{database}" WITH (FORCE)',
+        )
+        on_server(server.render_as_string(hide_password=False), f'DROP ROLE "{role}"')
+
+    assert tested.returncode == 0, f"{tested.stdout}{tested.stderr}"
+    assert "17 passed" in tested.stdout
+
+
+def test_init_says_what_each_argument_is() -> None:
+    """Its ``--help``: the name, the directory, and the profiles it offers."""
+    from domainkit.management.commands.init import Command
+
+    usage = " ".join(Command().create_parser("manage.py", "init").format_help().split())
+    assert usage.startswith("usage: manage.py init [-h] [--profile {fintech}] name ")
+    assert usage.endswith(
+        " positional arguments: name project name, as in [project].name; it sets "
+        "the environment variable prefix (billingAPI: BILLING_API_) directory where "
+        "to create it (default: ./<name>); empty or missing options: -h, --help show "
+        "this help message and exit --profile {fintech} a project with a sector's "
+        "controls on and wired: fintech, a bank's first-review list "
+        "(docs/fintech.md)"
+    )

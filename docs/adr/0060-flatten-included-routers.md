@@ -41,7 +41,7 @@ The options:
 ## Decision
 
 - `get_asgi_application` flattens the routers it includes from
-  `ROOT_ROUTER` with `domainkit.http.routing.flatten_routes`. Each
+  `ROOT_ROUTER` with `http.routing.flatten_routes` (internal since 1.0). Each
   included router is replaced, in place and in order, by the routes
   FastAPI works out for it, at every depth:
   - a path operation becomes a copy of the router's route, so it keeps
@@ -51,7 +51,7 @@ The options:
     the route FastAPI already builds, and serves, for it.
 - Left included as FastAPI built them:
   - a router that serves requests in its own way
-    (`domainkit.http.routing.serves_itself`): its class, a class between
+    (`http.routing.serves_itself`): its class, a class between
     it and `APIRouter`, or the router itself has its own version of any
     method of `APIRouter` or Starlette's `Router` but those that only
     declare routes (`__init__`, `add_api_route`, `get`, `include_router`,

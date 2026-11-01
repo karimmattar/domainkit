@@ -25,7 +25,6 @@ from which list); ``register_currency`` adds a project's own, such as a
 token or an internal unit, before any amount uses it.
 """
 
-import csv
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -80,7 +79,12 @@ __all__ = [
 ISO_4217_PUBLISHED: Final = date(2026, 9, 17)
 """The date of the ISO 4217 list the known currencies come from (``iso4217.csv``)."""
 MAX_DIGITS: Final = 38
-"""The most digits an amount has before its point, as ``NUMERIC(38)`` holds."""
+"""The most digits an amount has before its point, in memory and in JSON.
+
+A column holds fewer: an ``ExactDecimal`` has at most 18 digits in all
+(``domainkit.db.types.STORED_DIGITS``), 14 of them before the point in a
+money column's default ``(18, 4)``, and refuses more (``AmountOutOfRange``).
+"""
 MAX_MINOR_UNITS: Final = 18
 """The most minor units a currency may have: the places ``ExactDecimal`` can hold."""
 CODE_PATTERN: Final = r"^[A-Z][A-Z0-9]{2,7}$"
@@ -291,8 +295,11 @@ def _whole(value: object) -> bool:
 def _iso_4217() -> Mapping[str, Currency]:
     """The active ISO 4217 currencies that have minor units, by code.
 
-    Read from ``iso4217.csv`` on first use, comment lines skipped.
+    Read from ``iso4217.csv`` on first use, comment lines skipped; ``csv``
+    is imported then too (PERF-31).
     """
+    import csv
+
     text = files(__name__).joinpath("iso4217.csv").read_text(encoding="utf-8")
     rows = csv.DictReader(
         line for line in text.splitlines() if not line.startswith("#")
@@ -777,10 +784,13 @@ def _quantized(
 ) -> Decimal:
     """``amount`` with exactly ``currency``'s places; rounded only as asked.
 
-    Zero has no sign.
+    Zero has no sign. Rounding may carry into one more digit before the
+    point (38 nines and .995 rounded up): the result is checked again.
 
     Raises:
         InexactAmount: It has more places, and no rounding was named.
+        MoneyError: Rounded, it has more than ``MAX_DIGITS`` digits before
+            the point.
     """
     places = Decimal(1).scaleb(-currency.minor_units)
     if rounding is not None:
@@ -794,7 +804,9 @@ def _quantized(
                 f"{currency.code} has {currency.minor_units} decimal places; an "
                 "amount with more is refused rather than rounded: name a Rounding."
             ) from None
-    return quantized.copy_abs() if quantized.is_zero() else quantized
+    if quantized.is_zero():
+        return quantized.copy_abs()
+    return _amount(quantized)
 
 
 def _check_same(mine: Currency, theirs: Currency, verb: str) -> None:

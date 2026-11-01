@@ -85,7 +85,7 @@ class IsApprover(BasePermission):
         """The principal is one the request's policy names.
 
         Raises:
-            PolicyGone: The request's guard or policy no longer exists.
+            PolicyRemoved: The request's guard or policy no longer exists.
         """
         assert isinstance(obj, ApprovalRequest)  # noqa: S101 - the resource's model.
         _, policy = policy_of(obj)
@@ -148,7 +148,7 @@ def _rule_of(request: ApprovalRequest) -> BasePermission | None:
     """The approve rule of the request's policy, or the configured one.
 
     Raises:
-        PolicyGone: The policy no longer exists: no fallback to rules the
+        PolicyRemoved: The policy no longer exists: no fallback to rules the
             request was not submitted under.
     """
     _, policy = policy_of(request)

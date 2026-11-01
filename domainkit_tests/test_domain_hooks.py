@@ -7,7 +7,7 @@ the domain; so does a hook method 0.13 removed, still defined.
 
 import asyncio
 import functools
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -17,10 +17,10 @@ from domainkit.apps import hooks as hooks_module
 from domainkit.apps.config import REMOVED_HOOKS
 from domainkit.apps.hooks import (
     HookPoint,
-    on_check,
     on_check_application,
     on_deployment_warnings,
     on_erase_subject,
+    on_ready,
     on_seed,
     on_startup,
 )
@@ -45,12 +45,12 @@ class MisspeltConfig(DomainConfig):
 """
 SYNC_CHECK = """
 from domainkit.apps import DomainConfig
-from domainkit.apps.hooks import on_check
+from domainkit.apps.hooks import on_ready
 
 
 class SyncConfig(DomainConfig):
     def ready(self):
-        on_check(self.probe)
+        on_ready(self.probe)
 
     def probe(self):
         pass
@@ -173,7 +173,7 @@ class ErasingConfig(DomainConfig):
 """
 TWICE = """
 from domainkit.apps import DomainConfig
-from domainkit.apps.hooks import on_check, on_seed, on_shutdown, on_startup
+from domainkit.apps.hooks import on_ready, on_seed, on_shutdown, on_startup
 from twicelog import CALLS
 
 
@@ -182,8 +182,8 @@ class TwiceConfig(DomainConfig):
         on_startup(self.open_first)
         on_startup(self.open_second)
         on_shutdown(self.close)
-        on_check(self.first)
-        on_check(self.second)
+        on_ready(self.first)
+        on_ready(self.second)
         on_seed(self.sow)
         on_seed(self.sow_again)
 
@@ -267,7 +267,7 @@ def test_a_misspelt_or_mistyped_hook_fails_setup(make_package: MakePackage) -> N
         override_settings(INSTALLED_DOMAINS=[ALPHA, "synccheck"]),
         pytest.raises(
             ImproperlyConfigured,
-            match=r"^synccheck's check hook SyncConfig.probe must be an async "
+            match=r"^synccheck's ready hook SyncConfig.probe must be an async "
             r"function\.$",
         ),
     ):
@@ -303,7 +303,7 @@ def test_registrations_are_checked_against_the_point() -> None:
         on_deployment_warnings(wrong, domain="alpha")
     assert on_check_application(anything, domain="alpha") is anything
     probe = Probe()
-    assert on_check(probe, domain="alpha") is probe
+    assert on_ready(probe, domain="alpha") is probe
     with pytest.raises(ImproperlyConfigured) as unnamed:
         on_erase_subject(probe, domain="alpha")  # type: ignore[arg-type]
     assert str(unnamed.value).startswith(
@@ -421,7 +421,7 @@ def test_the_base_class_defines_no_hook_method() -> None:
         assert not hasattr(DomainConfig, method)
     setup()
 
-    assert [hook.domain for hook in on_check] == ["alpha"]
+    assert [hook.domain for hook in on_ready] == ["alpha"]
     assert callable(DomainConfig.databases)
     assert callable(DomainConfig.holds_table)
 
@@ -441,10 +441,10 @@ def test_hooks_register_for_the_registry_that_loads_the_domains(
         "twice",
     ]
     assert [hook.domain for hook in on_startup] == ["alpha"]
-    assert on_check.of("twice", own) == tuple(
-        hook for hook in on_check.hooks(own) if hook.domain == "twice"
+    assert on_ready.of("twice", own) == tuple(
+        hook for hook in on_ready.hooks(own) if hook.domain == "twice"
     )
-    assert on_check.of("twice") == ()
+    assert on_ready.of("twice") == ()
 
 
 def test_a_domain_starts_with_all_its_hooks_and_stops_with_its_own(
@@ -510,21 +510,25 @@ def test_seed_runs_every_hook_and_names_each_domain_once(
     assert twice_calls == ["seed", "seed again"]
 
 
+NEW_POINTS: Final = frozenset({"domainkit.apps.hooks.on_retain_subject"})
+"""Points that replaced no method of ``DomainConfig`` (FIN-94)."""
+RENAMED_POINTS: Final = {"check": "on_ready"}
+"""Methods whose point 1.0 renamed (DSGN-23): ``on_check`` read as ``check``'s."""
+
+
 def test_every_hook_method_has_its_point() -> None:
-    """Each removed method names the point of the same name, and only those."""
+    """Each removed method names its point; every other point is a new one."""
     points = {
-        point.name: f"{module.__name__}.{name}"
+        f"{module.__name__}.{name}"
         for module in (hooks_module, db_hooks)
         for name, point in vars(module).items()
         if isinstance(point, HookPoint)
     }
 
-    assert points == REMOVED_HOOKS
+    assert points == set(REMOVED_HOOKS.values()) | NEW_POINTS
     assert all(
-        name == f"on_{method}"
-        for method, name in (
-            (method, target.rpartition(".")[2]) for method, target in points.items()
-        )
+        target.rpartition(".")[2] == RENAMED_POINTS.get(method, f"on_{method}")
+        for method, target in REMOVED_HOOKS.items()
     )
 
 

@@ -1,6 +1,6 @@
 # 0122. Step up in a rule, and bind authorizations with a stored row and a code
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-01 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -121,3 +121,21 @@ after the user confirmed is authorized as if the user had seen it.
 - An authorization spent on a transaction that then fails is gone: the
   user confirms again. The opposite (spend after acting) would let a
   crash between the two act twice.
+
+## Amendment (2026-11-01, 1.0): making a personal token steps up
+
+`POST /auth/tokens` took any credentials without scopes, a browser
+session included, and made an unscoped token that could work until
+revoked (AUTH-16 of the 0.15 audit): a page script, or a login left
+open, turned into a credential that no idle timeout, logout, or
+`MAX_LOGINS` ends. Making one now asks the user to authenticate again,
+as this record's step-up does for the acts that matter: a step-up within
+5 minutes for a user with a second factor, the password for one
+without, who cannot step up (counted with their other password checks).
+A token works `AUTH.PERSONAL_TOKEN_MAX_AGE` at most (90 days, GitHub's
+own default for a classic token being 30 and its longest a year), and
+works until revoked only where that setting is `None`. Asking for a
+step-up of every user, refusing those without a second factor, was
+weighed: it would have taken personal tokens from every project that has
+not turned second factors on, for an act the password already guards
+elsewhere (`/auth/password`, the factor's own changes).

@@ -603,6 +603,9 @@ def test_the_main_ruleset_requires_every_job_that_checks_a_pull_request() -> Non
         for name in reviewed - ADVISORY
         for check in check_names(name, jobs()[name])
     }
+    # CodeQL's job, from its own workflow (INFRA-21).
+    checked |= set(check_names("analyze", jobs("codeql.yml")["analyze"]))
+    assert "codeql" in checked
     assert sorted(contexts) == sorted(checked)
     versioning = (ROOT / "docs" / "versioning.md").read_text()
     for check in contexts:
@@ -617,6 +620,15 @@ def test_the_rulesets_hold_without_an_everyday_bypass() -> None:
     assert {"deletion", "non_fast_forward", "pull_request"} <= {
         rule["type"] for rule in main["rules"]
     }
+    # A new high or critical CodeQL alert, or an error, stops the merge.
+    [scanning] = [rule for rule in main["rules"] if rule["type"] == "code_scanning"]
+    assert scanning["parameters"]["code_scanning_tools"] == [
+        {
+            "tool": "CodeQL",
+            "security_alerts_threshold": "high_or_higher",
+            "alerts_threshold": "errors",
+        }
+    ]
     tags = json.loads((RULESETS / "release-tags.json").read_text())
     assert tags["bypass_actors"] == []
     assert tags["conditions"]["ref_name"]["include"] == ["refs/tags/v*"]
@@ -747,16 +759,24 @@ def test_the_bill_of_materials_is_one_attest_takes() -> None:
 
 
 def test_releases_reuse_mains_green_run_of_the_tagged_commit() -> None:
-    """Nothing runs twice: the tag's push-to-main run must have succeeded.
+    """Nothing runs twice: the tag's push-to-main run must have passed.
 
+    Passed the checks the ruleset requires, and attest (required_jobs.py),
+    not the run's own conclusion, which counts the advisory jobs (INFRA-14).
     Its dist and sbom artifacts, attested by that run, are what is
     published; only the audit runs again, as CI's audit job does, since an
-    advisory can appear after main's run.
+    advisory can appear after main's run, and then over the published
+    ranges (INFRA-21).
     """
     release = jobs("release.yml")
     assert "workflow_call" not in (WORKFLOWS / "ci.yml").read_text()
     assert all("uses" not in job for job in release.values())
-    [find] = release["ci"]["steps"]
+    [checkout, find] = release["ci"]["steps"]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"] == {
+        "persist-credentials": False,
+        "sparse-checkout": ".github",
+    }
     script = find["run"]
     for option in (
         "--workflow ci.yml",
@@ -766,7 +786,11 @@ def test_releases_reuse_mains_green_run_of_the_tagged_commit() -> None:
     ):
         assert option in script, option
     assert find["env"]["SHA"] == "${{ github.sha }}"
-    assert '[ "$conclusion" != "success" ]' in script
+    assert "--json conclusion" not in script
+    assert "--json status,jobs > run.json" in script
+    assert (
+        "python3 .github/scripts/required_jobs.py .github/rulesets/main.json < run.json"
+    ) in script
     assert release["ci"]["outputs"] == {"run-id": "${{ steps.run.outputs.id }}"}
     downloads = [
         step["with"]
@@ -785,7 +809,16 @@ def test_releases_reuse_mains_green_run_of_the_tagged_commit() -> None:
             and step["with"]["name"] == name
         ]
         assert upload["retention-days"] == 90
-    assert release["audit"]["steps"] == jobs()["audit"]["steps"]
+    audit = jobs()["audit"]["steps"]
+    assert release["audit"]["steps"][: len(audit)] == audit
+    [ranges] = release["audit"]["steps"][len(audit) :]
+    assert ranges["name"] == "Audit what the published ranges resolve to today"
+    assert (
+        '.ranges/bin/python -m pip install "$(ls dist/*.whl)[$extras]"'
+        in (ranges["run"])
+    )
+    assert "--path" in ranges["run"]
+    assert "--group" not in ranges["run"]
 
 
 def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
@@ -794,8 +827,9 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
     Those are the modules that join the repository's root to ``docs`` or a
     top-level Markdown file; a run with an audit hook on ``open`` found the
     same four (October 2026), 0.12 added the recipes' (DOCS-05), 0.13
-    the upgrade guide's proof, which reads the changelog (SEC-13c-1), and
-    0.15 the fintech page's, which checks the tests it names (FIN-74).
+    the upgrade guide's proof, which reads the changelog (SEC-13c-1),
+    0.15 the fintech page's, which checks the tests it names (FIN-74), and
+    1.0 the problem codes' page's (DSGN-20).
     """
     reading = re.compile(r'(?:ROOT|parents\[1\])\s*/\s*"(?:docs|[A-Za-z]+\.md)"')
     readers = {
@@ -809,7 +843,7 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
         if "pytest" in step.get("run", "")
     ]
     assert set(re.findall(r"domainkit_tests/\S+\.py", command)) == readers
-    assert len(readers) == 8
+    assert len(readers) == 9
 
 
 def test_the_suite_runs_on_every_core() -> None:
@@ -1538,3 +1572,280 @@ def test_mutmut_s_own_runs_note_the_test_they_stopped_at(
     monkeypatch.delenv("MUTANT_UNDER_TEST")
     conftest.pytest_runtest_logstart("t.py::f", ("t.py", 1, "f"))
     assert not noted.exists()  # A mutant's run, or no mutation run: nothing.
+
+
+REQUIRED_JOBS = ROOT / ".github" / "scripts" / "required_jobs.py"
+RELEASE_CHECK = ROOT / ".github" / "scripts" / "release_check.py"
+LOCK_CONSTRAINTS = ROOT / ".github" / "scripts" / "lock_constraints.py"
+
+
+def push_run(status: str = "completed", **changed: str) -> dict[str, Any]:
+    """A run of a push to main where each job ended as it should, but ``changed``."""
+    concluded = {
+        check: "success"
+        for name in running("push")
+        for check in check_names(name, jobs()[name])
+    }
+    concluded |= {"changes": "skipped", "docs": "skipped"} | changed
+    return {
+        "status": status,
+        "jobs": [
+            {"name": name, "conclusion": conclusion}
+            for name, conclusion in concluded.items()
+            if conclusion != "absent"
+        ],
+    }
+
+
+def judge(run: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+    """The release's verdict on main's ``run``, by the ruleset."""
+    return subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+        [sys.executable, str(REQUIRED_JOBS), str(RULESETS / "main.json")],
+        input=json.dumps(run),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a_release_judges_mains_run_by_the_checks_the_ruleset_requires() -> None:
+    """The advisory jobs may fail; each required check, and attest, may not.
+
+    ``stress (3.14t)`` runs on the push a release reuses and crashes now
+    and then inside SQLAlchemy on 3.14t; the run's own conclusion counted
+    it (INFRA-14).
+    """
+    assert judge(push_run()).returncode == 0
+    advisory = push_run(**{"stress (3.14t)": "failure"})
+    assert judge(advisory).returncode == 0
+    for check in ("test (3.14t)", "test (3.15)", "build", "sbom", "attest"):
+        done = judge(push_run(**{check: "failure"}))
+        assert done.returncode == 1
+        assert done.stdout == f"{check}: failure, not success\n"
+    ran = judge(push_run(docs="success"))
+    assert (ran.returncode, ran.stdout) == (1, "docs: success, not skipped\n")
+    missing = judge(push_run(attest="absent"))
+    assert (missing.returncode, missing.stdout) == (1, "attest: not in the run\n")
+    going = judge(push_run(status="in_progress"))
+    assert going.stdout == "the run is in_progress, not completed\n"
+    assert going.returncode == 1
+
+
+def test_releases_get_a_run_of_their_own_per_tag() -> None:
+    """No pending release is cancelled by a third tag (INFRA-21)."""
+    release: dict[str, Any] = yaml.safe_load((WORKFLOWS / "release.yml").read_text())
+    assert release["concurrency"] == {
+        "group": "release-${{ github.ref }}",
+        "cancel-in-progress": False,
+    }
+    steps = [step.get("run", "") for step in release["jobs"]["tag"]["steps"]]
+    assert 'python3 .github/scripts/release_check.py "$TAG"' in steps
+
+
+def test_a_release_version_is_ordered_as_pep_440_orders_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-releases before the release; anything but X.Y.Z[aN|bN|rcN] refused."""
+    check = load_script("release_check", monkeypatch)
+    ordered = ["0.12.1", "1.0.0a1", "1.0.0b2", "1.0.0rc1", "1.0.0", "1.0.1", "1.10.0"]
+    keys = [check.key(version) for version in ordered]
+    assert keys == sorted(keys)
+    assert len(set(keys)) == len(keys)
+    for version in ("1.0", "1.0.0.post1", "1.0.0-rc.1", "v1.0.0", "1.0.0rc"):
+        assert check.key(version) is None, version
+
+
+def test_a_release_follows_the_tags_of_its_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new line is the newest; a patch is its line's newest (backports pass)."""
+    check = load_script("release_check", monkeypatch)
+    tags = ["v0.12.0", "v0.12.1", "v1.0.0rc1", "notes", "v1.0"]
+    assert check.tag_problems("1.0.0", tags) == []
+    assert check.tag_problems("1.0.0", [*tags, "v1.0.0"]) == []  # Itself.
+    assert check.tag_problems("0.12.2", tags) == []  # A patch of its own line.
+    assert check.tag_problems("0.12.1", [*tags, "v0.12.2"]) == [
+        "v0.12.2 exists, and 0.12.1 is not newer"
+    ]
+    assert check.tag_problems("0.13.0", tags) == [
+        "v1.0.0rc1 exists, and 0.13.0 is not newer"
+    ]
+    assert check.tag_problems("1.0.0rc1", [*tags, "v1.0.0rc2"]) == [
+        "v1.0.0rc2 exists, and 1.0.0rc1 is not newer"
+    ]
+    later = ["v1.9.5", "v2.0.0"]
+    assert check.tag_problems("1.9.6", later) == []  # The last 1.x minor's fix.
+    assert check.tag_problems("1.9.5", ["v1.9.6"]) == [
+        "v1.9.6 exists, and 1.9.5 is not newer"
+    ]
+    assert check.tag_problems("1.10.0", later) == [
+        "v2.0.0 exists, and 1.10.0 is not newer"
+    ]
+    assert check.tag_problems("1.0", tags) == [
+        "1.0 is not a release version (X.Y.Z, or aN, bN, rcN)"
+    ]
+
+
+def test_a_release_has_its_dated_changelog_section_and_nothing_unreleased(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 1 of docs/versioning.md's release: the entries moved, and dated."""
+    check = load_script("release_check", monkeypatch)
+    released = "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-11-02\n\n- a\n"
+    assert check.changelog_problems(released, "1.0.0") == []
+    assert (
+        check.changelog_problems(released.replace("## [Unreleased]\n", ""), "1.0.0")
+        == []
+    )
+    assert check.changelog_problems(
+        released.replace("## [Unreleased]\n", "## [Unreleased]\n\n- b\n"), "1.0.0"
+    ) == ["CHANGELOG.md: [Unreleased] still holds entries"]
+    assert check.changelog_problems("## [Unreleased]\n\n- b\n", "1.0.0") == [
+        "CHANGELOG.md: [Unreleased] still holds entries",
+        "CHANGELOG.md: the newest release section is not [1.0.0]",
+    ]
+    assert check.changelog_problems(released, "1.0.1") == [
+        "CHANGELOG.md: the newest release section is not [1.0.1]"
+    ]
+    assert check.changelog_problems(released.replace(" - 2026-11-02", ""), "1.0.0") == [
+        "CHANGELOG.md: [1.0.0] has no date"
+    ]
+
+
+def test_a_release_is_tagged_on_the_commit_that_made_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The version changed in it, or its changelog section was added in it."""
+    check = load_script("release_check", monkeypatch)
+    pyproject = '[project]\nversion = "{}"\n'
+    section = "## [Unreleased]\n\n## [1.0.0] - 2026-11-02\n"
+    assert check.commit_problems("1.0.0", None, None) == []  # A root commit.
+    assert check.commit_problems("1.0.0", pyproject.format("0.13.0"), section) == []
+    assert check.commit_problems("1.0.0", pyproject.format("1.0.0"), "") == []
+    assert check.commit_problems("1.0.0", pyproject.format("1.0.0"), None) == []
+    assert check.commit_problems("1.0.0", pyproject.format("1.0.0"), section) == [
+        (
+            "the commit before this one already had version 1.0.0 and its "
+            "changelog section: tag the release commit"
+        )
+    ]
+    assert check.commit_problems("1.0.0", "[tool.x]\n", section) == []
+
+
+def test_a_tag_on_a_commit_after_the_release_is_refused(tmp_path: Path) -> None:
+    """The script on a repository: the release commit passes, the next does not."""
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.12.1"\n')
+    (tmp_path / "CHANGELOG.md").write_text(
+        "## [Unreleased]\n\n## [0.12.1] - 2026-10-29\n"
+    )
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-q", "-m", "0.12.1")
+    git(tmp_path, "tag", "v0.12.1")
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n')
+    (tmp_path / "CHANGELOG.md").write_text(
+        "## [Unreleased]\n\n## [1.0.0] - 2026-11-02\n\n## [0.12.1] - 2026-10-29\n"
+    )
+    git(tmp_path, "commit", "-q", "-am", "Release 1.0.0")
+
+    def release(tag: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+            [sys.executable, str(RELEASE_CHECK), tag],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert release("v1.0.0").returncode == 0
+    mismatched = release("v1.0.1")
+    assert mismatched.returncode == 1
+    assert (
+        "v1.0.1 does not match version 1.0.0 in pyproject.toml\n" in mismatched.stdout
+    )
+    (tmp_path / "README.md").write_text("Later.\n")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-q", "-m", "A later change")
+    later = release("v1.0.0")
+    assert later.returncode == 1
+    assert later.stdout == (
+        "the commit before this one already had version 1.0.0 and its changelog"
+        " section: tag the release commit\n"
+    )
+
+
+def test_the_build_job_smoke_tests_the_wheel_on_the_locked_set() -> None:
+    """Upstream's new releases are newest's to try, not a required check's."""
+    done = subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+        [sys.executable, str(LOCK_CONSTRAINTS), str(ROOT / "poetry.lock")],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lock = tomllib.loads((ROOT / "poetry.lock").read_text())
+    assert done.stdout.splitlines() == sorted(
+        f"{package['name']}=={package['version']}" for package in lock["package"]
+    )
+    script = "\n".join(step.get("run", "") for step in jobs()["build"]["steps"])
+    assert "python .github/scripts/lock_constraints.py > /tmp/constraints.txt" in script
+    installs = re.findall(r"/clean/bin/pip install .*", script)
+    assert len(installs) == 2
+    assert all(each.endswith(" -c /tmp/constraints.txt") for each in installs)
+
+
+def test_the_required_free_threaded_job_leaves_engines_on_threads_to_stress() -> None:
+    """A known crash upstream fails the advisory stress job only (INFRA-14)."""
+    required = " ".join(
+        step.get("run", "") for step in jobs()["free-threaded"]["steps"]
+    )
+    stress = " ".join(
+        step.get("run", "") for step in jobs()["free-threaded-stress"]["steps"]
+    )
+    assert '-m "not engines_on_threads"' in required
+    assert "engines_on_threads" not in stress
+    marked = re.findall(
+        r"@pytest\.mark\.engines_on_threads\n(?:@.*\n)*def (\w+)",
+        (ROOT / "domainkit_tests" / "test_free_threading.py").read_text(),
+    )
+    assert marked == [
+        "test_loops_on_threads_get_their_own_engines",
+        "test_loops_on_threads_keep_their_own_isolated_engines",
+        "test_loops_on_threads_keep_their_own_read_only_binds",
+    ]
+
+
+def test_the_published_links_name_the_release_tag(tmp_path: Path) -> None:
+    """The PyPI page's links to this repository name ``vX.Y.Z``, not main.
+
+    The build job rewrites the README's and the project URLs' links before
+    it builds the files a release publishes (INFRA-22).
+    """
+    steps = jobs()["build"]["steps"]
+    names = [step.get("name") or step.get("run", "") for step in steps]
+    point = names.index("Point the package's links at its release tag")
+    assert names.index("poetry build") == point + 1
+    for name in ("README.md", "pyproject.toml"):
+        (tmp_path / name).write_text((ROOT / name).read_text())
+    shim = tmp_path / "bin" / "poetry"
+    shim.parent.mkdir()
+    shim.write_text("#!/bin/sh\necho 1.2.3\n")
+    shim.chmod(0o755)
+    done = subprocess.run(  # noqa: S603 - bash, the workflow's own step.
+        ["bash", "-e", "-c", steps[point]["run"]],  # noqa: S607 - bash from PATH.
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{shim.parent}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    readme = (tmp_path / "README.md").read_text()
+    assert "/blob/main/" not in readme
+    assert readme.count(f"{REPOSITORY_URL}blob/v1.2.3/docs/") >= 20
+    urls = tomllib.loads((tmp_path / "pyproject.toml").read_text())["project"]["urls"]
+    assert urls["Documentation"] == f"{REPOSITORY_URL}blob/v1.2.3/docs/reference.md"
+    assert urls["Changelog"] == f"{REPOSITORY_URL}blob/v1.2.3/CHANGELOG.md"
+    assert urls["Homepage"] == REPOSITORY_URL.rstrip("/")
+
+
+REPOSITORY_URL = "https://github.com/karimmattar/domainkit/"

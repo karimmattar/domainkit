@@ -5,7 +5,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict
 
 from domainkit.apps import DomainConfig
-from domainkit.apps.hooks import on_check, on_shutdown, on_startup
+from domainkit.apps.hooks import on_ready, on_shutdown, on_startup
 
 
 class AlphaSettings(BaseModel):
@@ -29,7 +29,7 @@ class AlphaConfig(DomainConfig):
         self.calls.append("ready")
         on_startup(self.start)
         on_shutdown(self.stop)
-        on_check(self.probe)
+        on_ready(self.probe)
 
     async def start(self) -> None:
         """Record the call."""

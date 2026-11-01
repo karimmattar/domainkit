@@ -22,7 +22,7 @@ from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import bearer, create_user, login
 from domainkit_tests.test_auth_principals import scope
 
-PCI = {"PASSWORD_PRESET": "pci-dss-4"}
+PCI = {"PRESET": "pci-dss-4"}
 
 
 async def _credentials(headers: dict[str, str]) -> Any:  # noqa: ANN401

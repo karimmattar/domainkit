@@ -1,6 +1,6 @@
 # 0117. Reconcile statements through a port, match by rules in order, and record breaks
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-01 (at the end)
 - Date: 2026-10-30
 
 ## Context
@@ -73,3 +73,24 @@ lock of the account's name, so two runs never record the same match.
   subject. Import only what reconciliation needs.
 - Formats other than CSV are adapters a project writes against the port
   until the parsers of FIN-12 arrive.
+
+## Amendment (2026-11-01, the 0.15 audit)
+
+- **Imports and runs are audited** (FIN-90, FIN-100). Over HTTP they
+  wrote through a connection and left nothing in the trail, where the
+  command recorded both; a clerk could import a fabricated statement
+  whose lines "match" postings the bank never saw. `import_statement`
+  and `reconcile` now record `StatementImported` (the statement's name,
+  the lines imported and skipped, and a SHA-256 of the lines as stored)
+  and `AccountReconciled` (the run, the matches by rule, the breaks
+  left) on the account, in their transaction, so the trail names the
+  actor, whichever path. The breaks are still the last run's; earlier
+  runs are in the trail by their counts.
+- **Matching is bounded and off the loop** (PERF-25). `ByAmountAndDate`
+  finds a line's candidates among the postings of its amount and
+  currency (a dict), not all of them: lines plus postings, not their
+  product. Every rule runs on a thread (`asyncio.to_thread`), so a long
+  match stalls no request. The postings a run reads still span the dates
+  the account's statements cover, as breaks need.
+- **Lines are marked in batches** (PERF-23) of `CHECK_BATCH`, far below
+  the 32,767 parameters a PostgreSQL statement takes.

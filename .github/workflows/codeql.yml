@@ -4,7 +4,11 @@
 # CodeQL follows values from where they enter (a request, a header, a
 # file) across functions and modules to where they are used (SQL, a path,
 # a URL, a log line). Alerts go to the repository's code scanning page and
-# to the pull request; a check that gates merging is the ruleset's to add.
+# to the pull request. The job's check, codeql, is one the main branch
+# ruleset requires (INFRA-21), and its code scanning rule refuses a pull
+# request that brings a new high or critical security alert, or an error
+# alert. A release does not wait for main's push run, which the next push
+# may cancel: the pull request passed it.
 # Free for public repositories.
 name: CodeQL
 
@@ -25,6 +29,8 @@ concurrency:
 
 jobs:
   analyze:
+    # The ruleset requires this name (.github/rulesets/main.json).
+    name: codeql
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

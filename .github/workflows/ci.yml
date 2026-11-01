@@ -90,7 +90,7 @@ jobs:
           poetry run pytest -n auto --junitxml=junit.xml
           domainkit_tests/test_api.py domainkit_tests/test_ci.py
           domainkit_tests/test_docs.py domainkit_tests/test_fintech_docs.py
-          domainkit_tests/test_recipes.py
+          domainkit_tests/test_problem_codes.py domainkit_tests/test_recipes.py
           domainkit_tests/test_sec13c_1_upgrade_guide_skips_removals.py
           domainkit_tests/test_sec14b_5_erase_leaves_documented_code.py
           domainkit_tests/test_walkthroughs.py
@@ -129,7 +129,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.13", "3.14"]
+        python: ["3.13", "3.14", "3.15"]
     env:
       COVERAGE_FILE: .coverage.test-${{ matrix.python }}
     # Every step is skipped for a pull request that changes only docs.
@@ -176,7 +176,14 @@ jobs:
   # whole suite crashes the 3.14.6t interpreter (a segmentation fault in
   # mimalloc's free, at a different test each run, in the main thread),
   # already at 0.7.0, so it waits for a fix upstream (docs/runtime.md).
-  # Coverage comes from the other jobs.
+  # Nor do the tests that make and close engines on several threads at once
+  # (marked engines_on_threads): they crash 3.14.6t inside SQLAlchemy's
+  # compiled extensions now and then (a segmentation fault, a SystemError
+  # from a weak reference, or a hang): 13 of 28 runs of the file failed so
+  # on a 4-core machine in November 2026, and 12 of 12 passed without them.
+  # A required check must fail for the change's sake only (INFRA-14). They run
+  # on 3.14t in stress (3.14t), which gates nothing, and in the test jobs
+  # with the GIL. Coverage comes from the other jobs.
   free-threaded:
     name: test (3.14t)
     needs: changes
@@ -203,7 +210,8 @@ jobs:
           jwt mfa rabbitmq redis uploads testing webhooks tzdata uvloop granian"
       - run: poetry run python -c "import sys; assert not sys._is_gil_enabled()"
       - run: >-
-          poetry run pytest -p no:cov domainkit_tests/test_free_threading.py
+          poetry run pytest -p no:cov -m "not engines_on_threads"
+          domainkit_tests/test_free_threading.py
           domainkit_tests/test_log.py domainkit_tests/test_reporting.py
           domainkit_tests/test_loops.py domainkit_tests/test_auth_hashers.py
           domainkit_tests/test_cache.py domainkit_tests/test_throttles.py
@@ -212,8 +220,8 @@ jobs:
           domainkit_tests/test_blocking.py domainkit_tests/test_servers.py
           domainkit_tests/test_orm_loading.py
 
-  # The free-threading tests again, many times, on 3.14t: a race between
-  # threads shows in some runs only. Each run takes a new random order
+  # The free-threading tests again, many times, on 3.14t, engines_on_threads
+  # included: a race between threads shows in some runs only. Each run takes a new random order
   # (pytest-randomly), so loops on threads meet the shared state in another
   # interleaving each time; any failing run fails the job. Not a required
   # check (test_ci.py's ADVISORY): on 3.14.6t some runs crash inside
@@ -398,16 +406,58 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  # The PostgreSQL tests again, on the oldest PostgreSQL domainkit supports
+  # (docs/databases.md: 16 to 18; integration runs the newest). Only
+  # PostgreSQL is set, so tests of the other servers skip; a test skipped for
+  # want of PostgreSQL fails the job. Required, as integration is: the range
+  # is a promise of 1.0, and a release must not break its floor unseen
+  # (TEST-18). No coverage: integration's run is the one that counts.
+  postgresql-floor:
+    name: postgresql (16)
+    needs: changes
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DOMAINKIT_TEST_POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --all-extras --with dev
+      - shell: bash
+        run: |
+          poetry run pytest -n auto --dist worksteal -p no:cov -rs | tee pytest.log
+          ! grep -E "SKIPPED.*DOMAINKIT_TEST_POSTGRES_URL" pytest.log
+
   # The benchmark ladder (docs/performance.md, ADR 0064): Python calls and
   # database round trips per request on each rung, against
   # benchmarks/budgets.toml; over budget fails. CPU time goes to the job
   # summary, beside the base branch's on pull requests, and is never gated:
-  # a shared runner's timings are too noisy for that.
+  # a shared runner's timings are too noisy for that. Its Python is pinned
+  # to the patch release benchmarks/budgets.toml was written on: counts
+  # written on one did not hold on another (PERF-32).
   bench:
     needs: changes
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
@@ -435,7 +485,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.13.16"
       - run: pipx install "poetry==${POETRY_VERSION}"
       # Every extra, as make install: the modules each rung loads depend on
       # what is installed (prometheus_client, opentelemetry), and are gated.
@@ -474,7 +524,11 @@ jobs:
       - run: poetry run coverage report --fail-under=100
 
   # The wheel must carry its templates and Alembic environment, and import
-  # in a clean environment with only its declared dependencies.
+  # in a clean environment with only its declared dependencies, at the
+  # versions poetry.lock pins (.github/scripts/lock_constraints.py): what
+  # upstream released today is the newest job's to try, and must not fail
+  # this required check, or the run a release reuses (INFRA-21). The image
+  # a new project builds resolves its own dependencies, as a project's does.
   build:
     needs: [changes, lint, test]
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
@@ -488,6 +542,16 @@ jobs:
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
+      # The PyPI page is the README, and the project's URLs: their links to
+      # this repository's files name the release's tag, not main, whose
+      # documents move on with the next release (INFRA-22). A build of
+      # main between releases links to the last one's tag; only a release
+      # commit's build is published.
+      - name: Point the package's links at its release tag
+        run: |
+          version="$(poetry version --short)"
+          sed -i "s#/karimmattar/domainkit/blob/main/#/karimmattar/domainkit/blob/v${version}/#g" README.md pyproject.toml
+          ! grep -q "/karimmattar/domainkit/blob/main/" README.md pyproject.toml
       - run: poetry build
       - run: |
           python -m zipfile -l dist/*.whl | grep -q "management/templates/domain"
@@ -495,8 +559,9 @@ jobs:
           python -m zipfile -l dist/*.whl | grep -q "management/templates/profiles/fintech/dot-github/workflows/ci.yml-tpl"
           python -m zipfile -l dist/*.whl | grep -q "contrib/auth/common-passwords.txt.gz"
       - run: |
+          python .github/scripts/lock_constraints.py > /tmp/constraints.txt
           python -m venv /tmp/clean
-          /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres]"
+          /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres]" -c /tmp/constraints.txt
           /tmp/clean/bin/python -c "import domainkit, domainkit.broker, domainkit.cache, domainkit.contrib.messaging; print(domainkit.__version__)"
           /tmp/clean/bin/domainkit init smokeAPI /tmp/smoke
           test -f /tmp/smoke/.env && test -f /tmp/smoke/manage.py
@@ -506,7 +571,7 @@ jobs:
       # (INFRA-09, SEC-12c-2).
       - name: Build and run a new project's image
         run: |
-          /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres,redis,sqlite]"
+          /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres,redis,sqlite]" -c /tmp/constraints.txt
           cd /tmp/smoke
           /tmp/clean/bin/python manage.py startdomain orders --minimal
           /tmp/clean/bin/python manage.py makemigrations -m "create"
@@ -708,8 +773,9 @@ jobs:
   # The newest releases the ranges in pyproject.toml allow, not the lock:
   # what "pip install domainkit[...]" resolves today. The other jobs test
   # the locked set; this one tests the top of every range, on pull requests
-  # and weekly, as releases land upstream. It gates no release: a release
-  # upstream must not hold back a fix here.
+  # and weekly, as releases land upstream, on the newest Python, where
+  # the newest releases meet it first (oldest takes the oldest). It gates
+  # no release: a release upstream must not hold back a fix here.
   newest:
     needs: changes
     if: >-
@@ -736,7 +802,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.15"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry build --format wheel
       # Every extra and the dev group, each at the newest release its range
@@ -818,6 +884,11 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - run: .oldest/bin/python -m pytest -n auto --junitxml=junit.xml
+      # The floors audited: a floor an advisory overtakes is found the week
+      # it is, and moved past it (INFRA-15). Like the job, it gates nothing.
+      - run: >-
+          .oldest/bin/python -m pip_audit --progress-spinner off
+          --ignore-vuln PYSEC-2026-1325
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -867,6 +938,14 @@ jobs:
           echo "mutants=$mutants" >> "$GITHUB_OUTPUT"
           if [ -z "$mutants" ]; then
             echo "### Mutation of the changed functions: none changed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Decorated functions (routes, validators, properties, context
+          # managers, fixtures): mutmut 3 never mutates them (ADR 0106).
+          if [ -s unmutated-functions.txt ]; then
+            {
+              echo "### Changed functions mutmut does not mutate (decorated)"
+              sed 's/^/- /' unmutated-functions.txt
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
       # The patterns are mutant names, not files: no globbing by the shell.
       # Interrupted (SIGINT) before the job's limit, mutmut stops and keeps
@@ -1143,7 +1222,7 @@ jobs:
               domainkit.management.commands.migrate.*
               domainkit.management.commands.partitions.*
               domainkit.management.commands.showmigrations.* domainkit.utils.decimals.*
-              domainkit.utils.headers.*
+              domainkit.utils.headers.* domainkit.utils.unset.*
           - name: domain
             mutants: >-
               domainkit.resources.* domainkit.ddd.* domainkit.testing.* domainkit.i18n.*
@@ -1163,7 +1242,7 @@ jobs:
               domainkit.contrib.audit.protection.* domainkit.contrib.audit.seals.*
               domainkit.contrib.audit.settings.* domainkit.contrib.audit.tasks.*
               domainkit.contrib.audit.checkpoints.* domainkit.contrib.audit.pruning.*
-              domainkit.contrib.audit.ledgerstates.*
+              domainkit.contrib.audit.ledgerstates.* domainkit.contrib.audit.testing.*
               domainkit.contrib.contenttypes.* domainkit.contrib.evidence.*
               domainkit.contrib.flags.* domainkit.contrib.idempotency.operations.*
               domainkit.contrib.idempotency.settings.*

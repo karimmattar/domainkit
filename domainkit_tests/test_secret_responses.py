@@ -173,7 +173,8 @@ def answers(client: TestClient) -> dict[str, list[Response]]:
     tokens = call("POST", "/auth/login", json=credentials).json()
     root = bearer(tokens["access_token"])
     call("POST", "/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
-    call("POST", "/auth/tokens", json={"name": "ci"}, headers=root)
+    token = {"name": "ci", "password": PASSWORD}
+    call("POST", "/auth/tokens", json=token, headers=root)
     call("POST", "/auth/session", json=credentials, headers=ORIGIN)
     call("GET", "/auth/session")
     client.cookies.clear()

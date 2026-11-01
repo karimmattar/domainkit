@@ -15,6 +15,7 @@ the public names see [api.md](api.md); for releases and deprecations see
 | [Server limits](reference/servers.md) | uvicorn's and Granian's options, and what to set in front of them |
 | [Deployment checks](reference/checks.md) | Every check id: what staging and production refuse, and what `check --deploy` warns about |
 | [Errors, JSON responses, and the API surface](reference/responses.md) | [Error bodies and codes](reference/responses.md#errors), [JSON responses](reference/responses.md#json-responses), [operation ids](reference/responses.md#operation-ids), [versions and deprecations](reference/responses.md#versions-and-deprecations), and [included routers](reference/responses.md#included-routers) |
+| [Problem codes](reference/problems.md) | Every `code` an error answers with, its status, and what answers it |
 | [Signing](reference/signing.md) | `domainkit.signing`, and [encryption](reference/signing.md#encryption) |
 | [Observability](reference/observability.md) | Logs, metrics and their labels, and traces |
 | [The test plugin](reference/test-plugin.md) | Enabling `domainkit.testing`; [testing.md](testing.md) covers what it brings |

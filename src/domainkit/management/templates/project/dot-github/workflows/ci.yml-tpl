@@ -1,7 +1,8 @@
-# The project's checks on every push and pull request: the code as ruff
-# formats it, the layer rules and settings (check), every model change in
-# a migration, the tests, and the image built. Actions are pinned to commit
-# SHAs, as domainkit's own CI pins them; Renovate or Dependabot keep them new.
+# The project's checks on every push and pull request: its dependencies
+# against the advisories (pip-audit), the code as ruff formats it, the
+# layer rules and settings (check), every model change in a migration, the
+# tests, and the image built. Actions are pinned to commit SHAs, as
+# domainkit's own CI pins them; Renovate or Dependabot keep them new.
 name: ci
 
 on:
@@ -32,6 +33,10 @@ jobs:
           python -m pip install --upgrade pip
           python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt
           python -m pip install --group dev -r requirements.txt
+      - name: Audit
+        # What was installed, against the advisories (pip-audit): the
+        # project's dependencies, domainkit's, and theirs.
+        run: pip-audit --progress-spinner off
       - name: Lint
         run: |
           ruff check .
