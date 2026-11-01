@@ -19,6 +19,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `AccountNotEmpty`: Closing an account that still has a balance, or holds.
 - `AccountNotFound`: No account has that id or code.
 - `AccountOpened`: An account was opened.
+- `AccountReconciled`: An account's statement lines were matched to its postings (FIN-90).
 - `AccountStatus`: Whether an account takes postings.
 - `AccountType`: What an account counts, which decides its normal balance.
 - `AccountingSettings`: How the ledger posts, holds, and reconciles; every key is optional.
@@ -64,6 +65,7 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `ReversalNotReversible`: Reversing a reversal: it would move the money of the entry it undid again.
 - `ReverseEntry`: Post the entry that undoes another, dated `booked_on` (default: today).
 - `Side`: A posting's side.
+- `StatementImported`: A statement's lines were imported for an account (FIN-90).
 - `TrialBalance`: Every account with a balance or movements in a period, and the totals.
 - `UnbalancedEntry`: An entry whose debits and credits differ in some currency.
 - `capture_hold`: Capture a hold into an entry; capturing it again returns it as captured.

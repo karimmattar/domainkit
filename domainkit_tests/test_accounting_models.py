@@ -16,6 +16,7 @@ from domainkit.contrib.accounting import (
     AccountIsClosed,
     AccountNotEmpty,
     AccountOpened,
+    AccountReconciled,
     AccountStatus,
     AccountType,
     Entry,
@@ -38,6 +39,7 @@ from domainkit.contrib.accounting import (
     PeriodsOverlap,
     PeriodStatus,
     Side,
+    StatementImported,
     UnbalancedEntry,
     models,
 )
@@ -320,11 +322,38 @@ def test_an_entry_balances_per_currency() -> None:
     )
 
 
+def test_imports_and_reconciliations_are_recorded_on_the_account() -> None:
+    """Each is an event with what was done, for the audit trail (FIN-90)."""
+    account = an_account()
+    run = uuid.uuid4()
+
+    account.imported("october.csv", 3, 1, "ab" * 32)
+    account.reconciled(run, {"reference": 2}, 1)
+
+    imported, reconciled = account.pull_events()
+    assert isinstance(imported, StatementImported)
+    assert (
+        imported.account_id,
+        imported.statement,
+        imported.imported,
+        imported.skipped,
+        imported.digest,
+    ) == (account.id, "october.csv", 3, 1, "ab" * 32)
+    assert isinstance(reconciled, AccountReconciled)
+    assert (
+        reconciled.account_id,
+        reconciled.run_id,
+        reconciled.matched,
+        reconciled.breaks,
+    ) == (account.id, run, {"reference": 2}, 1)
+
+
 def test_amounts_past_the_ledgers_columns_are_out_of_range() -> None:
     """14 digits before the point, in a line, a balance, or what is held (FIN-91)."""
     cash, sales = ids()
     huge = usd("100000000000000")
-    with pytest.raises(AmountOutOfRange):
+    message = r"^The amount is larger than the ledger keeps\.$"
+    with pytest.raises(AmountOutOfRange, match=message):
         draft([Line.debit(cash, huge), Line.credit(sales, huge)])
     account = an_account()
     account.post(Side.DEBIT, usd("99999999999999"))

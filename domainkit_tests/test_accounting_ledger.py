@@ -1,6 +1,7 @@
 """The ledger's use cases on a database: accounts, entries, periods, and holds."""
 
 import asyncio
+import dataclasses
 import os
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -170,6 +171,30 @@ async def test_entries_need_an_open_period_by_default() -> None:
         entry = await post_entry(command, AccountingUnitOfWork())
 
     assert entry.period_id is None
+
+
+async def test_a_date_in_a_gap_before_a_closed_period_is_closed_too() -> None:
+    """Without REQUIRE_PERIOD, a date no period covers, before one closed: refused."""
+    october = await period()
+    cash, sales = await account("1000"), await account("4000")
+    await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    early = transfer(sales, cash, usd("1"), "gap")
+
+    with (
+        override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}),
+        refused(PeriodIsClosed, match=r"^The books are closed up to a later date"),
+    ):
+        await post_entry(
+            dataclasses.replace(early, booked_on=date(2026, 9, 30)),
+            AccountingUnitOfWork(),
+        )
+    with override_settings(ACCOUNTING={"REQUIRE_PERIOD": False}):
+        later = await post_entry(
+            dataclasses.replace(early, booked_on=date(2026, 11, 1)),
+            AccountingUnitOfWork(),
+        )
+
+    assert later.period_id is None
 
 
 async def test_periods_close_in_date_order() -> None:
