@@ -87,7 +87,10 @@ def near(moments: list[datetime], now: datetime) -> bool:
 async def test_movements_and_subjects_are_stamped_by_the_database(
     skew: Skew,
 ) -> None:
-    """Bound by a window or not, a subject's touch and its usage are the database's."""
+    """A bounded subject's touch and its usage are the database's.
+
+    The payee no window bounds keeps neither (PERF-26).
+    """
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     skew(timedelta(days=3))
     await spend("h-1", key="k")
@@ -118,7 +121,11 @@ async def test_a_window_starts_by_the_databases_day(skew: Skew) -> None:
 
 
 async def test_the_purge_cuts_off_by_the_databases_clock(skew: Skew) -> None:
-    """Forty days ahead on the host, nothing the database dates today is old."""
+    """Forty days ahead on the host, nothing the database dates today is old.
+
+    A window bounds the subject, so it has a row and usage (PERF-26).
+    """
+    await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     await spend("h-1")
     skew(timedelta(days=40))
 

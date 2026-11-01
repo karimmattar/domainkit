@@ -475,7 +475,7 @@ def test_the_fintech_tests_pass_on_postgresql_as_the_applications_role(
         on_server(server.render_as_string(hide_password=False), f'DROP ROLE "{role}"')
 
     assert tested.returncode == 0, f"{tested.stdout}{tested.stderr}"
-    assert "16 passed" in tested.stdout
+    assert "17 passed" in tested.stdout
 
 
 def test_init_says_what_each_argument_is() -> None:
