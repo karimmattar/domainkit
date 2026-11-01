@@ -445,13 +445,11 @@ async def _lock(session: AsyncSession, key: SubjectKey) -> tuple[UUID, datetime]
 
 
 async def _ensure(session: AsyncSession, keys: list[SubjectKey]) -> None:
-    """Make the rows of the subjects of ``keys`` that have none, locking none.
+    """Make the rows of the subjects of ``keys`` (at least one) that have none.
 
-    One statement; a row that is there stays as it is, unlocked: no window
-    bounds these subjects, so their movements need not wait for each other.
+    One statement, locking none: a row that is there stays as it is.
+    ``postings.count_earlier`` counts earlier movements under them.
     """
-    if not keys:
-        return
     dialect = session.get_bind().dialect.name
     now = dbclock.now(dialect)
     statement = _upsert(dialect)(subjects).values(

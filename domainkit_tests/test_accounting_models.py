@@ -19,6 +19,7 @@ from domainkit.contrib.accounting import (
     AccountStatus,
     AccountType,
     Entry,
+    EntryAmount,
     EntryId,
     EntryPosted,
     Hold,
@@ -42,6 +43,7 @@ from domainkit.contrib.accounting import (
 )
 from domainkit.ddd import DomainError
 from domainkit.money import (
+    AmountOutOfRange,
     Money,
     UnknownCurrency,
     currencies_kept,
@@ -304,6 +306,36 @@ def test_an_entry_balances_per_currency() -> None:
         "a sale",
         None,
         None,
+    )
+    # What it moved, per account and currency, and its digest (FIN-96).
+    assert event.digest == entry.fingerprint
+    assert set(event.amounts) == {
+        EntryAmount(cash, usd("10"), usd("0")),
+        EntryAmount(cash, Money.of("3", "EUR"), Money.of("0", "EUR")),
+        EntryAmount(sales, usd("0"), usd("10")),
+        EntryAmount(sales, Money.of("0", "EUR"), Money.of("3", "EUR")),
+    }
+    assert [each.account_id for each in event.amounts] == sorted(
+        each.account_id for each in event.amounts
+    )
+
+
+def test_amounts_past_the_ledgers_columns_are_out_of_range() -> None:
+    """14 digits before the point, in a line, a balance, or what is held (FIN-91)."""
+    cash, sales = ids()
+    huge = usd("100000000000000")
+    with pytest.raises(AmountOutOfRange):
+        draft([Line.debit(cash, huge), Line.credit(sales, huge)])
+    account = an_account()
+    account.post(Side.DEBIT, usd("99999999999999"))
+    with pytest.raises(AmountOutOfRange):
+        account.post(Side.DEBIT, usd("1"))
+    account.reserve(usd("99999999999999"))
+    with pytest.raises(AmountOutOfRange):
+        account.reserve(usd("1"))
+    assert (account.balance, account.held) == (
+        Decimal("99999999999999.00"),
+        Decimal("99999999999999.00"),
     )
 
 

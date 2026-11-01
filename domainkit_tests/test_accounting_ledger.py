@@ -26,6 +26,7 @@ from domainkit.contrib.accounting import (
     CaptureHold,
     CloseAccount,
     ClosePeriod,
+    EarlierPeriodOpen,
     EntryId,
     EntryNotFound,
     HoldFinished,
@@ -171,6 +172,19 @@ async def test_entries_need_an_open_period_by_default() -> None:
     assert entry.period_id is None
 
 
+async def test_periods_close_in_date_order() -> None:
+    """A period is not closed while one before it is open (FIN-87)."""
+    september = await period("2026-09", date(2026, 9, 1), date(2026, 9, 30))
+    october = await period()
+
+    with refused(EarlierPeriodOpen, match=r"^A period before this one is still open"):
+        await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    await close_period(ClosePeriod(period_id=september), AccountingUnitOfWork())
+    closed = await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+
+    assert closed.status is PeriodStatus.CLOSED
+
+
 async def test_no_entry_is_dated_in_a_closed_period() -> None:
     """Closed, a period refuses entries, with or without ``REQUIRE_PERIOD``."""
     october = await period()
@@ -196,6 +210,11 @@ async def test_no_entry_is_dated_in_a_closed_period() -> None:
         await post_entry(transfer(sales, cash, usd("1"), "r-2"), AccountingUnitOfWork())
     with refused(PeriodIsClosed):
         await close_period(ClosePeriod(period_id=october), AccountingUnitOfWork())
+    with refused(PeriodIsClosed, match=r"^The books are closed up to a later date"):
+        await open_period(
+            OpenPeriod(name="2026-09", starts_on=date(2026, 9, 1), ends_on=TODAY),
+            AccountingUnitOfWork(),
+        )
     with refused(PeriodNotFound, match=r"^No accounting period has that id\.$"):
         await close_period(
             ClosePeriod(period_id=uuid.UUID(int=3)), AccountingUnitOfWork()

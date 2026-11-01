@@ -104,3 +104,46 @@ def test_a_request_of_a_maker_deactivated_since_never_runs(
     done = client.get(f"{API}/{request['id']}", headers=ann).json()
     assert done["status"] == "failed", done
     assert run_async(_booked("big")) == 0
+
+
+async def _revoke(username: str, key: str) -> None:
+    """Take ``key`` back from ``username``."""
+    async with AuthUnitOfWork() as uow:
+        found = await uow.users.get_by_natural_key(username)
+        assert found is not None
+        found.revoke(*await uow.permissions.get_many([key]))
+        await uow.commit()
+
+
+def test_a_request_of_a_maker_who_lost_the_permission_never_runs(
+    client: TestClient,  # noqa: F811 - the fixture.
+) -> None:
+    """Still active, but no longer allowed to post: the request fails."""
+    cash, sales = run_async(_books())
+    maker = user("maker", *CLERK)
+    ann = user("ann", *CLERK)
+    bob = user("bob", *CLERK)
+    amount = {"amount": "5000.00", "currency": "USD"}
+    request = submit(
+        client,
+        maker,
+        "accounting.post_entry",
+        {
+            "source": "shop",
+            "reference": "revoked",
+            "booked_on": "2026-10-15",
+            "lines": [
+                {"account_id": cash, "side": "debit", "amount": amount},
+                {"account_id": sales, "side": "credit", "amount": amount},
+            ],
+        },
+    ).json()
+
+    run_async(_revoke("maker", "accounting.add_entry"))
+    decide(client, request, ann)
+    decide(client, request, bob)
+    run_async(drain())
+
+    done = client.get(f"{API}/{request['id']}", headers=ann).json()
+    assert (done["status"], done["reason"]) == ("failed", "maker_not_allowed")
+    assert run_async(_booked("revoked")) == 0

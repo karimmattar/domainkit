@@ -769,3 +769,15 @@ def test_names_and_thresholds_at_their_bounds() -> None:
         Guard("Refund", Refund, refund, object, (POLICY,))
     assert Threshold({"USD": "0"}).exceeded_by([Money.of("0.01", "USD")])
     assert Threshold({"USD": "0.50"}).limits["USD"] == Money.of("0.50", "USD")
+
+
+async def test_without_auth_a_runs_maker_is_left_to_the_project(
+    installed: None,
+) -> None:
+    """No user store to ask: a maker's id, a user's or not, is not checked."""
+    from domainkit.contrib.approvals.services import _check_maker
+
+    registered = register(permission="tests.add_refund")
+
+    assert await _check_maker(registered, str(uuid.uuid4())) is None
+    assert await _check_maker(registered, "a-service") is None

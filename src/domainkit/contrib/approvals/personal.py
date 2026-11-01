@@ -92,14 +92,14 @@ async def erase_subject(subject: str) -> Mapping[str, int]:
                 each.approver == subject and each.verdict is Verdict.REJECT
                 for each in request.decisions
             )
+            if (mine or rejected) and request.status is not RequestStatus.FAILED:
+                request.reason = ""  # Their words; a failure's code is not.
             if mine and request.status is RequestStatus.PENDING and request.sealed():
                 request.cancel(subject, "")
                 counts["cancelled"] += 1
             elif mine and request.status is RequestStatus.APPROVED:
                 request.failed(MakerNotAllowed.code)
                 counts["failed"] += 1
-            if mine or rejected:
-                request.reason = ""
             counts["requests"] += mine
             counts["decisions"] += sum(
                 each.approver == subject for each in request.decisions

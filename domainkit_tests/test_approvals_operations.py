@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import Final
 
 import pytest
+from sqlalchemy import update
 
 from domainkit import clock, setup
 from domainkit.apps import registry
@@ -33,6 +34,8 @@ from domainkit.contrib.approvals import (
     submit_command,
 )
 from domainkit.contrib.approvals.rules import configured_rule
+from domainkit.contrib.approvals.tables import decisions, requests
+from domainkit.db import connections
 from domainkit.ddd import Command
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsAuthenticated
@@ -274,6 +277,52 @@ def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> 
         str(bystander.id): 0,
     }
     assert by_kind[str(bystander.id)].status is RequestStatus.PENDING
+
+
+def test_erasure_fails_a_request_approved_and_launders_no_seal(project: str) -> None:
+    """Their approved request fails rather than runs; a broken seal stays broken.
+
+    A request or a decision changed around the application is not sealed
+    again by an erasure, so it is still refused (FIN-94).
+    """
+    approved = submitted("approved", maker="subject")
+    decide(approved, "ann")
+    decide(approved, "bob")
+    tampered = submitted("tampered", maker="subject")
+    decide(tampered, "subject-2")
+    other = submitted("other")
+    decide(other, "subject")
+
+    async def tamper() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(requests).where(requests.c.id == tampered.id).values(required=1)
+            )
+            await connection.execute(
+                update(decisions)
+                .where(decisions.c.request_id == other.id)
+                .values(fingerprint="0" * 64)
+            )
+
+    run_async(tamper())
+    (erase,) = on_erase_subject.of("approvals")
+
+    counts = run_async(erase.call("subject", "request"))
+
+    by_kind = run_async(_stored())
+    done, kept, theirs = (
+        by_kind[str(approved.id)],
+        by_kind[str(tampered.id)],
+        by_kind[str(other.id)],
+    )
+    assert counts == {"requests": 2, "failed": 1, "decisions": 1}
+    assert (done.status, done.reason) == (RequestStatus.FAILED, "maker_not_allowed")
+    assert done.sealed()
+    assert (kept.status, kept.sealed()) == (RequestStatus.PENDING, False)
+    assert kept.maker.startswith("erased:")
+    (decision,) = theirs.decisions
+    assert decision.approver.startswith("erased:")
+    assert not decision.verified(theirs.id)
 
 
 def test_setup_refuses_thresholds_and_rules_that_cannot_work(
