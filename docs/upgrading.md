@@ -27,6 +27,11 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **The `settings` fixture reads settings read-only** (TEST-19): a test
+  that changed a mapping in place (`settings.CACHES["x"] = ...`) gets
+  `TypeError`. **Fix:** assign the whole setting,
+  `settings.CACHES = {**settings.CACHES, "x": {...}}`, which is validated
+  and undone when the test ends.
 - **An open live connection no longer keeps its login alive**
   (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
   WebSocket or event stream wrote the login's last use, so a page left

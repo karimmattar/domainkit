@@ -284,6 +284,13 @@ Retention that keeps the chain: prune below a signed checkpoint; export checkpoi
 - `export`: Every audited database's checkpoints, and one of its head, signed.
 - `prune`: Prune `database`'s trail below a checkpoint of its last seal before `before`.
 
+## `domainkit.contrib.audit.testing`
+
+The audit trail as tests read it: its rows, as records.
+
+- `RecordedEntry`: One row of the audit trail, as it was written.
+- `audit_entries`: The trail's entries, oldest first, those matching every filter given.
+
 ## `domainkit.contrib.audit.tables`
 
 The audit trail: append-only, one row per recorded action, sealed in a chain.

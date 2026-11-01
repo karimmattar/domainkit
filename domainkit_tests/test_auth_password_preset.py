@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from domainkit import clock
+from domainkit.apps import registry
 from domainkit.checks import CheckFailed
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import (
@@ -193,8 +194,11 @@ def test_settings_that_contradict_the_preset_are_refused(
 def test_stricter_settings_keep_the_preset(
     use_auth: UseAuth, setting: dict[str, Any]
 ) -> None:
-    """What asks more than PCI holds."""
+    """What asks more than PCI holds, as given, not the preset's."""
     use_auth(**PCI, **setting)
+
+    [(name, value)] = setting.items()
+    assert getattr(registry.settings(AuthSettings), name) == value
 
 
 # The history ------------------------------------------------------------------------

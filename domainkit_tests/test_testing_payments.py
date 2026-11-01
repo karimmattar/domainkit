@@ -224,7 +224,12 @@ def test_the_routes_may_be_elsewhere(frozen: FrozenClock) -> None:
     """``prefix`` names where the project mounts them."""
     app = FastAPI()
     seen: list[str] = []
-    app.post("/id/step-up")(lambda: seen.append("step-up") or {})
+
+    @app.post("/id/step-up")
+    def stepped() -> dict[str, str]:
+        seen.append("step-up")
+        return {}
+
     app.post("/id/sca/c/confirm")(lambda: {"authorization": "c.ok"})
 
     client = TestClient(app)

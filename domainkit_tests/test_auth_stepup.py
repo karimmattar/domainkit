@@ -275,7 +275,7 @@ def test_scoped_credentials_cannot_step_up(identity: Api, frozen: FrozenClock) -
 
     refused = step_up(client, bearer(scoped), now_code(secret, frozen))
 
-    assert refused.status_code == 403
+    assert (refused.status_code, refused.json()["code"]) == (403, "permission_denied")
 
 
 # The password too -----------------------------------------------------------------

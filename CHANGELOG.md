@@ -11,6 +11,27 @@ and a status.
 
 ### Added
 
+- Testing money-moving flows (`domainkit.testing`): `totp_code(secret,
+  at=None)` (RFC 6238 as auth checks it), `enrol_totp(client, password)`
+  returning an `Authenticator` whose `code()` never gives a step twice (it
+  moves a frozen clock to the next step), `step_up(client, app)`,
+  `confirm_sca(client, challenge, app)`, `approve_request(client, url)`,
+  each through the application's own routes, raising
+  `UnexpectedResponse` when a step is refused;
+  `domainkit.contrib.audit.testing.audit_entries()` reads the trail as
+  `RecordedEntry` records; `domainkit.testing.kms` gives `FakeKms` and
+  `FakeVault` for `KEYS` providers without the service. The fintech
+  profile's tests use them instead of a hand-written TOTP (TEST-21).
+- `domainkit.apps.hooks.hooks_kept()`: every hook point's registrations
+  put back when the block ends; the test plugin keeps each test in it, so
+  a hook a test registers (`on_guard(check, domain="payments")`) no
+  longer stays for every later test (TEST-14).
+- PostgreSQL 16 to 18 are supported (`docs/databases.md`,
+  `docs/versioning.md`); a required `postgresql (16)` check runs the
+  PostgreSQL tests on the oldest, beside `integration` on 18. The fintech
+  profile's test settings read `<PREFIX>TEST_DATABASE_URL` and
+  `<PREFIX>TEST_DATABASE_OWNER_URL`, and CI runs that project's tests on
+  PostgreSQL as a row-level role (TEST-18).
 - `domainkit.money`: `Money`, an amount with exactly its currency's
   places and the currency, immutable and exact: `Money.of("10.5", "USD")`
   is 10.50, more places are refused (`InexactAmount`) and never rounded,
@@ -276,6 +297,17 @@ and a status.
 
 ### Changed
 
+- **Breaking (tests):** the `settings` fixture reads settings read-only:
+  `settings.CACHES["x"] = ...` raises `TypeError`, where it changed the
+  session's settings, unvalidated, for every later test. Assign the whole
+  setting (`settings.CACHES = {**settings.CACHES, "x": ...}`) (TEST-19).
+- `mutation (changed)` counts lines deleted inside a function and modules
+  moved and edited, and lists the changed decorated functions mutmut never
+  mutates apart instead of naming them, which stopped `mutmut run`; ADR
+  0106's 0.15 amendment and `CONTRIBUTING.md` say what the mutation runs
+  do not measure: decorated functions, code only a server reaches, flaky
+  tests counted as kills, and no whole run since 0.12.0 (TEST-16,
+  TEST-17).
 - **Breaking:** auth has three new tables, `domainkit_step_ups`,
   `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
   new features use them, but deleting or erasing a user deletes the
@@ -313,6 +345,17 @@ and a status.
 
 ### Fixed
 
+- The test plugin grants the application's role (`URL`) `SELECT`,
+  `INSERT`, `UPDATE`, `DELETE` on the test database's tables and the use
+  of its sequences when `MIGRATION_URL` names another role, so the
+  two-role setup `docs/deploying.md` asks for runs its tests on
+  PostgreSQL; before, every test failed with "permission denied" (TEST-13).
+- Timing-coupled tests: the ordering tests' SQLite waits 30 s for a
+  writer's lock (a write that waited past 5 s under load lost its outcome
+  behind a 60 s lock), a cache's one-second window is bounded by the
+  write, and hypothesis has no deadline in CI; assertion-free and
+  status-only tests now check the state or the problem code (TEST-20,
+  TEST-23).
 - `migrate` makes the audit trail append-only on PostgreSQL itself:
   `domainkit.contrib.audit` registers `protect_migrated` on
   `on_migrated`, which makes the triggers of `domainkit_audit_log` and
