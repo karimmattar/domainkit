@@ -759,7 +759,7 @@ def test_signed_in_password_checks_count_as_logins_when_set(identity: Api) -> No
     assert guesses == [400, 400]
     assert (login_after.status_code, login_after.json()["code"]) == (
         429,
-        "login_throttled",
+        "rate_limited",
     )
 
 
@@ -775,7 +775,7 @@ def test_wrong_logins_hold_back_signed_in_checks_when_set(identity: Api) -> None
 
     held = change(client, headers, STRONG[0], STRONG[1])
 
-    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
     assert "throttled" in [row["details"]["reason"] for row in audited("auth.login")]
 
 

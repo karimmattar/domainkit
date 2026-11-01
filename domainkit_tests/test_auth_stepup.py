@@ -257,7 +257,7 @@ def test_wrong_codes_count_against_the_users_code_rate(
     held = step_up(client, headers, now_code(secret, frozen))
 
     assert answers == [401, 401]
-    assert (held.status_code, held.json()["code"]) == (429, "throttled")
+    assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
 
 
 def test_scoped_credentials_cannot_step_up(identity: Api, frozen: FrozenClock) -> None:
@@ -325,7 +325,7 @@ def test_wrong_passwords_count_against_the_login_rate(
         headers=headers,
     )
 
-    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
     assert changing.status_code == 429  # The user's own count of password checks.
 
 

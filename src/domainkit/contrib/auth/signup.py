@@ -132,7 +132,6 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
         [address_key(request, "signup"), email_key("signup", email)],
         action="auth.signup",
         detail="Too many requests for mail; try again later.",
-        code="throttled",
     )
     model = get_user_model()
     fields = {model.USERNAME_FIELD: body.username, cast(str, model.EMAIL_FIELD): email}
@@ -191,7 +190,6 @@ async def confirm_signup(body: SignupConfirmIn, request: Request) -> None:
         address_key(request, "signup-confirm"),
         action="auth.signup",
         detail="Too many attempts; try again later.",
-        code="throttled",
     )
     await audit_refusal("auth.signup", "invalid_token")
     raise InvalidLink

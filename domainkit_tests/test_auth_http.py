@@ -344,7 +344,7 @@ def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:
     codes = [client.post("/auth/login", json=wrong).status_code for _ in range(3)]
     assert codes == [401, 401, 429]
     refused = client.post("/auth/login", json={**wrong, "username": "bob"})
-    assert (refused.status_code, refused.json()["code"]) == (429, "login_throttled")
+    assert (refused.status_code, refused.json()["code"]) == (429, "rate_limited")
     assert refused.json()["detail"] == "Too many login attempts; try again later."
     assert int(refused.headers["Retry-After"]) > 0
     assert audited("auth.login")[-1]["details"] == {"reason": "throttled"}
@@ -395,7 +395,7 @@ def test_logins_that_work_use_up_no_count(api: Api) -> None:
 
     assert logins == [200] * 5
     assert guesses == [401, 401]
-    assert (after.status_code, after.json()["code"]) == (429, "login_throttled")
+    assert (after.status_code, after.json()["code"]) == (429, "rate_limited")
 
 
 def test_wrong_passwords_from_anywhere_hold_an_accounts_right_one_back(
@@ -428,7 +428,7 @@ def test_wrong_passwords_from_anywhere_hold_an_accounts_right_one_back(
         logins = [alice.post("/auth/login", json=right).status_code for _ in range(2)]
 
     assert guesses == [401, 401, 429]
-    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
     assert again == [401, 429]
     assert logins == [200, 200]
 

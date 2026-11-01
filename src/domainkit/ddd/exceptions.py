@@ -4,13 +4,21 @@ The domain never mentions HTTP: ``domainkit.http.errors`` maps each base class
 below to a status code. Subclass the closest one, for example
 ``class ProductNotFound(NotFound)``. Each class gets a machine-readable
 ``code`` (``product_not_found``) unless it sets its own.
+
+Clients switch on codes, so a code is public: a class renamed must keep
+the code it had. Set ``code`` on the class to keep it whatever its name.
+domainkit's own classes must (``FRAMEWORK``), and
+``docs/reference/problems.md`` lists every one (DSGN-20).
 """
 
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from domainkit.exceptions import DomainkitError
 from domainkit.utils.text import snake_case
+
+FRAMEWORK: Final = "domainkit."
+"""The modules whose errors must set their ``code`` (domainkit's own)."""
 
 
 class DomainError(DomainkitError):
@@ -19,10 +27,21 @@ class DomainError(DomainkitError):
     code: ClassVar[str] = "domain_error"
 
     def __init_subclass__(cls) -> None:
-        """Derive ``code`` from the class name unless the class sets one."""
+        """Derive ``code`` from the class name unless the class sets one.
+
+        Raises:
+            TypeError: A class of domainkit's own sets none: its code is
+                pinned, so a rename never changes it (DSGN-20).
+        """
         super().__init_subclass__()
-        if "code" not in cls.__dict__:
-            cls.code = snake_case(cls.__name__)
+        if "code" in cls.__dict__:
+            return
+        if cls.__module__.startswith(FRAMEWORK):
+            raise TypeError(
+                f"{cls.__module__}.{cls.__qualname__} must set its code: "
+                "domainkit's problem codes are pinned, never derived."
+            )
+        cls.code = snake_case(cls.__name__)
 
     def __init__(self, message: str) -> None:
         """Store the user-facing ``message``."""
@@ -33,9 +52,13 @@ class DomainError(DomainkitError):
 class NotFound(DomainError):
     """The requested aggregate does not exist."""
 
+    code = "not_found"
+
 
 class Conflict(DomainError):
     """The operation clashes with the current state, such as a duplicate."""
+
+    code = "conflict"
 
 
 class ConcurrentUpdate(Conflict):
@@ -45,6 +68,8 @@ class ConcurrentUpdate(Conflict):
     unit of work could tell it; it is for logs, never for the answer.
     """
 
+    code = "concurrent_update"
+
     def __init__(self, message: str, *, model: str | None = None) -> None:
         """Store the message, and the model that lost the race if known."""
         super().__init__(message)
@@ -53,6 +78,8 @@ class ConcurrentUpdate(Conflict):
 
 class DuplicateValue(Conflict):
     """A value that must be unique is taken (a unique constraint refused it)."""
+
+    code = "duplicate_value"
 
     def __init__(
         self,
@@ -76,10 +103,16 @@ class PreconditionFailed(DomainError):
     decide. (``ConcurrentUpdate`` is the same race, found at commit.)
     """
 
+    code = "precondition_failed"
+
 
 class BusinessRuleViolation(DomainError):
     """The request is well-formed but breaks an invariant of the model."""
 
+    code = "business_rule_violation"
+
 
 class PermissionDenied(DomainError):
     """The actor may not perform the operation."""
+
+    code = "permission_denied"

@@ -24,6 +24,8 @@ from .uow import ObjectPermissionsUnitOfWork, about
 class InvalidGrant(BusinessRuleViolation):
     """A grant names a permission of another model, or no one or two at once."""
 
+    code = "invalid_grant"
+
 
 def describe(obj: object) -> tuple[str, ObjectId]:
     """``(content type, id)`` of a stored object: ``("catalog.product", id)``.
