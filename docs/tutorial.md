@@ -31,6 +31,6 @@ After the tutorial:
 - [operations.md](operations.md): running it in production, and
   [runbook.md](runbook.md) for when an alarm fires.
 - [security.md](security.md): the hardening checklist.
-- [upgrading.md](upgrading.md): moving a project to a new minor version.
+- [upgrading.md](upgrading.md): moving a project to a new version, and from 0.12 to 1.0.
 - [api.md](api.md): every public name; the documentation site renders
   each one's docstring under "API reference".

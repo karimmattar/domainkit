@@ -123,7 +123,7 @@ changed is put back (`domainkit.contrib.audit.protection.protect_migrated`,
 registered on `on_migrated`). No revision of the project's needs to call
 them. Only the table owner (the migration role) can drop them, for example
 to apply a retention policy; `unprotect(op)` in a revision does, until the
-next `migrate`. A revision that calls `protect(op)` itself, as 0.14 asked,
+next `migrate`. A revision that calls `protect(op)` itself, as 0.12 asked,
 still applies: protecting replaces what is there.
 
 ## Tamper evidence

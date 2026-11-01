@@ -22,7 +22,7 @@ the public names see [api.md](api.md); for releases and deprecations see
 | [Commands](reference/commands.md) | Every command and its options, [operators](reference/commands.md#operators), [fixtures, flush, and seeds](reference/commands.md#data-fixtures-flush-and-seeds), and [squashing migrations](reference/commands.md#squashing-migrations) |
 | [Extension points](reference/extension-points.md) | What a project implements, and where it registers it |
 
-Until 0.13 these were the sections of this one page; a link to one of
+In 0.12 these were the sections of this one page; a link to one of
 them (`reference.md#server-limits`) now opens this list, and each keeps
 its name and its anchor on its new page.
 

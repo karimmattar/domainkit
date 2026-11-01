@@ -97,5 +97,5 @@ how. [operations.md](operations.md) explains what runs and why;
       logins refused while Redis is down.
 - [ ] **Backups** of every database, restored once to prove they work
       ([Backups and restores](operations.md#backups-and-restores)).
-- [ ] **Upgrades** one minor at a time, as [upgrading.md](upgrading.md)
+- [ ] **Upgrades** to each 1.x minor while it is the latest, as [upgrading.md](upgrading.md)
       says, with `check --deploy` after each.

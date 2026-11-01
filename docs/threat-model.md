@@ -1,8 +1,8 @@
 # Threat model
 
-**Draft (0.9.2; moving money added in 0.15).** This is a first version,
-written for the teams that build services on domainkit and for their
-security reviewers. It says what a domainkit service has to protect,
+**As of 1.0.0.** First written for 0.9.2; 1.0 adds moving money and the
+key service. It is written for the teams that build services on domainkit
+and for their security reviewers. It says what a domainkit service has to protect,
 where its trust boundaries are, what can go wrong at each (by STRIDE),
 what domainkit does about it, and what is left to the project. It
 describes the framework as released; it does not replace a project's own
@@ -14,12 +14,13 @@ To report a vulnerability, follow [SECURITY.md](../SECURITY.md).
 
 | Asset | What can go wrong | Where domainkit holds it |
 | --- | --- | --- |
-| Money | An amount changes in transit or rounding; two concurrent changes overwrite each other; a retried request pays twice; a payment's follow-up work is lost or done twice. | Exact decimals end to end, written as fixed-point text ([databases.md](databases.md#exact-amounts)); optimistic versions on every aggregate ([databases.md](databases.md#versions)); row locks ([queries.md](queries.md)); idempotency keys ([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)); the outbox, committed with the change ([contrib.md](contrib/messaging.md#messaging-outbox-durable-handlers-background-tasks)). |
+| Money | An amount changes in transit or rounding; two concurrent changes overwrite each other; a retried request pays twice; a payment's follow-up work is lost or done twice; an amount is mixed with another currency, or booked on one side only; a large or repeated movement goes through on one person's say. | Exact decimals end to end, written as fixed-point text ([databases.md](databases.md#exact-amounts)); optimistic versions on every aggregate ([databases.md](databases.md#versions)); row locks ([queries.md](queries.md)); idempotency keys ([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)); the outbox, committed with the change ([contrib.md](contrib/messaging.md#messaging-outbox-durable-handlers-background-tasks)).; `Money`, an exact amount in its currency ([money.md](money.md)); double-entry books, append-only ([contrib/accounting.md](contrib/accounting.md)); maker-checker and limits ([contrib/approvals.md](contrib/approvals.md), [contrib/limits.md](contrib/limits.md)). |
+| Keys | The KEK, the data keys, or a person's key is read, used by someone else, or lost; an erased person's key survives somewhere. | The KEK in AWS KMS or Vault; data keys wrapped by it and held in memory; subjects' keys wrapped by a data key, destroyed by erasure ([contrib/keys.md](contrib/keys.md)). |
 | Credentials | Passwords, tokens, second factors, signing keys, and database and broker passwords are guessed, stolen, or logged. | Password hashing and throttles, opaque tokens kept as digests, second factors encrypted at rest ([auth.md](auth.md)); one `SECRET_KEY`, with fallbacks for rotation, from which each purpose's key is derived ([reference/signing.md](reference/signing.md)); secrets left out of reprs and logs. |
 | The audit trail | Who did what is changed, deleted, or never written; an operator acts anonymously. | An append-only trail with a hash chain, sealed and anchored in a ledger ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); operators named and audited ([reference/commands.md](reference/commands.md#operators)); evidence in an immudb ledger, verified by the client ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change)). |
 | Personal data | A person's data is shown to someone else, kept longer than allowed, or cannot be exported or erased. | Deny-by-default route rules and object permissions ([auth.md](auth/routes.md#protecting-routes)); personal markers, pseudonyms in the trail, export, erasure, and retention ([privacy.md](privacy.md)); outbox messages blanked once sent ([mail.md](mail.md)). |
 
-The service's availability matters to all four: a service that is down
+The service's availability matters to all of them: a service that is down
 cannot pay, and one that is overloaded may fail half-way.
 
 ## Trust boundaries
@@ -38,6 +39,7 @@ cannot pay, and one that is overloaded may fail half-way.
 
    operators: manage.py commands, the admin API    (8)
    source, CI, and the package on PyPI             (9)
+   key service: AWS KMS or Vault                   (10)
 ```
 
 1. **Client to edge.** Anyone on the internet. Nothing the client sends is
@@ -60,6 +62,9 @@ cannot pay, and one that is overloaded may fail half-way.
 8. **Operators.** People with a shell, the admin API, or the database.
 9. **Supply chain.** domainkit's source, its CI, the package on PyPI, and
    the dependencies it resolves.
+10. **Application to the key service.** AWS KMS or Vault holds the
+    key-encryption key; the application asks it to wrap and unwrap the
+    data keys that seal encrypted fields, and nothing else.
 
 ## STRIDE per boundary
 
@@ -85,7 +90,7 @@ project" is the team that builds and runs the service.
 | **Spoofing** the server | `SSLMODE = "verify-full"` required for network databases where deployed ([reference/checks.md](reference/checks.md)). | Certificates and their rotation. |
 | **Tampering** with rows | Bound parameters only; optimistic versions refuse a lost update, and a table without `version` is refused ([databases.md](databases.md#versions)); `protect()` triggers keep the trail append-only ([contrib.md](contrib/audit.md#tamper-evidence)). | Who can connect as the schema owner; `migrate` makes the `protect()` triggers, and startup refuses a trail without them where deployed. |
 | **Repudiation** | The trail is written in the transaction of the change. | Changes made outside the application (a `psql` session) are not audited. |
-| **Information disclosure** | Bound values never logged where deployed (`LOG_PARAMETERS` refused); TOTP secrets encrypted; tokens stored as digests; audit pseudonyms. | Encryption at rest, backups and their access, row-level security. |
+| **Information disclosure** | Bound values never logged where deployed (`LOG_PARAMETERS` refused); fields marked `Encrypted` sealed under keys the key service wraps, so the database, its replicas, backups, and dumps hold ciphertext ([contrib/keys.md](contrib/keys.md)); TOTP secrets encrypted; tokens stored as digests; audit pseudonyms. | Choosing which fields to encrypt; encryption at rest of the rest (disks, backups), and who reads backups; row-level security. |
 | **Denial of service** | Statement, lock, idle, connect, and pool timeouts ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). | Pool sizing for the load ([performance.md](performance.md)). |
 | **Elevation of privilege** | A row-level role for the application, a schema-owner URL for migrations only (`MIGRATION_URL`). | Granting those roles. |
 
@@ -138,6 +143,17 @@ project" is the team that builds and runs the service.
 | **Tampering** with the package | Releases built in CI from `main`, approved, and published with trusted publishing and attestations; actions pinned to commit SHAs ([SECURITY.md](../SECURITY.md)). | Verifying attestations when installing. |
 | Vulnerable dependencies | pip-audit and a secret scan on every push; updates through Renovate. | The project's own lock file and its updates. |
 
+### 10. The key service
+
+| Threat | What domainkit does | What remains |
+| --- | --- | --- |
+| **Spoofing** the key service | Calls go over HTTPS to the KMS endpoint of `AWS_KMS.REGION` (or `AWS_KMS.ENDPOINT`), or to `VAULT.URL`, which staging and production refuse over plain HTTP (`keys.E002`); AWS container credentials are taken only from the endpoints the AWS SDKs allow ([contrib/keys.md](contrib/keys.md#providers)). | The service's certificates, and the network path to it. |
+| **Tampering** with keys | Data keys are wrapped by the KEK, and every value sealed under a data key or a subject's key is authenticated (AES-256-GCM) and bound to its table, column, and row; AWS calls carry the encryption context `{"domainkit": "data-key"}` ([ADR 0119](adr/0119-wrap-data-keys-under-a-kms-key-through-a-port-and-name-the-key-in-every-sealed-value.md), [ADR 0120](adr/0120-seal-encrypted-fields-in-the-orm-bound-to-their-row-and-shred-a-person-by-destroying-their-key.md)). | Who may change the KEK's policy. |
+| **Repudiation** | `keys reencrypt` and `dumpdata --decrypt` are audited with their operator. | The key service's own audit log (CloudTrail, Vault's audit device): who unwrapped what. |
+| **Information disclosure** | The KEK never leaves the service; data keys are unwrapped once, at startup, and kept in memory only; the local KEK, derived from `SECRET_KEY`, is refused where deployed (`keys.E001`); a sealed value names its key, not its content. | Granting `kms:Decrypt` (or Vault's `decrypt`) to the application's role alone, best with the encryption context as a condition; keeping wrapped data keys with the configuration, not the data. |
+| **Denial of service** | A process unwraps its data keys at startup and calls the service no more while it serves: an outage stops new processes from starting, not running ones; each call is bounded by `KEYS.TIMEOUT`. | The service's availability, and a runbook for its outage ([runbook.md](runbook.md#the-key-service-is-unreachable)). |
+| **Elevation of privilege** | The role needs `GenerateDataKey`, `Decrypt`, and `ReEncrypt` on one key, or Vault's `datakey`, `decrypt`, and `rewrap` on one transit key. | Writing those policies, and rotating the KEK in the service. |
+
 ## Moving money
 
 A transfer crosses every boundary above, so a bank reads it as one flow:
@@ -168,8 +184,8 @@ safe side: docs off, HSTS on, a rate limit, and the deployment checks.
 
 ## Residual risks
 
-What domainkit does not yet do, as of 0.11. Each is either planned or
-left to the project on purpose.
+What domainkit does not do, as of 1.0. Each is either planned or left
+to the project on purpose.
 
 - **Login throttles hold a known username back on a new device.**
   `LOGIN_RATE` wrong passwords a minute for a username hold its user back
@@ -202,7 +218,15 @@ left to the project on purpose.
   `IDEMPOTENCY.TOMBSTONE_SECONDS` (7 days) past its TTL (1 day); keep the
   two above the time clients retry, and refuse what must never happen
   twice with a unique column of the domain's own.
-- **Open findings of the 0.9.0 audit.** [audit/0.9.0.md](audit/0.9.0.md)
+- **Erasure reaches a backup only when applied to it.** A backup taken
+  before an erasure holds the person's key, wrapped under a data key the
+  service still holds. Bound backup retention, route the keys app to a
+  database of its own with a shorter retention where a law asks, and
+  apply the recorded erasures again after a restore
+  ([contrib/keys.md](contrib/keys.md#backups-taken-before-an-erasure)).
+- **A limit on a busy subject costs a sum over its window** (PERF-27):
+  each movement adds the window's usage under the subject's lock.
+- **Open findings of the audits.** [audit/0.9.0.md](audit/0.9.0.md)
   lists every one with its status; open security findings are listed by id
   and severity until they are fixed.
 
@@ -227,6 +251,9 @@ left to the project on purpose.
   `get_for_update` or `get_many_for_update` where writers contend, and a
   serializable unit of work, run with retries, for rules across rows.
 - Mark personal data, and run retention (`privacy purge`) on a schedule.
+- Run the key service: the KEK, its policy, its rotation, and its audit
+  log; keep wrapped data keys with the configuration; replay recorded
+  erasures after restoring a backup.
 - Run sealing on a schedule, anchor in a ledger, and run `auditverify`.
 - Keep logs, the audit trail, and backups for as long as its regulator
   asks, encrypted, with access controlled and itself audited.
@@ -235,4 +262,5 @@ left to the project on purpose.
 - Protect the edge from volumetric attacks, and test the service itself:
   this model covers the framework, not the project's code.
 - Follow [docs/versioning.md](versioning.md#security-fixes-and-support):
-  take patch releases as they come, and upgrade one minor at a time.
+  take patch releases as they come, and each 1.x minor while it is the
+  latest.

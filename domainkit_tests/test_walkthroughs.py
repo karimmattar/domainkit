@@ -383,13 +383,14 @@ def test_part_1_serves_a_first_resource(tutorial: Tutorial) -> None:
 def test_part_2_holds_the_rules_written_by_hand(tutorial: Tutorial) -> None:
     """A deposit adds to the balance; the aggregate and the API refuse the rest."""
     answers = tutorial.through(PARTS[1])
-    deposited, negative, too_precise, closed, archived, late = answers
+    deposited, negative, too_precise, euros, closed, archived, late = answers
 
-    assert body(deposited)["balance"] == "100.00"
+    assert body(deposited)["balance"] == {"amount": "100.00", "currency": "USD"}
     assert body(deposited)["id"] == tutorial.shell.variables["ID"]
     assert body(negative)["code"] == "invalid_amount"
     assert body(too_precise)["code"] == "validation_error"
-    assert body(too_precise)["errors"][0]["loc"] == ["body", "amount"]
+    assert body(too_precise)["errors"][0]["loc"][:2] == ["body", "amount"]
+    assert body(euros)["code"] == "currency_mismatch"
     assert closed["output"].strip() == tutorial.shell.variables["CLOSED"]
     assert body(archived)["archived"] is True
     assert body(late)["code"] == "account_is_archived"
@@ -420,7 +421,7 @@ def test_part_4_runs_a_durable_handler_in_the_worker(tutorial: Tutorial) -> None
     [deposited] = tutorial.through(PARTS[3])
     printed = tutorial.shell.printed
 
-    assert body(deposited)["balance"] == "125.00"
+    assert body(deposited)["balance"] == {"amount": "125.00", "currency": "USD"}
     pending = printed["python manage.py messages --pending"].splitlines()
     assert [line.split()[2].rsplit(".", 1)[1] for line in pending] == [
         "log_account_created",
@@ -429,7 +430,7 @@ def test_part_4_runs_a_durable_handler_in_the_worker(tutorial: Tutorial) -> None
     ]
     ran = printed["python manage.py runworker --once"]
     account = tutorial.shell.variables["ID"]
-    assert f"Deposited 25.00 into account {account}" in ran
+    assert f"Deposited 25.00 USD into account {account}" in ran
 
 
 @WALKED
@@ -441,9 +442,9 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
     tests = tutorial.shell.cwd / "tests" / "domains" / "accounts"
     assert "def test_deposits_must_be_positive" in (tests / "test_model.py").read_text()
     printed = tutorial.shell.printed["pytest"]
-    # Twice: after part 2, and with part 5's four tests (one of them twice).
+    # Twice: after part 2, and with part 5's five tests (one of them twice).
     first, second = re.findall(r"(\d+) passed", printed)
-    assert int(second) == int(first) + 5
+    assert int(second) == int(first) + 6
     [check] = [
         output
         for line, output in tutorial.shell.printed.items()

@@ -32,11 +32,11 @@ def test_breaking_entries_of_removed_and_security_are_read() -> None:
 def test_this_releases_removals_are_held_to_the_guide() -> None:
     """DSGN-03 and DSGN-14, both Breaking removals of 0.13, are checked.
 
-    Read from 0.13.0's section: once ``[Unreleased]`` has Breaking entries
-    of its own, the guide is held to those instead.
+    0.13 was never published: its removals are 1.0.0's, read from that
+    section.
     """
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    entries = _upgrade_entries(changelog.split("\n## [0.13.0]")[1].split("\n## [")[0])
+    entries = _upgrade_entries(changelog.split("\n## [1.0.0]")[1].split("\n## [")[0])
 
     assert [
         ident

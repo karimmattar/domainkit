@@ -12,7 +12,11 @@ repeats it: `Accepted; amended 2026-10-25 (at the end)`,
 `Accepted; amended by` and a link to the new record, or `Superseded by` and
 that link. The `(Amended YYYY-MM-DD.)` marks inside 0023, 0056, 0057, 0061,
 and 0062 are earlier corrections made in place, before this rule; their
-status says `amended in place`. Number 0067 was never used.
+status says `amended in place`. Eleven numbers were never used: 0067,
+0073, 0074, 0081, 0083, 0088, 0091, 0093, 0103, 0109, and 0110. Numbers
+were handed out ahead to work done side by side, and a piece of work that
+needed no record left its number unused; none was withdrawn, and no
+record cites them.
 `domainkit_tests/test_docs.py` checks the order of this index, its
 statuses, and the amendments they name.
 

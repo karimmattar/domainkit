@@ -9,8 +9,84 @@ and a status.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-01
+
+The first release since 0.12.1, and the first with a stable public API:
+from 1.0, a name, setting, command, route, or format that
+[docs/versioning.md](docs/versioning.md) calls public is removed or
+changed only in 2.0. 0.13, 0.14 and 0.15 were milestones of `main` that
+were never published, so this release gathers them: 0.13's removals of
+what 0.12 deprecated, 0.14's money, 0.15's fintech controls, the fixes of
+the 0.15 audit, and the freeze of the API.
+
+- **Money** (`domainkit.money`): exact amounts in their currency, in
+  tables, queries, schemas and the generators; a double-entry ledger with
+  holds, periods, reports and reconciliation (`domainkit.contrib.accounting`).
+- **A bank's controls**: encrypted fields under AWS KMS or Vault, with
+  crypto-shredding (`domainkit.contrib.keys`, the `keys` extra);
+  maker-checker (`domainkit.contrib.approvals`); limits per transaction and
+  per window (`domainkit.contrib.limits`); step-up and transactions
+  authorized for one amount and payee; a PCI DSS preset; and
+  `domainkit init --profile fintech`, a project with them all on
+  ([docs/fintech.md](docs/fintech.md)).
+- **Messaging**: ordering keys, which run one key's messages one at a
+  time in commit order; unknown tasks wait for the deploy that brings
+  them.
+- **The freeze** ([ADR 0125](docs/adr/0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)):
+  names that 0.13 to 0.15 added were renamed freely; names of 0.12 that
+  changed keep a deprecated alias until 2.0; about 45 internals left the
+  public API; errors are RFC 9457 problem details by default, with every
+  code listed ([docs/reference/problems.md](docs/reference/problems.md)).
+- **Support**: Python 3.13 to 3.15, PostgreSQL 16 to 18, and a support
+  statement for 1.x ([docs/versioning.md](docs/versioning.md#security-fixes-and-support)).
+
+Upgrade from 0.12.1, the last published release, with
+[docs/upgrading.md](docs/upgrading.md#012-to-10): it lists every
+**Breaking:** entry below in the order to apply them. Breaking entries
+about a feature this release adds (the ledger, approvals, limits, keys,
+step-up) matter only to projects that ran 0.13 to 0.15 from source.
+
 ### Added
 
+- `live_server` in the pytest plugin: the project's application served by
+  uvicorn on a port of the test process, for browsers and other
+  processes, on the `db` databases, with `127.0.0.1` in `ALLOWED_HOSTS`.
+  It starts for the test and stops after it (about 2 ms and 0.14 s), so
+  each test's application has its own settings and nothing it served
+  reaches the next; its thread carries the test's context, a frozen clock
+  too. `LiveServer(app)` serves any ASGI application in a `with` block
+  (`docs/testing.md`) (TEST-08).
+- factory_boy's `Trait`, `post_generation`, `RelatedFactory`,
+  `SelfAttribute`, `Maybe`, and `stub()` / `stub_batch()` for
+  `domainkit.testing.Factory`. Parameters and traits go in `class Params`
+  and never reach the model; `post_generation` methods and related
+  factories run after `create` adds the object and before the unit of
+  work commits, so what they change, the events they record, and the
+  objects they add are committed with it. A declaration given as an
+  argument is computed (`currency=SelfAttribute("..currency")`). No
+  `Faker`: it would be a new dependency (TEST-08).
+- `client.browser_session_as(user)`, `await
+  async_client.browser_session_as(user)`, and `await
+  browser_session_for(user)`: a test client signed in with a browser
+  session, its cookies and CSRF token, without posting to
+  `/auth/session`, as Litestar's `set_session_data`. Auth starts it
+  (`AuthConfig.issue_test_session`, through the new `BrowserSessionIssuer`
+  protocol) as the route does, and refuses unless `ENVIRONMENT = "test"`,
+  as the test tokens do (TEST-08, SEC-12a-2).
+- `database_blocker` and `DatabaseBlocker`: `with
+  database_blocker.unblock():` lets a fixture wider than one test reach
+  the test databases, as pytest-django's `django_db_blocker`;
+  `ConnectionHandler.refuse(reason)` and `allow()` underneath, which raise
+  `domainkit.db.DatabaseAccessRefused` (ADR 0112) (TEST-08).
+- Public resets for what a test can leave behind:
+  `domainkit.log.reset_throttled()` and `ThrottledLog.reset()`,
+  `EventBus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`,
+  and `domainkit.http.metrics.refreshers_kept()`. The plugin calls them:
+  before each test the throttled logs and the principal cache forget what
+  they hold, and once the domains are loaded the subscriptions, tasks, and
+  metric refreshers a test adds are dropped after it, where 0.12 left them
+  for every later test. `docs/testing.md` lists what each test starts
+  from, and the reset behind each line (ADR 0113) (TEST-05).
 - `domainkit.apps.hooks.on_retain_subject`: a domain says why a person's
   data must be kept for now (`async def check(subject, reason) -> str |
   None`). `privacy erase` asks every check before any hook erases: one
@@ -332,7 +408,6 @@ and a status.
   and production) about tasks without `name=`, whose name follows their
   module's path; the messaging guide gives the deploy order
   ([ADR 0005](docs/adr/0005-transactional-outbox.md), amended) (CONC-15).
-
 - `docs/reference/problems.md` lists every problem `code` the framework
   answers with, its status, and what answers it; `test_problem_codes`
   fails when the framework and the page differ. Every error class of
@@ -356,6 +431,32 @@ and a status.
 
 ### Changed
 
+- **Breaking:** the pytest plugin refuses the test databases to a test
+  that did not request `db` (or a fixture that does: `client`,
+  `async_client`, `live_server`, ...), as pytest-django does: it raises
+  `DatabaseAccessRefused`, naming the fixture to request. Until now such
+  a test saw whatever the test before it left, and when it ran first it
+  reached the databases the test settings name. **Fix:** request `db`;
+  in a fixture wider than one test, use `database_blocker.unblock()`.
+  **To keep the old behaviour:** mark a test or a module
+  `@pytest.mark.allow_database`, or set `domainkit_allow_database = true`
+  in the pytest settings. It costs a test nothing measurable (ADR 0112)
+  (TEST-08).
+- The reference is a page for each area, under `docs/reference/`:
+  settings, databases and the other backends, HTTP, server limits,
+  deployment checks, errors and responses, signing, observability, the
+  test plugin, commands, and extension points; the public API is a page
+  for each part of the package, under `docs/api/`. `docs/reference.md`
+  and `docs/api.md` list the pages, and each section keeps its name and
+  its anchor on its new page; a link into `reference.md#<section>` from
+  before opens the list. The comments `init` writes, and the error
+  `SECRET_KEY` unset raises, name the new pages (DOCS-05; ADR 0114).
+- The weekly mutation run maps a function behind a cache to every test
+  that reaches it, not only the first: the tests empty domainkit's caches
+  before each test of mutmut's stats run. The longest tests that checked
+  several behaviours are split into one test each, and the survivors of
+  the run on 0.12.0 that pointed at missing tests are killed; the audit
+  page lists, by module, what is left (TEST-06, TEST-07; ADR 0106).
 - Python 3.15 is tested: `test (3.15)` runs the suite and is a required
   check, the `newest` job runs on 3.15, and the classifiers name it;
   `requires-python` already admitted it (INFRA-17).
@@ -375,7 +476,6 @@ and a status.
 - The PyPI page's links to this repository's files name the release's tag
   instead of `main`: CI's build job points the README's and the project
   URLs' links at `vX.Y.Z` before building (INFRA-22).
-
 - **Breaking:** errors are RFC 9457 problem details by default:
   `ERROR_FORMAT` defaults to `"problem+json"`, a body that keeps
   `detail`, `code`, `request_id`, and `errors` and adds `type`, `title`,
@@ -591,7 +691,6 @@ and a status.
   certificates included, as a new password does: what logged in with the
   password alone may not be the user's. The request's own login stays
   (AUTH-20).
-
 - **Breaking:** auth has three new tables, `domainkit_step_ups`,
   `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
   new features use them, but deleting or erasing a user deletes the
@@ -608,8 +707,8 @@ and a status.
   messages are deleted after `RETENTION_SECONDS`, and their keys with them
   (FIN-18).
 - The modules money touches (`db.types`, `ddd`, `contrib.idempotency`,
-  `contrib.messaging`, `db.uow`, `db.repository`) were mutated whole on
-  0.13.0: 209 of the mutants that lived are killed by tests of behaviour
+  `contrib.messaging`, `db.uow`, `db.repository`) were mutated whole at
+  the 0.13 milestone: 209 of the mutants that lived are killed by tests of behaviour
   none pinned, 75 die on PostgreSQL, 176 are equivalent and 84 reach only
   a server's code; the audit page lists, by module, the 15 left and why,
   and the 682 not checked (TEST-07).
@@ -666,7 +765,6 @@ and a status.
   69 die on PostgreSQL already, 233 are equivalent, and 25 run only at
   import; the audit page lists, by module, the 12 left and why
   (TEST-12).
-
 - **Breaking:** every 429 answers the code `rate_limited`: a route's
   `Throttle` and auth's code, link, and signup throttles answered
   `throttled`, and its login and password throttles `login_throttled`
@@ -685,6 +783,20 @@ and a status.
 - Translated messages find their catalogs in one lookup while the domains
   and the settings stay the same, whatever the number of installed
   domains (PERF-24).
+- The documentation for 1.0: `docs/upgrading.md` takes a project from
+  0.12.1 to 1.0 in one section, in the order to apply it, with the
+  revision to make before the tests and the order to deploy workers in;
+  `docs/versioning.md` says what is public (names, settings and their
+  defaults, commands, check ids, problem codes, routes, table schemas,
+  wire and storage formats, extras), what a 1.x minor and patch release
+  may change, and that what 1.x deprecates goes in 2.0; `apps.E002` stays
+  until 2.0; the pages say which release they describe; the threat model
+  is no longer a draft and has the key service as a boundary; the runbook
+  has stalled ordering keys, the key service, the ledger, and restores;
+  the tutorial's balance is `Money`; and the README, the docs' index, and
+  the API's pages list what 0.14 and 0.15 added, with the `keys` and
+  `audit` extras (DOCS-13, DOCS-15, DOCS-16, DOCS-17, DOCS-18, DOCS-19,
+  DOCS-20, DOCS-21, DOCS-22, DOCS-23, DOCS-24, DSGN-21, INFRA-20).
 
 ### Deprecated
 
@@ -698,8 +810,44 @@ and a status.
   (`content_type_key` is `model_key`); `WebhookSettings` is
   `WebhooksSettings`; `Credentials.session` is `Credentials.login`.
 
+### Removed
+
+- **Breaking:** the hook methods of `DomainConfig` that 0.12 deprecated:
+  `startup`, `shutdown`, `check`, `seed`, `erase_subject`,
+  `export_subject`, `check_application`, `deployment_warnings`, `stage`,
+  `committed`, `stage_transaction`, `transaction_committed`, and
+  `migrated`, with their warnings and the path that called an override.
+  `setup()` refuses a domain that still defines one of these names, on
+  its class, a base, or the instance, set in the class body or later,
+  since nothing would call it (an `erase_subject` left behind would keep
+  a person's data through an erasure that reports success). One check
+  `apps.E002` per name says the domain, the class, and the point to
+  register on. **To change:** register the function in `ready()`,
+  `on_erase_subject(erase_copies)`, under a name of its own. The refusal
+  stays until 1.0. `HookPoint` no longer takes `method=` (DSGN-03;
+  ADR 0111).
+- **Breaking:** `domainkit.ddd.preconditions.expect_version`, and the
+  context-wide expectation every repository load and commit read. Importing
+  it raises `ImportError`. **To change:** `with uow.expect(Order, order_id,
+  versions):` on the unit of work the service changes the aggregate
+  through. An expectation is still checked again in each transaction of
+  the unit of work (SEC-12a-6) (DSGN-14; ADR 0102).
+
 ### Fixed
 
+- A single-field value object around another (`Code(sku: Sku)`) did not
+  survive `dumpdata` then `loaddata`: the dump held the inner object,
+  `{"value": "LAMP-1"}`, which the load refused. A fixture holds such a
+  column as the database does, its innermost value, and the load makes
+  each object from the inside out, so each checks what it holds. Fixtures
+  written by 0.11 and 0.12 load (DATA-12).
+- `makemigrations` wrote a revision that failed with `NameError` for a
+  single-field value object around another (0.12.1 fixed one around a
+  `Decimal` or a `datetime`): Alembic rendered the column type as
+  `domainkit.db.derive.ValueObjectType(...)`, naming classes the revision
+  does not import. It renders the type the column stores, as for a plain
+  column (`sa.String(length=20)`, `sa.Numeric(precision=12, scale=2)`)
+  (DATA-12).
 - `release.yml` refused a tag whose CI run had passed every required
   check when the advisory `stress (3.14t)` job, which runs on the push and
   crashes now and then inside SQLAlchemy on 3.14t, failed: it judged the
@@ -820,7 +968,6 @@ and a status.
 - `GET /auth/tokens` documents `certificate` among the kinds it lists, and
   the API reference describes `UserId`, `GroupId`, and
   `ObjectPermissionId` (AUTH-20).
-
 - `migrate` makes the audit trail append-only on PostgreSQL itself:
   `domainkit.contrib.audit` registers `protect_migrated` on
   `on_migrated`, which makes the triggers of `domainkit_audit_log` and
@@ -840,7 +987,6 @@ and a status.
   both accept. A test renders every contrib server default as SQLite
   writes it and applies it on the database at hand. Existing revisions
   are unchanged and need no new one (FIN-74).
-
 - A lost optimistic race flushed before the commit (by a query, an
   explicit `flush()`, a savepoint, or an `on_stage` hook such as the
   audit trail's) raised SQLAlchemy's `StaleDataError`, so
@@ -869,7 +1015,6 @@ and a status.
   in a column of two places): such a cursor was a few characters over the
   bound `FilterSet` checks. The bound now counts the most places a
   currency has (FIN-01).
-
 - Generic `PATCH` and `DELETE` (`crud=True`), and atomic batches, ask
   rules that look at the object before the write's transaction, in a unit
   of work of their own, as commands do: an object permission backend's
@@ -887,7 +1032,10 @@ and a status.
   `Cache-Control`, `Vary`, and deprecation headers, besides
   `Content-Type`, `Location`, and `Content-Language` (WEB-21).
 
-### Security
+The findings below were in features and tools this release adds, found
+by the security reviews of the 0.13, 0.14 and 0.15 milestones before any
+release had them; each entry says what the feature does now, and its ids
+lead to the finding on [docs/audit/0.9.0.md](docs/audit/0.9.0.md).
 
 - On SQLite, a check written as SQL around amounts compares them as
   integers of minor units: each comparison naming an amount is counted in
@@ -903,23 +1051,15 @@ and a status.
   a guessed value is stored, an oracle on what the derived schema now
   hides (DSGN-19).
 
-- The `immudb` extra's protobuf floor is 6.33.5, past PYSEC-2026-1805
-  (CVE-2026-0994) and PYSEC-2026-1806 (CVE-2025-4565), which 5.27.0, the
-  floor before, had; the `oldest` job now runs pip-audit over the floors
-  it installs (INFRA-15).
-
-- The admin API bounded staff by model permissions alone: a staff member
-  with `auth.change_user` set the password, or the address, of a user
-  holding grants on single objects (`contrib.objectpermissions`) they
-  lacked, and became that user, or joined a group holding such grants.
-  Backends now say what they grant on objects
-  (`BaseBackend.object_grants`, `ObjectGrant`, `backends.object_grants`;
-  `ObjectPermissionBackend` reads every database's grants), and staff
-  change no user or group, and add no one to a group, holding a grant they
-  lack through its permission on the model or the same grant on the
-  object (`403`, naming each) ([ADR 0017](docs/adr/0017-deny-by-default-and-admin-api.md)'s
-  amendment) (AUTH-14).
-
+- `live_server` no longer leaves `127.0.0.1` in `ALLOWED_HOSTS` after a
+  test that also changed a setting through the `settings` fixture: the
+  host now goes through that fixture's own changes, which are undone in
+  reverse order. Before, every later test, and its application, accepted
+  `Host: 127.0.0.1` (SEC-13b-1).
+- The test of the upgrade guide reads every **Breaking:** entry of a
+  release, under `Removed` and `Security` too, not only under `Changed`:
+  a breaking removal with no line in `docs/upgrading.md` fails it, where
+  it passed (SEC-13c-1).
 - `contrib.approvals`: with `SUPERUSER_APPROVALS`, a user who held
   `auth.change_user` could submit `auth.grant_superuser` for themselves
   and have another such user approve it. Only a superuser submits one
@@ -955,17 +1095,6 @@ and a status.
   not stop: a second account made by someone who may create users and
   grant the approvers' permission, and amounts split under a threshold
   (SEC-15b-1).
-- The PCI preset bounds a JSON Web Token login's idleness: `auth.E010`
-  refuses `AUTH.JWT.ACCESS_TOKEN_TTL` plus `LEEWAY` above 15 minutes, and
-  with `AUTH.IDLE_TIMEOUT` any access token issued longer ago than the
-  timeout is refused (`401`, "Session ended after inactivity"): a JSON Web
-  Token login's use is its refreshes. An access token living an hour let
-  a login idle an hour under the preset (SEC-15c-1).
-- An open WebSocket or event stream no longer keeps its login alive: its
-  re-checks (`LIVE_REAUTH_INTERVAL`) write no last use, so with
-  `AUTH.IDLE_TIMEOUT` a connection nobody uses closes once its login
-  idles out. A live page left open kept a login from ever idling
-  (SEC-15c-2).
 - `changepassword <user>` sets a password the user changes at the first
   login, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, as the admin API's
   does; `--no-temporary` keeps it, `--temporary` asks it of one's own
@@ -994,7 +1123,6 @@ and a status.
   counted apart, doubling the guesses (SEC-15c-8).
 - `auth.E106`: a route whose `StepUp(methods=...)` asks for methods
   `AUTH.STEP_UP.METHODS` never proves, so it refuses everyone (SEC-15c-9).
-
 - A money condition through child entities is one condition on one
   child: `F("lines.price") >= Money.of("100", "USD")` holds for an order
   with a line priced in USD at 100 or more, in memory and in one SQL
@@ -1061,13 +1189,13 @@ and a status.
   references, descriptions, and memos as written (SEC-14b-5).
 - A key left with held messages and none pending is released. Only the
   transaction that finishes a key's message made the next one pending, so
-  a 0.13 worker that finished a message 0.14 wrote during a rolling deploy
-  left the rest of its key, and every later message of it, waiting for
-  good. Each cleanup round (`prune_keys`) now makes the first held message
+  a worker of an older release that finished a keyed message during a
+  rolling deploy left the rest of its key, and every later message of it,
+  waiting for good. Each cleanup round (`prune_keys`) now makes the first held message
   of such a key pending, under the key's turn, through the ordering index,
   and logs it; `messages --release` (`admin.release_stalled`) does it at
-  once. The upgrade guide says to stop 0.13 workers before 0.14 processes
-  write keyed messages (SEC-14c-3).
+  once. The upgrade guide says to stop the 0.12 workers before 1.0
+  processes write keyed messages (SEC-14c-3).
 - `messages --retry` puts a dead letter of a key back where the docs said:
   before the key's pending message too, while no worker has started it and
   no relay holds it for the broker, which is held again behind it. It
@@ -1135,127 +1263,6 @@ and a status.
   (`keys.E002`); `AWS_KMS.ENDPOINT` given with a trailing `/` signs the
   path `/` (SEC-15a-6).
 
-## [0.13.0] - 2026-10-29
-
-A minor release. It removes what 0.12 deprecated: the hook methods of
-`DomainConfig`, which `setup()` now refuses, and `expect_version`. The
-pytest plugin refuses the test databases to a test that did not request
-them, and each test starts from its own registrations, ledgers and
-storages. `live_server`, factory_boy's other declarations and browser
-sessions join the testing tools, and the reference and the public API are
-a page for each area. Read [docs/upgrading.md](docs/upgrading.md) first:
-each **Breaking:** entry has its line there.
-
-### Added
-
-- `live_server` in the pytest plugin: the project's application served by
-  uvicorn on a port of the test process, for browsers and other
-  processes, on the `db` databases, with `127.0.0.1` in `ALLOWED_HOSTS`.
-  It starts for the test and stops after it (about 2 ms and 0.14 s), so
-  each test's application has its own settings and nothing it served
-  reaches the next; its thread carries the test's context, a frozen clock
-  too. `LiveServer(app)` serves any ASGI application in a `with` block
-  (`docs/testing.md`) (TEST-08).
-- factory_boy's `Trait`, `post_generation`, `RelatedFactory`,
-  `SelfAttribute`, `Maybe`, and `stub()` / `stub_batch()` for
-  `domainkit.testing.Factory`. Parameters and traits go in `class Params`
-  and never reach the model; `post_generation` methods and related
-  factories run after `create` adds the object and before the unit of
-  work commits, so what they change, the events they record, and the
-  objects they add are committed with it. A declaration given as an
-  argument is computed (`currency=SelfAttribute("..currency")`). No
-  `Faker`: it would be a new dependency (TEST-08).
-- `client.browser_session_as(user)`, `await
-  async_client.browser_session_as(user)`, and `await
-  browser_session_for(user)`: a test client signed in with a browser
-  session, its cookies and CSRF token, without posting to
-  `/auth/session`, as Litestar's `set_session_data`. Auth starts it
-  (`AuthConfig.issue_test_session`, through the new `BrowserSessionIssuer`
-  protocol) as the route does, and refuses unless `ENVIRONMENT = "test"`,
-  as the test tokens do (TEST-08, SEC-12a-2).
-- `database_blocker` and `DatabaseBlocker`: `with
-  database_blocker.unblock():` lets a fixture wider than one test reach
-  the test databases, as pytest-django's `django_db_blocker`;
-  `ConnectionHandler.refuse(reason)` and `allow()` underneath, which raise
-  `domainkit.db.DatabaseAccessRefused` (ADR 0112) (TEST-08).
-- Public resets for what a test can leave behind:
-  `domainkit.log.reset_throttled()` and `ThrottledLog.reset()`,
-  `EventBus.subscriptions_kept()`, `domainkit.contrib.messaging.tasks_kept()`,
-  and `domainkit.http.metrics.refreshers_kept()`. The plugin calls them:
-  before each test the throttled logs and the principal cache forget what
-  they hold, and once the domains are loaded the subscriptions, tasks, and
-  metric refreshers a test adds are dropped after it, where 0.12 left them
-  for every later test. `docs/testing.md` lists what each test starts
-  from, and the reset behind each line (ADR 0113) (TEST-05).
-
-### Changed
-
-- **Breaking:** the pytest plugin refuses the test databases to a test
-  that did not request `db` (or a fixture that does: `client`,
-  `async_client`, `live_server`, ...), as pytest-django does: it raises
-  `DatabaseAccessRefused`, naming the fixture to request. Until now such
-  a test saw whatever the test before it left, and when it ran first it
-  reached the databases the test settings name. **Fix:** request `db`;
-  in a fixture wider than one test, use `database_blocker.unblock()`.
-  **To keep the old behaviour:** mark a test or a module
-  `@pytest.mark.allow_database`, or set `domainkit_allow_database = true`
-  in the pytest settings. It costs a test nothing measurable (ADR 0112)
-  (TEST-08).
-- The reference is a page for each area, under `docs/reference/`:
-  settings, databases and the other backends, HTTP, server limits,
-  deployment checks, errors and responses, signing, observability, the
-  test plugin, commands, and extension points; the public API is a page
-  for each part of the package, under `docs/api/`. `docs/reference.md`
-  and `docs/api.md` list the pages, and each section keeps its name and
-  its anchor on its new page; a link into `reference.md#<section>` from
-  before opens the list. The comments `init` writes, and the error
-  `SECRET_KEY` unset raises, name the new pages (DOCS-05; ADR 0114).
-- The weekly mutation run maps a function behind a cache to every test
-  that reaches it, not only the first: the tests empty domainkit's caches
-  before each test of mutmut's stats run. The longest tests that checked
-  several behaviours are split into one test each, and the survivors of
-  the run on 0.12.0 that pointed at missing tests are killed; the audit
-  page lists, by module, what is left (TEST-06, TEST-07; ADR 0106).
-
-### Removed
-
-- **Breaking:** the hook methods of `DomainConfig` that 0.12 deprecated:
-  `startup`, `shutdown`, `check`, `seed`, `erase_subject`,
-  `export_subject`, `check_application`, `deployment_warnings`, `stage`,
-  `committed`, `stage_transaction`, `transaction_committed`, and
-  `migrated`, with their warnings and the path that called an override.
-  `setup()` refuses a domain that still defines one of these names, on
-  its class, a base, or the instance, set in the class body or later,
-  since nothing would call it (an `erase_subject` left behind would keep
-  a person's data through an erasure that reports success). One check
-  `apps.E002` per name says the domain, the class, and the point to
-  register on. **To change:** register the function in `ready()`,
-  `on_erase_subject(erase_copies)`, under a name of its own. The refusal
-  stays until 1.0. `HookPoint` no longer takes `method=` (DSGN-03;
-  ADR 0111).
-- **Breaking:** `domainkit.ddd.preconditions.expect_version`, and the
-  context-wide expectation every repository load and commit read. Importing
-  it raises `ImportError`. **To change:** `with uow.expect(Order, order_id,
-  versions):` on the unit of work the service changes the aggregate
-  through. An expectation is still checked again in each transaction of
-  the unit of work (SEC-12a-6) (DSGN-14; ADR 0102).
-
-### Fixed
-
-- A single-field value object around another (`Code(sku: Sku)`) did not
-  survive `dumpdata` then `loaddata`: the dump held the inner object,
-  `{"value": "LAMP-1"}`, which the load refused. A fixture holds such a
-  column as the database does, its innermost value, and the load makes
-  each object from the inside out, so each checks what it holds. Fixtures
-  written by 0.11 and 0.12 load (DATA-12).
-- `makemigrations` wrote a revision that failed with `NameError` for a
-  single-field value object around another (0.12.1 fixed one around a
-  `Decimal` or a `datetime`): Alembic rendered the column type as
-  `domainkit.db.derive.ValueObjectType(...)`, naming classes the revision
-  does not import. It renders the type the column stores, as for a plain
-  column (`sa.String(length=20)`, `sa.Numeric(precision=12, scale=2)`)
-  (DATA-12).
-
 ### Security
 
 - A `PasswordHash` in a model's own field, or inside another value object
@@ -1266,11 +1273,6 @@ each **Breaking:** entry has its line there.
   registers its column type for `PasswordHash`, so every such column gets
   the same check. Its storage is the `Text` it always derived: no
   migration (SEC-13a-1).
-- `live_server` no longer leaves `127.0.0.1` in `ALLOWED_HOSTS` after a
-  test that also changed a setting through the `settings` fixture: the
-  host now goes through that fixture's own changes, which are undone in
-  reverse order. Before, every later test, and its application, accepted
-  `Host: 127.0.0.1` (SEC-13b-1).
 - The first test whose fixtures load the domains (a client, `db`) no
   longer keeps the handlers and tasks its body registers for every later
   test: the plugin keeps the registrations from the start of the test's
@@ -1281,10 +1283,32 @@ each **Breaking:** entry has its line there.
   databases' ids start again after `db`. `LiveServer`'s thread is a
   daemon, and stopping cancels requests still open after `stop_seconds`
   (SEC-13b-3).
-- The test of the upgrade guide reads every **Breaking:** entry of a
-  release, under `Removed` and `Security` too, not only under `Changed`:
-  a breaking removal with no line in `docs/upgrading.md` fails it, where
-  it passed (SEC-13c-1).
+- The `immudb` extra's protobuf floor is 6.33.5, past PYSEC-2026-1805
+  (CVE-2026-0994) and PYSEC-2026-1806 (CVE-2025-4565), which 5.27.0, the
+  floor before, had; the `oldest` job now runs pip-audit over the floors
+  it installs (INFRA-15).
+- The admin API bounded staff by model permissions alone: a staff member
+  with `auth.change_user` set the password, or the address, of a user
+  holding grants on single objects (`contrib.objectpermissions`) they
+  lacked, and became that user, or joined a group holding such grants.
+  Backends now say what they grant on objects
+  (`BaseBackend.object_grants`, `ObjectGrant`, `backends.object_grants`;
+  `ObjectPermissionBackend` reads every database's grants), and staff
+  change no user or group, and add no one to a group, holding a grant they
+  lack through its permission on the model or the same grant on the
+  object (`403`, naming each) ([ADR 0017](docs/adr/0017-deny-by-default-and-admin-api.md)'s
+  amendment) (AUTH-14).
+- The PCI preset bounds a JSON Web Token login's idleness: `auth.E010`
+  refuses `AUTH.JWT.ACCESS_TOKEN_TTL` plus `LEEWAY` above 15 minutes, and
+  with `AUTH.IDLE_TIMEOUT` any access token issued longer ago than the
+  timeout is refused (`401`, "Session ended after inactivity"): a JSON Web
+  Token login's use is its refreshes. An access token living an hour let
+  a login idle an hour under the preset (SEC-15c-1).
+- An open WebSocket or event stream no longer keeps its login alive: its
+  re-checks (`LIVE_REAUTH_INTERVAL`) write no last use, so with
+  `AUTH.IDLE_TIMEOUT` a connection nobody uses closes once its login
+  idles out. A live page left open kept a login from ever idling
+  (SEC-15c-2).
 
 ## [0.12.1] - 2026-10-29
 
@@ -1691,7 +1715,8 @@ No migration is added.
 ## [0.11.2] - 2026-10-28
 
 A patch release: one fix of savepoints in the SQL unit of work. Nothing a
-project relies on changes.
+project relies on changes. Never tagged nor published: 0.12.0 was the
+first release with its fix.
 
 ### Fixed
 
@@ -1706,7 +1731,8 @@ project relies on changes.
 ## [0.11.1] - 2026-10-28
 
 A patch release: one fix of reads on their own, and the contributors'
-coverage command. Nothing a project relies on changes.
+coverage command. Nothing a project relies on changes. Never tagged nor
+published: 0.12.0 was the first release with its fix.
 
 ### Fixed
 
@@ -5346,12 +5372,10 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.13.0...HEAD
-[0.13.0]: https://github.com/karimmattar/domainkit/compare/v0.12.1...v0.13.0
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/karimmattar/domainkit/compare/v0.12.1...v1.0.0
 [0.12.1]: https://github.com/karimmattar/domainkit/compare/v0.12.0...v0.12.1
-[0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.2...v0.12.0
-[0.11.2]: https://github.com/karimmattar/domainkit/compare/v0.11.1...v0.11.2
-[0.11.1]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.11.1
+[0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/karimmattar/domainkit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/karimmattar/domainkit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/karimmattar/domainkit/compare/v0.9.3...v0.10.0

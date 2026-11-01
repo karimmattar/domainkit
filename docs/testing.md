@@ -179,7 +179,7 @@ db fixture (a client fixture requests it too); in a fixture wider than one
 test, use database_blocker.unblock(). ...
 ```
 
-Until 0.13 such a test saw whatever the test before it left, and when it
+Until 1.0 such a test saw whatever the test before it left, and when it
 ran first, before any test had made the test databases, it reached the
 databases the test settings name.
 
@@ -702,14 +702,14 @@ SQL unit of work in API tests.
 
 ## Compared with pytest-django, DRF, Litestar, and factory_boy
 
-What their testing tools give, and where domainkit stands as of 0.13. Rows
-marked 0.12 and 0.13 were added for the 0.9.0 audit's TEST-08.
+What their testing tools give, and where domainkit stands as of 1.0. Rows
+marked 0.12 and 1.0 were added for the 0.9.0 audit's TEST-08.
 
 | They give | domainkit |
 | --- | --- |
 | pytest-django's `db`, `django_db_setup`, `--reuse-db` | `db`, `database`, `--keepdb`; a database per xdist worker |
-| pytest-django's `django_db_blocker` and its `db` mark | the databases refused to a test that did not request `db`; `database_blocker`; `allow_database` and `domainkit_allow_database` to allow them as before (0.13) |
-| pytest-django's `live_server`; Django's `LiveServerTestCase` | `live_server`, `LiveServer(app)` (0.13) |
+| pytest-django's `django_db_blocker` and its `db` mark | the databases refused to a test that did not request `db`; `database_blocker`; `allow_database` and `domainkit_allow_database` to allow them as before (1.0) |
+| pytest-django's `live_server`; Django's `LiveServerTestCase` | `live_server`, `LiveServer(app)` (1.0) |
 | pytest-django's `client`, `admin_client`, `async_client` | `client`, `admin_client`, `async_client`, `async_admin_client` |
 | pytest-django's `django_assert_num_queries`, `django_assert_max_num_queries` | `assert_num_queries`, `assert_max_queries` |
 | pytest-django's `mailoutbox`; Django's emptied `mail.outbox` | `mail.outbox`, `sms_outbox`, and `push_outbox`, emptied before each test |
@@ -717,13 +717,13 @@ marked 0.12 and 0.13 were added for the 0.9.0 audit's TEST-08.
 | pytest-django's `settings` | `settings` (0.12) |
 | pytest-django's `admin_user`, `django_user_model`; factory_boy's model factories for users | `create_user`, `create_group` (0.12); `client_for(...)` for a new user per client |
 | DRF's `force_authenticate`, `force_login` | `authenticated_as(user)`, `token_for(user)` (0.12) |
-| Litestar's `set_session_data` | `browser_session_as(user)`, `browser_session_for(user)` (0.13) |
+| Litestar's `set_session_data` | `browser_session_as(user)`, `browser_session_for(user)` (1.0) |
 | DRF's `APIClient.credentials` | `client.another(headers)` |
 | Litestar's `create_test_client`, `AsyncTestClient` | `TestClient(app)`, `AsyncTestClient(app)` for any ASGI application |
 | freezegun, time-machine | `freeze_time`, which the application, tokens, and the outbox follow |
-| pyotp in tests; moto for KMS | `totp_code`, `enrol_totp`, `step_up`, `confirm_sca`, `approve_request`; `domainkit.testing.kms` (0.15) |
+| pyotp in tests; moto for KMS | `totp_code`, `enrol_totp`, `step_up`, `confirm_sca`, `approve_request`; `domainkit.testing.kms` (1.0) |
 | factory_boy's `Factory`, `Sequence`, `LazyFunction`, `LazyAttribute`, `SubFactory`, `build_batch`, `create_batch` | the same names |
-| factory_boy's `Trait`, `post_generation`, `RelatedFactory`, `SelfAttribute`, `Maybe`, `stub()` | the same names, run through the unit of work before its commit (0.13) |
+| factory_boy's `Trait`, `post_generation`, `RelatedFactory`, `SelfAttribute`, `Maybe`, `stub()` | the same names, run through the unit of work before its commit (1.0) |
 
 Not given, each with what to do instead:
 

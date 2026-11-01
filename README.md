@@ -25,6 +25,14 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   `contrib.auth`: password hashing and rules, backends, object permissions,
   and a swappable user model; token or JWT authentication, and route rules
   as in Django REST framework
+- money: exact amounts in their currency, through tables, queries, and
+  schemas, and a double-entry ledger with holds, periods, reports, and
+  reconciliation
+- a bank's controls: fields encrypted under AWS KMS or Vault, with
+  crypto-shredding; maker-checker approvals; limits per transaction and per
+  window; step-up and transactions authorized for one amount and payee; a
+  PCI DSS preset; and `domainkit init --profile fintech`, a project with
+  them all on
 - optional apps for reliable messaging, audit trails, idempotent requests,
   tamper-evident evidence, signed outgoing webhooks, feature flags, and privacy
   requests (export, erasure, and retention)
@@ -35,7 +43,9 @@ pip install "domainkit[postgres]"     # the extras are listed below
 
 The extras: `postgres`, `sqlite` (database drivers); `argon2`, `jwt`, `mfa`
 (passwords, JSON Web Tokens, and second factors for `contrib.auth`);
-`immudb` (ledgers); `redis` (shared caches and rate limits); `rabbitmq`
+`keys` (encrypted fields, under AWS KMS or Vault); `audit` (the audit
+trail's signed checkpoints); `immudb` (ledgers); `redis` (shared caches
+and rate limits); `rabbitmq`
 (the worker's broker); `metrics`, `tracing` (Prometheus and
 OpenTelemetry); `uploads` (multipart forms); `httpclient` (outgoing HTTP
 calls); `webhooks`; `testing` (the pytest plugin); `tzdata` (time zones
@@ -44,6 +54,11 @@ and a server).
 
 ## Documentation
 
+These pages describe the release they come with: on PyPI, each link opens
+the pages of that release's tag; on GitHub, `main` describes the next
+release, and a release's pages are under its tag
+(`https://github.com/karimmattar/domainkit/tree/vX.Y.Z/docs`).
+
 - [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): getting started, in five
   parts: a first resource, rules, permissions, events and the worker, and
   tests and production; every command and code change run in CI
@@ -51,8 +66,8 @@ and a server).
   processes, configuration, sizing, migrations in a rollout, the worker,
   sealing, backups, and what to alert on; [docs/runbook.md](https://github.com/karimmattar/domainkit/blob/main/docs/runbook.md)
   for each alarm, [docs/security.md](https://github.com/karimmattar/domainkit/blob/main/docs/security.md) the hardening
-  checklist, and [docs/upgrading.md](https://github.com/karimmattar/domainkit/blob/main/docs/upgrading.md) from one minor to
-  the next
+  checklist, and [docs/upgrading.md](https://github.com/karimmattar/domainkit/blob/main/docs/upgrading.md) from one version
+  to the next, and from 0.12 to 1.0
 
 - [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, deployment checks,
   middleware, errors, the API surface (OpenAPI, versions, deprecations),
@@ -73,9 +88,12 @@ and a server).
   outgoing HTTP calls), and servers
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
+- [docs/money.md](https://github.com/karimmattar/domainkit/blob/main/docs/money.md): amounts, currencies, rounding, and
+  allocation, and money in tables, queries, and schemas
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
-  webhooks, audit and records' history, idempotency, evidence, and
-  feature flags
+  webhooks, audit and records' history, idempotency, evidence, feature
+  flags, keys and encrypted fields, the double-entry ledger, approvals,
+  and limits
 - [docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md): users, groups, permissions, content
   types, passwords, backends, tokens, route rules, and the admin API
 - [docs/mail.md](https://github.com/karimmattar/domainkit/blob/main/docs/mail.md): email, mail templates, text messages,
@@ -177,7 +195,8 @@ billing/
   tests/test_health.py
 ```
 
-The production settings read `BILLING_API_ALLOWED_HOSTS`,
+The production settings read `BILLING_API_SECRET_KEY` (50 random
+characters or more), `BILLING_API_ALLOWED_HOSTS`,
 `BILLING_API_DATABASE_URL`, `BILLING_API_REDIS_URL` (where requests and
 login attempts are counted, once for every process), and
 `BILLING_API_TRUSTED_PROXIES` (the load balancers' networks, or empty)

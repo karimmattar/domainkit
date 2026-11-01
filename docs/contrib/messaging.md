@@ -352,8 +352,8 @@ event_bus.subscribe(PaymentEvent, send_status, durable=True)
 
 - **A stalled key is released.** A key with held messages and none
   pending would wait for good: no worker claims held messages, and every
-  new message of the key is held behind them. 0.14 never leaves a key so,
-  but a 0.13 worker that finishes a message 0.14 wrote does (see
+  new message of the key is held behind them. 1.0 never leaves a key so,
+  but a 0.12 worker that finishes a keyed message 1.0 wrote does (see
   upgrading below). Each worker's cleanup round makes the first held
   message of such a key pending, under the key's turn, and logs a warning
   naming the message; `messages --release` does it at once.
@@ -528,16 +528,16 @@ again.
 before deploying: until then, workers' cleanup logs a failure each round,
 and `@inbox` handlers fail.
 
-**Upgrading to 0.14.** The outbox gained `ordering_key` and `sequence`
+**Upgrading to 1.0.** The outbox gained `ordering_key` and `sequence`
 columns, a `held` status, and an index of keyed messages,
 `ix_domainkit_messages_ordering`; messaging has a new table of keys,
 `domainkit_ordering_keys`, in every database that holds an outbox. Run
 `makemigrations` and `migrate` in each project that installs messaging
-before deploying: workers claim through the new columns. Stop the 0.13
-workers before any 0.14 process writes a message with an ordering key: a
-0.13 worker finishes such a message without making the next of its key
-pending, and the key waits until a 0.14 worker's cleanup round, or
-`messages --release`, releases it. Adding the
+before deploying: workers claim through the new columns. Stop the 0.12
+workers before any 1.0 process writes a message with an ordering key: a
+0.12 worker finishes such a message without making the next of its key
+pending, and the key waits until a 1.0 worker's cleanup round, or
+`messages --release`, releases it ([upgrading.md](../upgrading.md#012-to-10)). Adding the
 columns rewrites nothing; building the index reads the outbox once, and
 adds no entry, since no existing message has a key. For an outbox too
 large to block writes that long, build it without blocking, as for the

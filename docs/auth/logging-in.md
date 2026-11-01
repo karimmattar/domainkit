@@ -175,7 +175,7 @@ a known device in. With six valid proofs and no ceiling they checked
   longer ago than the timeout authenticate, whatever its lifetime. An open
   WebSocket or event stream does not use its login: its re-checks
   (`LIVE_REAUTH_INTERVAL`) write no last use, so it closes once its login
-  idles out (since 0.15). Last uses are then written every
+  idles out (since 1.0). Last uses are then written every
   tenth of the timeout, so a login ends no sooner than the timeout and
   within a tenth of it after, at one more `UPDATE` per active login per
   tenth (40 an hour for 15 minutes, 12 by default). A kept principal that
