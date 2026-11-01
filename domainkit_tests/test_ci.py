@@ -794,8 +794,9 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
     Those are the modules that join the repository's root to ``docs`` or a
     top-level Markdown file; a run with an audit hook on ``open`` found the
     same four (October 2026), 0.12 added the recipes' (DOCS-05), 0.13
-    the upgrade guide's proof, which reads the changelog (SEC-13c-1), and
-    0.15 the fintech page's, which checks the tests it names (FIN-74).
+    the upgrade guide's proof, which reads the changelog (SEC-13c-1),
+    0.15 the fintech page's, which checks the tests it names (FIN-74), and
+    1.0 the problem codes' page's (DSGN-20).
     """
     reading = re.compile(r'(?:ROOT|parents\[1\])\s*/\s*"(?:docs|[A-Za-z]+\.md)"')
     readers = {
@@ -809,7 +810,7 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
         if "pytest" in step.get("run", "")
     ]
     assert set(re.findall(r"domainkit_tests/\S+\.py", command)) == readers
-    assert len(readers) == 8
+    assert len(readers) == 9
 
 
 def test_the_suite_runs_on_every_core() -> None:
