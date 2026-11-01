@@ -11,9 +11,11 @@ approved request runs is counted, and frees nothing (FIN-88).
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Final
 
 import pytest
+from sqlalchemy import insert
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -31,6 +33,7 @@ from domainkit.contrib.accounting import (
     post_entry,
     reverse_entry,
 )
+from domainkit.contrib.accounting.tables import entries, postings
 from domainkit.contrib.approvals import POST_ENTRY, REVERSE_ENTRY
 from domainkit.contrib.approvals.guards import running
 from domainkit.contrib.limits import (
@@ -39,6 +42,7 @@ from domainkit.contrib.limits import (
     Limit,
     LimitExceeded,
     LimitsUnitOfWork,
+    MovementOutOfRange,
     RemoveLimit,
     SetLimit,
     Window,
@@ -439,3 +443,146 @@ async def test_removing_a_limit_counts_back_for_the_default_that_applies() -> No
                 await post_entry(
                     spend(wallet, till, egp("900"), "p-2"), AccountingUnitOfWork()
                 )
+
+
+@pytest.mark.usefixtures("approving")
+async def test_a_limit_set_after_an_approved_reversal_counts_the_reversal_too() -> None:
+    """Money in, bounded after the fact: the top-up and the reversal's 2,000 back.
+
+    A reversal booked on approval counted as a movement of its own (money
+    back into the wallet), so a limit of money in set later counts it.
+    """
+    await period()
+    till = await account("till")
+    wallet = await account("wallet", AccountType.LIABILITY, holder="h-1")
+    fund = PostEntry(
+        source="topups",
+        reference="f-1",
+        booked_on=TODAY,
+        lines=(Line.debit(till.id, egp("5000")), Line.credit(wallet.id, egp("5000"))),
+    )
+    payout = spend(wallet, till, egp("2000"), "p-1")
+    with freeze_time(MORNING):
+        with running(uuid.uuid4(), POST_ENTRY, fund, "maker", 2):
+            await post_entry(fund, AccountingUnitOfWork())
+        with running(uuid.uuid4(), POST_ENTRY, payout, "maker", 2):
+            paid = await post_entry(payout, AccountingUnitOfWork())
+        undo = ReverseEntry(entry_id=paid.id, booked_on=TODAY)
+        with running(uuid.uuid4(), REVERSE_ENTRY, undo, "maker", 2):
+            await reverse_entry(undo, AccountingUnitOfWork())
+    with freeze_time(ELEVEN):
+        await limit(
+            code="daily.in",
+            direction=Direction.IN,
+            window=Window.DAY,
+            max_amount=egp("100000"),
+        )
+
+    with freeze_time(NOON):
+        (each,) = await usage_of("holder", "h-1", direction=Direction.IN)
+        assert (each.used, each.count) == (egp("7000"), 2)
+
+
+@pytest.mark.usefixtures("books")
+async def test_counting_back_names_each_subject_by_its_direction_and_currency() -> None:
+    """Limits set out, in, then in dollars, then out again: each its own usage.
+
+    The subject rows of other directions and currencies, made since, are
+    never the ones a count back writes to.
+    """
+    await period()
+    (wallet,), (till,) = await wallets("h-1", 1)
+    dollars = await account_in("USD", "wallet-usd", "h-1")
+    dollar_till = await account_in("USD", "till-usd")
+    with freeze_time(MORNING):
+        await post_entry(spend(wallet, till, egp("300"), "p-1"), AccountingUnitOfWork())
+        await post_entry(
+            PostEntry(
+                source="topups",
+                reference="t-1",
+                booked_on=TODAY,
+                lines=(
+                    Line.debit(till.id, egp("40")),
+                    Line.credit(wallet.id, egp("40")),
+                ),
+            ),
+            AccountingUnitOfWork(),
+        )
+        await post_entry(
+            PostEntry(
+                source="payments",
+                reference="p-usd",
+                booked_on=TODAY,
+                lines=(
+                    Line.debit(dollars.id, Money.of("70", "USD")),
+                    Line.credit(dollar_till.id, Money.of("70", "USD")),
+                ),
+            ),
+            AccountingUnitOfWork(),
+        )
+    with freeze_time(ELEVEN):
+        await limit(code="out", window=Window.DAY, max_amount=egp("1000"))
+        await limit(code="in", direction=Direction.IN, window=Window.DAY, max_count=100)
+        await limit(code="out", currency="USD", window=Window.DAY, max_count=100)
+        await limit(code="out", window=Window.DAY, max_amount=egp("2000"))
+
+    with freeze_time(NOON):
+        found = {
+            (each.code, each.direction, each.used.currency.code): each.used
+            for each in await usage_of("holder", "h-1")
+        }
+    assert found == {
+        ("out", Direction.OUT, "EGP"): egp("300"),
+        ("in", Direction.IN, "EGP"): egp("40"),
+        ("out", Direction.OUT, "USD"): Money.of("70", "USD"),
+    }
+
+
+@pytest.mark.usefixtures("books")
+async def test_a_movement_counted_back_past_the_columns_is_refused() -> None:
+    """Two credits of 6 x 10^13 to one wallet, from before: refused, not a 500."""
+    await period()
+    (wallet,), (till,) = await wallets("h-1", 1)
+    entry_id = uuid.uuid4()
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            insert(entries).values(
+                id=entry_id,
+                source="old",
+                reference="big",
+                booked_on=TODAY,
+                description="",
+                period_id=None,
+                reverses=None,
+                fingerprint="0" * 64,
+                posted_at=MORNING,
+            )
+        )
+        await connection.execute(
+            insert(postings),
+            [
+                {
+                    "id": uuid.uuid4(),
+                    "entry_id": entry_id,
+                    "line": line,
+                    "account_id": account_id,
+                    "side": side,
+                    "amount": amount,
+                    "currency": "EGP",
+                    "booked_on": TODAY,
+                    "memo": "",
+                }
+                for line, (account_id, side, amount) in enumerate(
+                    [
+                        (till.id, "debit", Decimal("60000000000000")),
+                        (till.id, "debit", Decimal("60000000000000")),
+                        (wallet.id, "credit", Decimal("60000000000000")),
+                        (wallet.id, "credit", Decimal("60000000000000")),
+                    ],
+                    start=1,
+                )
+            ],
+        )
+
+    with freeze_time(ELEVEN), refused(MovementOutOfRange):
+        await limit(code="in", direction=Direction.IN, window=Window.DAY, max_count=100)

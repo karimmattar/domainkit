@@ -27,7 +27,7 @@ from domainkit.money import Money
 
 from .models import Direction, Limit, LimitId, Window, check_kind, limit_currency
 from .uow import LimitsUnitOfWork
-from .usage import ANY_CURRENCY, LOCK, Rule, _rules, applicable
+from .usage import LOCK, Rule, _rules, applicable
 
 if TYPE_CHECKING:
     from .postings import Scope
@@ -68,9 +68,11 @@ async def _count_after_removal(uow: LimitsUnitOfWork, removed: Limit) -> None:
 
 
 def _named(rule: Rule, removed: Limit) -> Rule:
-    """``rule``, for the subjects and the currency ``removed`` named."""
-    currency = removed.currency if rule.currency == ANY_CURRENCY else rule.currency
-    return replace(rule, subject=removed.subject, currency=currency)
+    """``rule``, for the subjects and the currency ``removed`` named.
+
+    The rule names that currency, or every currency (``"*"``).
+    """
+    return replace(rule, subject=removed.subject, currency=removed.currency)
 
 
 class SetLimit(Command):

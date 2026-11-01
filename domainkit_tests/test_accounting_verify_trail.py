@@ -9,14 +9,21 @@ from typing import Final
 import pytest
 from sqlalchemy import insert, text, update
 
-from domainkit.contrib.accounting import AccountingUnitOfWork, post_entry
+from domainkit.contrib.accounting import (
+    AccountingUnitOfWork,
+    Line,
+    PostEntry,
+    ReverseEntry,
+    post_entry,
+    reverse_entry,
+)
 from domainkit.contrib.accounting.reports import verify_ledger
 from domainkit.contrib.accounting.tables import entries, postings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.db import connections
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Migrated
-from domainkit_tests.test_accounting import account, period, transfer, usd
+from domainkit_tests.test_accounting import TODAY, account, period, transfer, usd
 from domainkit_tests.test_sec16b_6_rewritten_postings_pass_verify import AUDITED
 
 TABLES: Final = ("domainkit_accounting_entries", "domainkit_accounting_postings")
@@ -61,11 +68,40 @@ def test_each_way_an_entry_differs_from_the_trail_is_named(project: str) -> None
                     transfer(bank, wallet, usd("10"), reference),
                     AccountingUnitOfWork(),
                 )
-                for reference in ("same", "renamed", "extra", "described", "inexact")
+                for reference in (
+                    "same",
+                    "renamed",
+                    "extra",
+                    "described",
+                    "inexact",
+                    "moved",
+                )
             ],
+            await post_entry(
+                PostEntry(
+                    source="tests",
+                    reference="split",
+                    booked_on=TODAY,
+                    lines=(
+                        Line.credit(bank.id, usd("4")),
+                        Line.credit(bank.id, usd("6")),
+                        Line.debit(wallet.id, usd("10")),
+                    ),
+                ),
+                AccountingUnitOfWork(),
+            ),
         ]
 
-    _, _, other, same, renamed, extra, described, inexact = run_async(make())
+    made = run_async(make())
+    bank, _, other, same, renamed, extra, described, inexact, moved, split = made
+
+    async def undo() -> None:
+        await reverse_entry(
+            ReverseEntry(entry_id=same.id, booked_on=TODAY),  # type: ignore[attr-defined]
+            AccountingUnitOfWork(),
+        )
+
+    run_async(undo())
 
     async def tamper() -> None:
         postgres = project.startswith("postgresql")
@@ -82,8 +118,16 @@ def test_each_way_an_entry_differs_from_the_trail_is_named(project: str) -> None
             )
             await connection.execute(
                 update(entries)
-                .where(entries.c.id == described.id)  # type: ignore[attr-defined]
+                .where(entries.c.id.in_([described.id, split.id]))  # type: ignore[attr-defined]
                 .values(description="changed")
+            )
+            await connection.execute(
+                update(postings)
+                .where(
+                    postings.c.entry_id == moved.id,  # type: ignore[attr-defined]
+                    postings.c.side == "credit",
+                )
+                .values(account_id=other.id)  # type: ignore[attr-defined]
             )
             await connection.execute(
                 update(postings)
@@ -145,6 +189,14 @@ def test_each_way_an_entry_differs_from_the_trail_is_named(project: str) -> None
         (str(GONE), "in the audit trail, not in the books"),
         (str(renamed.id), generic),  # type: ignore[attr-defined]
         (str(described.id), generic),  # type: ignore[attr-defined]
+        (str(split.id), generic),  # type: ignore[attr-defined]
+        (
+            str(moved.id),  # type: ignore[attr-defined]
+            (
+                f"{bank.id}: debits 0.0000, credits 0.0000; "  # type: ignore[attr-defined]
+                "the trail: debits 0.0000, credits 10.0000"
+            ),
+        ),
         (str(extra.id), f"{other.id}: posted to, and not in the trail"),  # type: ignore[attr-defined]
         (
             str(inexact.id),  # type: ignore[attr-defined]

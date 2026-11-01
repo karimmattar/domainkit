@@ -6,23 +6,43 @@ counts them on the commit, under a shared lock of each ledger kind that
 """
 
 import asyncio
+import uuid
 from collections.abc import Sequence
+from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
+from domainkit.clock import freeze_time
+from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
     AccountingUnitOfWork,
     Entry,
     post_entry,
 )
 from domainkit.contrib.accounting.ledger import REVERSAL_SOURCE, book, lock_accounts
-from domainkit.contrib.limits import LimitExceeded, Window
+from domainkit.contrib.limits import (
+    InvalidLimit,
+    LimitExceeded,
+    LimitsUnitOfWork,
+    Movement,
+    MovementOutOfRange,
+    RemoveLimit,
+    SetLimit,
+    Window,
+    purge_usage,
+    remove_limit,
+    set_limit,
+)
 from domainkit.contrib.limits.postings import _staged
+from domainkit.contrib.limits.tables import kept
+from domainkit.db import connections
 from domainkit.db.hooks import on_stage
 from domainkit_tests.test_limits import (  # noqa: F401 - the fixture.
+    NOON,
     TODAY,
     books,
+    counted,
     egp,
     limit,
     period,
@@ -82,7 +102,7 @@ async def test_what_a_rolled_back_transaction_staged_is_not_counted() -> None:
         _staged(uow.session, create=True).append("third")  # type: ignore[arg-type]
         taken, again = _staged(uow.session), _staged(uow.session)
 
-    assert (after, taken, again) == ([], ["third"], [])
+    assert (after, taken, again) == ([], ["third"], [])  # type: ignore[comparison-overlap]
 
 
 @pytest.mark.usefixtures("books")
@@ -118,3 +138,91 @@ async def test_entries_booked_in_one_transaction_are_each_counted() -> None:
 
     with refused(LimitExceeded):  # 950 counted; the 900 given back.
         await post_entry(spend(wallet, till, egp("100"), "p-3"), AccountingUnitOfWork())
+
+
+@pytest.mark.usefixtures("books")
+async def test_a_movement_of_nothing_nobody_or_too_much_is_refused() -> None:
+    """Zero, no subject, or past usage's columns: each refused as such."""
+    with refused(InvalidLimit):
+        Movement(egp("0"), {"holder": "h-1"})
+    with refused(InvalidLimit):
+        Movement(egp("1"), {})
+    with refused(MovementOutOfRange):
+        Movement(egp("100000000000000"), {"holder": "h-1"})
+    assert Movement(egp("99999999999999"), {"holder": "h-1"}).amount
+
+
+@pytest.mark.usefixtures("books")
+async def test_the_marks_of_kept_reversals_are_purged_with_the_usage() -> None:
+    """Older than ``KEEP_USAGE`` (35 days), a mark goes; one that old exactly stays."""
+    old, newer = uuid.uuid4(), uuid.uuid4()
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            insert(kept),
+            [
+                {"entry_id": old, "at": NOON},
+                {"entry_id": newer, "at": NOON + timedelta(days=20)},
+            ],
+        )
+
+    async def marks() -> set[uuid.UUID]:
+        async with connections.engine().connect() as connection:
+            return set(await connection.scalars(select(kept.c.entry_id)))
+
+    with freeze_time(NOON + timedelta(days=35)):
+        await purge_usage()
+        exactly = await marks()
+    with freeze_time(NOON + timedelta(days=36)):
+        await purge_usage()
+        later = await marks()
+
+    assert (exactly, later) == ({old, newer}, {newer})
+
+
+@pytest.mark.usefixtures("books")
+async def test_removing_one_exemption_counts_back_for_its_subject_only() -> None:
+    """Two holders exempt from the default; one exemption removed: one counted."""
+    daily = {
+        "DEFAULTS": [
+            {
+                "code": "wallet.daily",
+                "kind": "holder",
+                "currency": "EGP",
+                "window": "day",
+                "max_amount": "1000",
+                "time_zone": "UTC",
+            }
+        ]
+    }
+    with override_settings(LIMITS=daily):
+        await period()
+        (first,), (till,) = await wallets("h-1", 1)
+        (second,), (other,) = await wallets("h-2", 1)
+        with freeze_time(NOON - timedelta(hours=3)):
+            exemptions = [
+                await set_limit(
+                    SetLimit(
+                        code="wallet.daily",
+                        kind="holder",
+                        currency="EGP",
+                        subject=holder,
+                        window=Window.DAY,
+                        max_amount=egp("1000"),
+                        enabled=False,
+                    ),
+                    LimitsUnitOfWork(),
+                )
+                for holder in ("h-1", "h-2")
+            ]
+            await post_entry(
+                spend(first, till, egp("900"), "p-1"), AccountingUnitOfWork()
+            )
+            await post_entry(
+                spend(second, other, egp("900"), "p-2"), AccountingUnitOfWork()
+            )
+        with freeze_time(NOON - timedelta(hours=1)):
+            await remove_limit(
+                RemoveLimit(limit_id=exemptions[0].id), LimitsUnitOfWork()
+            )
+
+    assert await counted() == 1

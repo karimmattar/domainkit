@@ -446,20 +446,28 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
 
     exported = await export.call("subject-1")
     nothing = await export.call("subject-2")
-    with refused(ErasureHeld):  # Checked again as it erases: 8.00 is owed.
+    with refused(ErasureHeld) as held:  # Checked again as it erases: 8.00 owed.
         await erase.call("subject-1", "asked")
+    payee = await account("3000")
     with freeze_time(NOW + timedelta(minutes=5)):
         await post_entry(
             PostEntry(
                 source="tests",
                 reference="paid-out",
                 booked_on=date(2026, 10, 21),
-                lines=(Line.debit(wallet.id, usd("8")), Line.credit(bank.id, usd("8"))),
+                lines=(
+                    Line.debit(wallet.id, usd("8")),
+                    Line.credit(payee.id, usd("8")),
+                ),
             ),
             AccountingUnitOfWork(),
         )
-    erased = await erase.call("subject-1", "asked")
-    again = await erase.call("subject-1", "asked")
+    with freeze_time(NOW + timedelta(minutes=6)):
+        old = await account("2002", type=AccountType.LIABILITY, holder="subject-1")
+        await close_account(CloseAccount(account_id=old.id), AccountingUnitOfWork())
+    with freeze_time(NOW + timedelta(minutes=10)):
+        erased = await erase.call("subject-1", "asked")
+        again = await erase.call("subject-1", "asked")
 
     first, second = cast(list[dict[str, Any]], exported["accounts"])
     assert first == {
@@ -488,10 +496,15 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
         ("late", "m"),
         ("last", ""),
     ]
-    assert (nothing, erased, again) == ({}, {"accounts": 2}, {})
+    assert held.value.held == {  # type: ignore[attr-defined]
+        "accounting": "Holds an open account with money on it or held: close it first."
+    }
+    assert (nothing, erased, again) == ({}, {"accounts": 3}, {})
     async with AccountingUnitOfWork(readonly=True) as uow:
         stored = await uow.accounts.get(wallet.id)
         empty = await uow.accounts.get(savings.id)
+        closed = await uow.accounts.get(old.id)
+        others = await uow.accounts.get(bank.id)  # Funded, no holder's: open.
     assert stored.holder is not None
     assert stored.holder.startswith("erased:")
     assert (empty.holder, stored.version, stored.balance) == (
@@ -500,6 +513,11 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
         Decimal("0.0000"),
     )
     assert {stored.status, empty.status} == {AccountStatus.CLOSED}
+    assert (stored.closed_at, closed.closed_at, others.status) == (
+        NOW + timedelta(minutes=10),
+        NOW + timedelta(minutes=6),
+        AccountStatus.OPEN,
+    )
     assert await export.call("subject-1") == {}
 
 
