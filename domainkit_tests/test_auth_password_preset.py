@@ -61,7 +61,10 @@ def test_letters_and_digits() -> None:
     for good in ("abc1", "1a", "مرحبا١"):
         validator.validate(good)
     for bad in ("abcdefgh", "12345678", "!!!!----", ""):
-        with pytest.raises(PasswordValidationError, match="letters and digits"):
+        with pytest.raises(
+            PasswordValidationError,
+            match=r"^This password must contain both letters and digits\.$",
+        ):
             validator.validate(bad)
     assert validator.help_text() == (
         "Your password must contain at least one letter and one digit."
@@ -261,8 +264,10 @@ def test_nothing_is_kept_without_the_settings(identity: Api) -> None:
     assert history_rows() == []
 
 
-def test_unusable_passwords_are_not_kept(identity: Api) -> None:
-    """Nor checked against."""
+def test_unusable_passwords_are_not_kept(
+    identity: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Nor checked against: no hasher is looked for them, nothing logged."""
     create_user("alice", None)
     identity(PASSWORD_HISTORY=4)
 
@@ -274,9 +279,11 @@ def test_unusable_passwords_are_not_kept(identity: Api) -> None:
             await uow.users.set_password(user, STRONG[0])
             await uow.commit()
 
-    run_async(set_one())
+    with caplog.at_level("WARNING", logger="domainkit.security"):
+        run_async(set_one())
 
     assert len(history_rows()) == 1
+    assert caplog.messages == []
 
 
 def test_each_user_keeps_their_own(identity: Api) -> None:
@@ -859,3 +866,17 @@ def test_changepassword_sets_no_temporary_password_without_the_setting(
 
     assert log_in(client, STRONG[1]).status_code == 200
     assert history_rows() == []
+
+
+def test_every_contradiction_is_named_in_one_error(use_auth: UseAuth) -> None:
+    """``auth.E010`` lists them, then says how to keep the preset."""
+    with pytest.raises(CheckFailed) as refused:
+        use_auth(**PCI, PASSWORD_HISTORY=3, PASSWORD_CHANGE_ON_FIRST_USE=False)
+
+    [problem] = refused.value.messages
+    assert str(problem) == (
+        "AUTH.PASSWORD_PRESET 'pci-dss-4' is contradicted: PASSWORD_HISTORY is 3, "
+        "under 4 (8.3.7); PASSWORD_CHANGE_ON_FIRST_USE is off: passwords staff set "
+        "are not changed at their first use (8.3.5). Leave these settings out for "
+        "the preset's, or drop the preset."
+    )

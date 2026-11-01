@@ -430,3 +430,19 @@ def test_the_fintech_workflow_is_the_projects_with_its_types_checked(
     uses = re.findall(r"uses: (\S+@\S+ # \S+)", fintech)
     assert len(uses) == 3
     assert all(f"uses: {use}" in ours for use in uses)
+
+
+def test_init_says_what_each_argument_is() -> None:
+    """Its ``--help``: the name, the directory, and the profiles it offers."""
+    from domainkit.management.commands.init import Command
+
+    usage = " ".join(Command().create_parser("manage.py", "init").format_help().split())
+    assert usage.startswith("usage: manage.py init [-h] [--profile {fintech}] name ")
+    assert usage.endswith(
+        " positional arguments: name project name, as in [project].name; it sets "
+        "the environment variable prefix (billingAPI: BILLING_API_) directory where "
+        "to create it (default: ./<name>); empty or missing options: -h, --help show "
+        "this help message and exit --profile {fintech} a project with a sector's "
+        "controls on and wired: fintech, a bank's first-review list "
+        "(docs/fintech.md)"
+    )

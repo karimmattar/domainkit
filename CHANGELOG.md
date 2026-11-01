@@ -344,6 +344,12 @@ and a status.
   counted pass no longer reads one again now and then; the JSON-log rungs
   are budgeted at the highest of three runs. `docs/performance.md`'s
   table is this release's (ADR 0064's amendment) (PERF-32).
+- The 642 mutants 0.15's changed functions left (605 alive, 37 that no
+  test reached) are settled: 303 are killed by new tests (13 of them
+  on PostgreSQL, where the database's clock and the erasure race run),
+  69 die on PostgreSQL already, 233 are equivalent, and 25 run only at
+  import; the audit page lists, by module, the 12 left and why
+  (TEST-12).
 
 ### Fixed
 
