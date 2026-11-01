@@ -1,6 +1,7 @@
 """Column types that behave the same on every supported database."""
 
 import re
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final, cast
@@ -547,12 +548,19 @@ _DEFAULT_LITERAL: Final = re.compile(
     r"\s*\(?\s*'?\s*(-?[0-9]+(?:\.[0-9]+)?)\s*'?\s*\)?\s*"
 )
 """A server default that is a plain number: ``1.50``, ``'1.50'``, ``(0)``."""
-_NAME: Final = r'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)'
 _SQL_TOKEN: Final = re.compile(
-    r"'(?:[^']|'')*'"  # A string: left as it is.
-    rf"|(?:{_NAME}\.)?"  # A name, maybe after its table's.
-    r'(?:"(?P<quoted>(?:[^"]|"")*)"|(?P<bare>[A-Za-z_][A-Za-z0-9_$]*))'
+    r"(?P<string>'(?:[^']|'')*')"  # Left as it is.
+    r'|(?P<name>(?:(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)\.)?'  # Its table's.
+    r'(?:"(?P<quoted>(?:[^"]|"")*)"|(?P<bare>[A-Za-z_][A-Za-z0-9_$]*)))'
+    r"|(?P<number>(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+    r"|(?P<other>\s+|.)",
+    re.DOTALL,
 )
+"""A check's SQL, token by token: strings, names, numbers, and the rest."""
+_JOINS: Final = frozenset({"and", "or"})
+"""The words that join a check's comparisons (``BETWEEN``'s ``AND`` aside)."""
+_FACTORS: Final = frozenset("*/%")
+"""SQL operators whose operand is a factor, not an amount: refused beside one."""
 
 
 def stored_scale(column: Column[Any]) -> int | None:
@@ -623,13 +631,21 @@ def _check_on_sqlite(
     compiler: DDLCompiler,
     **kwargs: Any,  # noqa: ANN401 - the compiler's options.
 ) -> str:
-    """A check written as SQL, comparing amounts rather than their minor units.
+    """A check written as SQL, comparing amounts in exact minor units.
 
-    Each name of an amount column becomes ``(name / 100.0)`` for a scale of
-    2: a real number, compared with the check's literals as they are, so
+    Each comparison of the check that names an amount column is counted in
+    whole minor units of the largest scale it names: a column of a smaller
+    scale is multiplied up (``fee * 10``), and each number is written in
+    those units (``cap <= 100`` with a scale of 2 is ``cap <= 10000``), so
     ``CHECK (cap <= 100)`` caps the column at 100.00, as on PostgreSQL
-    (DATA-15). Checks built as expressions bind their values through the
-    column's type already.
+    (DATA-15), and amounts are compared as integers, never as floats
+    (SEC-16c-1). A comparison without an amount is left as it is. Checks
+    built as expressions bind their values through the column's type
+    already.
+
+    Raises:
+        CompileError: A comparison of an amount holds a number with more
+            places than its unit, another column, or ``*``, ``/``, ``%``.
     """
     visit = getattr(compiler, f"visit_{constraint.__visit_name__}")
     written: str = visit(constraint, **kwargs)
@@ -641,21 +657,90 @@ def _check_on_sqlite(
     scales = {
         column.name.lower(): scale
         for column in table.columns
-        if (scale := stored_scale(column))
+        if (scale := stored_scale(column)) is not None
     }
     if not scales:
         return written
+    columns = {column.name.lower() for column in table.columns}
     inner = compiler.sql_compiler.process(
         constraint.sqltext, include_table=False, literal_binds=True
     )
-
-    def scaled(token: re.Match[str]) -> str:
-        quoted, bare = token["quoted"], token["bare"]
-        name = bare if quoted is None else quoted.replace('""', '"')
-        if name is None or name.lower() not in scales:  # A string, or no amount.
-            return token[0]
-        return f"({token[0]} / {10 ** scales[name.lower()]}.0)"
-
-    return written.replace(
-        f"CHECK ({inner})", f"CHECK ({_SQL_TOKEN.sub(scaled, inner)})", 1
+    counted = "".join(
+        _in_minor_units(comparison, scales, columns, constraint)
+        for comparison in _comparisons(inner)
     )
+    return written.replace(f"CHECK ({inner})", f"CHECK ({counted})", 1)
+
+
+def _name(token: re.Match[str]) -> str | None:
+    """The column a name token names, lowered; None for any other token."""
+    if token["quoted"] is not None:
+        return token["quoted"].replace('""', '"').lower()
+    bare = token["bare"]
+    return None if bare is None else bare.lower()
+
+
+def _comparisons(sql: str) -> list[list[re.Match[str]]]:
+    """``sql``'s tokens, cut before each ``AND`` and ``OR`` that joins comparisons.
+
+    The ``AND`` of ``BETWEEN ... AND ...`` stays inside its comparison.
+    """
+    parts: list[list[re.Match[str]]] = [[]]
+    between = False
+    for token in _SQL_TOKEN.finditer(sql):
+        word = token["bare"].lower() if token["bare"] and not token["quoted"] else None
+        if word == "between":
+            between = True
+        elif word in _JOINS and not (between and word == "and"):
+            parts.append([])
+        elif word == "and":
+            between = False
+        parts[-1].append(token)
+    return parts
+
+
+def _in_minor_units(
+    tokens: list[re.Match[str]],
+    scales: Mapping[str, int],
+    columns: Collection[str],
+    constraint: CheckConstraint,
+) -> str:
+    """One comparison's SQL, in minor units if it names an amount.
+
+    Raises:
+        CompileError: See ``_check_on_sqlite``.
+    """
+    names = [
+        name
+        for token in tokens
+        if (name := _name(token)) is not None and name in columns
+    ]
+    amounts = [scales[name] for name in names if name in scales]
+    if not amounts:
+        return "".join(token[0] for token in tokens)
+    where = f"{constraint.name or 'A check'}"
+    if any(name not in scales for name in names) or any(
+        token["other"] in _FACTORS for token in tokens
+    ):
+        raise CompileError(
+            f"{where} compares an amount with another column, or multiplies or "
+            "divides one: on SQLite amounts are minor units, so write such a "
+            "check as an expression of the columns, or keep it in Python."
+        )
+    unit = max(amounts)
+    written: list[str] = []
+    for token in tokens:
+        name = _name(token)
+        if name is not None and name in scales and scales[name] < unit:
+            written.append(f"({token[0]} * {10 ** (unit - scales[name])})")
+        elif token["number"] is not None:
+            minor = Decimal(token["number"]).scaleb(unit)
+            if minor != minor.to_integral_value():
+                raise CompileError(
+                    f"{where} holds {token['number']}, which has more than "
+                    f"{unit} decimal places: no amount it compares has them."
+                )
+            written.append(str(int(minor)))
+        else:
+            written.append(token[0])
+    return "".join(written)

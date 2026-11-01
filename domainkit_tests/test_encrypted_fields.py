@@ -1004,3 +1004,51 @@ async def test_a_value_the_ring_never_sealed_does_not_load(bank: str) -> None:
             match=exactly("The value is not one the key ring sealed."),
         ):
             await uow.payments.get(uuid.UUID(int=1))
+
+
+def test_a_filter_of_an_encrypted_field_needs_the_field_shown() -> None:
+    """A blind index answers guesses: filtering one is exposing it (DSGN-19).
+
+    Refused where the schema leaves the field out, as a derived one does;
+    taken where the schema names it. One inside a child entity is refused.
+    """
+    from domainkit.http import FilterSet
+    from domainkit.http.filters import Filter
+    from domainkit.resources import ResourceRouter, schema_for
+
+    class PaymentFilters(FilterSet):
+        """Payments by card number."""
+
+        model = Payment
+        pan = Filter("exact")
+
+    class HolderFilters(FilterSet):
+        """Payments by holder: no encrypted field."""
+
+        model = Payment
+        holder_id = Filter("exact")
+
+    def resource(**options: Any) -> ResourceRouter:  # noqa: ANN401
+        return ResourceRouter(
+            "/payments",
+            model=Payment,
+            unit_of_work=CardsUnitOfWork,
+            repository=lambda uow: uow.payments,
+            **options,
+        )
+
+    class NameFilters(FilterSet):
+        """Card holders by name: a field payments do not have."""
+
+        model = Cardholder
+        name = Filter("exact")
+
+    tables.start_mappers()
+    resource(filters=NameFilters)  # Its fields are its own model's to check.
+    with pytest.raises(TypeError, match=r"encrypted fields .* not show: pan\."):
+        resource(filters=PaymentFilters)
+    resource(filters=HolderFilters)
+    resource(
+        filters=PaymentFilters,
+        schema=schema_for(Payment, include=["id", "holder_id", "pan"]),
+    )

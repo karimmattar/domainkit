@@ -272,6 +272,9 @@ number) is in a schema only where `include` names it: a read schema, and
 the bodies `crud=True` derives with `writable=ALL_FIELDS`, leave it out, so
 no derived route serves it in clear by default; serve it on purpose with
 `schema_for(Card, include=["id", "number"])` or `writable=[..., "number"]`.
+A `FilterSet` may filter such a field only where the resource's schema
+shows it: a blind index answers whether a guessed value is stored, so a
+filter of one is refused (`TypeError`) wherever the field is not exposed.
 A field holding a secret (`Sensitive`, a password hash) is refused even
 when named.
 

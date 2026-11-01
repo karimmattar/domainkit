@@ -617,6 +617,15 @@ PostgreSQL would store differently.
     and `sum` fails with an overflow, where PostgreSQL computes exactly;
   - casts to text, which give minor units on SQLite.
 
+  A check written as SQL (`CheckConstraint("refunded <= paid")`) is
+  rewritten on SQLite: each comparison that names an amount is counted in
+  whole minor units of the largest scale it names (`fee * 100` beside a
+  column of four places, `cap <= 100` as `cap <= 10000`), so it compares
+  exactly, as integers. A number with more places than that unit, another
+  column, or `*`, `/`, `%` beside an amount is refused as the table is
+  made: write such a rule as an expression of the columns, or in Python.
+  A plain-number server default of an amount is written in minor units.
+
   For `avg`, name the type: `func.avg(price, type_=price.type)`.
 
 ## Unique values
