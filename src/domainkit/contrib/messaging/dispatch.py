@@ -221,8 +221,8 @@ class BrokerWorkers:
             try:
                 while not stop.is_set():
                     wake.clear()
+                    await worker._schedule()
                     try:
-                        await worker.schedule_periodic()
                         relayed = await worker.relay(broker, batch)
                     except Exception as exc:  # noqa: BLE001 - logged; it waits.
                         await outage.failed(exc, stop)

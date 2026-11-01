@@ -36,6 +36,7 @@ from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.ddd import ReadOnlyError
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import Money
+from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.test_limits import (
     books,  # noqa: F401 - the fixture.
     egp,
@@ -361,7 +362,35 @@ async def test_purge_deletes_in_batches(monkeypatch: pytest.MonkeyPatch) -> None
     with freeze_time(NOON) as clock:
         await spend(*(paid("1") for _ in range(5)))
         clock.move_to(NOON + timedelta(days=36))
-        assert await purge_usage() == 5
+        with CapturedQueries() as queries:
+            assert await purge_usage() == 5
+    deletes = [
+        each
+        for each in queries.statements
+        if "DELETE FROM domainkit_limits_usage" in each
+    ]
+    assert len(deletes) == 3  # 2, 2, then the 1 that ends it.
+
+
+async def test_a_subject_with_usage_left_is_kept_however_long_ago_it_began() -> None:
+    """A subject whose newer usage is left keeps its row, however old the row.
+
+    Only a subject a window bounds has a row and usage (PERF-26).
+    """
+    await limit(
+        code="steady", subject="h-steady", window=Window.DAY, max_amount=egp("1000")
+    )
+    with freeze_time(NOON) as clock:
+        await spend(paid("1", holder="h-steady"))
+        clock.move_to(NOON + timedelta(days=30))
+        await spend(paid("1", holder="h-steady"))
+        clock.move_to(NOON + timedelta(days=36))
+        assert await purge_usage() == 1
+    async with connections.engine().connect() as connection:
+        kept = await connection.scalars(select(subjects.c.subject))
+        assert list(kept) == ["h-steady"]
+        left = await connection.scalar(select(func.count()).select_from(usage))
+        assert left == 1
 
 
 async def test_usage_names_its_window_and_what_is_left() -> None:
@@ -401,6 +430,13 @@ async def test_counting_needs_an_open_unit_of_work_that_writes_on_their_database
     with pytest.raises(ReadOnlyError) as readonly:
         async with LimitsUnitOfWork(readonly=True) as uow:
             await release(uow, "k")
+    with pytest.raises(
+        ReadOnlyError,
+        match=r"^LimitsUnitOfWork is read-only; movements are counted in one that "
+        r"writes\.$",
+    ):
+        async with LimitsUnitOfWork(readonly=True) as uow:
+            await consume(uow, paid("1"))
     with pytest.raises(RuntimeError) as closed:
         await consume(LimitsUnitOfWork(), paid("1"))
     with pytest.raises(ValueError, match=r"^Give at least one movement\.$"):
@@ -489,3 +525,25 @@ async def test_a_limit_that_gains_a_window_counts_the_windows_movements() -> Non
         await spend(paid("1"))
         with refused(LimitExceeded):
             await spend(paid("1"))
+
+
+async def test_limits_live_in_one_sql_database_routing_names() -> None:
+    """Routed to a shard group, the limits' alias names the setting that routes it."""
+    from domainkit.contrib.limits.uow import limits_alias
+
+    with (
+        override_settings(
+            DATABASES={
+                "default": {"URL": "sqlite+aiosqlite://"},
+                "a": {"URL": "sqlite+aiosqlite://"},
+                "b": {"URL": "sqlite+aiosqlite://"},
+            },
+            SHARDS={"books": {"DATABASES": ["a", "b"]}},
+            DATABASE_ROUTING={"limits": "books"},
+        ),
+        pytest.raises(
+            ImproperlyConfigured,
+            match=r"^DATABASE_ROUTING\['limits'\] = 'books' must name a SQL alias ",
+        ),
+    ):
+        limits_alias()

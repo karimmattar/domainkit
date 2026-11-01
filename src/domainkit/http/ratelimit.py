@@ -63,6 +63,7 @@ from domainkit.utils.rates import parse_rate
 
 __all__ = [
     "FALLBACK_KEYS",
+    "RATE_LIMITED",
     "Backend",
     "Decision",
     "MemoryBackend",
@@ -415,6 +416,8 @@ TRY_AGAIN_LATER: Final = 1013
 """WebSocket close code for a handshake refused because of the rate limit."""
 TOO_MANY_REQUESTS: Final = "Too many requests; slow down."
 """The detail of every 429 a limit answers with."""
+RATE_LIMITED: Final = "rate_limited"
+"""The code of every 429: ``RATE_LIMIT``, a ``Throttle``, and auth's throttles."""
 _DENIAL: Final = "websocket.http.response"
 """The ASGI extension that lets a WebSocket handshake be refused with a 429."""
 ADDRESS: Final = "domainkit.address"
@@ -471,7 +474,7 @@ async def refuse(
         await send({"type": "websocket.close", "code": TRY_AGAIN_LATER})
         return
     response = error_response(
-        status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY_REQUESTS, code="rate_limited"
+        status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY_REQUESTS, code=RATE_LIMITED
     )
     response.headers.update(
         {**_quota(limit, decision), "Retry-After": str(math.ceil(decision.retry_after))}
@@ -584,7 +587,7 @@ class Throttled(APIError):
         super().__init__(
             status.HTTP_429_TOO_MANY_REQUESTS,
             TOO_MANY_REQUESTS,
-            code="throttled",
+            code=RATE_LIMITED,
             headers={
                 **_quota(limit, decision),
                 "Retry-After": str(math.ceil(decision.retry_after)),

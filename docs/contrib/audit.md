@@ -322,6 +322,7 @@ each missing part is an error (`audit.E001` to `audit.E005`) that
 | `DATABASE` | `"default"` | Where `record()` writes, and what `auditlog` reads by default. |
 | `EVENTS` | `True` | Record every committed domain event. |
 | `EXCLUDE` | `()` | Actions to skip, as shell patterns (`catalog.*`, `*.viewed`). |
+| `HISTORY_FIELDS` | `()` | Fields of `details` whose histories are read by aggregate (`account_id`, `request_id`): on PostgreSQL, `migrate` keeps an index of each and drops those of fields no longer named ([History](#history)). |
 | `LEDGER` | `None` | `LEDGERS` alias to anchor each chain's head on; `None` seals without anchoring. |
 | `NAMESPACE` | `None` | Part of the anchors' ledger key, `domainkit/audit/<NAMESPACE>/<alias>`: a lower-case letter, then up to 31 letters, digits, `_`, or `-`. `None` keeps the key of 0.9.0, which every project on the ledger shares; staging and production warn. |
 | `PREVIOUS_ANCHORS` | `True` | With `NAMESPACE`, also verify the heads anchored under `domainkit/audit/<alias>` before it was set. Turn it off when other projects anchored there too. |
@@ -375,6 +376,23 @@ From the command line, each change under its entry:
 ```shell
 python manage.py auditlog --target r-1
 python manage.py auditlog --aggregate product_id=6f1c7e6a-...
+```
+
+**Reading by aggregate at scale.** A history by `target` reads its index. A
+history by an aggregate's field reads the rows whose `details[field]` is
+the id, and without an index of that field each page scans the whole trail
+(555 ms a page at 500,000 rows, and growing with it: every committed
+event adds a row). Name the fields the project reads histories by in
+`AUDIT.HISTORY_FIELDS`; on PostgreSQL, `migrate` then keeps an index
+`ix_domainkit_audit_log_history_<field>` of each,
+`((details ->> 'field'), occurred_at, id)`, and drops those of fields no
+longer named. Revisions (`makemigrations`) leave these indexes alone.
+Building one holds writes to the trail until it is built: on a large
+trail, make it first with `CREATE INDEX CONCURRENTLY` under the same name
+and columns, and `migrate` keeps it. SQLite gets none (PERF-29).
+
+```python
+AUDIT = {"HISTORY_FIELDS": ["account_id", "entry_id", "request_id"]}
 ```
 
 Staff read histories over HTTP, with `audit.view_history` (a permission

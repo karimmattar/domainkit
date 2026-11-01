@@ -39,6 +39,27 @@ and a status.
 - `EarlierPeriodOpen` (`earlier_period_open`), `CurrencyNotLimited`
   (`currency_not_limited`, a `LimitExceeded`), and
   `contrib.audit.settings.min_retention` (FIN-87, FIN-89, FIN-95).
+- Testing money-moving flows (`domainkit.testing`): `totp_code(secret,
+  at=None)` (RFC 6238 as auth checks it), `enrol_totp(client, password)`
+  returning an `Authenticator` whose `code()` never gives a step twice (it
+  moves a frozen clock to the next step), `step_up(client, app)`,
+  `confirm_sca(client, challenge, app)`, `approve_request(client, url)`,
+  each through the application's own routes, raising
+  `UnexpectedResponse` when a step is refused;
+  `domainkit.contrib.audit.testing.audit_entries()` reads the trail as
+  `RecordedEntry` records; `domainkit.testing.kms` gives `FakeKms` and
+  `FakeVault` for `KEYS` providers without the service. The fintech
+  profile's tests use them instead of a hand-written TOTP (TEST-21).
+- `domainkit.apps.hooks.hooks_kept()`: every hook point's registrations
+  put back when the block ends; the test plugin keeps each test in it, so
+  a hook a test registers (`on_guard(check, domain="payments")`) no
+  longer stays for every later test (TEST-14).
+- PostgreSQL 16 to 18 are supported (`docs/databases.md`,
+  `docs/versioning.md`); a required `postgresql (16)` check runs the
+  PostgreSQL tests on the oldest, beside `integration` on 18. The fintech
+  profile's test settings read `<PREFIX>TEST_DATABASE_URL` and
+  `<PREFIX>TEST_DATABASE_OWNER_URL`, and CI runs that project's tests on
+  PostgreSQL as a row-level role (TEST-18).
 - `domainkit.money`: `Money`, an amount with exactly its currency's
   places and the currency, immutable and exact: `Money.of("10.5", "USD")`
   is 10.50, more places are refused (`InexactAmount`) and never rounded,
@@ -301,6 +322,37 @@ and a status.
   threat model gains a section on moving money
   ([ADR 0124](docs/adr/0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md))
   (FIN-74).
+- `MESSAGING.UNKNOWN_TARGET_GRACE` (an hour by default): a message naming
+  a task or durable handler the worker does not know waits for a worker
+  that does, given back with a delay that doubles, its attempt not spent
+  and its ordering key's place kept, and is dead-lettered once the grace
+  has passed since a worker first found it unknown (outcome `unknown` in
+  `messaging_messages_total`). The test plugin's `drain` still
+  dead-letters it at once. `check` warns (`messaging.W001`, in staging
+  and production) about tasks without `name=`, whose name follows their
+  module's path; the messaging guide gives the deploy order
+  ([ADR 0005](docs/adr/0005-transactional-outbox.md), amended) (CONC-15).
+
+- `docs/reference/problems.md` lists every problem `code` the framework
+  answers with, its status, and what answers it; `test_problem_codes`
+  fails when the framework and the page differ. Every error class of
+  domainkit's own sets its code, and `DomainError` refuses one of
+  domainkit's that sets none, so a rename never changes a code (DSGN-20,
+  WEB-25).
+- `CORS_EXPOSE_HEADERS` (`ETag`, `Location`, `Retry-After`, the
+  `RateLimit-*` quota, `Idempotent-Replayed`, the deprecation headers,
+  `X-Request-ID`) and `CORS_MAX_AGE` (600): a script on an allowed origin
+  can read what resources answer. `CORS_ALLOWED_HEADERS` adds `If-Match`,
+  `If-None-Match`, and `Idempotency-Key` by default (WEB-19).
+- `domainkit.exceptions.UpstreamError`: an outgoing call that failed.
+  `domainkit.http.client`'s `CircuitOpen` is 503 `upstream_unavailable`
+  with `Retry-After` the cooldown left, `CallTimeout` 504
+  `upstream_timeout`, and `ResponseTooLarge` 502
+  `upstream_response_too_large`; none is reported to `ERROR_REPORTERS`, and
+  the detail names no host (WEB-23).
+- `live.W002`: `check` warns where deployed about a route with an access
+  rule whose `LiveLimits(reauth_interval=None)` keeps revoked logins
+  connected (WEB-24).
 
 ### Changed
 
@@ -361,6 +413,78 @@ and a status.
 - `verify_ledger` compares in the database and streams what differs; the
   general ledger is read in pieces of `CHUNK` postings, each in a short
   transaction, so a slow reader holds no connection (PERF-28).
+- **Breaking:** a message naming a task or durable handler the worker does
+  not know is no longer dead-lettered at once: it waits up to
+  `MESSAGING.UNKNOWN_TARGET_GRACE` (an hour) for a worker that knows it.
+  A rolling deploy's older workers dead-lettered every message for what
+  the new code added, and a dead letter let its ordering key's later
+  messages run first; a task moved to another module did the same to the
+  messages queued under its old name. `UNKNOWN_TARGET_GRACE = 0` keeps
+  the old behaviour (CONC-15).
+- **Breaking:** `@task` and `@periodic` refuse a name longer than 255
+  characters, the outbox's column: PostgreSQL refused its messages at
+  every commit. A scheduled run's key hashes a name too long to leave
+  room for the slot's number (CONC-16).
+- **Breaking:** a `CancelledError` a handler or task raises while its
+  worker is not stopping it (it awaited something that was cancelled) is
+  a failed run, `HandlerCancelled`, retried with backoff and counted. The
+  worker took it for its own stop: the message went back at once, its
+  attempt refunded, and ran again and again, never dead-lettered, holding
+  its ordering key and, through a broker, a consumer's slot (CONC-17).
+- **Breaking (tests):** the `settings` fixture reads settings read-only:
+  `settings.CACHES["x"] = ...` raises `TypeError`, where it changed the
+  session's settings, unvalidated, for every later test. Assign the whole
+  setting (`settings.CACHES = {**settings.CACHES, "x": ...}`) (TEST-19).
+- `mutation (changed)` counts lines deleted inside a function and modules
+  moved and edited, and lists the changed decorated functions mutmut never
+  mutates apart instead of naming them, which stopped `mutmut run`; ADR
+  0106's 0.15 amendment and `CONTRIBUTING.md` say what the mutation runs
+  do not measure: decorated functions, code only a server reaches, flaky
+  tests counted as kills, and no whole run since 0.12.0 (TEST-16,
+  TEST-17).
+- **Breaking:** SQLite checks foreign keys, as PostgreSQL does: every
+  connection the framework opens runs `PRAGMA foreign_keys = ON`, so a row
+  naming no parent is refused and `ON DELETE CASCADE` cascades (also for
+  `delete_rows`, `flush`, and `loaddata`). Migrations turn the check off
+  while revisions run, as batch mode recreates tables, and `migrate` then
+  checks every row, refusing with `ForeignKeyViolation`, by table, rows
+  stored while nothing was checked (DATA-18).
+- **Breaking:** derived schemas leave `Encrypted` fields out unless
+  `include` names them: `schema_for(Card)`, `crud=True` with
+  `writable=ALL_FIELDS`, and the admin no longer serve a card number in
+  clear by default; `schema_for(Card, include=[..., "number"])` or
+  `writable=[..., "number"]` serves it on purpose (DSGN-19).
+- **Breaking:** `makemigrations` renders revisions in batch mode on every
+  database, so a revision written against PostgreSQL applies on the SQLite
+  test database (on PostgreSQL batch mode is plain `ALTER`). Revisions
+  written before are unchanged (DATA-13).
+- **Breaking:** `makemigrations` adds the both-or-neither check of a
+  nullable money pair whenever the database table lacks it: a field made
+  optional (`Money` to `Money | None`) gets it, and a pair added before
+  0.14's check gets it in the next revision (DATA-20).
+- `domainkit.db.types.MAX_DIGITS` is `STORED_DIGITS`: 18, what an
+  `ExactDecimal` holds in all, fewer than `domainkit.money.MAX_DIGITS`
+  (38), which bounds money in memory and in JSON; both say how they relate
+  (DATA-21).
+- The key ring follows the settings: `KEYS` (and `SECRET_KEY`, which the
+  development key derives from) changed by `override_settings` or the
+  `settings` fixture seals and opens with the ring it describes, made
+  once per value (`SettingsKeyring`); `use_keyring` takes a function
+  giving the ring. Approvals' guard of entries reads `ENTRY_THRESHOLDS`
+  of the settings it runs under (TEST-15).
+- `SubjectKeyStore` has `find_many`: a query's rows sealed for subjects
+  read their keys in one statement once the query has loaded
+  (`Keyring.subject_keys_by_id`), as does `dumpdata --decrypt`, so a page
+  of N people costs one statement for their keys, not N (PERF-22). The
+  blind index's key is derived once per data key, and `keys reencrypt`
+  locks each batch's rows and writes them back in one statement per kind
+  of change (PERF-33).
+- The docs no longer promise that crypto-shredding reaches a backup taken
+  before the erasure, which holds the person's key: `docs/contrib/keys.md`
+  ("Backups taken before an erasure") and `docs/operations.md` say to bound
+  backup retention and to apply recorded erasures (`privacy.erase` in the
+  audit trail) again after a restore; ADR 0120 is amended (DOCS-14).
+
 - **Breaking:** auth has three new tables, `domainkit_step_ups`,
   `domainkit_sca_challenges`, and `domainkit_password_history`. Only the
   new features use them, but deleting or erasing a user deletes the
@@ -395,6 +519,65 @@ and a status.
   clock run), 156 die on PostgreSQL already, 106 are equivalent, and
   12 run only at import; the audit page lists, by module, the 6 left
   and why (TEST-11).
+- The new list endpoints read their default order through an index: the
+  ledger's entries (`posted_at`) and holds (`placed_at`), and approval
+  requests (`submitted_at`); each page scanned and sorted the table
+  before (107 ms a page at 500,000 entries). Run `makemigrations` and
+  `migrate` (PERF-29).
+- `AUDIT.HISTORY_FIELDS`: the fields of `details` a project reads
+  histories by (`history(aggregate=(field, id))`, `GET /history?field=`).
+  On PostgreSQL, `migrate` keeps an index of each,
+  `ix_domainkit_audit_log_history_<field>`, and drops those of fields no
+  longer named; revisions leave them alone. Without one a history by
+  aggregate scans the whole trail (555 ms a page at 500,000 rows). The
+  query writes the field into the SQL there, so prepared statements use
+  the index (PERF-29).
+- Fewer index writes on the books: postings lose their own index of
+  `entry_id` (the unique `(entry_id, line)` serves it), the limits'
+  subjects lose the index of `touched_at`, so the lock each movement
+  takes is a HOT update, and usage's `key` index is a hash on PostgreSQL
+  (40 MB instead of 111 MB at 1.5 million rows), renamed
+  `ix_domainkit_limits_usage_key_hash`. Run `makemigrations` and
+  `migrate` (PERF-30).
+- A process that encrypts no field and handles no money no longer
+  imports the key ring or `csv`: `domainkit.db.encrypted` loads the ring
+  on first use, and money `csv` when it first reads its currencies, four
+  modules fewer in every process (`bare` 786 to 782). `domainkit.money`,
+  `domainkit.db.money` and `domainkit.db.encrypted` stay on the import
+  path, about 5 ms (`docs/performance.md`) (PERF-31).
+- The benchmark ladder measures money: `money-write`, `posting` (a
+  posting counted against a limit), `encrypted-read`, and `step-up`
+  rungs, with budgets. CI's `bench` job runs on Python 3.13.16, the
+  release its budgets were written on, as the counts moved between 3.13
+  patch releases; the bench project keeps principals for the run, so a
+  counted pass no longer reads one again now and then; the JSON-log rungs
+  are budgeted at the highest of three runs. `docs/performance.md`'s
+  table is this release's (ADR 0064's amendment) (PERF-32).
+- The 642 mutants 0.15's changed functions left (605 alive, 37 that no
+  test reached) are settled: 303 are killed by new tests (13 of them
+  on PostgreSQL, where the database's clock and the erasure race run),
+  69 die on PostgreSQL already, 233 are equivalent, and 25 run only at
+  import; the audit page lists, by module, the 12 left and why
+  (TEST-12).
+
+- **Breaking:** every 429 answers the code `rate_limited`: a route's
+  `Throttle` and auth's code, link, and signup throttles answered
+  `throttled`, and its login and password throttles `login_throttled`
+  (WEB-25).
+- **Breaking:** `WEBSOCKET_MAX_LIFETIME`, `SSE_MAX_LIFETIME`, and a
+  route's `LiveLimits(max_lifetime=...)` are at most 86,400 seconds, a
+  day (WEB-24).
+- OpenAPI declares `If-Match` required on the writes of a resource with
+  `require_if_match` (they answer 428 without it, as before), documents
+  `ETag` (and `Location` on a 201) on the answers that carry it, 408 on
+  routes that take a body, and 503 on every route (WEB-18).
+- A batch without `atomic` whose item raises a bug after earlier items ran
+  answers 207: that item 500 `internal_error`, logged and reported, the
+  rest 424 `not_applied`. A bug in the first item still fails the request
+  (WEB-17).
+- Translated messages find their catalogs in one lookup while the domains
+  and the settings stay the same, whatever the number of installed
+  domains (PERF-24).
 
 ### Fixed
 
@@ -413,6 +596,62 @@ and a status.
   the controls that posts nothing to the books, an operator identity that
   is self-asserted, an inbox said not to exist, and reversals the limits
   were said to count (FIN-101).
+- A periodic task whose interval is longer than `RETENTION_SECONDS` ran
+  again at every worker start once cleanup had deleted the slot's
+  finished run, the only record that it was queued: a 30-day task, or a
+  daily one with an hour's retention, ran after each deploy or restart.
+  Cleanup now keeps the run of such a task until its slot ends (CONC-13).
+- A claim, or a consumer's take-over, cut off by a cancellation as it
+  committed (a second signal, the code running the worker cancelling it)
+  is given back, as the relay's lease already was: its messages stayed
+  locked for `VISIBILITY_TIMEOUT` with an attempt spent, and one on its
+  last attempt was dead-lettered without running (CONC-14).
+- Queueing the periodic tasks no longer holds up claiming: a failure to
+  queue them is logged and tried again after a pause that doubles, up to
+  a minute, while due messages still run, through a broker too. One
+  that kept failing (a name too long for the outbox's key) stopped the
+  home outbox's worker for good, logged as an outage (CONC-16).
+- The queue-lag gauge (`admin.queue_lag`, `messages`, metrics) measures
+  the wait on PostgreSQL by the database's clock, which wrote the times:
+  a host whose clock ran ahead reported lag that was not there (CONC-18).
+- The transaction that finishes a keyed message takes its key's turn
+  before it updates the message, as every writer of the key does (ADR
+  0118): it took it after, and could deadlock with `messages --cancel` of
+  a message whose run outlived its lease (CONC-19).
+- The test plugin grants the application's role (`URL`) `SELECT`,
+  `INSERT`, `UPDATE`, `DELETE` on the test database's tables and the use
+  of its sequences when `MIGRATION_URL` names another role, so the
+  two-role setup `docs/deploying.md` asks for runs its tests on
+  PostgreSQL; before, every test failed with "permission denied" (TEST-13).
+- Timing-coupled tests: the ordering tests' SQLite waits 30 s for a
+  writer's lock (a write that waited past 5 s under load lost its outcome
+  behind a 60 s lock), a cache's one-second window is bounded by the
+  write, and hypothesis has no deadline in CI; assertion-free and
+  status-only tests now check the state or the problem code (TEST-20,
+  TEST-23).
+- `dumpdata` reads every table in one snapshot (`REPEATABLE READ`, read
+  only, on PostgreSQL; a transaction begun before the first read on
+  SQLite): a parent and child committed while it ran were in the dump as
+  the child alone (DATA-14).
+- On SQLite, a plain-number server default of an amount column
+  (`server_default="1.50"`) is written in minor units, where it read back
+  as 0.015, and a check written as SQL compares amounts in their own units
+  (`CHECK (cap <= 100)` capped the column at 1.00); as tables are created,
+  and in revisions, which declare the column as plain `NUMERIC` (DATA-15).
+- The in-memory unit of work rolls back: a block that leaves without
+  `commit()`, or raises, puts its in-memory repositories back as they were
+  when it began or last committed, as the database does (DATA-16).
+- `Money.of(..., rounding=...)` and `multiply` refuse an amount that
+  rounding carries past `MAX_DIGITS` (`MoneyError`), where they made money
+  that could not be copied, pickled, or read back (DATA-17).
+- After `uow.rollback()`, the aggregates the SQL unit of work loaded are
+  read again, as stored; reading one raised `MissingGreenlet` (DATA-19).
+- An erasure forgets old tombstones (`domainkit_keys_erasures`) by the
+  clock that dated them, PostgreSQL's: with the host's clock more than a
+  day ahead of the database, it deleted the tombstone it had just left,
+  and a subject's first key made meanwhile survived the erasure, undoing
+  SEC-15a-2 (DATA-22).
+
 - `migrate` makes the audit trail append-only on PostgreSQL itself:
   `domainkit.contrib.audit` registers `protect_migrated` on
   `on_migrated`, which makes the triggers of `domainkit_audit_log` and
@@ -461,6 +700,23 @@ and a status.
   in a column of two places): such a cursor was a few characters over the
   bound `FilterSet` checks. The bound now counts the most places a
   currency has (FIN-01).
+
+- Generic `PATCH` and `DELETE` (`crud=True`), and atomic batches, ask
+  rules that look at the object before the write's transaction, in a unit
+  of work of their own, as commands do: an object permission backend's
+  query no longer waits for a second connection while the request holds
+  one, which, with as many writes at once as the pool holds, failed them
+  all with 503. A generic write whose aggregate changed after the rule saw
+  it is 409 `concurrent_update` (WEB-16).
+- A `MoneyError` raised by a batch item is that item's 422, with its code,
+  as a request's is; it answered the whole request 422 after earlier
+  items committed (WEB-17).
+- A command's or a batch's answer with another schema (`returns=`) leaves
+  out the fields the resource's `FieldPolicy` hides from the caller, as
+  reads do (WEB-20).
+- An `Idempotency-Key` replay carries the answer's `ETag`,
+  `Cache-Control`, `Vary`, and deprecation headers, besides
+  `Content-Type`, `Location`, and `Content-Language` (WEB-21).
 
 ### Security
 

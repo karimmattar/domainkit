@@ -1,7 +1,7 @@
 """Settings of ``domainkit.contrib.audit``: ``AUDIT = {...}``."""
 
 from datetime import timedelta
-from typing import Final
+from typing import Annotated, Final
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -15,6 +15,8 @@ PCI_RETENTION: Final = timedelta(days=365)
 PCI DSS v4.0 10.5.1 keeps audit logs twelve months (FIN-95)."""
 NAMESPACE_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,31}$"
 """Namespaces: a lower-case letter, then up to 31 letters, digits, ``_``, ``-``."""
+FIELD_PATTERN: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+"""A field of an audit row's ``details`` that names an aggregate."""
 
 
 class AuditSettings(BaseModel):
@@ -28,6 +30,11 @@ class AuditSettings(BaseModel):
     """Record every committed domain event, in the same transaction."""
     EXCLUDE: tuple[str, ...] = ()
     """Actions to skip, as shell patterns (``catalog.*``, ``*.viewed``)."""
+    HISTORY_FIELDS: tuple[Annotated[str, Field(pattern=FIELD_PATTERN)], ...] = ()
+    """Fields of ``details`` whose histories are read by aggregate
+    (``history(aggregate=(field, id))``, ``GET /history?field=...``): on
+    PostgreSQL, ``migrate`` keeps an index of each, and drops those of fields
+    no longer named. A field not named is read by scanning the trail."""
     LEDGER: str | None = None
     """Alias in ``LEDGERS`` to anchor the chain's head on; None anchors nowhere."""
     NAMESPACE: str | None = Field(default=None, pattern=NAMESPACE_PATTERN)

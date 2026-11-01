@@ -1131,11 +1131,14 @@ def test_openapi_documents_each_route(store: InMemoryGadgets) -> None:
         "401",
         "403",
         "404",
+        "408",
         "409",
         "412",
         "422",
     ]
-    assert sorted(made["responses"]) == ["201", "401", "403", "409", "422"]
+    assert sorted(made["responses"]) == ["201", "401", "403", "408", "409", "422"]
+    assert set(made["responses"]["201"]["headers"]) == {"ETag", "Location"}
+    assert set(read["responses"]["200"]["headers"]) == {"ETag"}
     assert {item["name"] for item in read["parameters"]} == {
         "gadget_id",
         "If-None-Match",

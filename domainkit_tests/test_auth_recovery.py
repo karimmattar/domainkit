@@ -381,7 +381,7 @@ def test_resets_and_checks_are_throttled(identity: Api) -> None:
     )
 
     for response in (by_address, by_recipient):
-        assert (response.status_code, response.json()["code"]) == (429, "throttled")
+        assert (response.status_code, response.json()["code"]) == (429, "rate_limited")
         assert response.json()["detail"] == (
             "Too many requests for mail; try again later."
         )
@@ -396,7 +396,7 @@ def test_resets_and_checks_are_throttled(identity: Api) -> None:
     assert confirm(third, "wrong").status_code == 400
     assert confirm(third, "wrong").status_code == 400
     refused = confirm(third, "wrong")  # This address is done guessing.
-    assert (refused.status_code, refused.json()["code"]) == (429, "throttled")
+    assert (refused.status_code, refused.json()["code"]) == (429, "rate_limited")
     assert refused.json()["detail"] == "Too many attempts; try again later."
     assert int(refused.headers["Retry-After"]) > 0
     assert [row["details"] for row in audited("auth.password_reset")] == [

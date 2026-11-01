@@ -72,6 +72,45 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   requests keep their commands, sealed again for the pseudonym. **Fix:**
   close a customer's accounts before erasing them; register
   `on_erase_check` in a domain whose records a law asks to keep.
+- **Every 429 answers `rate_limited`** (WEB-25). A route's `Throttle` and
+  auth's code, link, and signup throttles answered `throttled`, and its
+  login and password throttles `login_throttled`. **Fix:** a client that
+  switched on either switches on `rate_limited`, or on the status, and
+  waits as `Retry-After` says. Every code is listed in
+  [reference/problems.md](reference/problems.md).
+- **A live connection's lifetime is at most a day** (WEB-24):
+  `WEBSOCKET_MAX_LIFETIME`, `SSE_MAX_LIFETIME`, and a route's
+  `LiveLimits(max_lifetime=...)` above 86,400 seconds are refused at
+  startup. **Fix:** lower them; clients reconnect. A route that turns
+  re-authorization off (`LiveLimits(reauth_interval=None)`) is warned
+  about where deployed (`live.W002`).
+- **The `settings` fixture reads settings read-only** (TEST-19): a test
+  that changed a mapping in place (`settings.CACHES["x"] = ...`) gets
+  `TypeError`. **Fix:** assign the whole setting,
+  `settings.CACHES = {**settings.CACHES, "x": {...}}`, which is validated
+  and undone when the test ends.
+- **SQLite checks foreign keys** (DATA-18). Every connection runs
+  `PRAGMA foreign_keys = ON`: a row naming no parent is refused, as on
+  PostgreSQL, and `ON DELETE CASCADE` deletes children. `migrate` checks
+  the rows already stored and refuses, naming the tables, rows that name
+  a missing parent. **Fix:** delete or repair those rows (`PRAGMA
+  foreign_key_check` lists them), then migrate again; a test that stored
+  a child without its parent stores the parent first.
+- **Derived schemas leave `Encrypted` fields out** (DSGN-19). `schema_for`
+  without `include`, `crud=True` with `writable=ALL_FIELDS`, and the admin
+  no longer show or take a field stored encrypted. **Fix:** name it where
+  it should be served: `schema_for(Card, include=["id", "number"])`,
+  `writable=[..., "number"]`, or the admin's `schema=`; a create body that
+  needs it names it in `writable`.
+- **Revisions are rendered in batch mode** (DATA-13), on PostgreSQL too,
+  so they apply on SQLite. Nothing to do; a revision written before is
+  unchanged.
+- **A missing money check is added** (DATA-20). `makemigrations` writes the
+  both-or-neither check of every nullable money pair the database lacks,
+  also of a pair made optional, or added before 0.14. **Fix:** run
+  `makemigrations` and `migrate`; a row holding half a pair fails the
+  check: repair it first.
+
 - **An open live connection no longer keeps its login alive**
   (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
   WebSocket or event stream wrote the login's last use, so a page left
@@ -108,6 +147,26 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   `messages --release`, releases it (SEC-14c-3). `messages` prints a
   `held` line after `pending`: a script that reads its lines by position
   reads them by name instead. Nothing keeps the old schema.
+- **A message for an unknown task or handler waits before it dies**
+  (CONC-15). It is given back, its attempt not spent, until
+  `MESSAGING.UNKNOWN_TARGET_GRACE` (an hour) has passed, then
+  dead-lettered as before. A message whose target no deploy brings back
+  is dead-lettered an hour later, and an ordered key waits behind it
+  meanwhile. **Fix:** nothing, usually; `MESSAGING =
+  {"UNKNOWN_TARGET_GRACE": 0}` keeps the old behaviour. Deploy workers
+  before web processes when a release adds tasks or handlers, and name
+  tasks (`@task(name=...)`): `check` warns about the others where
+  deployed (`messaging.W001`).
+- **Task names are at most 255 characters** (CONC-16): `@task` and
+  `@periodic` refuse a longer `name=` (or module path) with
+  `ImproperlyConfigured`. PostgreSQL refused its messages anyway.
+  **Fix:** a shorter `name=`.
+- **A handler's own `CancelledError` is a failure** (CONC-17). One raised
+  while the worker is not stopping (a cancelled task or future awaited)
+  is retried with backoff, counts as an attempt, and dead-letters the
+  message after `max_attempts`, as `HandlerCancelled`; it used to be
+  retried at once, uncounted, for ever. **Fix:** nothing; a handler that
+  cancels on purpose raises another error.
 - **An amount in SQL is multiplied or divided by a number, not by another
   amount** (TEST-11). `amount * other` and `amount / other`, where `other`
   is an amount too (an `ExactDecimal` column, money's amount column

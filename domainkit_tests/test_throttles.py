@@ -48,7 +48,7 @@ def test_routes_are_throttled_per_caller(client: TestClient) -> None:
 
     assert [first.status_code, second.status_code, other.status_code] == [200] * 3
     assert refused.status_code == 429
-    assert refused.json()["code"] == "throttled"
+    assert refused.json()["code"] == "rate_limited"
     assert refused.json()["detail"] == TOO_MANY_REQUESTS
     assert refused.json()["request_id"] == refused.headers["X-Request-ID"]
     # One request refills in 30 seconds; the burst of two after 60.

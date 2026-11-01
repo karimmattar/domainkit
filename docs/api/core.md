@@ -27,6 +27,7 @@ Typed hooks a domain registers for what it takes part in.
 
 - `Hook`: One registered function, and the domain that registered it.
 - `HookPoint`: Functions installed domains registered for one purpose, in domain order.
+- `hooks_kept`: Put every hook point's registrations back as they were, when the block ends.
 - `on_check`: Raise when the domain cannot serve traffic (`/ready`): `()`.
 - `on_check_application`: Problems with the built application: `(app)`, best as `CheckMessage`.
 - `on_deployment_warnings`: Weak but valid settings where deployed: `()`; none elsewhere.
@@ -147,6 +148,7 @@ Errors raised by the framework itself (`django.core.exceptions`).
 - `DomainkitError`: The root of every exception domainkit raises.
 - `ImproperlyConfigured`: Settings, the environment, or the installed domains are invalid.
 - `ServiceBusy`: Something the operation needs is busy now; trying again later may work.
+- `UpstreamError`: A service this one called failed it: unavailable, too slow, or too large.
 
 ## `domainkit.i18n`
 
@@ -341,6 +343,7 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `IN_MEMORY`: The URL of an in-memory SQLite database, for `migrated_database`.
 - `AsyncClientFor`: The `async_client_for` fixture's type: awaited, it gives a client for a new user.
 - `AsyncTestClient`: An `httpx2.AsyncClient` that serves an ASGI application in this task.
+- `Authenticator`: One person's authenticator app: codes of its secret, never one step twice.
 - `CapturedQueries`: The SQL statements run while it is entered; checked against a count.
 - `ClientFor`: The `client_for` fixture's type: a client for a new user with permissions.
 - `DatabaseBlocker`: Refuse the test databases, or allow them for a block.
@@ -359,14 +362,28 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `SubFactory`: `SubFactory(MoneyFactory, currency="EUR")`: another factory's object.
 - `TestClient`: Starlette's `TestClient`; the application sees the caller's context.
 - `Trait`: `shipped = Trait(status="shipped")` in `class Params`: defaults to turn on.
+- `UnexpectedResponse`: A step of a flow was answered with another status than it expects.
+- `approve_request`: Approve the approval request at `url` as `client`'s user; return it.
 - `assert_max_queries`: Check that the `with` block runs at most `limit` SQL statements.
 - `assert_num_queries`: Check that the `with` block runs exactly `expected` SQL statements.
 - `browser_session_for`: Return the headers of a browser signed in as `user`, a user stored already.
+- `confirm_sca`: Confirm SCA `challenge` with a code of `app`; return the authorization.
+- `enrol_totp`: Turn on an authenticator app for `client`'s user; return the app.
 - `freeze_time`: Return a clock frozen at `when` (default: now), for a `with` block.
 - `migrated_database`: Make, migrate, and later drop the test databases; yield the default's URL.
 - `post_generation`: Run the decorated method on each object made: `(made, create, extracted)`.
+- `step_up`: Step `client`'s user up with a code of `app`.
 - `token_for`: Return an access token for `user`, a user stored already.
+- `totp_code`: The authenticator app's code for `secret` at `at` (default: the clock's now).
 - `user_token`: Store a new user granted `permissions`; return an access token for them.
+
+## `domainkit.testing.kms`
+
+Key services in memory that speak their wire protocols: AWS KMS and Vault transit.
+
+- `SECRETS`: Access keys `FakeKms` knows by default, and their secrets: AWS's example.
+- `FakeKms`: KMS keys in memory, by id and alias; see the module.
+- `FakeVault`: One Vault transit engine in memory; see the module.
 
 ## `domainkit.tracing`
 

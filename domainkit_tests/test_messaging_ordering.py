@@ -69,7 +69,7 @@ from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     broker_tables,
     brokered,
     immediate_retries,
-    messaging,
+    installed,
     tables,
 )
 from domainkit_tests.test_messaging_inbox import expire_locks
@@ -78,6 +78,20 @@ pytestmark = pytest.mark.anyio
 
 WAIT: Final = 30.0
 """The longest a test waits for its workers; a regression fails, never hangs."""
+
+
+@pytest.fixture
+def messaging(database_url: str) -> Iterator[None]:
+    """Messaging installed; SQLite waits up to 30 s for a writer's lock (TEST-20).
+
+    Four workers write one SQLite file. On a loaded machine a write waited
+    past SQLite's default 5 s, failed ("database is locked"), and its
+    message waited out a 60 s lock, past ``WAIT``: the test failed. Waiting
+    longer costs nothing when the lock comes at once.
+    """
+    patient = {"CONNECT_ARGS": {"timeout": 30}} if "sqlite" in database_url else {}
+    with installed({"URL": database_url, **patient}):
+        yield
 
 
 class Runs:

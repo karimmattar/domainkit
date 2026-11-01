@@ -32,6 +32,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
+from domainkit.apps import registry
 from domainkit.ddd import Command
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
@@ -96,6 +97,24 @@ async def approved_reversal(
     return await reverse_entry(command, uow)
 
 
+_threshold: tuple[ApprovalsSettings, Threshold] | None = None
+"""The thresholds last read, with the settings they were read from."""
+
+
+def current_threshold() -> Threshold:
+    """``ENTRY_THRESHOLDS`` of the settings now, read again when they change.
+
+    A test that changes them through ``override_settings`` or the
+    ``settings`` fixture is held to the new amounts (TEST-15).
+    """
+    global _threshold
+    config = registry.settings(ApprovalsSettings)
+    kept = _threshold
+    if kept is None or kept[0] is not config:
+        kept = _threshold = (config, Threshold(config.ENTRY_THRESHOLDS))
+    return kept[1]
+
+
 def guard_entries(config: ApprovalsSettings) -> None:
     """Guard postings, captures, and reversals over ``ENTRY_THRESHOLDS``.
 
@@ -117,10 +136,10 @@ def guard_entries(config: ApprovalsSettings) -> None:
     )
     from domainkit.contrib.accounting.hooks import on_booking, on_posting
 
-    threshold = Threshold(config.ENTRY_THRESHOLDS)
+    Threshold(config.ENTRY_THRESHOLDS)  # A wrong amount fails setup().
 
     def large(command: PostEntry) -> bool:
-        return threshold.exceeded_by(
+        return current_threshold().exceeded_by(
             line.amount for line in command.lines if line.side is Side.DEBIT
         )
 
@@ -171,7 +190,7 @@ def guard_entries(config: ApprovalsSettings) -> None:
         moves what its entry moved, back (FIN-88).
         """
         moved = (line.amount for line in entry.lines() if line.side is Side.DEBIT)
-        if not threshold.exceeded_by(moved) or _approved_booking(entry):
+        if not current_threshold().exceeded_by(moved) or _approved_booking(entry):
             return
         raise ApprovalRequired("This command needs approval: submit it for approval.")
 
@@ -199,12 +218,12 @@ def guard_entries(config: ApprovalsSettings) -> None:
             )
         if run.action == REVERSES and isinstance(command, ReverseEntry):
             return entry.reverses == command.entry_id
-        return run.action not in LEDGER_ACTIONS and approved_run(run, config)
+        return run.action not in LEDGER_ACTIONS and approved_run(run)
 
     async def check_entry(command: PostEntry) -> None:
         """Refuse a posting over its threshold that no approved request runs."""
         run = current_run()
-        if run is None or run.action in LEDGER_ACTIONS or not approved_run(run, config):
+        if run is None or run.action in LEDGER_ACTIONS or not approved_run(run):
             await check(ENTRIES, command)
 
     on_posting(check_entry)
@@ -215,13 +234,14 @@ LEDGER_ACTIONS: Final = frozenset({ENTRIES, CAPTURES, REVERSES})
 """The ledger's own guarded actions, whose runs book only what they approved."""
 
 
-def approved_run(run: Running, config: ApprovalsSettings) -> bool:
+def approved_run(run: Running) -> bool:
     """Whether the approved request ``run`` had as many approvals as entries need.
 
-    Its policy asked at least ``ENTRY_APPROVALS`` approvals: what another
-    guard's command books passes the thresholds (FIN-92).
+    Its policy asked at least ``ENTRY_APPROVALS`` approvals (of the settings
+    now, as the thresholds are read: TEST-15): what another guard's command
+    books passes the thresholds (FIN-92).
     """
-    return run.required >= config.ENTRY_APPROVALS
+    return run.required >= registry.settings(ApprovalsSettings).ENTRY_APPROVALS
 
 
 class GrantSuperuser(Command):

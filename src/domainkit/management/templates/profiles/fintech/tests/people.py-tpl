@@ -1,13 +1,15 @@
 """People who move money and approve it, each with an authenticator app."""
 
-import base64
-import hashlib
-import hmac
-import struct
 from typing import Any
 
 from domainkit.contrib.auth.testing import create_user
-from domainkit.testing import FrozenClock, TestClient
+from domainkit.testing import (
+    Authenticator,
+    TestClient,
+    confirm_sca,
+    enrol_totp,
+    step_up,
+)
 
 URL = "/api/v1/payments"
 PASSWORD = "correct-horse-battery-42"
@@ -22,45 +24,27 @@ def usd(amount: str) -> dict[str, str]:
     return {"amount": amount, "currency": "USD"}
 
 
-def totp(secret: bytes, at: float) -> str:
-    """The authenticator's code at ``at`` (RFC 6238: SHA-1, 6 digits, 30 s)."""
-    digest = hmac.new(secret, struct.pack(">Q", int(at // 30)), hashlib.sha1).digest()
-    offset = digest[-1] & 0x0F
-    value = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
-    return f"{value % 1_000_000:06d}"
-
-
 class Person:
-    """A user granted ``permissions``, logged in, with a second factor."""
+    """A user granted ``permissions``, logged in, with a second factor.
 
-    def __init__(
-        self, client: TestClient, clock: FrozenClock, *permissions: str
-    ) -> None:
+    The clock must be frozen (the ``clock`` fixture): each code moves it to
+    the next 30-second step, as an authenticator app's codes come.
+    """
+
+    def __init__(self, client: TestClient, *permissions: str) -> None:
         """Store the user and turn their authenticator app on."""
         self.user = client.run(create_user, *permissions, password=PASSWORD)
         self.api = client.authenticated_as(self.user)
-        self.clock = clock
-        started = self.api.post("/auth/mfa/totp", json={"password": PASSWORD})
-        assert started.status_code == 200, started.json()
-        encoded: str = started.json()["secret"]
-        self.secret = base64.b32decode(encoded + "=" * (-len(encoded) % 8))
-        confirmed = self.api.post("/auth/mfa/totp/confirm", json={"code": self.code()})
-        assert confirmed.status_code == 200, confirmed.json()
+        self.app: Authenticator = enrol_totp(self.api, PASSWORD)
 
     @property
     def id(self) -> str:
         """The user's id, as the audit trail and the limits name them."""
         return str(self.user.id)
 
-    def code(self) -> str:
-        """A code of the authenticator app, a step after the last one used."""
-        self.clock.tick(30)
-        return totp(self.secret, self.clock.tick(0).timestamp())
-
     def step_up(self) -> None:
         """Authenticate again, with a code."""
-        stepped = self.api.post("/auth/step-up", json={"code": self.code()})
-        assert stepped.status_code == 200, stepped.json()
+        step_up(self.api, self.app)
 
     def register_card(self, number: str = CARD) -> str:
         """Step up, register a card, and return its id."""
@@ -75,13 +59,7 @@ class Person:
         body = {"card_id": card_id, "amount": amount}
         asked = self.api.post(f"{URL}/transfers/authorize", json=body)
         assert asked.status_code == 200, asked.json()
-        challenge = asked.json()["challenge"]
-        confirmed = self.api.post(
-            f"/auth/sca/{challenge}/confirm", json={"code": self.code()}
-        )
-        assert confirmed.status_code == 200, confirmed.json()
-        authorization: str = confirmed.json()["authorization"]
-        return authorization
+        return confirm_sca(self.api, asked.json()["challenge"], self.app)
 
     def transfer(
         self,

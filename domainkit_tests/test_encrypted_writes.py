@@ -101,6 +101,16 @@ def test_an_entity_shows_encrypted_values_masked() -> None:
     )
 
 
+def test_a_masked_repr_lists_fields_as_a_dataclass_does() -> None:
+    """Each field once, in order, separated by a comma and a space."""
+    holder = Cardholder(id=ANN, name="Ann", passport="X1", card_number=PAN)
+
+    assert repr(holder) == (
+        f"Cardholder(id={ANN!r}, version=0, name='Ann', passport=<encrypted>, "
+        "card_number=<encrypted>, api_secret=None)"
+    )
+
+
 @pytest.mark.anyio
 async def test_an_unloaded_value_whose_key_is_gone_stays_gone(
     bank: str,  # noqa: F811
@@ -121,3 +131,19 @@ async def test_an_unloaded_value_whose_key_is_gone_stays_gone(
         assert (await uow.payments.get(uuid.UUID(int=1))).note is None
     # The ciphertext stays as shredded: nothing opens it.
     assert (await raw("SELECT note FROM cards_payments"))[0]["note"] == shredded
+
+
+@pytest.mark.anyio
+async def test_update_rows_of_what_nothing_seals_is_one_statement(
+    bank: str,  # noqa: F811
+) -> None:
+    """A name, beside encrypted fields: one UPDATE, no aggregate loaded."""
+    from domainkit.testing.queries import CapturedQueries
+
+    await save(Cardholder(id=ANN, name="Ann"), Cardholder(id=BOB, name="Bob"))
+    async with CardsUnitOfWork() as uow:
+        with CapturedQueries() as queries:
+            changed = await uow.cardholders.update_rows(F("name") != "", name="X")
+        await uow.commit()
+    assert changed == 2
+    assert [each.split()[0] for each in queries.statements] == ["UPDATE"]

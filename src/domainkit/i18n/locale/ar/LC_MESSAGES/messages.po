@@ -1020,3 +1020,21 @@ msgstr "لم يعد يحق لمن قدّم هذا الأمر أن يجريه."
 
 msgid "This person's data must be kept for now: nothing was erased."
 msgstr "يجب حفظ بيانات هذا الشخص الآن: لم يُمحَ شيء منها."
+
+#. domainkit.resources and domainkit.http.client: races and outgoing calls
+msgid ""
+"This record changed while it was being checked; read it again and "
+"retry."
+msgstr "تغيّر هذا السجل أثناء التحقق منه؛ اقرأه مرة أخرى ثم أعد المحاولة."
+
+msgid "A service this one depends on failed; try again later."
+msgstr "تعطّلت خدمة تعتمد عليها هذه الخدمة؛ أعد المحاولة لاحقًا."
+
+msgid "A service this one depends on is unavailable; try again later."
+msgstr "خدمة تعتمد عليها هذه الخدمة غير متاحة؛ أعد المحاولة لاحقًا."
+
+msgid "A service this one depends on took too long to answer."
+msgstr "استغرقت خدمة تعتمد عليها هذه الخدمة وقتًا طويلًا للرد."
+
+msgid "A service this one depends on answered with more than can be read."
+msgstr "ردّت خدمة تعتمد عليها هذه الخدمة بأكثر مما يمكن قراءته."

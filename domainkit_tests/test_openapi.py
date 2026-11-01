@@ -1259,3 +1259,34 @@ def test_hidden_routes_neither_clash_nor_end_the_check() -> None:
                 "distinct names (name=...)."
             )
         ]
+
+
+def test_headers_a_route_requires_itself_are_required_after_hidden_routes() -> None:
+    """``REQUIRED_HEADERS`` marks its headers required (WEB-18), past a hidden route."""
+    from fastapi import Header
+
+    from domainkit.http.errors import install_exception_handlers
+    from domainkit.http.openapi import REQUIRED_HEADERS, install_openapi
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    install_openapi(app)
+
+    @app.get("/hidden", include_in_schema=False)
+    async def hidden() -> None:
+        """Out of the document."""
+
+    async def change(
+        if_match: str | None = Header(default=None),
+        x_trace: str | None = Header(default=None),
+    ) -> None:
+        """Answer 428 without If-Match, itself; any trace."""
+
+    setattr(change, REQUIRED_HEADERS, ("If-Match",))
+    app.add_api_route("/things/{thing_id}", change, methods=["PATCH"])
+
+    parameters = app.openapi()["paths"]["/things/{thing_id}"]["patch"]["parameters"]
+    assert {each["name"]: each["required"] for each in parameters} == {
+        "if-match": True,
+        "x-trace": False,
+    }

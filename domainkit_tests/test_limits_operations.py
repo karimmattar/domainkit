@@ -16,6 +16,7 @@ from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import on_booking
 from domainkit.contrib.limits import (
+    Direction,
     LimitsUnitOfWork,
     Movement,
     SetLimit,
@@ -224,13 +225,11 @@ def test_the_command_refuses_options_it_does_not_take() -> None:
     from domainkit.contrib.limits.management.commands.limits import Command
 
     shown = Command().create_parser("manage.py", "limits").format_help()
-    for text in (
-        "every limit, stored or default",
-        "what a subject used of its limits",
-        "make a limit or change its bounds",
-        "delete usage older than LIMITS.KEEP_USAGE",
-    ):
-        assert text in shown
+    assert (
+        " list every limit, stored or default usage what a subject used of its "
+        "limits set make a limit or change its bounds purge delete usage older "
+        "than LIMITS.KEEP_USAGE options:"
+    ) in " ".join(shown.split())
     (actions,) = [
         each
         for each in Command().create_parser("manage.py", "limits")._actions
@@ -238,14 +237,13 @@ def test_the_command_refuses_options_it_does_not_take() -> None:
     ]
     setting = actions.choices["set"].format_help()  # type: ignore[index]
     for text in (
-        "--subject SUBJECT",
-        "one subject; none: every one",
-        "{out,in}",
+        "--subject SUBJECT one subject; none: every one --direction {out,in}",
+        "--per-transaction PER_TRANSACTION an amount, or none --window",
         "{day,month,rolling_day,rolling_month,none}",
-        "an amount, or none",
-        "a count, or none",
+        "--max-amount MAX_AMOUNT an amount, or none --max-count",
+        "--max-count MAX_COUNT a count, or none",
     ):
-        assert text in " ".join(setting.split()), text
+        assert f" {text} " in " ".join(setting.split()), text
 
 
 @pytest.mark.usefixtures("project")
@@ -465,6 +463,51 @@ def test_a_persons_limits_and_usage_are_exported_and_erased() -> None:
         ]
         == 1
     )
+
+
+@pytest.mark.usefixtures("project")
+def test_an_export_lists_usage_by_kind_direction_and_currency() -> None:
+    """In that order, whatever order the movements came in.
+
+    A window bounds each, so each keeps its movements (PERF-26).
+    """
+
+    async def count() -> None:
+        with freeze_time(NOON):
+            for currency, direction in (
+                ("USD", Direction.OUT),
+                ("EGP", Direction.IN),
+                ("USD", Direction.IN),
+                ("EGP", Direction.OUT),
+            ):
+                await set_limit(
+                    SetLimit(
+                        code="daily",
+                        kind="holder",
+                        currency=currency,
+                        subject="s",
+                        direction=direction,
+                        window=Window.DAY,
+                        max_amount=Money.of("1000", currency),
+                    ),
+                    LimitsUnitOfWork(),
+                )
+                async with LimitsUnitOfWork() as uow:
+                    await consume(
+                        uow,
+                        Movement(Money.of("1", currency), {"holder": "s"}, direction),
+                    )
+                    await uow.commit()
+
+    run_async(count())
+    (export,) = on_export_subject.of("limits")
+    exported = cast(dict[str, Any], run_async(export.call("s")))
+    assert [(row["direction"], row["currency"]) for row in exported["usage"]] == [
+        ("in", "EGP"),
+        ("in", "USD"),
+        ("out", "EGP"),
+        ("out", "USD"),
+    ]
 
 
 def test_limits_live_where_the_ledger_does() -> None:

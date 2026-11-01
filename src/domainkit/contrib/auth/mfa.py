@@ -244,7 +244,6 @@ async def verify_challenge(request: Request, token: str, code: str) -> AbstractB
             address_key(request, "mfa-challenge"),
             action="auth.mfa",
             detail=TOO_MANY,
-            code="throttled",
         )
         await audit_refusal("auth.mfa", "invalid_token")
         raise InvalidChallenge
@@ -529,9 +528,7 @@ async def _spend_totp(
 
 async def _limit(request: Request, limits: list[Limit]) -> Attempt:
     """Count a code check against each ``(key, rate)``."""
-    return await attempt(
-        request, limits, action="auth.mfa", detail=TOO_MANY, code="throttled"
-    )
+    return await attempt(request, limits, action="auth.mfa", detail=TOO_MANY)
 
 
 async def _limit_user(request: Request, user: AbstractBaseUser) -> Attempt:

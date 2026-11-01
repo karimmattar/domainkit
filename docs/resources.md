@@ -81,8 +81,10 @@ async def rename_product(command: RenameProduct, uow: CatalogUnitOfWork) -> Prod
 - The answer is the aggregate the service returns, in the resource's
   schema, with its `ETag`; a `POST` on the collection answers `201` with
   `Location`. `returns=OtherSchema` answers with another schema
-  (`from_domain`, or the result's attributes); `returns=None`, and a
-  `DELETE` by default, answer `204`.
+  (`from_domain`, or the result's attributes), without the fields the
+  resource's `FieldPolicy` hides from the caller; `returns=None`, and a
+  `DELETE` by default, answer `204`. OpenAPI documents the `ETag` and
+  `Location`.
 - Domain errors answer as everywhere: `NotFound` is `404`, `Conflict`
   `409`, a `BusinessRuleViolation` `422`.
 - `summary` defaults to the command's docstring; `name` (the route's name,
@@ -202,8 +204,12 @@ body's fields and, for a command on one product, its `product_id` and an
   each service's own commit waits for the batch's, events are published
   once at the end, and the first failure undoes everything, every other
   item answering `424 not_applied`.
-- Bugs are not results: an unexpected exception fails the request with
-  `500`, as it would for one item.
+- Bugs are not results: an unexpected exception in the first item fails
+  the request with `500`, as it would for one item. Past it, without
+  `atomic`, the items before it may have committed, so the batch answers
+  `207`: that item `500 internal_error`, logged and reported, and the
+  rest `424 not_applied`, not run. A money error (`MoneyError`) is the
+  item's `422`, and a failed outgoing call its `502`, `503`, or `504`.
 - `action` defaults to `change` for commands on one aggregate and `add`
   for the others; the route needs that permission once, for the batch.
 - `retry=Retry()` runs work that lost a race again, as a command route's
@@ -261,7 +267,15 @@ ProductOut.from_domain(product)
 | `set[str]` | a sorted list, so the representation is stable |
 | `X | None` | the same, or null |
 
-A read schema lists every field, required, and has `from_domain`. A write
+A field stored encrypted (`Annotated[str | None, Encrypted(...)]`, a card
+number) is in a schema only where `include` names it: a read schema, and
+the bodies `crud=True` derives with `writable=ALL_FIELDS`, leave it out, so
+no derived route serves it in clear by default; serve it on purpose with
+`schema_for(Card, include=["id", "number"])` or `writable=[..., "number"]`.
+A field holding a secret (`Sensitive`, a password hash) is refused even
+when named.
+
+A read schema lists every other field, required, and has `from_domain`. A write
 schema (`write=True`) leaves out `id`, `version`, and `deleted_at`, takes
 the domain's defaults, forbids unknown fields, takes only datetimes with a
 time zone, and bounds integers to 64 bits. `include` keeps fields, in its
@@ -397,7 +411,12 @@ back as before, and a later block runs in a transaction of its own: a
 change a service gave up in one block never commits with the next. When a
 rule
 looks at the aggregate, the check has a unit of work of its own, closed
-before the rule runs, and the service another.
+before the rule runs, and the service another: a rule may query the
+database itself (object permission grants) without waiting for a second
+connection while the request holds one. Generic writes do the same, and
+refuse with `409 concurrent_update` an aggregate that changed after the
+rule saw it; an atomic batch asks the rules about every item before its
+transaction begins, and the first refused undoes the batch.
 
 The rules are the core's (`domainkit.http.access`): a resource needs no
 `domainkit.contrib.auth`, only a middleware that puts who sent the request

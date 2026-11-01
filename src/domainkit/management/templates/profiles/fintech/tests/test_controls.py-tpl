@@ -2,6 +2,7 @@
 
 import io
 
+from domainkit.contrib.audit.testing import audit_entries
 from domainkit.contrib.auth import InvalidPassword, validate_password
 from domainkit.http import get_asgi_application
 from domainkit.http.access import open_routes
@@ -34,20 +35,18 @@ def test_the_trail_names_who_moved_money_and_verifies(maker: Person) -> None:
     """The transfer's event is audited with its maker; sealed, the chain holds."""
     card = maker.register_card()
     maker.transfer(card, usd("20.00"), maker.authorize(card, usd("20.00")))
-    trail, verified = io.StringIO(), io.StringIO()
+    verified = io.StringIO()
 
-    call_command("auditlog", "--action", "payments.transfer_made", stdout=trail)
+    [made] = maker.api.run(audit_entries, action="payments.transfer_made")
     call_command("auditseal")
     call_command("auditverify", stdout=verified)
 
-    assert maker.id in trail.getvalue()
+    assert (made.actor, made.outcome) == (maker.id, "success")
     assert "intact" in verified.getvalue()
 
 
 def test_operators_changes_name_the_operator(client: TestClient) -> None:
     """A limit set from the command line is audited as the operator's."""
-    trail = io.StringIO()
-
     call_command(
         "limits",
         "--operator",
@@ -61,6 +60,6 @@ def test_operators_changes_name_the_operator(client: TestClient) -> None:
         "--per-transaction",
         "500.00",
     )
-    call_command("auditlog", "--actor", "operator:ops-alice", stdout=trail)
+    entries = client.run(audit_entries, actor="operator:ops-alice")
 
-    assert "limits.limit_set" in trail.getvalue()
+    assert "limits.limit_set" in [entry.action for entry in entries]

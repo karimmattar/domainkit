@@ -273,8 +273,9 @@ without the prefix where it could hold.
 
 A single-page app on another origin needs CORS with credentials:
 `CORS_ALLOWED_ORIGINS = ["https://app.example.com"]`,
-`CORS_ALLOW_CREDENTIALS = True`, and `X-CSRF-Token` in
-`CORS_ALLOWED_HEADERS`. `check` reports the router mounted without
+`CORS_ALLOW_CREDENTIALS = True`, and `X-CSRF-Token` added to
+`CORS_ALLOWED_HEADERS`, keeping its defaults (`If-Match` and
+`Idempotency-Key` among them). `check` reports the router mounted without
 `CookieAuthentication` in `AUTHENTICATION_CLASSES`. List it after the
 classes that read headers: it issues no tokens for `/login`.
 

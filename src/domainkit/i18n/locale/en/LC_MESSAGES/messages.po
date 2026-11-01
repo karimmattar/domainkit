@@ -1010,3 +1010,21 @@ msgstr ""
 
 msgid "This person's data must be kept for now: nothing was erased."
 msgstr ""
+
+#. domainkit.resources and domainkit.http.client: races and outgoing calls
+msgid ""
+"This record changed while it was being checked; read it again and "
+"retry."
+msgstr ""
+
+msgid "A service this one depends on failed; try again later."
+msgstr ""
+
+msgid "A service this one depends on is unavailable; try again later."
+msgstr ""
+
+msgid "A service this one depends on took too long to answer."
+msgstr ""
+
+msgid "A service this one depends on answered with more than can be read."
+msgstr ""

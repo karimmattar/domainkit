@@ -781,3 +781,53 @@ async def test_without_auth_a_runs_maker_is_left_to_the_project(
 
     await _check_maker(registered, str(uuid.uuid4()))  # Not refused.
     await _check_maker(registered, "a-service")
+
+
+async def test_an_approver_rule_is_asked_about_the_request(installed: None) -> None:
+    """A policy's own rule decides with the connection, the principal, the request."""
+    from domainkit.contrib.approvals.models import ApprovalRequest
+    from domainkit.contrib.approvals.rules import IsApprover
+    from domainkit.http.access import BasePermission
+
+    asked: list[tuple[object, object, object]] = []
+
+    class Treasurer(BasePermission):
+        async def has_permission(self, request: Any, user: Any) -> bool:  # noqa: ANN401
+            return True
+
+        async def has_object_permission(
+            self,
+            request: Any,  # noqa: ANN401
+            user: Any,  # noqa: ANN401
+            obj: object,
+        ) -> bool:
+            asked.append((request, user, obj))
+            return True
+
+    guard(
+        "tests.refund",
+        refund,
+        unit_of_work=object,
+        policies=[Policy("tests.refunds", approver_rule=Treasurer())],
+        domain="alpha",
+    )
+    request = ApprovalRequest.submit(
+        "tests.refund",
+        {},
+        maker="m",
+        policy="tests.refunds",
+        required=1,
+        permission=None,
+        group=None,
+        expires_at=clock.now() + timedelta(days=1),
+    )
+    connection, member = object(), someone()
+
+    assert await IsApprover().has_object_permission(connection, member, request)  # type: ignore[arg-type]
+    assert asked == [(connection, member, request)]
+
+
+def test_a_guard_keeps_the_rule_its_maker_must_meet(installed: None) -> None:
+    """``maker_rule`` is the guard's, as given."""
+    rule = IsAuthenticated()
+    assert register(maker_rule=rule).maker_rule is rule

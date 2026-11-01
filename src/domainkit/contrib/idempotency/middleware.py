@@ -110,7 +110,22 @@ SETTLE_TIMEOUT: Final = 5.0
 SETTLE_TASK: Final = "domainkit.idempotency.settle"
 HEADER: Final = "idempotency-key"
 REPLAYED: Final = "Idempotent-Replayed"
-_STORED_HEADERS: Final = frozenset({"content-type", "location", "content-language"})
+_STORED_HEADERS: Final = frozenset(
+    {
+        "content-type",
+        "location",
+        "content-language",
+        # The replay stands for the answer: the version it made, how it may
+        # be cached, and a deprecation the route announced (WEB-21).
+        "etag",
+        "cache-control",
+        "vary",
+        "deprecation",
+        "sunset",
+        "link",
+    }
+)
+"""The headers of a kept response that its replays carry."""
 UNSEEN_BODIES: Final = frozenset(
     {"http.response.pathsend", "http.response.zerocopysend"}
 )

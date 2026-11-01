@@ -20,6 +20,7 @@ from domainkit.ledger.trust import use_states
 
 from .baseline import check_at_startup, required, settings_problems
 from .checkpoints import configured_public_key
+from .history import index_history
 from .ledgerstates import DatabaseStateStore
 from .models import AuditEntry
 from .protection import protect_migrated
@@ -44,7 +45,8 @@ class AuditConfig(DomainConfig):
         ``AuditEntry`` is mapped so content types give it its permission.
         Each commit's events are written with it (``on_stage``), and
         ``migrate`` makes the trail append-only on PostgreSQL
-        (``protect_migrated``).
+        (``protect_migrated``), and indexes ``AUDIT.HISTORY_FIELDS`` there
+        (``index_history``).
 
         Ledgers keep the state they were last verified at in
         ``AUDIT.DATABASE`` (``ledgerstates``), so every process starts from it.
@@ -60,6 +62,7 @@ class AuditConfig(DomainConfig):
         map_imperatively(AuditEntry, audit_log)
         on_stage(self.stage_events)
         on_migrated(protect_migrated)
+        on_migrated(index_history)
         use_states(DatabaseStateStore(config.DATABASE))
         configured_public_key()  # Refuse a key that cannot verify, now.
         if registry.is_installed(MESSAGING):

@@ -446,7 +446,7 @@ async def test_a_running_message_may_finish_within_a_short_shutdown_timeout() ->
     await gate.until(lambda: gate.started == ["ending"])
 
     stop.set()
-    await asyncio.sleep(0.1)  # The worker is waiting for it to finish.
+    await asyncio.sleep(0.01)  # The worker starts to wait; 0.89 s of slack.
     gate.open()
     await within(running)
 
@@ -3104,7 +3104,7 @@ async def test_a_flush_that_gives_up_leaves_the_others_waiting() -> None:
 async def test_a_worker_outlives_failing_schedules(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Queueing periodic tasks may fail too; the worker waits and goes on."""
+    """Queueing periodic tasks may fail too; the worker logs it and goes on."""
     worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 0.01}))
     schedule = worker.schedule_periodic
     failed = False
@@ -3127,7 +3127,8 @@ async def test_a_worker_outlives_failing_schedules(
         await within(running)
 
     assert logged(caplog, "domainkit.contrib.messaging.worker")[0].startswith(
-        "Could not reach the outbox of 'default' (1 failure in a row)"
+        "Could not queue the periodic tasks in 'default' (1 failure in a row); "
+        "messages still run; queueing them again in 0.01s"
     )
 
 
