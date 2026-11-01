@@ -377,5 +377,8 @@ def test_generic_writes_refuse_what_changed_after_the_rule_saw_it(
 
     assert (patched.status_code, patched.json()["code"]) == (409, "concurrent_update")
     assert (deleted.status_code, deleted.json()["code"]) == (409, "concurrent_update")
+    assert patched.json()["detail"] == (
+        "This record changed while it was being checked; read it again and retry."
+    )
     assert store.items[known["a"]].stock != 9
     assert known["b"] in store.items

@@ -1276,11 +1276,17 @@ def test_headers_a_route_requires_itself_are_required_after_hidden_routes() -> N
     async def hidden() -> None:
         """Out of the document."""
 
-    async def change(if_match: str | None = Header(default=None)) -> None:
-        """Answer 428 without If-Match, itself."""
+    async def change(
+        if_match: str | None = Header(default=None),
+        x_trace: str | None = Header(default=None),
+    ) -> None:
+        """Answer 428 without If-Match, itself; any trace."""
 
     setattr(change, REQUIRED_HEADERS, ("If-Match",))
     app.add_api_route("/things/{thing_id}", change, methods=["PATCH"])
 
-    (header,) = app.openapi()["paths"]["/things/{thing_id}"]["patch"]["parameters"]
-    assert (header["name"], header["required"]) == ("if-match", True)
+    parameters = app.openapi()["paths"]["/things/{thing_id}"]["patch"]["parameters"]
+    assert {each["name"]: each["required"] for each in parameters} == {
+        "if-match": True,
+        "x-trace": False,
+    }
