@@ -50,7 +50,8 @@ one transaction per database.
 import base64
 import binascii
 import json
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import batched, groupby
@@ -71,7 +72,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.engine import RowMapping
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.types import TypeEngine
 
 from domainkit.db.connections import connections, create_owner_engine
@@ -81,6 +82,7 @@ from domainkit.db.encrypted import (
     EncryptedType,
     Plaintext,
     encrypted_columns,
+    hold_subject_keys,
     open_row,
     seal_row,
 )
@@ -223,8 +225,13 @@ async def dump(
 ) -> dict[str, Any]:
     """The fixture of ``tables`` in ``database``, rows in primary key order.
 
-    Encrypted columns hold their sealed text, unless ``decrypt``: then
-    their values, opened, as ``{"plaintext": ...}`` (null once shredded).
+    Every table is read in one snapshot, as of the first read: a parent
+    and child committed while it runs are both in it, or neither is
+    (DATA-14). On PostgreSQL that is a ``REPEATABLE READ``, ``READ ONLY``
+    transaction; on SQLite a transaction begun before the first read,
+    which holds writers off until the dump ends. Encrypted columns hold
+    their sealed text, unless ``decrypt``: then their values, opened, as
+    ``{"plaintext": ...}`` (null once shredded).
 
     Raises:
         FixtureError: With ``decrypt``, a value does not open.
@@ -232,18 +239,37 @@ async def dump(
     documents = []
     engine = create_owner_engine(connections.config(database))
     try:
-        async with engine.connect() as connection:
+        async with _snapshot(engine) as connection:
             for table in tables:
                 query = select(table).order_by(*table.primary_key.columns)
                 rows = (await connection.execute(query)).mappings().all()
                 encoded = [_encoded_row(table, row) for row in rows]
                 if decrypt and encrypted(table):
+                    await connection.run_sync(hold_subject_keys, table, rows)
                     for row, written in zip(rows, encoded, strict=True):
                         written.update(await _opened(connection, table, row))
                 documents.append({"table": table.name, "rows": encoded})
     finally:
         await engine.dispose()
     return {"format": FORMAT, "version": VERSION, "tables": documents}
+
+
+@asynccontextmanager
+async def _snapshot(engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """A connection of ``engine`` whose reads share one snapshot, rolled back after."""
+    async with engine.connect() as connection:
+        if connection.dialect.name == "postgresql":
+            await connection.execution_options(
+                isolation_level="REPEATABLE READ", postgresql_readonly=True
+            )
+            await connection.begin()
+        else:  # SQLite's driver begins nothing before a read.
+            await connection.begin()
+            await connection.exec_driver_sql("BEGIN")
+        try:
+            yield connection
+        finally:
+            await connection.rollback()
 
 
 async def _opened(

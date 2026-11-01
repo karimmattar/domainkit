@@ -346,7 +346,12 @@ async def test_other_queries_on_an_encrypted_field_are_refused(bank: str) -> Non
 
 
 def test_the_sql_compiler_refuses_what_the_domain_query_would() -> None:
-    """Compiled directly, ordering and other lookups are refused too."""
+    """Compiled directly, ordering and other lookups are refused too.
+
+    It maps the cards itself (once per process, as the domain's ``ready()``
+    does), so it passes whichever test ran before it.
+    """
+    tables.start_mappers()
     with pytest.raises(InvalidQuery, match="do not sort"):
         compile_ordering((Ordering("pan"),), Payment)
     with pytest.raises(InvalidQuery, match="ask only whether it is None"):
@@ -671,9 +676,9 @@ def test_an_encrypted_value_object_may_be_sensitive() -> None:
     table = table_for(Vault, "vaults", metadata=MetaData())
     type_ = cast(EncryptedType, table.c.secret.type)
     assert type_.from_bytes(type_.to_bytes(Secret("s"))) == Secret("s")
+    assert "secret" not in schema_for(Vault).model_fields  # Encrypted: unnamed.
     with pytest.raises(TypeError, match="holds a secret"):
-        schema_for(Vault)
-    assert "secret" not in schema_for(Vault, exclude={"secret"}).model_fields
+        schema_for(Vault, include=["id", "secret"])  # Sensitive: refused, named.
 
 
 def test_an_encrypted_column_takes_its_kind_only() -> None:
@@ -780,7 +785,10 @@ def staffed_bank(database_url: str, tmp_path: Path) -> Iterator[str]:
 
 
 def test_the_admin_api_reads_and_finds_encrypted_fields(staffed_bank: str) -> None:
-    """Staff read the card number in clear, and look it up through its index."""
+    """Staff read the card number where its schema names it, and look it up.
+
+    The derived schema leaves it out (DSGN-19); naming it serves it.
+    """
     from domainkit.contrib.admin import AdminSite
     from domainkit.http import FilterSet
     from domainkit.http.filters import Filter
@@ -801,6 +809,7 @@ def test_the_admin_api_reads_and_finds_encrypted_fields(staffed_bank: str) -> No
         repository=lambda uow: uow.payments,
         label="cards.payment",
         filters=PaymentFilters,
+        schema=schema_for(Payment, include=["id", "version", "holder_id", "pan"]),
     )
     client = client_of(site)
     listed = client.get("/admin/cards/payments", headers=as_("root"))
@@ -809,3 +818,61 @@ def test_the_admin_api_reads_and_finds_encrypted_fields(staffed_bank: str) -> No
     assert [item["pan"] for item in listed.json()["items"]] == [PAN, OTHER_PAN]
     assert [item["id"] for item in found.json()["items"]] == [str(uuid.UUID(int=1))]
     assert read.json()["pan"] == PAN
+
+
+def test_a_page_of_people_opens_with_one_read_of_their_keys(bank: str) -> None:
+    """Thirty card holders: one statement for the rows, one for their keys (PERF-22).
+
+    A streamed query (``yield_per``) opens each row as it loads, as before.
+    """
+    from sqlalchemy import select as select_
+
+    from domainkit.testing import assert_max_queries
+
+    people = [
+        Cardholder(id=uuid.UUID(int=n + 1), name=f"P{n}", card_number=f"4111{n:04d}")
+        for n in range(30)
+    ]
+    run_async(save(*people))
+
+    async def listed() -> list[Cardholder]:
+        async with CardsUnitOfWork() as uow:
+            return await uow.cardholders.filter()
+
+    async def streamed() -> list[Cardholder]:
+        async with CardsUnitOfWork() as uow:
+            result = await uow.session.stream(
+                select_(Cardholder).execution_options(yield_per=10)
+            )
+            return [person async for person in result.scalars()]
+
+    with assert_max_queries(2):
+        found = run_async(listed())
+    assert sorted(str(person.card_number) for person in found) == sorted(
+        f"4111{n:04d}" for n in range(30)
+    )
+    assert {person.card_number for person in run_async(streamed())} == {
+        f"4111{n:04d}" for n in range(30)
+    }
+
+
+def test_a_decrypted_dump_reads_the_keys_of_its_people_together(bank: str) -> None:
+    """``dumpdata --decrypt`` of thirty people: their keys in one statement."""
+    from domainkit.db.fixtures import dump
+    from domainkit.testing import assert_max_queries
+
+    run_async(
+        save(
+            *(
+                Cardholder(id=uuid.UUID(int=n + 1), name=f"P{n}", card_number=f"41{n}")
+                for n in range(30)
+            )
+        )
+    )
+
+    with assert_max_queries(3):
+        document = run_async(dump("default", [tables.cardholders], decrypt=True))
+    (holders,) = document["tables"]
+    assert {row["card_number"]["plaintext"] for row in holders["rows"]} == {
+        f"41{n}" for n in range(30)
+    }

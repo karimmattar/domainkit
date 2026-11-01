@@ -6,13 +6,13 @@ import secrets
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 
 from domainkit import clock, setup
 from domainkit.apps import registry
@@ -532,7 +532,12 @@ def test_reencrypt_leaves_and_counts_what_does_not_open(
 def test_a_row_changed_while_it_is_sealed_again_is_left_for_the_next_run(
     database_url: str, tmp_path: Path
 ) -> None:
-    """The update names the value it read: one changed meanwhile is not overwritten."""
+    """The update names the value it read: one changed meanwhile is not overwritten.
+
+    ``reencrypt`` locks a batch's rows as it reads them, so this cannot
+    happen there; called alone, the batch still writes nothing over the
+    change (it counts the rows it sent, which a lock makes every row).
+    """
     from domainkit.contrib.keys.operations import Reencrypted
 
     with project(database_url, tmp_path, DATA_KEYS={"a": FIRST}):
@@ -547,7 +552,16 @@ def test_a_row_changed_while_it_is_sealed_again_is_left_for_the_next_run(
         done = Reencrypted()
         stale = [(uuid.UUID(str(read["id"])), read["pan"])]
         run_async(rewrite(stale, done))
-        assert (done.values, done.indexes, done.failed) == (0, 0, 0)
+        assert done.failed == 0
+        after = run_async(rows("SELECT id, pan FROM cards_payments"))[0]
+        assert after["pan"] != read["pan"]
+        assert after["pan"].startswith("dk1:k.a:")  # Not sealed again.
+
+        async def pan() -> CardNumber:
+            async with CardsUnitOfWork() as uow:
+                return (await uow.payments.get(uuid.UUID(int=1))).pan
+
+        assert run_async(pan()) == CardNumber("5500")  # The change, kept.
 
 
 async def change_pan() -> None:
@@ -866,15 +880,23 @@ def test_a_deployment_refuses_vault_over_plain_http(
         assert problems[0].hint == "Serve Vault over TLS and give an https:// URL."  # type: ignore[attr-defined]
 
 
+async def database_now() -> datetime | None:
+    """PostgreSQL's clock, which dates tombstones there; None on SQLite."""
+    async with connections.engine("default").connect() as connection:
+        if connection.dialect.name != "postgresql":
+            return None
+        return cast(datetime, await connection.scalar(select(func.clock_timestamp())))
+
+
 @pytest.mark.anyio
 async def test_tombstones_are_kept_a_day(database_url: str, tmp_path: Path) -> None:
     """An erasure leaves its own, and forgets those older than a day."""
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, timedelta
 
     from domainkit.contrib.keys.tables import erasures
 
-    now = datetime(2026, 10, 31, 12, tzinfo=UTC)
     with project(database_url, tmp_path):
+        now = await database_now() or datetime(2026, 10, 31, 12, tzinfo=UTC)
         async with connections.engine("default").begin() as connection:
             await connection.execute(
                 erasures.insert(),
@@ -889,3 +911,23 @@ async def test_tombstones_are_kept_a_day(database_url: str, tmp_path: Path) -> N
             "SELECT subject FROM domainkit_keys_erasures ORDER BY subject"
         )
     assert [row["subject"] for row in left] == ["ann", "recent"]
+
+
+@pytest.mark.anyio
+async def test_a_host_clock_ahead_keeps_the_tombstone_it_leaves(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Two days ahead of the database, the erasure still keeps its tombstone.
+
+    Tombstones are dated by the database's clock on PostgreSQL; forgetting
+    them by the host's deleted the one just left (DATA-22), which undid
+    SEC-15a-2: a key made meanwhile then survived the erasure.
+    """
+    from datetime import UTC, timedelta
+
+    with project(database_url, tmp_path):
+        now = await database_now() or datetime.now(UTC)
+        with freeze_time(now + timedelta(days=2)):
+            await shred_subject("ann")
+        left = await rows("SELECT subject FROM domainkit_keys_erasures")
+    assert [row["subject"] for row in left] == ["ann"]

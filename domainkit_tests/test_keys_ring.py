@@ -1,7 +1,7 @@
 """The key ring: data keys by id, sealed values that name their key, subjects' keys."""
 
 import gc
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from typing import Any, Final, cast
 
 import pytest
@@ -56,6 +56,13 @@ class MemoryStore:
         """The key ``key_id``."""
         self.reads += 1
         return self.keys.get(key_id)
+
+    def find_many(
+        self, connection: Connection, key_ids: Collection[str]
+    ) -> list[StoredSubjectKey]:
+        """The keys of ``key_ids``, in one read."""
+        self.reads += 1
+        return [self.keys[key_id] for key_id in key_ids if key_id in self.keys]
 
     def of_subject(
         self, connection: Connection, subject: str
@@ -245,6 +252,42 @@ def test_a_subjects_key_is_made_once_and_seals_their_values() -> None:
     again = keys.seal(b"P789", CONTEXT, connection=connection(), subject="ann")
     assert again.startswith(f"dk1:s.{key_id}:")
     assert len(store.keys) == 1
+
+
+def test_subjects_keys_are_read_together_and_held() -> None:
+    """Held keys are not read again; the rest in one read; a missing one is None."""
+    store = MemoryStore()
+    keys = ring(subject_keys=store)
+    first = connection()
+    held = sealed_key(keys.seal(b"A", CONTEXT, connection=first, subject="ann"))
+    stored = sealed_key(
+        keys.seal(b"B", CONTEXT, connection=connection(), subject="bob")
+    )
+    assert held is not None
+    assert stored is not None
+    reads = store.reads
+
+    found = keys.subject_keys_by_id(first, [held[1], stored[1], "gone", stored[1]])
+
+    assert store.reads == reads + 1
+    assert set(found) == {held[1], stored[1], "gone"}
+    assert found["gone"] is None
+    sealed = keys.seal(b"C", CONTEXT, connection=connection(), subject="bob")
+    assert keys.open(sealed, CONTEXT, subject_keys=found) == b"C"  # No connection.
+    elsewhere = connection()
+    assert keys.open(sealed, CONTEXT, connection=elsewhere, subject_keys={}) == b"C"
+    reads = store.reads
+    keys.subject_keys_by_id(first, [stored[1]])
+    assert store.reads == reads  # Held by the transaction since.
+
+
+def test_blind_index_keys_are_derived_once_per_data_key() -> None:
+    """The index's key is kept by data key: the same value, the same index."""
+    keys = ring()
+    first = keys.blind_index(b"4111", CONTEXT)
+    assert len(keys._index_keys) == 1
+    assert keys.blind_index(b"4111", CONTEXT) == first
+    assert len(keys._index_keys) == 1
 
 
 def test_a_destroyed_subjects_key_opens_nothing() -> None:

@@ -55,7 +55,7 @@ from sqlalchemy import (
     event,
     select,
 )
-from sqlalchemy.engine import Connection, Dialect, Transaction
+from sqlalchemy.engine import Connection, Dialect, Result, Transaction
 from sqlalchemy.orm import Mapper, ORMExecuteState, QueryContext, Session, attributes
 from sqlalchemy.orm.attributes import instance_state, set_committed_value
 from sqlalchemy.orm.base import PASSIVE_NO_INITIALIZE
@@ -84,6 +84,16 @@ _PENDING: Final = "domainkit.encrypted.pending"
 """The ``Session.info`` key of the values sealed in a flush, until written."""
 _FIELDS: WeakKeyDictionary[Mapper[Any], tuple["_Field", ...]] = WeakKeyDictionary()
 """Each mapper's encrypted attributes, read once."""
+_OPENING: Final = "domainkit.encrypted.opening"
+"""The ``Session.info`` key of the queries running whose rows wait to be opened:
+for each, the values sealed for subjects its rows loaded (PERF-22)."""
+_FOR_SUBJECTS: set[type] = set()
+"""The mapped classes with a value sealed for a subject: their queries open
+their rows together, once loaded."""
+
+type _Waiting = tuple[object, "_Field", Mapper[Any], str, bytes]
+"""A loaded value sealed for a subject: the object, its field, its mapper,
+the sealed text, and its context."""
 
 
 class Ciphertext(str):
@@ -389,6 +399,26 @@ def seal_row(
     return sealed
 
 
+def hold_subject_keys(
+    connection: Connection, table: Table, rows: Sequence[Mapping[Any, Any]]
+) -> None:
+    """Read the keys of the subjects ``rows`` were sealed for, together.
+
+    ``open_row`` then finds them held: a dump of N people's rows reads their
+    keys in one statement, not N (PERF-22).
+    """
+    key_ids = [
+        found[1]
+        for column in encrypted_columns(table)
+        for row in rows
+        if (value := row.get(column.name)) is not None
+        and (found := sealed_key(str(value))) is not None
+        and found[0] == SUBJECT
+    ]
+    if key_ids:
+        keyring().subject_keys_by_id(connection, key_ids)
+
+
 def open_row(
     connection: Connection, table: Table, row: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -436,6 +466,11 @@ def watch(class_: type, table: Table) -> None:
     event.listen(class_, "after_update", _restore)
     event.listen(class_, "load", _open)
     event.listen(class_, "refresh", _refreshed)
+    if any(
+        cast("EncryptedType", column.type).subject is not None
+        for column in encrypted_columns(table)
+    ):
+        _FOR_SUBJECTS.add(class_)
 
 
 def _fields(mapper: Mapper[Any]) -> tuple[_Field, ...]:
@@ -669,26 +704,86 @@ def _rolled_back(session: Session, previous_transaction: object) -> None:
         set_committed_value(target, key, value)
 
 
+@event.listens_for(Session, "do_orm_execute")
+def _open_together(state: ORMExecuteState) -> Result[Any] | None:
+    """Run a query of rows sealed for subjects, then open its rows together.
+
+    Each row's values sealed for a subject wait while the query loads
+    (``_open``); once it has, their subjects' keys are read in one
+    statement (``Keyring.subject_keys_by_id``) and the values opened, so a
+    page of N people costs one more statement, not N (PERF-22). A streamed
+    query (``stream_results``, which ``yield_per`` sets) opens each row as
+    it loads.
+    """
+    options = state.execution_options
+    if (
+        not state.is_select
+        or options.get("stream_results")  # yield_per sets it too.
+        or not any(
+            mapper.class_ in _FOR_SUBJECTS
+            for each in state.all_mappers
+            for mapper in each.iterate_to_root()
+        )
+    ):
+        return None
+    session = state.session
+    queries: list[list[_Waiting]] = session.info.setdefault(_OPENING, [])
+    waiting: list[_Waiting] = []
+    queries.append(waiting)
+    try:
+        loaded = state.invoke_statement().freeze()
+    finally:
+        queries.remove(waiting)
+    _open_waiting(session, waiting)
+    return loaded()
+
+
+def _open_waiting(session: Session, waiting: Sequence[_Waiting]) -> None:
+    """Open the values ``waiting``, their subjects' keys read together per mapper."""
+    ring = keyring()
+    by_mapper: dict[Mapper[Any], list[_Waiting]] = {}
+    for entry in waiting:
+        by_mapper.setdefault(entry[2], []).append(entry)
+    for mapper, entries in by_mapper.items():
+        connection = session.connection(bind_arguments={"mapper": mapper})
+        keys = ring.subject_keys_by_id(
+            connection, [cast("tuple[str, str]", sealed_key(e[3]))[1] for e in entries]
+        )
+        for target, field, _, value, where in entries:
+            opened = ring.open(value, where, connection=connection, subject_keys=keys)
+            set_committed_value(
+                target,
+                field.key,
+                None if opened is None else field.type.from_bytes(opened),
+            )
+
+
 def _open(target: object, context_: QueryContext) -> None:
-    """Open each sealed value of a row just loaded."""
+    """Open each sealed value of a row just loaded.
+
+    A value sealed for a subject, loaded by a query ``_open_together``
+    runs, waits for the query's other rows, to be opened with them.
+    """
     state = instance_state(target)
     mapper = state.mapper
     session = context_.session
+    queries: list[list[_Waiting]] = session.info.get(_OPENING) or []
     for field in _fields(mapper):
         value = state.dict.get(field.key)
         if not isinstance(value, Ciphertext) or field.key in state.committed_state:
             continue  # In clear, or changed: sealed for this flush, not loaded.
         sealed = sealed_key(value)
+        where = context(field.column, _identity(mapper, target))
+        for_subject = sealed is not None and sealed[0] == SUBJECT
+        if for_subject and queries:
+            queries[-1].append((target, field, mapper, value, where))
+            continue
         connection = (
             session.connection(bind_arguments={"mapper": mapper})
-            if sealed is not None and sealed[0] == SUBJECT
+            if for_subject
             else None
         )
-        opened = keyring().open(
-            value,
-            context(field.column, _identity(mapper, target)),
-            connection=connection,
-        )
+        opened = keyring().open(value, where, connection=connection)
         set_committed_value(
             target, field.key, None if opened is None else field.type.from_bytes(opened)
         )
