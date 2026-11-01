@@ -107,6 +107,12 @@ Request deadlines over HTTP: `REQUEST_TIMEOUT`, and `RequestTimeout` per route.
 - `DeadlineMiddleware`: Cancel HTTP requests that run past their deadline, and answer 503.
 - `RequestTimeout`: A dependency that gives a route its own deadline (`Depends`).
 
+## `domainkit.http.health`
+
+The liveness and readiness endpoints every generated project mounts.
+
+- `router`: `GET /health` and `GET /ready`, which guard themselves; include it in the root router.
+
 ## `domainkit.http.live`
 
 Long-lived connections: WebSockets and event streams, bounded and re-checked.

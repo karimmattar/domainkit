@@ -139,6 +139,26 @@ def test_the_pages_send_users_only_to_public_names() -> None:
     assert private == []
 
 
+def test_generated_projects_import_only_public_names() -> None:
+    """What ``init`` and the generators write imports listed names only (DSGN-16).
+
+    The generated layout is public, so the names it starts every project
+    with are too: a template importing an internal module would tie each
+    project to a name any release may change.
+    """
+    templates = SRC / "domainkit" / "management" / "templates"
+    private = []
+    for path in sorted(templates.rglob("*-tpl")):
+        for dotted in sorted(documented(path.read_text(encoding="utf-8"))):
+            module, _, name = dotted.rpartition(".")
+            if module in API and name in API[module]:
+                continue
+            if dotted in API:
+                continue
+            private.append(f"{path.relative_to(templates)}: {dotted}")
+    assert private == []
+
+
 def test_the_checks_read_sections_items_and_examples() -> None:
     """The parsers find what they look for and refuse what they cannot read."""
     text = "## `domainkit.x`\n\nAbout.\n\n- `A`: One.\n- `b`: Two.\n"

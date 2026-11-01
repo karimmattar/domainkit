@@ -9,7 +9,7 @@ secrets (production.py).
 from datetime import timedelta
 from pathlib import Path
 
-from domainkit.conf.env import Env
+from domainkit.conf import Env
 from domainkit.log import build_logging_config
 
 env = Env()
