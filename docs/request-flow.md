@@ -71,7 +71,8 @@ FastAPI resolves what the endpoint declares (`resources/routing/declaring.py`):
   made here and not opened: no connection is taken yet.
 - the path's id (`product_id`), typed as the aggregate's ids: a malformed
   one is 422.
-- `If-Match`, at most 4,096 characters.
+- `If-Match` and `If-None-Match`, read from the request itself, at most
+  4,096 characters each (422 past that), and documented in OpenAPI.
 - the body, through the schema `ResourceRouter.use_case` made from the use
   case's parameters, with their markers: `{"quantity": 0}` is 422 here,
   before anything else runs ([validation.md](validation.md)).
@@ -159,12 +160,15 @@ per request:
 
 | Request | SQL statements | Transactions | Python calls |
 | --- | --- | --- | --- |
-| A write through a hand-written route | 1 | 1 | 2,209 |
-| A command through `ResourceRouter` | 1 | 1 | 3,405 |
+| A write through a hand-written route | 1 | 1 | 2,139 |
+| A read through `ResourceRouter` | 1 | 1 | 2,359 |
+| A command through `ResourceRouter` | 1 | 1 | 3,083 |
 
-Of the command's 3,405 calls, domainkit's resource routing (stages 3 to 6
-and 9) makes 39, SQLAlchemy about 690, and FastAPI about 280, most of them
-resolving the endpoint's parameters again on every request (stage 3). That
-is the largest cost the flow adds over a plain write, and the target of
-the speed step ([roadmap.md](roadmap.md), C6): resolve the parameters a
-resource route declares once, at startup.
+Of a command's calls, domainkit's resource routing (stages 3 to 6 and 9)
+makes about 40, SQLAlchemy about 690, and FastAPI most of the rest,
+resolving the endpoint's parameters on every request (stage 3). A resource
+route reads `If-Match` and `If-None-Match` from the request itself rather
+than as FastAPI parameters, which saved 255 calls a command and 235 a read,
+and keeping each setting once read and working out a unit of work's
+domain once saved about 30 more;
+the budgets in `benchmarks/budgets.toml` hold the gain.

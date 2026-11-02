@@ -9,8 +9,36 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- A resource route reads `If-Match` and `If-None-Match` from the request
+  rather than as FastAPI parameters: 255 fewer calls a command and 235 a
+  read, on the benchmark ladder, whose budgets now hold it. The headers
+  keep their 4,096-character bound (422) and their OpenAPI entries; the
+  422s they can answer are documented with domainkit's error schema.
+- The benchmark ladder has a `resource-list` rung, a `ResourceRouter` page
+  of 20 items, budgeted at 3,025 calls in one statement: a list page now
+  has a budget, as a read and a write have.
+- `settings` keeps a value once read, so later reads are an attribute
+  lookup, not a call; replacing the settings (`override_settings`, a
+  reload) drops what was kept, under a lock, and a value read while they
+  change is never kept: 13 to 17 fewer calls a request.
+- A unit of work finds the domain that owns it, and so its database, once
+  per module while the installed domains stay the same, not by walking
+  every installed domain on each request; `DATABASE_ROUTING` is still read
+  each time. `clock.now()` and `clock.monotonic()` take one lookup when no
+  clock is frozen: about 17 fewer calls a request. The ladder's budgets
+  hold the new counts (a command 3,083 calls, a read 2,359, a list page
+  3,025).
+
 ### Added
 
+- `repository.stream(query, batch=500)`: everything a query selects, read
+  a batch at a time by keyset, each batch one statement (Django's
+  `iterator()`).
+- `repository.explain(query, analyze=False)` on SQL repositories: the
+  database's plan for what `filter` would run, values still bound
+  (Django's `explain()`).
 - `docs/request-flow.md`: the path a command takes, from the middleware to
   the answer and the worker after it, what can refuse it at each stage,
   and what each stage costs on the benchmark ladder.
@@ -60,6 +88,13 @@ and a status.
   (`domainkit.db.dbclock`), the model names of `contrib.contenttypes`
   (`domainkit.db.models`'), `contrib.webhooks.WebhookSettings`
   (`WebhooksSettings`), and `Credentials.session` (`login`).
+
+### Fixed
+
+- A reconciliation cancelled while its matching rule fails no longer has
+  that failure reported as unhandled on Python 3.14.6, which logs an
+  exception of a shielded task once its waiter was cancelled: the run
+  waits for the rule's thread with `asyncio.wait`.
 
 ## [1.5.0] - 2026-11-02
 

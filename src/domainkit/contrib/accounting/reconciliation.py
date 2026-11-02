@@ -743,17 +743,20 @@ async def _off_loop(
     A thread cannot be stopped: a reconciliation cancelled meanwhile waits
     for it, holding the account's lock, and only then gives up, so no
     second run of the account starts while the first one's rule still
-    works (the SEC-16b review).
+    works (the SEC-16b review). (``asyncio.wait`` rather than
+    ``asyncio.shield``, which on Python 3.14 reports the rule's failure as
+    unhandled once the run was cancelled.)
     """
     work = asyncio.ensure_future(asyncio.to_thread(_pairs, rule, lines, items, window))
     try:
-        return await asyncio.shield(work)
+        await asyncio.wait({work})
     except asyncio.CancelledError:
         while not work.done():
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.wait({work})
         work.exception()  # Retrieved: cancelled, the run reports none of it.
         raise
+    return work.result()
 
 
 def _pairs(

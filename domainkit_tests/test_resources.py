@@ -455,6 +455,31 @@ def test_commands_create_with_location_and_etag(
     assert (invalid.status_code, invalid.json()["code"]) == (422, "validation_error")
 
 
+def test_conditional_headers_are_bounded(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """An ``If-Match`` or ``If-None-Match`` past 4,096 characters is 422."""
+    use_auth()
+    resource = gadgets(store)
+    resource.command_route(RenameGadget, service=rename, body=RenameIn, path="/rename")
+    client = client_of(resource)
+    gadget = next(iter(store.items.values()))
+    long = '"' + "x" * 4095 + '"'
+
+    read = client.get(
+        f"{LOCATION}{gadget.id}", headers=as_("viewer", **{"If-None-Match": long})
+    )
+    write = client.post(
+        f"{LOCATION}{gadget.id}/rename",
+        json={"name": "x"},
+        headers=as_("changer", **{"If-Match": long}),
+    )
+
+    assert (read.status_code, write.status_code) == (422, 422)
+    assert read.json()["code"] == "validation_error"
+    assert gadget.name != "x"
+
+
 def test_commands_on_one_item_honour_if_match(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:

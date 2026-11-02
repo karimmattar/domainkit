@@ -27,23 +27,24 @@ pings; modules are what the rung's process holds once it served.
 | --- | --- | ---: | ---: | ---: | ---: |
 | `asgi` | A bare ASGI application: `GET /hello` | 5 (5) | 0/0/0/0 | 166 | 0.9 |
 | `fastapi` | Plain FastAPI: `GET /hello` | 234 (168) | 0/0/0/0 | 393 | 48 |
-| `bare` | domainkit, no middleware: `GET /hello` | 304 (1,653) | 0/0/0/0 | 782 | 60 |
-| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 304 (1,889) | 0/0/0/0 | 782 | 59 |
+| `bare` | domainkit, no middleware: `GET /hello` | 303 (1,653) | 0/0/0/0 | 782 | 60 |
+| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 303 (1,889) | 0/0/0/0 | 782 | 59 |
 | `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 414 (1,825) | 0/0/0/0 | 783 | 105 |
-| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 560 (1,965) | 0/0/0/0 | 783 | 171 |
+| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 551 (1,965) | 0/0/0/0 | 783 | 171 |
 | `template` | The `init` template's stack: `GET /hello` | 529 (2,018) | 0/0/0/0 | 785 | 135 |
-| `template-json` | The template's stack, JSON access log: `GET /hello` | 675 (2,158) | 0/0/0/0 | 785 | 207 |
-| `me` | Template stack, opaque token: `GET /me` | 774 (5,892) | 0/0/0/0 | 813 | 226 |
-| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,842 (7,359) | 1/1/1/1 | 813 | 1,484 |
-| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,162 (7,648) | 1/1/1/1 | 813 | 1,725 |
-| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 2,622 | 1/1/1/1 | 813 | 1,854 |
-| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 3,357 | 1/1/1/1 | 813 | 2,427 |
-| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,647 (10,977) | 4/3/3/3 | 814 | 3,548 |
-| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,267 | 1/1/1/1 | 882 | 1,777 |
-| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 12,566 | 13/1/1/1 | 882 | 10,884 |
-| `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,885 | 1/1/1/1 | 882 | 1,584 |
-| `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,710 | 1/1/1/1 | 882 | 1,348 |
-| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 482 (4,401) | 0/0/0/0 | 813 | 188 |
+| `template-json` | The template's stack, JSON access log: `GET /hello` | 666 (2,158) | 0/0/0/0 | 785 | 207 |
+| `me` | Template stack, opaque token: `GET /me` | 775 (5,892) | 0/0/0/0 | 813 | 226 |
+| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,812 (7,359) | 1/1/1/1 | 813 | 1,484 |
+| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,139 (7,648) | 1/1/1/1 | 813 | 1,725 |
+| `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 3,025 | 1/1/1/1 | 817 | 2,167 |
+| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 2,359 | 1/1/1/1 | 817 | 1,890 |
+| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 3,083 | 1/1/1/1 | 817 | 2,500 |
+| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,615 (10,977) | 4/3/3/3 | 814 | 3,548 |
+| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,265 | 1/1/1/1 | 882 | 1,777 |
+| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 11,949 | 14/1/1/1 | 882 | 10,884 |
+| `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,855 | 1/1/1/1 | 882 | 1,584 |
+| `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,673 | 1/1/1/1 | 882 | 1,348 |
+| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 498 (4,401) | 0/0/0/0 | 813 | 188 |
 
 The four money rungs came with the 0.15 audit (PERF-32). They install
 money's ledger, limits, keys, and a small domain of their own beside the

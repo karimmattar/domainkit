@@ -42,6 +42,8 @@ from benchmarks.ladder import POSTGRES_VARIABLE, masked
 SCHEMA: Final = re.compile(r"domainkit_bench_[a-z0-9_]{1,40}")
 PERMISSIONS: Final = ("catalog.view_item", "catalog.add_item")
 TOKEN_TTL: Final = timedelta(hours=1)
+PAGE: Final = 20
+"""Items seeded: the page the resource-list rung reads, all on one page."""
 """How long the bench token lasts: a run takes minutes, and one killed
 leaves no token that works for long."""
 
@@ -83,7 +85,7 @@ async def _run(url: str, statement: str) -> None:
 
 
 async def seed() -> dict[str, str]:
-    """Add the user, their group, token, and an item; return the token and id."""
+    """Add the user, their group, token, and a page of items; the token, an id."""
     from benchmarks.project.catalog.models import Item, ItemId
     from benchmarks.project.catalog.uow import CatalogUnitOfWork
     from domainkit.contrib.auth import AuthUnitOfWork
@@ -97,8 +99,14 @@ async def seed() -> dict[str, str]:
         token = await uow.tokens.issue(user.id, ttl=TOKEN_TTL, name="bench")
         await uow.commit()
     item = Item(id=ItemId(uuid4()), name="widget", price=42)
+    # A page of the resource-list rung: twenty items, the rungs that write after.
+    others = [
+        Item(id=ItemId(uuid4()), name=f"part {number:02}", price=number)
+        for number in range(1, PAGE)
+    ]
     async with CatalogUnitOfWork() as catalog:
         await catalog.items.add(item)
+        await catalog.items.add_all(others)
         await catalog.commit()
     await connections.close_all()
     return {"token": token, "item": str(item.id)}

@@ -48,6 +48,8 @@ type Moment = datetime | date | str
 
 def now() -> datetime:
     """Return the current time, aware and in UTC (the frozen clock's, if any)."""
+    if _frozen.get() is None:  # Real time, the common case, in one lookup.
+        return datetime.now(UTC)
     clock = frozen()
     return datetime.now(UTC) if clock is None else clock.now()
 
@@ -65,6 +67,8 @@ def monotonic() -> float:
     count, so ticks of whole seconds add exactly. Intervals measured across
     the start or end of a freeze are meaningless: the count jumps.
     """
+    if _frozen.get() is None:
+        return time.monotonic()
     clock = frozen()
     return time.monotonic() if clock is None else clock.monotonic()
 

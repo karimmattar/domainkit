@@ -15,7 +15,7 @@ import asyncio
 import copy
 import dataclasses
 from abc import ABC, abstractmethod
-from collections.abc import Hashable, Iterable, Sequence
+from collections.abc import AsyncIterator, Hashable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
@@ -326,6 +326,42 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             next_position=position_of(items[-1], ordering) if more else None,
             total=total,
         )
+
+    async def stream(
+        self, query: Selection | CriteriaLike | None = None, *, batch: int = 500
+    ) -> AsyncIterator[AggregateT]:
+        """Every aggregate ``query`` selects, in its ordering, ``batch`` at a time.
+
+        Django's ``iterator()``: each batch is one statement that starts
+        after the last aggregate of the one before (keyset), so no statement
+        returns more than ``batch`` rows and none is held open between them.
+        Each aggregate is tracked as ``filter`` tracks it, so its changes and
+        events are committed with the unit of work; a read-only unit of work
+        (``readonly=True``) is the one for reading a large table through.
+
+        Raises:
+            ValueError: ``batch`` is below 1, or ``query`` has a ``limit`` or
+                an ``offset`` (a page is ``paginate``'s).
+        """
+        if batch < 1:
+            raise ValueError(f"A batch holds at least one aggregate, not {batch}.")
+        base = as_query(query)
+        if base.limit is not None or base.offset:
+            raise ValueError(
+                "stream() reads everything a query selects; take a page with "
+                "paginate(limit=..., offset=...)."
+            )
+        ordering = total_ordering(base.ordering)
+        after = base.after
+        while True:
+            found = await self.filter(
+                base.replace(ordering=ordering, limit=batch, after=after)
+            )
+            for aggregate in found:
+                yield aggregate
+            if len(found) < batch:
+                return
+            after = position_of(found[-1], ordering)
 
     @overload
     async def get_for_update(

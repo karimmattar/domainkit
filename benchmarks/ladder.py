@@ -104,6 +104,14 @@ LADDER: Final = (
         database=True,
     ),
     Rung(
+        "resource-list",
+        "ResourceRouter page of 20, scoped, model permission",
+        stack="template",
+        path="/resources/items",
+        token=True,
+        database=True,
+    ),
+    Rung(
         "write",
         "Write, unit of work",
         stack="template",
