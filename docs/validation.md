@@ -6,7 +6,14 @@ them: the object itself, the request body, and the column.
 ```python
 from typing import Annotated
 
-from domainkit.ddd import AggregateRoot, BusinessRuleViolation, MaxLength, MinLength, Pattern, Range
+from domainkit.ddd import (
+    AggregateRoot,
+    BusinessRuleViolation,
+    MaxLength,
+    MinLength,
+    Pattern,
+    Range,
+)
 
 Sku = Annotated[str, MinLength(3), MaxLength(12), Pattern("[A-Z0-9-]+")]
 
