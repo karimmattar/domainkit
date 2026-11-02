@@ -72,7 +72,7 @@ framework, for the reason given.
 | `transaction.on_commit()` | Events after the commit, `uow.defer(...)` | Yes | |
 | Savepoints | `uow.savepoint()` | Yes | |
 | `makemigrations`, `migrate`, `showmigrations`, `squashmigrations` | The same commands, on Alembic | Yes | |
-| `sqlmigrate` | None | No | C7 |
+| `sqlmigrate` | `migrate REVISION --sql --from PREVIOUS`, rendered offline by Alembic | Yes | C7 |
 | Data migrations (`RunPython`, `RunSQL`) | Alembic operations, by hand | Partial | |
 | `inspectdb` | None | No | C7 |
 | `dumpdata`, `loaddata`, `flush`, `dbshell`, `shell`, `diffsettings` | The same commands | Yes | |
