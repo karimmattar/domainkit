@@ -85,6 +85,6 @@ def test_an_integer_range_may_have_a_lower_bound_only() -> None:
 
     StockIn = schema_for(Stock, write=True, include=["count", "ratio"])
 
-    assert StockIn(count=3, ratio="0.5").count == 3
+    assert StockIn(count=3, ratio="0.5").model_dump()["count"] == 3
     with pytest.raises(pydantic.ValidationError):
         StockIn(count=-1, ratio="0.5")

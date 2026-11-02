@@ -75,7 +75,7 @@ def test_bodies_outside_the_limits_are_refused(
     change: dict[str, Any], error: str
 ) -> None:
     """Each marker refuses what it rules out, before any use case runs."""
-    assert ItemIn(**GOOD).quantity == 5
+    assert ItemIn(**GOOD).model_dump()["quantity"] == 5
     with pytest.raises(pydantic.ValidationError) as caught:
         ItemIn(**{**GOOD, **change})
     assert caught.value.errors()[0]["type"] == error
