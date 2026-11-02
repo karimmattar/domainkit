@@ -4,7 +4,7 @@ CONC-15 keeps a message for a task no worker knows yet, for
 ``UNKNOWN_TARGET_GRACE`` from the header ``unknown_target_since``. That
 header stays on the row when the message runs, and is copied into the next
 step of its chain (``_follow_up`` copies every header) and kept by
-``messages --retry``. So the next step, or a retried dead letter, is
+``messages retry``. So the next step, or a retried dead letter, is
 dead-lettered at once by an older worker during a rolling deploy: no grace,
 and its ordering key moves on without it (CONC-15's case again).
 """
@@ -95,7 +95,7 @@ async def test_the_next_step_of_a_chain_gets_its_own_grace() -> None:
 
 @pytest.mark.usefixtures("tables")
 async def test_a_retried_dead_letter_gets_a_grace_again() -> None:
-    """``messages --retry`` puts it back with a grace of its own."""
+    """``messages retry`` puts it back with a grace of its own."""
     with freeze_time("2026-11-01T09:00:00Z") as clock:
         task(name=FIRST)(first_step)
         await enqueue(first_step, label="y")

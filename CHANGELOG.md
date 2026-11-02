@@ -15,7 +15,8 @@ and a status.
   shape for every command of several actions, `manage.py <command>
   <action> [options]`, each action a method with its own options and
   help; `@action(operator=True)` marks one that changes data, which takes
-  `--operator` and runs as that operator. An operator's run is recorded
+  `--operator` and runs as that operator, and `common_options` are taken
+  by every action. An operator's run is recorded
   with its action (`audit forget`), not only its command (DSGN-30).
 
 ### Changed
@@ -26,6 +27,11 @@ and a status.
   `--check-export`, `audit check-export FILE`), `auditprune` is
   `audit prune`, and `auditforget` is `audit forget`. Only `prune` and
   `forget` take `--operator`.
+- **Breaking:** `messages` takes an action: `messages status` (the counts
+  and lag `messages` printed), `messages list pending|held|locked|dead`,
+  `messages retry ID|all`, `messages cancel ID`, and `messages release`,
+  each with `--database` after it. Only `retry`, `cancel`, and `release`
+  take `--operator`.
 
 ## [1.5.0] - 2026-11-02
 

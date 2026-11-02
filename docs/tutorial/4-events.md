@@ -61,7 +61,7 @@ Stop the server, and look at the outbox. The deposit's message waits
 there, beside those of the accounts opened so far:
 
 ```bash
-python manage.py messages --pending
+python manage.py messages list pending
 ```
 
 Run the worker once: it runs every message that is due, then exits. In
@@ -70,12 +70,12 @@ and never exits ([operations.md](../operations.md#the-worker)).
 
 ```bash
 python manage.py runworker --once
-python manage.py messages --pending
+python manage.py messages list pending
 ```
 
 The log shows `Deposited 25.00 USD into account ...`, and the outbox is empty.
 A handler that fails is retried with a growing delay, then kept as a dead
-letter for `messages --dead` and `messages --retry`. Since a message may
+letter for `messages list dead` and `messages retry`. Since a message may
 run more than once (the worker can crash after the handler, before it
 records the outcome), write handlers that do no harm the second time.
 

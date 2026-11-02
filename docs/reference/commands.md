@@ -87,7 +87,7 @@ dry_run=True)`: an action is named after its method, `_` written `-`, unless
 
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
-`domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
+`domainkit.contrib.audit` installed): `messages retry` and `--cancel`,
 `audit forget`, `audit prune`, `loaddata`, `flush`, `partitions --prune`, `privacy`,
 and `keys reencrypt`; `dumpdata --include-guarded`, which copies credentials out (0.12),
 and `dumpdata --decrypt`, which copies encrypted values out in clear;

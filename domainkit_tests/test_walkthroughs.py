@@ -422,7 +422,7 @@ def test_part_4_runs_a_durable_handler_in_the_worker(tutorial: Tutorial) -> None
     printed = tutorial.shell.printed
 
     assert body(deposited)["balance"] == {"amount": "125.00", "currency": "USD"}
-    pending = printed["python manage.py messages --pending"].splitlines()
+    pending = printed["python manage.py messages list pending"].splitlines()
     assert [line.split()[2].rsplit(".", 1)[1] for line in pending] == [
         "log_account_created",
         "log_account_created",

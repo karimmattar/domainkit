@@ -8,8 +8,8 @@ messages and no ``pending`` one, and from then on:
 - no worker claims or relays the held ones;
 - every new message of the key is ``held`` behind them (``first_status``
   counts held ones as busy);
-- cleanup, ``messages --retry`` and the relay never repair it;
-- the only operator action is ``messages --cancel`` of a held message,
+- cleanup, ``messages retry`` and the relay never repair it;
+- the only operator action is ``messages cancel`` of a held message,
   which loses it.
 
 The realistic way in is the documented upgrade: ``migrate``, then deploy.

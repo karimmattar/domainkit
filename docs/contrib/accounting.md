@@ -197,7 +197,7 @@ The worker posts it with the task `domainkit.accounting.post_entry`,
 under the inbox (ADR 0094): a message run again after its entry
 committed is skipped, and a second message about the same entry returns
 the first one's. A refused entry (a closed period, say) is dead-lettered
-at once; `messages --retry` runs it again once the books allow it. A
+at once; `messages retry` runs it again once the books allow it. A
 posting that lost its race `MAX_ATTEMPTS` times (`ConcurrentUpdate`)
 is not refused: the worker runs it again after its backoff, and the
 source and reference book it once.

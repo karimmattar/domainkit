@@ -13,6 +13,7 @@ a method, its options declared beside it, its help in ``--help``::
         async def status(self) -> None: ...
 
 ``manage.py keys generate --id 2026-10`` runs ``generate(key_id="2026-10")``;
+``common_options`` are taken by every action, as a ``--database``;
 ``manage.py keys --help`` lists the actions, ``manage.py keys status --help``
 one's options. ``name=`` names an action other than its method (a name with
 a ``-``, or a Python keyword). Options are ``ArgumentParser.add_argument``'s,
@@ -23,7 +24,7 @@ positional ones included; a command with ``operator_actions`` takes
 from argparse import ArgumentParser
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from domainkit.management.base import BaseCommand
 
@@ -65,13 +66,21 @@ class _Declared:
 type Handler = Callable[..., Awaitable[None] | None]
 
 
+class _Declare(Protocol):
+    """``@action(...)``: gives back the method it marks, its type unchanged."""
+
+    def __call__[MethodT: Callable[..., object]](self, method: MethodT, /) -> MethodT:
+        """Mark ``method`` as an action."""
+        ...
+
+
 def action(
     *,
     name: str | None = None,
     help: str,
     options: Sequence[Option] = (),
     operator: bool = False,
-) -> Callable[[Handler], Handler]:
+) -> _Declare:
     """Declare a method of an ``ActionCommand`` as one of its actions.
 
     ``name`` defaults to the method's, with ``_`` as ``-``; ``help`` is the
@@ -81,7 +90,7 @@ def action(
     marks every action of the command).
     """
 
-    def declare(method: Handler) -> Handler:
+    def declare[MethodT: Callable[..., object]](method: MethodT) -> MethodT:
         setattr(
             method,
             _ACTION,
@@ -100,6 +109,9 @@ def action(
 class ActionCommand(BaseCommand):
     """A command whose first argument picks one of its ``@action`` methods."""
 
+    common_options: Sequence[Option] = ()
+    """Options every action takes, after its own (as ``--database``)."""
+
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Declare one sub-parser per action, with its options.
 
@@ -111,7 +123,7 @@ class ActionCommand(BaseCommand):
             sub = actions.add_parser(
                 declared.name, help=declared.help, description=declared.help
             )
-            for each in declared.options:
+            for each in (*declared.options, *self.common_options):
                 sub.add_argument(*each.names, **each.settings)
             if self._operates(declared):
                 super().add_operator_argument(sub)

@@ -112,7 +112,7 @@ surprises a rollout.
 - [ ] `pip-audit` (or the platform's scanner) over the deployed image's
       packages, on a schedule: new advisories appear with no change here.
 - [ ] Operators named in the audit trail: commands that change data
-      (`messages --retry`, `audit forget`, `flush`, `privacy purge`) take
+      (`messages retry`, `audit forget`, `flush`, `privacy purge`) take
       `--operator` or `$DOMAINKIT_OPERATOR`; `loaddata` and `flush`
       refuse without one (refused).
 - [ ] `loaddata --include-guarded` and `flush --include-guarded` kept for

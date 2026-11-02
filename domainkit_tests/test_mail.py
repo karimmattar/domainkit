@@ -302,7 +302,7 @@ async def test_sent_mail_leaves_no_link_or_address_in_the_outbox(
 async def test_dead_mail_keeps_its_error_not_its_message(tables: Install) -> None:
     """Mail is a sensitive task: dead, it keeps the error and drops the rest.
 
-    ``messages --retry`` says why such a message cannot go again.
+    ``messages retry`` says why such a message cannot go again.
     """
     tables(BACKEND="domainkit_tests.test_mail.FlakyBackend", MAX_ATTEMPTS=2)
     FlakyBackend.failures = 5

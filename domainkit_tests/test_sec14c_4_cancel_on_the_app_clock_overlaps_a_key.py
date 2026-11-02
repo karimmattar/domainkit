@@ -1,4 +1,4 @@
-"""SEC-14c-4: ``messages --cancel`` judges "running" by its own clock, not the lock's.
+"""SEC-14c-4: ``messages cancel`` judges "running" by its own clock, not the lock's.
 
 On PostgreSQL the worker's lock is set by the database's clock (ADR 0043,
 ``dbclock``), but ``admin.cancel`` decides whether the message is running

@@ -211,7 +211,11 @@ OPERATED: Final = {
         "resetmfa",
     ],
     "domainkit.contrib.flags": ["flags"],
-    "domainkit.contrib.messaging": ["messages"],
+    "domainkit.contrib.messaging": [
+        "messages retry",
+        "messages cancel",
+        "messages release",
+    ],
     "domainkit.contrib.privacy": ["privacy"],
     "domainkit.contrib.webhooks": ["webhooks"],
     "domainkit": ["flush", "loaddata", "partitions"],

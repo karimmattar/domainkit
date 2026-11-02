@@ -47,7 +47,7 @@ grows with it.
 
 **Check:**
 
-1. Are workers running, and ready? `python manage.py messages --locked`
+1. Are workers running, and ready? `python manage.py messages list locked`
    lists what they hold now; none at all means no worker claims.
 2. Are messages failing and being retried? `messaging_messages_total{outcome}`
    by `kind`, and the logs of the worker, by the message's handler name.
@@ -65,7 +65,7 @@ grows with it.
   while the database has connections to spare.
 - One handler failing: fix it and deploy; retries continue on their own,
   and those that ran out are [dead letters](#messages-are-dead-lettered).
-- `python manage.py messages --cancel ID` drops one message no worker is
+- `python manage.py messages cancel ID` drops one message no worker is
   running; with the audit app, the audit trail records it with your name
   (`--operator`).
 
@@ -77,11 +77,11 @@ runs them, in the same database as the changes that wrote them.
 **You see** `messaging_outbox_messages{status="dead"}` above zero, and the
 error in `ERROR_REPORTERS` and the worker's log.
 
-**Check** `python manage.py messages --dead`: each dead message, its
+**Check** `python manage.py messages list dead`: each dead message, its
 handler, attempts, and last error.
 
 **Do** fix the cause, deploy the fix, then
-`python manage.py messages --retry ID` (or `--retry all`). A dead message
+`python manage.py messages retry ID` (or `--retry all`). A dead message
 is kept until retried or cancelled; it never runs again on its own.
 
 ## A key's messages stall
@@ -92,8 +92,8 @@ their ordering key ([messaging.md](contrib/messaging.md#one-at-a-time-per-key-or
 
 **Check:**
 
-1. `python manage.py messages --held` lists the waiting messages, by key.
-2. Is the key's earlier message dead? `messages --dead`: a key waits
+1. `python manage.py messages list held` lists the waiting messages, by key.
+2. Is the key's earlier message dead? `messages list dead`: a key waits
    behind its dead letter until it is retried or cancelled.
 3. Is it waiting for a task or handler no worker knows? The worker logs
    "Waiting for a worker that knows it", until
@@ -105,9 +105,9 @@ their ordering key ([messaging.md](contrib/messaging.md#one-at-a-time-per-key-or
 
 **Do:**
 
-- A dead letter in front: fix the cause, then `messages --retry ID`, which
+- A dead letter in front: fix the cause, then `messages retry ID`, which
   puts it back in its place, before the key's next message; or
-  `messages --cancel ID` to let the rest go.
+  `messages cancel ID` to let the rest go.
 - An unknown target: deploy the workers that know it (workers before web
   processes, [operations.md](operations.md#migrations-in-a-rollout)).
 - No message of the key pending at all: `python manage.py messages

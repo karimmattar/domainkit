@@ -729,11 +729,11 @@ def test_the_messages_command_counts_and_lists_held_messages() -> None:
 
     first, held = asyncio.run(prepare())
     counts = io.StringIO()
-    call_command("messages", stdout=counts)
+    call_command("messages", "status", stdout=counts)
     listed = io.StringIO()
-    call_command("messages", "--held", stdout=listed)
+    call_command("messages", "list", "held", stdout=listed)
     pending = io.StringIO()
-    call_command("messages", "--pending", stdout=pending)
+    call_command("messages", "list", "pending", stdout=pending)
 
     assert counts.getvalue().splitlines()[:2] == ["pending  1", "held     1"]
     assert listed.getvalue() == (

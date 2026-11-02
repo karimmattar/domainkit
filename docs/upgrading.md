@@ -53,6 +53,19 @@ Cron jobs and runbooks that call the audit commands use their new names:
 The trail keeps recording `operator.auditprune` and `operator.auditforget`;
 the request path of an operator's run names the action (`audit forget`).
 
+### `messages` takes an action
+
+| Before | Now |
+| --- | --- |
+| `messages` | `messages status` |
+| `messages --pending` (`--held`, `--locked`, `--dead`) | `messages list pending` (`held`, `locked`, `dead`) |
+| `messages --retry ID` (or `all`) | `messages retry ID` (or `all`) |
+| `messages --cancel ID` | `messages cancel ID` |
+| `messages --release` | `messages release` |
+| `messages --database ALIAS ...` | `messages ... --database ALIAS`, after the action |
+
+Only `retry`, `cancel`, and `release` take `--operator`.
+
 ## 0.12 to 1.0
 
 1.0 is the first release since 0.12.1. Everything 0.13, 0.14, and 0.15

@@ -5,7 +5,7 @@ event's class, for a durable handler call, and those of its task's
 parameters, for a task (``Annotated[str, Personal(of="customer_id")]``).
 Done and cancelled messages keep no arguments already (``payload`` is
 ``{}``). A dead one about the subject is blanked, as a ``sensitive``
-task's is when it dies, and ``messages --retry`` then refuses it. A pending
+task's is when it dies, and ``messages retry`` then refuses it. A pending
 one is left to run, and is blanked once done; it is counted, so the
 operator can erase again once the worker has run it.
 """

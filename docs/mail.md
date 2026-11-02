@@ -169,7 +169,7 @@ directory there to replace a template a contrib app ships, such as
 | `BACKEND` | `...SmtpBackend` | Dotted path to a `BaseEmailBackend`. Checked at startup. |
 | `DEFAULT_FROM_EMAIL` | `"webmaster@localhost"` | The sender of messages that name none. |
 | `SMTP` | see below | The server `SmtpBackend` uses. |
-| `MAX_ATTEMPTS` | `5` | Tries of each message before it is dead-lettered (`messages --dead`). |
+| `MAX_ATTEMPTS` | `5` | Tries of each message before it is dead-lettered (`messages list dead`). |
 | `QUEUE` | `None` | The worker queue that sends mail (`runworker --queue`); `default` when `None`. |
 | `TEMPLATE_DIRS` | `()` | Directories searched for templates before the domains. |
 

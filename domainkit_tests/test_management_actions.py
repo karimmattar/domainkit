@@ -46,7 +46,7 @@ class Audited(Tool):
     operator_actions = True
 
     @action(help="count things, audited", options=[option("subject")])
-    def count(self, *, subject: str) -> None:
+    def count(self, *, subject: str) -> None:  # type: ignore[override]
         """Remember the call and the operator."""
         assert self.operator is not None
         self.ran.append(("audited", {"subject": subject, "by": self.operator.name}))

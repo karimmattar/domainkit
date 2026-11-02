@@ -1,7 +1,7 @@
 """Who runs a command that changes or erases data, and the record of it.
 
 Commands that act on stored data or credentials as an operator, not as
-the application (``messages --retry``, ``audit forget``, ``loaddata``,
+the application (``messages retry``, ``audit forget``, ``loaddata``,
 ``flush``, ``partitions --prune``, ``privacy``, ``resetmfa``,
 ``createtoken``, ``flags``, ``webhooks replay``, ...), say who runs them:
 ``--operator``, else ``DOMAINKIT_OPERATOR``, else the login name

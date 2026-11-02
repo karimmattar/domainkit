@@ -898,16 +898,16 @@ def test_commands(
 
     # One success and three attempts of the failing task.
     assert run("runworker", "--once") == "Processed 4 message(s).\n"
-    assert run("messages") == (
+    assert run("messages", "status") == (
         "pending  0\nheld     0\ndone     1\ndead     1\ncancelled 0\n"
     )
-    (dead_line,) = run("messages", "--dead").splitlines()
+    (dead_line,) = run("messages", "list", "dead").splitlines()
     assert "tests.always_fails  x3  RuntimeError: still broken" in dead_line
     dead_id = dead_line.split()[0]
-    assert run("messages", "--retry", dead_id) == "Queued 1 message(s).\n"
-    assert run("messages", "--retry", "all") == "Queued 0 message(s).\n"
+    assert run("messages", "retry", dead_id) == "Queued 1 message(s).\n"
+    assert run("messages", "retry", "all") == "Queued 0 message(s).\n"
     with pytest.raises(CommandError, match="not a message id"):
-        run("messages", "--retry", "x")
+        run("messages", "retry", "x")
 
     async def stopped_at_once(self: Worker, stop: asyncio.Event) -> None:
         return None
@@ -1009,7 +1009,7 @@ async def test_steps_after_a_sensitive_one_are_blanked_when_they_die(
 
 
 def test_retrying_a_blanked_message_says_why_it_cannot(messaging: None) -> None:
-    """``messages --retry`` refuses one blanked message, and counts them in all."""
+    """``messages retry`` refuses one blanked message, and counts them in all."""
 
     async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
         async with connections.engine().begin() as connection:
@@ -1024,14 +1024,14 @@ def test_retrying_a_blanked_message_says_why_it_cannot(messaging: None) -> None:
     blanked_id, failed_id = asyncio.run(prepare())
 
     with pytest.raises(CommandError) as refused:
-        run("messages", "--retry", str(blanked_id))
+        run("messages", "retry", str(blanked_id))
     assert str(refused.value) == (
         f"{blanked_id} was not queued: its task is sensitive, so its arguments "
         "were blanked when it died. Make and send it again from where it came "
         "from."
     )
-    assert run("messages", "--retry", str(failed_id)) == "Queued 1 message(s).\n"
-    assert run("messages", "--retry", "all") == (
+    assert run("messages", "retry", str(failed_id)) == "Queued 1 message(s).\n"
+    assert run("messages", "retry", "all") == (
         "Queued 0 message(s).\n"
         "Left 1 dead message(s) of sensitive tasks: their arguments were blanked "
         "when they died.\n"
@@ -1041,7 +1041,7 @@ def test_retrying_a_blanked_message_says_why_it_cannot(messaging: None) -> None:
 def test_retries_and_cancels_are_audited_with_their_operator(
     database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``messages --retry`` and ``--cancel`` leave a row naming who ran them.
+    """``messages retry`` and ``--cancel`` leave a row naming who ran them.
 
     At 0.9.0 re-running every dead handler (``--retry all``) left no trace.
     """
@@ -1081,13 +1081,13 @@ def test_retries_and_cancels_are_audited_with_their_operator(
             return found
 
         dead, waiting = asyncio.run(prepare())
-        run("messages", "--retry", str(dead))
-        run("messages", "--retry", "all")
-        run("messages", "--cancel", str(waiting), "--operator", "alice")
+        run("messages", "retry", str(dead))
+        run("messages", "retry", "all")
+        run("messages", "cancel", str(waiting), "--operator", "alice")
         with pytest.raises(CommandError) as refused:
-            run("messages", "--cancel", str(waiting))
-        assert run("messages", "--release") == "Released 0 stalled key(s).\n"
-        run("messages", "--dead")  # Reading is not recorded.
+            run("messages", "cancel", str(waiting))
+        assert run("messages", "release") == "Released 0 stalled key(s).\n"
+        run("messages", "list", "dead")  # Reading is not recorded.
         rows = [
             row
             for row in asyncio.run(recorded())
@@ -1179,15 +1179,13 @@ def test_retries_and_cancels_reach_the_outbox_named(
             return found, details
 
         asyncio.run(prepare())
-        assert run("messages", "--retry", "all") == "Queued 0 message(s).\n"
-        assert run("messages", "--retry", "all", "--database", "other") == (
+        assert run("messages", "retry", "all") == "Queued 0 message(s).\n"
+        assert run("messages", "retry", "all", "--database", "other") == (
             "Queued 1 message(s).\n"
             "Left 1 dead message(s) of sensitive tasks: their arguments were "
             "blanked when they died.\n"
         )
-        cancelled = run(
-            "messages", "--cancel", str(waiting["id"]), "--database", "other"
-        )
+        cancelled = run("messages", "cancel", str(waiting["id"]), "--database", "other")
         found, details = asyncio.run(statuses())
     registry.clear()
 
@@ -1245,8 +1243,8 @@ def test_releases_and_lags_are_of_the_outbox_named(
             await connections.close_all()
 
         asyncio.run(prepare())
-        released = run("messages", "--release", "--database", "other")
-        summary = run("messages", "--database", "other")
+        released = run("messages", "release", "--database", "other")
+        summary = run("messages", "status", "--database", "other")
     registry.clear()
 
     assert released == "Released 1 stalled key(s).\n"
