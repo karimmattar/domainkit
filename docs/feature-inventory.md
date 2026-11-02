@@ -34,7 +34,7 @@ framework, for the reason given.
 | `ForeignKey` to a child | Child entities, stored with their aggregate | Yes | |
 | `ForeignKey` to another model | `Reference[OtherId]` by id | Yes | |
 | `OneToOneField` | `Annotated[Reference[XId], Unique()]` | Yes | C7 |
-| `ManyToManyField` | None | No: a list of references stored in a link table | C7 |
+| `ManyToManyField` | A list of child entities holding a `Reference`: their table is the link table ([databases.md](databases.md#many-to-many)) | Yes | C7 |
 | `GenericForeignKey` | `contrib.contenttypes` ids | Partial | |
 | Signals (`post_save`, `post_delete`) | Domain events, published after the commit | Yes | |
 | `pre_save` | `on_stage` hooks | Partial | |

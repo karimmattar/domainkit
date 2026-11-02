@@ -480,6 +480,35 @@ def start_mappers() -> None:
   PostgreSQL; SQLite enforces foreign keys only with `PRAGMA foreign_keys`.
 - Queries reach into children with dotted names: `F("lines.sku") == "A-1"`.
 
+### Many-to-many
+
+An aggregate refers to another by id only, so Django's `ManyToManyField`
+is a list of child entities, each holding a `Reference`: their table is
+the link table, and a link can carry its own data.
+
+```python
+class Tagging(Entity[TaggingId]):
+    tag_id: Reference[TagId]
+    added_at: datetime
+
+
+class Article(AggregateRoot[ArticleId]):
+    title: Annotated[str, MaxLength(200)]
+    taggings: list[Tagging] = field(default_factory=list)
+
+    def tag(self, tag_id: TagId) -> None:
+        if all(each.tag_id != tag_id for each in self.taggings):
+            self.taggings.append(Tagging(TaggingId(uuid4()), tag_id, clock.now()))
+
+
+await uow.articles.filter(F("taggings.tag_id") == tag_id)  # articles with a tag
+```
+
+Its table keeps a pair once with a `UniqueConstraint("article_id",
+"tag_id")` among `table_for`'s items (`article_id` is the foreign key, a
+column but not a field), and the `tag_id` column is indexed, as every
+`Reference` is.
+
 ## Versions
 
 An aggregate's table has a `version` column. `map_imperatively` makes every
