@@ -16,6 +16,9 @@ and a status.
   read, on the benchmark ladder, whose budgets now hold it. The headers
   keep their 4,096-character bound (422) and their OpenAPI entries; the
   422s they can answer are documented with domainkit's error schema.
+- The benchmark ladder has a `resource-list` rung, a `ResourceRouter` page
+  of 20 items, budgeted at 3,074 calls in one statement: a list page now
+  has a budget, as a read and a write have.
 
 ### Added
 

@@ -90,6 +90,14 @@ checkouts = 1
 pings = 1
 modules = 818
 
+[rungs.resource-list]
+calls = 3074
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+modules = 818
+
 [rungs.write]
 calls = 2162
 statements = 1

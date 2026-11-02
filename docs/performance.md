@@ -36,8 +36,9 @@ pings; modules are what the rung's process holds once it served.
 | `me` | Template stack, opaque token: `GET /me` | 774 (5,892) | 0/0/0/0 | 813 | 226 |
 | `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,842 (7,359) | 1/1/1/1 | 813 | 1,484 |
 | `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,162 (7,648) | 1/1/1/1 | 813 | 1,725 |
-| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 2,622 | 1/1/1/1 | 813 | 1,854 |
-| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 3,357 | 1/1/1/1 | 813 | 2,427 |
+| `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 3,074 | 1/1/1/1 | 817 | 2,167 |
+| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 2,389 | 1/1/1/1 | 817 | 1,890 |
+| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 3,116 | 1/1/1/1 | 817 | 2,500 |
 | `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,647 (10,977) | 4/3/3/3 | 814 | 3,548 |
 | `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,267 | 1/1/1/1 | 882 | 1,777 |
 | `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 12,566 | 13/1/1/1 | 882 | 10,884 |
