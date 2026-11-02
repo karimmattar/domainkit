@@ -134,7 +134,13 @@ def test_generated_code_never_blocks_the_event_loop(tmp_path: Path) -> None:
     project = tmp_path / "billing"
     init("billingAPI", str(project))
     started = run(
-        project, "manage.py", "startdomain", "invoices", "--aggregate", "Invoice"
+        project,
+        "manage.py",
+        "startdomain",
+        "invoices",
+        "--aggregate",
+        "Invoice",
+        "--layered",
     )
     assert started.returncode == 0, started.stderr
     smaller = run(project, "manage.py", "startdomain", "notes", "--minimal")
@@ -500,6 +506,7 @@ def test_a_generated_domain_can_live_in_its_own_database(tmp_path: Path) -> None
         "invoices",
         "--aggregate",
         "Invoice",
+        "--layered",
         "--manual",  # The test installs and mounts it, routed, below.
     )
     assert started.returncode == 0, started.stderr

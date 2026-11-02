@@ -35,7 +35,6 @@ import hashlib
 import logging
 import re
 import threading
-from abc import abstractmethod
 from collections.abc import Sequence
 from enum import StrEnum
 from functools import partial
@@ -53,7 +52,7 @@ from domainkit.db.connections import INTERNAL, Reads, connections
 from domainkit.db.errors import duplicate_value
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.orm import mapper_registry, metadata
-from domainkit.db.repository import _sqlstate, reload_expired
+from domainkit.db.repository import SqlAlchemyRepository, _sqlstate, reload_expired
 from domainkit.db.routing import ShardKey, router
 from domainkit.ddd import (
     ConcurrentUpdate,
@@ -64,6 +63,7 @@ from domainkit.ddd import (
     UnitOfWork,
 )
 from domainkit.ddd.repository import Mark, Repository
+from domainkit.ddd.stores import implementation, repositories_of
 from domainkit.ddd.uow import Savepoint
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
@@ -132,7 +132,13 @@ def lock_key(name: str) -> int:
 class SqlAlchemyUnitOfWork(UnitOfWork):
     """Open a session on enter, commit on ``commit()``, close on exit.
 
-    Subclasses create their repositories in ``create_repositories``. The
+    Its repositories are those its class annotates, made by
+    ``create_repositories``::
+
+        class SqlAlchemyCatalogUnitOfWork(SqlAlchemyUnitOfWork, CatalogUnitOfWork):
+            pass  # CatalogUnitOfWork's repositories, in SQL
+
+    The
     session opens on the routing target of the domain that defines the
     subclass (``DATABASE_ROUTING``), unless ``database`` names one. On a shard
     group, ``shard_key`` picks the database::
@@ -252,9 +258,16 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             if duplicate is not None:
                 raise duplicate from exc
 
-    @abstractmethod
     def create_repositories(self, session: AsyncSession) -> None:
-        """Assign this unit of work's repositories, all bound to ``session``."""
+        """Assign this unit of work's repositories, all bound to ``session``.
+
+        By default, one for each repository the class annotates
+        (``products: ProductRepository``): a ``SqlAlchemyRepository`` that
+        implements the port, or the class annotated, if it is one
+        (``domainkit.ddd.stores``). Override it to build them otherwise.
+        """
+        for name, declared in repositories_of(type(self)).items():
+            setattr(self, name, implementation(declared, SqlAlchemyRepository)(session))
 
     async def commit(self) -> None:
         """Commit inside a ``uow.commit`` span (see ``domainkit.tracing``).

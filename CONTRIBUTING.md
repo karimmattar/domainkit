@@ -25,7 +25,7 @@ Each `make` command runs what CI runs, the same way:
 | `make lint` | `poetry check --lock`, `ruff check`, `ruff format --check`, `mypy` (strict), `deptry` | `lint` |
 | `make test` | the suite on SQLite and in-memory fakes, in random order, with coverage | `test (3.13)`, `test (3.14)` |
 | `make integration` | the suite against PostgreSQL, immudb, Redis, Valkey, and RabbitMQ from `compose.yaml`; a skipped test fails | `integration` |
-| `make cov` | both runs combined, which must cover 100% | `coverage` |
+| `make cov` | both runs combined, which must cover 98% | `coverage` |
 | `make bench` | Python calls and round trips per request against `benchmarks/budgets.toml` | `bench` |
 | `make docs` | the documentation site, with every link and public name checked | `docs-site` |
 | `make audit` | pip-audit of the lock, and gitleaks over the history | `audit` |

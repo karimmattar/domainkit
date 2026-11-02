@@ -412,7 +412,8 @@ def test_rules_read_as_one_line_each(make_package: MakePackage) -> None:
         "arch.billing.infrastructure",
         (
             "use another domain only through arch.billing.application or "
-            "arch.billing.domain.events or arch.billing.domain.values"
+            "arch.billing.domain.events or arch.billing.controllers or "
+            "arch.billing.domain.values"
         ),
     ) in shipping
     assert (
@@ -428,3 +429,40 @@ def test_a_rule_for_a_layer_not_in_the_rules_does_nothing(layered: str) -> None:
     found = found_in(check_domain(layered, rules=rules))
     assert not any(module == "settings" for module, _ in found)
     assert ("domain.model", "sqlalchemy") in found
+
+
+def test_the_simple_layout_holds_each_file_to_its_layer(
+    make_package: MakePackage,
+) -> None:
+    """domain.py, controllers.py, models.py, and routes.py are the four layers."""
+    make_package(
+        "flat",
+        {
+            "shop/__init__.py": "import sqlalchemy\n",  # no layer: no rule
+            "shop/domain.py": "import sqlalchemy\nfrom domainkit.ddd import Command\n",
+            "shop/controllers.py": (
+                "from flat.shop.domain import x\nfrom flat.shop.models import y\n"
+            ),
+            "shop/models.py": "import sqlalchemy\nfrom flat.shop.routes import z\n",
+            "shop/routes.py": "import fastapi\nfrom flat.shop.models import y\n",
+            "orders/__init__.py": "",
+            "orders/controllers.py": (
+                "from flat.shop.controllers import a\nfrom flat.shop.models import b\n"
+            ),
+        },
+    )
+
+    found = {
+        (v.module, v.imported)
+        for v in check_domains(["flat.shop", "flat.orders"], LayerRules())
+    }
+
+    assert found == {
+        ("flat.shop.domain", "sqlalchemy"),
+        ("flat.shop.controllers", "flat.shop.models"),
+        ("flat.shop.controllers", "flat.shop.models.y"),
+        ("flat.shop.models", "flat.shop.routes"),
+        ("flat.shop.models", "flat.shop.routes.z"),
+        ("flat.orders.controllers", "flat.shop.models"),
+        ("flat.orders.controllers", "flat.shop.models.b"),
+    }

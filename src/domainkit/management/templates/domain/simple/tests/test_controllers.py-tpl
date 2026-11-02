@@ -1,0 +1,44 @@
+"""Use-case tests with an in-memory unit of work: no database, no HTTP."""
+
+import pytest
+from domainkit.ddd import in_memory
+
+from {{ package }} import controllers
+from {{ package }}.domain import (
+    {{ Aggregate }},
+    {{ Aggregate }}Renamed,
+    {{ Domain }}UnitOfWork,
+    Invalid{{ Aggregate }}Name,
+)
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_create_and_rename_commit_once_each() -> None:
+    """The name is trimmed, and each use case commits its change."""
+    uow = in_memory({{ Domain }}UnitOfWork)
+
+    {{ aggregate }} = await controllers.create_{{ aggregate }}(uow, name=" First ")
+    await controllers.rename_{{ aggregate }}(uow, {{ aggregate }}_id={{ aggregate }}.id, name="Second")
+
+    assert await uow.{{ aggregates }}.get({{ aggregate }}.id) is {{ aggregate }}
+    assert ({{ aggregate }}.name, uow.committed) == ("Second", 2)
+
+
+def test_renaming_records_an_event() -> None:
+    """The aggregate alone, in plain Python: a rename is recorded as an event."""
+    {{ aggregate }} = {{ Aggregate }}.create("First")
+
+    {{ aggregate }}.rename("Second")
+
+    assert [type(event) for event in {{ aggregate }}.pull_events()] == [{{ Aggregate }}Renamed]
+
+
+async def test_a_blank_name_is_refused_before_anything_is_stored() -> None:
+    """The aggregate's rule holds in every use case."""
+    uow = in_memory({{ Domain }}UnitOfWork)
+
+    with pytest.raises(Invalid{{ Aggregate }}Name):
+        await controllers.create_{{ aggregate }}(uow, name="   ")
+
+    assert (await uow.{{ aggregates }}.count(None), uow.committed) == (0, 0)

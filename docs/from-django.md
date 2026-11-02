@@ -11,7 +11,7 @@ together.
 | Django | domainkit |
 | --- | --- |
 | `django-admin startproject` | `domainkit init` ([tutorial](tutorial/1-first-resource.md)) |
-| `manage.py startapp` | `manage.py startdomain`, a layered package; `--minimal` for a small one ([generators](resources.md#generators)) |
+| `manage.py startapp` | `manage.py startdomain`: four files, `domain.py` (business), `controllers.py` (use cases), `models.py` (tables), `routes.py` (API); `--layered` for a package per layer ([generators](resources.md#generators)) |
 | `INSTALLED_APPS`, `AppConfig.ready()` | `INSTALLED_DOMAINS`, `DomainConfig.ready()` ([api/core.md](api/core.md#domainkitapps)) |
 | `settings.py` per environment, `django-environ` | `config/settings/{base,local,test,production}.py`, `domainkit.conf.Env` ([operations.md](operations.md#configuration)) |
 | `manage.py check --deploy` | `manage.py check --deploy`: errors and warnings with ids, `SILENCED_CHECKS` ([deployment checks](reference/checks.md)) |
@@ -66,3 +66,6 @@ What has no Django name: aggregates and their rules, commands, the
 transactional outbox, the inbox, the audit trail and its seals, evidence
 records, and idempotency keys. [resources.md](resources.md) and
 [the optional apps](contrib.md) start there.
+
+Every Django feature, with what domainkit has and the step that adds what
+it lacks, is in the [feature inventory](feature-inventory.md).

@@ -432,6 +432,8 @@ def test_startdomain_reads_its_command_line_as_its_help_says() -> None:
         "tests_dir": Path("t"),
         "manual": True,
         "minimal": True,
+        "layered": False,
+        "user": False,
     }
     assert (plain["tests_dir"], plain["manual"], plain["minimal"]) == (
         None,
@@ -449,8 +451,12 @@ def test_startdomain_reads_its_command_line_as_its_help_says() -> None:
         "--tests-dir TESTS_DIR directory for the tests (default: tests/<parent path>)",
         "--manual neither install the domain nor mount its router; print how",
         (
-            "--minimal a smaller domain: an aggregate with a name, create and "
-            "rename, a table, a resource, two tests"
+            "--minimal with --layered: a smaller layered domain (an aggregate "
+            "with a name, create and rename, a table, a resource, two tests)"
+        ),
+        (
+            "--layered a package per layer (domain/, application/, "
+            "infrastructure/, api/)"
         ),
     ):
         assert line in shown, line
@@ -538,6 +544,7 @@ def test_startdomain_generates_a_working_domain(
         aggregate="OrderLine",
         parent="generated",
         tests_dir=tests_dir,
+        layered=True,
     )
 
     package = tmp_path / "generated" / "shop"
@@ -612,6 +619,50 @@ def test_startdomain_generates_a_working_domain(
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_startdomain_writes_four_files_by_default(
+    make_package: MakePackage, tmp_path: Path
+) -> None:
+    """domain.py, controllers.py, models.py, routes.py: in their layers, tested."""
+    make_package("simple", {})
+    tests_dir = tmp_path / "simple_tests"
+
+    output = run(
+        "startdomain", "shop", aggregate="Item", parent="simple", tests_dir=tests_dir
+    )
+
+    package = tmp_path / "simple" / "shop"
+    assert "from simple.shop.routes import router as shop_router" in output
+    assert "(and add_, change_) to the users" in output
+    assert sorted(
+        path.relative_to(package).as_posix() for path in package.rglob("*.py")
+    ) == ["__init__.py", "controllers.py", "domain.py", "models.py", "routes.py"]
+    generated = [*package.rglob("*.py"), *(tests_dir / "shop").rglob("*.py")]
+    assert not [path for path in generated if "{{" in path.read_text(encoding="utf-8")]
+    assert check_domain("simple.shop") == []
+
+    result = subprocess.run(  # noqa: S603 - the test interpreter and generated files.
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            str(tests_dir / "shop" / "test_controllers.py"),
+        ],
+        cwd=tmp_path,
+        env={
+            **{k: v for k, v in os.environ.items() if k != "MUTANT_UNDER_TEST"},
+            "PYTHONPATH": os.pathsep.join([str(tmp_path), *sys.path]),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "3 passed" in result.stdout
 
 
 def test_startdomain_creates_test_packages_inside_the_project(
@@ -810,3 +861,36 @@ def test_the_smaller_domain_asks_only_for_the_permissions_it_uses(
         "  3. Grant invoices.view_invoice (and add_, change_) to the users or "
         "groups that need them; superusers have them."
     ) in output.splitlines()
+
+
+def test_startdomain_user_writes_the_user_model_and_names_it_in_auth(
+    make_package: MakePackage, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--user: models.py with User and its table, installed, AUTH filled in."""
+    from domainkit.management import generators
+
+    make_package("domains", {})
+    settings = tmp_path / generators.SETTINGS_FILE
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        'INSTALLED_DOMAINS = [\n    "domainkit.contrib.auth",\n]\n'
+        f"{generators.EMPTY_AUTH}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(startdomain, "format_python", lambda paths: False)
+    monkeypatch.setattr(generators, "format_python", lambda paths: False)
+
+    output = run("startdomain", "accounts", user=True)
+
+    written = settings.read_text(encoding="utf-8")
+    assert '"domains.accounts",' in written
+    assert '"USER_MODEL": "domains.accounts.models.User",' in written
+    assert '"USER_TABLE": "domains.accounts.models.users",' in written
+    assert "Named domains.accounts.models.User in AUTH" in output
+    assert "Before the first migrate" in output
+    package = tmp_path / "domains" / "accounts"
+    assert sorted(p.name for p in package.glob("*.py")) == ["__init__.py", "models.py"]
+    assert check_domain("domains.accounts") == []
+    with pytest.raises(CommandError, match="leave out --layered"):
+        run("startdomain", "people", user=True, layered=True)

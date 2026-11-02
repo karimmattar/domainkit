@@ -14,6 +14,10 @@ INSTALLED_DOMAINS = [
     "domainkit.contrib.contenttypes",
     "domainkit.contrib.auth",
 ]
+# Users and logins (docs/auth.md). `manage.py startdomain accounts --user`
+# writes a user model of your own and names it here; do it before the first
+# migrate. Other settings files extend this: AUTH = {**AUTH, ...}.
+AUTH: dict[str, object] = {}
 ROOT_ROUTER = "config.urls.router"
 # /docs, /redoc, and /openapi.json follow DEBUG: on locally, off when
 # deployed; API_DOCS = True serves them anywhere (docs/reference/http.md).

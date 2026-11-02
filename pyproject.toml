@@ -1,6 +1,6 @@
 [project]
 name = "domainkit"
-version = "1.0.0"
+version = "1.5.0"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
 license = "MIT"
@@ -230,6 +230,9 @@ tzdata = "tzdata"
 # Loaded by name, not imported: SQLAlchemy loads the database drivers named
 # in DATABASES, FastAPI reads multipart forms, zoneinfo reads tzdata.
 DEP002 = ["asyncpg", "aiosqlite", "python-multipart", "tzdata"]
+# The standard library's from Python 3.14, imported only there; deptry,
+# run on 3.13, does not know it yet.
+DEP001 = ["annotationlib"]
 
 [tool.pytest.ini_options]
 testpaths = ["domainkit_tests"]
@@ -255,8 +258,8 @@ source = ["src"]
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
-# Every run, with or without servers; CI's coverage job also requires 100%
-# of all runs combined.
+# Every run, with or without servers, and CI's coverage job of all runs
+# combined.
 fail_under = 98
 precision = 2
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]

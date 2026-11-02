@@ -18,6 +18,7 @@ from domainkit.ddd.exceptions import (
     Conflict,
     DomainError,
     DuplicateValue,
+    InvalidField,
     NotFound,
     PermissionDenied,
     PreconditionFailed,
@@ -27,6 +28,9 @@ from domainkit.ddd.fields import (
     Encrypted,
     InvalidQuery,
     MaxLength,
+    MinLength,
+    Pattern,
+    Range,
     Reference,
     Sensitive,
     UnknownField,
@@ -50,7 +54,9 @@ from domainkit.ddd.repository import (
     RowLocks,
     SoftDeletable,
 )
+from domainkit.ddd.stores import in_memory
 from domainkit.ddd.uow import DeferredTask, ReadOnlyError, Retry, UnitOfWork
+from domainkit.ddd.usecases import UseCase, use_case
 
 __all__ = [
     "UNSET",
@@ -73,16 +79,20 @@ __all__ = [
     "F",
     "HandlerTimedOut",
     "InMemoryRepository",
+    "InvalidField",
     "InvalidQuery",
     "LockNotAvailable",
     "MaxLength",
+    "MinLength",
     "NotFound",
     "Ordering",
     "Page",
+    "Pattern",
     "PermissionDenied",
     "Personal",
     "PreconditionFailed",
     "Query",
+    "Range",
     "ReadOnlyError",
     "Reference",
     "Repository",
@@ -96,7 +106,10 @@ __all__ = [
     "UnitOfWork",
     "UnknownField",
     "Unset",
+    "UseCase",
     "ValueObject",
     "event_bus",
     "fields_about",
+    "in_memory",
+    "use_case",
 ]

@@ -1,0 +1,15 @@
+"""{{ domain_title }} domain: four files, one per layer.
+
+- ``domain.py``: the business. The ``{{ Aggregate }}`` aggregate, its rules,
+  errors, and events, and the ports (repository, unit of work). Plain Python.
+- ``controllers.py``: what the domain does. Commands, and the use cases that
+  run them.
+- ``models.py``: how it is stored. The table, the repository, and the unit
+  of work on the database.
+- ``routes.py``: the HTTP API, and who may call it.
+
+``python manage.py check`` keeps each file to its layer: ``domain.py`` imports
+no framework, ``controllers.py`` neither ``models.py`` nor ``routes.py``, and
+``models.py`` not ``routes.py``. Other domains use this one through
+``controllers.py`` only.
+"""

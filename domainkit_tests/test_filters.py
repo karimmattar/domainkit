@@ -549,7 +549,8 @@ def test_a_long_sort_value_never_breaks_a_page(
     """Pages ending on a value longer than its field declares still answer.
 
     The in-memory repository keeps names past ``MaxLength(30)``, as SQLite
-    does; such a page was a 500.
+    does; such a page was a 500. The names are set as a load sets them,
+    past the aggregate's own check.
     """
 
     class Listing(FilterSet):
@@ -558,9 +559,9 @@ def test_a_long_sort_value_never_breaks_a_page(
         default_ordering = ("name",)
 
     arabic = make_gadget("b")
-    arabic.name = "b" + "\u0628" * 800  # 1,600 bytes of UTF-8.
+    arabic.__dict__["name"] = "b" + "\u0628" * 800  # 1,600 bytes of UTF-8.
     control = make_gadget("c")
-    control.name = "c" + "\x1f" * 3000  # 18,000 bytes of JSON.
+    control.__dict__["name"] = "c" + "\x1f" * 3000  # 18,000 bytes of JSON.
     repository = InMemoryGadgets([make_gadget("a"), arabic, control, make_gadget("d")])
     app = FastAPI()
     install_exception_handlers(app)

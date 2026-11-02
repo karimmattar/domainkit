@@ -87,13 +87,24 @@ unlinkable (see [contrib.md](../contrib.md)).
 
 ## A custom user model
 
-Swap the user for one of your own, as with `AUTH_USER_MODEL`: subclass
-`AbstractUser` (or `AbstractBaseUser`, which has no username, names, or
-staff flag), give it a table, and name both in the settings. Do it before
-the first `migrate` that creates users.
+Swap the user for one of your own, as with `AUTH_USER_MODEL`, before the
+first `migrate` that creates users. One command does it:
+
+```bash
+python manage.py startdomain accounts --user
+```
+
+It writes `accounts/models.py`, with a `User` that subclasses
+`AbstractUser` and its table, installs the domain, and names both in
+`AUTH`. To write it by hand: subclass `AbstractUser` (or `AbstractBaseUser`,
+which has no username, names, or staff flag), give it a table, and name
+both in the settings. Keep both in `models.py` (or `infrastructure/`): they
+build on `domainkit.contrib.auth`, which the domain layer may not import.
+Settings files other than the base extend `AUTH` (`AUTH = {**AUTH, ...}`),
+or the user model is lost there.
 
 ```python
-# accounts/domain/model.py
+# accounts/models.py
 class Account(AbstractUser):
     phone: str = ""
     risk_flag: bool = False
@@ -101,7 +112,7 @@ class Account(AbstractUser):
     EDITABLE_FIELDS = AbstractUser.EDITABLE_FIELDS | {"phone"}  # staff may change
 
 
-# accounts/infrastructure/orm.py
+# accounts/models.py, below the class
 accounts = Table(
     "accounts_users",
     metadata,
@@ -130,8 +141,8 @@ scopes.
 
 ```python
 AUTH = {
-    "USER_MODEL": "accounts.domain.model.Account",
-    "USER_TABLE": "accounts.infrastructure.orm.accounts",
+    "USER_MODEL": "accounts.models.Account",
+    "USER_TABLE": "accounts.models.accounts",
 }
 ```
 

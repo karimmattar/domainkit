@@ -159,16 +159,20 @@ Domain-driven design building blocks ("seedwork").
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
 - `InMemoryRepository`: Dictionary-backed repository for unit tests and prototypes.
+- `InvalidField`: A field was given a value its markers rule out (`MaxLength`, `Range`, ...).
 - `InvalidQuery`: A query names a field, lookup, or value its aggregate cannot take.
 - `LockNotAvailable`: Another transaction holds the row's lock, and the caller would not wait.
 - `MaxLength`: `Annotated` metadata: text of at most `length` characters.
+- `MinLength`: `Annotated` metadata: text of at least `length` characters.
 - `NotFound`: The requested aggregate does not exist.
 - `Ordering`: Sort by one field of the aggregate itself.
 - `Page`: Up to `limit` items and whether more follow the last one.
+- `Pattern`: `Annotated` metadata: text that matches `regex` from end to end.
 - `PermissionDenied`: The actor may not perform the operation.
 - `Personal`: `Annotated` metadata: the field holds personal data about someone.
 - `PreconditionFailed`: The caller expected another version of the aggregate than the stored one.
 - `Query`: Request for data that changes nothing.
+- `Range`: `Annotated` metadata: a number from `min` to `max`, both included.
 - `ReadOnlyError`: A read-only unit of work was asked to commit.
 - `Reference`: The id of another aggregate, which is referenced by id only (`Reference[XId]`).
 - `Repository`: Load and store aggregates of one type; subclasses implement `_` methods.
@@ -182,9 +186,12 @@ Domain-driven design building blocks ("seedwork").
 - `UnitOfWork`: Transaction boundary; subclasses expose repositories as attributes.
 - `UnknownField`: A query names a field the class does not have.
 - `Unset`: The type of `UNSET`: a field the request left out, as opposed to None.
+- `UseCase`: A use case: its command, and how to run it in a unit of work.
 - `ValueObject`: Immutable value defined only by its attributes; equal values are equal.
 - `event_bus`: Process-wide bus used by units of work unless they are given another.
 - `fields_about`: What `values` hold about `subject`, and about nobody else.
+- `in_memory`: A unit of work whose repositories, made from its annotations, keep everything in memory.
+- `use_case`: Make an async function a use case: its command is made from its parameters.
 
 ## `domainkit.ddd.preconditions`
 

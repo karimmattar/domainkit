@@ -1,0 +1,39 @@
+"""The project's user model, in its own table."""
+
+import pytest
+from domainkit.contrib.auth import AuthUnitOfWork, get_user_model
+from domainkit.testing import TestClient
+
+from {{ package }}.models import {{ Aggregate }}
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_users_are_ours_and_keep_their_fields(db: None) -> None:
+    """create_user makes a {{ Aggregate }}, stored with its own fields."""
+    async with AuthUnitOfWork() as uow:
+        await uow.users.create_user(
+            "ada", "A-long-pass-2026!", email="ada@example.com", display_name="Ada"
+        )
+        await uow.commit()
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.get_by_natural_key("ada")
+
+    assert get_user_model() is {{ Aggregate }}
+    assert user is not None
+    assert user.display_name == "Ada"
+
+
+def test_staff_change_the_fields_they_are_given(admin_client: TestClient) -> None:
+    """EDITABLE_FIELDS reach the admin API."""
+    made = admin_client.post(
+        "/admin/auth/users",
+        json={
+            "username": "bob",
+            "password": "B-long-pass-2026!",
+            "fields": {"email": "bob@example.com", "display_name": "Bob"},
+        },
+    )
+
+    assert made.status_code == 201
+    assert made.json()["fields"]["display_name"] == "Bob"

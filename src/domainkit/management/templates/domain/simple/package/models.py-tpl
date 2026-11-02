@@ -1,0 +1,25 @@
+"""How the {{ domain }} domain is stored: its table, and its unit of work in SQL.
+
+``table_for`` makes the table from the aggregate's fields, so a field is
+declared once, in domain.py; run ``makemigrations`` after changing one.
+The unit of work's repositories come from ``{{ Domain }}UnitOfWork``'s
+annotations: a SQL repository for each. A port that declares a query of
+its own needs a class that writes it here, annotated on the unit of work
+(``{{ aggregates }}: SqlAlchemy{{ Aggregate }}Repository``). The domain's default
+``DomainConfig`` calls ``start_mappers()`` at startup.
+"""
+
+from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively, table_for
+
+from {{ package }}.domain import {{ Aggregate }}, {{ Domain }}UnitOfWork
+
+{{ aggregates }} = table_for({{ Aggregate }}, "{{ table }}", domain="{{ domain }}")
+
+
+class SqlAlchemy{{ Domain }}UnitOfWork(SqlAlchemyUnitOfWork, {{ Domain }}UnitOfWork):
+    """One database transaction over the {{ domain }} repositories."""
+
+
+def start_mappers() -> None:
+    """Map the aggregates onto their tables (idempotent)."""
+    map_imperatively({{ Aggregate }}, {{ aggregates }})

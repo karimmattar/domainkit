@@ -19,6 +19,8 @@ it (``accounts_users_groups``, ``accounts_users_permissions``).
 from functools import partial
 from typing import Any
 
+__all__ = ["abstract_base_user_columns", "abstract_user_columns"]
+
 from sqlalchemy import (
     BigInteger,
     Boolean,

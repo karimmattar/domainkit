@@ -12,6 +12,11 @@ Limits that storage needs, and that the domain should state anyway, are
         name: Annotated[str, MaxLength(200)]
         price: Annotated[Decimal, Digits(12, 2)]
 
+Others say what input may hold; the API checks them before a use case
+runs, and OpenAPI shows them: ``MinLength(3)``, ``Pattern(r"[A-Z]{3}-[0-9]{4}")``,
+and ``Range(min=1, max=100)``. A rule that must hold however a value is
+made belongs in the domain too: a value object that checks itself.
+
 A value object with a single field (``ProductName(value: str)``) counts as
 that field's value: it is compared, ordered, and searched by it, as the
 column holding it is.
@@ -53,6 +58,10 @@ from typing import (
 )
 from uuid import UUID
 
+from domainkit.ddd.markers import MaxLength as MaxLength
+from domainkit.ddd.markers import MinLength as MinLength
+from domainkit.ddd.markers import Pattern as Pattern
+from domainkit.ddd.markers import Range as Range
 from domainkit.ddd.model import Entity, ValueObject
 from domainkit.exceptions import DomainkitError
 from domainkit.money import Currency, Money, MoneyError, currency
@@ -86,20 +95,6 @@ class InvalidQuery(ValueError, DomainkitError):
 
 class UnknownField(InvalidQuery):
     """A query names a field the class does not have."""
-
-
-@dataclass(frozen=True, slots=True)
-class MaxLength:
-    """``Annotated`` metadata: text of at most ``length`` characters."""
-
-    length: int
-
-    def __post_init__(self) -> None:
-        """Refuse lengths below one."""
-        if self.length < 1:
-            raise ValueError(
-                f"MaxLength needs a length of at least 1, not {self.length}."
-            )
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,35 @@
+"""HTTP tests through the whole stack, with the migrated test database.
+
+They need the domain installed (INSTALLED_DOMAINS) and mounted (config/urls.py).
+``admin_client`` calls as a superuser, and ``client`` anonymously. Each test
+starts from the database as ``migrate`` left it.
+"""
+
+from domainkit.testing import TestClient
+
+URL = "/api/v1/{{ domain }}/{{ aggregates }}"
+
+
+def test_create_read_rename_and_list(admin_client: TestClient) -> None:
+    """201 with a Location, the {{ aggregate }} by id, a rename, then the page."""
+    created = admin_client.post(URL, json={"name": "First"})
+    item = created.headers["location"]
+    read = admin_client.get(item)
+    renamed = admin_client.post(f"{item}/rename", json={"name": "Second"})
+
+    assert created.status_code == 201
+    assert read.json() == created.json()
+    assert renamed.json()["name"] == "Second"
+    assert [found["name"] for found in admin_client.get(URL).json()["items"]] == [
+        "Second"
+    ]
+
+
+def test_callers_log_in_and_names_follow_the_rule(
+    admin_client: TestClient, client: TestClient
+) -> None:
+    """Anonymous callers get 401; a blank name, 422 with the rule's code."""
+    blank = admin_client.post(URL, json={"name": "   "})
+
+    assert client.get(URL).status_code == 401
+    assert (blank.status_code, blank.json()["code"]) == (422, "invalid_{{ aggregate }}_name")

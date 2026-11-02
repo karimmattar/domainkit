@@ -288,8 +288,13 @@ def _after_docstring(tree: ast.Module) -> int:
     return 0
 
 
-def install(package: str, domain: str, root: Path) -> list[str]:
+def install(
+    package: str, domain: str, root: Path, *, routes: str = "api.routes"
+) -> list[str]:
     """Add ``package`` to ``INSTALLED_DOMAINS`` and mount its router, if safe.
+
+    ``routes`` is the module of the router within the package: ``routes`` in
+    the simple layout, ``api.routes`` in the layered one.
 
     Safe means the project is laid out as ``init`` makes it, the settings
     list ``INSTALLED_DOMAINS`` literally (without comments inside), and
@@ -301,7 +306,9 @@ def install(package: str, domain: str, root: Path) -> list[str]:
         settings, urls = Source.read(settings_path), Source.read(urls_path)
     except CommandError:
         return []
-    if not (_add_installed(settings, package) and _mount(urls, package, domain)):
+    if not (
+        _add_installed(settings, package) and _mount(urls, package, domain, routes)
+    ):
         return []
     settings.save()
     urls.save()
@@ -309,6 +316,39 @@ def install(package: str, domain: str, root: Path) -> list[str]:
     return [
         f"Added {package!r} to INSTALLED_DOMAINS in {SETTINGS_FILE}.",
         f'Mounted its router at "/api/v1/{domain}" in {URLS_FILE}.',
+    ]
+
+
+EMPTY_AUTH: Final = "AUTH: dict[str, object] = {}"
+"""The ``AUTH`` line ``init`` writes in the base settings."""
+
+
+def install_user_model(package: str, model: str, table: str, root: Path) -> list[str]:
+    """Install the user domain ``package`` and name its model and table in ``AUTH``.
+
+    Safe means the base settings are as ``init`` writes them: a literal
+    ``INSTALLED_DOMAINS`` and the empty ``AUTH`` line. Returns what was
+    done; nothing if it was not safe.
+    """
+    settings_path = root / SETTINGS_FILE
+    try:
+        settings = Source.read(settings_path)
+    except CommandError:
+        return []
+    if settings.text.count(EMPTY_AUTH) != 1 or not _add_installed(settings, package):
+        return []
+    settings.text = settings.text.replace(
+        EMPTY_AUTH,
+        "AUTH: dict[str, object] = {\n"
+        f'    "USER_MODEL": "{package}.models.{model}",\n'
+        f'    "USER_TABLE": "{package}.models.{table}",\n'
+        "}",
+    )
+    settings.save()
+    format_python([settings_path])
+    return [
+        f"Added {package!r} to INSTALLED_DOMAINS in {SETTINGS_FILE}.",
+        f"Named {package}.models.{model} in AUTH (USER_MODEL, USER_TABLE).",
     ]
 
 
@@ -357,9 +397,9 @@ def _span(text: str, node: ast.expr) -> tuple[int, int]:
     )
 
 
-def _mount(urls: Source, package: str, domain: str) -> bool:
+def _mount(urls: Source, package: str, domain: str, routes: str) -> bool:
     """Import the domain's router and include it in ``router``; False if unsafe."""
-    module = f"{package}.api.routes"
+    module = f"{package}.{routes}"
     alias = f"{domain}_router"
     tree = urls.tree()
     if "router" not in top_level_names(tree) or urls.defines(alias):
@@ -773,6 +813,12 @@ class Domain:
         """
         within(directory, root, "domain")
         if not (directory / "domain" / "model.py").is_file():
+            if (directory / "domain.py").is_file():
+                raise CommandError(
+                    f"{directory} is a four-file domain: add the command, query, "
+                    "or event to domain.py, controllers.py, and routes.py by hand. "
+                    "The generators grow domains made with startdomain --layered."
+                )
             raise CommandError(f"{directory} is not a domain made by startdomain.")
         package = ".".join(
             directory.resolve().relative_to(_source_root(directory)).parts

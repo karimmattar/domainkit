@@ -1,0 +1,33 @@
+"""What the {{ domain }} domain does: one async function per use case.
+
+``@use_case`` makes each a command (``controllers.create_{{ aggregate }}.command``
+is ``Create{{ Aggregate }}(name=...)``) from its parameters after the unit of
+work, and runs it inside that unit of work: opened, then committed, or rolled
+back if it raises. So a use case only loads, calls the aggregate's methods,
+and returns. No HTTP and no SQL here: the API, a script, and a test all run
+the same code.
+"""
+
+from uuid import UUID
+
+from domainkit.ddd import use_case
+
+from {{ package }}.domain import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Name, {{ Domain }}UnitOfWork
+
+
+@use_case
+async def create_{{ aggregate }}(uow: {{ Domain }}UnitOfWork, name: {{ Aggregate }}Name) -> {{ Aggregate }}:
+    """Create a {{ aggregate }} called ``name``."""
+    {{ aggregate }} = {{ Aggregate }}.create(name)
+    await uow.{{ aggregates }}.add({{ aggregate }})
+    return {{ aggregate }}
+
+
+@use_case
+async def rename_{{ aggregate }}(
+    uow: {{ Domain }}UnitOfWork, {{ aggregate }}_id: UUID, name: {{ Aggregate }}Name
+) -> {{ Aggregate }}:
+    """Give a {{ aggregate }} another name."""
+    {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id({{ aggregate }}_id))
+    {{ aggregate }}.rename(name)
+    return {{ aggregate }}
