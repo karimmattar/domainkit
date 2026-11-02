@@ -54,7 +54,7 @@ framework, for the reason given.
 | `in_bulk` | `get_many`, and `get_many_for_update` to lock | Yes | C7 |
 | `update()` and `delete()` on a queryset | `remove_all` of loaded aggregates | Partial: no set-based write, on purpose for aggregates; offered for reference data | C7 |
 | `aggregate()` (`Count`, `Sum`, `Avg`, `Min`, `Max`) | `repository.aggregate(criteria, name=Sum(...))`, one statement | Yes | C7 |
-| `annotate()`, `values()`, `values_list()`, `only()`, `defer()` | None | No: read models (projections) | C4 |
+| `annotate()`, `values()`, `values_list()`, `only()`, `defer()` | `repository.values(query, "id", "name")`: dicts of the fields, one statement, nothing loaded; `aggregate()` for measures | Partial: no `annotate()` per row | C4 |
 | `select_related`, `prefetch_related` | An aggregate loads whole, children included | n/a | |
 | `select_for_update(nowait, skip_locked)` | `get_for_update`, `RowLock` | Yes | |
 | `iterator()`, `aiterator()` | `stream(query, batch=...)`, keyset batches ([queries.md](queries.md)) | Yes | C6 |

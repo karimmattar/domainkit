@@ -11,7 +11,7 @@ are an escape hatch for infrastructure code (see ADR 0022).
 """
 
 import operator
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from decimal import Decimal
 from typing import Any, Final
 
@@ -217,6 +217,21 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
             Explain(self._select(prepared.replace(lock=None)), analyze=analyze)
         )
         return "\n".join(_plan_line(row) for row in rows)
+
+    async def _values(
+        self, query: Selection, fields: Sequence[str]
+    ) -> list[dict[str, object]]:
+        """One ``SELECT`` of the fields' columns; a money field as its ``Money``."""
+        model = self.aggregate_type
+        attributes = [getattr(model, name) for name in fields]
+        statement = (
+            self._where(select(*attributes), query.criteria)
+            .order_by(*compile_ordering(query.ordering, model))
+            .offset(query.offset or None)
+            .limit(query.limit)
+        )
+        rows = await self.session.execute(statement)
+        return [dict(zip(fields, row, strict=True)) for row in rows]
 
     async def _aggregate(
         self, criteria: Criteria | None, measures: dict[str, Measure]

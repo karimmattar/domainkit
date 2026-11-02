@@ -36,6 +36,7 @@ from domainkit.ddd import (
     Encrypted,
     Entity,
     EventBus,
+    InMemoryRepository,
     InvalidQuery,
     LockNotAvailable,
     MultipleFound,
@@ -1243,3 +1244,49 @@ def test_a_meta_ordering_that_cannot_work_is_refused() -> None:
         default_ordering(Bare)
     with pytest.raises(InvalidQuery):
         default_ordering(Unsortable)
+
+
+async def test_values_reads_fields_without_loading(tables: None) -> None:
+    """One statement, the fields asked for, as in memory; nothing tracked."""
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    query = Selection(F("price") > Decimal(0), ordering=["-price", "name"], limit=3)
+    fields = ("name", "label", "price", "made_at", "stock", "color")
+
+    async with GadgetsUnitOfWork() as uow:
+        with assert_num_queries(1):
+            rows = await uow.gadgets.values(query, *fields)
+        everything = await uow.gadgets.values(None, "name")
+        assert uow.gadgets.seen == ()
+
+    assert rows == await fake.values(query, *fields)
+    assert [row["name"] for row in rows] == ["é中\\", "", "A_c"]
+    assert sorted(str(row["name"]) for row in everything) == sorted(
+        each.name for each in items
+    )
+
+
+def test_what_values_cannot_read_is_refused() -> None:
+    """No field, a child, a dotted name, a lock, an encrypted field."""
+    fake = InMemoryGadgets([])
+
+    class Vault(AggregateRoot[int]):
+        secret: Annotated[str, Encrypted()]
+
+    class Vaults(InMemoryRepository[Vault, int]):
+        pass
+
+    async def refused() -> None:
+        with pytest.raises(TypeError, match="takes field names"):
+            await fake.values(None)
+        with pytest.raises(InvalidQuery):
+            await fake.values(None, "parts")
+        with pytest.raises(InvalidQuery, match="itself"):
+            await fake.values(None, "parts.sku")
+        with pytest.raises(InvalidQuery, match="without locking"):
+            await fake.values(Selection(lock=RowLock()), "name")
+        with pytest.raises(InvalidQuery, match="encrypted"):
+            await Vaults([]).values(None, "secret")
+
+    asyncio.run(refused())

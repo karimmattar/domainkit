@@ -39,6 +39,10 @@ Steps C1 to C8 are the core's; the [feature inventory](feature-inventory.md)
 names each Django feature and platform need, what exists, and the step
 that closes its gap.
 
+After C7, the core closed the inventory's last open rows of its own: the
+`Email`, `URL`, `Slug`, and `IPAddress` field types; `Meta.ordering`;
+`GZipMiddleware` and `Last-Modified`; and `values()` projections.
+
 ## Then: adapters on the core
 
 Each adapter is a port in the core (the shape every provider fills) and

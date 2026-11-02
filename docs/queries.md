@@ -256,6 +256,20 @@ What it yields is tracked as `filter`'s is, so a unit of work that writes
 commits changes made to it; read a large table through a read-only one.
 A query with a `limit` or an `offset` is refused: a page is `paginate`'s.
 
+`values` reads a few fields of many aggregates as dicts, in one statement
+that names only their columns (Django's `values()`), for a listing or an
+export:
+
+```python
+await uow.orders.values(Selection(F("status") == "paid", limit=100), "id", "total")
+# [{"id": ..., "total": Money("42.00", "USD")}, ...]
+```
+
+Nothing is loaded or tracked, so what it reads cannot be changed and
+committed. Fields of the aggregate itself only: not a child entity, a
+dotted name, or an encrypted field (load the aggregate to read that).
+A query without an ordering follows `Meta.ordering`, then the id.
+
 `explain` gives the database's plan for what `filter` would run (SQL
 repositories): `EXPLAIN` on PostgreSQL, where `analyze=True` also runs it
 and reports the time, and `EXPLAIN QUERY PLAN` on SQLite. The values stay

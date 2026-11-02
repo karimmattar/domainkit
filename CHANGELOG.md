@@ -33,6 +33,10 @@ and a status.
 
 ### Added
 
+- `repository.values(query, *fields)` (Django's `values()`): the fields
+  of the aggregates a query selects, as dicts, in one statement that names
+  only their columns; nothing is loaded or tracked. Fields of the
+  aggregate itself, not children or encrypted ones.
 - `domainkit.http.compression.GZipMiddleware` (Django's): compresses
   responses of `GZIP_MINIMUM_SIZE` bytes or more (500) at `GZIP_LEVEL` (6)
   for clients that accept gzip. Not listed by default; see BREACH in its

@@ -24,7 +24,7 @@ from typing import Any, Final, Literal, cast, overload
 from domainkit import clock
 from domainkit.ddd._dataclass import EntityMeta
 from domainkit.ddd.exceptions import Conflict, DuplicateValue, MultipleFound, NotFound
-from domainkit.ddd.fields import primitive
+from domainkit.ddd.fields import InvalidQuery, primitive
 from domainkit.ddd.model import AggregateRoot
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.preconditions import Expectation, check_expected
@@ -43,6 +43,7 @@ from domainkit.ddd.query import (
     following,
     order,
     position_of,
+    resolve,
     total_ordering,
 )
 
@@ -360,6 +361,41 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             total=total,
         )
 
+    async def values(
+        self, query: Selection | CriteriaLike | None, /, *fields: str
+    ) -> list[dict[str, object]]:
+        """``fields`` of the aggregates ``query`` selects, as dicts, in its order.
+
+        Django's ``values()``: one statement that reads the columns it names,
+        for a listing or an export that needs a few fields of many
+        aggregates. Nothing is loaded or tracked, so nothing read this way
+        can be changed and committed. A query without an ordering follows
+        ``Meta.ordering``, then the id; a limit and an offset apply.
+
+        Raises:
+            TypeError: No field is named.
+            InvalidQuery: A field is a child entity, is encrypted, names
+                nothing, or the query locks rows.
+        """
+        if not fields:
+            raise TypeError("values() takes field names, as values(query, 'id').")
+        base = self._ordered(as_query(query))
+        if base.lock is not None:
+            raise InvalidQuery("values() reads without locking; use filter() to lock.")
+        model = self.aggregate_type
+        for name in fields:
+            path = resolve(model, name)
+            if len(path) > 1:
+                raise InvalidQuery(
+                    f"values() reads fields of {model.__name__} itself, not {name!r}."
+                )
+            if path[0].encrypted:
+                raise InvalidQuery(
+                    f"{model.__name__}.{name} is encrypted: load the aggregate "
+                    "to read it."
+                )
+        return await self._values(self._prepare(base), fields)
+
     async def stream(
         self, query: Selection | CriteriaLike | None = None, *, batch: int = 500
     ) -> AsyncIterator[AggregateT]:
@@ -652,6 +688,15 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
     async def _exists(self, criteria: Criteria | None) -> bool:
         """Whether the bound ``criteria`` select anything."""
         return await self._count(criteria) > 0
+
+    async def _values(
+        self, query: Selection, fields: Sequence[str]
+    ) -> list[dict[str, object]]:
+        """The ``fields`` of what the bound ``query`` selects, in its order."""
+        return [
+            {name: getattr(aggregate, name) for name in fields}
+            for aggregate in await self._filter(query)
+        ]
 
     async def _aggregate(
         self, criteria: Criteria | None, measures: dict[str, Measure]
