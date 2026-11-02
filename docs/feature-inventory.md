@@ -23,17 +23,17 @@ framework, for the reason given.
 | Char, Text, Integer, Decimal, Boolean, Date, DateTime, Duration, UUID, JSON fields | Python types in the field's hint | Yes | |
 | `EmailField`, `URLField`, `SlugField`, `GenericIPAddressField` | Write a value object | No: ready-made types | C3 |
 | `choices` | An `Enum` field | Yes | |
-| `get_FOO_display()`, choice labels | None | No | C7 |
+| `get_FOO_display()`, choice labels | `TextChoices` and `IntegerChoices`: `member.label`, `choices()` | Yes | C7 |
 | `null`, `default` | `X \| None`, dataclass defaults | Yes | |
 | `db_default`, `GeneratedField` | A hand-written column in `table_for(..., *extra)` | Partial | C7 |
-| `unique=True`, `db_index=True` | A constraint or index passed in `extra` | Partial: no marker on the field | C7 |
-| `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | SQLAlchemy items in `extra` | Partial: not declared on the aggregate | C7 |
+| `unique=True`, `db_index=True` | `Unique()` and `Indexed()` on the field | Yes | C7 |
+| `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | `Meta.unique` and `Meta.indexes` on the aggregate; a check constraint in `extra` | Partial: checks are SQLAlchemy's, in `extra` | C7 |
 | `Meta.ordering` | A `FilterSet`'s `default_ordering`; repositories order by id | Partial | C7 |
 | Validators (`MaxLengthValidator`, `RegexValidator`, `MinValueValidator`, ...) | `MaxLength`, `MinLength`, `Pattern`, `Range` markers, checked by the object, the request, and OpenAPI ([validation.md](validation.md)) | Yes | |
 | `clean()`, `full_clean()`, `clean_fields()` | `clean()`, run when made and before every commit; fields checked whenever set | Yes | |
 | `ForeignKey` to a child | Child entities, stored with their aggregate | Yes | |
 | `ForeignKey` to another model | `Reference[OtherId]` by id | Yes | |
-| `OneToOneField` | A `Reference` | Partial: no unique marker | C7 |
+| `OneToOneField` | `Annotated[Reference[XId], Unique()]` | Yes | C7 |
 | `ManyToManyField` | None | No: a list of references stored in a link table | C7 |
 | `GenericForeignKey` | `contrib.contenttypes` ids | Partial | |
 | Signals (`post_save`, `post_delete`) | Domain events, published after the commit | Yes | |
@@ -49,11 +49,11 @@ framework, for the reason given.
 | Lookups: `exact`, `iexact`, `contains`, `icontains`, `startswith`, `istartswith`, `endswith`, `iendswith`, `in`, `range`, `gt`, `gte`, `lt`, `lte`, `isnull` | The same, on `F` | Yes | |
 | `regex`, `iregex` | None | No | C7 |
 | Date transforms (`__year`, `__month`, `__date`) | None | No | C7 |
-| `get_or_create`, `update_or_create` | None | No | C7 |
+| `get_or_create`, `update_or_create` | The same names, the aggregate's factory and methods doing the work; a lost insert race answers the winner | Yes | C7 |
 | `bulk_create` | `add_all` | Yes | |
-| `in_bulk` | `get_many_for_update` (locks) | Partial: no plain `get_many` | C7 |
+| `in_bulk` | `get_many`, and `get_many_for_update` to lock | Yes | C7 |
 | `update()` and `delete()` on a queryset | `remove_all` of loaded aggregates | Partial: no set-based write, on purpose for aggregates; offered for reference data | C7 |
-| `aggregate()` (`Count`, `Sum`, `Avg`, `Min`, `Max`) | None | No | C7 |
+| `aggregate()` (`Count`, `Sum`, `Avg`, `Min`, `Max`) | `repository.aggregate(criteria, name=Sum(...))`, one statement | Yes | C7 |
 | `annotate()`, `values()`, `values_list()`, `only()`, `defer()` | None | No: read models (projections) | C4 |
 | `select_related`, `prefetch_related` | An aggregate loads whole, children included | n/a | |
 | `select_for_update(nowait, skip_locked)` | `get_for_update`, `RowLock` | Yes | |
@@ -72,7 +72,7 @@ framework, for the reason given.
 | `transaction.on_commit()` | Events after the commit, `uow.defer(...)` | Yes | |
 | Savepoints | `uow.savepoint()` | Yes | |
 | `makemigrations`, `migrate`, `showmigrations`, `squashmigrations` | The same commands, on Alembic | Yes | |
-| `sqlmigrate` | None | No | C7 |
+| `sqlmigrate` | `migrate REVISION --sql --from PREVIOUS`, rendered offline by Alembic | Yes | C7 |
 | Data migrations (`RunPython`, `RunSQL`) | Alembic operations, by hand | Partial | |
 | `inspectdb` | None | No | C7 |
 | `dumpdata`, `loaddata`, `flush`, `dbshell`, `shell`, `diffsettings` | The same commands | Yes | |

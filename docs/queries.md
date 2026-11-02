@@ -130,6 +130,32 @@ late = await uow.invoices.filter(Overdue(today) & ~Disputed())
 `is_satisfied_by` evaluates the criteria in Python by default. A subclass may
 decide it in Python instead, but must keep its criteria in step.
 
+## Counting and totals
+
+`aggregate` works out measures over what the criteria select, in one
+statement, without loading anything (Django's `aggregate()`):
+
+```python
+from domainkit.ddd import Avg, Count, Max, Min, Sum
+
+await uow.orders.aggregate(
+    F("status") == "paid",
+    orders=Count(),
+    revenue=Sum("total"),
+    mean=Avg("total"),
+    first=Min("placed_at"),
+)
+# {"orders": 3, "revenue": Decimal("42.00"), "mean": Decimal("14.00"), "first": ...}
+```
+
+`Count()` counts the aggregates, `Count("field")` those with the field
+set. `Sum` and `Avg` take a number field, `Min` and `Max` any field whose
+values sort, and each leaves out aggregates without a value: over none, it
+is None. Totals and extremes keep the field's type, exact on SQLite too;
+the mean of a `Decimal` field is a `Decimal`. A money field is counted but
+not summed: its amounts are measured per currency, with the currency in
+the criteria. A measure that does not fit its field is an `InvalidQuery`.
+
 ## Pages
 
 `paginate` returns a `Page`: up to `limit` aggregates, whether more follow,
@@ -306,6 +332,34 @@ model's other fields. The other bounds are `max_values` (50 values in an
 (100), and `max_ordering` (3 fields).
 
 ## Several aggregates at once
+
+`get_many(ids)` loads the aggregates of `ids` that exist in one statement,
+by ascending id (Django's `in_bulk`); a missing id is left out.
+`get_many_for_update` locks them and refuses a missing one (below).
+
+`get_or_create(criteria, create)` answers the one aggregate the criteria
+select, or makes one with `create()` and stores it, with whether it was
+created. `update_or_create(criteria, update, create)` reads the one found
+with its row locked and calls `update(aggregate)` on it, or creates one:
+
+```python
+customer, created = await uow.customers.get_or_create(
+    F("email") == email, lambda: Customer.register(email)
+)
+account, _ = await uow.accounts.update_or_create(
+    F("owner_id") == owner_id,
+    lambda account: account.rename(name),
+    lambda: Account.open(owner_id, name),
+)
+```
+
+`create` and `update` go through the aggregate's own factory and methods,
+so its rules and events hold. The new aggregate is inserted at once, in a
+savepoint: when another transaction inserted a matching one first, the
+unique constraint refuses this one and the one stored is read and
+answered instead. That needs a unique constraint on what the criteria
+name; without one, two transactions at once can each create one. More
+than one match is a 409 `multiple_found`.
 
 `add_all` and `remove_all` add or remove each aggregate as `add` and
 `remove` do, so their events are published on commit.

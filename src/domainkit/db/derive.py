@@ -45,6 +45,7 @@ are added. The result is an ordinary ``Table`` on ``metadata``, so
 ``makemigrations`` sees it as it sees hand-written ones.
 """
 
+import hashlib
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -59,12 +60,14 @@ from sqlalchemy import (
     Column,
     Date,
     Double,
+    Index,
     Integer,
     MetaData,
     String,
     Table,
     Text,
     Time,
+    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy.engine import Dialect
@@ -80,7 +83,9 @@ from domainkit.ddd.fields import (
     Digits,
     Encrypted,
     FieldInfo,
+    Indexed,
     MaxLength,
+    Unique,
     fields_of,
     wrapped_field,
 )
@@ -241,14 +246,103 @@ def table_for(
             )
         )
     others = [item for item in extra if not isinstance(item, Column)]
+    declared = _declared_keys(cls, name, fields)
     return Table(
         name,
         metadata,
         *columns,
         *given.values(),
         *others,
+        *declared,
         info={} if domain is None else {"domain": domain},
     )
+
+
+def _declared_keys(
+    cls: type, table: str, fields: Mapping[str, FieldInfo]
+) -> list[SchemaItem]:
+    """The constraints and indexes the class declares, each named after its fields.
+
+    ``Unique()`` and ``Indexed()`` on a field, and ``Meta.unique`` and
+    ``Meta.indexes`` (tuples of field names) on the class. A money field
+    counts as its currency and amount columns.
+
+    Raises:
+        TypeError: A name is not a field stored in a column of its own or a
+            money field, or a ``Meta`` entry is not a tuple of names.
+    """
+    meta = getattr(cls, "Meta", None)
+    unique: list[tuple[str, ...]] = [
+        (field.name,) for field in fields.values() if field.marker(Unique)
+    ]
+    indexes: list[tuple[str, ...]] = [
+        (field.name,) for field in fields.values() if field.marker(Indexed)
+    ]
+    unique += _names(cls, "unique", getattr(meta, "unique", ()))
+    indexes += _names(cls, "indexes", getattr(meta, "indexes", ()))
+    items: list[SchemaItem] = []
+    for names in unique:
+        columns = _key_columns(cls, fields, names)
+        items.append(UniqueConstraint(*columns, name=_key_name("uq", table, names)))
+    for names in indexes:
+        columns = _key_columns(cls, fields, names)
+        items.append(Index(_key_name("ix", table, names), *columns))
+    return items
+
+
+def _names(cls: type, attribute: str, entries: object) -> list[tuple[str, ...]]:
+    """``Meta.<attribute>``'s entries, each a tuple of field names.
+
+    Raises:
+        TypeError: An entry is not a non-empty tuple of names.
+    """
+    found: list[tuple[str, ...]] = []
+    for entry in entries:  # type: ignore[attr-defined]
+        if not (
+            isinstance(entry, tuple)
+            and entry
+            and all(isinstance(name, str) for name in entry)
+        ):
+            raise TypeError(
+                f"{cls.__qualname__}.Meta.{attribute} holds tuples of field "
+                f"names, as ('customer_id', 'number'), not {entry!r}."
+            )
+        found.append(entry)
+    return found
+
+
+def _key_columns(
+    cls: type, fields: Mapping[str, FieldInfo], names: tuple[str, ...]
+) -> list[str]:
+    """The column names behind ``names``: a money field's currency and amount.
+
+    Raises:
+        TypeError: A name is no field, a child entity, or an encrypted field.
+    """
+    columns: list[str] = []
+    for name in names:
+        field = fields.get(name)
+        if field is None or field.entity is not None or field.encrypted:
+            raise TypeError(
+                f"{cls.__qualname__}: {name!r} is not a field stored in a column "
+                "of its own, so it cannot be unique or indexed (an encrypted "
+                "field is looked up by its blind_index)."
+            )
+        columns += [f"{name}_currency", name] if field.kind is Money else [name]
+    return columns
+
+
+def _key_name(prefix: str, table: str, names: tuple[str, ...]) -> str:
+    """``uq_<table>_<fields>``, cut to PostgreSQL's 63 characters with a digest."""
+    name = f"{prefix}_{table}_{'_'.join(names)}"
+    if len(name) <= IDENTIFIER_LENGTH:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:8]
+    return f"{name[: IDENTIFIER_LENGTH - 9]}_{digest}"
+
+
+IDENTIFIER_LENGTH: Final = 63
+"""PostgreSQL's longest identifier; a longer name is cut short silently."""
 
 
 def _money_columns(

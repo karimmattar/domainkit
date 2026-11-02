@@ -158,6 +158,25 @@ class Encrypted:
 
 
 @dataclass(frozen=True, slots=True)
+class Unique:
+    """``Annotated`` metadata: no two aggregates hold the same value.
+
+    ``table_for`` gives the column a unique constraint, so a duplicate is a
+    409 ``duplicate_value`` naming the field, and ``get_or_create`` on it
+    answers the one stored first. Several fields unique together go in the
+    aggregate's ``Meta.unique``.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class Indexed:
+    """``Annotated`` metadata: queries look the field up; give it an index.
+
+    Several fields indexed together go in the aggregate's ``Meta.indexes``.
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class AggregateReference:
     """``Annotated`` metadata: the field holds another aggregate's id."""
 

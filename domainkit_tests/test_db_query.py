@@ -21,27 +21,44 @@ from sqlalchemy import (
     false,
     select,
 )
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import column_property
 from sqlalchemy.sql.elements import ColumnElement
 
 from domainkit.conf import override_settings
 from domainkit.db import SqlAlchemyRepository, connections, map_imperatively
+from domainkit.db import repository as db_repository
 from domainkit.db.query import compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import (
     AggregateRoot,
     DuplicateValue,
+    Encrypted,
     Entity,
     EventBus,
     InvalidQuery,
     LockNotAvailable,
+    MultipleFound,
     ReadOnlyError,
     UnknownField,
 )
-from domainkit.ddd.query import Criteria, F, Ordering, RowLock, Selection, Within
+from domainkit.ddd.query import (
+    ID,
+    Avg,
+    Count,
+    Criteria,
+    F,
+    Max,
+    Min,
+    Ordering,
+    RowLock,
+    Selection,
+    Sum,
+    Within,
+)
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet
+from domainkit.money import Money
 from domainkit.testing import AsyncTestClient, assert_num_queries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.gadgets import (
@@ -806,3 +823,230 @@ async def test_explain_gives_the_plan_with_values_bound(tables: None) -> None:
             assert "gadgets" in plan.lower()
             with pytest.raises(ValueError, match="PostgreSQL's"):
                 await uow.gadgets.explain(query, analyze=True)
+
+
+async def test_get_or_create_reads_or_stores_one(tables: None) -> None:
+    """The one that matches, or a new one stored at once and tracked."""
+    kept = make_gadget("kept")
+    await store(kept, make_gadget("twin", stock=7), make_gadget("twin", stock=8))
+    async with GadgetsUnitOfWork() as uow:
+        found, created = await uow.gadgets.get_or_create(
+            F("name") == "kept", lambda: make_gadget("never")
+        )
+        assert (found.id, created) == (kept.id, False)
+        made, created = await uow.gadgets.get_or_create(
+            F("name") == "new", lambda: make_gadget("new")
+        )
+        assert created
+        assert made in uow.gadgets.seen
+        with pytest.raises(MultipleFound) as caught:
+            await uow.gadgets.get_or_create(F("name") == "twin", make_gadget)
+        assert caught.value.code == "multiple_found"
+        await uow.commit()
+    async with GadgetsUnitOfWork() as uow:
+        assert await uow.gadgets.count(F("name") == "new") == 1
+
+
+async def test_get_or_create_returns_what_won_the_race(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stored first by another transaction: the unique constraint answers."""
+    winner = make_gadget("winner")
+    await store(winner)
+
+    def loser() -> Gadget:
+        twin = make_gadget("winner")
+        twin.id = winner.id
+        return twin
+
+    async with GadgetsUnitOfWork() as uow:
+        one = uow.gadgets._one
+        calls: list[object] = []
+
+        async def late(criteria: Any, **options: Any) -> Gadget | None:  # noqa: ANN401
+            calls.append(criteria)
+            return None if len(calls) == 1 else await one(criteria, **options)
+
+        monkeypatch.setattr(uow.gadgets, "_one", late)
+        found, created = await uow.gadgets.get_or_create(F(ID) == winner.id, loser)
+        assert (found.id, found.name, created) == (winner.id, "winner", False)
+        other = make_gadget("other")
+        await uow.gadgets.add(other)
+        await uow.commit()
+    async with GadgetsUnitOfWork() as uow:
+        with pytest.raises(DuplicateValue):  # Taken by one the criteria miss.
+            await uow.gadgets.get_or_create(F("name") == "nobody", loser)
+        assert await uow.gadgets.count() == 2
+
+
+async def test_other_refusals_of_a_new_aggregate_stay_as_they_are(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a unique violation reads the winner; any other refusal is raised."""
+    winner = make_gadget("winner")
+    await store(winner)
+    monkeypatch.setattr(db_repository, "duplicate_value", lambda *_: None)
+
+    def loser() -> Gadget:
+        twin = make_gadget("x")
+        twin.id = winner.id
+        return twin
+
+    async with GadgetsUnitOfWork() as uow:
+        with pytest.raises(IntegrityError):
+            await uow.gadgets.get_or_create(F("name") == "x", loser)
+
+
+async def test_update_or_create_changes_or_stores(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one found is changed through its methods; else a new one is stored."""
+    kept = make_gadget("kept")
+    await store(kept)
+
+    def rename(gadget: Gadget) -> None:
+        gadget.rename("renamed")
+
+    async with GadgetsUnitOfWork() as uow:
+        found, created = await uow.gadgets.update_or_create(
+            F(ID) == kept.id, rename, lambda: make_gadget("never")
+        )
+        assert (found.name, created) == ("renamed", False)
+        made, created = await uow.gadgets.update_or_create(
+            F("name") == "fresh", rename, lambda: make_gadget("fresh")
+        )
+        assert (made.name, created) == ("fresh", True)
+        await uow.commit()
+    async with GadgetsUnitOfWork() as uow:
+        assert {each.name for each in await uow.gadgets.filter()} == {
+            "renamed",
+            "fresh",
+        }
+
+    async with GadgetsUnitOfWork() as uow:
+        repository = uow.gadgets
+        answers: list[Gadget | None] = [None, None]
+        one = repository._one
+
+        async def raced(criteria: Any, **options: Any) -> Gadget | None:  # noqa: ANN401
+            return answers.pop(0) if answers else await one(criteria, **options)
+
+        monkeypatch.setattr(repository, "_one", raced)
+        # Missing, then found by get_or_create's insert race, then locked.
+        winner = await repository.get(kept.id)
+        answers[:] = [None, winner, winner]
+        found, created = await repository.update_or_create(
+            F(ID) == kept.id, rename, lambda: make_gadget("never")
+        )
+        assert (found is winner, created) == (True, False)
+        # Removed again between the race and the lock: created after all.
+        answers[:] = [None, winner, None, None]
+        made, created = await repository.update_or_create(
+            F("name") == "third", rename, lambda: make_gadget("third")
+        )
+        assert (made.name, created) == ("third", True)
+
+
+async def test_get_many_leaves_out_what_is_missing(tables: None) -> None:
+    """Django's ``in_bulk``: one statement, by ascending id, none locked."""
+    first, second = make_gadget("a"), make_gadget("b")
+    await store(first, second)
+    async with GadgetsUnitOfWork() as uow:
+        assert await uow.gadgets.get_many([]) == {}
+        with assert_num_queries(3):  # The gadgets, then their parts and makers.
+            found = await uow.gadgets.get_many(
+                [second.id, make_gadget().id, first.id, second.id]
+            )
+    assert set(found) == {first.id, second.id}
+    assert list(found) == sorted(found, key=str)
+
+
+async def test_the_conveniences_work_in_memory_too() -> None:
+    """The in-memory repository answers as the SQL one does."""
+    kept = make_gadget("kept")
+    fake = InMemoryGadgets([kept])
+
+    found, created = await fake.get_or_create(F("name") == "kept", make_gadget)
+    made, made_now = await fake.get_or_create(
+        F("name") == "new", lambda: make_gadget("new")
+    )
+    changed, _ = await fake.update_or_create(
+        F(ID) == kept.id, lambda gadget: gadget.rename("renamed"), make_gadget
+    )
+
+    assert (found is kept, created, made_now) == (True, False, True)
+    assert changed.name == "renamed"
+    assert set(await fake.get_many([made.id, kept.id])) == {made.id, kept.id}
+    assert [each.name async for each in fake.stream(batch=1)] in (
+        ["renamed", "new"],
+        ["new", "renamed"],
+    )
+
+
+async def test_aggregate_measures_in_one_statement(tables: None) -> None:
+    """Counts, totals, means, and extremes, as the in-memory repository has them."""
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    measures: dict[str, Any] = {
+        "gadgets": Count(),
+        "stocked": Count("stock"),
+        "stock": Sum("stock"),
+        "revenue": Sum("price"),
+        "mean": Avg("price"),
+        "mean_stock": Avg("stock"),
+        "cheapest": Min("price"),
+        "first": Min("made_at"),
+        "last_name": Max("name"),
+        "label": Max("label"),
+    }
+    expected = {
+        "gadgets": 5,
+        "stocked": 3,
+        "stock": 6,
+        "revenue": Decimal("14.25"),
+        "mean": Decimal("2.85"),
+        "mean_stock": 2.0,
+        "cheapest": Decimal("-1.25"),
+        "first": MADE,
+        "last_name": "é中\\",
+        "label": Label("É中\\"),
+    }
+    async with GadgetsUnitOfWork() as uow:
+        with assert_num_queries(1):
+            measured = await uow.gadgets.aggregate(**measures)
+        none = await uow.gadgets.aggregate(
+            F("name") == "nothing", n=Count(), total=Sum("price"), mean=Avg("stock")
+        )
+        assert uow.gadgets.seen == ()
+    assert measured == expected == await fake.aggregate(**measures)
+    assert none == {"n": 0, "total": None, "mean": None}
+    assert await fake.aggregate(F("name") == "nothing", mean=Avg("stock")) == {
+        "mean": None
+    }
+
+
+async def test_measures_that_do_not_fit_are_refused() -> None:
+    """A measure needs a field it fits, and a call needs a measure."""
+    fake = InMemoryGadgets([])
+    for measure, message in [
+        (Sum(None), "measures a field"),
+        (Sum("name"), "not a number"),
+        (Avg("active"), "not a number"),
+        (Max("parts"), "child entities"),
+        (Min("nowhere"), "nowhere"),
+    ]:
+        with pytest.raises(InvalidQuery, match=message):
+            await fake.aggregate(measured=measure)
+    with pytest.raises(TypeError, match="takes measures"):
+        await fake.aggregate()
+
+    class Purse(AggregateRoot[int]):
+        cash: Money
+        secret: Annotated[str, Encrypted(subject="id")]
+
+    with pytest.raises(InvalidQuery, match="per currency"):
+        Sum("cash").bind(Purse)
+    with pytest.raises(InvalidQuery, match="cannot be measured"):
+        Max("secret").bind(Purse)
+    assert Count("cash").bind(Purse) == Count("cash")

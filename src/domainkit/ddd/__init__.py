@@ -5,6 +5,7 @@ This package depends only on the standard library, ``domainkit.utils``,
 imports nothing but ``domainkit.ddd`` stays free of frameworks and I/O.
 """
 
+from domainkit.ddd.choices import IntegerChoices, TextChoices
 from domainkit.ddd.events import (
     DomainEvent,
     EventBus,
@@ -19,6 +20,7 @@ from domainkit.ddd.exceptions import (
     DomainError,
     DuplicateValue,
     InvalidField,
+    MultipleFound,
     NotFound,
     PermissionDenied,
     PreconditionFailed,
@@ -26,6 +28,7 @@ from domainkit.ddd.exceptions import (
 from domainkit.ddd.fields import (
     Digits,
     Encrypted,
+    Indexed,
     InvalidQuery,
     MaxLength,
     MinLength,
@@ -33,6 +36,7 @@ from domainkit.ddd.fields import (
     Range,
     Reference,
     Sensitive,
+    Unique,
     UnknownField,
 )
 from domainkit.ddd.messages import UNSET, Command, Query, Unset
@@ -40,12 +44,18 @@ from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.personal import Counted, Personal, fields_about
 from domainkit.ddd.query import (
+    Avg,
+    Count,
     Criteria,
     F,
+    Max,
+    Measure,
+    Min,
     Ordering,
     RowLock,
     Selection,
     Specification,
+    Sum,
 )
 from domainkit.ddd.repository import (
     InMemoryRepository,
@@ -61,10 +71,12 @@ from domainkit.ddd.usecases import UseCase, use_case
 __all__ = [
     "UNSET",
     "AggregateRoot",
+    "Avg",
     "BusinessRuleViolation",
     "Command",
     "ConcurrentUpdate",
     "Conflict",
+    "Count",
     "Counted",
     "Criteria",
     "DeferredTask",
@@ -79,11 +91,17 @@ __all__ = [
     "F",
     "HandlerTimedOut",
     "InMemoryRepository",
+    "Indexed",
+    "IntegerChoices",
     "InvalidField",
     "InvalidQuery",
     "LockNotAvailable",
+    "Max",
     "MaxLength",
+    "Measure",
+    "Min",
     "MinLength",
+    "MultipleFound",
     "NotFound",
     "Ordering",
     "Page",
@@ -103,6 +121,9 @@ __all__ = [
     "Sensitive",
     "SoftDeletable",
     "Specification",
+    "Sum",
+    "TextChoices",
+    "Unique",
     "UnitOfWork",
     "UnknownField",
     "Unset",

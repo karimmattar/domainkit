@@ -33,6 +33,29 @@ and a status.
 
 ### Added
 
+- `Unique()` and `Indexed()` field markers, and `Meta.unique` and
+  `Meta.indexes` on an aggregate (`domainkit.ddd`): `table_for` makes each
+  a constraint or an index named after its table and fields, cut to 63
+  characters with a digest (Django's `unique=True`, `db_index=True`, and
+  `Meta`). A duplicate is the usual 409 `duplicate_value`, naming the
+  fields.
+- `TextChoices` and `IntegerChoices` (`domainkit.ddd`): enums whose
+  members carry a label, given (`PAID = "paid", gettext_lazy("Paid")`) or
+  made from the name; `Status.PAID.label`, `Status.choices()`, and
+  `Status.labels()` (Django's choices and `get_FOO_display()`).
+- `repository.aggregate(criteria, **measures)` with `Count`, `Sum`, `Avg`,
+  `Min`, and `Max` (`domainkit.ddd`): measures over the aggregates
+  selected, in one statement, nothing loaded (Django's `aggregate()`).
+  Exact on SQLite: a mean is a total over a count, and a `Decimal` field's
+  stays a `Decimal`.
+- `repository.get_or_create(criteria, create)` and
+  `update_or_create(criteria, update, create)`: the one aggregate the
+  criteria select, or a new one stored at once in a savepoint; when
+  another transaction stored a matching one first, the unique constraint
+  refuses this one and the stored one is answered. More than one match is
+  `MultipleFound`, a 409 `multiple_found`.
+- `repository.get_many(ids)`: the aggregates that exist, in one statement
+  (Django's `in_bulk`).
 - `repository.stream(query, batch=500)`: everything a query selects, read
   a batch at a time by keyset, each batch one statement (Django's
   `iterator()`).

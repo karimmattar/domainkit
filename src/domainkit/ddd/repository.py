@@ -15,7 +15,7 @@ import asyncio
 import copy
 import dataclasses
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Hashable, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Hashable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
@@ -23,7 +23,8 @@ from typing import Any, Final, Literal, cast, overload
 
 from domainkit import clock
 from domainkit.ddd._dataclass import EntityMeta
-from domainkit.ddd.exceptions import Conflict, NotFound
+from domainkit.ddd.exceptions import Conflict, DuplicateValue, MultipleFound, NotFound
+from domainkit.ddd.fields import primitive
 from domainkit.ddd.model import AggregateRoot
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.preconditions import Expectation, check_expected
@@ -32,6 +33,7 @@ from domainkit.ddd.query import (
     Criteria,
     CriteriaLike,
     F,
+    Measure,
     RowLock,
     Selection,
     as_criteria,
@@ -291,6 +293,35 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             self._scope(criteria, include_deleted=include_deleted)
         )
 
+    async def aggregate(
+        self,
+        criteria: CriteriaLike | None = None,
+        *,
+        include_deleted: bool = False,
+        **measures: Measure,
+    ) -> dict[str, object]:
+        """Measures over the aggregates ``criteria`` select, in one statement.
+
+        Django's ``aggregate()``::
+
+            await uow.orders.aggregate(
+                F("status") == "paid", orders=Count(), revenue=Sum("total_cents")
+            )  # {"orders": 3, "revenue": 4200}
+
+        Nothing is loaded or tracked.
+
+        Raises:
+            TypeError: No measure is given.
+            InvalidQuery: A measure does not fit its field (``Measure.bind``).
+        """
+        if not measures:
+            raise TypeError("aggregate() takes measures, as total=Sum('amount').")
+        model = self.aggregate_type
+        bound = {name: measure.bind(model) for name, measure in measures.items()}
+        return await self._aggregate(
+            self._scope(criteria, include_deleted=include_deleted), bound
+        )
+
     async def paginate(
         self,
         query: Selection | CriteriaLike | None = None,
@@ -423,6 +454,103 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
                     raise self.not_found(id_)
         return found
 
+    async def get_many(
+        self, ids: Iterable[IdT], *, include_deleted: bool = False
+    ) -> dict[IdT, AggregateT]:
+        """The aggregates of ``ids`` that exist, by ascending id, in one statement.
+
+        Django's ``in_bulk``: a missing id is left out, not an error
+        (``get_many_for_update`` locks them and refuses one missing).
+        """
+        wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return {}
+        selection = Selection(F(ID).in_(wanted), include_deleted=include_deleted)
+        return {aggregate.id: aggregate for aggregate in await self.filter(selection)}
+
+    async def get_or_create(
+        self, criteria: CriteriaLike, create: Callable[[], AggregateT]
+    ) -> tuple[AggregateT, bool]:
+        """The aggregate ``criteria`` select, or a new one ``create()`` makes.
+
+        The answer says whether it was created. A new aggregate is stored
+        at once (on a database, in a savepoint): if another transaction
+        stored a matching one first and a unique constraint refuses this
+        one, that one is read and returned instead. Without a unique
+        constraint on what ``criteria`` name, two transactions at once can
+        each create one.
+
+        Raises:
+            MultipleFound: ``criteria`` select more than one aggregate.
+            DuplicateValue: A unique constraint refused the new aggregate,
+                and no aggregate meets ``criteria``.
+        """
+        found = await self._one(criteria)
+        if found is not None:
+            return found, False
+        aggregate = create()
+        try:
+            await self._add_now(aggregate)
+        except DuplicateValue:
+            found = await self._one(criteria)
+            if found is None:
+                raise
+            return found, False
+        self._track(aggregate)
+        return aggregate, True
+
+    async def update_or_create(
+        self,
+        criteria: CriteriaLike,
+        update: Callable[[AggregateT], object],
+        create: Callable[[], AggregateT],
+    ) -> tuple[AggregateT, bool]:
+        """Change the aggregate ``criteria`` select, or store a new one.
+
+        The aggregate found is read with its row locked (as
+        ``get_for_update``), then ``update(aggregate)`` changes it, through
+        its own methods. Otherwise ``create()`` makes one, stored as
+        ``get_or_create`` stores it; if another transaction stored it first,
+        that one is locked and updated instead. The answer says whether it
+        was created.
+
+        Raises:
+            MultipleFound: ``criteria`` select more than one aggregate.
+        """
+        found = await self._one(criteria, lock=RowLock())
+        if found is None:
+            aggregate, created = await self.get_or_create(criteria, create)
+            if created:
+                return aggregate, True
+            found = await self._one(criteria, lock=RowLock())
+            if found is None:  # Removed again since; one more try.
+                return await self.get_or_create(criteria, create)
+        update(found)
+        return found, False
+
+    async def _one(
+        self, criteria: CriteriaLike, *, lock: RowLock | None = None
+    ) -> AggregateT | None:
+        """The one aggregate ``criteria`` select, or None.
+
+        Raises:
+            MultipleFound: They select more than one.
+        """
+        found = await self.filter(Selection(criteria, limit=2, lock=lock))
+        if len(found) > 1:
+            raise MultipleFound(
+                f"More than one {self.aggregate_type.__name__} meets the criteria."
+            )
+        return found[0] if found else None
+
+    async def _add_now(self, aggregate: AggregateT) -> None:
+        """Store a new aggregate at once, so a unique constraint answers now.
+
+        Raises:
+            DuplicateValue: A unique constraint refused it; nothing is stored.
+        """
+        await self._add(aggregate)
+
     def not_found(self, id_: IdT) -> NotFound:
         """Build the error for a missing aggregate; override for a domain error."""
         return NotFound(f"No aggregate has id {id_}.")
@@ -516,6 +644,12 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         """Whether the bound ``criteria`` select anything."""
         return await self._count(criteria) > 0
 
+    async def _aggregate(
+        self, criteria: Criteria | None, measures: dict[str, Measure]
+    ) -> dict[str, object]:
+        """Work out the bound ``measures`` over what ``criteria`` select."""
+        raise NotImplementedError(f"{type(self).__name__} cannot aggregate.")
+
 
 def _is_deleted(aggregate: object) -> bool:
     """Whether ``aggregate`` is soft-deleted."""
@@ -598,6 +732,24 @@ class InMemoryRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
     async def _count(self, criteria: Criteria | None) -> int:
         """Count the matches."""
         return len(self._matching(criteria))
+
+    async def _aggregate(
+        self, criteria: Criteria | None, measures: dict[str, Measure]
+    ) -> dict[str, object]:
+        """Each measure over the matching aggregates' values that are set."""
+        matching = self._matching(criteria)
+        answer: dict[str, object] = {}
+        for name, measure in measures.items():
+            if measure.field is None:
+                answer[name] = len(matching)
+                continue
+            values = [
+                value
+                for aggregate in matching
+                if (value := primitive(getattr(aggregate, measure.field))) is not None
+            ]
+            answer[name] = measure.present(self.aggregate_type, measure.compute(values))
+        return answer
 
     def _matching(self, criteria: Criteria | None) -> list[AggregateT]:
         """The stored aggregates that meet the bound ``criteria``."""

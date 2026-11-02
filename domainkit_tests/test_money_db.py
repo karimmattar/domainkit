@@ -55,7 +55,7 @@ from domainkit.ddd import (
     MaxLength,
     UnknownField,
 )
-from domainkit.ddd.query import Criteria, F, Ordering, Selection
+from domainkit.ddd.query import Count, Criteria, F, Ordering, Selection, Sum
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.money import (
@@ -873,4 +873,21 @@ def test_a_given_amount_column_gets_the_pair_check() -> None:
     assert {str(each.name) for each in sized.constraints} >= {
         "version_counts",
         "limit_money",
+    }
+
+
+async def test_a_money_field_is_counted_not_summed(tables: None) -> None:
+    """``Count`` of a money field counts the set ones; ``Sum`` is per currency."""
+    items = dataset()
+    await store(*items)
+    with_limit = sum(1 for item in items if item.limit is not None)
+
+    async with WalletsUnitOfWork() as uow:
+        counted = await uow.wallets.aggregate(limits=Count("limit"), all=Count())
+        with pytest.raises(InvalidQuery, match="per currency"):
+            await uow.wallets.aggregate(total=Sum("balance"))
+
+    assert counted == {"limits": with_limit, "all": len(items)}
+    assert await InMemoryWallets(items).aggregate(limits=Count("limit")) == {
+        "limits": with_limit
     }

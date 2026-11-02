@@ -42,13 +42,15 @@ import dataclasses
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Final, NoReturn, Self, cast
+from typing import Any, ClassVar, Final, NoReturn, Self, cast
 
 from domainkit.ddd.fields import (
     FieldInfo,
     InvalidQuery,
     UnknownField,
+    base_type,
     fields_of,
     money_part,
     primitive,
@@ -56,12 +58,18 @@ from domainkit.ddd.fields import (
 from domainkit.money import Money
 
 __all__ = [
+    "Avg",
+    "Count",
     "Criteria",
     "F",
+    "Max",
+    "Measure",
+    "Min",
     "Ordering",
     "RowLock",
     "Selection",
     "Specification",
+    "Sum",
 ]
 
 ID: Final = "id"
@@ -510,6 +518,112 @@ class Ordering:
 type OrderingLike = Ordering | F | str
 """An ordering, a field (ascending), or Django's ``"-name"``."""
 type CriteriaLike = Criteria | Specification[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class Measure:
+    """What ``repository.aggregate`` works out over the aggregates selected.
+
+    ``Count()`` counts them, ``Count("field")`` the ones whose field is
+    set; ``Sum``, ``Avg``, ``Min``, and ``Max`` take a field and leave out
+    the aggregates without a value, and are None when none has one.
+    """
+
+    field: str | None = None
+    function: ClassVar[str] = "count"
+
+    def bind(self, model: type) -> Self:
+        """Check that ``model`` has the field and that the measure fits it.
+
+        Raises:
+            UnknownField: The model has no such field.
+            InvalidQuery: The field is a relation, does not sort, holds
+                amounts of money (measure them per currency), or is not a
+                number for ``Sum`` and ``Avg``.
+        """
+        if self.field is None:
+            if self.function != "count":
+                raise InvalidQuery(f"{type(self).__name__}() measures a field.")
+            return self
+        (info,) = resolve(model, self.field)
+        kind = base_type(info.kind)
+        where = f"{model.__name__}.{self.field}"
+        if not info.orderable:
+            raise InvalidQuery(f"{where} cannot be measured.")
+        if self.function != "count" and kind is not None and issubclass(kind, Money):
+            raise InvalidQuery(
+                f"{where} holds money: measure its amount per currency, with the "
+                "currency in the criteria."
+            )
+        if self.function in {"sum", "avg"} and not (
+            kind is not None and issubclass(kind, NUMBERS) and kind is not bool
+        ):
+            raise InvalidQuery(f"{where} is not a number to {self.function}.")
+        return self
+
+    def present(self, model: type, value: object) -> object:
+        """``value`` as the answer gives it: ``Min`` and ``Max`` as the field holds it.
+
+        A count, a total, and a mean are plain numbers.
+        """
+        if value is None or self.field is None or self.function not in {"min", "max"}:
+            return value
+        (info,) = resolve(model, self.field)
+        return info.coerce(primitive(value))
+
+    def compute(self, values: Sequence[object]) -> object:
+        """The measure of ``values``, the field's values that are set."""
+        if self.function == "count":
+            return len(values)
+        if not values:
+            return None
+        if self.function == "min":
+            return min(values)  # type: ignore[type-var]
+        if self.function == "max":
+            return max(values)  # type: ignore[type-var]
+        total = sum(values)  # type: ignore[arg-type]
+        return total if self.function == "sum" else total / len(values)
+
+
+@dataclass(frozen=True, slots=True)
+class Count(Measure):
+    """How many aggregates there are, or how many have the field set."""
+
+
+@dataclass(frozen=True, slots=True)
+class Sum(Measure):
+    """The total of a number field."""
+
+    field: str | None
+    function: ClassVar[str] = "sum"
+
+
+@dataclass(frozen=True, slots=True)
+class Avg(Measure):
+    """The mean of a number field: exact for a ``Decimal`` field."""
+
+    field: str | None
+    function: ClassVar[str] = "avg"
+
+
+@dataclass(frozen=True, slots=True)
+class Min(Measure):
+    """The smallest value of a field whose values sort."""
+
+    field: str | None
+    function: ClassVar[str] = "min"
+
+
+@dataclass(frozen=True, slots=True)
+class Max(Measure):
+    """The largest value of a field whose values sort."""
+
+    field: str | None
+    function: ClassVar[str] = "max"
+
+
+NUMBERS: Final = (int, float, Decimal)
+"""The kinds of values ``Sum`` and ``Avg`` take."""
 
 
 @dataclass(frozen=True, slots=True)
