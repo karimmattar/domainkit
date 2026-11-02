@@ -266,7 +266,10 @@ async def tables(database: str) -> AsyncIterator[None]:
 async def test_the_database_holds_the_check_for_rows_written_past_the_domain(
     tables: None,
 ) -> None:
-    """A row inserted by hand is refused, and the error names the check."""
+    """A row inserted by hand is refused, and the error names the check.
+
+    The row breaks one check alone: of several, the database names any.
+    """
     async with SqlItemsUnitOfWork() as uow:
         await uow.items.add(Item(id=ItemId(1), stock=3))
         await uow.commit()
@@ -280,7 +283,7 @@ async def test_the_database_holds_the_check_for_rows_written_past_the_domain(
         async with connections.engine().begin() as connection:
             await connection.execute(
                 insert(items).values(
-                    id=2, version=1, stock=-1, cap=None, status="open", code="A"
+                    id=2, version=1, stock=1, cap=5000, status="open", code="A"
                 )
             )
     violation = integrity_violation(caught.value, metadata)
@@ -288,7 +291,7 @@ async def test_the_database_holds_the_check_for_rows_written_past_the_domain(
     assert violation is not None
     assert (violation.kind, violation.constraint) == (
         "check",
-        "ck_framework_test_checked_items_stock_not_negative",
+        "ck_framework_test_checked_items_cap_under_1000",
     )
 
 
