@@ -44,6 +44,42 @@ at 98% or more:
    checked against what the repository and `table_for` already do before
    it is built.
 
+### What the core asks of an application today
+
+Measured on the guide's shop, one aggregate with four commands:
+
+| To add | An application writes today | Where |
+| --- | --- | --- |
+| One use case | A `Command` class, a service function, a request schema (`schema_for`), and a `command_route` line | four places, two files |
+| One aggregate's storage | A repository port, a unit-of-work port, a SQLAlchemy repository, a SQLAlchemy unit of work, `table_for`, `map_imperatively`, `start_mappers`, and an in-memory fake for tests | eight pieces |
+| One validated field | A marker for the API (`MaxLength`), a value object for the domain, and, on a user, `create` and `clean_field` overrides | three mechanisms |
+| A custom user field | The class, a hand-written column, `EDITABLE_FIELDS`, and conftest overrides of `admin_client` and `client_for` | four places |
+
+### The target design
+
+- **A use case is one function.** `@controller` on `async def restock(uow,
+  product_id: UUID, quantity: Annotated[int, Range(min=1)]) -> Product` is
+  enough: the command, its request schema, its route, its OpenAPI, and its
+  permission (`change_product`) are derived from the signature, and the
+  unit of work is opened and committed around it. `Command` classes stay
+  for messages that travel (tasks, approvals).
+- **An aggregate's storage is declared, not written.** `class
+  CatalogStore(Store): products = Repository(Product)` makes the port, the
+  SQLAlchemy unit of work, the table (from the fields), the mapping, and an
+  in-memory twin for tests; a repository of its own is a subclass only when
+  it adds queries.
+- **One validation path.** Field markers and a `clean()` method are
+  checked by the aggregate itself when it is made or changed (the API
+  derives its schema from the same markers), and the user model is an
+  aggregate like any other, so `phone: Annotated[str, Pattern(...)]` is the
+  whole of a validated user field.
+- **One request flow, drawn in the docs**: route, controller, unit of
+  work, aggregate, events after commit, outbox. Nothing else on the path
+  that a reader cannot see.
+- **Migration**: each step lands behind the current API, the guide's shop
+  is rewritten on it and must shrink, and the old spelling is removed in
+  the release after.
+
 ## Then
 
 1. **Generators for the four-file layout.** `addcommand`, `addquery`, and
