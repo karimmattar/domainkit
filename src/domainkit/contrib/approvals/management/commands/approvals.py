@@ -2,7 +2,6 @@
 
 import json
 import uuid
-from argparse import ArgumentParser
 
 from sqlalchemy import select
 
@@ -11,50 +10,50 @@ from domainkit.contrib.approvals.services import expire_requests
 from domainkit.contrib.approvals.tables import decisions, requests
 from domainkit.contrib.approvals.uow import approvals_alias
 from domainkit.db import connections
-from domainkit.management import BaseCommand, CommandError
-
-ACTIONS = ("list", "show", "expire")
+from domainkit.management import ActionCommand, CommandError, action, option
 
 
-class Command(BaseCommand):
+class Command(ActionCommand):
     """List requests, show one with its decisions, or expire the overdue."""
 
     help = (
         "List approval requests (pending by default), show one with its "
         "command and decisions, or expire those whose time is up."
     )
-    operator_actions = True
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the action and its options."""
-        parser.add_argument("action", choices=ACTIONS)
-        parser.add_argument("request", nargs="?", help="show: the request's id")
-        parser.add_argument(
-            "--status",
-            choices=[status.value for status in RequestStatus],
-            default=RequestStatus.PENDING.value,
-            help="list: the requests in this status (default: pending)",
-        )
-        parser.add_argument("--limit", type=int, default=50)
+    @action(
+        name="list",
+        help="list the requests in a status, oldest first",
+        options=[
+            option(
+                "--status",
+                choices=[status.value for status in RequestStatus],
+                default=RequestStatus.PENDING.value,
+                help="the requests in this status (default: pending)",
+            ),
+            option(
+                "--limit", type=int, default=50, help="from 1 to 1000 (default: 50)"
+            ),
+        ],
+    )
+    async def listed(self, *, status: str, limit: int) -> None:
+        """One line per request."""
+        await self._list(RequestStatus(status), limit)
 
-    async def handle(
-        self,
-        *,
-        action: str,
-        request: str | None,
-        status: str,
-        limit: int,
-        **options: object,
-    ) -> None:
-        """Do what ``action`` names."""
-        if action == "expire":
-            async with self.recorded("approvals.expire") as recorded:
-                recorded["requests"] = expired = await expire_requests()
-            self.write(f"Expired {expired} request(s).")
-        elif action == "list":
-            await self._list(RequestStatus(status), limit)
-        else:
-            await self._show(_id(request))
+    @action(
+        help="show a request, its command, and its decisions",
+        options=[option("request", nargs="?", help="the request's id")],
+    )
+    async def show(self, *, request: str | None) -> None:
+        """The request, its command, and its decisions."""
+        await self._show(_id(request))
+
+    @action(help="expire the requests whose time is up", operator=True)
+    async def expire(self) -> None:
+        """Expire the overdue requests, and say how many."""
+        async with self.recorded("approvals.expire") as recorded:
+            recorded["requests"] = expired = await expire_requests()
+        self.write(f"Expired {expired} request(s).")
 
     async def _list(self, status: RequestStatus, limit: int) -> None:
         """One line per request in ``status``, oldest first."""
@@ -104,7 +103,11 @@ class Command(BaseCommand):
 
 
 def _id(text: str | None) -> uuid.UUID:
-    """``text`` as a request's id."""
+    """``text`` as a request's id.
+
+    Raises:
+        CommandError: It is missing, or not one.
+    """
     try:
         return uuid.UUID(text or "")
     except ValueError:
