@@ -14,6 +14,7 @@ dataclass ``__init__``, and pays nothing. An ORM loading a row sets
 """
 
 import dataclasses
+import inspect
 import sys
 from collections.abc import Callable, Mapping
 from types import NoneType, UnionType
@@ -120,13 +121,29 @@ def _hints(cls: type) -> dict[str, Any]:
         hints = {}
         for klass in reversed(cls.__mro__):
             space = vars(sys.modules[klass.__module__])
-            for name, hint in vars(klass).get("__annotations__", {}).items():
+            for name, hint in _own_annotations(klass).items():
                 try:
                     hints[name] = _evaluated(hint, space, dict(vars(klass)))
                 except (NameError, TypeError, SyntaxError):
                     hints.pop(name, None)
     names = {field.name for field in dataclasses.fields(cls)}
     return {name: hint for name, hint in hints.items() if name in names}
+
+
+def _own_annotations(klass: type) -> dict[str, Any]:
+    """The annotations ``klass`` itself declares, unresolved names left as they are.
+
+    Python 3.14 makes them on first use (PEP 649) rather than keeping them
+    in the class's ``__dict__``; ``annotationlib``'s forward references
+    stand for the names it cannot resolve.
+    """
+    if sys.version_info >= (3, 14):
+        import annotationlib
+
+        return annotationlib.get_annotations(
+            klass, format=annotationlib.Format.FORWARDREF
+        )
+    return inspect.get_annotations(klass)
 
 
 def _evaluated(hint: object, space: dict[str, Any], local: dict[str, Any]) -> object:
