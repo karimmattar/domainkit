@@ -1,7 +1,7 @@
 """SEC-14c-1: a retried dead letter runs after its key's next waiting message.
 
 The docs (messaging, "A dead letter lets the key go on") and ADR 0118 say
-``messages --retry`` puts a dead message "back in its place, held before
+``messages retry`` puts a dead message "back in its place, held before
 the key's messages still waiting, after the one running if there is one".
 ``ordering.requeue`` decides with ``first_status``: any *pending* message of
 the key, running or not, makes the retried one ``held``. So a key's next

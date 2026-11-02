@@ -133,7 +133,7 @@ project" is the team that builds and runs the service.
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
 | **Repudiation** | Data-changing commands run as `operator:<name>` and are audited ([ADR 0070](adr/0070-name-the-operator-of-data-changing-commands.md)); `loaddata` and `flush` record the tables they touched and the fixture's SHA-256, and need a name given on purpose where deployed; staff changes through the admin API are audited. | Other commands take the login name when none is given. Direct database access is not audited by domainkit. |
-| **Tampering** | `migrate --downgrade` needs `--allow-data-loss` where deployed; `loaddata` only adds rows unless `--replace`, and neither it nor `flush` touches users, grants, tokens, or second factors without `--include-guarded` ([ADR 0100](adr/0100-guard-credentials-and-grants-from-loaddata-and-flush.md)); the trail's seals show rewritten rows (`auditverify`). | Who holds production access. |
+| **Tampering** | `migrate --downgrade` needs `--allow-data-loss` where deployed; `loaddata` only adds rows unless `--replace`, and neither it nor `flush` touches users, grants, tokens, or second factors without `--include-guarded` ([ADR 0100](adr/0100-guard-credentials-and-grants-from-loaddata-and-flush.md)); the trail's seals show rewritten rows (`audit verify`). | Who holds production access. |
 | **Information disclosure** | Secrets hidden in `diffsettings`, reprs, and dumps. | Shell access sees the environment. |
 
 ### 9. The supply chain
@@ -254,7 +254,7 @@ to the project on purpose.
 - Run the key service: the KEK, its policy, its rotation, and its audit
   log; keep wrapped data keys with the configuration; replay recorded
   erasures after restoring a backup.
-- Run sealing on a schedule, anchor in a ledger, and run `auditverify`.
+- Run sealing on a schedule, anchor in a ledger, and run `audit verify`.
 - Keep logs, the audit trail, and backups for as long as its regulator
   asks, encrypted, with access controlled and itself audited.
 - Watch the metrics: the outbox's backlog, refused requests, shed load,

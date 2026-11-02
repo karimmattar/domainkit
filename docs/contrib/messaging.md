@@ -53,7 +53,7 @@ during its last attempt is dead-lettered too: it is not run again after
 `max_attempts`. A handler or task that raises `CancelledError` while the
 worker is not stopping it (it awaited a task or future that was
 cancelled) has failed, as `HandlerCancelled`, and is retried and counted
-as any failure. `python manage.py messages --dead` lists dead
+as any failure. `python manage.py messages list dead` lists dead
 letters, and `--retry ID` (or `all`) queues them again after a fix. A
 message's last error is kept with it, logged, and reported. Validation
 errors (arguments or an event that no longer fit) are kept as `InvalidData`,
@@ -99,8 +99,8 @@ has its own outbox, written in the same transaction as that database's
 changes. `runworker` runs one worker per outbox, all in one process by
 default; `runworker --database <target>` runs only a target's, so groups can
 scale apart. Periodic tasks and `enqueue()` use the home outbox,
-`MESSAGING.DATABASE`, which must be one alias. `messages --database <alias>`
-inspects any outbox.
+`MESSAGING.DATABASE`, which must be one alias. `messages status --database
+<alias>` (and each action of `messages`) inspects any outbox.
 
 | `MESSAGING` key | Default | Meaning |
 | --- | --- | --- |
@@ -331,15 +331,15 @@ event_bus.subscribe(PaymentEvent, send_status, durable=True)
 - **A dead letter lets the key go on.** Once a message is dead-lettered
   (after `max_attempts`, at once for `dont_retry_on`, or its worker died
   during its last attempt), the key's next message runs, and the rest
-  after it. The dead message is out of the line: `messages --retry` puts it
+  after it. The dead message is out of the line: `messages retry` puts it
   back in its place, before the key's messages still waiting, the pending
   one included while no worker has started it and no relay has handed it
   to the broker (that one is held again behind it); after the one under
   way, if there is one. The messages that ran meanwhile stay run. A key that must stop at a failure, a ledger's say, gives its
   task a high `max_attempts` with a capped backoff: the message keeps
   retrying in place, holding the key, until it succeeds or a fix lets it.
-  Watch for it in the logs and `messages --held`.
-- **Cancelling.** `messages --cancel ID` cancels a held message too;
+  Watch for it in the logs and `messages list held`.
+- **Cancelling.** `messages cancel ID` cancels a held message too;
   cancelling a key's first message lets the next one run.
 - **What it costs.** A key runs one message at a time, a round trip
   between each: spread work over keys (per account, per payment), not one
@@ -356,9 +356,9 @@ event_bus.subscribe(PaymentEvent, send_status, durable=True)
   but a 0.12 worker that finishes a keyed message 1.0 wrote does (see
   upgrading below). Each worker's cleanup round makes the first held
   message of such a key pending, under the key's turn, and logs a warning
-  naming the message; `messages --release` does it at once.
+  naming the message; `messages release` does it at once.
 
-`messages` counts held messages, and `messages --held` lists them by key,
+`messages` counts held messages, and `messages list held` lists them by key,
 in order. Workers delete a key's row once none of its messages waits or
 is dead and it was not used for `RETENTION_SECONDS`. That query reads the
 whole table of keys when few are idle: 78 ms a batch at a million keys,
@@ -431,7 +431,7 @@ aio-pika). Then `runworker` works like this:
   already ran, is acknowledged and skipped.
 - **Retries and dead letters** stay in the outbox. A failed message goes
   back with its backoff delay, and the relay publishes it again when it is
-  due, so RabbitMQ needs no delayed-message plugin. `messages --dead` and
+  due, so RabbitMQ needs no delayed-message plugin. `messages list dead` and
   `--retry` work as before.
 - **Every delivery is answered**, so a failure never holds one of the
   consumer's `CONCURRENCY` slots. A delivery whose outbox cannot be reached
@@ -537,7 +537,7 @@ before deploying: workers claim through the new columns. Stop the 0.12
 workers before any 1.0 process writes a message with an ordering key: a
 0.12 worker finishes such a message without making the next of its key
 pending, and the key waits until a 1.0 worker's cleanup round, or
-`messages --release`, releases it ([upgrading.md](../upgrading.md#012-to-10)). Adding the
+`messages release`, releases it ([upgrading.md](../upgrading.md#012-to-10)). Adding the
 columns rewrites nothing; building the index reads the outbox once, and
 adds no entry, since no existing message has a key. For an outbox too
 large to block writes that long, build it without blocking, as for the
@@ -594,7 +594,7 @@ async def push_invoice(invoice_id: UUID) -> None:
   statement that marks it done, and `cancel` when it cancels it; the row
   keeps the task's name, id, times, attempts, and error, for
   `RETENTION_SECONDS`. A dead message keeps its arguments, so
-  `messages --retry` can run it again, for as long as it stays dead,
+  `messages retry` can run it again, for as long as it stays dead,
   unless its task is `sensitive`: then they are blanked with its error
   recorded, its headers say `payload_blanked`, and a retry refuses it.
   Mark a task sensitive when its arguments hold secrets or personal data;
@@ -695,7 +695,7 @@ options list messages without their arguments:
   refuses one, and `--retry all` says how many it left;
 - `--queue NAME` and `--limit N` narrow a listing.
 
-`messages --cancel ID` cancels a message no worker is running: a waiting
+`messages cancel ID` cancels a message no worker is running: a waiting
 or held one, or one on its way through the broker (its delivery is then
 skipped).
 A running message is refused. A cancelled message never runs, nor does the

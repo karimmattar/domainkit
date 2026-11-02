@@ -55,7 +55,7 @@ class AuditConfig(DomainConfig):
             ImproperlyConfigured: ``AUDIT.CHECKPOINT_PUBLIC_KEY`` is set but
                 is not an Ed25519 public key in PEM, or cryptography is
                 missing. The private ``AUDIT.CHECKPOINT_KEY`` is not read
-                here: only ``auditprune`` and ``auditverify --export`` sign.
+                here: only ``audit prune`` and ``audit verify --export`` sign.
         """
         config = registry.settings(AuditSettings)
         router.require_standalone(config.DATABASE, "AUDIT.DATABASE")

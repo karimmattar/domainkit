@@ -53,7 +53,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple
 from weakref import WeakKeyDictionary, WeakSet
 
-from domainkit.deprecation import renamed
 from domainkit.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
@@ -408,5 +407,3 @@ on_deployment_warnings: HookPoint[DeploymentCheck] = HookPoint(
 )
 """Warnings ``check`` lists: ``()``. Weak but valid settings where deployed,
 none elsewhere; code to change (a ``def`` the loop awaits), anywhere."""
-
-__getattr__ = renamed(__name__, {"on_check": f"{__name__}.on_ready"}, "2.0")

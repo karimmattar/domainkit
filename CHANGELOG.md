@@ -14,6 +14,52 @@ and a status.
 - `docs/request-flow.md`: the path a command takes, from the middleware to
   the answer and the worker after it, what can refuse it at each stage,
   and what each stage costs on the benchmark ladder.
+- `ActionCommand`, `@action`, and `option` (`domainkit.management`): one
+  shape for every command of several actions, `manage.py <command>
+  <action> [options]`, each action a method with its own options and
+  help; `@action(operator=True)` marks one that changes data, which takes
+  `--operator` and runs as that operator, and `common_options` are taken
+  by every action. An operator's run is recorded
+  with its action (`audit forget`), not only its command (DSGN-30).
+
+### Changed
+
+- **Breaking:** the five audit commands are one, `audit`: `auditlog` is
+  `audit log` (and, with `--target` or `--aggregate`, `audit history`),
+  `auditseal` is `audit seal`, `auditverify` is `audit verify` (and, with
+  `--check-export`, `audit check-export FILE`), `auditprune` is
+  `audit prune`, and `auditforget` is `audit forget`. Only `prune` and
+  `forget` take `--operator`.
+- **Breaking:** `messages` takes an action: `messages status` (the counts
+  and lag `messages` printed), `messages list pending|held|locked|dead`,
+  `messages retry ID|all`, `messages cancel ID`, and `messages release`,
+  each with `--database` after it. Only `retry`, `cancel`, and `release`
+  take `--operator`.
+- **Breaking:** `evidence --subject S` is `evidence list S`, and
+  `evidence --verify KEY` is `evidence verify KEY`. `webhooks`' actions
+  take only their own options, and only `replay` takes `--operator`.
+- **Breaking:** every command of several actions (`keys`, `flags`,
+  `limits`, `privacy`, `approvals`, `accounting`, `cache`, `broker`, and
+  those above) is an `ActionCommand`: `--operator` comes after the action
+  (`privacy purge --operator alice`), and only the actions that change data
+  take it; their listings and checks (`flags list`, `accounting verify`,
+  `approvals list`) no longer do.
+
+- The refusals of a deployment by `contrib.mail`, `contrib.notifications`,
+  and `contrib.evidence` carry check ids, as the core's do: `deploy.E004`
+  (a development mail backend), `deploy.E005` and `deploy.E006` (a
+  development SMS or push backend), and `security.E019` (no evidence
+  subject key), each with its hint (DSGN-32).
+
+### Removed
+
+- **Breaking:** the names 1.0 renamed and deprecated, so each name has one
+  home (DSGN-29): `domainkit.apps.hooks.on_check` (`on_ready`),
+  `DomainConfig.RETENTION` (`retention`), `MESSAGING.SHUTDOWN_TIMEOUT`
+  (`DRAIN_TIMEOUT`), `domainkit.contrib.messaging.dbclock`
+  (`domainkit.db.dbclock`), the model names of `contrib.contenttypes`
+  (`domainkit.db.models`'), `contrib.webhooks.WebhookSettings`
+  (`WebhooksSettings`), and `Credentials.session` (`login`).
 
 ## [1.5.0] - 2026-11-02
 

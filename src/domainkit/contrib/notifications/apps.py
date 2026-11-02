@@ -1,10 +1,10 @@
 """Install ``domainkit.contrib.notifications``, with messaging."""
 
 from domainkit.apps import DomainConfig, Requirement, registry
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.messaging import task
-from domainkit.exceptions import ImproperlyConfigured
 
 from .delivery import (
     PUSH_TASK,
@@ -49,11 +49,17 @@ class NotificationsConfig(DomainConfig):
             "SMS_BACKEND": get_sms_backend().deployable,
             "PUSH_BACKEND": get_push_backend().deployable,
         }
-        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-            for setting, deployable in backends.items():
-                if not deployable:
-                    raise ImproperlyConfigured(
-                        f"NOTIFICATIONS.{setting} {getattr(config, setting)!r} is "
-                        f"for development and tests; write an adapter for your "
-                        f"provider for {settings.ENVIRONMENT}."
-                    )
+        ids = {"SMS_BACKEND": "deploy.E005", "PUSH_BACKEND": "deploy.E006"}
+        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS and (
+            refused := [
+                CheckMessage(
+                    ids[setting],
+                    f"NOTIFICATIONS.{setting} {getattr(config, setting)!r} is "
+                    "for development and tests",
+                    f"Write an adapter for your provider for {settings.ENVIRONMENT}.",
+                )
+                for setting, deployable in backends.items()
+                if not deployable
+            ]
+        ):
+            raise CheckFailed("NOTIFICATIONS settings cannot be deployed", refused)

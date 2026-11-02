@@ -492,7 +492,7 @@ async def verify_ledger() -> list[LedgerProblem]:
     its balances with it, still balances, but no longer matches the trail
     (SEC-16b-6). Entries whose trail rows were pruned, or excluded
     (``AUDIT.EXCLUDE``), or posted before 0.15, are not compared; that the
-    trail itself is as written is ``auditverify``'s to say.
+    trail itself is as written is ``audit verify``'s to say.
     """
     signed = case(
         (postings.c.side == Side.DEBIT, postings.c.amount), else_=-postings.c.amount

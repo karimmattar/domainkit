@@ -21,14 +21,14 @@ from domainkit.contrib.audit import Outcome, record
 await record("auth.login", Outcome.DENIED, reason="mfa")
 ```
 
-`python manage.py auditlog --actor alice --action catalog.product_created` reads the
+`python manage.py audit log --actor alice --action catalog.product_created` reads the
 trail. Operators' commands add their own rows ([operators](../reference/commands.md#operators)):
 `operator.loaddata` names the fixture file, its SHA-256, and each table
 with how many rows it got and replaced; `operator.flush` each table it
 emptied, with its rows, and the tables it kept; both say whether
 `--replace` or `--include-guarded` was given. Neither loads nor empties
 the trail's own tables. Events are audited in the database where they commit, so with several
-databases, `auditlog --database <alias>` reads another one.
+databases, `audit log --database <alias>` reads another one.
 
 ## Personal data
 
@@ -87,8 +87,8 @@ To honour an erasure request, delete the person's key, in every database
 that holds an audit trail:
 
 ```shell
-python manage.py auditforget 4b0c6f0e-...            # or: await forget(str(user.id))
-python manage.py auditforget --anonymous-days 30     # anonymous callers' days before that
+python manage.py audit forget 4b0c6f0e-...            # or: await forget(str(user.id))
+python manage.py audit forget --anonymous-days 30     # anonymous callers' days before that
 ```
 
 Each run is recorded as `operator.auditforget`, with the operator who ran
@@ -138,7 +138,7 @@ rewrite.
   canonical JSON) and its link (the SHA-256 of the previous link and the
   digest). The worker seals every `AUDIT.SEAL_EVERY` when
   `domainkit.contrib.messaging` is installed; otherwise run
-  `python manage.py auditseal` on a schedule. Each database's trail is its
+  `python manage.py audit seal` on a schedule. Each database's trail is its
   own chain. The newest sealed row is a high-water mark: a run looks for
   rows from `AUDIT.SEAL_LATE_WINDOW` before it (rows that committed late),
   so its cost follows what is new, not how long the trail is. The mark
@@ -151,11 +151,11 @@ rewrite.
   (UTC) audited requests do not queue behind one insert of the new day's
   key.
 - **Sealing late rows.** A row that commits later than the window after
-  the mark is out of a run's reach, and `auditverify` reports it as
+  the mark is out of a run's reach, and `audit verify` reports it as
   unsealed once it is a day old. Look into why (a transaction that ran
   that long, a host whose clock runs behind), then run
-  `python manage.py auditseal --late`: it seals such rows into the same
-  chain, each seal flagged `late`, and `auditverify` counts them
+  `python manage.py audit seal --late`: it seals such rows into the same
+  chain, each seal flagged `late`, and `audit verify` counts them
   afterwards ("rows sealed late"). They were open to change unnoticed for
   longer than the others. Finding them reads the whole trail, so the
   worker never does it on its own.
@@ -167,13 +167,13 @@ rewrite.
   shares a ledger a namespace of its own (`"shop-production"`): without
   one, anchors go under `domainkit/audit/<alias>`, the key of 0.9.0, which
   every project on the ledger shares, so one project's anchors hold
-  another's back and read as rewritten anchors in its `auditverify`.
+  another's back and read as rewritten anchors in its `audit verify`.
   Setting a namespace on a trail anchored before keeps it verified:
-  `auditverify` also reads the heads anchored under the old key while
+  `audit verify` also reads the heads anchored under the old key while
   `AUDIT.PREVIOUS_ANCHORS` is on. If other projects wrote that key too,
   their heads read as rewritten anchors there; set `PREVIOUS_ANCHORS` to
   `False` once your namespace holds an anchor of its own.
-- **Verifying.** `python manage.py auditverify` checks every row against
+- **Verifying.** `python manage.py audit verify` checks every row against
   its seal, every link against the one before, and every anchored head
   against the chain. It prints what it found and fails on changed or
   missing rows, broken links, rewritten anchors, seals that no anchor
@@ -188,7 +188,7 @@ own clock runs ahead cannot leave other hosts' rows behind.
 
 A row can be changed unnoticed only until it is sealed and its head
 anchored, so anchor as often as you need: the default is hourly. Erasing a
-person (`auditforget`) deletes a key, not a row, so the chain stays intact.
+person (`audit forget`) deletes a key, not a row, so the chain stays intact.
 
 **Upgrading.** The seals table has a new `late` column: run
 `makemigrations` and `migrate` in each project that installs audit.
@@ -210,9 +210,9 @@ AUDIT = {..., "CHECKPOINT_PUBLIC_KEY": env.str("AUDIT_CHECKPOINT_PUBLIC_KEY")}
 ```
 
 ```bash
-# Only where auditprune (and auditverify --export) run: the private key too.
+# Only where audit prune (and audit verify --export) run: the private key too.
 AUDIT_CHECKPOINT_KEY="$(cat audit-checkpoint.pem)" \
-  python manage.py auditprune --keep-days 2555   # keep seven years
+  python manage.py audit prune --keep-days 2555   # keep seven years
 ```
 
 where those commands' settings read `"CHECKPOINT_KEY":
@@ -220,16 +220,16 @@ env.str("AUDIT_CHECKPOINT_KEY", None)`. The application never reads the
 private key: whoever holds its settings cannot sign a checkpoint.
 
 `--keep-days` is at least `AUDIT.MIN_RETENTION` (30 days by default):
-a shorter one is refused. For each audited database, `auditprune` finds
+a shorter one is refused. For each audited database, `audit prune` finds
 the newest seal sealed more than `--keep-days` ago (with `AUDIT.LEDGER`,
 the newest one anchored `MIN_RETENTION` ago, so the ledger vouches for it
-too; never the chain's head), checks the chain up to it as `auditverify`
+too; never the chain's head), checks the chain up to it as `audit verify`
 does, and refuses if anything there is wrong: pruning would hide it. It
 then signs a checkpoint of that seal, its number and link, with
 `AUDIT.CHECKPOINT_KEY` (Ed25519), records it on the ledger
 (`domainkit/audit-pruned/<NAMESPACE>/<alias>`), stores it in
 `domainkit_audit_checkpoints`, and deletes the rows and seals at and
-below it, the newest first, 1,000 a transaction. `auditverify` starts the
+below it, the newest first, 1,000 a transaction. `audit verify` starts the
 chain from the checkpoint, so a pruned trail still verifies (it prints
 how many seals were pruned), and one tampered with still fails: a row
 changed, a seal removed, the checkpoint removed or changed, or a
@@ -253,9 +253,9 @@ On PostgreSQL the `protect()` triggers refuse every delete, so each batch
 disables them in its own transaction, as the tables' owner: set
 `MIGRATION_URL` to the owner's URL where the application's role is not
 it. Writers of the trail wait for that one batch (under 10 ms in our
-measurements). Run `auditprune` from cron, not more than daily.
+measurements). Run `audit prune` from cron, not more than daily.
 
-**Exports for a third party.** `python manage.py auditverify --export
+**Exports for a third party.** `python manage.py audit verify --export
 checkpoints.json` verifies every trail, then writes a new file (mode
 `0600`) with each database's stored checkpoints and one of its current
 head, each signed, and the public key's id. Whoever holds the public key
@@ -263,7 +263,7 @@ head, each signed, and the public key's id. Whoever holds the public key
 your credentials:
 
 ```bash
-python manage.py auditverify --check-export checkpoints.json --public-key audit-checkpoint.pub
+python manage.py audit check-export checkpoints.json --public-key audit-checkpoint.pub
 ```
 
 or with any Ed25519 library: the format is in
@@ -278,7 +278,7 @@ exports agree.
 
 **Two sealers at once.** One sealer seals a database at a time: on
 PostgreSQL each batch takes a transaction-scoped advisory lock. A sealer
-that finds it taken (`auditseal` run by hand while the worker seals, or
+that finds it taken (`audit seal` run by hand while the worker seals, or
 two outboxes' workers sealing one database) stops at once, logs that
 another sealer is at work, and leaves it the rest; what it sealed before
 stays sealed. Until 0.9.2 it waited for the lock, and failed after
@@ -295,7 +295,7 @@ not seal (a stuck session, or anyone's `pg_advisory_lock`). Find it in
 The trail is tamper-evident only with four things in place, and each is
 easy to leave out: a ledger (`AUDIT.LEDGER`), a namespace on it
 (`AUDIT.NAMESPACE`), something that seals on a schedule (the worker, with
-`domainkit.contrib.messaging` installed, or `auditseal` from cron, said
+`domainkit.contrib.messaging` installed, or `audit seal` from cron, said
 with `AUDIT.SEALED_EXTERNALLY = True`), and the `protect()` triggers on
 both tables. In staging and production, `manage.py check` warns about each
 setting that is missing, and the application, when it starts, asks each
@@ -309,7 +309,7 @@ condition, or for some columns only, or whose function is not the one
 missing. The probe cannot see a session that sets
 `session_replication_role = replica`, which only a superuser may do, nor
 stop a table owner from dropping the triggers between two starts:
-`auditverify` checks what they protect.
+`audit verify` checks what they protect.
 
 Since 0.10 they refuse: `AUDIT.REQUIRE_BASELINE` is `True` by default, so
 staging and production do not start without the four, `check` fails, and
@@ -319,7 +319,7 @@ each missing part is an error (`audit.E001` to `audit.E005`) that
 
 | `AUDIT` key | Default | Meaning |
 | --- | --- | --- |
-| `DATABASE` | `"default"` | Where `record()` writes, and what `auditlog` reads by default. |
+| `DATABASE` | `"default"` | Where `record()` writes, and what `audit log` reads by default. |
 | `EVENTS` | `True` | Record every committed domain event. |
 | `EXCLUDE` | `()` | Actions to skip, as shell patterns (`catalog.*`, `*.viewed`). |
 | `HISTORY_FIELDS` | `()` | Fields of `details` whose histories are read by aggregate (`account_id`, `request_id`): on PostgreSQL, `migrate` keeps an index of each and drops those of fields no longer named ([History](#history)). |
@@ -328,14 +328,14 @@ each missing part is an error (`audit.E001` to `audit.E005`) that
 | `PREVIOUS_ANCHORS` | `True` | With `NAMESPACE`, also verify the heads anchored under `domainkit/audit/<alias>` before it was set. Turn it off when other projects anchored there too. |
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
-| `SEALED_EXTERNALLY` | `False` | `auditseal` runs from a schedule of your own (cron), not in the worker: staging and production then do not warn that nothing seals. |
+| `SEALED_EXTERNALLY` | `False` | `audit seal` runs from a schedule of your own (cron), not in the worker: staging and production then do not warn that nothing seals. |
 | `REQUIRE_BASELINE` | `True` | Refuse to start in staging and production without a ledger, a namespace, a sealing schedule, and the triggers (the default since 0.10). `False` only warns, as 0.9 did. |
-| `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `auditseal --late`, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
+| `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `audit seal --late`, and `audit verify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
 | `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
-| `CHECKPOINT_KEY` | `None` | The Ed25519 private key, in PEM (at most 1,024 characters), that signs checkpoints: those `auditprune` prunes below, and those `auditverify --export` writes. Read by those two commands alone, so set it only where they run, not in the application's settings. `None`: neither runs. |
-| `CHECKPOINT_PUBLIC_KEY` | `None` | The public half of `CHECKPOINT_KEY`, in PEM (at most 1,024 characters): what `auditverify` checks stored checkpoints with. Checked when the application starts; signing refuses a private key it is not the half of. `None`: no stored checkpoint verifies, so a pruned trail does not. |
-| `MIN_RETENTION` | `30 days` | How old a seal must be before `auditprune` may cut there (1 day to 3,650 days): a shorter `--keep-days` is refused, and a checkpoint of a younger seal starts nothing in `auditverify`. Under `AUTH.PRESET = "pci-dss-4"` it is 365 days at least, whatever it says (PCI DSS v4.0 10.5.1); `--profile fintech` sets 365 days. |
+| `CHECKPOINT_KEY` | `None` | The Ed25519 private key, in PEM (at most 1,024 characters), that signs checkpoints: those `audit prune` prunes below, and those `audit verify --export` writes. Read by those two commands alone, so set it only where they run, not in the application's settings. `None`: neither runs. |
+| `CHECKPOINT_PUBLIC_KEY` | `None` | The public half of `CHECKPOINT_KEY`, in PEM (at most 1,024 characters): what `audit verify` checks stored checkpoints with. Checked when the application starts; signing refuses a private key it is not the half of. `None`: no stored checkpoint verifies, so a pruned trail does not. |
+| `MIN_RETENTION` | `30 days` | How old a seal must be before `audit prune` may cut there (1 day to 3,650 days): a shorter `--keep-days` is refused, and a checkpoint of a younger seal starts nothing in `audit verify`. Under `AUTH.PRESET = "pci-dss-4"` it is 365 days at least, whatever it says (PCI DSS v4.0 10.5.1); `--profile fintech` sets 365 days. |
 
 ## History
 
@@ -374,8 +374,8 @@ pseudonyms).
 From the command line, each change under its entry:
 
 ```shell
-python manage.py auditlog --target r-1
-python manage.py auditlog --aggregate product_id=6f1c7e6a-...
+python manage.py audit history --target r-1
+python manage.py audit history --aggregate product_id=6f1c7e6a-...
 ```
 
 **Reading by aggregate at scale.** A history by `target` reads its index. A

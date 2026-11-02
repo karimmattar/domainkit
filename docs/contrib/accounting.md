@@ -197,7 +197,7 @@ The worker posts it with the task `domainkit.accounting.post_entry`,
 under the inbox (ADR 0094): a message run again after its entry
 committed is skipped, and a second message about the same entry returns
 the first one's. A refused entry (a closed period, say) is dead-lettered
-at once; `messages --retry` runs it again once the books allow it. A
+at once; `messages retry` runs it again once the books allow it. A
 posting that lost its race `MAX_ATTEMPTS` times (`ConcurrentUpdate`)
 is not refused: the worker runs it again after its backoff, and the
 source and reference book it once.
@@ -311,7 +311,7 @@ async for piece in general_ledger(october.id, "csv"):  # or "json", streamed
   account whose amounts differ, or an entry the trail has and the books
   do not; SEC-16b-6). Entries whose trail rows were pruned or excluded
   (`AUDIT.EXCLUDE`), or posted before 0.15, are not compared; that the
-  trail is as written is `auditverify`'s to say.
+  trail is as written is `audit verify`'s to say.
 - An entry's `posted_at` is the host's clock, as it is drafted (reading
   the database's would cost a round trip a posting): a limit set later
   counts back the postings since its window began by it, so keep the

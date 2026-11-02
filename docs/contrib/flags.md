@@ -99,7 +99,7 @@ router.include_router(flags_router, prefix="/admin/flags")
 Every endpoint also needs a staff user (`is_staff`) or a superuser. Each
 change, from the API or the command, is a domain event (`FlagChanged`,
 `FlagDeleted`, `SettingChanged`, `SettingReset`), so the audit trail records
-who changed what, and `auditlog --aggregate name=beta` shows a flag's
+who changed what, and `audit history --aggregate name=beta` shows a flag's
 history.
 
 Every flag and stored setting is read in one query and cached as one entry

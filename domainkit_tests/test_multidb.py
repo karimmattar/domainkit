@@ -317,13 +317,16 @@ def test_runworker_and_messages_cover_every_outbox(sharded: Path) -> None:
     asyncio.run(queue("shard_a"))
     asyncio.run(queue("shard_b"))
 
-    assert run("messages", "--database", "shard_a").splitlines()[0] == "pending  1"
+    assert (
+        run("messages", "status", "--database", "shard_a").splitlines()[0]
+        == "pending  1"
+    )
     assert (
         run("runworker", "--once", "--database", "shard_a")
         == "Processed 1 message(s).\n"
     )
     assert run("runworker", "--once") == "Processed 1 message(s).\n"
-    dead = run("messages", "--database", "shard_b", "--dead").splitlines()
+    dead = run("messages", "list", "dead", "--database", "shard_b").splitlines()
     assert len(dead) == 1
     assert "tests.nothing_here" in dead[0]
     assert (
@@ -414,7 +417,7 @@ def test_auditlog_reads_any_database(two_targets: Path) -> None:
 
         asyncio.run(record_one())
 
-        assert "alpha.thing_made" in run("auditlog", "--database", "reports")
+        assert "alpha.thing_made" in run("audit", "log", "--database", "reports")
 
 
 @pytest.mark.usefixtures("database_access")

@@ -1,12 +1,12 @@
 """``broker``: check that brokers answer, or declare the worker's queues."""
 
-from argparse import ArgumentParser
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from domainkit.broker import BrokerError, brokers
 from domainkit.conf import settings
-from domainkit.management.base import BaseCommand, CommandError
+from domainkit.management.actions import ActionCommand, action, option
+from domainkit.management.base import CommandError
 
 
 @runtime_checkable
@@ -25,7 +25,7 @@ class QueueDeclarer(Protocol):
         ...
 
 
-class Command(BaseCommand):
+class Command(ActionCommand):
     """Connect to brokers, or create the exchange and queues the worker uses.
 
     Declare with an account allowed to configure the virtual host, before
@@ -34,25 +34,18 @@ class Command(BaseCommand):
 
     help = "Check that brokers answer, or declare the worker's queues."
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the action and, for check, the aliases."""
-        parser.add_argument("action", choices=("check", "declare"))
-        parser.add_argument(
-            "aliases",
-            nargs="*",
-            metavar="ALIAS",
-            help="brokers to check (default: all of them)",
-        )
+    @action(
+        help="connect to brokers (default: all of them)",
+        options=[option("aliases", nargs="*", metavar="ALIAS")],
+    )
+    async def check(self, *, aliases: list[str]) -> None:
+        """Report each broker, and fail if any could not be reached.
 
-    async def handle(
-        self, *, action: str, aliases: list[str], **options: object
-    ) -> None:
-        """Report each broker, and fail if any could not be reached."""
+        Raises:
+            CommandError: An alias ``BROKERS`` lacks, or a broker unreachable.
+        """
         if unknown := [alias for alias in aliases if alias not in settings.BROKERS]:
             raise CommandError(f"BROKERS has no {', '.join(map(repr, unknown))}.")
-        if action == "declare":
-            await self._declare()
-            return
         failed = []
         for alias in aliases or list(settings.BROKERS):
             try:
@@ -64,6 +57,14 @@ class Command(BaseCommand):
                 self.write(f"{alias}: ok")
         if failed:
             raise CommandError(f"Unavailable: {', '.join(failed)}.")
+
+    @action(
+        help="declare the exchange and every queue the worker's tasks use on "
+        "MESSAGING.BROKER"
+    )
+    async def declare(self) -> None:
+        """Declare the worker's queues."""
+        await self._declare()
 
     async def _declare(self) -> None:
         """Declare every queue the worker's tasks use, on the broker they use.

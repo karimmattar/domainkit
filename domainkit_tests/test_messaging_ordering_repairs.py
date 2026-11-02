@@ -1,7 +1,7 @@
 """Ordering keys after their security review (SEC-14c): repairs and refusals.
 
 A key left with held messages and none pending is released by cleanup and
-by ``messages --release``; a dead letter given back goes before its key's
+by ``messages release``; a dead letter given back goes before its key's
 pending message while no one has started it; a task's key must name one
 of its arguments; a key no outbox can store is refused where it is given;
 and operator queries judge leases by the earlier of two clocks.
@@ -153,7 +153,7 @@ async def test_pruning_keys_releases_stalled_ones_first() -> None:
 
 @pytest.mark.usefixtures("messaging")
 def test_messages_release_repairs_stalled_keys_and_says_how_many() -> None:
-    """``messages --release`` does at once what cleanup does each round."""
+    """``messages release`` does at once what cleanup does each round."""
 
     async def prepare() -> None:
         async with connections.engine().begin() as connection:
@@ -168,8 +168,8 @@ def test_messages_release_repairs_stalled_keys_and_says_how_many() -> None:
 
     asyncio.run(prepare())
     first, again = io.StringIO(), io.StringIO()
-    call_command("messages", "--release", stdout=first)
-    call_command("messages", "--release", stdout=again)
+    call_command("messages", "release", stdout=first)
+    call_command("messages", "release", stdout=again)
 
     assert first.getvalue() == "Released 1 stalled key(s).\n"
     assert again.getvalue() == "Released 0 stalled key(s).\n"
@@ -376,7 +376,7 @@ def test_a_dead_letter_without_an_error_is_listed() -> None:
 
     dead = asyncio.run(prepare())
     listed = io.StringIO()
-    call_command("messages", "--dead", stdout=listed)
+    call_command("messages", "list", "dead", stdout=listed)
 
     assert listed.getvalue() == f"{dead}  task tests.ordering.plain  x1  \n"
 

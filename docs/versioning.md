@@ -124,14 +124,14 @@ instead.
 | The hook methods of `DomainConfig` (`startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated`), overridden | The points `on_<method>` of `domainkit.apps.hooks` and `domainkit.db.hooks`, registered in `ready()` | Removed them; `setup()` refuses a configuration that still defines one (`apps.E002`), until 2.0 |
 | `domainkit.ddd.preconditions.expect_version` | `UnitOfWork.expect(model, id, versions)` | Removed it, and the context-wide expectation |
 
-### Deprecations planned for 2.0
+### Removed after 1.5
 
 1.0 renamed these names of 0.12, and froze the rest ([ADR 0125](adr/0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)).
-Each old name still works through 1.x, warning with
-`DomainkitDeprecationWarning`; 2.0 removes them, and `apps.E002` with them.
+With no project left on the old names, the release after 1.5 removed
+them, so each name has one home (DSGN-29);
 [upgrading.md](upgrading.md#deprecated-removed-in-20) says what to write instead.
 
-| Deprecated in 1.0 | Use instead |
+| Removed | Use instead |
 | --- | --- |
 | `on_check` of `domainkit.apps.hooks` | `domainkit.apps.hooks.on_ready` |
 | `DomainConfig.RETENTION` | `DomainConfig.retention` |

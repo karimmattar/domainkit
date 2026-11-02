@@ -6,7 +6,7 @@ trail vouches for each entry ... A rewrite of postings and balances that
 ``verify_ledger`` cannot see ... no longer matches the trail". But
 nothing compares them: ``verify_ledger`` (``manage.py accounting
 verify``) still checks only that entries balance and balances add up,
-``auditverify`` checks the trail's own chain, and no command reads
+``audit verify`` checks the trail's own chain, and no command reads
 ``EntryPosted`` back against the postings (the audit's "Do" for FIN-96:
 "have ``accounting verify`` check entries against the trail"). Whoever
 owns the schema disables the append-only triggers, turns a 5,000.00
@@ -112,4 +112,4 @@ def test_a_payout_rewritten_on_both_sides_is_found_by_verify(project: str) -> No
     # The trail still says 5,000.00: the evidence is there, unread.
     assert "5000" in str(run_async(vouched()))
     with pytest.raises(CommandError):
-        call_command("accounting", "verify", "--operator", "t", stdout=io.StringIO())
+        call_command("accounting", "verify", stdout=io.StringIO())

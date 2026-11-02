@@ -68,7 +68,7 @@ def test_erasing_the_owner_shreds_their_card_number(
     before = client.run(number_of, card)
 
     call_command(
-        "privacy", "--operator", "dpo", "erase", "--subject", maker.id, "--noinput"
+        "privacy", "erase", "--subject", maker.id, "--noinput", "--operator", "dpo"
     )
 
     [row] = client.run(stored_cards)

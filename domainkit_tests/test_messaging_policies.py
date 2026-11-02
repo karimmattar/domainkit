@@ -987,7 +987,7 @@ def test_the_messages_command_lists_and_cancels() -> None:
 
     running, *_ = asyncio.run(prepare())
 
-    pending = run("messages", "--pending").splitlines()
+    pending = run("messages", "list", "pending").splitlines()
     assert len(pending) == 2
     assert "tests.policy" in pending[0]  # Priority 0 before -10.
     assert pending[1].split()[1:5] == [
@@ -997,13 +997,13 @@ def test_the_messages_command_lists_and_cancels() -> None:
         "priority=-10",
     ]
     assert pending[1].split()[5:7] == ["x0/10", "due"]
-    assert run("messages", "--pending", "--queue", "emails") == ""
-    assert run("messages", "--pending", "--limit", "1").count("\n") == 1
-    (locked,) = run("messages", "--locked").splitlines()
+    assert run("messages", "list", "pending", "--queue", "emails") == ""
+    assert run("messages", "list", "pending", "--limit", "1").count("\n") == 1
+    (locked,) = run("messages", "list", "locked").splitlines()
     assert locked.startswith(f"{running}  task tests.high")
     assert " running " in locked
-    assert run("messages", "--dead") == ""
-    counts = run("messages").splitlines()
+    assert run("messages", "list", "dead") == ""
+    counts = run("messages", "status").splitlines()
     assert counts[:5] == [
         "pending  3",
         "held     0",
@@ -1013,19 +1013,19 @@ def test_the_messages_command_lists_and_cancels() -> None:
     ]
     assert counts[5].startswith("lag default: ")
     with pytest.raises(CommandError, match="--limit must be 1 or more"):
-        run("messages", "--dead", "--limit", "0")
+        run("messages", "list", "dead", "--limit", "0")
     with pytest.raises(SystemExit):
-        run("messages", "--dead", "--pending")
+        run("messages", "list", "dead", "--pending")
 
     waiting = pending[1].split()[0]
-    assert run("messages", "--cancel", waiting) == f"Cancelled {waiting}.\n"
+    assert run("messages", "cancel", waiting) == f"Cancelled {waiting}.\n"
     with pytest.raises(CommandError, match="was not cancelled: it is running"):
-        run("messages", "--cancel", str(running))
+        run("messages", "cancel", str(running))
     with pytest.raises(CommandError, match=r"'nope' is not a message id\.$"):
-        run("messages", "--cancel", "nope")
+        run("messages", "cancel", "nope")
     with pytest.raises(CommandError, match="'x' is not a message id or 'all'"):
-        run("messages", "--retry", "x")
-    assert "cancelled 1" in run("messages")
+        run("messages", "retry", "x")
+    assert "cancelled 1" in run("messages", "status")
 
 
 def test_settings_bound_the_retry_delays() -> None:

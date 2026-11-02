@@ -63,16 +63,20 @@ class BaseCommand:
         )
         self.add_arguments(parser)
         if self.operator_actions:
-            parser.add_argument(
-                "--operator",
-                metavar="NAME",
-                help="who runs this, for the audit trail (default: "
-                "$DOMAINKIT_OPERATOR, else your login name, else uid-<n>)",
-            )
+            self.add_operator_argument(parser)
         return parser
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Declare the command's options."""
+
+    def add_operator_argument(self, parser: ArgumentParser) -> None:
+        """Take ``--operator``, for a command with ``operator_actions``."""
+        parser.add_argument(
+            "--operator",
+            metavar="NAME",
+            help="who runs this, for the audit trail (default: "
+            "$DOMAINKIT_OPERATOR, else your login name, else uid-<n>)",
+        )
 
     def run_from_argv(self, argv: Sequence[str]) -> None:
         """Parse ``[prog, command, *args]`` and execute."""
@@ -90,7 +94,7 @@ class BaseCommand:
             from domainkit.management.operators import acting_as, operator
 
             self.operator = operator(cast(str | None, options.pop("operator", None)))
-            acting = acting_as(self.operator, type(self).__module__.rpartition(".")[2])
+            acting = acting_as(self.operator, self.label(options))
         if self.requires_setup:
             from domainkit import setup
 
@@ -99,6 +103,10 @@ class BaseCommand:
             result = self.handle(**options)
             if inspect.isawaitable(result):
                 run_async(result)
+
+    def label(self, options: dict[str, object]) -> str:
+        """What the audit trail calls this run: the command's name."""
+        return type(self).__module__.rpartition(".")[2]
 
     def recorded(
         self, action: str, **details: object

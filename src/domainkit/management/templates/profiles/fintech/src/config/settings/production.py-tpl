@@ -115,7 +115,7 @@ LEDGERS = {
         "SERVER_SIGNING_KEY": env.path("LEDGER_SIGNING_KEY"),
     },
 }
-# The trail is kept a year at least: auditprune refuses to cut younger
+# The trail is kept a year at least: audit prune refuses to cut younger
 # (PCI DSS v4.0 10.5.1; the PCI preset holds it there too). A bank keeps it
 # as long as its regulator asks: raise it.
 AUDIT = {

@@ -1,11 +1,12 @@
 """``messages``: inspect the outbox, retry dead letters, cancel waiting work.
 
-``--release`` repairs ordering keys left with held messages and none
-pending, as each worker's cleanup does.
+``manage.py messages status | list STATE | retry ID|all | cancel ID | release``;
+``release`` repairs ordering keys left with held messages and none pending,
+as each worker's cleanup does. ``retry``, ``cancel``, and ``release`` change
+the outbox, and run as the operator who names themselves.
 """
 
 import uuid
-from argparse import ArgumentParser
 from datetime import datetime
 from typing import Any
 
@@ -14,7 +15,6 @@ from domainkit.apps import registry
 from domainkit.contrib.messaging.admin import (
     State,
     blanked_dead_letters,
-    cancel,
     list_messages,
     queue_counts,
     queue_lag,
@@ -22,95 +22,95 @@ from domainkit.contrib.messaging.admin import (
     retry_dead,
     state_of,
 )
+from domainkit.contrib.messaging.admin import (
+    cancel as cancel_message,
+)
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.messaging.tables import STATUSES
-from domainkit.management import BaseCommand, CommandError
+from domainkit.management import ActionCommand, CommandError, action, option
 
 
-class Command(BaseCommand):
-    """Show counts and lag, list messages, retry dead ones, or cancel one."""
+class Command(ActionCommand):
+    """Show counts and lag, list messages, retry dead ones, cancel or release."""
 
-    help = "Inspect the messaging outbox."
-    operator_actions = True
+    help = "Inspect the messaging outbox, and act on it."
+    common_options = (
+        option("--database", help="the outbox's alias (default: MESSAGING.DATABASE)"),
+    )
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the listing, retry, and cancel options."""
-        listing = parser.add_mutually_exclusive_group()
-        for state, text in (
-            ("pending", "list waiting messages, in the order workers take them"),
-            ("held", "list messages waiting for an earlier one of their key"),
-            ("locked", "list running and published messages"),
-            ("dead", "list dead letters"),
-        ):
-            listing.add_argument(
-                f"--{state}",
-                dest="state",
-                action="store_const",
-                const=state,
-                help=text,
-            )
-        parser.add_argument("--limit", type=int, default=20)
-        parser.add_argument("--queue", help="list only this queue's messages")
-        parser.add_argument(
-            "--retry", metavar="ID|all", help="queue a dead message (or all) again"
-        )
-        parser.add_argument(
-            "--cancel", metavar="ID", help="cancel a message no worker is running"
-        )
-        parser.add_argument(
-            "--release",
-            action="store_true",
-            help=(
-                "run the next message of each ordering key left with held "
-                "messages and none pending"
-            ),
-        )
-        parser.add_argument(
-            "--database",
-            help="the outbox's alias (default: MESSAGING.DATABASE)",
-        )
-
-    async def handle(
-        self,
-        *,
-        state: State | None,
-        limit: int,
-        queue: str | None,
-        retry: str | None,
-        cancel: str | None,
-        database: str | None,
-        release: bool = False,
-        **options: object,
-    ) -> None:
-        """Print what was asked for."""
+    @action(help="count messages by status, and each queue's lag")
+    async def status(self, *, database: str | None) -> None:
+        """Print a count per status, then each queue's lag."""
         config = registry.settings(MessagingSettings)
-        if release:
-            async with self.recorded(
-                "messages.release", database=database or config.DATABASE
-            ) as action:
-                action["released"] = released = await release_stalled(config, database)
-            self.write(f"Released {released} stalled key(s).")
-            return
-        if retry is not None:
-            message_id = None if retry == "all" else _message_id(retry, "or 'all'")
-            await self._retry(config, message_id, database)
-            return
-        if cancel is not None:
-            await self._cancel(config, _message_id(cancel), database)
-            return
-        if state is not None:
-            if limit < 1:
-                raise CommandError("--limit must be 1 or more.")
-            rows = await list_messages(config, state, limit, database, queue=queue)
-            now = clock.now()
-            for row in rows:
-                self.write(_line(row, state, now))
-            return
         counts = await queue_counts(config, database)
         for status in STATUSES:
             self.write(f"{status:8} {counts.get(status, 0)}")
         for name, seconds in sorted((await queue_lag(config, database)).items()):
             self.write(f"lag {name}: {seconds:.1f}s")
+
+    @action(
+        name="list",
+        help="list messages in a state: pending (in the order workers take "
+        "them), held (waiting for an earlier one of their key), locked "
+        "(running and published), or dead",
+        options=[
+            option("state", choices=("pending", "held", "locked", "dead")),
+            option(
+                "--limit", type=int, default=20, help="at most this many (default: 20)"
+            ),
+            option("--queue", help="only this queue's messages"),
+        ],
+    )
+    async def listed(
+        self, *, state: State, limit: int, queue: str | None, database: str | None
+    ) -> None:
+        """Print one line per message, without its arguments.
+
+        Raises:
+            CommandError: ``--limit`` below 1.
+        """
+        if limit < 1:
+            raise CommandError("--limit must be 1 or more.")
+        config = registry.settings(MessagingSettings)
+        rows = await list_messages(config, state, limit, database, queue=queue)
+        now = clock.now()
+        for row in rows:
+            self.write(_line(row, state, now))
+
+    @action(
+        help="queue a dead message, or all of them, again",
+        options=[option("message", metavar="ID|all")],
+        operator=True,
+    )
+    async def retry(self, *, message: str, database: str | None) -> None:
+        """Queue dead messages again; say which ones cannot be, and why."""
+        config = registry.settings(MessagingSettings)
+        message_id = None if message == "all" else _message_id(message, "or 'all'")
+        await self._retry(config, message_id, database)
+
+    @action(
+        help="cancel a message no worker is running",
+        options=[option("message", metavar="ID")],
+        operator=True,
+    )
+    async def cancel(self, *, message: str, database: str | None) -> None:
+        """Cancel one message, or explain why it was not."""
+        config = registry.settings(MessagingSettings)
+        await self._cancel(config, _message_id(message), database)
+
+    @action(
+        help="run the next message of each ordering key left with held messages "
+        "and none pending",
+        operator=True,
+    )
+    async def release(self, *, database: str | None) -> None:
+        """Release stalled ordering keys, as each worker's cleanup does."""
+        config = registry.settings(MessagingSettings)
+        async with self.recorded(
+            "messages.release", database=database or config.DATABASE
+        ) as record:
+            record["released"] = released = await release_stalled(config, database)
+        self.write(f"Released {released} stalled key(s).")
 
     async def _retry(
         self,
@@ -152,7 +152,9 @@ class Command(BaseCommand):
             message=str(message_id),
             database=database or config.DATABASE,
         ) as action:
-            action["cancelled"] = cancelled = await cancel(config, message_id, database)
+            action["cancelled"] = cancelled = await cancel_message(
+                config, message_id, database
+            )
         if cancelled:
             self.write(f"Cancelled {message_id}.")
             return

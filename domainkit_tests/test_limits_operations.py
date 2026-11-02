@@ -66,7 +66,9 @@ def actions(monkeypatch: pytest.MonkeyPatch) -> list[Action]:
 def run(*args: str) -> str:
     """``limits`` with ``args``; what it printed."""
     output = io.StringIO()
-    call_command("limits", "--operator", "tester", *args, stdout=output)
+    operates = bool(args) and args[0] in {"set", "purge"}
+    operator = ("--operator", "tester") if operates else ()
+    call_command("limits", *args, *operator, stdout=output)
     return output.getvalue()
 
 
@@ -226,7 +228,8 @@ def test_the_command_refuses_options_it_does_not_take() -> None:
 
     shown = Command().create_parser("manage.py", "limits").format_help()
     assert (
-        " list every limit, stored or default usage what a subject used of its "
+        " list every limit, stored or default (the default) usage what a subject "
+        "used of its "
         "limits set make a limit or change its bounds purge delete usage older "
         "than LIMITS.KEEP_USAGE options:"
     ) in " ".join(shown.split())
@@ -244,6 +247,13 @@ def test_the_command_refuses_options_it_does_not_take() -> None:
         "--max-count MAX_COUNT a count, or none",
     ):
         assert f" {text} " in " ".join(setting.split()), text
+
+
+@pytest.mark.usefixtures("project")
+def test_the_command_refuses_enabling_and_disabling_at_once() -> None:
+    """``--enable`` and ``--disable`` together say which to pick."""
+    with pytest.raises(CommandError, match="cannot go together"):
+        run("set", "x", "--kind", "k", "--currency", "KWD", "--enable", "--disable")
 
 
 @pytest.mark.usefixtures("project")

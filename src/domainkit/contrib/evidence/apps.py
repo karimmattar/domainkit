@@ -4,10 +4,10 @@ from importlib import import_module
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.apps.hooks import on_deployment_warnings
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.routing import DatabaseRouter
-from domainkit.exceptions import ImproperlyConfigured
 from domainkit.ledger import ledgers
 
 from .settings import EvidenceSettings
@@ -34,10 +34,16 @@ class EvidenceConfig(DomainConfig):
         config = registry.settings(EvidenceSettings)
         ledgers.config(config.LEDGER)
         if not config.has_subject_key and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-            raise ImproperlyConfigured(
-                f"EVIDENCE.SUBJECT_KEY is required in {settings.ENVIRONMENT}: a "
-                "random secret of 32 characters or more, kept for as long as "
-                "the evidence."
+            raise CheckFailed(
+                "EVIDENCE settings cannot be deployed",
+                [
+                    CheckMessage(
+                        "security.E019",
+                        f"EVIDENCE.SUBJECT_KEY is required in {settings.ENVIRONMENT}",
+                        "A random secret of 32 characters or more, kept for as "
+                        "long as the evidence: the development key is public.",
+                    )
+                ],
             )
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")

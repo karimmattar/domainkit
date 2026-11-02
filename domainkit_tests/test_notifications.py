@@ -370,10 +370,19 @@ ADAPTERS = {
 @pytest.mark.parametrize(
     ("options", "message"),
     [
-        ({}, "NOTIFICATIONS.SMS_BACKEND .*MemorySmsBackend' is for development"),
+        (
+            {},
+            (
+                "deploy.E005: NOTIFICATIONS.SMS_BACKEND .*MemorySmsBackend' is for "
+                "development"
+            ),
+        ),
         (
             {"SMS_BACKEND": ADAPTERS["SMS_BACKEND"]},
-            "NOTIFICATIONS.PUSH_BACKEND .* write an adapter .* for production",
+            (
+                "deploy.E006: NOTIFICATIONS.PUSH_BACKEND (.|\\n)* Write an adapter "
+                "for your provider for production"
+            ),
         ),
         (
             {"PUSH_BACKEND": ADAPTERS["PUSH_BACKEND"]},

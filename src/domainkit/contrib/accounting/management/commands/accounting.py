@@ -2,7 +2,6 @@
 
 import asyncio
 import uuid
-from argparse import ArgumentParser
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -24,20 +23,19 @@ from domainkit.contrib.accounting.reports import (
 from domainkit.contrib.accounting.tables import accounts, periods
 from domainkit.contrib.accounting.uow import accounting_alias
 from domainkit.db import connections
-from domainkit.management import BaseCommand, CommandError
+from domainkit.management import ActionCommand, CommandError, action, option
 
-ACTIONS = (
-    "trialbalance",
-    "ledger",
-    "verify",
-    "expireholds",
-    "import",
-    "reconcile",
-    "unmatched",
+REPORT_OPTIONS = (
+    option("target", nargs="?", metavar="PERIOD", help="the period, by name or id"),
+    option("--format", choices=("csv", "json"), default="csv"),
+    option("--output", type=Path, help="write the report there instead of stdout"),
+)
+ACCOUNT = option(
+    "target", nargs="?", metavar="ACCOUNT", help="the account, by code or id"
 )
 
 
-class Command(BaseCommand):
+class Command(ActionCommand):
     """Report a period, check the books, expire holds, and reconcile statements."""
 
     help = (
@@ -45,48 +43,62 @@ class Command(BaseCommand):
         "release expired holds, import a statement, reconcile an account, or "
         "list what is unmatched."
     )
-    operator_actions = True
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the action and its options."""
-        parser.add_argument("action", choices=ACTIONS)
-        parser.add_argument(
-            "target",
-            nargs="?",
-            help="the period (name or id) to report, or the account (code or id) "
-            "to import into, reconcile, or list",
-        )
-        parser.add_argument(
-            "file", nargs="?", type=Path, help="import: the statement's CSV file"
-        )
-        parser.add_argument("--format", choices=("csv", "json"), default="csv")
-        parser.add_argument(
-            "--output", type=Path, help="write the report there instead of stdout"
-        )
-
-    async def handle(
-        self,
-        *,
-        action: str,
-        target: str | None,
-        file: Path | None,
-        format: str,
-        output: Path | None,
-        **options: object,
+    @action(help="write a period's trial balance", options=REPORT_OPTIONS)
+    async def trialbalance(
+        self, *, target: str | None, format: str, output: Path | None
     ) -> None:
-        """Do what ``action`` names."""
-        if action == "verify":
-            await self._verify()
-        elif action == "expireholds":
-            async with self.recorded("accounting.expireholds") as recorded:
-                recorded["holds"] = expired = await expire_holds()
-            self.write(f"Released {expired} expired hold(s).")
-        elif target is None:
-            raise CommandError(f"{action} needs a period or an account.")
-        elif action in ("trialbalance", "ledger"):
-            await self._report(action, await _period(target), format, output)
-        else:
-            await self._account_action(action, await _account(target), file)
+        """Write the period's trial balance."""
+        period = await _period(_named(target, "trialbalance"))
+        await self._report("trialbalance", period, format, output)
+
+    @action(help="write a period's general ledger", options=REPORT_OPTIONS)
+    async def ledger(
+        self, *, target: str | None, format: str, output: Path | None
+    ) -> None:
+        """Write the period's general ledger."""
+        period = await _period(_named(target, "ledger"))
+        await self._report("ledger", period, format, output)
+
+    @action(help="check that every entry balances and every balance sums its postings")
+    async def verify(self) -> None:
+        """Check the books."""
+        await self._verify()
+
+    @action(help="release the holds whose time is up", operator=True)
+    async def expireholds(self) -> None:
+        """Release expired holds, and say how many."""
+        async with self.recorded("accounting.expireholds") as recorded:
+            recorded["holds"] = expired = await expire_holds()
+        self.write(f"Released {expired} expired hold(s).")
+
+    @action(
+        name="import",
+        help="import a statement's CSV file into an account",
+        options=[
+            ACCOUNT,
+            option("file", nargs="?", type=Path, help="the statement's CSV file"),
+        ],
+        operator=True,
+    )
+    async def import_(self, *, target: str | None, file: Path | None) -> None:
+        """Import the statement."""
+        account = await _account(_named(target, "import"))
+        await self._account_action("import", account, file)
+
+    @action(
+        help="reconcile an account's statement lines", options=[ACCOUNT], operator=True
+    )
+    async def reconcile(self, *, target: str | None) -> None:
+        """Match the account's lines, and say what is left."""
+        account = await _account(_named(target, "reconcile"))
+        await self._account_action("reconcile", account, None)
+
+    @action(help="list an account's unmatched lines", options=[ACCOUNT])
+    async def unmatched(self, *, target: str | None) -> None:
+        """One line per break."""
+        account = await _account(_named(target, "unmatched"))
+        await self._account_action("unmatched", account, None)
 
     async def _verify(self) -> None:
         """Check every entry balances and every balance sums its postings."""
@@ -146,6 +158,17 @@ class Command(BaseCommand):
                     f"{amount_text(each.amount, each.currency)} {each.currency}"
                     f"  {each.reference}"
                 )
+
+
+def _named(target: str | None, name: str) -> str:
+    """``target``, the period or account ``name`` acts on.
+
+    Raises:
+        CommandError: None was given.
+    """
+    if target is None:
+        raise CommandError(f"{name} needs a period or an account.")
+    return target
 
 
 def _uuid(text: str) -> uuid.UUID | None:

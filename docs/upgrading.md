@@ -34,6 +34,53 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 1.5 to the next release
+
+### The audit commands are one
+
+Cron jobs and runbooks that call the audit commands use their new names:
+
+| Before | Now |
+| --- | --- |
+| `auditlog` | `audit log` |
+| `auditlog --target T`, `auditlog --aggregate FIELD=ID` | `audit history --target T`, `audit history --aggregate FIELD=ID` |
+| `auditseal` | `audit seal` |
+| `auditverify` | `audit verify` |
+| `auditverify --check-export FILE --public-key PEM` | `audit check-export FILE --public-key PEM` |
+| `auditprune --keep-days N` | `audit prune --keep-days N` |
+| `auditforget SUBJECT` | `audit forget SUBJECT` |
+
+The trail keeps recording `operator.auditprune` and `operator.auditforget`;
+the request path of an operator's run names the action (`audit forget`).
+
+### `messages` takes an action
+
+| Before | Now |
+| --- | --- |
+| `messages` | `messages status` |
+| `messages --pending` (`--held`, `--locked`, `--dead`) | `messages list pending` (`held`, `locked`, `dead`) |
+| `messages --retry ID` (or `all`) | `messages retry ID` (or `all`) |
+| `messages --cancel ID` | `messages cancel ID` |
+| `messages --release` | `messages release` |
+| `messages --database ALIAS ...` | `messages ... --database ALIAS`, after the action |
+
+Only `retry`, `cancel`, and `release` take `--operator`.
+
+### `evidence` takes an action
+
+`evidence --subject S` is `evidence list S`, and `evidence --verify KEY` is
+`evidence verify KEY`. `webhooks` keeps its actions; each takes only its
+own options now, and only `replay` takes `--operator`.
+
+### `--operator` follows the action
+
+Every command of several actions takes `--operator` after its action,
+and only on the actions that change something: `privacy --operator alice
+purge` is `privacy purge --operator alice`; `flags --operator alice set
+beta` is `flags set beta --operator alice`. Listings and checks
+(`flags list`, `accounting verify`, `approvals list`, `limits list`)
+take none.
+
 ## 0.12 to 1.0
 
 1.0 is the first release since 0.12.1. Everything 0.13, 0.14, and 0.15
@@ -333,8 +380,9 @@ Each was deprecated in 0.12, with a warning that named its replacement.
 
 ### Deprecated, removed in 2.0
 
-Each old name works through 1.x, warning with
-`DomainkitDeprecationWarning` (DSGN-23, DSGN-24, DSGN-29):
+Each old name worked through 1.5, warning with
+`DomainkitDeprecationWarning`; the release after 1.5 removed them, so each
+name has one home (DSGN-23, DSGN-24, DSGN-29):
 
 - `on_check` of `domainkit.apps.hooks` is `on_ready`: it is the readiness
   probe, not `manage.py check`'s.

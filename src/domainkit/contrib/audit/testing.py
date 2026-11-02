@@ -1,7 +1,7 @@
 """The audit trail as tests read it: its rows, as records.
 
 A test of a control checks who did what, and what it was refused, from the
-trail itself rather than from ``auditlog``'s text (TEST-21)::
+trail itself rather than from ``audit log``'s text (TEST-21)::
 
     from domainkit.contrib.audit.testing import audit_entries
 

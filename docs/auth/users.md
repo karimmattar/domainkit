@@ -82,7 +82,7 @@ token came back, so its login was ended; it is also logged as a security
 warning). With `domainkit.contrib.audit` installed, each
 becomes a row of the audit trail (`auth.user_permission_granted`). The
 username in `UserCreated` and `UserDeleted` is personal data: the trail keeps
-it as a pseudonym of the user's id, which `auditforget <user id>` makes
+it as a pseudonym of the user's id, which `audit forget <user id>` makes
 unlinkable (see [contrib.md](../contrib.md)).
 
 ## A custom user model

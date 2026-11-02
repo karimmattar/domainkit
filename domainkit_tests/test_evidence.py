@@ -712,8 +712,10 @@ def test_deployments_need_a_subject_key(environment: str) -> None:
     registry.clear()
 
     assert str(refused.value) == (
-        f"EVIDENCE.SUBJECT_KEY is required in {environment}: a random secret of "
-        "32 characters or more, kept for as long as the evidence."
+        "EVIDENCE settings cannot be deployed:\n"
+        f"  security.E019: EVIDENCE.SUBJECT_KEY is required in {environment}\n"
+        "    Hint: A random secret of 32 characters or more, kept for as long as "
+        "the evidence: the development key is public."
     )
 
 
@@ -819,9 +821,9 @@ async def test_the_evidence_command_lists_and_verifies(installed: None) -> None:
     )
     await ledgers["evidence"].append(other.key.encode(), b"rewritten")
 
-    listing = await _run_command("--subject", "customer:42")
-    limited = await _run_command("--subject", "customer:42", "--limit", "1")
-    intact = await _run_command("--verify", receipt.key)
+    listing = await _run_command("list", "customer:42")
+    limited = await _run_command("list", "customer:42", "--limit", "1")
+    intact = await _run_command("verify", receipt.key)
 
     assert sorted(line.split()[-1] for line in listing.splitlines()) == [
         "AGAIN",
@@ -830,7 +832,7 @@ async def test_the_evidence_command_lists_and_verifies(installed: None) -> None:
     assert len(limited.splitlines()) == 1
     assert intact.startswith("Intact: kyc.document_verified about customer:42")
     with pytest.raises(CommandError, match="written again"):
-        await _run_command("--verify", other.key)
+        await _run_command("verify", other.key)
 
 
 async def _run_command(*args: str) -> str:
@@ -840,5 +842,7 @@ async def _run_command(*args: str) -> str:
     output = io.StringIO()
     command = Command(stdout=output)
     parser = command.create_parser("manage.py", "evidence")
-    await command.handle(**vars(parser.parse_args(list(args))))
+    result = command.handle(**vars(parser.parse_args(list(args))))
+    assert result is not None
+    await result
     return output.getvalue()

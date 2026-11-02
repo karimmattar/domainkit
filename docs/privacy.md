@@ -140,7 +140,7 @@ For every aggregate holding data about the subject:
   below). Each domain that erased something is recorded, with counts
   only (`privacy.copies_erased`);
 - then the subject's keys in the audit trail are forgotten, so their
-  pseudonyms there can no longer be linked to them (`auditforget`), and
+  pseudonyms there can no longer be linked to them (`audit forget`), and
   the erasure itself is recorded, with the reason.
 
 Rows stay: an order is still an order, without the person in it. Deleting
@@ -163,7 +163,7 @@ at once; others only expire.
 | The audit trail (`domainkit.contrib.audit`) | The subject's keys, so every pseudonym of them is unlinkable | Unmarked event fields stay in `details` for good, since the trail is append-only: mark every personal field of an audited event |
 | Webhook deliveries (`domainkit.contrib.webhooks`) | The body of each delivery about the subject; a pending one is cancelled, and `replay` sends none of them again. Its row and attempt log stay, without the body | What receivers were already sent: tell them yourself |
 | Kept responses (`domainkit.contrib.idempotency`) | Each response the subject asked for, or whose request committed an event about them. The key stays, so a retry gets 409 `idempotency_response_unavailable` and never runs again | A response about the subject that another caller got, with no event naming them, until `IDEMPOTENCY.TTL_SECONDS` (24 hours by default). Then a key that committed is kept as a tombstone for `IDEMPOTENCY.TOMBSTONE_SECONDS` (7 days): without its response, its headers, or whom it was about, only a one-way hash of the caller and the key, which erasure and exports cannot find or link to anyone, as an erased key keeps |
-| Outbox messages (`domainkit.contrib.messaging`) | Dead messages about the subject: their arguments are blanked, and `messages --retry` refuses them | Pending ones run as planned, and are blanked when done; the erasure logs how many, so run it again once they have run (what they wrote, such as a new delivery, is erased then). Done and cancelled messages hold no arguments. Error texts (`last_error`) keep what an exception said, for `MESSAGING.RETENTION_SECONDS` (7 days) once finished, and for good while dead: keep personal data out of exception messages. The inbox (`domainkit_inbox`) holds handler names, message ids, and times only |
+| Outbox messages (`domainkit.contrib.messaging`) | Dead messages about the subject: their arguments are blanked, and `messages retry` refuses them | Pending ones run as planned, and are blanked when done; the erasure logs how many, so run it again once they have run (what they wrote, such as a new delivery, is erased then). Done and cancelled messages hold no arguments. Error texts (`last_error`) keep what an exception said, for `MESSAGING.RETENTION_SECONDS` (7 days) once finished, and for good while dead: keep personal data out of exception messages. The inbox (`domainkit_inbox`) holds handler names, message ids, and times only |
 | Limits set for a person, and their counted movements (`domainkit.contrib.limits`) | Both: each limit whose subject is the person is removed (audited, `LimitRemoved`), and the usage of each kind of subject they are; `privacy export` lists them first | The audit trail's `LimitSet` rows, which name the subject's id, as every row names its actor's ([limits.md](contrib/limits.md#privacy)) |
 | Accounts kept for a person (`domainkit.contrib.accounting`) | The link: each account's `holder`, the one field in which the ledger keeps the subject, names one `erased:` pseudonym, the same for all their accounts; `privacy export` lists their accounts and postings first. While they hold an open account with money on it or held, the erasure is held (`erasure_held`) | The books themselves: balances, entries, and postings, which the law asks to keep and which are append-only. Account codes and names, references, descriptions, memos, and statement lines are kept as written, so nothing names the subject after erasure only if the project kept personal data out of them: an opaque code, never the person's id ([accounting.md](contrib/accounting.md#accounts)) |
 | Encrypted fields (`domainkit.contrib.keys`) | The subject's keys, in every hosting database, so every value sealed for them reads as None, in replicas, and in backups and dumps taken afterwards (one taken before still opens them until it expires, or is restored and the erasure applied again: [keys.md](contrib/keys.md#backups-taken-before-an-erasure)); and the blind indexes of those values | Their ciphertext, which nothing opens; values of theirs sealed under a data key instead (a field with no subject); blind indexes outside the rows naming them ([keys.md](contrib/keys.md#erasing-a-person-crypto-shredding)) |
@@ -301,7 +301,7 @@ python manage.py privacy purge             # in a nightly job
   `domainkit.contrib.audit.protection.protect` makes it; rows other rows
   still refer to), that table is reported and recorded as a failure,
   nothing is disabled or forced, the others are purged, and the command
-  fails. Forget people in the audit trail instead (`auditforget
+  fails. Forget people in the audit trail instead (`audit forget
   --anonymous-days`).
 - Each table and database purged is recorded in the audit trail
   (`privacy.purge`, with the rows and the cutoff).
@@ -317,7 +317,7 @@ python manage.py privacy purge             # in a nightly job
 | `privacy.purge` | `<domain>.<table>` | `database`, `before`, `operation` (`deleted` or `erased`), `rows`; `reason` when refused |
 
 The actor is whoever runs them. From the `privacy` command it is the
-operator, `operator:<name>`, from `--operator` (before the action:
-`privacy --operator alice erase --subject ...`), `DOMAINKIT_OPERATOR`, or
+operator, `operator:<name>`, from `--operator` (after the action:
+`privacy erase --subject ... --operator alice`), `DOMAINKIT_OPERATOR`, or
 the login name ([operators](reference/commands.md#operators)); from code run
 outside a request, `system`.

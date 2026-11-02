@@ -2,7 +2,6 @@
 
 import json
 import os
-from argparse import ArgumentParser
 from pathlib import Path
 
 from domainkit.contrib.privacy import (
@@ -13,10 +12,10 @@ from domainkit.contrib.privacy import (
     export_subject,
     purge,
 )
-from domainkit.management import BaseCommand, CommandError
+from domainkit.management import ActionCommand, CommandError, action, option
 
 
-class Command(BaseCommand):
+class Command(ActionCommand):
     """Answer privacy requests across installed domains, and apply retention."""
 
     help = (
@@ -27,56 +26,47 @@ class Command(BaseCommand):
     operator_actions = True
     """Exports, erasures, and purges are audited as the operator who ran them."""
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Declare the three actions and their options."""
-        actions = parser.add_subparsers(dest="action", required=True)
-        export = actions.add_parser("export", help="write a person's data as JSON")
-        export.add_argument("--subject", required=True, help="whose: their id")
-        export.add_argument(
-            "--output",
-            type=Path,
-            help="a new file to write it to (mode 0600); default: standard output",
-        )
-        erase = actions.add_parser("erase", help="erase a person's data")
-        erase.add_argument("--subject", required=True, help="whose: their id")
-        erase.add_argument(
-            "--reason",
-            default="request",
-            help="recorded with each erasure (default: request), such as a ticket",
-        )
-        erase.add_argument(
-            "--noinput", action="store_true", help="do not ask for confirmation"
-        )
-        purge_parser = actions.add_parser(
-            "purge", help="apply every domain's retention"
-        )
-        purge_parser.add_argument(
-            "--dry-run", action="store_true", help="only count what would go"
-        )
+    @action(
+        help="write a person's data as JSON",
+        options=[
+            option("--subject", required=True, help="whose: their id"),
+            option(
+                "--output",
+                type=Path,
+                help="a new file to write it to (mode 0600); default: standard output",
+            ),
+        ],
+    )
+    async def export(self, *, subject: str, output: Path | None) -> None:
+        """Write the person's data."""
+        await self._export(_subject(subject), output)
 
-    async def handle(
-        self,
-        *,
-        action: str,
-        subject: str | None = None,
-        output: Path | None = None,
-        reason: str = "request",
-        noinput: bool = False,
-        dry_run: bool = False,
-        **options: object,
-    ) -> None:
-        """Run the action."""
-        if action == "purge":
-            await self._purge(dry_run=dry_run)
-            return
+    @action(
+        help="erase a person's data",
+        options=[
+            option("--subject", required=True, help="whose: their id"),
+            option(
+                "--reason",
+                default="request",
+                help="recorded with each erasure (default: request), such as a ticket",
+            ),
+            option(
+                "--noinput", action="store_true", help="do not ask for confirmation"
+            ),
+        ],
+    )
+    async def erase(self, *, subject: str, reason: str, noinput: bool) -> None:
+        """Erase the person's data, once confirmed.
+
+        Raises:
+            CommandError: A bad subject or reason, no confirmation, or a domain
+                that keeps the data.
+        """
+        subject = _subject(subject)
         try:
-            subject = check_subject(subject or "")
             check_reason(reason)
         except ValueError as exc:
             raise CommandError(str(exc)) from None
-        if action == "export":
-            await self._export(subject, output)
-            return
         self._confirm(subject, noinput=noinput)
         try:
             erased = await erase_subject(subject, reason=reason)
@@ -87,6 +77,16 @@ class Command(BaseCommand):
             f"Erased the personal data of {subject} in {erased} "
             f"aggregate{'' if erased == 1 else 's'}, and forgot their audit keys."
         )
+
+    @action(
+        help="apply every domain's retention",
+        options=[
+            option("--dry-run", action="store_true", help="only count what would go")
+        ],
+    )
+    async def purge(self, *, dry_run: bool) -> None:
+        """Purge, and print a line per table and database."""
+        await self._purge(dry_run=dry_run)
 
     async def _export(self, subject: str, output: Path | None) -> None:
         """Write the export to ``output``, a new private file, or standard output."""
@@ -128,3 +128,15 @@ class Command(BaseCommand):
             self.write("No domain declares a retention.")
         if refused := [result.policy for result in results if result.refused]:
             raise CommandError(f"Not purged: {', '.join(refused)}.")
+
+
+def _subject(text: str) -> str:
+    """``text``, checked as a subject's id.
+
+    Raises:
+        CommandError: It is not one.
+    """
+    try:
+        return check_subject(text)
+    except ValueError as exc:
+        raise CommandError(str(exc)) from None

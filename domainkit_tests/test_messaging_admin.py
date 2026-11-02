@@ -282,38 +282,52 @@ def test_runworker_says_what_each_option_does() -> None:
     )
 
 
+def action_usage(action: str) -> str:
+    """``manage.py messages <action> --help``, on one line."""
+    parser = MessagesCommand().create_parser("manage.py", "messages")
+    found = parser._subparsers._group_actions[0].choices[action]  # type: ignore[union-attr, index]
+    return " ".join(str(found.format_help()).split())
+
+
 @pytest.mark.parametrize(
-    "line",
+    ("action", "line"),
     [
-        "--pending list waiting messages, in the order workers take them",
-        "--held list messages waiting for an earlier one of their key",
+        ("status", "count messages by status, and each queue's lag"),
+        ("list", "{pending,held,locked,dead}"),
+        ("list", "--limit LIMIT at most this many (default: 20)"),
+        ("list", "--queue QUEUE only this queue's messages"),
+        ("retry", "ID|all"),
+        ("retry", "--operator NAME"),
+        ("cancel", "ID"),
         (
-            "--release run the next message of each ordering key left with held "
-            "messages and none pending"
+            "release",
+            (
+                "run the next message of each ordering key left with held messages "
+                "and none pending"
+            ),
         ),
-        "--locked list running and published messages",
-        "--dead list dead letters",
-        "--limit LIMIT",
-        "--queue QUEUE list only this queue's messages",
-        "--retry ID|all queue a dead message (or all) again",
-        "--cancel ID cancel a message no worker is running",
-        "--database DATABASE the outbox's alias (default: MESSAGING.DATABASE)",
+        (
+            "status",
+            "--database DATABASE the outbox's alias (default: MESSAGING.DATABASE)",
+        ),
     ],
 )
-def test_messages_says_what_each_option_does(line: str) -> None:
-    """Each option's line of its ``--help``."""
-    assert f" {line} " in f"{usage(MessagesCommand, 'messages')} "
+def test_messages_says_what_each_action_and_option_does(action: str, line: str) -> None:
+    """Each action's line of its ``--help``; reading actions take no operator."""
+    assert f" {line} " in f"{action_usage(action)} "
+    assert "--operator" not in action_usage("status")
+    assert "--operator" not in action_usage("list")
 
 
 def test_messages_lists_twenty_unless_told() -> None:
     """``--limit`` defaults to 20 messages."""
     parser = MessagesCommand().create_parser("manage.py", "messages")
 
-    assert parser.parse_args(["--dead"]).limit == 20
+    assert parser.parse_args(["list", "dead"]).limit == 20
 
 
 def test_a_locked_message_is_listed_with_the_end_of_its_lock() -> None:
-    """``messages --locked`` shows when the lock ends, not when it was due."""
+    """``messages list locked`` shows when the lock ends, not when it was due."""
     locked = SimpleNamespace(
         id="m1",
         kind="task",
@@ -364,8 +378,8 @@ async def test_metrics_need_the_metrics_extra(monkeypatch: pytest.MonkeyPatch) -
 async def test_messages_refuses_a_limit_below_one(installed: None) -> None:
     """``--limit 0`` is refused, saying what it takes."""
     with pytest.raises(CommandError) as refused:
-        await MessagesCommand(stdout=io.StringIO()).handle(
-            state="dead", limit=0, queue=None, retry=None, cancel=None, database=None
+        await MessagesCommand(stdout=io.StringIO()).listed(
+            state="dead", limit=0, queue=None, database=None
         )
 
     assert str(refused.value) == "--limit must be 1 or more."
@@ -378,14 +392,7 @@ async def test_messages_shows_the_lag_of_the_outbox_named(installed: None) -> No
     printed = io.StringIO()
 
     with freeze_time(NOW):
-        await MessagesCommand(stdout=printed).handle(
-            state=None,
-            limit=20,
-            queue=None,
-            retry=None,
-            cancel=None,
-            database="archive",
-        )
+        await MessagesCommand(stdout=printed).status(database="archive")
 
     assert printed.getvalue().splitlines()[-1] == "lag archive: 3600.0s"
 

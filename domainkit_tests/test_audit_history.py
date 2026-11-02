@@ -255,16 +255,18 @@ def test_changes_compare_with_the_newest_older_value() -> None:
 
 def test_auditlog_prints_a_history_with_changes(note: uuid.UUID) -> None:
     """``--aggregate FIELD=ID`` and ``--target``, each change under its entry."""
-    lines = run("auditlog", "--aggregate", f"note_id={note}").splitlines()
+    lines = run("audit", "history", "--aggregate", f"note_id={note}").splitlines()
 
     assert "u1  domainkit_tests.note_titled  success  req-1" in lines[0]
     assert lines[1] == "    title: 'Draft' -> 'Final'"
     assert len([line for line in lines if not line.startswith(" ")]) == 3
-    assert run("auditlog", "--target", "nothing") == ""
-    assert run("auditlog", "--aggregate", f"note_id={note}", "--database", "default")
+    assert run("audit", "history", "--target", "nothing") == ""
+    assert run(
+        "audit", "history", "--aggregate", f"note_id={note}", "--database", "default"
+    )
     for value, message in [("note_id", "takes FIELD=ID"), ("x y=1", "is not a field")]:
         with pytest.raises(CommandError, match=message):
-            run("auditlog", "--aggregate", value)
+            run("audit", "history", "--aggregate", value)
 
 
 # The staff endpoint ---------------------------------------------------------------
@@ -441,7 +443,7 @@ def test_pages_hold_one_to_two_hundred_entries(project: None) -> None:
     asyncio.run(write_rows(*rows))
 
     assert len(run_async(history(target="t-1"))) == 50
-    assert len(run("auditlog", "--target", "t-1").splitlines()) == 50
+    assert len(run("audit", "history", "--target", "t-1").splitlines()) == 50
     assert ids(run_async(history(target="t-1", limit=1))) == [51]
     assert len(run_async(history(target="t-1", limit=MAX_LIMIT))) == 51
     exact = run_async(history_page(target="t-1", limit=51))
@@ -500,23 +502,36 @@ def test_auditlog_reads_one_database_and_filters(project: None, tmp_path: Path) 
         asyncio.run(write_rows((LATER, 3, {}), alias="elsewhere"))
         asyncio.run(record("report.viewed", target="r-1"))
 
-        listed = run("auditlog", "--target", "t-1", "--database", "default")
+        listed = run("audit", "history", "--target", "t-1", "--database", "default")
         assert len(listed.splitlines()) == 2
-        lines = run("auditlog", "--target", "t-1", "--database", "elsewhere")
+        lines = run("audit", "history", "--target", "t-1", "--database", "elsewhere")
         assert lines == "2026-10-19 10:05:00  u1  test.changed  success  -\n"
-        assert len(run("auditlog", "--target", "t-1", "--limit", "1").splitlines()) == 1
-        assert run("auditlog", "--action", "report.viewed").count("\n") == 1
-        assert "report.viewed" not in run("auditlog", "--actor", "u1")
-        assert run("auditlog", "--limit", "1").count("\n") == 1
+        assert (
+            len(run("audit", "history", "--target", "t-1", "--limit", "1").splitlines())
+            == 1
+        )
+        assert run("audit", "log", "--action", "report.viewed").count("\n") == 1
+        assert "report.viewed" not in run("audit", "log", "--actor", "u1")
+        assert run("audit", "log", "--limit", "1").count("\n") == 1
+
+
+def test_history_names_one_record(project: None) -> None:
+    """``audit history`` needs ``--target`` or ``--aggregate``, not both."""
+    for args in ((), ("--target", "t-1", "--aggregate", "note_id=1")):
+        with pytest.raises(CommandError) as refused:
+            run("audit", "history", *args)
+        assert str(refused.value) == (
+            "Name the record: --target, or --aggregate FIELD=ID."
+        )
 
 
 def test_auditlog_reads_aggregate_ids_after_the_first_equals(project: None) -> None:
     """``FIELD=ID``: the id may hold ``=``; it may not be empty."""
     asyncio.run(write_rows((EARLIER, 1, {"code": "a=b"})))
 
-    assert "test.changed" in run("auditlog", "--aggregate", "code=a=b")
+    assert "test.changed" in run("audit", "history", "--aggregate", "code=a=b")
     with pytest.raises(CommandError) as refused:
-        run("auditlog", "--aggregate", "code=")
+        run("audit", "history", "--aggregate", "code=")
     assert str(refused.value) == "--aggregate takes FIELD=ID, as product_id=42."
 
 

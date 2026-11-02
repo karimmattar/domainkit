@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, IPvAnyNetwork, model_validato
 
 from domainkit.conf.global_settings import NAME_PATTERN
 from domainkit.contrib.messaging.retry import MAX_DELAY
-from domainkit.deprecation import renamed
 
 
 class WebhooksSettings(BaseModel):
@@ -51,8 +50,3 @@ class WebhooksSettings(BaseModel):
         if self.CONNECT_TIMEOUT > self.TIMEOUT:
             raise ValueError("CONNECT_TIMEOUT must not exceed TIMEOUT")
         return self
-
-
-__getattr__ = renamed(
-    __name__, {"WebhookSettings": f"{__name__}.WebhooksSettings"}, "2.0"
-)

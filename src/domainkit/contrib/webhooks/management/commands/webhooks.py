@@ -1,7 +1,6 @@
 """``webhooks``: list subscriptions and deliveries, and replay deliveries."""
 
 import uuid
-from argparse import ArgumentParser
 from typing import Any
 
 import httpx2
@@ -9,8 +8,10 @@ from sqlalchemy import select
 
 from domainkit.contrib.webhooks.delivery import (
     failed_deliveries,
-    replay,
     webhooks_alias,
+)
+from domainkit.contrib.webhooks.delivery import (
+    replay as replay_deliveries,
 )
 from domainkit.contrib.webhooks.tables import (
     DELIVERY_STATUSES,
@@ -18,56 +19,57 @@ from domainkit.contrib.webhooks.tables import (
     subscriptions,
 )
 from domainkit.db import connections
-from domainkit.management import BaseCommand, CommandError
+from domainkit.management import ActionCommand, CommandError, action, option
 
 MAX_LIMIT = 1000
 
 
-class Command(BaseCommand):
+class Command(ActionCommand):
     """Inspect webhook subscriptions and deliveries, and send deliveries again."""
 
     help = "List webhook subscriptions and deliveries, or replay deliveries."
-    operator_actions = True
+    common_options = (
+        option("--limit", type=int, default=20, help="at most this many (default: 20)"),
+    )
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the action and its options."""
-        parser.add_argument("action", choices=("subscriptions", "deliveries", "replay"))
-        parser.add_argument(
-            "ids",
-            nargs="*",
-            metavar="DELIVERY",
-            help="replay: the deliveries to send again",
-        )
-        parser.add_argument(
-            "--failed",
-            action="store_true",
-            help="replay: the most recent failed deliveries (up to --limit)",
-        )
-        parser.add_argument("--status", choices=DELIVERY_STATUSES)
-        parser.add_argument("--subscription", metavar="ID")
-        parser.add_argument("--limit", type=int, default=20)
+    @action(help="list the subscriptions, without their URLs' paths or secrets")
+    async def subscriptions(self, *, limit: int) -> None:
+        """One line per subscription."""
+        await self._subscriptions(_checked(limit))
 
-    async def handle(
-        self,
-        *,
-        action: str,
-        ids: list[str],
-        failed: bool,
-        status: str | None,
-        subscription: str | None,
-        limit: int,
-        **options: object,
+    @action(
+        help="list the newest deliveries",
+        options=[
+            option("--status", choices=DELIVERY_STATUSES),
+            option("--subscription", metavar="ID", help="only this subscription's"),
+        ],
+    )
+    async def deliveries(
+        self, *, status: str | None, subscription: str | None, limit: int
     ) -> None:
-        """Print what was asked for, or replay."""
-        if not 1 <= limit <= MAX_LIMIT:
-            raise CommandError(f"--limit must be from 1 to {MAX_LIMIT}.")
+        """One line per delivery."""
         owner = None if subscription is None else _id(subscription)
-        if action == "subscriptions":
-            await self._subscriptions(limit)
-        elif action == "deliveries":
-            await self._deliveries(limit, status, owner)
-        else:
-            await self._replay([_id(text) for text in ids], failed, limit, owner)
+        await self._deliveries(_checked(limit), status, owner)
+
+    @action(
+        help="send deliveries again: those named, or the most recent failed ones",
+        options=[
+            option("ids", nargs="*", metavar="DELIVERY", help="the deliveries"),
+            option(
+                "--failed",
+                action="store_true",
+                help="the most recent failed deliveries (up to --limit)",
+            ),
+            option("--subscription", metavar="ID", help="only this subscription's"),
+        ],
+        operator=True,
+    )
+    async def replay(
+        self, *, ids: list[str], failed: bool, subscription: str | None, limit: int
+    ) -> None:
+        """Queue deliveries again."""
+        owner = None if subscription is None else _id(subscription)
+        await self._replay([_id(text) for text in ids], failed, _checked(limit), owner)
 
     async def _subscriptions(self, limit: int) -> None:
         """One line per subscription, without its URL's path or its secret."""
@@ -117,7 +119,7 @@ class Command(BaseCommand):
         if failed:
             ids = await failed_deliveries(limit, owner)
         async with self.recorded("webhooks.replay", asked=len(ids)) as action:
-            replayed = await replay(ids)
+            replayed = await replay_deliveries(ids)
             action["deliveries"] = len(replayed)
         self.write(f"Queued {len(replayed)} delivery(ies) again.")
 
@@ -134,3 +136,14 @@ async def _rows(statement: Any) -> list[Any]:  # noqa: ANN401 - a select.
     """Run ``statement`` on the webhooks database."""
     async with connections.engine(webhooks_alias()).connect() as connection:
         return list((await connection.execute(statement)).all())
+
+
+def _checked(limit: int) -> int:
+    """``limit``, if from 1 to ``MAX_LIMIT``.
+
+    Raises:
+        CommandError: It is not.
+    """
+    if not 1 <= limit <= MAX_LIMIT:
+        raise CommandError(f"--limit must be from 1 to {MAX_LIMIT}.")
+    return limit

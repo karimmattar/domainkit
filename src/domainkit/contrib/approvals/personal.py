@@ -13,7 +13,7 @@ stands as maker or approver, by one ``erased:`` id, the same for all of
 their rows, so a request still shows that its maker and its approvers
 were different people. Seals are made again for the pseudonym, so the
 record still verifies. The audit trail keeps the actor of each event,
-and its own erasure (``auditforget``) covers its personal data.
+and its own erasure (``audit forget``) covers its personal data.
 """
 
 import uuid

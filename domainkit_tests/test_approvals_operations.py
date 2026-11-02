@@ -82,7 +82,8 @@ def actions(monkeypatch: pytest.MonkeyPatch) -> list[Action]:
 def run(*args: str) -> str:
     """``approvals`` with ``args``; what it printed."""
     output = io.StringIO()
-    call_command("approvals", *args, "--operator", "tester", stdout=output)
+    operator = ("--operator", "tester") if args[0] == "expire" else ()
+    call_command("approvals", *args, *operator, stdout=output)
     return output.getvalue()
 
 
@@ -448,11 +449,16 @@ def test_the_command_says_what_each_argument_is() -> None:
     """Its ``--help``: what ``request`` and ``--status`` are for."""
     from domainkit.contrib.approvals.management.commands.approvals import Command
 
-    usage = " ".join(
-        Command().create_parser("manage.py", "approvals").format_help().split()
-    )
-    assert " request show: the request's id options:" in usage
+    parser = Command().create_parser("manage.py", "approvals")
+    choices = parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+    show = " ".join(choices["show"].format_help().split())  # type: ignore[index]
+    listed = " ".join(choices["list"].format_help().split())  # type: ignore[index]
+    expire = " ".join(choices["expire"].format_help().split())  # type: ignore[index]
+
+    assert " request the request's id options:" in show
     assert (
         " --status {pending,approved,executed,rejected,cancelled,expired,failed} "
-        "list: the requests in this status (default: pending) --limit LIMIT "
-    ) in usage
+        "the requests in this status (default: pending) --limit LIMIT "
+    ) in listed
+    assert "--operator" not in listed
+    assert "--operator NAME" in expire

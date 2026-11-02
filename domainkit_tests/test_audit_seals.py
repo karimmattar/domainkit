@@ -27,13 +27,10 @@ from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.audit import apps as audit_apps
 from domainkit.contrib.audit import record
 from domainkit.contrib.audit import seals as seals_module
-from domainkit.contrib.audit.management.commands.auditseal import (
-    Command as SealCommand,
+from domainkit.contrib.audit.management.commands.audit import (
+    Command as AuditCommand,
 )
-from domainkit.contrib.audit.management.commands.auditverify import (
-    Command as VerifyCommand,
-)
-from domainkit.contrib.audit.management.commands.auditverify import _summary
+from domainkit.contrib.audit.management.commands.audit import _summary
 from domainkit.contrib.audit.protection import protect, statements
 from domainkit.contrib.audit.seals import (
     COLUMNS,
@@ -1092,27 +1089,28 @@ def two_trails(
 
 def test_auditseal_reports_what_it_sealed(two_trails: list[uuid.UUID]) -> None:
     """The rows sealed and the anchor; then nothing new, late rows included."""
-    assert run_command("auditseal") == "default: sealed 4 rows, anchored #4.\n"
-    assert run_command("auditseal") == "default: sealed 0 rows.\n"
-    assert run_command("auditseal", "--late") == "default: sealed 0 rows.\n"
+    assert run_command("audit", "seal") == "default: sealed 4 rows, anchored #4.\n"
+    assert run_command("audit", "seal") == "default: sealed 0 rows.\n"
+    assert run_command("audit", "seal", "--late") == "default: sealed 0 rows.\n"
 
 
 def test_auditverify_reports_an_intact_trail(two_trails: list[uuid.UUID]) -> None:
     """Its seals and anchors per database; anchors left unread without a ledger."""
-    run_command("auditseal")
+    run_command("audit", "seal")
 
-    assert run_command("auditverify") == "default: 4 seals, 1 anchors: intact.\n"
-    assert run_command("auditverify", "--database", "reports") == (
+    assert run_command("audit", "verify") == "default: 4 seals, 1 anchors: intact.\n"
+    assert run_command("audit", "verify", "--database", "reports") == (
         "reports: 0 seals, 0 anchors: intact.\n"
     )
     with override_settings(AUDIT={}):
-        assert run_command("auditverify") == "default: 4 seals, 0 anchors: intact.\n"
+        verified = run_command("audit", "verify")
+        assert verified == "default: 4 seals, 0 anchors: intact.\n"
 
 
 def test_auditverify_names_each_problem(two_trails: list[uuid.UUID]) -> None:
     """Changed and missing rows, broken links, rewritten anchors, unsealed rows."""
     first, second, third, _ = two_trails
-    run_command("auditseal")
+    run_command("audit", "seal")
 
     async def tamper() -> None:
         for entry in (first, third):
@@ -1133,7 +1131,7 @@ def test_auditverify_names_each_problem(two_trails: list[uuid.UUID]) -> None:
         CommandError,
         match=r"^The audit trail failed verification: \['default'\]\.$",
     ):
-        call_command("auditverify", "--database", "default", stdout=output)
+        call_command("audit", "verify", "--database", "default", stdout=output)
 
     assert output.getvalue() == (
         "default: 3 seals, 1 anchors: NOT INTACT.\n"
@@ -1162,7 +1160,7 @@ def test_auditverify_counts_rows_sealed_late() -> None:
 
 def test_auditseal_explains_its_late_option() -> None:
     """``--help`` says what ``--late`` seals, and what it costs."""
-    usage = SealCommand().create_parser("manage.py", "auditseal").format_help()
+    usage = action_help("seal")
 
     assert (
         "--late also seal rows that committed later than "
@@ -1174,7 +1172,7 @@ def test_auditseal_explains_its_late_option() -> None:
 def test_auditseal_seals_late_rows_only_with_its_option(
     audited: str, late: bool
 ) -> None:
-    """``auditseal --late`` reaches the rows a plain run leaves alone."""
+    """``audit seal --late`` reaches the rows a plain run leaves alone."""
 
     async def prepare() -> None:
         async with connections.engine().begin() as connection:
@@ -1189,7 +1187,7 @@ def test_auditseal_seals_late_rows_only_with_its_option(
     asyncio.run(prepare())
     output = io.StringIO()
     with override_settings(AUDIT={}):  # Seal only: no anchors to count.
-        call_command("auditseal", *(["--late"] if late else []), stdout=output)
+        call_command("audit", "seal", *(["--late"] if late else []), stdout=output)
 
     assert (
         output.getvalue() == f"default: sealed {int(late)} row{'' if late else 's'}.\n"
@@ -1198,7 +1196,7 @@ def test_auditseal_seals_late_rows_only_with_its_option(
 
 def test_auditverify_explains_its_option() -> None:
     """``--help`` says what ``--database`` picks."""
-    usage = VerifyCommand().create_parser("manage.py", "auditverify").format_help()
+    usage = action_help("verify")
 
     assert "--database DATABASE the alias to check (default: every audited one)" in (
         " ".join(usage.split())
@@ -1345,7 +1343,7 @@ async def test_a_lock_held_across_runs_is_reported_as_a_stall(
 
     The backlog is far below SEAL_BACKLOG_WARNING; its age gives it away.
     A new row is what a sealer at work leaves, and a row below the horizon
-    is out of every run's reach (``auditseal --late``): neither warns.
+    is out of every run's reach (``audit seal --late``): neither warns.
     """
     now = datetime.now(UTC)
     await add(now - timedelta(hours=2))
@@ -1485,3 +1483,10 @@ async def test_concurrent_sealers_take_turns(tables: None) -> None:
     assert sum(counts) == 20
     assert [each["seq"] for each in await seals()] == list(range(1, 21))
     assert (await verify("default")).intact
+
+
+def action_help(action: str) -> str:
+    """``manage.py audit <action> --help``."""
+    parser = AuditCommand().create_parser("manage.py", "audit")
+    found = parser._subparsers._group_actions[0].choices[action]  # type: ignore[union-attr, index]
+    return str(found.format_help())
