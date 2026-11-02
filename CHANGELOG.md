@@ -11,6 +11,9 @@ and a status.
 
 ### Added
 
+- `docs/request-flow.md`: the path a command takes, from the middleware to
+  the answer and the worker after it, what can refuse it at each stage,
+  and what each stage costs on the benchmark ladder.
 - `ActionCommand`, `@action`, and `option` (`domainkit.management`): one
   shape for every command of several actions, `manage.py <command>
   <action> [options]`, each action a method with its own options and
