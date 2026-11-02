@@ -6,7 +6,7 @@ trail vouches for each entry ... A rewrite of postings and balances that
 ``verify_ledger`` cannot see ... no longer matches the trail". But
 nothing compares them: ``verify_ledger`` (``manage.py accounting
 verify``) still checks only that entries balance and balances add up,
-``auditverify`` checks the trail's own chain, and no command reads
+``audit verify`` checks the trail's own chain, and no command reads
 ``EntryPosted`` back against the postings (the audit's "Do" for FIN-96:
 "have ``accounting verify`` check entries against the trail"). Whoever
 owns the schema disables the append-only triggers, turns a 5,000.00

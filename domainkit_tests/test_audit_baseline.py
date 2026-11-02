@@ -68,7 +68,7 @@ NO_NAMESPACE = (
 )
 NO_SCHEDULE = (
     f"Nothing seals the audit trail on a schedule: install {MESSAGING} and run "
-    "a worker, or run 'manage.py auditseal' from cron and set "
+    "a worker, or run 'manage.py audit seal' from cron and set "
     "AUDIT.SEALED_EXTERNALLY = True."
 )
 on_postgres = pytest.mark.skipif(
@@ -282,7 +282,7 @@ async def test_a_database_that_does_not_answer_is_named(
     assert await protection_problems() == [
         (
             "Could not check the audit trail's triggers in 'default' "
-            "(OperationalError); run 'manage.py auditverify' once it answers."
+            "(OperationalError); run 'manage.py audit verify' once it answers."
         )
     ]
 
@@ -310,7 +310,7 @@ async def test_every_audited_database_is_probed(
     assert problems == [
         (
             "Could not check the audit trail's triggers in 'default' "
-            "(TimeoutError); run 'manage.py auditverify' once it answers."
+            "(TimeoutError); run 'manage.py audit verify' once it answers."
         ),
         (
             "The audit trail in 'reports' is not append-only: triggers "
@@ -335,7 +335,7 @@ async def test_a_probe_that_hangs_is_given_up_on(
     assert await protection_problems() == [
         (
             "Could not check the audit trail's triggers in 'default' "
-            "(TimeoutError); run 'manage.py auditverify' once it answers."
+            "(TimeoutError); run 'manage.py audit verify' once it answers."
         )
     ]
 

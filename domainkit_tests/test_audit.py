@@ -31,7 +31,7 @@ from domainkit.contrib.audit import (
     pseudonym_of,
     record,
 )
-from domainkit.contrib.audit.management.commands.auditforget import Command
+from domainkit.contrib.audit.management.commands.audit import Command as AuditCommand
 from domainkit.contrib.audit.personal import audited_databases, pseudonym, subject_keys
 from domainkit.contrib.audit.protection import PROTECT, UNPROTECT, protect, unprotect
 from domainkit.contrib.audit.recorder import event_rows
@@ -176,7 +176,7 @@ def test_action_names_use_domain_labels(audited: str) -> None:
 
 
 def test_auditlog_command(audited: str) -> None:
-    """``auditlog`` lists entries newest first, with filters."""
+    """``audit log`` lists entries newest first, with filters."""
 
     async def prepare() -> None:
         async with connections.engine().begin() as connection:
@@ -190,7 +190,7 @@ def test_auditlog_command(audited: str) -> None:
 
     def run(*args: str) -> list[str]:
         output = io.StringIO()
-        call_command("auditlog", *args, stdout=output)
+        call_command("audit", "log", *args, stdout=output)
         return output.getvalue().splitlines()
 
     newest, oldest = run()
@@ -654,7 +654,7 @@ def test_auditforget_command(
 
     def run(*args: str) -> str:
         output = io.StringIO()
-        call_command("auditforget", *args, stdout=output)
+        call_command("audit", "forget", *args, stdout=output)
         return output.getvalue()
 
     assert run("alice", "nobody") == "Forgot 1 key.\n"
@@ -808,9 +808,9 @@ async def test_an_excluded_event_does_not_hide_the_next_one(tables: None) -> Non
 
 def test_auditforget_explains_its_arguments() -> None:
     """``--help`` names the subjects and the retention period."""
-    usage = Command().create_parser("manage.py", "auditforget").format_help()
+    usage = action_help("forget")
 
-    assert "usage: manage.py auditforget [-h] [--anonymous-days DAYS]" in usage
+    assert "usage: manage.py audit forget [-h] [--anonymous-days DAYS]" in usage
     assert "[subject ...]" in usage
     assert (
         "keep anonymous callers' addresses for DAYS days (UTC) and forget older ones"
@@ -1139,3 +1139,10 @@ async def test_connections_keep_no_keys(tables: None) -> None:
 
     assert on_keys(again) == ["SELECT"]
     assert first["ann"]
+
+
+def action_help(action: str) -> str:
+    """``manage.py audit <action> --help``."""
+    parser = AuditCommand().create_parser("manage.py", "audit")
+    found = parser._subparsers._group_actions[0].choices[action]  # type: ignore[union-attr, index]
+    return str(found.format_help())

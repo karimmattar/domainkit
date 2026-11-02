@@ -4,7 +4,7 @@ A trail is append-only and anchored only when four things hold, and each is
 easy to forget: a ledger to anchor on (``AUDIT.LEDGER``), a namespace that
 keeps its anchors apart on a shared ledger (``AUDIT.NAMESPACE``), something
 that seals on a schedule (the worker, with ``domainkit.contrib.messaging``,
-or ``auditseal`` from cron, ``AUDIT.SEALED_EXTERNALLY``), and the
+or ``audit seal`` from cron, ``AUDIT.SEALED_EXTERNALLY``), and the
 ``protect()`` triggers on PostgreSQL. ``check`` lists the settings that
 are missing; the application, when it starts, also asks each audited
 PostgreSQL database for the triggers. With ``AUDIT.REQUIRE_BASELINE``, the
@@ -117,7 +117,7 @@ def settings_problems() -> list[str]:
             _problem(
                 3,
                 f"Nothing seals the audit trail on a schedule: install {MESSAGING} "
-                "and run a worker, or run 'manage.py auditseal' from cron and set "
+                "and run a worker, or run 'manage.py audit seal' from cron and set "
                 "AUDIT.SEALED_EXTERNALLY = True.",
             )
         )
@@ -164,7 +164,7 @@ async def protection_problems() -> list[str]:
                 _problem(
                     4,
                     f"Could not check the audit trail's triggers in {database!r} "
-                    f"({type(exc).__name__}); run 'manage.py auditverify' once it "
+                    f"({type(exc).__name__}); run 'manage.py audit verify' once it "
                     "answers.",
                 )
             )

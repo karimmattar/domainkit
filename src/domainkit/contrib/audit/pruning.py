@@ -139,7 +139,7 @@ async def prune(
     if forged:
         raise PruneRefused(
             f"Checkpoints of {database!r} at seals {forged} do not verify "
-            "(auditverify); nothing was pruned."
+            "(audit verify); nothing was pruned."
         )
     last = accepted[points[-1].seq] if points else None
     left = 0 if last is None else await _left_below(database, last, ledger)
@@ -240,7 +240,7 @@ def _refuse_unless_intact(database: str, report: Report) -> None:
     if found := {name: count for name, count in problems.items() if count}:
         raise PruneRefused(
             f"The trail of {database!r} does not verify up to the cut ({found}); "
-            "pruning it would hide that. Nothing was pruned: run auditverify."
+            "pruning it would hide that. Nothing was pruned: run audit verify."
         )
 
 
@@ -278,7 +278,7 @@ async def _delete(database: str, lowest: int, cut: int) -> int:
         raise PruneRefused(
             f"The trail of {database!r} is protected by triggers only its owner may "
             f"disable: set DATABASES[{database!r}]['MIGRATION_URL'] to the owner's "
-            "URL. The checkpoint is stored; run auditprune again."
+            "URL. The checkpoint is stored; run audit prune again."
         ) from exc
     finally:
         if postgres:
@@ -332,7 +332,7 @@ async def export(
         report = await verify(database, ledger, now=now)
         if not report.intact:
             raise ExportRefused(
-                f"The trail of {database!r} does not verify: run auditverify."
+                f"The trail of {database!r} does not verify: run audit verify."
             )
         async with connections.engine(database).connect() as connection:
             points = await stored(connection, database, public)

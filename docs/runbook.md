@@ -154,10 +154,10 @@ append-only triggers missing or changed
 **Check:**
 
 1. What the command printed: each entry or account, and what differs.
-2. `auditlog --action accounting.entry_posted` for the entries named: the
+2. `audit log --action accounting.entry_posted` for the entries named: the
    trail's `amounts` and `digest` say what each entry moved when it was
    posted, sealed and anchored with the trail.
-3. `auditverify`: whether the trail itself was rewritten.
+3. `audit verify`: whether the trail itself was rewritten.
 4. Who held the schema owner's role: the triggers keep rows from changing
    for every other role.
 
@@ -178,13 +178,13 @@ incident.
 **Do,** as [operations.md](operations.md#backups-and-restores) says:
 
 1. Before restoring, list the erasures made since the backup's time
-   (`manage.py auditlog --action privacy.erase`), and keep the list
+   (`manage.py audit log --action privacy.erase`), and keep the list
    outside the databases being restored.
 2. Restore, then run `manage.py privacy erase --subject <id>` for each:
    the backup holds the erased people's keys and data again
    ([keys.md](contrib/keys.md#backups-taken-before-an-erasure)).
-3. Run `auditverify`, and keep what it reports about anchors the restore
-   lost with the incident ([auditverify fails](#auditverify-fails)).
+3. Run `audit verify`, and keep what it reports about anchors the restore
+   lost with the incident ([audit verify fails](#audit verify-fails)).
 
 ## A circuit breaker opens
 
@@ -221,7 +221,7 @@ the oldest row waiting is older than `AUDIT.SEAL_EVERY` and
 **Check:**
 
 1. Does anything seal? The worker seals when `domainkit.contrib.messaging`
-   is installed; otherwise cron must run `python manage.py auditseal`.
+   is installed; otherwise cron must run `python manage.py audit seal`.
 2. The log line saying another sealer is at work: one sealer per database
    at a time, under a PostgreSQL advisory lock.
 3. If a run warns that the oldest waiting row is too old, the lock is held
@@ -230,19 +230,19 @@ the oldest row waiting is older than `AUDIT.SEAL_EVERY` and
 
 **Do:**
 
-- Nothing seals: start the worker, or schedule `auditseal`.
+- Nothing seals: start the worker, or schedule `audit seal`.
 - The volume outgrew the runs: raise `AUDIT.SEAL_BATCHES`, or seal more
   often (`AUDIT.SEAL_EVERY`).
 - A stuck session holds the lock: end it (`pg_terminate_backend`).
 - A row that committed later than the window: once you know why (a long
-  transaction, a clock behind), `python manage.py auditseal --late`.
+  transaction, a clock behind), `python manage.py audit seal --late`.
 
 Until a row is sealed and its head anchored, it can be changed unnoticed:
 treat a backlog that lasts hours as a gap in the evidence, and note it.
 
-## auditverify fails
+## audit verify fails
 
-**You see** `python manage.py auditverify` exit non-zero, naming changed or
+**You see** `python manage.py audit verify` exit non-zero, naming changed or
 missing rows, broken links, rewritten anchors, unanchored seals, or old
 unsealed rows.
 
@@ -270,13 +270,13 @@ refuses to write to it or check against it rather than trust it.
 1. Treat it as an incident until shown otherwise: someone restored an
    older copy, or changed the ledger's storage.
 2. Ask the ledger's operators whether a restore happened, and when.
-3. Run `auditverify` against the databases. If the chain verifies and the
+3. Run `audit verify` against the databases. If the chain verifies and the
    restore was deliberate, delete the ledger's row from
    `domainkit_ledger_states`; the next call trusts the restored state and
    records it again.
 4. If no one restored it, keep the service refused, keep the ledger's
    storage for investigation, and check the last export
-   (`auditverify --check-export`) against the databases.
+   (`audit check-export`) against the databases.
 
 ## A cache fails
 

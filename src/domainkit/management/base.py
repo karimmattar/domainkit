@@ -94,7 +94,7 @@ class BaseCommand:
             from domainkit.management.operators import acting_as, operator
 
             self.operator = operator(cast(str | None, options.pop("operator", None)))
-            acting = acting_as(self.operator, type(self).__module__.rpartition(".")[2])
+            acting = acting_as(self.operator, self.label(options))
         if self.requires_setup:
             from domainkit import setup
 
@@ -103,6 +103,10 @@ class BaseCommand:
             result = self.handle(**options)
             if inspect.isawaitable(result):
                 run_async(result)
+
+    def label(self, options: dict[str, object]) -> str:
+        """What the audit trail calls this run: the command's name."""
+        return type(self).__module__.rpartition(".")[2]
 
     def recorded(
         self, action: str, **details: object

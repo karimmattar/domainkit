@@ -1232,7 +1232,7 @@ def test_an_append_only_table_is_never_purged(clinic: str) -> None:
             ),
             (
                 "patients: domainkit_audit_log is append-only: its rows are never "
-                "deleted. Forget people's keys instead (auditforget)."
+                "deleted. Forget people's keys instead (audit forget)."
             ),
         ),
         (
@@ -1241,7 +1241,7 @@ def test_an_append_only_table_is_never_purged(clinic: str) -> None:
             ),
             (
                 "patients: patients_ledger is append-only: its rows are never deleted. "
-                "Forget people's keys instead (auditforget)."
+                "Forget people's keys instead (audit forget)."
             ),
         ),
         (

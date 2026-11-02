@@ -90,7 +90,7 @@ surprises a rollout.
       signing key (refused without them), `AUDIT.NAMESPACE`, sealing on a
       schedule, and the `protect()` triggers (warned, or refused with
       `AUDIT.REQUIRE_BASELINE`) ([operations.md](operations.md#sealing-the-audit-trail)).
-- [ ] `auditverify` daily, with an alert when it fails.
+- [ ] `audit verify` daily, with an alert when it fails.
 - [ ] Personal data marked, and `privacy purge` on a schedule
       ([privacy.md](privacy.md)).
 - [ ] `EVIDENCE.SUBJECT_KEY` set where evidence is kept (refused without).
@@ -112,7 +112,7 @@ surprises a rollout.
 - [ ] `pip-audit` (or the platform's scanner) over the deployed image's
       packages, on a schedule: new advisories appear with no change here.
 - [ ] Operators named in the audit trail: commands that change data
-      (`messages --retry`, `auditforget`, `flush`, `privacy purge`) take
+      (`messages --retry`, `audit forget`, `flush`, `privacy purge`) take
       `--operator` or `$DOMAINKIT_OPERATOR`; `loaddata` and `flush`
       refuse without one (refused).
 - [ ] `loaddata --include-guarded` and `flush --include-guarded` kept for

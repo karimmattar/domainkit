@@ -54,30 +54,43 @@ def option(*names: str, **settings: Any) -> Option:  # noqa: ANN401 - add_argume
 
 @dataclass(frozen=True, slots=True)
 class _Declared:
-    """How an action is declared: its name, help, and options."""
+    """How an action is declared: its name, help, options, and whether it operates."""
 
     name: str
     help: str
     options: tuple[Option, ...]
+    operator: bool
 
 
 type Handler = Callable[..., Awaitable[None] | None]
 
 
 def action(
-    *, name: str | None = None, help: str, options: Sequence[Option] = ()
+    *,
+    name: str | None = None,
+    help: str,
+    options: Sequence[Option] = (),
+    operator: bool = False,
 ) -> Callable[[Handler], Handler]:
     """Declare a method of an ``ActionCommand`` as one of its actions.
 
     ``name`` defaults to the method's, with ``_`` as ``-``; ``help`` is the
     line ``--help`` shows; ``options`` are the action's own (``option``).
+    ``operator`` marks an action that changes or erases stored data: it
+    takes ``--operator`` and runs as that operator (``operator_actions``
+    marks every action of the command).
     """
 
     def declare(method: Handler) -> Handler:
         setattr(
             method,
             _ACTION,
-            _Declared(name or method.__name__.replace("_", "-"), help, tuple(options)),
+            _Declared(
+                name or method.__name__.replace("_", "-"),
+                help,
+                tuple(options),
+                operator,
+            ),
         )
         return method
 
@@ -94,19 +107,32 @@ class ActionCommand(BaseCommand):
             TypeError: The class declares no action, or two with one name.
         """
         actions = parser.add_subparsers(dest="action", required=True)
-        self._action_parsers: list[ArgumentParser] = []
         for declared in self.declared_actions().values():
             sub = actions.add_parser(
                 declared.name, help=declared.help, description=declared.help
             )
             for each in declared.options:
                 sub.add_argument(*each.names, **each.settings)
-            self._action_parsers.append(sub)
+            if self._operates(declared):
+                super().add_operator_argument(sub)
 
     def add_operator_argument(self, parser: ArgumentParser) -> None:
-        """Take ``--operator`` after any action, as each action's own option."""
-        for sub in self._action_parsers:
-            super().add_operator_argument(sub)
+        """Nothing: each action that operates takes ``--operator`` itself."""
+
+    def execute(self, **options: object) -> None:
+        """Run the action, as its operator if it is one that operates."""
+        declared = self.declared_actions().get(str(options.get("action")))
+        if declared is not None and self._operates(declared):
+            self.operator_actions = True
+        super().execute(**options)
+
+    def _operates(self, declared: _Declared) -> bool:
+        """Whether ``declared`` runs as an operator: its own mark, or the class's."""
+        return declared.operator or type(self).operator_actions
+
+    def label(self, options: dict[str, object]) -> str:
+        """What the audit trail calls this run: the command and its action."""
+        return f"{super().label(options)} {options['action']}"
 
     @classmethod
     def declared_actions(cls) -> dict[str, _Declared]:

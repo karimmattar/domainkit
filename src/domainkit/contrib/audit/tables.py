@@ -78,7 +78,7 @@ audit_seals = Table(
 """Each row's place in the hash chain (see ``seals``); append-only too.
 
 ``late`` marks a row sealed after it fell out of the late window
-(``auditseal --late``): it was open to change unnoticed for longer.
+(``audit seal --late``): it was open to change unnoticed for longer.
 """
 
 audit_checkpoints = Table(

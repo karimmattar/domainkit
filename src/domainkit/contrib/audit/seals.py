@@ -19,7 +19,7 @@ with a ledger, is recorded there, its seal anchored that long before; any
 other is reported, and starts nothing (SEC-10b-2, SEC-10b-3).
 
 Rows are sealed after they commit, by the worker every ``AUDIT.SEAL_EVERY``
-or by ``auditseal``, so a row can be rewritten unnoticed until it is sealed
+or by ``audit seal``, so a row can be rewritten unnoticed until it is sealed
 and its head anchored. The newest sealed row is the high-water mark: a run
 looks for unsealed rows from ``AUDIT.SEAL_LATE_WINDOW`` before it, for rows
 that committed late, then on from the last row it sealed, so a run costs
@@ -33,7 +33,7 @@ what is left waits for the next run, and is counted
 
 A row that committed later than the window is out of a run's reach, and
 ``verify`` reports it once it is ``LOOKBACK`` old. ``seal(late=True)``
-(``auditseal --late``) seals such rows too, into the same chain, each
+(``audit seal --late``) seals such rows too, into the same chain, each
 seal flagged ``late``; finding them reads the whole trail, so it runs only
 when asked. Late seals never move the high-water mark back.
 """
@@ -173,13 +173,13 @@ class Report:
     unsealed: int = 0
     """Rows older than ``LOOKBACK`` without a seal."""
     late: int = 0
-    """Seals of rows sealed out of the late window (``auditseal --late``).
+    """Seals of rows sealed out of the late window (``audit seal --late``).
 
     Not a problem by itself: those rows were open to change unnoticed for
     longer than the others.
     """
     pruned: int = 0
-    """Seals pruned below checkpoints that verified (``auditprune``)."""
+    """Seals pruned below checkpoints that verified (``audit prune``)."""
     forged: list[int] = field(default_factory=list)
     """Checkpoints, by seal, that start nothing: the signature does not
     verify under ``AUDIT.CHECKPOINT_PUBLIC_KEY`` (or no key is set), it was
@@ -394,7 +394,7 @@ async def verify(
     (``starting_points``) ends it: the seal after the gap must follow the
     checkpoint's link.
     Anchors of pruned seals are not checked, except one at a checkpoint,
-    which must be its link. ``upto`` stops at that seal (for ``auditprune``:
+    which must be its link. ``upto`` stops at that seal (for ``audit prune``:
     nothing after it is read, nor counted unsealed or unanchored).
     """
     now = now or clock.now()
@@ -708,7 +708,7 @@ async def starting_points(
     its signed ``sealed_at`` says so and, with ``ledger``, so does the
     anchor that first covered the seal (``history``, in ledger order), and
     the ledger records it (``pruned_key``), so a checkpoint signed outside
-    ``auditprune`` starts nothing either (SEC-10b-3).
+    ``audit prune`` starts nothing either (SEC-10b-3).
     """
     floor = min_retention()
     recorded = None if ledger is None else await _recorded(database, ledger)

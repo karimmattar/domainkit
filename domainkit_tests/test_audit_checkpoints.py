@@ -470,7 +470,7 @@ async def test_a_chain_that_does_not_verify_is_never_pruned(trail: Ledger) -> No
         await prune("default", before=CUT, ledger=trail)
     assert str(refused.value) == (
         "The trail of 'default' does not verify up to the cut ({'changed rows': 1}); "
-        "pruning it would hide that. Nothing was pruned: run auditverify."
+        "pruning it would hide that. Nothing was pruned: run audit verify."
     )
     assert len(await seals()) == 8
     assert await checkpoints() == []
@@ -622,7 +622,7 @@ def command(*args: str) -> str:
 
 @pytest.mark.usefixtures("unanchored")
 async def test_the_commands_prune_export_and_check(tmp_path: Path) -> None:
-    """``auditprune``, ``auditverify --export``, and ``--check-export``.
+    """``audit prune``, ``audit verify --export``, and ``--check-export``.
 
     The prunes are audited, so the trail is sealed again before the export.
     """
@@ -634,14 +634,16 @@ async def test_the_commands_prune_export_and_check(tmp_path: Path) -> None:
         return command(*args)
 
     with freeze_time(T1 + timedelta(days=1)):
-        pruned = await asyncio.to_thread(run, "auditprune", "--keep-days", "30")
+        pruned = await asyncio.to_thread(run, "audit", "prune", "--keep-days", "30")
         again = await asyncio.to_thread(
-            run, "auditprune", "--keep-days", "30", "--database", "default"
+            run, "audit", "prune", "--keep-days", "30", "--database", "default"
         )
-        sealed = await asyncio.to_thread(run, "auditseal")
-        exported = await asyncio.to_thread(run, "auditverify", "--export", str(target))
+        sealed = await asyncio.to_thread(run, "audit", "seal")
+        exported = await asyncio.to_thread(
+            run, "audit", "verify", "--export", str(target)
+        )
     checked = await asyncio.to_thread(
-        run, "auditverify", "--check-export", str(target), "--public-key", str(public)
+        run, "audit", "check-export", str(target), "--public-key", str(public)
     )
 
     assert pruned == "default: pruned 5 rows below seal #5.\n"
@@ -677,20 +679,20 @@ async def test_the_commands_refuse_what_they_cannot_do(tmp_path: Path) -> None:
     public = tmp_path / "public.pem"
     public.write_bytes(PUBLIC_PEM)
     refusals = [
-        (("auditverify", "--export", str(target)), "exists; name a new file"),
-        (("auditverify", "--check-export", str(target)), "needs --public-key"),
+        (("audit", "verify", "--export", str(target)), "exists; name a new file"),
+        (("audit", "check-export", str(target)), "needs --public-key"),
         (
-            ("auditverify", "--export", "x", "--database", "default"),
+            ("audit", "verify", "--export", "x", "--database", "default"),
             "covers every audited database",
         ),
         (
-            ("auditverify", "--check-export", str(target), "--public-key", str(public)),
+            ("audit", "check-export", str(target), "--public-key", str(public)),
             "does not verify: Not an export",
         ),
-        (("auditprune", "--keep-days", "0"), "--keep-days is at least 1"),
+        (("audit", "prune", "--keep-days", "0"), "--keep-days is at least 1"),
     ]
     with freeze_time(T1 + timedelta(days=1)):
-        await asyncio.to_thread(command, "auditseal")
+        await asyncio.to_thread(command, "audit", "seal")
         for args, message in refusals:
             with pytest.raises(CommandError, match=message):
                 await asyncio.to_thread(command, *args)
@@ -701,7 +703,7 @@ async def test_refusals_of_the_library_are_the_commands_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A prune or an export the library refuses is the command's error."""
-    from domainkit.contrib.audit.management.commands import auditprune, auditverify
+    from domainkit.contrib.audit.management.commands import audit
 
     async def refuse_prune(*args: object, **options: object) -> Any:  # noqa: ANN401
         raise PruneRefused("no")
@@ -709,15 +711,15 @@ async def test_refusals_of_the_library_are_the_commands_errors(
     async def refuse_export(*args: object, **options: object) -> Any:  # noqa: ANN401
         raise ExportRefused("not exported")
 
-    monkeypatch.setattr(auditprune, "prune", refuse_prune)
-    monkeypatch.setattr(auditverify, "export", refuse_export)
+    monkeypatch.setattr(audit, "prune", refuse_prune)
+    monkeypatch.setattr(audit, "export", refuse_export)
     with freeze_time(T1 + timedelta(days=1)):
         with pytest.raises(CommandError, match=r"^no$"):
-            await asyncio.to_thread(command, "auditprune", "--keep-days", "1")
-        await asyncio.to_thread(command, "auditseal")
+            await asyncio.to_thread(command, "audit", "prune", "--keep-days", "1")
+        await asyncio.to_thread(command, "audit", "seal")
         with pytest.raises(CommandError, match="not exported"):
             await asyncio.to_thread(
-                command, "auditverify", "--export", str(tmp_path / "x.json")
+                command, "audit", "verify", "--export", str(tmp_path / "x.json")
             )
 
 
@@ -1146,7 +1148,7 @@ def test_a_seal_is_first_anchored_when_the_ledger_first_saw_it() -> None:
 
 
 async def test_prune_keeps_the_minimum_retention(trail: Ledger) -> None:
-    """``auditprune`` refuses a cut within ``AUDIT.MIN_RETENTION``; nothing goes."""
+    """``audit prune`` refuses a cut within ``AUDIT.MIN_RETENTION``; nothing goes."""
     with (
         freeze_time(T1),
         pytest.raises(PruneRefused, match="MIN_RETENTION keeps every row for 30 days"),

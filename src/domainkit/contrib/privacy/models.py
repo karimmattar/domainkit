@@ -301,7 +301,7 @@ def _resolve(
     if table.name in APPEND_ONLY or table.info.get("append_only"):
         return None, (
             f"{table.name} is append-only: its rows are never deleted. Forget "
-            "people's keys instead (auditforget)."
+            "people's keys instead (audit forget)."
         )
     if table.info.get("domain") != config.label:
         return None, f"{table.name} is not a table of {config.label!r}."

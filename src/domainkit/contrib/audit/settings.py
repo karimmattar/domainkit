@@ -51,7 +51,7 @@ class AuditSettings(BaseModel):
     SEAL_EVERY: timedelta = timedelta(minutes=5)
     """How often the worker seals new rows (with ``domainkit.contrib.messaging``)."""
     SEALED_EXTERNALLY: bool = False
-    """``auditseal`` runs on a schedule of the project's own (cron), not in
+    """``audit seal`` runs on a schedule of the project's own (cron), not in
     the worker: staging and production then do not warn that nothing seals."""
     REQUIRE_BASELINE: bool = True
     """Refuse to start in staging and production without a ledger, a
@@ -61,7 +61,7 @@ class AuditSettings(BaseModel):
         default=timedelta(minutes=15), gt=timedelta(0), le=timedelta(days=1)
     )
     """How far before the newest sealed row sealing looks for rows that
-    committed late. A row later than this stays unsealed, and ``auditverify``
+    committed late. A row later than this stays unsealed, and ``audit verify``
     reports it; keep it above the longest transaction and the clock skew."""
     SEAL_BATCHES: int = Field(default=100, ge=1, le=10_000)
     """Batches of 1,000 rows one run seals at most; the rest wait for the next."""
@@ -69,13 +69,13 @@ class AuditSettings(BaseModel):
     """Rows left unsealed after a run past which it logs a warning."""
     CHECKPOINT_KEY: SecretStr | None = Field(default=None, max_length=1024)
     """The Ed25519 private key, in PEM, that signs checkpoints of the chain
-    (``checkpoints``): those ``auditprune`` prunes below, and those
-    ``auditverify --export`` writes for a verifier holding the public key.
+    (``checkpoints``): those ``audit prune`` prunes below, and those
+    ``audit verify --export`` writes for a verifier holding the public key.
     Read by those two commands alone: set it in their environment, not the
     application's, which verifies with ``CHECKPOINT_PUBLIC_KEY``. None:
     neither runs."""
     CHECKPOINT_PUBLIC_KEY: str | None = Field(default=None, max_length=1024)
-    """The public half of ``CHECKPOINT_KEY``, in PEM: what ``auditverify``
+    """The public half of ``CHECKPOINT_KEY``, in PEM: what ``audit verify``
     checks stored checkpoints with. Checked when the application starts.
     None: no stored checkpoint verifies, so a pruned trail does not."""
     MIN_RETENTION: timedelta = Field(
@@ -83,8 +83,8 @@ class AuditSettings(BaseModel):
         ge=timedelta(days=1),
         le=timedelta(days=3650),
     )
-    """How old a seal must be before ``auditprune`` may cut there; a
-    checkpoint of a younger one starts nothing in ``auditverify``. Raising
+    """How old a seal must be before ``audit prune`` may cut there; a
+    checkpoint of a younger one starts nothing in ``audit verify``. Raising
     it reports the prunes made below it before. Under the PCI preset
     (``AUTH.PRESET = "pci-dss-4"``) it is at least ``PCI_RETENTION``,
     365 days, whatever it says (``min_retention``)."""

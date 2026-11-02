@@ -64,11 +64,13 @@ dry_run=True)`: an action is named after its method, `_` written `-`, unless
 | `approvals` | `list [--status STATUS] [--limit N]`, `show ID`, `expire`, `--operator` | List approval requests (pending by default), show one with its command and decisions, or expire those whose time is up; expiries are audited (approvals; see [approvals.md](../contrib/approvals.md#from-the-command-line), [operators](#operators)). |
 | `accounting` | `trialbalance\|ledger PERIOD [--format csv\|json] [--output FILE]`, `verify`, `expireholds`, `import ACCOUNT FILE`, `reconcile ACCOUNT`, `unmatched ACCOUNT`, `--operator` | Write a period's trial balance or general ledger, check that every entry balances and every balance sums its postings (fails otherwise), release expired holds, import a bank statement (CSV) into an account, reconcile it, or list what is unmatched; a period by name or id, an account by code or id; imports, reconciliations, and expiries are audited (accounting; see [accounting.md](../contrib/accounting.md#from-the-command-line), [operators](#operators)). |
 | `limits` | `list [--kind K]`, `usage KIND SUBJECT [--currency C]`, `set CODE --kind K --currency C [--subject S] [--direction in\|out] [--per-transaction A] [--window W] [--max-amount A] [--max-count N] [--time-zone Z] [--note T] [--enable\|--disable]`, `purge`, `--operator` | List the limits, stored and from `LIMITS.DEFAULTS`, show a subject's usage of each window, make a limit or change the bounds given (`none` clears one), or delete usage older than `LIMITS.KEEP_USAGE`; changes are audited as the operator's, and so is `purge` (limits; see [limits.md](../contrib/limits.md#from-the-command-line), [operators](#operators)). |
-| `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](../contrib/audit.md#history)). |
-| `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
-| `auditverify` | `--database`, `--export FILE`, `--check-export FILE --public-key PEM` | Check the audit trail against its seals, checkpoints, and anchors; fails if anything changed. `--export` then writes signed checkpoints of every trail for a third party (`AUDIT.CHECKPOINT_KEY`, read by this and `auditprune` alone); `--check-export` checks such a file offline, with the public key alone (audit). |
-| `auditprune` | `--keep-days`, `--database`, `--operator` | Delete audit rows sealed more than `--keep-days` (at least `AUDIT.MIN_RETENTION`) ago below a signed checkpoint recorded on the ledger, which `auditverify` then starts the chain from; refused if the chain up to it does not verify. Each run is audited (audit; [operators](#operators)). |
-| `auditforget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
+| `audit log` | `--actor`, `--action`, `--limit`, `--database` | Read the audit trail, newest first (audit). |
+| `audit history` | `--target` or `--aggregate FIELD=ID`, `--limit`, `--database` | One record's history, with what each entry changed (audit; see [contrib.md](../contrib/audit.md#history)). |
+| `audit seal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
+| `audit verify` | `--database`, `--export FILE` | Check the audit trail against its seals, checkpoints, and anchors; fails if anything changed. `--export` then writes signed checkpoints of every trail for a third party (`AUDIT.CHECKPOINT_KEY`, read by this and `audit prune` alone) (audit). |
+| `audit check-export` | `FILE`, `--public-key PEM` | Check an export offline, with the public key alone (audit). |
+| `audit prune` | `--keep-days`, `--database`, `--operator` | Delete audit rows sealed more than `--keep-days` (at least `AUDIT.MIN_RETENTION`) ago below a signed checkpoint recorded on the ledger, which `audit verify` then starts the chain from; refused if the chain up to it does not verify. Each run is audited (audit; [operators](#operators)). |
+| `audit forget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
 | `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](../privacy.md), [operators](#operators)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
 | `keys` | `generate [--id ID]`, `rewrap`, `status [--check]`, `reencrypt [--batch-size N]`, `--operator` | Print a new data key wrapped by `KEYS.PROVIDER`, or `KEYS.DATA_KEYS` wrapped under the KEK's newest version; count what each data key seals (`--check` fails while a retired one still does, `keys.W001`); or seal everything under a retired key again under `CURRENT_KEY`, in batches, audited (keys; see [keys.md](../contrib/keys.md#rotating), [operators](#operators)). |
@@ -86,7 +88,7 @@ dry_run=True)`: an action is named after its method, `_` written `-`, unless
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
-`auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, `privacy`,
+`audit forget`, `audit prune`, `loaddata`, `flush`, `partitions --prune`, `privacy`,
 and `keys reencrypt`; `dumpdata --include-guarded`, which copies credentials out (0.12),
 and `dumpdata --decrypt`, which copies encrypted values out in clear;
 and so do those that change credentials, flags, settings, and deliveries:
@@ -95,7 +97,7 @@ and so do those that change credentials, flags, settings, and deliveries:
 (its `import`, `reconcile`, and `expireholds`), `approvals` (its
 `expire`), and `limits` (its `set` and `purge`). Their listings
 (`flags list`, `webhooks deliveries`, `accounting verify`, `approvals list`, ...) take the
-operator too but record nothing; `evidence`, `auditlog`, and `auditverify` only read and take none.
+operator too but record nothing; `evidence`, `audit log`, and `audit verify` only read and take none.
 The operator is, in this order:
 
 1. `--operator NAME` (before the action for `privacy`:
@@ -215,7 +217,7 @@ with a repository's `remove`, and an object given a flushed one's id
 starts bare.
 
 State is never dumped or loaded: the audit trail (a copy of its keys would
-outlive `auditforget`), tokens, the outbox, idempotency keys, webhook
+outlive `audit forget`), tokens, the outbox, idempotency keys, webhook
 subscriptions (they hold signing secrets: set them up in each environment)
 and deliveries, and any table with `info={"fixtures": False}`. A fixture can still hold personal data and
 password hashes: keep it as safe as the database. `dumpdata --output`

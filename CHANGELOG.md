@@ -9,6 +9,24 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `ActionCommand`, `@action`, and `option` (`domainkit.management`): one
+  shape for every command of several actions, `manage.py <command>
+  <action> [options]`, each action a method with its own options and
+  help; `@action(operator=True)` marks one that changes data, which takes
+  `--operator` and runs as that operator. An operator's run is recorded
+  with its action (`audit forget`), not only its command (DSGN-30).
+
+### Changed
+
+- **Breaking:** the five audit commands are one, `audit`: `auditlog` is
+  `audit log` (and, with `--target` or `--aggregate`, `audit history`),
+  `auditseal` is `audit seal`, `auditverify` is `audit verify` (and, with
+  `--check-export`, `audit check-export FILE`), `auditprune` is
+  `audit prune`, and `auditforget` is `audit forget`. Only `prune` and
+  `forget` take `--operator`.
+
 ## [1.5.0] - 2026-11-02
 
 Making domainkit simpler to learn and to start with, from building a first

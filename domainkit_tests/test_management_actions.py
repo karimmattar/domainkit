@@ -4,6 +4,7 @@ import io
 
 import pytest
 
+from domainkit.context import current_request
 from domainkit.management import ActionCommand, action, option
 
 
@@ -122,3 +123,44 @@ def test_declarations_that_cannot_work_are_refused() -> None:
     with pytest.raises(LookupError, match="Tool has no action 'nope'"):
         Tool().handle(action="nope")
     assert Tool().helper() == "not an action"
+
+
+class Mixed(ActionCommand):
+    """One action that reads, one that changes data as an operator."""
+
+    requires_setup = False
+
+    def __init__(self) -> None:
+        """Remember what ran, as whom, and under which label."""
+        super().__init__(stdout=io.StringIO())
+        self.ran: list[tuple[str, str | None, str]] = []
+
+    @action(help="read")
+    def show(self) -> None:
+        """Remember the call."""
+        self.ran.append(("show", None, ""))
+
+    @action(help="erase", operator=True)
+    def erase(self) -> None:
+        """Remember the call, its operator, and the request's path."""
+        assert self.operator is not None
+        context = current_request()
+        assert context is not None
+        self.ran.append(("erase", self.operator.name, context.path))
+
+
+def test_only_actions_that_operate_take_an_operator() -> None:
+    """``operator=True`` is per action; the run is labelled with it."""
+    parser = Mixed().create_parser("manage.py", "tool")
+    choices = parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+    mixed = Mixed()
+
+    run(mixed, "show")
+    run(mixed, "erase", "--operator", "ann")
+
+    assert "--operator" not in choices["show"].format_help()  # type: ignore[index]
+    assert "--operator NAME" in choices["erase"].format_help()  # type: ignore[index]
+    assert mixed.ran == [
+        ("show", None, ""),
+        ("erase", "ann", "test_management_actions erase"),
+    ]

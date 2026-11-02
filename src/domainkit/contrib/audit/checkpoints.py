@@ -17,19 +17,19 @@ the format::
 first), so a run of checkpoints is a chain too. ``kind`` is what it was
 signed for, one of two uses:
 
-- ``"prune"``: ``auditprune`` stores one (``domainkit_audit_checkpoints``),
+- ``"prune"``: ``audit prune`` stores one (``domainkit_audit_checkpoints``),
   records it on the ledger, and deletes the rows and seals below it;
   ``verify`` then starts the chain from the checkpoint instead of the
   genesis (``pruning``).
-- ``"export"``: ``auditverify --export`` writes the stored checkpoints and
+- ``"export"``: ``audit verify --export`` writes the stored checkpoints and
   one of the current head to a file (``export``), which ``check_export``
-  (and ``auditverify --check-export``) checks offline. A head checkpoint
+  (and ``audit check-export``) checks offline. A head checkpoint
   leaves the system, so it vouches for no deletion: stored, it starts
   nothing (SEC-10b-2).
 
 Verifying needs only the public key (``AUDIT.CHECKPOINT_PUBLIC_KEY``); the
-private key (``AUDIT.CHECKPOINT_KEY``) is read by ``auditprune`` and
-``auditverify --export`` alone, so the application need not hold it.
+private key (``AUDIT.CHECKPOINT_KEY``) is read by ``audit prune`` and
+``audit verify --export`` alone, so the application need not hold it.
 """
 
 from __future__ import annotations

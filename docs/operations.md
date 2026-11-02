@@ -196,9 +196,9 @@ on a schedule, and the `protect()` triggers on both audit tables
 
 - The worker seals every `AUDIT.SEAL_EVERY` (5 minutes) and anchors the
   chain's head on the ledger at most every `AUDIT.ANCHOR_EVERY` (an hour).
-  Without the messaging app, run `python manage.py auditseal` from cron and
+  Without the messaging app, run `python manage.py audit seal` from cron and
   set `AUDIT.SEALED_EXTERNALLY = True`.
-- Run `python manage.py auditverify` daily, and alert when it fails: it
+- Run `python manage.py audit verify` daily, and alert when it fails: it
   checks every row against its seal, every link, and every anchored head,
   and reports rows older than a day that were never sealed.
 - `audit_unsealed_rows` is the backlog; the [runbook](runbook.md#the-seal-backlog-grows)
@@ -211,14 +211,14 @@ from an older copy) is refused with `LedgerRolledBack`, and one that
 forked with `LedgerTampered`: every call fails and `/ready` answers 503
 until someone looks ([runbook.md](runbook.md#the-ledgers-state-goes-back)).
 
-`auditverify --export FILE` writes signed checkpoints of every trail
-(Ed25519, `AUDIT.CHECKPOINT_KEY`, set only where it and `auditprune` run;
-the application verifies with `AUDIT.CHECKPOINT_PUBLIC_KEY`) for an auditor, and `auditverify
+`audit verify --export FILE` writes signed checkpoints of every trail
+(Ed25519, `AUDIT.CHECKPOINT_KEY`, set only where it and `audit prune` run;
+the application verifies with `AUDIT.CHECKPOINT_PUBLIC_KEY`) for an auditor, and `audit verify
 --check-export FILE --public-key PEM` checks such a file offline, without
-the databases. `auditprune --keep-days DAYS` removes rows sealed before
+the databases. `audit prune --keep-days DAYS` removes rows sealed before
 then: it verifies the chain up to the newest anchored seal before the cut,
 stores a signed checkpoint, then deletes the oldest rows newest first, so a
-run cut short still verifies and the next one finishes it. `auditverify`
+run cut short still verifies and the next one finishes it. `audit verify`
 starts from that checkpoint. Keep the checkpoint key out of the database,
 and its public key where auditors can find it.
 
@@ -245,7 +245,7 @@ and test restores.
   service verified before is what a rollback attack looks like.
 - **After a restore.** Restoring a database to a point before the newest
   anchored head leaves the ledger holding seals the database lacks:
-  `auditverify` reports them as rewritten anchors, by number. That is the
+  `audit verify` reports them as rewritten anchors, by number. That is the
   record of what the restore lost; keep its output with the incident, and
   do not try to make it go away. Messages that ran after the restore point
   run again (handlers are idempotent), and messages written after it are
@@ -253,7 +253,7 @@ and test restores.
 - **Erasures after a restore.** A backup from before an erasure still
   holds the person's keys and their values (crypto-shredding reaches only
   copies made afterwards). Before restoring, list the erasures made since
-  the backup's time (`manage.py auditlog --action privacy.erase`), keep the
+  the backup's time (`manage.py audit log --action privacy.erase`), keep the
   list outside the databases being restored, and run `manage.py privacy
   erase --subject <id>` for each once restored
   ([contrib/keys.md](contrib/keys.md#backups-taken-before-an-erasure)).
@@ -328,7 +328,7 @@ starting points; tune them to the service.
 | `tasks_restarted_total` | it grows | [A background task restarts](runbook.md#a-background-task-restarts) |
 | `messaging_outbox_messages{status="held"}` | it does not fall for an hour while pending messages run | [A key's messages stall](runbook.md#a-keys-messages-stall) |
 
-`auditverify` failing, and `/ready` answering `503` on every replica, are
+`audit verify` failing, and `/ready` answering `503` on every replica, are
 alarms too; so are a process that fails to start with `KeyProviderError`
 ([The key service is unreachable](runbook.md#the-key-service-is-unreachable)),
 and `manage.py accounting verify`, run daily where the ledger is

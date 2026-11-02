@@ -34,6 +34,25 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 1.5 to the next release
+
+### The audit commands are one
+
+Cron jobs and runbooks that call the audit commands use their new names:
+
+| Before | Now |
+| --- | --- |
+| `auditlog` | `audit log` |
+| `auditlog --target T`, `auditlog --aggregate FIELD=ID` | `audit history --target T`, `audit history --aggregate FIELD=ID` |
+| `auditseal` | `audit seal` |
+| `auditverify` | `audit verify` |
+| `auditverify --check-export FILE --public-key PEM` | `audit check-export FILE --public-key PEM` |
+| `auditprune --keep-days N` | `audit prune --keep-days N` |
+| `auditforget SUBJECT` | `audit forget SUBJECT` |
+
+The trail keeps recording `operator.auditprune` and `operator.auditforget`;
+the request path of an operator's run names the action (`audit forget`).
+
 ## 0.12 to 1.0
 
 1.0 is the first release since 0.12.1. Everything 0.13, 0.14, and 0.15

@@ -38,8 +38,8 @@ def test_the_trail_names_who_moved_money_and_verifies(maker: Person) -> None:
     verified = io.StringIO()
 
     [made] = maker.api.run(audit_entries, action="payments.transfer_made")
-    call_command("auditseal")
-    call_command("auditverify", stdout=verified)
+    call_command("audit", "seal")
+    call_command("audit", "verify", stdout=verified)
 
     assert (made.actor, made.outcome) == (maker.id, "success")
     assert "intact" in verified.getvalue()

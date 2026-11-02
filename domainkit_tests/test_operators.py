@@ -201,7 +201,7 @@ def test_only_commands_that_change_data_take_an_operator() -> None:
 
 
 OPERATED: Final = {
-    "domainkit.contrib.audit": ["auditforget"],
+    "domainkit.contrib.audit": ["audit prune", "audit forget"],
     "domainkit.contrib.auth": [
         "addcertificate",
         "changepassword",
@@ -216,37 +216,43 @@ OPERATED: Final = {
     "domainkit.contrib.webhooks": ["webhooks"],
     "domainkit": ["flush", "loaddata", "partitions"],
 }
-"""The commands that change or erase stored data, or credentials, by package."""
+"""The commands, and actions, that change or erase stored data or credentials."""
+
+
+def operates(package: str, name: str) -> bool:
+    """Whether ``name`` (a command, or ``command action``) runs as an operator."""
+    command, _, action = name.partition(" ")
+    cls = import_module(f"{package}.management.commands.{command}").Command
+    if not action:
+        return bool(cls.operator_actions)
+    declared = cls.declared_actions()[action]
+    return bool(declared.operator or cls.operator_actions)
 
 
 def test_commands_that_change_data_or_credentials_name_their_operator() -> None:
     """Each runs as ``operator:<name>``, so its audit rows say who (SEC-r2-2).
 
-    Those that only read (``evidence``, ``auditlog``, ``auditverify``) do not
+    Those that only read (``evidence``, ``audit log``, ``audit verify``) do not
     ask for one.
     """
     operated = {
         name
         for package, names in OPERATED.items()
         for name in names
-        if import_module(
-            f"{package}.management.commands.{name}"
-        ).Command.operator_actions
+        if operates(package, name)
     }
     readers = {
         name
         for package, name in (
             ("domainkit.contrib.evidence", "evidence"),
-            ("domainkit.contrib.audit", "auditlog"),
-            ("domainkit.contrib.audit", "auditverify"),
+            ("domainkit.contrib.audit", "audit log"),
+            ("domainkit.contrib.audit", "audit verify"),
         )
-        if not import_module(
-            f"{package}.management.commands.{name}"
-        ).Command.operator_actions
+        if not operates(package, name)
     }
 
     assert operated == {name for names in OPERATED.values() for name in names}
-    assert readers == {"evidence", "auditlog", "auditverify"}
+    assert readers == {"evidence", "audit log", "audit verify"}
 
 
 def test_recording_needs_an_operator() -> None:

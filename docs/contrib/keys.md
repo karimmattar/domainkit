@@ -259,7 +259,7 @@ has been restored and the erasure applied to it again. So:
 - **Apply recorded erasures again after every restore.** Each erasure is
   recorded in the audit trail (`privacy.erase`, its subject as the
   target): before restoring, list those made since the backup's time with
-  `manage.py auditlog --action privacy.erase --limit N`, keep the list
+  `manage.py audit log --action privacy.erase --limit N`, keep the list
   outside the database being restored, and once restored run `manage.py
   privacy erase --subject <id>` for each again. Erasing is idempotent.
   Keep the audit trail in a database of its own (`AUDIT.DATABASE`), with

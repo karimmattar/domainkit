@@ -140,7 +140,7 @@ For every aggregate holding data about the subject:
   below). Each domain that erased something is recorded, with counts
   only (`privacy.copies_erased`);
 - then the subject's keys in the audit trail are forgotten, so their
-  pseudonyms there can no longer be linked to them (`auditforget`), and
+  pseudonyms there can no longer be linked to them (`audit forget`), and
   the erasure itself is recorded, with the reason.
 
 Rows stay: an order is still an order, without the person in it. Deleting
@@ -301,7 +301,7 @@ python manage.py privacy purge             # in a nightly job
   `domainkit.contrib.audit.protection.protect` makes it; rows other rows
   still refer to), that table is reported and recorded as a failure,
   nothing is disabled or forced, the others are purged, and the command
-  fails. Forget people in the audit trail instead (`auditforget
+  fails. Forget people in the audit trail instead (`audit forget
   --anonymous-days`).
 - Each table and database purged is recorded in the audit trail
   (`privacy.purge`, with the rows and the cutoff).

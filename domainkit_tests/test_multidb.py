@@ -414,7 +414,7 @@ def test_auditlog_reads_any_database(two_targets: Path) -> None:
 
         asyncio.run(record_one())
 
-        assert "alpha.thing_made" in run("auditlog", "--database", "reports")
+        assert "alpha.thing_made" in run("audit", "log", "--database", "reports")
 
 
 @pytest.mark.usefixtures("database_access")
