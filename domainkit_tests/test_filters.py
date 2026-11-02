@@ -396,7 +396,9 @@ def test_filter_sets_are_checked_when_declared() -> None:
     with pytest.raises(ValueError, match=r"^Offer gte and lte instead of range\.$"):
         Filter("range")
     with pytest.raises(ValueError, match="is not a valid Lookup"):
-        Filter("regex")
+        Filter("soundex")
+    with pytest.raises(ValueError, match="not offered over HTTP"):
+        Filter("icontains", "iregex")
 
 
 class Tagged(AggregateRoot[int]):

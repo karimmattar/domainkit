@@ -47,8 +47,8 @@ framework, for the reason given.
 | `get`, `first`, `count`, `exists` | The same names | Yes | |
 | `order_by`, slicing | `Ordering`, keyset pages, `limit` and `offset` | Yes | |
 | Lookups: `exact`, `iexact`, `contains`, `icontains`, `startswith`, `istartswith`, `endswith`, `iendswith`, `in`, `range`, `gt`, `gte`, `lt`, `lte`, `isnull` | The same, on `F` | Yes | |
-| `regex`, `iregex` | None | No | C7 |
-| Date transforms (`__year`, `__month`, `__date`) | None | No | C7 |
+| `regex`, `iregex` | `F(...).regex(p)`, `.iregex(p)`, in code; not offered over HTTP | Yes | C7 |
+| Date transforms (`__year`, `__month`, `__date`) | `F(...).year(y)`, `.month(y, m)`, `.on(day)`: ranges in UTC, on date and datetime fields | Yes | C7 |
 | `get_or_create`, `update_or_create` | The same names, the aggregate's factory and methods doing the work; a lost insert race answers the winner | Yes | C7 |
 | `bulk_create` | `add_all` | Yes | |
 | `in_bulk` | `get_many`, and `get_many_for_update` to lock | Yes | C7 |
@@ -118,12 +118,12 @@ framework, for the reason given.
 | `send_mail`, backends (SMTP, console, memory) | `contrib.mail` | Yes | |
 | `mail_admins`, error emails | `domainkit.reporting` (Sentry) | Partial | |
 | `gettext`, `compilemessages`, time zones | `domainkit.i18n`, `compilemessages` | Yes | |
-| `makemessages` | None | No | C7 |
+| `makemessages` | The same command: messages found with `ast`, translations kept, unused ones obsolete | Yes | C7 |
 | Custom management commands, `call_command` | `BaseCommand`, the same shape | Yes | |
 | System checks, `register()` | `check`, `--deploy`, custom checks | Yes | |
 | `TestCase`, `Client`, `override_settings`, `assertNumQueries`, `LiveServerTestCase` | pytest fixtures, `override_settings`, `assert_num_queries`, `live_server` | Yes | |
 | `mail.outbox`, `captureOnCommitCallbacks` | `MemoryBackend`, the `outbox` fixture | Yes | |
-| `RequestFactory` | None | No | C7 |
+| `RequestFactory` | Use cases are plain functions, called in tests with a unit of work; routes through `client_for` | n/a: there is no view to hand a request to | C7 |
 | `factory_boy`, `freezegun` | `Factory`, `freeze_time` | Yes | |
 
 ## B. The platform around the application

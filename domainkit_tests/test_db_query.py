@@ -3,7 +3,7 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, NewType
@@ -51,6 +51,7 @@ from domainkit.ddd.query import (
     Max,
     Min,
     Ordering,
+    Period,
     RowLock,
     Selection,
     Sum,
@@ -1050,3 +1051,91 @@ async def test_measures_that_do_not_fit_are_refused() -> None:
     with pytest.raises(InvalidQuery, match="cannot be measured"):
         Max("secret").bind(Purse)
     assert Count("cash").bind(Purse) == Count("cash")
+
+
+async def test_regular_expressions_match_as_in_memory(tables: None) -> None:
+    """``regex`` and ``iregex``, in SQL as in Python, on both databases."""
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    queries = [
+        F("name").regex(r"^[ab]"),
+        F("name").iregex(r"^[ab]"),
+        F("name").regex("c$"),
+    ]
+
+    async with GadgetsUnitOfWork() as uow:
+        for criteria in queries:
+            found = sorted(each.name for each in await uow.gadgets.filter(criteria))
+            expected = sorted(each.name for each in await fake.filter(criteria))
+            assert found == expected
+        assert sorted(each.name for each in await uow.gadgets.filter(queries[1])) == [
+            "A_c",
+            "a%b",
+            "b/c",
+        ]
+
+
+async def test_patterns_that_cannot_apply_are_refused() -> None:
+    """A pattern that does not compile, or a field that is not text."""
+    fake = InMemoryGadgets([])
+
+    with pytest.raises(InvalidQuery, match="is not a regular expression"):
+        await fake.filter(F("name").regex("(unclosed"))
+    with pytest.raises(InvalidQuery, match="stock is not text"):
+        await fake.filter(F("stock").iregex("1"))
+
+
+async def test_periods_are_ranges_on_dates_and_datetimes(tables: None) -> None:
+    """``year``, ``month``, ``on``: ranges in UTC, as in memory."""
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    later = sorted(each.name for each in items if each.made_at == LATER)
+    periods = {
+        "year": F("made_at").year(LATER.year),
+        "month": F("made_at").month(LATER.year, LATER.month),
+        "day": F("made_at").on(LATER.date()),
+        "december": F("made_at").month(LATER.year - 1, 12),
+    }
+
+    async with GadgetsUnitOfWork() as uow:
+        found = {
+            name: sorted(each.name for each in await uow.gadgets.filter(criteria))
+            for name, criteria in periods.items()
+        }
+    expected = {
+        name: sorted(each.name for each in await fake.filter(criteria))
+        for name, criteria in periods.items()
+    }
+
+    assert found == expected
+    assert found["day"] == found["month"] == later
+    assert F("made_at").month(2026, 12) == Period(
+        "made_at", date(2026, 12, 1), date(2027, 1, 1)
+    )
+
+
+def test_a_period_needs_a_field_of_dates() -> None:
+    """Not a number; and a period is evaluated only once bound."""
+    period = F("stock").year(2026)
+
+    with pytest.raises(InvalidQuery, match="holds no dates"):
+        period.bind(Gadget)
+    with pytest.raises(InvalidQuery, match="Bind the criteria"):
+        period.evaluate(make_gadget())
+    assert list(period.conditions()) == [
+        F("stock") >= date(2026, 1, 1),
+        F("stock") < date(2027, 1, 1),
+    ]
+
+    class Invoice(AggregateRoot[int]):
+        due: date
+
+    bound = F("due").on(date(2026, 3, 9)).bind(Invoice)
+    assert [each.value for each in bound.conditions()] == [
+        date(2026, 3, 9),
+        date(2026, 3, 10),
+    ]
+    assert bound.evaluate(Invoice(id=1, due=date(2026, 3, 9)))
+    assert not bound.evaluate(Invoice(id=2, due=date(2026, 3, 10)))

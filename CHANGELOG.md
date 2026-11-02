@@ -33,6 +33,21 @@ and a status.
 
 ### Added
 
+- `F(...).year(2026)`, `.month(2026, 3)`, and `.on(day)` (Django's
+  `__year`, `__month`, and `__date`): a period on a date or datetime
+  field, compiled to a range an index answers, in UTC.
+- `F(...).regex(pattern)` and `.iregex(pattern)` (Django's `regex` and
+  `iregex`): `~` and `~*` on PostgreSQL, Python's `re` on SQLite and in
+  memory. A pattern that does not compile is an `InvalidQuery`, and a
+  `FilterSet` refuses to offer them: a caller's pattern can take
+  exponential time.
+- `makemessages`: finds the messages each domain's code marks for
+  translation (`gettext`, `_`, `ngettext`, `pgettext`, `npgettext`, and
+  their `_lazy` forms, read with `ast`, nothing imported) and updates
+  `<domain>/locale/<locale>/LC_MESSAGES/messages.po`: new messages
+  untranslated, translations and fuzzy flags kept, unused ones kept as
+  obsolete entries. `--all` updates every locale a domain has; `--check`
+  fails in CI when a catalog is behind its code.
 - `Unique()` and `Indexed()` field markers, and `Meta.unique` and
   `Meta.indexes` on an aggregate (`domainkit.ddd`): `table_for` makes each
   a constraint or an index named after its table and fields, cut to 63
