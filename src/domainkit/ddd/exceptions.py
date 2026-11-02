@@ -112,6 +112,20 @@ class BusinessRuleViolation(DomainError):
     code = "business_rule_violation"
 
 
+class InvalidField(BusinessRuleViolation):
+    """A field was given a value its markers rule out (``MaxLength``, ``Range``, ...).
+
+    ``field`` names it; the API answers 422 with an error under it.
+    """
+
+    code = "invalid_field"
+
+    def __init__(self, message: str, *, field: str) -> None:
+        """Store the message and the field it is about."""
+        super().__init__(message)
+        self.field = field
+
+
 class PermissionDenied(DomainError):
     """The actor may not perform the operation."""
 

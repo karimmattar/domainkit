@@ -37,7 +37,6 @@ derived schema says what it is.
 
 import dataclasses
 import math
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -59,6 +58,10 @@ from typing import (
 )
 from uuid import UUID
 
+from domainkit.ddd.markers import MaxLength as MaxLength
+from domainkit.ddd.markers import MinLength as MinLength
+from domainkit.ddd.markers import Pattern as Pattern
+from domainkit.ddd.markers import Range as Range
 from domainkit.ddd.model import Entity, ValueObject
 from domainkit.exceptions import DomainkitError
 from domainkit.money import Currency, Money, MoneyError, currency
@@ -92,71 +95,6 @@ class InvalidQuery(ValueError, DomainkitError):
 
 class UnknownField(InvalidQuery):
     """A query names a field the class does not have."""
-
-
-@dataclass(frozen=True, slots=True)
-class MaxLength:
-    """``Annotated`` metadata: text of at most ``length`` characters."""
-
-    length: int
-
-    def __post_init__(self) -> None:
-        """Refuse lengths below one."""
-        if self.length < 1:
-            raise ValueError(
-                f"MaxLength needs a length of at least 1, not {self.length}."
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class MinLength:
-    """``Annotated`` metadata: text of at least ``length`` characters."""
-
-    length: int
-
-    def __post_init__(self) -> None:
-        """Refuse lengths below one."""
-        if self.length < 1:
-            raise ValueError(
-                f"MinLength needs a length of at least 1, not {self.length}."
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class Pattern:
-    """``Annotated`` metadata: text that matches ``regex`` from end to end.
-
-    The API checks it with pydantic's engine, which has no look-arounds or
-    back-references; write ``[0-9]`` for digits, since a class of any digit
-    also matches the digits of other scripts.
-    """
-
-    regex: str
-
-    def __post_init__(self) -> None:
-        """Refuse a pattern that does not compile."""
-        try:
-            re.compile(self.regex)
-        except re.error as exc:
-            raise ValueError(f"Pattern {self.regex!r} is not a regex: {exc}.") from None
-
-
-@dataclass(frozen=True, slots=True)
-class Range:
-    """``Annotated`` metadata: a number from ``min`` to ``max``, both included.
-
-    Either may be None, for no bound on that side.
-    """
-
-    min: int | Decimal | float | None = None
-    max: int | Decimal | float | None = None
-
-    def __post_init__(self) -> None:
-        """Refuse an empty range, and one without a bound."""
-        if self.min is None and self.max is None:
-            raise ValueError("Range needs min, max, or both.")
-        if self.min is not None and self.max is not None and self.min > self.max:
-            raise ValueError(f"Range has min {self.min} above max {self.max}.")
 
 
 @dataclass(frozen=True, slots=True)

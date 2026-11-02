@@ -29,8 +29,8 @@ framework, for the reason given.
 | `unique=True`, `db_index=True` | A constraint or index passed in `extra` | Partial: no marker on the field | C7 |
 | `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | SQLAlchemy items in `extra` | Partial: not declared on the aggregate | C7 |
 | `Meta.ordering` | A `FilterSet`'s `default_ordering`; repositories order by id | Partial | C7 |
-| Validators (`MaxLengthValidator`, `RegexValidator`, `MinValueValidator`, ...) | `MaxLength`, `MinLength`, `Pattern`, `Range`, `Digits` markers | Partial: checked by request bodies only | C3 |
-| `clean()`, `full_clean()`, `clean_fields()` | None | No | C3 |
+| Validators (`MaxLengthValidator`, `RegexValidator`, `MinValueValidator`, ...) | `MaxLength`, `MinLength`, `Pattern`, `Range` markers, checked by the object, the request, and OpenAPI ([validation.md](validation.md)) | Yes | |
+| `clean()`, `full_clean()`, `clean_fields()` | `clean()`, run when made and before every commit; fields checked whenever set | Yes | |
 | `ForeignKey` to a child | Child entities, stored with their aggregate | Yes | |
 | `ForeignKey` to another model | `Reference[OtherId]` by id | Yes | |
 | `OneToOneField` | A `Reference` | Partial: no unique marker | C7 |
@@ -84,7 +84,7 @@ framework, for the reason given.
 | URLconf, `include`, path converters, `reverse()` | FastAPI routes, typed path parameters, `url_path_for` | Yes | |
 | `ViewSet`, router, `@action` | `ResourceRouter`, `use_case` and `command_route` | Yes | |
 | `ModelSerializer`, nested serializers | `schema_for`, child entities included | Yes | |
-| `validate_<field>()`, `validate()` | Field markers in schemas | Partial: rules across fields | C3 |
+| `validate_<field>()`, `validate()` | Field markers, and `clean()` on the aggregate | Yes | |
 | Generic views (List, Retrieve, Create, Update, Destroy) | Reads by default, `crud=True` for reference data | Yes | |
 | Pagination | Keyset cursors; offset through `limit` and `offset` | Yes | |
 | Filtering, search, ordering (`django-filter`) | `FilterSet`, `Filter` | Yes | |

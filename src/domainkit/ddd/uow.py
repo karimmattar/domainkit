@@ -54,6 +54,7 @@ from collections.abc import (
     Callable,
     Collection,
     Hashable,
+    Iterable,
     Iterator,
     Mapping,
     Sequence,
@@ -358,7 +359,9 @@ class UnitOfWork(ABC):
         if self._savepoints:
             raise RuntimeError("Leave every savepoint before committing.")
         check_loaded(self._expected)
-        events = self.collect_new_events()
+        seen = self._seen()
+        _clean(seen)
+        events = [event for aggregate in seen for event in aggregate.pull_events()]
         deferred, self._deferred = self._deferred, []
         await self._stage(events, deferred)
         await self._commit()
@@ -547,10 +550,15 @@ class UnitOfWork(ABC):
     def collect_new_events(self) -> list[DomainEvent]:
         """Take the pending events from every aggregate the repositories saw."""
         return [
-            event
+            event for aggregate in self._seen() for event in aggregate.pull_events()
+        ]
+
+    def _seen(self) -> list[Any]:
+        """Every aggregate the repositories saw, in the order they saw them."""
+        return [
+            aggregate
             for repository in self.repositories()
             for aggregate in repository.seen
-            for event in aggregate.pull_events()
         ]
 
     def repositories(self) -> list[Repository[Any, Any]]:
@@ -564,6 +572,19 @@ class UnitOfWork(ABC):
     @abstractmethod
     async def _rollback(self) -> None:
         """Roll the underlying transaction back."""
+
+
+def _clean(aggregates: Iterable[Any]) -> None:
+    """Run each aggregate's own ``clean()`` before it is stored.
+
+    The base's does nothing, so it is skipped.
+
+    Raises:
+        DomainError: An aggregate's ``clean()`` refuses what it holds.
+    """
+    for aggregate in aggregates:
+        if not getattr(type(aggregate).clean, "__domainkit_noop__", False):
+            aggregate.clean()
 
 
 async def _sleep(seconds: float) -> None:

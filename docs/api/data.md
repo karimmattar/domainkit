@@ -159,6 +159,7 @@ Domain-driven design building blocks ("seedwork").
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
 - `InMemoryRepository`: Dictionary-backed repository for unit tests and prototypes.
+- `InvalidField`: A field was given a value its markers rule out (`MaxLength`, `Range`, ...).
 - `InvalidQuery`: A query names a field, lookup, or value its aggregate cannot take.
 - `LockNotAvailable`: Another transaction holds the row's lock, and the caller would not wait.
 - `MaxLength`: `Annotated` metadata: text of at most `length` characters.

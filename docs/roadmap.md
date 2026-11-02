@@ -13,7 +13,7 @@ around them.
 | A custom user model takes six manual steps, and the docs put it where `check` refuses it | `startdomain accounts --user` writes it, installs it, and fills in `AUTH`; the test settings keep it. |
 | A use case is a command class, a service, a schema, and a route line | `@use_case` on one async function; `ResourceRouter.use_case` makes its route. |
 | One aggregate's storage is eight hand-written pieces | The unit of work's annotations: SQL repositories and `in_memory(...)` for tests are made from them. |
-| Only `MaxLength` limits text | `MinLength`, `Pattern`, and `Range`, checked in request bodies and shown in OpenAPI. |
+| Only `MaxLength` limits text, and only at the API | `MinLength`, `Pattern`, and `Range`; every marker checked by the object itself, by request bodies, and in OpenAPI; `clean()` for rules across fields. |
 
 ## First: revamp the core
 
@@ -28,7 +28,7 @@ and one pushed commit.
 | --- | --- | --- | --- |
 | C1 | A use case is one function | `@use_case` makes the command, the request body, and the transaction from one async function; `ResourceRouter.use_case` its route. | Done |
 | C2 | Storage is declared | The unit of work's annotations make the SQL repositories and `in_memory(...)` for tests. | Done |
-| C3 | One validation path | Field markers (`MaxLength`, `MinLength`, `Pattern`, `Range`) checked by the object itself whenever a field is set (aggregates, entities, value objects, commands); `clean()` for rules across fields, run when the object is made and on each aggregate before every commit; a refusal is a 422 naming the field. Loading from the database checks nothing. | In progress |
+| C3 | One validation path | Field markers (`MaxLength`, `MinLength`, `Pattern`, `Range`) checked by the object itself whenever a field is set (aggregates, entities, value objects, commands); `clean()` for rules across fields, run when the object is made and on each aggregate before every commit; a refusal is a 422 naming the field. Loading from the database checks nothing ([validation.md](validation.md)). | Done |
 | C4 | One request flow | Route, command, use case, aggregate, commit, events after commit, outbox: written down and drawn, and the layers between a route and the database that the drawing does not need removed. | Next |
 | C5 | Structure | One public home per name, one shape per kind of thing (the audit's DSGN-29 to -33: names with two homes, three shapes of management command, two encryption systems). | |
 | C6 | Speed | Budgets on the benchmark ladder for a read, a write, and a list page; per-request work that does not depend on the request moved to startup. | |

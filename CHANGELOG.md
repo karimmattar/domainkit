@@ -48,6 +48,13 @@ release starts).
   (`domainkit.ddd`) is the unit of work tests use, without a fake class.
   `UnitOfWork.committed` counts commits. The four-file domain's
   `models.py` is its table, a one-line unit of work, and `start_mappers`.
+- One validation path: entities and aggregates check their fields'
+  markers (`MaxLength`, `MinLength`, `Pattern`, `Range`) whenever one is
+  set; value objects, commands, and events when they are made. A refusal
+  is `InvalidField` (`domainkit.ddd`), 422 `invalid_field` with the field
+  named. `Entity.clean()` checks rules across fields when the entity is
+  made and on every aggregate a unit of work saw before it commits.
+  Loading from the database checks nothing ([docs/validation.md](docs/validation.md)).
 - Field markers beside `MaxLength`: `MinLength(n)`, `Pattern(regex)`, and
   `Range(min=..., max=...)` (`domainkit.ddd`). Request schemas check them
   before a use case runs, and OpenAPI shows them; a single-field value

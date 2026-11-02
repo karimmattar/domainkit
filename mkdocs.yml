@@ -84,6 +84,7 @@ nav:
       - recipes/read-replica.md
   - Guides:
       - resources.md
+      - validation.md
       - queries.md
       - databases.md
       - money.md

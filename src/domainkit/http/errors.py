@@ -54,6 +54,7 @@ from domainkit.ddd.exceptions import (
     Conflict,
     DomainError,
     DuplicateValue,
+    InvalidField,
     NotFound,
     PermissionDenied,
     PreconditionFailed,
@@ -254,7 +255,13 @@ def status_code_for(error: DomainError) -> int:
 
 async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
     """Answer a ``DomainError`` with its status, message, and error code."""
-    errors = duplicate_errors(exc) if isinstance(exc, DuplicateValue) else None
+    errors = (
+        duplicate_errors(exc)
+        if isinstance(exc, DuplicateValue)
+        else [FieldError(loc=["body", exc.field], msg=exc.message, type=exc.code)]
+        if isinstance(exc, InvalidField)
+        else None
+    )
     return error_response(
         status_code_for(exc), exc.message, code=exc.code, errors=errors
     )

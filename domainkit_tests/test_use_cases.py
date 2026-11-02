@@ -325,7 +325,11 @@ class QuantityIn(BaseModel):
 def test_an_explicit_body_replaces_the_derived_one(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:
-    """``body=`` is used as given; the command's own fields still hold."""
+    """``body=`` is used as given, and the command still keeps its own limits.
+
+    One validation path: a body without the limits lets 500 through, and the
+    command refuses it, 422 naming the field.
+    """
     use_auth()
     resource = gadgets(store)
     resource.use_case(restock, body=QuantityIn, path="/add")
@@ -333,7 +337,16 @@ def test_an_explicit_body_replaces_the_derived_one(
     (gadget_id,) = store.items
 
     added = client.post(
+        f"{LOCATION}{gadget_id}/add", json={"quantity": 50}, headers=as_("changer")
+    )
+    refused = client.post(
         f"{LOCATION}{gadget_id}/add", json={"quantity": 500}, headers=as_("changer")
     )
 
-    assert (added.status_code, added.json()["stock"]) == (200, 500)
+    assert (added.status_code, added.json()["stock"]) == (200, 50)
+    assert refused.status_code == 422
+    assert refused.json()["code"] == "invalid_field"
+    assert [error["loc"] for error in refused.json()["errors"]] == [
+        ["body", "quantity"]
+    ]
+    assert store.items[gadget_id].stock == 50

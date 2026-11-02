@@ -31,10 +31,23 @@ class Entity[IdT: Hashable](metaclass=EntityMeta):
     """Object with a lifecycle, equal to another only when the ids match.
 
     Fields are keyword-only, so subclasses may add fields with or without
-    defaults in any order.
+    defaults in any order. A field's markers (``MaxLength``, ``Range``,
+    ...) are checked whenever it is set, when the entity is made and
+    after; ``clean()`` checks rules across fields.
     """
 
     id: IdT
+
+    def clean(self) -> None:
+        """Check rules across fields; raise a ``DomainError`` to refuse.
+
+        Runs when the entity is made, and, for an aggregate, before every
+        commit of a unit of work that saw it, as Django's ``Model.clean``
+        does before a save. Changes made field by field may break a rule
+        on the way; only what is committed must keep it.
+        """
+
+    clean.__domainkit_noop__ = True  # type: ignore[attr-defined]
 
     def __eq__(self, other: object) -> bool:
         """Compare by type and identity, never by attribute values."""
