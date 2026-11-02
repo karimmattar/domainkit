@@ -1129,7 +1129,6 @@ def test_a_period_needs_a_field_of_dates() -> None:
         F("stock") < date(2027, 1, 1),
     ]
 
-
     class Invoice(AggregateRoot[int]):
         due: date
 
