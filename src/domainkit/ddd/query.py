@@ -60,6 +60,7 @@ from domainkit.ddd.fields import (
 from domainkit.money import Money
 
 __all__ = [
+    "Arithmetic",
     "Avg",
     "Count",
     "Criteria",
@@ -463,6 +464,18 @@ class F:
         """Not equal to ``value``, missing values included."""
         return Not(Condition(self.name, Lookup.EXACT, value))
 
+    def __add__(self, operand: object) -> "Arithmetic":
+        """The field plus ``operand``, as ``update_rows`` computes it in SQL."""
+        return Arithmetic(self.name, "+", operand)
+
+    def __sub__(self, operand: object) -> "Arithmetic":
+        """The field minus ``operand``."""
+        return Arithmetic(self.name, "-", operand)
+
+    def __mul__(self, operand: object) -> "Arithmetic":
+        """The field times ``operand``."""
+        return Arithmetic(self.name, "*", operand)
+
     def __lt__(self, value: object) -> Condition:
         """Less than ``value``."""
         return Condition(self.name, Lookup.LT, value)
@@ -708,6 +721,22 @@ class Max(Measure):
 
 NUMBERS: Final = (int, float, Decimal)
 """The kinds of values ``Sum`` and ``Avg`` take."""
+
+
+@dataclass(frozen=True, slots=True)
+class Arithmetic:
+    """A field's value changed by a number, computed by the database.
+
+    Django's ``F()`` in an update: ``update_rows(criteria, stock=F("stock")
+    - 1)`` sets each row from its own value in one statement, so two
+    updates at once never read and overwrite each other.
+    """
+
+    field: str
+    operator: str
+    """``+``, ``-``, or ``*``."""
+    operand: object
+    """A number (an ``int`` or a ``Decimal``)."""
 
 
 @dataclass(frozen=True, slots=True)

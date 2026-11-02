@@ -58,7 +58,7 @@ framework, for the reason given.
 | `select_related`, `prefetch_related` | An aggregate loads whole, children included | n/a | |
 | `select_for_update(nowait, skip_locked)` | `get_for_update`, `RowLock` | Yes | |
 | `iterator()`, `aiterator()` | `stream(query, batch=...)`, keyset batches ([queries.md](queries.md)) | Yes | C6 |
-| `F()` expressions in updates | None | No | C7 |
+| `F()` expressions in updates | `update_rows(..., stock=F("stock") - 1)`: `+`, `-`, `*` computed in SQL | Yes | C7 |
 | `Case`, `When`, `Subquery`, `Window`, database functions | SQLAlchemy inside a repository of the project's own | Partial: by hand | |
 | `raw()`, `connection.cursor()` | The session of a SQL repository | Partial: by hand | |
 | `explain()` | `explain(query, analyze=...)` on SQL repositories | Yes | C6 |

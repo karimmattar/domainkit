@@ -33,6 +33,10 @@ and a status.
 
 ### Added
 
+- `update_rows` computes a value from each row's own (Django's `F()` in
+  an update): `stock=F("stock") - 1` subtracts in the database, in one
+  statement. `+`, `-`, and `*` take an `int` or a `Decimal`, on number
+  fields; text, flags, money, and encrypted fields are refused.
 - `F(...).year(2026)`, `.month(2026, 3)`, and `.on(day)` (Django's
   `__year`, `__month`, and `__date`): a period on a date or datetime
   field, compiled to a range an index answers, in UTC.

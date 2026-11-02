@@ -1139,3 +1139,48 @@ def test_a_period_needs_a_field_of_dates() -> None:
     ]
     assert bound.evaluate(Invoice(id=1, due=date(2026, 3, 9)))
     assert not bound.evaluate(Invoice(id=2, due=date(2026, 3, 10)))
+
+
+async def test_update_rows_computes_from_each_rows_own_value(tables: None) -> None:
+    """``F("stock") + 2`` in one statement; a missing value stays missing."""
+    items = dataset()
+    await store(*items)
+    before = {each.name: (each.stock, each.price) for each in items}
+
+    async with GadgetsUnitOfWork() as uow:
+        changed = await uow.gadgets.update_rows(
+            None, stock=F("stock") + 2, price=F("price") * 2
+        )
+        assert changed == len(items)
+        await uow.gadgets.update_rows(
+            F("stock") >= 0, price=F("price") - Decimal("0.25")
+        )
+        await uow.commit()
+    async with GadgetsUnitOfWork() as uow:
+        after = {
+            each.name: (each.stock, each.price) for each in await uow.gadgets.filter()
+        }
+
+    for name, (stock, price) in before.items():
+        doubled = price * 2 - (Decimal("0.25") if stock is not None else 0)
+        assert after[name] == (None if stock is None else stock + 2, doubled)
+
+
+async def test_what_update_rows_cannot_compute_is_refused(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Text, flags, floats, and a computed value beside an encrypted one."""
+    refusals: list[tuple[dict[str, Any], str]] = [
+        ({"name": F("name") + 1}, "'name' is not one"),
+        ({"stock": F("active") + 1}, "'active' is not one"),
+        ({"stock": F("nowhere") + 1}, "'nowhere' is not one"),
+        ({"stock": F("stock") + 1.5}, "takes an int or a Decimal, not float"),
+        ({"stock": F("stock") * True}, "not bool"),
+    ]
+    async with GadgetsUnitOfWork() as uow:
+        for values, message in refusals:
+            with pytest.raises(InvalidQuery, match=message):
+                await uow.gadgets.update_rows(None, **values)
+        monkeypatch.setattr(db_repository, "guarded_attributes", lambda _: {"name"})
+        with pytest.raises(InvalidQuery, match="in two calls"):
+            await uow.gadgets.update_rows(None, name="x", stock=F("stock") + 1)
