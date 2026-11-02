@@ -94,6 +94,12 @@ class DuplicateValue(Conflict):
         self.fields = tuple(fields)
 
 
+class MultipleFound(Conflict):
+    """A lookup that expects one aggregate met several (``get_or_create``)."""
+
+    code = "multiple_found"
+
+
 class PreconditionFailed(DomainError):
     """The caller expected another version of the aggregate than the stored one.
 

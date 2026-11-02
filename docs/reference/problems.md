@@ -120,6 +120,7 @@ How each status is reached, and which fields a body holds, is in
 | `not_acceptable` | 406 | resources.renderers: This resource cannot answer in a media type the request accepts. |
 | `not_applied` | 424 | resources.batches: Another item of the batch failed, so nothing was applied. |
 | `not_authenticated` | 401 | http.access: Authentication credentials were not provided. |
+| `multiple_found` | 409 | `MultipleFound` (ddd.exceptions): A lookup that expects one aggregate met several (`get_or_create`). |
 | `not_found` | 404 | `NotFound` (ddd.exceptions): The requested aggregate does not exist. contrib.auth.signup: Not Found. contrib.flags.dependencies: Not found. Starlette or FastAPI. |
 | `not_the_maker` | 403 | `NotTheMaker` (contrib.approvals.exceptions): Only whoever submitted a request may cancel it. |
 | `overloaded` | 503 | http.shedding: The server is busy; try again shortly. |

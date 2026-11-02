@@ -164,6 +164,7 @@ Domain-driven design building blocks ("seedwork").
 - `LockNotAvailable`: Another transaction holds the row's lock, and the caller would not wait.
 - `MaxLength`: `Annotated` metadata: text of at most `length` characters.
 - `MinLength`: `Annotated` metadata: text of at least `length` characters.
+- `MultipleFound`: A lookup that expects one aggregate met several (`get_or_create`).
 - `NotFound`: The requested aggregate does not exist.
 - `Ordering`: Sort by one field of the aggregate itself.
 - `Page`: Up to `limit` items and whether more follow the last one.

@@ -49,9 +49,9 @@ framework, for the reason given.
 | Lookups: `exact`, `iexact`, `contains`, `icontains`, `startswith`, `istartswith`, `endswith`, `iendswith`, `in`, `range`, `gt`, `gte`, `lt`, `lte`, `isnull` | The same, on `F` | Yes | |
 | `regex`, `iregex` | None | No | C7 |
 | Date transforms (`__year`, `__month`, `__date`) | None | No | C7 |
-| `get_or_create`, `update_or_create` | None | No | C7 |
+| `get_or_create`, `update_or_create` | The same names, the aggregate's factory and methods doing the work; a lost insert race answers the winner | Yes | C7 |
 | `bulk_create` | `add_all` | Yes | |
-| `in_bulk` | `get_many_for_update` (locks) | Partial: no plain `get_many` | C7 |
+| `in_bulk` | `get_many`, and `get_many_for_update` to lock | Yes | C7 |
 | `update()` and `delete()` on a queryset | `remove_all` of loaded aggregates | Partial: no set-based write, on purpose for aggregates; offered for reference data | C7 |
 | `aggregate()` (`Count`, `Sum`, `Avg`, `Min`, `Max`) | None | No | C7 |
 | `annotate()`, `values()`, `values_list()`, `only()`, `defer()` | None | No: read models (projections) | C4 |

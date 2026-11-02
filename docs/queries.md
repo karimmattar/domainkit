@@ -307,6 +307,34 @@ model's other fields. The other bounds are `max_values` (50 values in an
 
 ## Several aggregates at once
 
+`get_many(ids)` loads the aggregates of `ids` that exist in one statement,
+by ascending id (Django's `in_bulk`); a missing id is left out.
+`get_many_for_update` locks them and refuses a missing one (below).
+
+`get_or_create(criteria, create)` answers the one aggregate the criteria
+select, or makes one with `create()` and stores it, with whether it was
+created. `update_or_create(criteria, update, create)` reads the one found
+with its row locked and calls `update(aggregate)` on it, or creates one:
+
+```python
+customer, created = await uow.customers.get_or_create(
+    F("email") == email, lambda: Customer.register(email)
+)
+account, _ = await uow.accounts.update_or_create(
+    F("owner_id") == owner_id,
+    lambda account: account.rename(name),
+    lambda: Account.open(owner_id, name),
+)
+```
+
+`create` and `update` go through the aggregate's own factory and methods,
+so its rules and events hold. The new aggregate is inserted at once, in a
+savepoint: when another transaction inserted a matching one first, the
+unique constraint refuses this one and the one stored is read and
+answered instead. That needs a unique constraint on what the criteria
+name; without one, two transactions at once can each create one. More
+than one match is a 409 `multiple_found`.
+
 `add_all` and `remove_all` add or remove each aggregate as `add` and
 `remove` do, so their events are published on commit.
 

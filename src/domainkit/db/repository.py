@@ -15,7 +15,7 @@ from typing import Any, Final
 
 from sqlalchemy import Delete, Select, Update, delete, func, literal, select, update
 from sqlalchemy.engine import Row
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm.attributes import instance_state
@@ -24,7 +24,9 @@ from sqlalchemy.sql.elements import ClauseElement
 from sqlalchemy.sql.expression import Executable
 
 from domainkit.db.encrypted import guarded_attributes
+from domainkit.db.errors import duplicate_value
 from domainkit.db.money import money_columns
+from domainkit.db.orm import metadata
 from domainkit.db.query import column_of, compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import AggregateRoot, Repository
 from domainkit.ddd.fields import InvalidQuery, fields_of
@@ -81,6 +83,21 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
     async def _add(self, aggregate: AggregateT) -> None:
         """Add ``aggregate`` to the session."""
         self.session.add(aggregate)
+
+    async def _add_now(self, aggregate: AggregateT) -> None:
+        """Insert ``aggregate`` in a savepoint; a unique violation undoes only it.
+
+        Raises:
+            DuplicateValue: A unique constraint refused it; it is not stored.
+        """
+        try:
+            async with self.session.begin_nested():
+                self.session.add(aggregate)
+        except IntegrityError as exc:
+            duplicate = duplicate_value(exc, metadata)
+            if duplicate is None:
+                raise
+            raise duplicate from exc
 
     async def _get(self, id_: IdT) -> AggregateT | None:
         """Load by primary key."""

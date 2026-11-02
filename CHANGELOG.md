@@ -33,6 +33,14 @@ and a status.
 
 ### Added
 
+- `repository.get_or_create(criteria, create)` and
+  `update_or_create(criteria, update, create)`: the one aggregate the
+  criteria select, or a new one stored at once in a savepoint; when
+  another transaction stored a matching one first, the unique constraint
+  refuses this one and the stored one is answered. More than one match is
+  `MultipleFound`, a 409 `multiple_found`.
+- `repository.get_many(ids)`: the aggregates that exist, in one statement
+  (Django's `in_bulk`).
 - `repository.stream(query, batch=500)`: everything a query selects, read
   a batch at a time by keyset, each batch one statement (Django's
   `iterator()`).
