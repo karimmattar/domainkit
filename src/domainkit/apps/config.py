@@ -1,7 +1,6 @@
 """``DomainConfig``: Django's ``AppConfig`` for a bounded context."""
 
 import re
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -12,7 +11,6 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import BaseModel
 
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
@@ -98,11 +96,7 @@ class DomainConfig:
     settings_class: type[BaseModel] | None = None
     """Schema for this domain's settings, read from ``settings_name``."""
     retention: ClassVar[Sequence["Retention"]] = ()
-    """How long rows of its tables are kept (``domainkit.contrib.privacy``).
-
-    0.12 named it ``RETENTION``; a class that still does is read the same,
-    with a warning, until 2.0.
-    """
+    """How long rows of its tables are kept (``domainkit.contrib.privacy``)."""
     requires: ClassVar[Sequence["str | Requirement"]] = ()
     """Domain packages this one cannot work without, checked by ``setup()``.
 
@@ -111,18 +105,6 @@ class DomainConfig:
     domain's ``ready()`` runs. List optional companions here only if the
     domain cannot work without them.
     """
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        """Read 0.12's ``RETENTION`` as ``retention``, with a warning."""
-        super().__init_subclass__(**kwargs)
-        if "RETENTION" in cls.__dict__:
-            warnings.warn(
-                f"{cls.__qualname__}.RETENTION is now {cls.__qualname__}.retention; "
-                "the old name is read until domainkit 2.0.",
-                DomainkitDeprecationWarning,
-                stacklevel=2,
-            )
-            cls.retention = cls.__dict__["RETENTION"]
 
     def __init__(self, name: str, module: ModuleType) -> None:
         """Bind the config to the domain package ``name``."""

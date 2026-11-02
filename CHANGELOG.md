@@ -42,6 +42,16 @@ and a status.
   take it; their listings and checks (`flags list`, `accounting verify`,
   `approvals list`) no longer do.
 
+### Removed
+
+- **Breaking:** the names 1.0 renamed and deprecated, so each name has one
+  home (DSGN-29): `domainkit.apps.hooks.on_check` (`on_ready`),
+  `DomainConfig.RETENTION` (`retention`), `MESSAGING.SHUTDOWN_TIMEOUT`
+  (`DRAIN_TIMEOUT`), `domainkit.contrib.messaging.dbclock`
+  (`domainkit.db.dbclock`), the model names of `contrib.contenttypes`
+  (`domainkit.db.models`'), `contrib.webhooks.WebhookSettings`
+  (`WebhooksSettings`), and `Credentials.session` (`login`).
+
 ## [1.5.0] - 2026-11-02
 
 Making domainkit simpler to learn and to start with, from building a first

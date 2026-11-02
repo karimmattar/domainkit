@@ -23,7 +23,6 @@ import hashlib
 import hmac
 import json
 import logging
-import warnings
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import cache
@@ -34,7 +33,6 @@ from fastapi import status
 from starlette.requests import HTTPConnection
 
 from domainkit.checks import CheckFailed, CheckMessage
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
 from domainkit.log import SECURITY_LOGGER
@@ -115,15 +113,6 @@ class Credentials:
     in the table of step-ups (``proof``)."""
     amr: frozenset[str] = frozenset()
     """What that step-up proved (its ``amr`` claim): ``otp``, ``pwd``."""
-
-    @property
-    @warnings.deprecated(
-        "Credentials.session is now Credentials.login; removed in domainkit 2.0.",
-        category=DomainkitDeprecationWarning,
-    )
-    def session(self) -> UUID | None:
-        """``login``, under its 0.12 name."""
-        return self.login
 
     def allows(self, *perms: str) -> bool:
         """Whether the credentials' scopes cover every one of ``perms``."""

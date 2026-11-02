@@ -380,8 +380,9 @@ Each was deprecated in 0.12, with a warning that named its replacement.
 
 ### Deprecated, removed in 2.0
 
-Each old name works through 1.x, warning with
-`DomainkitDeprecationWarning` (DSGN-23, DSGN-24, DSGN-29):
+Each old name worked through 1.5, warning with
+`DomainkitDeprecationWarning`; the release after 1.5 removed them, so each
+name has one home (DSGN-23, DSGN-24, DSGN-29):
 
 - `on_check` of `domainkit.apps.hooks` is `on_ready`: it is the readiness
   probe, not `manage.py check`'s.
