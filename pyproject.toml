@@ -230,6 +230,9 @@ tzdata = "tzdata"
 # Loaded by name, not imported: SQLAlchemy loads the database drivers named
 # in DATABASES, FastAPI reads multipart forms, zoneinfo reads tzdata.
 DEP002 = ["asyncpg", "aiosqlite", "python-multipart", "tzdata"]
+# The standard library's from Python 3.14, imported only there; deptry,
+# run on 3.13, does not know it yet.
+DEP001 = ["annotationlib"]
 
 [tool.pytest.ini_options]
 testpaths = ["domainkit_tests"]
