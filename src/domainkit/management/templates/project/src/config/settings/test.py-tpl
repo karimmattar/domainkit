@@ -1,10 +1,14 @@
 """Settings for the tests (domainkit_settings in pyproject.toml)."""
 
 from config.settings.base import *
+from config.settings.base import AUTH
 
 ENVIRONMENT = "test"
 ALLOWED_HOSTS = ["testserver"]
 SECRET_KEY = "domainkit-insecure-test-key"
 DATABASES = {"default": {"URL": "sqlite+aiosqlite:///:memory:"}}
 # One hash iteration: fast tests. Staging and production refuse it.
-AUTH = {"PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"]}
+AUTH = {
+    **AUTH,  # keeps a user model of your own (USER_MODEL, USER_TABLE)
+    "PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"],
+}

@@ -47,7 +47,7 @@ RATE_LIMIT_CACHE = "shared"
 # Who a token names is kept for 5 seconds per process, so a revoked token
 # works up to 5 seconds longer in the other replicas; with the shared cache,
 # every replica sees a revocation at once:
-# AUTH = {"PRINCIPAL_CACHE": {"STAMPS": "shared"}}
+# AUTH = {**AUTH, "PRINCIPAL_CACHE": {"STAMPS": "shared"}}
 # A cache computation goes on after the request that started it ends; bound
 # it, so one that hangs frees its key instead of holding it until a restart.
 # 30 seconds is REQUEST_TIMEOUT's default.

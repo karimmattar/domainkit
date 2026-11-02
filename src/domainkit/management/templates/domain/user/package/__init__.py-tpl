@@ -1,0 +1,6 @@
+"""{{ domain_title }}: the project's own user model (``startdomain --user``).
+
+``models.py`` holds the ``{{ Aggregate }}`` class and its table, named in
+``AUTH["USER_MODEL"]`` and ``AUTH["USER_TABLE"]``. Logins, tokens, groups,
+permissions, and the admin API (``/admin/auth/users``) all use it.
+"""

@@ -205,6 +205,13 @@ Stepping up: authenticating again, with a second factor, for one act.
 
 - `router`: The routes: stepping up: authenticating again, with a second factor, for one act.
 
+## `domainkit.contrib.auth.tables`
+
+The columns a custom user table starts with (`AUTH.USER_TABLE`).
+
+- `abstract_base_user_columns`: New columns for the fields of `AbstractBaseUser`.
+- `abstract_user_columns`: New columns for the fields of `AbstractUser`.
+
 ## `domainkit.contrib.auth.testing`
 
 Users and groups for tests, stored as the application stores them.

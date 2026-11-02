@@ -433,6 +433,7 @@ def test_startdomain_reads_its_command_line_as_its_help_says() -> None:
         "manual": True,
         "minimal": True,
         "layered": False,
+        "user": False,
     }
     assert (plain["tests_dir"], plain["manual"], plain["minimal"]) == (
         None,
@@ -860,3 +861,36 @@ def test_the_smaller_domain_asks_only_for_the_permissions_it_uses(
         "  3. Grant invoices.view_invoice (and add_, change_) to the users or "
         "groups that need them; superusers have them."
     ) in output.splitlines()
+
+
+def test_startdomain_user_writes_the_user_model_and_names_it_in_auth(
+    make_package: MakePackage, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--user: models.py with User and its table, installed, AUTH filled in."""
+    from domainkit.management import generators
+
+    make_package("domains", {})
+    settings = tmp_path / generators.SETTINGS_FILE
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        'INSTALLED_DOMAINS = [\n    "domainkit.contrib.auth",\n]\n'
+        f"{generators.EMPTY_AUTH}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(startdomain, "format_python", lambda paths: False)
+    monkeypatch.setattr(generators, "format_python", lambda paths: False)
+
+    output = run("startdomain", "accounts", user=True)
+
+    written = settings.read_text(encoding="utf-8")
+    assert '"domains.accounts",' in written
+    assert '"USER_MODEL": "domains.accounts.models.User",' in written
+    assert '"USER_TABLE": "domains.accounts.models.users",' in written
+    assert "Named domains.accounts.models.User in AUTH" in output
+    assert "Before the first migrate" in output
+    package = tmp_path / "domains" / "accounts"
+    assert sorted(p.name for p in package.glob("*.py")) == ["__init__.py", "models.py"]
+    assert check_domain("domains.accounts") == []
+    with pytest.raises(CommandError, match="leave out --layered"):
+        run("startdomain", "people", user=True, layered=True)

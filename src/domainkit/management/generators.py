@@ -319,6 +319,39 @@ def install(
     ]
 
 
+EMPTY_AUTH: Final = "AUTH: dict[str, object] = {}"
+"""The ``AUTH`` line ``init`` writes in the base settings."""
+
+
+def install_user_model(package: str, model: str, table: str, root: Path) -> list[str]:
+    """Install the user domain ``package`` and name its model and table in ``AUTH``.
+
+    Safe means the base settings are as ``init`` writes them: a literal
+    ``INSTALLED_DOMAINS`` and the empty ``AUTH`` line. Returns what was
+    done; nothing if it was not safe.
+    """
+    settings_path = root / SETTINGS_FILE
+    try:
+        settings = Source.read(settings_path)
+    except CommandError:
+        return []
+    if settings.text.count(EMPTY_AUTH) != 1 or not _add_installed(settings, package):
+        return []
+    settings.text = settings.text.replace(
+        EMPTY_AUTH,
+        "AUTH: dict[str, object] = {\n"
+        f'    "USER_MODEL": "{package}.models.{model}",\n'
+        f'    "USER_TABLE": "{package}.models.{table}",\n'
+        "}",
+    )
+    settings.save()
+    format_python([settings_path])
+    return [
+        f"Added {package!r} to INSTALLED_DOMAINS in {SETTINGS_FILE}.",
+        f"Named {package}.models.{model} in AUTH (USER_MODEL, USER_TABLE).",
+    ]
+
+
 def _add_installed(settings: Source, package: str) -> bool:
     """Add ``package`` to the literal ``INSTALLED_DOMAINS`` list; False if unsafe."""
     for node in settings.tree().body:

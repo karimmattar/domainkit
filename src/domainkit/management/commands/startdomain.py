@@ -21,13 +21,20 @@ from typing import Final
 
 from domainkit.conf.env import project_root
 from domainkit.management.base import CommandError
-from domainkit.management.generators import Generator, install, package_directory
+from domainkit.management.generators import (
+    Generator,
+    install,
+    install_user_model,
+    package_directory,
+)
 from domainkit.utils.formatting import format_python
 from domainkit.utils.text import camel_case, plural_of, singular_of, snake_case
 
 TEMPLATE_DIR: Final = Path(__file__).resolve().parents[1] / "templates" / "domain"
 MINIMAL_DIR: Final = TEMPLATE_DIR / "minimal"
 """The smaller domain of ``--layered --minimal``: its ``package`` and ``tests``."""
+USER_DIR: Final = TEMPLATE_DIR / "user"
+"""``--user``: the project's own user model and its table."""
 SIMPLE_DIR: Final = TEMPLATE_DIR / "simple"
 """The default domain: four files, one per layer (``domain.py`` to ``routes.py``)."""
 TEMPLATE_SUFFIX: Final = "-tpl"
@@ -123,6 +130,7 @@ class NewDomain:
     install: bool
     minimal: bool = False
     layered: bool = False
+    user: bool = False
 
 
 class Command(Generator[NewDomain]):
@@ -164,6 +172,12 @@ class Command(Generator[NewDomain]):
             "addevent grow it. Without it: four files, one per layer",
         )
         parser.add_argument(
+            "--user",
+            action="store_true",
+            help="the project's own user model (default User) and its table, "
+            "named in AUTH; before the first migrate",
+        )
+        parser.add_argument(
             "--minimal",
             action="store_true",
             help="with --layered: a smaller layered domain (an aggregate with a "
@@ -181,12 +195,17 @@ class Command(Generator[NewDomain]):
         manual: bool = False,
         minimal: bool = False,
         layered: bool = False,
+        user: bool = False,
         **options: object,
     ) -> NewDomain:
         """Check the names, and that neither directory exists yet.
 
         ``--minimal`` is a layered domain, so it implies ``--layered``.
         """
+        if user and (layered or minimal):
+            raise CommandError("--user makes a user domain; leave out --layered.")
+        if user:
+            aggregate = aggregate or "User"
         context = template_context(name, parent, aggregate, plural)
         package_dir = package_directory(parent) / name
         root = project_root()
@@ -202,6 +221,7 @@ class Command(Generator[NewDomain]):
             not manual,
             minimal,
             layered or minimal,
+            user,
         )
 
     def apply(self, plan: NewDomain) -> str:
@@ -213,7 +233,9 @@ class Command(Generator[NewDomain]):
             plan.root,
         )
         name = context["domain"]
-        if not plan.layered:
+        if plan.user:
+            template = USER_DIR
+        elif not plan.layered:
             template = SIMPLE_DIR
         else:
             template = MINIMAL_DIR if plan.minimal else TEMPLATE_DIR
@@ -226,6 +248,8 @@ class Command(Generator[NewDomain]):
                 init.write_text(f'"""Tests of {directory.name}."""\n', encoding="utf-8")
             directory = directory.parent
         format_python([package_dir, tests_root / name])
+        if plan.user:
+            return _user_steps(context, package_dir, tests_root / name, plan.install)
         routes = "api.routes" if plan.layered else "routes"
         done = (
             install(context["package"], name, root, routes=routes)
@@ -240,6 +264,52 @@ class Command(Generator[NewDomain]):
             minimal=plan.minimal or not plan.layered,
             routes=routes,
         )
+
+
+def _user_steps(
+    context: dict[str, str], package_dir: Path, tests_dir: Path, install_it: bool
+) -> str:
+    """Install the user domain if safe; say what was done and what is left."""
+    package, model, table = (
+        context["package"],
+        context["Aggregate"],
+        context["aggregates"],
+    )
+    done = (
+        install_user_model(package, model, table, project_root()) if install_it else []
+    )
+    steps = (
+        []
+        if done
+        else [
+            f"Add {package!r} to INSTALLED_DOMAINS in your settings.",
+            (
+                "Name the model and its table in your base settings:\n"
+                f'       AUTH = {{"USER_MODEL": "{package}.models.{model}", '
+                f'"USER_TABLE": "{package}.models.{table}"}}'
+            ),
+        ]
+    )
+    steps += [
+        (
+            "Before the first migrate (the users' table is this one now):\n"
+            '       python manage.py makemigrations -m "users"\n'
+            "       python manage.py migrate\n"
+            "       python manage.py createsuperuser"
+        ),
+        (
+            f"Add fields to {model} in {package_dir / 'models.py'}: on the class "
+            "and as columns."
+        ),
+    ]
+    return "\n".join(
+        [
+            f"Created {package_dir} and {tests_dir}.",
+            *done,
+            "Next steps:",
+            *(f"  {number}. {step}" for number, step in enumerate(steps, 1)),
+        ]
+    )
 
 
 def _next_steps(

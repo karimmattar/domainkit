@@ -1,0 +1,37 @@
+"""The project's user: everything auth's user has, plus fields of your own.
+
+Add a field in two places: on the class (with its limits) and as a column
+of the table. Then run ``makemigrations`` and ``migrate``.
+
+- ``REQUIRED_FIELDS``: what ``createsuperuser`` asks for.
+- ``EDITABLE_FIELDS``: what staff may change through the admin API; a new
+  field stays hidden there until you list it (or ``READ_ONLY_FIELDS``).
+- To check a field (a phone number, say), override ``create`` (new users)
+  and ``clean_field`` (changes), as ``AbstractUser`` does for the email.
+"""
+
+from typing import Annotated
+
+from domainkit.contrib.auth import AbstractUser
+from domainkit.contrib.auth.tables import abstract_user_columns
+from domainkit.db import metadata
+from domainkit.ddd import MaxLength, Personal
+from sqlalchemy import Column, String, Table
+
+
+class {{ Aggregate }}(AbstractUser):
+    """A person who can log in."""
+
+    display_name: Annotated[str, MaxLength(100), Personal(of="id")] = ""
+
+    REQUIRED_FIELDS = ("email",)
+    EDITABLE_FIELDS = AbstractUser.EDITABLE_FIELDS | {"display_name"}
+
+
+{{ aggregates }} = Table(
+    "{{ table }}",
+    metadata,
+    *abstract_user_columns(),  # id, username, password, email, is_active, ...
+    Column("display_name", String(100), nullable=False, default=""),
+    info={"domain": "{{ domain }}"},
+)
