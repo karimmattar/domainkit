@@ -35,6 +35,26 @@ class Product(AggregateRoot[ProductId]):
 | `MinLength(n)` | text of at least `n` characters |
 | `Pattern(regex)` | text the pattern matches from end to end; write `[0-9]` for digits, since `\d` also matches other scripts' digits |
 | `Range(min=..., max=...)` | a number from `min` to `max`, both included; either may be left out |
+| `IPAddressFormat(version=None)` | an IPv4 or IPv6 address, or only one of them with `version=4` or `6` |
+
+Four field types come ready, as Django's fields do: `Email` (at most 254
+characters, a local part, `@`, and a domain of two labels or more), `URL`
+(`http` or `https`, at most 2,048), `Slug` (Latin letters, digits, `-`,
+and `_`, at most 50), and `IPAddress`. Each is an `Annotated[str, ...]` of
+the markers above, so it is checked where they are, and sized in its
+column:
+
+```python
+from domainkit.ddd import URL, AggregateRoot, Email, Slug
+
+
+class Site(AggregateRoot[SiteId]):
+    contact: Email
+    slug: Annotated[Slug, Unique()]
+    home: URL | None = None
+```
+
+An `Email` that matches may still bounce: only sending to it shows that.
 
 ## Where they are checked
 

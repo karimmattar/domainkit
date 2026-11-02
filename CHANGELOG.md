@@ -33,6 +33,12 @@ and a status.
 
 ### Added
 
+- `Email`, `URL`, `Slug`, and `IPAddress` field types (`domainkit.ddd`),
+  Django's `EmailField`, `URLField`, `SlugField`, and
+  `GenericIPAddressField`: `Annotated[str, ...]` of the markers, so the
+  object, the request, OpenAPI, and the column all hold them. The new
+  `IPAddressFormat(version=...)` marker checks an address with Python's
+  `ipaddress`.
 - `inspectdb`: prints aggregates for an existing database's tables, to
   start from: a field per column with its hint (`MaxLength` for sized
   text, `Digits` for decimals, `| None` when nullable), required fields

@@ -140,6 +140,7 @@ Where each domain's data lives: routing targets, aliases, and shards.
 Domain-driven design building blocks ("seedwork").
 
 - `UNSET`: A field left out of a partial change (`PatchModel`, `UpdateX` commands).
+- `URL`: An `http` or `https` address (Django's `URLField`): at most 2,048 characters.
 - `AggregateRoot`: Entry point to a consistency boundary; records events as it changes.
 - `Avg`: The mean of a number field: exact for a `Decimal` field.
 - `BusinessRuleViolation`: The request is well-formed but breaks an invariant of the model.
@@ -154,12 +155,15 @@ Domain-driven design building blocks ("seedwork").
 - `DomainError`: A business rule refused the operation; the message is safe to show.
 - `DomainEvent`: Something that happened in the domain, named in the past tense.
 - `DuplicateValue`: A value that must be unique is taken (a unique constraint refused it).
+- `Email`: An email address (Django's `EmailField`): at most 254 characters.
 - `Encrypted`: `Annotated` metadata: the field is stored encrypted, never in clear.
 - `Entity`: Object with a lifecycle, equal to another only when the ids match.
 - `EventBus`: Deliver events to handlers subscribed to their class or a base class.
 - `EventHandler`: An event handler: `async def handle(event) -> None`.
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
+- `IPAddress`: An IPv4 or IPv6 address (Django's `GenericIPAddressField`).
+- `IPAddressFormat`: `Annotated` metadata: an IPv4 or IPv6 address, as `ipaddress` reads it.
 - `InMemoryRepository`: Dictionary-backed repository for unit tests and prototypes.
 - `Indexed`: `Annotated` metadata: queries look the field up; give it an index.
 - `IntegerChoices`: Whole-number values, each with a label: `HIGH = 3, "High"`.
@@ -189,6 +193,7 @@ Domain-driven design building blocks ("seedwork").
 - `RowLocks`: Row locks for in-memory repositories, held until the unit of work ends.
 - `Selection`: Which aggregates to load, in which order, and how many.
 - `Sensitive`: A type whose values no schema shows or takes, such as a password hash.
+- `Slug`: A slug (Django's `SlugField`): at most 50 characters.
 - `SoftDeletable`: Mixin for aggregates that are marked deleted rather than removed.
 - `Specification`: A named business rule about aggregates, for Python and for queries.
 - `Sum`: The total of a number field.

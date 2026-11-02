@@ -21,7 +21,7 @@ framework, for the reason given.
 | Abstract base models | Dataclass inheritance; `AbstractUser` | Yes | |
 | Multi-table and proxy inheritance | One aggregate, one table; a role is a field | n/a: aggregates are not class hierarchies over tables | |
 | Char, Text, Integer, Decimal, Boolean, Date, DateTime, Duration, UUID, JSON fields | Python types in the field's hint | Yes | |
-| `EmailField`, `URLField`, `SlugField`, `GenericIPAddressField` | Write a value object | No: ready-made types | C3 |
+| `EmailField`, `URLField`, `SlugField`, `GenericIPAddressField` | `Email`, `URL`, `Slug`, `IPAddress` (`domainkit.ddd`), checked by the object, the request, and OpenAPI ([validation.md](validation.md)) | Yes | C3 |
 | `choices` | An `Enum` field | Yes | |
 | `get_FOO_display()`, choice labels | `TextChoices` and `IntegerChoices`: `member.label`, `choices()` | Yes | C7 |
 | `null`, `default` | `X \| None`, dataclass defaults | Yes | |
