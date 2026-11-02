@@ -82,6 +82,7 @@ nav:
       - recipes/jwt-keys.md
       - recipes/behind-a-proxy.md
       - recipes/read-replica.md
+      - recipes/api-keys.md
   - Guides:
       - resources.md
       - validation.md

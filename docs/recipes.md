@@ -17,6 +17,9 @@ for you, that is a bug: please report it.
   addresses and request ids from the proxy only.
 - [Reading from a replica](recipes/read-replica.md): read-only units of
   work for a resource's reads, and the replica's settings.
+- [Service accounts with API keys](recipes/api-keys.md): an
+  authentication class of your own, `X-API-Key` logging in as a service's
+  user, the keys kept as digests.
 
 Each starts from `domainkit init`; [the tutorial](tutorial.md) explains
 what that makes, and [deploying.md](deploying.md) what to do before the
