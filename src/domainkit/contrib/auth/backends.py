@@ -13,9 +13,15 @@ elsewhere (a directory service), or to grant object permissions::
     class OwnerBackend(BaseBackend):
         async def has_perm(self, user, perm, obj=None):
             return perm == "billing.change_invoice" and obj.owner_id == user.id
+
+A backend that stores grants on single objects also says which it holds
+for a user or a group (``object_grants``), so the admin API bounds staff
+by them as by model permissions: staff change no one, and join no group,
+holding a grant they lack (AUTH-14).
 """
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from functools import cache
 from uuid import UUID
 
@@ -24,7 +30,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
 from .hashers import amake_password, averify_password
-from .models import AbstractBaseUser, AnyUser, PasswordHash, UserId
+from .models import AbstractBaseUser, AnyUser, Group, PasswordHash, UserId
 from .settings import auth_settings
 from .uow import AuthUnitOfWork
 from .users import get_user_model
@@ -32,12 +38,31 @@ from .users import get_user_model
 __all__ = [
     "BaseBackend",
     "ModelBackend",
+    "ObjectGrant",
     "authenticate",
+    "backends_without_object_grants",
     "get_all_permissions",
     "get_user",
     "has_perm",
     "has_perms",
+    "object_grants",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectGrant:
+    """``permission`` granted on one object: its content type and its id."""
+
+    permission: str
+    """A permission key: ``shop.change_product``."""
+    content_type: str
+    """The object's content type: ``shop.product``."""
+    object_id: object
+    """The object's id: a UUID, an integer, or text."""
+
+    def __str__(self) -> str:
+        """``shop.change_product on shop.product 42``."""
+        return f"{self.permission} on {self.content_type} {self.object_id}"
 
 
 class BaseBackend:
@@ -64,6 +89,21 @@ class BaseBackend:
     ) -> bool:
         """Whether this backend grants ``perm`` to ``user`` (on ``obj``)."""
         return perm in await self.get_all_permissions(user, obj)
+
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """What this backend grants ``holder`` on single objects.
+
+        For a user, their own grants and their groups', whether the user is
+        active or not (what they would hold once active); for a group, its
+        own. A backend that grants on objects must answer it: the admin
+        API bounds staff by it (AUTH-14). A backend that grants on no
+        object answers it too, with an empty set: one that leaves this
+        default lets only superusers change users and groups there
+        (``backends_without_object_grants``, ``auth.W007``).
+        """
+        return frozenset()
 
 
 class ModelBackend(BaseBackend):
@@ -96,6 +136,8 @@ class ModelBackend(BaseBackend):
             return None
         if check.rehashed is not None:
             await self._rehash(user.id, user.password, check.rehashed)
+            # The login is held to the hash it checked (``api.held_login``).
+            user.rehash_password(PasswordHash(check.rehashed))
         return user
 
     def user_can_authenticate(self, user: AbstractBaseUser) -> bool:
@@ -186,6 +228,32 @@ async def get_all_permissions(
     granted: set[str] = set()
     for backend in get_backends():
         granted |= await backend.get_all_permissions(user, obj)
+    return frozenset(granted)
+
+
+def backends_without_object_grants() -> list[str]:
+    """The configured backends that do not say what they grant on objects.
+
+    Those that keep ``BaseBackend.object_grants``, which answers nothing,
+    but ``ModelBackend``, which grants on no object. Such a backend may
+    grant on objects all the same (``has_perm(user, perm, obj)``), so the
+    admin API lets only superusers change users and groups while one is
+    configured (SEC-16a-5); one that grants on no object says so by
+    answering ``object_grants`` with an empty set.
+    """
+    return [
+        f"{type(backend).__module__}.{type(backend).__qualname__}"
+        for backend in get_backends()
+        if not isinstance(backend, ModelBackend)
+        and type(backend).object_grants is BaseBackend.object_grants
+    ]
+
+
+async def object_grants(holder: AbstractBaseUser | Group) -> frozenset[ObjectGrant]:
+    """What every backend grants ``holder`` (a user or a group) on single objects."""
+    granted: set[ObjectGrant] = set()
+    for backend in get_backends():
+        granted |= await backend.object_grants(holder)
     return frozenset(granted)
 
 

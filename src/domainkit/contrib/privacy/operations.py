@@ -31,9 +31,15 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import clock
-from domainkit.apps.hooks import Hook, on_erase_subject, on_export_subject
+from domainkit.apps.hooks import (
+    Hook,
+    on_erase_subject,
+    on_export_subject,
+    on_retain_subject,
+)
 from domainkit.contrib.audit import Outcome, forget, record
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
+from domainkit.ddd import BusinessRuleViolation
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import sqlstate
 from domainkit.utils.decimals import jsonable
@@ -163,6 +169,44 @@ async def export_subject(subject: str) -> dict[str, Any]:
     }
 
 
+class ErasureHeld(BusinessRuleViolation):
+    """A person's data must be kept for now: nothing of it was erased (FIN-94).
+
+    ``held`` names, by domain, why each ``on_retain_subject`` holds it (an
+    account with money on it, a retention the law asks for), or why a
+    domain that may hold erasures held it as it erased (SEC-16b-4). A
+    second such domain holding it then leaves what the first erased.
+    """
+
+    code = "erasure_held"
+
+    def __init__(self, message: str, *, held: Mapping[str, str]) -> None:
+        """Store the message, and each domain's reason."""
+        super().__init__(message)
+        self.held = dict(held)
+
+
+async def erasure_holds(subject: str, reason: str) -> dict[str, str]:
+    """What each domain's ``on_retain_subject`` says holds the erasure, by domain.
+
+    Raises:
+        ImproperlyConfigured: A check answered something other than a
+            sentence or None.
+    """
+    held: dict[str, str] = {}
+    for hook in on_retain_subject:
+        found = await hook.call(subject, reason)
+        if found is None:
+            continue
+        if not isinstance(found, str) or not _TEXT.fullmatch(found):
+            raise ImproperlyConfigured(
+                f"The on_retain_subject hook of {hook.domain!r} answered {found!r}: "
+                "a sentence of 1 to 255 printable characters, or None."
+            )
+        held.setdefault(hook.domain, found)
+    return held
+
+
 async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     """Erase every field marked ``Personal`` about ``subject``; return how many changed.
 
@@ -175,7 +219,17 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     (``privacy.copies_erased``, counts only). The subject's keys in the
     audit trail are then forgotten, and the erasure recorded.
 
+    First, every domain's ``on_retain_subject`` is asked whether the
+    subject's data must be kept for now: if any says so, nothing is
+    erased, ``privacy.erase`` is recorded as denied with the reasons, and
+    ``ErasureHeld`` is raised (FIN-94). The ``on_erase_subject`` hooks of
+    the domains that may hold an erasure run first, before anything else
+    is erased: one of them may check again as it erases, under its own
+    locks, and hold the erasure then (the ledger, when money landed after
+    the check, SEC-16b-4), recorded and raised the same way.
+
     Raises:
+        ErasureHeld: A domain holds the erasure.
         ValueError: ``subject`` or ``reason`` is not 1 to 255 printable
             characters, or ``subject`` is an id not written as it prints
             (see ``check_subject``).
@@ -184,6 +238,36 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     """
     check_subject(subject)
     check_reason(reason)
+    if held := await erasure_holds(subject, reason):
+        await record(
+            "privacy.erase",
+            Outcome.DENIED,
+            target=subject,
+            held=held,
+            reason=reason,
+        )
+        raise ErasureHeld(
+            "This person's data must be kept for now: nothing was erased.",
+            held=held,
+        )
+    holding = {hook.domain for hook in on_retain_subject}
+    groups = [
+        (domain, list(hooks))
+        for domain, hooks in groupby(on_erase_subject, key=attrgetter("domain"))
+    ]
+    try:
+        for domain, hooks in groups:
+            if domain in holding:
+                await _erase_copies(domain, hooks, subject, reason)
+    except ErasureHeld as late:
+        await record(
+            "privacy.erase",
+            Outcome.DENIED,
+            target=subject,
+            held=late.held,
+            reason=reason,
+        )
+        raise
     erased = 0
     for model in personal_models():
         for of, fields in model.subjects.items():
@@ -195,30 +279,38 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
                     model, alias, model.columns[of] == value, fields, reason
                 )
                 erased += changed
-    for domain, hooks in groupby(on_erase_subject, key=attrgetter("domain")):
-        done: dict[str, int] = {}
-        for hook in hooks:
-            for kind, count in _counts(hook, await hook.call(subject, reason)).items():
-                done[kind] = done.get(kind, 0) + count
-        if any(done.values()):
-            await record(
-                "privacy.copies_erased",
-                target=subject,
-                domain=domain,
-                copies=done,
-                reason=reason,
-            )
-        if done.get("pending"):
-            logger.warning(
-                "%s keeps %d cop%s of a subject's data still to finish (queued "
-                "work); they are erased once it ends: erase the subject again then",
-                domain,
-                done["pending"],
-                "y" if done["pending"] == 1 else "ies",
-            )
+    for domain, hooks in groups:
+        if domain not in holding:
+            await _erase_copies(domain, hooks, subject, reason)
     await forget(subject)
     await record("privacy.erase", target=subject, aggregates=erased, reason=reason)
     return erased
+
+
+async def _erase_copies(
+    domain: str, hooks: list[Hook[Any]], subject: str, reason: str
+) -> None:
+    """Run one domain's ``on_erase_subject`` hooks, and record what they erased."""
+    done: dict[str, int] = {}
+    for hook in hooks:
+        for kind, count in _counts(hook, await hook.call(subject, reason)).items():
+            done[kind] = done.get(kind, 0) + count
+    if any(done.values()):
+        await record(
+            "privacy.copies_erased",
+            target=subject,
+            domain=domain,
+            copies=done,
+            reason=reason,
+        )
+    if done.get("pending"):
+        logger.warning(
+            "%s keeps %d cop%s of a subject's data still to finish (queued "
+            "work); they are erased once it ends: erase the subject again then",
+            domain,
+            done["pending"],
+            "y" if done["pending"] == 1 else "ies",
+        )
 
 
 def _merge(copies: dict[str, object], kept: Mapping[str, object]) -> None:
@@ -406,7 +498,7 @@ class _Progress:
 
 
 async def purge(*, dry_run: bool = False, now: datetime | None = None) -> list[Purged]:
-    """Apply every domain's ``RETENTION``, on every database it uses.
+    """Apply every domain's ``retention``, on every database it uses.
 
     Old rows are deleted, or their aggregates' personal fields erased, in
     transactions of ``BATCH_SIZE``, so a purge never holds a table long. A

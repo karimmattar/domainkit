@@ -62,7 +62,7 @@ request from a typed ``RouteContext``; what they share is in ``reach``
 A new kind of route is a module of that shape and a method here (ADR 0025).
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -72,9 +72,10 @@ from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute
 
-from domainkit.ddd.fields import fields_of
+from domainkit.ddd.fields import InvalidQuery, fields_of
 from domainkit.ddd.messages import Command
 from domainkit.ddd.messages import Query as QueryMessage
+from domainkit.ddd.query import resolve
 from domainkit.ddd.uow import Retry, UnitOfWork
 from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
@@ -232,6 +233,8 @@ class ResourceRouter(APIRouter):
         if policy is not None:
             policy.check(given.model_fields, given.__name__)
             _check_filters(filters, policy)
+        if isinstance(model, type):
+            _check_encrypted_filters(filters, model, given.model_fields)
         self.source_schema = given
         self.schema = presenting.documented(self, given)
         self.present = present or presenting.presenter(given)
@@ -498,6 +501,61 @@ def _id_type(model: type | Callable[[], type]) -> type:
     return kind if kind in {UUID, int, str} else UUID
 
 
+def _filtered(filters: object) -> set[str]:
+    """The fields a ``FilterSet`` filters, orders, or searches; none otherwise."""
+    if not (isinstance(filters, type) and issubclass(filters, FilterSet)):
+        return set()
+    used = {
+        *(each.field or name for name, (each, _, _) in filters.filters.items()),
+        *filters.ordering_fields,
+        *(item.removeprefix("-") for item in filters.default_ordering),
+        *filters.search_fields,
+    }
+    return {name for name in used if name}
+
+
+def _name_of(filters: object) -> str:
+    """The ``FilterSet``'s class name, as errors name it."""
+    return str(getattr(filters, "__name__", filters))
+
+
+def _check_encrypted_filters(
+    filters: object, model: type, shown: Collection[str]
+) -> None:
+    """Refuse filters on encrypted fields the read schema does not name.
+
+    A filter of a field with a blind index answers whether a guessed value
+    is stored: an equality oracle on what the schema keeps hidden. As a
+    derived schema shows an ``Encrypted`` field only where ``include``
+    names it, a ``FilterSet`` may filter one only where the resource shows
+    it (DSGN-19); one inside a child entity, never.
+
+    Raises:
+        TypeError: The ``FilterSet`` filters an encrypted field not shown.
+    """
+    hidden = sorted(
+        name
+        for name in _filtered(filters)
+        if _encrypted(model, name) and name not in shown
+    )
+    if hidden:
+        raise TypeError(
+            f"{_name_of(filters)} filters encrypted fields the resource does not "
+            f"show: {', '.join(hidden)}. A filter of one tells whether a "
+            "guessed value is stored; name the field in the schema "
+            '(schema_for(..., include=[..., "field"])) to expose it on purpose.'
+        )
+
+
+def _encrypted(model: type, name: str) -> bool:
+    """Whether ``name`` (dotted through child entities) is a field stored encrypted."""
+    try:
+        path = resolve(model, name)
+    except InvalidQuery:
+        return False  # A field of the FilterSet's own model, not this one's.
+    return path[-1].encrypted
+
+
 def _check_filters(filters: object, policy: FieldPolicy) -> None:
     """Refuse filters on fields the policy hides: values leak through them.
 
@@ -507,18 +565,10 @@ def _check_filters(filters: object, policy: FieldPolicy) -> None:
     Raises:
         TypeError: The ``FilterSet`` filters, orders, or searches a hidden field.
     """
-    if not (isinstance(filters, type) and issubclass(filters, FilterSet)):
-        return
-    used = {
-        *(each.field or name for name, (each, _, _) in filters.filters.items()),
-        *filters.ordering_fields,
-        *(item.removeprefix("-") for item in filters.default_ordering),
-        *filters.search_fields,
-    }
     if hidden := sorted(
-        {name.partition(".")[0] for name in used if name} & set(policy.visible)
+        {name.partition(".")[0] for name in _filtered(filters)} & set(policy.visible)
     ):
         raise TypeError(
-            f"{filters.__name__} filters, orders, or searches fields some callers "
+            f"{_name_of(filters)} filters, orders, or searches fields some callers "
             f"may not see: {', '.join(hidden)}."
         )

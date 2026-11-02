@@ -13,12 +13,14 @@ from domainkit.contrib.accounting import (
     Account,
     AccountClosed,
     AccountId,
-    AccountIsClosed,
     AccountNotEmpty,
+    AccountNotOpen,
     AccountOpened,
+    AccountReconciled,
     AccountStatus,
     AccountType,
     Entry,
+    EntryAmount,
     EntryId,
     EntryPosted,
     Hold,
@@ -32,16 +34,18 @@ from domainkit.contrib.accounting import (
     Line,
     Period,
     PeriodClosed,
-    PeriodIsClosed,
+    PeriodNotOpen,
     PeriodOpened,
     PeriodsOverlap,
     PeriodStatus,
     Side,
+    StatementImported,
     UnbalancedEntry,
     models,
 )
 from domainkit.ddd import DomainError
 from domainkit.money import (
+    AmountOutOfRange,
     Money,
     UnknownCurrency,
     currencies_kept,
@@ -59,7 +63,8 @@ def usd(amount: str) -> Money:
 
 
 def an_account(type: AccountType = AccountType.ASSET, **options: object) -> Account:
-    """A new USD account."""
+    """A new USD account, which may go negative unless ``options`` say otherwise."""
+    options.setdefault("may_go_negative", True)
     account = Account.open("1000", "Cash", type, "USD", **options)  # type: ignore[arg-type]
     account.pull_events()
     return account
@@ -121,7 +126,7 @@ def test_an_account_opens_with_nothing_on_it() -> None:
     )
     assert (account.holder, account.may_go_negative, account.opened_at) == (
         "user-1",
-        True,
+        False,  # Only an account opened so may go negative (FIN-97).
         NOW,
     )
     assert account.closed_at is None
@@ -198,9 +203,9 @@ def test_postings_are_refused_on_closed_accounts_and_in_other_currencies() -> No
     with refused(InvalidEntry, match="not in its account's currency"):
         account.reserve(Money.of("1", "EUR"))
     account.close()
-    with refused(AccountIsClosed, match="account is closed"):
+    with refused(AccountNotOpen, match="account is closed"):
         account.post(Side.DEBIT, usd("1"))
-    with refused(AccountIsClosed):
+    with refused(AccountNotOpen):
         account.reserve(usd("1"))
 
 
@@ -227,11 +232,21 @@ def test_an_account_that_may_not_go_negative_keeps_something_available() -> None
 
 
 def test_an_account_that_may_go_negative_does() -> None:
-    """By default an account may be overdrawn, held amounts included."""
-    account = an_account()
+    """Opened so, an account may be overdrawn, held amounts included."""
+    account = an_account(may_go_negative=True)
     account.reserve(usd("5"))
     account.post(Side.CREDIT, usd("5"))
     assert (account.balance, account.available) == (Decimal("-5.00"), Decimal("-10.00"))
+
+
+def test_an_account_may_not_go_negative_by_default() -> None:
+    """Opened without the flag, nothing takes it below zero (FIN-97)."""
+    account = Account.open("1000", "Cash", AccountType.ASSET, "USD")
+    with refused(InsufficientFunds):
+        account.post(Side.CREDIT, usd("0.01"))
+    with refused(InsufficientFunds):
+        account.reserve(usd("0.01"))
+    assert (account.balance, account.held) == (Decimal(0), Decimal(0))
 
 
 def test_only_an_empty_open_account_closes() -> None:
@@ -253,7 +268,7 @@ def test_only_an_empty_open_account_closes() -> None:
     (event,) = account.pull_events()
     assert isinstance(event, AccountClosed)
     assert event.account_id == account.id
-    with refused(AccountIsClosed):
+    with refused(AccountNotOpen):
         account.close()
 
 
@@ -293,6 +308,63 @@ def test_an_entry_balances_per_currency() -> None:
         "a sale",
         None,
         None,
+    )
+    # What it moved, per account and currency, and its digest (FIN-96).
+    assert event.digest == entry.fingerprint
+    assert set(event.amounts) == {
+        EntryAmount(cash, usd("10"), usd("0")),
+        EntryAmount(cash, Money.of("3", "EUR"), Money.of("0", "EUR")),
+        EntryAmount(sales, usd("0"), usd("10")),
+        EntryAmount(sales, Money.of("0", "EUR"), Money.of("3", "EUR")),
+    }
+    assert [each.account_id for each in event.amounts] == sorted(
+        each.account_id for each in event.amounts
+    )
+
+
+def test_imports_and_reconciliations_are_recorded_on_the_account() -> None:
+    """Each is an event with what was done, for the audit trail (FIN-90)."""
+    account = an_account()
+    run = uuid.uuid4()
+
+    account.imported("october.csv", 3, 1, "ab" * 32)
+    account.reconciled(run, {"reference": 2}, 1)
+
+    imported, reconciled = account.pull_events()
+    assert isinstance(imported, StatementImported)
+    assert (
+        imported.account_id,
+        imported.statement,
+        imported.imported,
+        imported.skipped,
+        imported.digest,
+    ) == (account.id, "october.csv", 3, 1, "ab" * 32)
+    assert isinstance(reconciled, AccountReconciled)
+    assert (
+        reconciled.account_id,
+        reconciled.run_id,
+        reconciled.matched,
+        reconciled.breaks,
+    ) == (account.id, run, {"reference": 2}, 1)
+
+
+def test_amounts_past_the_ledgers_columns_are_out_of_range() -> None:
+    """14 digits before the point, in a line, a balance, or what is held (FIN-91)."""
+    cash, sales = ids()
+    huge = usd("100000000000000")
+    message = r"^The amount is larger than the ledger keeps\.$"
+    with pytest.raises(AmountOutOfRange, match=message):
+        draft([Line.debit(cash, huge), Line.credit(sales, huge)])
+    account = an_account()
+    account.post(Side.DEBIT, usd("99999999999999"))
+    with pytest.raises(AmountOutOfRange):
+        account.post(Side.DEBIT, usd("1"))
+    account.reserve(usd("99999999999999"))
+    with pytest.raises(AmountOutOfRange):
+        account.reserve(usd("1"))
+    assert (account.balance, account.held) == (
+        Decimal("99999999999999.00"),
+        Decimal("99999999999999.00"),
     )
 
 
@@ -475,6 +547,18 @@ def test_a_hold_reserves_until_it_finishes() -> None:
         hold.finish(account, HoldStatus.EXPIRED)
 
 
+def test_a_hold_is_placed_at_the_present_it_is_given() -> None:
+    """The database's present, a day behind the host's: its expiry checks by it."""
+    account = an_account()
+    account.post(Side.DEBIT, usd("10"))
+    earlier = NOW - timedelta(days=1)
+    with freeze_time(NOW):
+        hold = Hold.place(
+            account, usd("4"), "shop", "h-1", earlier + timedelta(hours=1), now=earlier
+        )
+    assert (hold.placed_at, hold.expires_at) == (earlier, earlier + timedelta(hours=1))
+
+
 def test_an_expired_hold_is_not_captured_but_is_released() -> None:
     """At its expiry a hold can no longer be captured."""
     account = an_account()
@@ -554,9 +638,9 @@ def test_a_period_opens_and_closes_once() -> None:
     (closed,) = period.pull_events()
     assert isinstance(closed, PeriodClosed)
     assert closed.period_id == period.id
-    with refused(PeriodIsClosed, match="closed period"):
+    with refused(PeriodNotOpen, match="closed period"):
         period.takes()
-    with refused(PeriodIsClosed):
+    with refused(PeriodNotOpen):
         period.close()
 
 

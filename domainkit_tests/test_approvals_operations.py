@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import Final
 
 import pytest
+from sqlalchemy import update
 
 from domainkit import clock, setup
 from domainkit.apps import registry
@@ -33,6 +34,8 @@ from domainkit.contrib.approvals import (
     submit_command,
 )
 from domainkit.contrib.approvals.rules import configured_rule
+from domainkit.contrib.approvals.tables import decisions, requests
+from domainkit.db import connections
 from domainkit.ddd import Command
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsAuthenticated
@@ -215,10 +218,13 @@ async def _stored() -> dict[str, ApprovalRequest]:
 
 
 def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> None:
-    """Their pending requests are cancelled, their commands and reasons blanked.
+    """Their pending requests are cancelled, their reasons blanked; the record kept.
 
     Their id becomes one ``erased:`` id, so a request still shows that its
-    maker and its approver were two people; what others wrote stays.
+    maker and its approver were two people; what others wrote stays. The
+    commands stay as approved, and the seals are made again for the
+    pseudonym, so the record still verifies (FIN-94: a business record
+    the law asks to keep, pseudonymised, not blanked).
     """
     pending = submitted("pending", maker="subject")
     decided = submitted("decided", maker="subject")
@@ -242,7 +248,16 @@ def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> 
     by_kind = run_async(_stored())
     first, second = by_kind[str(pending.id)], by_kind[str(decided.id)]
     assert (first.status, first.decided_at) == (RequestStatus.CANCELLED, frozen.now())
-    assert (first.arguments, second.arguments) == ({}, {})
+    assert (first.arguments, second.arguments) == (
+        pending.arguments,
+        decided.arguments,
+    )
+    assert all(each.sealed() for each in by_kind.values())
+    assert all(
+        decision.verified(request.id)
+        for request in by_kind.values()
+        for decision in request.decisions
+    )
     assert first.maker == second.maker
     assert first.maker.startswith("erased:")
     assert second.reason == ""
@@ -253,15 +268,76 @@ def test_privacy_erasure_unlinks_a_person_and_keeps_the_record(project: str) -> 
     assert approvers == {first.maker, "bob"}
     assert by_kind[str(approved.id)].maker == "maker"
     changed = {key: by_kind[key].version - version for key, version in before.items()}
-    assert changed == {
-        str(pending.id): 3,
-        str(decided.id): 2,
+    assert changed == {  # One unit of work: each request changed once.
+        str(pending.id): 1,
+        str(decided.id): 1,
         str(approved.id): 0,
         str(rejected.id): 1,
         str(kept.id): 0,
         str(bystander.id): 0,
     }
     assert by_kind[str(bystander.id)].status is RequestStatus.PENDING
+
+
+def test_erasure_fails_a_request_approved_and_launders_no_seal(project: str) -> None:
+    """Their approved request fails rather than runs; a broken seal stays broken.
+
+    A request or a decision changed around the application is not sealed
+    again by an erasure, so it is still refused (FIN-94).
+    """
+    approved = submitted("approved", maker="subject")
+    decide(approved, "ann")
+    decide(approved, "bob")
+    again = submitted("again", maker="subject")
+    decide(again, "ann")
+    decide(again, "bob")
+    pending = [submitted(f"pending-{n}", maker="subject") for n in range(2)]
+    both = submitted("both")
+    decide(both, "bob")
+    decide(both, "subject")
+    tampered = submitted("tampered", maker="subject")
+    decide(tampered, "subject-2")
+    other = submitted("other")
+    decide(other, "subject")
+
+    async def tamper() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(requests).where(requests.c.id == tampered.id).values(required=1)
+            )
+            await connection.execute(
+                update(decisions)
+                .where(decisions.c.request_id == other.id)
+                .values(fingerprint="0" * 64)
+            )
+
+    run_async(tamper())
+    (erase,) = on_erase_subject.of("approvals")
+
+    counts = run_async(erase.call("subject", "request"))
+
+    by_kind = run_async(_stored())
+    done, kept, theirs = (
+        by_kind[str(approved.id)],
+        by_kind[str(tampered.id)],
+        by_kind[str(other.id)],
+    )
+    assert counts == {"requests": 5, "cancelled": 2, "failed": 2, "decisions": 2}
+    assert (done.status, done.reason) == (RequestStatus.FAILED, "maker_not_allowed")
+    assert by_kind[str(again.id)].status is RequestStatus.FAILED
+    assert [
+        (by_kind[str(each.id)].status, by_kind[str(each.id)].reason) for each in pending
+    ] == [(RequestStatus.CANCELLED, "")] * 2
+    bob, theirs_too = by_kind[str(both.id)].decisions
+    assert (bob.approver, theirs_too.approver[:7]) == ("bob", "erased:")
+    assert bob.verified(both.id)
+    assert theirs_too.verified(both.id)
+    assert done.sealed()
+    assert (kept.status, kept.sealed()) == (RequestStatus.PENDING, False)
+    assert kept.maker.startswith("erased:")
+    (decision,) = theirs.decisions
+    assert decision.approver.startswith("erased:")
+    assert not decision.verified(theirs.id)
 
 
 def test_setup_refuses_thresholds_and_rules_that_cannot_work(
@@ -366,3 +442,17 @@ def test_the_command_shows_decisions_in_order_and_keys_sorted(project: str) -> N
         return [each.approver for each in found.decisions]
 
     assert run_async(approvers()) == ["zed", "amy"]
+
+
+def test_the_command_says_what_each_argument_is() -> None:
+    """Its ``--help``: what ``request`` and ``--status`` are for."""
+    from domainkit.contrib.approvals.management.commands.approvals import Command
+
+    usage = " ".join(
+        Command().create_parser("manage.py", "approvals").format_help().split()
+    )
+    assert " request show: the request's id options:" in usage
+    assert (
+        " --status {pending,approved,executed,rejected,cancelled,expired,failed} "
+        "list: the requests in this status (default: pending) --limit LIMIT "
+    ) in usage

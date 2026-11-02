@@ -43,7 +43,7 @@ class FakeNotesUnitOfWork(NotesUnitOfWork):
         self.commits += 1
 
     async def _rollback(self) -> None:
-        """Nothing to undo: the repositories are the state."""
+        """Nothing to undo here: ``rollback()`` puts the repositories back."""
 
 
 def new_note() -> Note:

@@ -23,8 +23,8 @@ from decimal import Decimal
 import pytest
 
 from domainkit.contrib.accounting import (
-    CAPTURES,
-    REVERSALS,
+    CAPTURE_SOURCE,
+    REVERSAL_SOURCE,
     AccountingUnitOfWork,
     AccountType,
     CaptureHold,
@@ -87,7 +87,7 @@ async def test_a_squatted_reversal_source_does_not_fake_a_reversal() -> None:
         transfer(sales, cash, usd("100"), "sale-1"), AccountingUnitOfWork()
     )
 
-    await _squat(REVERSALS, str(entry.id))
+    await _squat(REVERSAL_SOURCE, str(entry.id))
     reversal = await reverse_entry(
         ReverseEntry(entry_id=entry.id, booked_on=TODAY), AccountingUnitOfWork()
     )
@@ -120,7 +120,7 @@ async def test_a_squatted_capture_source_does_not_block_the_capture() -> None:
         AccountingUnitOfWork(),
     )
 
-    await _squat(CAPTURES, str(hold.id))
+    await _squat(CAPTURE_SOURCE, str(hold.id))
     captured = await capture_hold(
         CaptureHold(hold_id=hold.id, counter_account_id=merchant.id, booked_on=TODAY),
         AccountingUnitOfWork(),
@@ -130,7 +130,9 @@ async def test_a_squatted_capture_source_does_not_block_the_capture() -> None:
     assert (await balances())[merchant.id] == Decimal("20.0000")
 
 
-@pytest.mark.parametrize("source", [REVERSALS, CAPTURES, "accounting.", "accounting.x"])
+@pytest.mark.parametrize(
+    "source", [REVERSAL_SOURCE, CAPTURE_SOURCE, "accounting.", "accounting.x"]
+)
 async def test_the_ledgers_own_sources_are_refused(source: str) -> None:
     """Every source under ``accounting.``, before any lock or row."""
     await period()
@@ -176,7 +178,7 @@ async def test_a_reversal_reference_taken_before_is_refused() -> None:
     entry = await post_entry(
         transfer(sales, cash, usd("100"), "sale-1"), AccountingUnitOfWork()
     )
-    await _posted_before_the_fix(REVERSALS, str(entry.id))
+    await _posted_before_the_fix(REVERSAL_SOURCE, str(entry.id))
 
     with refused(ReferenceReused):
         await reverse_entry(ReverseEntry(entry_id=entry.id), AccountingUnitOfWork())
@@ -192,7 +194,7 @@ async def test_a_capture_reference_taken_before_is_refused() -> None:
         PlaceHold(account_id=wallet.id, amount=usd("5"), source="cards", reference="a"),
         AccountingUnitOfWork(),
     )
-    await _posted_before_the_fix(CAPTURES, str(hold.id))
+    await _posted_before_the_fix(CAPTURE_SOURCE, str(hold.id))
 
     with refused(ReferenceReused):
         await capture_hold(

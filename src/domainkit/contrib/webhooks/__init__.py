@@ -18,18 +18,24 @@ go through the outbox, so they happen only if the change commits, and are
 signed as Standard Webhooks (``signing.verify`` checks one).
 """
 
+from domainkit.deprecation import renamed
+
 from .delivery import expose, queue_deliveries
 from .guard import UnsafeTarget
-from .settings import WebhookSettings
+from .settings import WebhooksSettings
 from .signing import InvalidSignature, new_secret, sign, verify
 
 __all__ = [
     "InvalidSignature",
     "UnsafeTarget",
-    "WebhookSettings",
+    "WebhooksSettings",
     "expose",
     "new_secret",
     "queue_deliveries",
     "sign",
     "verify",
 ]
+
+__getattr__ = renamed(
+    __name__, {"WebhookSettings": f"{__name__}.WebhooksSettings"}, "2.0"
+)

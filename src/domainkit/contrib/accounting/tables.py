@@ -116,15 +116,20 @@ entries = Table(
     Column("posted_at", UTCDateTime, nullable=False),
     UniqueConstraint("source", "reference"),
     Index("ix_domainkit_accounting_entries_booked_on", "booked_on", "posted_at"),
+    Index("ix_domainkit_accounting_entries_posted_at", "posted_at"),
     info=APPEND_ONLY,
 )
-"""Journal entries: one per ``(source, reference)``, each reversed once at most."""
+"""Journal entries: one per ``(source, reference)``, each reversed once at most.
+
+``posted_at`` is indexed for the listing's default order, newest first
+(PERF-29).
+"""
 
 postings = Table(
     "domainkit_accounting_postings",
     metadata,
     Column("id", Uuid, primary_key=True),
-    Column("entry_id", Uuid, ForeignKey(entries.c.id), nullable=False, index=True),
+    Column("entry_id", Uuid, ForeignKey(entries.c.id), nullable=False),
     Column("line", Integer, nullable=False),
     Column("account_id", Uuid, ForeignKey(accounts.c.id), nullable=False),
     Column("side", EnumValue(Side), nullable=False),
@@ -137,7 +142,11 @@ postings = Table(
     Index("ix_domainkit_accounting_postings_booked_on", "booked_on"),
     info=APPEND_ONLY,
 )
-"""The lines of the entries: an amount on one side of one account."""
+"""The lines of the entries: an amount on one side of one account.
+
+The unique ``(entry_id, line)`` serves the look-ups by entry: ``entry_id``
+has no index of its own (PERF-30).
+"""
 
 holds = Table(
     "domainkit_accounting_holds",
@@ -156,9 +165,13 @@ holds = Table(
     Column("version", Integer, nullable=False),
     UniqueConstraint("source", "reference"),
     Index("ix_domainkit_accounting_holds_expiry", "status", "expires_at"),
+    Index("ix_domainkit_accounting_holds_placed_at", "placed_at"),
     info=INFO,
 )
-"""Amounts reserved on accounts; each account's ``held`` is its active ones'."""
+"""Amounts reserved on accounts; each account's ``held`` is its active ones'.
+
+``placed_at`` is indexed for the listing's default order (PERF-29).
+"""
 
 statement_lines = Table(
     "domainkit_accounting_statement_lines",

@@ -26,7 +26,7 @@ LOADERS: Final = frozenset({"import_module", "import_string", "__import__"})
 
 ALLOWED: Final = frozenset(
     {
-        # For type checkers only: DomainConfig.RETENTION holds privacy's
+        # For type checkers only: DomainConfig.retention holds privacy's
         # Retention policies, until hooks are registered by type (DSGN-03).
         ("domainkit.apps.config", "domainkit.contrib.privacy", "typing"),
     }

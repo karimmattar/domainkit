@@ -499,7 +499,9 @@ free-threading tests 30 times more, each in a new random order (`stress
 (3.14t)`, not a required check), so a race that shows in some runs only
 fails the job. On 3.14.6t some of those runs crash inside SQLAlchemy's
 compiled extensions while loops on threads make engines at once (seen at
-0.9.2 too), which waits for a fix there. The whole
+0.9.2 too), which waits for a fix there: the required `test (3.14t)`
+leaves those three tests (marked `engines_on_threads`) to the stress job,
+and a release does not wait on that job. The whole
 suite does not run there yet: on 3.14.6t it crashes the interpreter now
 and then (a segmentation fault inside the allocator, at a different test
 each time), as it did before any of this was added, so that waits for a
@@ -635,7 +637,7 @@ messages to the broker without ever holding up a commit:
 
 **Brokered shutdown.** A stopping worker stops consuming within five
 seconds, even from a broker that is lost or stalled, and logs it if it
-could not. Running deliveries still get `MESSAGING.SHUTDOWN_TIMEOUT` (20
+could not. Running deliveries still get `MESSAGING.DRAIN_TIMEOUT` (20
 seconds), counted from the stop; a delivery that arrives meanwhile is given
 back to the broker, not run. Relays, cleanup, and the listener of a
 stopping worker finish the step they are on, for up to five seconds, so a
@@ -647,7 +649,7 @@ messages get their time first, then the process shuts down within
 `SHUTDOWN_TIMEOUT` like any other. With the defaults that is up to
 20 + 5 + 15 = 40 seconds, so give worker pods a longer grace period than
 Kubernetes' 30-second default (`terminationGracePeriodSeconds: 45`), or
-lower `MESSAGING.SHUTDOWN_TIMEOUT`.
+lower `MESSAGING.DRAIN_TIMEOUT`.
 
 **Cleanup.** Each polling and relaying worker deletes finished messages
 older than `RETENTION_SECONDS` in a task of its own, every
@@ -1064,14 +1066,19 @@ lookups at least. (A lookup cannot be interrupted,
 which an asynchronous resolver will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 
-| Raised | When |
-| --- | --- |
-| `CallTimeout` (an `httpx2.TimeoutException`) | `timeout` passed, retries included |
-| `DeadlineExceeded` | no time was left when the call began |
-| `CircuitOpen` (an `httpx2.TransportError`) | the host's circuit is open |
-| `ResponseTooLarge` (an `httpx2.RequestError`) | the answer was over `MAX_RESPONSE_BYTES` |
-| `UnsafeURL` | a guarded client may not call the URL, or it leaves `base_url` |
-| `httpx2.HTTPError` | the call failed on its last try |
+| Raised | When | A request that lets it go answers |
+| --- | --- | --- |
+| `CallTimeout` (an `httpx2.TimeoutException`) | `timeout` passed, retries included | 504 `upstream_timeout` |
+| `DeadlineExceeded` | no time was left when the call began | 503 `deadline_exceeded` |
+| `CircuitOpen` (an `httpx2.TransportError`) | the host's circuit is open | 503 `upstream_unavailable`, `Retry-After` the cooldown left |
+| `ResponseTooLarge` (an `httpx2.RequestError`) | the answer was over `MAX_RESPONSE_BYTES` | 502 `upstream_response_too_large` |
+| `UnsafeURL` | a guarded client may not call the URL, or it leaves `base_url` | 422 `unsafe_url` |
+| `httpx2.HTTPError` | the call failed on its last try | 500 `internal_error`, reported |
+
+`CallTimeout`, `CircuitOpen`, and `ResponseTooLarge` are
+`domainkit.exceptions.UpstreamError`s too: the client logged them, so
+they are answered without a report to `ERROR_REPORTERS`, with a detail
+that names no host. Catch them to degrade instead.
 
 **In tests**, `stub` sends every call made in its block, from any client,
 to a handler, through httpx2's `MockTransport`:

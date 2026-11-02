@@ -31,7 +31,7 @@ async def required() -> dict[str, bool]:
 
 @router.get("/current")
 async def current(user: CurrentUser) -> dict[str, str]:
-    """Reads the user, whoever it is."""
+    """Reads the user, whoever it is: no rule, so the check lists it."""
     return {"user": user.get_username()}
 
 

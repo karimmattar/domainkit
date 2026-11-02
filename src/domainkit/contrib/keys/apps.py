@@ -17,7 +17,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.routing import DatabaseRouter
 from domainkit.keys.ring import keyring, use_keyring
 
-from .operations import ring_for, shred_subject
+from .operations import SettingsKeyring, shred_subject
 from .settings import KeysSettings
 
 
@@ -32,10 +32,15 @@ class KeysConfig(DomainConfig):
     def ready(self) -> None:
         """Set up the process's key ring from ``KEYS``, unwrapped at startup.
 
+        The ring follows the settings (``SettingsKeyring``): a test that
+        changes ``KEYS`` seals and opens with the ring it describes.
+
         Erasing a person (``erase_subject``, ``domainkit.contrib.privacy``)
         destroys their keys.
         """
-        use_keyring(ring_for(registry.settings(KeysSettings)))
+        rings = SettingsKeyring()
+        rings()  # Makes the ring now: a wrong KEYS fails setup().
+        use_keyring(rings)
         on_startup(self.start)
         on_check_application(self.application_problems)
         on_deployment_warnings(self.retired_keys)

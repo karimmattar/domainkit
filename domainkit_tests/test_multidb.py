@@ -20,7 +20,7 @@ from domainkit.apps import registry
 from domainkit.conf import UNSET, override_settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.messaging import Worker, periodic
-from domainkit.contrib.messaging.tables import messages
+from domainkit.contrib.messaging.tables import UNKNOWN_SINCE, messages
 from domainkit.contrib.messaging.testing import Drained, drain
 from domainkit.db import connections, create_engine
 from domainkit.db import migrations as migrations_module
@@ -277,8 +277,8 @@ async def test_only_the_home_outbox_schedules_periodic_tasks(sharded: Path) -> N
     async def hourly() -> None: ...
 
     home, shard = Worker(), Worker(database="shard_a")
-    await home.schedule_periodic()
-    await shard.schedule_periodic()
+    await home._schedule_periodic()
+    await shard._schedule_periodic()
 
     assert (home.schedules, shard.schedules) == (True, False)
     for alias, expected in (("default", 1), ("shard_a", 0)):
@@ -302,7 +302,8 @@ def test_runworker_and_messages_cover_every_outbox(sharded: Path) -> None:
                         kind="task",
                         target="tests.nothing_here",
                         payload={},
-                        headers={},
+                        # Unknown for longer than UNKNOWN_TARGET_GRACE: it dies.
+                        headers={UNKNOWN_SINCE: "2000-01-01T00:00:00+00:00"},
                         status="pending",
                         attempts=0,
                         max_attempts=1,

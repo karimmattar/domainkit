@@ -1,6 +1,7 @@
 """``DomainConfig``: Django's ``AppConfig`` for a bounded context."""
 
 import re
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -10,6 +11,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import BaseModel
 
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
@@ -26,7 +28,7 @@ MAX_REQUIREMENTS: Final = 32
 REMOVED_HOOKS: Final = {
     "startup": "domainkit.apps.hooks.on_startup",
     "shutdown": "domainkit.apps.hooks.on_shutdown",
-    "check": "domainkit.apps.hooks.on_check",
+    "check": "domainkit.apps.hooks.on_ready",
     "seed": "domainkit.apps.hooks.on_seed",
     "erase_subject": "domainkit.apps.hooks.on_erase_subject",
     "export_subject": "domainkit.apps.hooks.on_export_subject",
@@ -41,7 +43,7 @@ REMOVED_HOOKS: Final = {
 """Each hook method 0.13 removed, and the point a domain registers on instead.
 
 ``setup()`` refuses a domain that still defines one (``apps.E002``) until
-1.0: nothing would call it (ADR 0111).
+2.0: nothing would call it (ADRs 0111, 0125).
 """
 HOOKS_REMOVED_IN: Final = "0.13"
 
@@ -92,8 +94,12 @@ class DomainConfig:
     verbose_name: str = ""
     settings_class: type[BaseModel] | None = None
     """Schema for this domain's settings, read from ``settings_name``."""
-    RETENTION: ClassVar[Sequence["Retention"]] = ()
-    """How long rows of its tables are kept (``domainkit.contrib.privacy``)."""
+    retention: ClassVar[Sequence["Retention"]] = ()
+    """How long rows of its tables are kept (``domainkit.contrib.privacy``).
+
+    0.12 named it ``RETENTION``; a class that still does is read the same,
+    with a warning, until 2.0.
+    """
     requires: ClassVar[Sequence["str | Requirement"]] = ()
     """Domain packages this one cannot work without, checked by ``setup()``.
 
@@ -102,6 +108,18 @@ class DomainConfig:
     domain's ``ready()`` runs. List optional companions here only if the
     domain cannot work without them.
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Read 0.12's ``RETENTION`` as ``retention``, with a warning."""
+        super().__init_subclass__(**kwargs)
+        if "RETENTION" in cls.__dict__:
+            warnings.warn(
+                f"{cls.__qualname__}.RETENTION is now {cls.__qualname__}.retention; "
+                "the old name is read until domainkit 2.0.",
+                DomainkitDeprecationWarning,
+                stacklevel=2,
+            )
+            cls.retention = cls.__dict__["RETENTION"]
 
     def __init__(self, name: str, module: ModuleType) -> None:
         """Bind the config to the domain package ``name``."""

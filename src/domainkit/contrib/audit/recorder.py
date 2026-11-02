@@ -12,13 +12,13 @@ marked ``Personal``, as the person's they name.
 
 import fnmatch
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from domainkit import clock
@@ -178,6 +178,23 @@ def event_rows(events: Sequence[DomainEvent], config: AuditSettings) -> list[Dra
             )
         )
     return rows
+
+
+async def recorded(
+    connection: AsyncConnection, action: str, *, per: int = 500
+) -> AsyncIterator[list[Mapping[str, Any]]]:
+    """The details of each row of ``action`` in the trail, ``per`` rows at a time.
+
+    Streamed on ``connection``, in no order: what ``accounting verify``
+    compares the books with (its ``EntryPosted``, SEC-16b-6).
+    """
+    rows = await connection.stream(
+        select(audit_log.c.details)
+        .where(audit_log.c.action == action)
+        .execution_options(yield_per=per)
+    )
+    async for chunk in rows.partitions(per):
+        yield [row.details for row in chunk]
 
 
 async def write(

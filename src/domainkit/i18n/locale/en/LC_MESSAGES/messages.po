@@ -112,6 +112,11 @@ msgstr ""
 msgid "Too many login attempts; try again later."
 msgstr ""
 
+msgid ""
+"Your password or second factor changed while you logged in; log in "
+"again."
+msgstr ""
+
 msgid "Tokens are not refreshed here; log in again."
 msgstr ""
 
@@ -185,6 +190,11 @@ msgid "The login has expired; log in again."
 msgstr ""
 
 msgid "The code is wrong, or was used already."
+msgstr ""
+
+msgid ""
+"Your authenticator can no longer be checked here; ask for your second "
+"factor to be reset."
 msgstr ""
 
 msgid "No such token."
@@ -991,4 +1001,43 @@ msgid "The request was changed outside the application; it is neither decided no
 msgstr ""
 
 msgid "The request's guard or policy no longer exists; it is neither decided nor run."
+msgstr ""
+
+msgid "The amount is larger than the ledger keeps."
+msgstr ""
+
+msgid "The amount is larger than limits keep."
+msgstr ""
+
+msgid "The books are closed up to a later date than this one."
+msgstr ""
+
+msgid "A period before this one is still open: close it first."
+msgstr ""
+
+msgid "No limit names this currency for this subject: it moves none."
+msgstr ""
+
+msgid "Whoever submitted this command may no longer make it."
+msgstr ""
+
+msgid "This person's data must be kept for now: nothing was erased."
+msgstr ""
+
+#. domainkit.resources and domainkit.http.client: races and outgoing calls
+msgid ""
+"This record changed while it was being checked; read it again and "
+"retry."
+msgstr ""
+
+msgid "A service this one depends on failed; try again later."
+msgstr ""
+
+msgid "A service this one depends on is unavailable; try again later."
+msgstr ""
+
+msgid "A service this one depends on took too long to answer."
+msgstr ""
+
+msgid "A service this one depends on answered with more than can be read."
 msgstr ""

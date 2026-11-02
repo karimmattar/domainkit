@@ -48,14 +48,40 @@ not guaranteed, unless they share an ordering key
 
 **Failures** are retried with exponential backoff and jitter, up to
 `max_attempts`. Then the message is dead-lettered and sent to
-`ERROR_REPORTERS`. A message naming an unknown task or handler is
-dead-lettered at once. So is a message whose worker died (a crash, or a
-kill) during its last attempt: it is not run again after `max_attempts`. `python manage.py messages --dead` lists dead
+`ERROR_REPORTERS`. A message whose worker died (a crash, or a kill)
+during its last attempt is dead-lettered too: it is not run again after
+`max_attempts`. A handler or task that raises `CancelledError` while the
+worker is not stopping it (it awaited a task or future that was
+cancelled) has failed, as `HandlerCancelled`, and is retried and counted
+as any failure. `python manage.py messages --dead` lists dead
 letters, and `--retry ID` (or `all`) queues them again after a fix. A
 message's last error is kept with it, logged, and reported. Validation
 errors (arguments or an event that no longer fit) are kept as `InvalidData`,
 naming the fields and rules but not the values, which are often personal
 data. Pass ids in task arguments rather than names or emails all the same.
+
+**Unknown tasks and handlers, and deploys.** A message names its task or
+durable handler; a worker that does not know it (an older release, while a
+deploy rolls out) gives it back without spending an attempt, after a delay
+that doubles, logged as a warning and counted as the outcome `unknown`,
+and keeps its ordering key's place meanwhile. Once
+`UNKNOWN_TARGET_GRACE` (an hour) has passed since a worker first found
+it unknown, it is dead-lettered, and `--retry` queues it again. So:
+
+- **Deploy workers first** when a release adds tasks or durable handlers,
+  and web processes first when it removes them, so no message waits on
+  a worker that cannot run it. Within the grace, either order works.
+- **Name your tasks.** A task's name is what its messages carry. Without
+  `name=`, it is `module.function`: moving the function to another module,
+  or renaming it, renames the task, and messages queued under the old name
+  wait, then die. `@task(name="billing.push_invoice")` keeps it whatever
+  the code does; `check` warns about tasks without one in staging and
+  production (`messaging.W001`). A durable handler's name is always
+  `module.QualName`: keep a moved handler's old one subscribed for a
+  release, or let its messages drain first.
+
+The test plugin's `drain` dead-letters such a message at once and reports
+it: in a test's process, every task is there.
 
 **Database outages** do not stop a worker. When its outbox cannot be
 reached (a restart, a network drop, a failover), it logs the error, waits
@@ -88,8 +114,9 @@ inspects any outbox.
 | `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
-| `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. |
+| `DRAIN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
+| `UNKNOWN_TARGET_GRACE` | `3600.0` | Seconds a message naming a task or handler no worker knows waits for one, given back with a doubling delay, before it is dead-lettered (see *Unknown tasks and handlers* above); 0 dead-letters it at once (at most 365 days). |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. A periodic task's run is kept until its slot ends, however long: it is what stops workers from queuing the slot again. |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
@@ -149,10 +176,10 @@ False` stops domainkit's notifications, and workers fall back on polling.
 
 **Stopping.** `SIGTERM` (or Ctrl+C) stops claiming (and, with a broker,
 consuming, within five seconds even if the broker does not answer) and
-gives running messages `SHUTDOWN_TIMEOUT` seconds to finish. Messages still running then
+gives running messages `DRAIN_TIMEOUT` seconds to finish. Messages still running then
 are cancelled and go back to the outbox, due at once; the cut-short run
 does not count as an attempt. A second signal stops them at once. Keep
-`SHUTDOWN_TIMEOUT` a few seconds under the time your platform waits before
+`DRAIN_TIMEOUT` a few seconds under the time your platform waits before
 it kills the process (Kubernetes' `terminationGracePeriodSeconds`, 30 by
 default), so they are given back rather than left locked until
 `VISIBILITY_TIMEOUT`. Handlers see the cancellation as
@@ -325,8 +352,8 @@ event_bus.subscribe(PaymentEvent, send_status, durable=True)
 
 - **A stalled key is released.** A key with held messages and none
   pending would wait for good: no worker claims held messages, and every
-  new message of the key is held behind them. 0.14 never leaves a key so,
-  but a 0.13 worker that finishes a message 0.14 wrote does (see
+  new message of the key is held behind them. 1.0 never leaves a key so,
+  but a 0.12 worker that finishes a keyed message 1.0 wrote does (see
   upgrading below). Each worker's cleanup round makes the first held
   message of such a key pending, under the key's turn, and logs a warning
   naming the message; `messages --release` does it at once.
@@ -501,16 +528,16 @@ again.
 before deploying: until then, workers' cleanup logs a failure each round,
 and `@inbox` handlers fail.
 
-**Upgrading to 0.14.** The outbox gained `ordering_key` and `sequence`
+**Upgrading to 1.0.** The outbox gained `ordering_key` and `sequence`
 columns, a `held` status, and an index of keyed messages,
 `ix_domainkit_messages_ordering`; messaging has a new table of keys,
 `domainkit_ordering_keys`, in every database that holds an outbox. Run
 `makemigrations` and `migrate` in each project that installs messaging
-before deploying: workers claim through the new columns. Stop the 0.13
-workers before any 0.14 process writes a message with an ordering key: a
-0.13 worker finishes such a message without making the next of its key
-pending, and the key waits until a 0.14 worker's cleanup round, or
-`messages --release`, releases it. Adding the
+before deploying: workers claim through the new columns. Stop the 0.12
+workers before any 1.0 process writes a message with an ordering key: a
+0.12 worker finishes such a message without making the next of its key
+pending, and the key waits until a 1.0 worker's cleanup round, or
+`messages --release`, releases it ([upgrading.md](../upgrading.md#012-to-10)). Adding the
 columns rewrites nothing; building the index reads the outbox once, and
 adds no entry, since no existing message has a key. For an outbox too
 large to block writes that long, build it without blocking, as for the
@@ -581,7 +608,11 @@ Durable event handlers use the `MESSAGING` settings.
 ## Schedules
 
 `@periodic(every=timedelta(...))` runs a task once per interval, at the
-start of each. `@periodic(cron="...", tz="...")` runs it at the wall-clock
+start of each. Workers queue the slot under a key of its own, and keep its
+run until the slot ends, even past `RETENTION_SECONDS`, so a worker that
+starts during the slot does not run it again. Queueing never holds up
+the work that is due: a failure is logged and tried again after a pause
+that doubles, up to a minute. `@periodic(cron="...", tz="...")` runs it at the wall-clock
 times of a five-field cron expression in an IANA time zone (UTC by default):
 
 | Field | Values |

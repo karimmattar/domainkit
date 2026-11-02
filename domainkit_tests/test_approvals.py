@@ -33,7 +33,7 @@ from domainkit.contrib.accounting import (
 )
 from domainkit.contrib.accounting.tables import entries
 from domainkit.contrib.approvals import (
-    ENTRIES,
+    POST_ENTRY,
     AlreadyDecided,
     ApprovalNotNeeded,
     ApprovalPending,
@@ -146,11 +146,23 @@ async def books() -> tuple[Account, Account]:
         AccountingUnitOfWork(),
     )
     cash = await open_account(
-        OpenAccount(code="1000", name="Cash", type=AccountType.ASSET, currency="USD"),
+        OpenAccount(
+            code="1000",
+            name="Cash",
+            type=AccountType.ASSET,
+            currency="USD",
+            may_go_negative=True,  # Holds are placed on it unfunded.
+        ),
         AccountingUnitOfWork(),
     )
     sales = await open_account(
-        OpenAccount(code="4000", name="Sales", type=AccountType.INCOME, currency="USD"),
+        OpenAccount(
+            code="4000",
+            name="Sales",
+            type=AccountType.INCOME,
+            currency="USD",
+            may_go_negative=True,  # Captures are debited to it.
+        ),
         AccountingUnitOfWork(),
     )
     return cash, sales
@@ -230,7 +242,7 @@ async def test_a_large_entry_runs_once_two_others_approve_it(project: str) -> No
     assert await count(entries) == 1
 
     with acting("maker"):
-        request = await submit_command(ENTRIES, large, maker="maker")
+        request = await submit_command(POST_ENTRY, large, maker="maker")
     assert request.status is RequestStatus.PENDING
     assert (request.policy, request.required) == ("accounting.large_entry", 2)
     with acting("ann"):
@@ -341,7 +353,7 @@ async def test_the_maker_never_decides_and_no_one_decides_twice(project: str) ->
     """Maker ≠ checker, even where the maker could approve; one person, once."""
     cash, sales = await books()
     request = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-4"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-4"), maker="maker"
     )
     with refused(MakerCannotDecide):
         await approve(request, "maker")
@@ -370,7 +382,7 @@ async def test_rejected_cancelled_and_expired_requests_never_run(project: str) -
     """One rejection ends a request, with its reason; the maker may withdraw it."""
     cash, sales = await books()
     rejected = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-5"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-5"), maker="maker"
     )
     done = await reject_request(
         RejectRequest(request_id=rejected.id, approver="ann", reason="Not ours."),
@@ -381,7 +393,7 @@ async def test_rejected_cancelled_and_expired_requests_never_run(project: str) -
         await approve(rejected, "bob")
 
     withdrawn = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-6"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-6"), maker="maker"
     )
     with refused(NotTheMaker):
         await cancel_request(
@@ -399,7 +411,7 @@ async def test_rejected_cancelled_and_expired_requests_never_run(project: str) -
         )
 
     late = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-7"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-7"), maker="maker"
     )
     with clock.freeze_time(clock.now() + timedelta(days=3)):
         with refused(RequestNotPending, "expired"):
@@ -428,7 +440,7 @@ async def test_what_runs_is_what_was_approved(project: str) -> None:
     """
     cash, sales = await books()
     request = await submit_command(
-        ENTRIES, sale(cash, sales, "5000.00", "s-8"), maker="maker"
+        POST_ENTRY, sale(cash, sales, "5000.00", "s-8"), maker="maker"
     )
     await approve(request, "ann")
     await approve(request, "bob")
@@ -443,7 +455,7 @@ async def test_what_runs_is_what_was_approved(project: str) -> None:
         await connection.execute(
             update(requests)
             .where(requests.c.id == request.id)
-            .values(arguments=tampered, fingerprint=fingerprint(ENTRIES, tampered))
+            .values(arguments=tampered, fingerprint=fingerprint(POST_ENTRY, tampered))
         )
     await drain()
     failed = await stored(request.id)
@@ -462,20 +474,22 @@ async def test_submissions_are_checked_before_they_are_stored(project: str) -> N
         await submit_command("tests.nothing", small, maker="maker")
     with refused(InvalidArguments):
         await submit_command(
-            ENTRIES, OpenPeriod(name="x", starts_on=TODAY, ends_on=TODAY), maker="maker"
+            POST_ENTRY,
+            OpenPeriod(name="x", starts_on=TODAY, ends_on=TODAY),
+            maker="maker",
         )
     with refused(ApprovalNotNeeded):
-        await submit_command(ENTRIES, small, maker="maker")
+        await submit_command(POST_ENTRY, small, maker="maker")
     with refused(InvalidArguments):
-        await submit_command(ENTRIES, sale(cash, sales, "5000.00", "x"), maker="")
+        await submit_command(POST_ENTRY, sale(cash, sales, "5000.00", "x"), maker="")
     with refused(InvalidArguments):
         await submit_request(
-            SubmitRequest(action=ENTRIES, arguments={"source": 1}, maker="maker"),
+            SubmitRequest(action=POST_ENTRY, arguments={"source": 1}, maker="maker"),
             ApprovalsUnitOfWork(),
         )
     made = await submit_request(
         SubmitRequest(
-            action=ENTRIES,
+            action=POST_ENTRY,
             arguments={
                 "source": "shop",
                 "reference": "s-10",
@@ -694,7 +708,7 @@ async def test_a_command_that_no_longer_reads_as_approved_never_runs(
     registry.clear()
     setup()
     await execute_request(gone.id, gone.run_token)
-    assert await status_of(gone) == (RequestStatus.FAILED, "policy_not_found")
+    assert await status_of(gone) == (RequestStatus.FAILED, "policy_removed")
 
     class Wider(Command):
         """The command, with a field it did not have."""
@@ -912,9 +926,58 @@ async def test_the_executed_event_names_the_request(
         await execute_request(request.id, request.run_token)
     finally:
         event_bus.unsubscribe(RequestExecuted, keep)
-    assert [(event.request_id, event.action) for event in seen] == [
-        (request.id, "tests.act")
+    assert [(event.request_id, event.action, event.approvers) for event in seen] == [
+        (request.id, "tests.act", ("ann",))
     ]
+
+
+async def test_a_request_holds_its_commands_fingerprint_and_a_run_token(
+    project: str,
+) -> None:
+    """The fingerprint a client works out; 128 random bits to run it, spent once."""
+    from domainkit.contrib.approvals import fingerprint
+
+    guard_acts()
+    request = await approved_act("fp")
+    assert request.fingerprint == fingerprint("tests.act", request.arguments)
+    assert request.run_token is not None
+    assert len(request.run_token) == 32
+    await execute_request(request.id, request.run_token)
+    assert (await stored(request.id)).run_token is None
+
+
+async def test_a_failed_request_keeps_no_run_token(project: str) -> None:
+    """Failing spends the token as running does."""
+    guard_acts()
+    money = await approved_act("money")
+    await execute_request(money.id, money.run_token)
+    found = await stored(money.id)
+    assert (found.status, found.run_token) == (RequestStatus.FAILED, None)
+
+
+async def test_a_message_without_the_run_token_runs_nothing_and_says_so(
+    project: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A warning names the request; it stays approved."""
+    guard_acts()
+    request = await approved_act("untokened")
+    await execute_request(request.id, "not-the-token")
+    assert (
+        f"A message to run approval request {request.id} holds no run token of it"
+        in [record.getMessage() for record in caplog.records]
+    )
+    assert await status_of(request) == (RequestStatus.APPROVED, "")
+
+
+async def test_a_commit_whose_token_no_longer_runs_says_so(project: str) -> None:
+    """The use case's unit of work refuses to commit for a request not waiting."""
+    from domainkit.contrib.approvals.services import _Marking
+
+    guard_acts()
+    request = await approved_act("stale")
+    async with _Marking(AccountingUnitOfWork(), request.id, "not-the-token") as uow:
+        with refused(RequestNotPending, r"^The request is not waiting to run\.$"):
+            await uow.commit()
 
 
 async def test_a_maker_without_an_id_is_refused(project: str) -> None:
@@ -927,7 +990,7 @@ async def test_a_maker_without_an_id_is_refused(project: str) -> None:
         await submit_command("tests.act", Act(kind="k"), maker="m" * 256)
     with refused(InvalidArguments, r"^A maker's id has 1 to 255 characters\.$"):
         await submit_request(
-            SubmitRequest(action=ENTRIES, arguments={}, maker=""),
+            SubmitRequest(action=POST_ENTRY, arguments={}, maker=""),
             ApprovalsUnitOfWork(),
         )
     with refused(InvalidArguments, r"^An approver's id has 1 to 255 characters\.$"):

@@ -31,7 +31,14 @@ cancelled by their maker; every change is a domain event the audit trail
 records with its actor. See ``docs/contrib/approvals.md`` and ADR 0121.
 """
 
-from .builtin import CAPTURES, ENTRIES, SUPERUSERS, GrantSuperuser, refuse_if_guarded
+from .builtin import (
+    CAPTURE_HOLD,
+    GRANT_SUPERUSER,
+    POST_ENTRY,
+    REVERSE_ENTRY,
+    GrantSuperuser,
+    refuse_if_guarded,
+)
 from .exceptions import (
     AlreadyDecided,
     ApprovalNotNeeded,
@@ -43,7 +50,7 @@ from .exceptions import (
     MakerCannotDecide,
     MakerNotAllowed,
     NotTheMaker,
-    PolicyGone,
+    PolicyRemoved,
     RequestNotFound,
     RequestNotPending,
     RequestTampered,
@@ -54,9 +61,9 @@ from .guards import (
     Policy,
     Threshold,
     approved,
+    current_run,
     guard,
     guards,
-    on_guard,
     requires_approval,
 )
 from .models import (
@@ -92,9 +99,10 @@ from .settings import ApprovalsSettings
 from .uow import ApprovalsUnitOfWork
 
 __all__ = [
-    "CAPTURES",
-    "ENTRIES",
-    "SUPERUSERS",
+    "CAPTURE_HOLD",
+    "GRANT_SUPERUSER",
+    "POST_ENTRY",
+    "REVERSE_ENTRY",
     "AlreadyDecided",
     "ApprovalGiven",
     "ApprovalNotNeeded",
@@ -115,7 +123,7 @@ __all__ = [
     "MakerNotAllowed",
     "NotTheMaker",
     "Policy",
-    "PolicyGone",
+    "PolicyRemoved",
     "RejectRequest",
     "RequestApproved",
     "RequestCancelled",
@@ -136,12 +144,12 @@ __all__ = [
     "approve_request",
     "approved",
     "cancel_request",
+    "current_run",
     "execute_request",
     "expire_requests",
     "fingerprint",
     "guard",
     "guards",
-    "on_guard",
     "refuse_if_guarded",
     "reject_request",
     "requires_approval",

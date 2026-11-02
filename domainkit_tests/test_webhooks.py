@@ -38,10 +38,11 @@ from domainkit.contrib.webhooks.models import (
     previous_signs,
     secret_box,
 )
-from domainkit.contrib.webhooks.settings import WebhookSettings
+from domainkit.contrib.webhooks.settings import WebhooksSettings
 from domainkit.contrib.webhooks.signing import InvalidSignature, sign, verify
 from domainkit.ddd import BusinessRuleViolation
 from domainkit.encryption import DecryptionFailed, SecretBox
+from domainkit.http import guard as http_guard
 
 pytestmark = pytest.mark.anyio
 
@@ -683,10 +684,10 @@ async def test_every_address_of_a_host_must_pass(resolver: FakeResolver) -> None
 
 async def test_real_lookups_are_checked_too() -> None:
     """localhost-like names that resolve locally are refused by address."""
-    addresses = await guard.lookup("127.0.0.1", 80)
+    addresses = await http_guard.lookup("127.0.0.1", 80)
     assert addresses == [ipaddress.ip_address("127.0.0.1")]
     with pytest.raises(socket.gaierror):
-        await guard.lookup("no-such-host.invalid", 443)
+        await http_guard.lookup("no-such-host.invalid", 443)
 
 
 # The sender ---------------------------------------------------------------------
@@ -775,9 +776,9 @@ class Receiver:
         await self._stopped.wait()
 
 
-def settings_for(**options: Any) -> WebhookSettings:  # noqa: ANN401 - settings.
+def settings_for(**options: Any) -> WebhooksSettings:  # noqa: ANN401 - settings.
     """Settings that let 127.0.0.1 through, with short timeouts."""
-    return WebhookSettings(
+    return WebhooksSettings(
         **{
             "ALLOWED_PRIVATE_NETWORKS": ["127.0.0.0/8"],
             "TIMEOUT": 2,
@@ -1122,7 +1123,7 @@ def test_tls_contexts_are_built_once_and_strict(certificates: dict[str, Path]) -
 def test_settings_keep_the_connect_timeout_within_the_attempt() -> None:
     """CONNECT_TIMEOUT may not exceed TIMEOUT."""
     with pytest.raises(ValueError, match="CONNECT_TIMEOUT must not exceed TIMEOUT"):
-        WebhookSettings(TIMEOUT=2, CONNECT_TIMEOUT=3)
+        WebhooksSettings(TIMEOUT=2, CONNECT_TIMEOUT=3)
 
 
 async def test_reading_stops_at_the_limit_however_the_answer_arrives() -> None:

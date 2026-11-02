@@ -1153,3 +1153,16 @@ def test_tables_that_are_all_key_still_refuse_other_duplicates(
         metadata.remove(pairs)
 
     assert stored == [1]
+
+
+def test_dumpdata_says_what_decrypt_does() -> None:
+    """Its ``--help`` line for ``--decrypt``."""
+    from domainkit.management.commands.dumpdata import Command
+
+    usage = " ".join(
+        Command().create_parser("manage.py", "dumpdata").format_help().split()
+    )
+    assert (
+        " --decrypt write encrypted columns' values, not their ciphertext "
+        "--include-guarded "
+    ) in usage

@@ -11,7 +11,7 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.exceptions import ImproperlyConfigured
 
-from .settings import WebhookSettings
+from .settings import WebhooksSettings
 
 MESSAGING: Final = "domainkit.contrib.messaging"
 LOCAL_NETWORKS: Final = tuple(
@@ -26,7 +26,7 @@ class WebhooksConfig(DomainConfig):
 
     label = "webhooks"
     verbose_name = "Webhooks"
-    settings_class = WebhookSettings
+    settings_class = WebhooksSettings
     requires = (MESSAGING,)
 
     def ready(self) -> None:
@@ -47,7 +47,7 @@ class WebhooksConfig(DomainConfig):
                 "domainkit.contrib.webhooks encrypts subscription secrets with "
                 'cryptography: pip install "domainkit[webhooks]".'
             )
-        config = registry.settings(WebhookSettings)
+        config = registry.settings(WebhooksSettings)
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             for network in config.ALLOWED_PRIVATE_NETWORKS:
                 if any(

@@ -60,13 +60,20 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `child`: A relationship to the one child entity an aggregate owns, or None.
 - `children`: A relationship to the child entities an aggregate owns (`list[Line]`).
 - `connections`: Process-wide connection handler.
-- `create_engine`: Build a pooled engine; bound values stay out of logs and errors by default.
 - `lock_key`: The 64-bit key `lock(name)` takes on PostgreSQL, signed, as `bigint`.
 - `map_imperatively`: Map `class_` to `table` once; later calls are ignored.
-- `mapper_registry`: Generalized registry for mapping classes.
 - `metadata`: Every table of every domain; the target of `makemigrations`.
 - `register_column_type`: Store fields of `cls` (and its subclasses) in `column_type`.
 - `table_for`: The table that stores `cls`: one column per field (see the module).
+
+## `domainkit.db.dbclock`
+
+The database's clock, which decides when shared leases and keys expire: the outbox's work, idempotency keys, limits' windows.
+
+- `Moment`: A time to compare or store: a value, or the database's clock in SQL.
+- `at`: `seconds` from now (earlier when negative), on the database's clock.
+- `now`: The current time as a database of `dialect` should see it.
+- `uses_database`: Report whether the database's clock decides on `dialect` right now.
 
 ## `domainkit.db.encrypted`
 
@@ -230,7 +237,7 @@ The ledger state a client trusts, kept where a restart does not lose it.
 Money: an amount in a currency, exact, with named rounding and allocation.
 
 - `ISO_4217_PUBLISHED`: The date of the ISO 4217 list the known currencies come from (`iso4217.csv`).
-- `MAX_DIGITS`: The most digits an amount has before its point, as `NUMERIC(38)` holds.
+- `MAX_DIGITS`: The most digits an amount has before its point, in memory and in JSON.
 - `AmountOutOfRange`: An amount where it is kept cannot hold it: too many digits, or places.
 - `Currency`: A currency: its code, its ISO 4217 numeric code, and its minor units.
 - `CurrencyMismatch`: Amounts of two currencies were added, subtracted, or compared.
@@ -287,6 +294,4 @@ Files: a storage port, on the file system or in memory.
 - `StorageError`: A storage refused an operation.
 - `StorageHandler`: Make each configured storage on first use; one per alias and process.
 - `StoredFile`: A file open for reading; close it, or use it in `async with`.
-- `check_name`: Return `name` if a storage could hold a file under it.
-- `new_name`: A new random name, in `directory`, ending in `extension` (`.png`).
 - `storages`: The process-wide storages: `storages["default"]`.

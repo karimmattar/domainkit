@@ -60,21 +60,33 @@ to `.ci/`. `make services-down` stops them and drops their data.
   mutation runs leave such tests out. Under mutmut's stats run the suite
   empties domainkit's `functools` caches before each test, so a function
   behind a cache is mapped to every test that reaches it, not the first.
+  What a score leaves out: decorated functions (routes, validators,
+  properties, context managers, fixtures), which mutmut never mutates and
+  the job lists apart; code only a server reaches, as the runs are on
+  SQLite (a survivor there needs a run on PostgreSQL before it means a
+  missing test); and a flaky test counts as a kill (ADR 0106's 0.15
+  amendment).
 - **The public API** is what `docs/api.md` lists ([ADR 0076](docs/adr/0076-public-api-is-docs-api-md.md)).
   A new public name goes in its module's `__all__` and on its package's
   page of `docs/api/`, with a docstring (Google style, the repository's
   plain voice); the site renders the docstring in the API reference.
 - **Compatibility.** A patch release changes no behaviour a project relies
-  on. A minor release removes a public name only after a minor of
-  deprecation: the old name keeps working, warning with
-  `DomainkitDeprecationWarning`, naming the new place and the version that
-  removes it ([versioning.md](docs/versioning.md)).
+  on. A 1.x minor release adds, and may deprecate, but removes or changes
+  nothing [versioning.md](docs/versioning.md) calls public: a deprecated
+  name keeps working until 2.0, warning with `DomainkitDeprecationWarning`,
+  naming the new place and the version that removes it.
 - **Settings.** A new setting is bounded and validated, defaults to
   today's behaviour, and gets a row in its table with its default and
   bounds (`test_docs.py` checks the rows).
 - **Docs.** Change the page that describes what you changed. A new command
   or setting is named on its page of `docs/reference/` (`docs/reference.md`
-  lists them).
+  lists them). The pages describe the release they ship with, as of its
+  tag: what a 1.x minor adds says *New in 1.x* where it is described, and a
+  fix to the pages of a released version goes to `main` and its next patch
+  release. Pages link to each other by relative paths; the README links to
+  the files of `main` by absolute URLs, which CI's `build` points at the
+  release's tag before it builds, so the PyPI page opens that release's
+  pages (INFRA-22).
 - **Layers.** `domainkit.architecture` keeps each layer to its own imports,
   and the core never imports `domainkit.contrib`
   ([ADR 0080](docs/adr/0080-access-rules-are-core-auth-is-one-provider.md)).

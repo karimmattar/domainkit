@@ -41,10 +41,16 @@ def browser(app: Any, address: str) -> TestClient:  # noqa: ANN401 - an applicat
 
 
 def guess(app: Any, address: str, username: str = "alice") -> int:  # noqa: ANN401 - an application.
-    """A wrong password for ``username`` from ``address``, without a proof."""
-    response = browser(app, address).post(
-        "/auth/login", json={"username": username, "password": f"x-{address}"}
-    )
+    """A wrong password for ``username`` from ``address``, without a proof.
+
+    The client is closed after its one request: open, its loop's engine
+    keeps a connection, and a test of hundreds of guesses runs PostgreSQL
+    out of them.
+    """
+    with browser(app, address) as client:
+        response = client.post(
+            "/auth/login", json={"username": username, "password": f"x-{address}"}
+        )
     return response.status_code
 
 
@@ -341,3 +347,83 @@ def login_token(client: TestClient) -> str:
     """Alice's access token, before she has a second factor."""
     token: str = client.post("/auth/login", json=RIGHT).json()["access_token"]
     return token
+
+
+def test_an_account_takes_at_most_a_days_guesses(api: Api) -> None:
+    """``ACCOUNT_LOGIN_RATE`` bounds the day's wrong passwords per account (AUTH-19).
+
+    However slowly they come, under ``LOGIN_RATE``: strangers fill the
+    unproven count, and a new browser of alice's is held; a proven client
+    has a daily count of its own, which they cannot touch, as strict.
+    """
+    create_user("alice")
+    client = api(LOGIN_RATE="100/minute", ACCOUNT_LOGIN_RATE="3/day")
+    alice = browser(client.app, "203.0.113.50")
+    assert alice.post("/auth/login", json=RIGHT).status_code == 200
+    wrong = {"username": "alice", "password": "wrong"}
+
+    with freeze_time("2026-10-26T10:00:00Z") as clock:
+        guesses = []
+        for number in range(1, 5):
+            guesses.append(guess(client.app, f"198.51.100.{number}"))
+            clock.tick(timedelta(hours=1))
+        new_browser = browser(client.app, "203.0.113.51").post(
+            "/auth/login", json=RIGHT
+        )
+        proven = [alice.post("/auth/login", json=RIGHT).status_code]
+        proven += [alice.post("/auth/login", json=wrong).status_code for _ in range(4)]
+
+    assert guesses == [401, 401, 401, 429]
+    assert new_browser.status_code == 429
+    assert proven == [200, 401, 401, 401, 429]
+
+
+def test_signed_in_password_checks_count_on_the_day_too(api: Api) -> None:
+    """With ``PASSWORD_CHECKS_COUNT_AS_LOGINS``, a wrong ``/auth/password`` counts."""
+    create_user("alice")
+    client = api(
+        LOGIN_RATE="100/minute",
+        ACCOUNT_LOGIN_RATE="2/day",
+        PASSWORD_CHECKS_COUNT_AS_LOGINS=True,
+    )
+    login = client.post("/auth/login", json=RIGHT).json()["access_token"]
+    wrong = {"old_password": "wrong", "new_password": "Zq8!wL-d4#Kp7v"}
+
+    changes = [
+        client.post("/auth/password", json=wrong, headers=bearer(login)).status_code
+        for _ in range(3)
+    ]
+
+    assert changes == [400, 400, 429]
+    assert guess(client.app, "198.51.100.1") == 429
+    refused = client.post("/auth/password", json=wrong, headers=bearer(login))
+    assert refused.json()["detail"] == "Too many login attempts; try again later."
+
+
+def test_without_a_days_bound_proven_clients_count_by_the_minute(api: Api) -> None:
+    """``ACCOUNT_LOGIN_RATE = None``: no daily count, per device nor for the account."""
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute", ACCOUNT_LOGIN_RATE=None)
+    alice = browser(client.app, "203.0.113.50")
+    assert alice.post("/auth/login", json=RIGHT).status_code == 200
+    wrong = {"username": "alice", "password": "wrong"}
+
+    answers = [alice.post("/auth/login", json=wrong).status_code for _ in range(3)]
+
+    assert answers == [401, 401, 429]
+
+
+def test_proven_devices_share_a_days_ceiling_of_twice_the_rate(api: Api) -> None:
+    """Each device its day's count; all of them twice it (SEC-16a-7)."""
+    create_user("alice")
+    client = api(LOGIN_RATE="100/minute", ACCOUNT_LOGIN_RATE="1/day")
+    wrong = {"username": "alice", "password": "wrong"}
+    with freeze_time("2026-11-01T08:00:00Z"):
+        devices = [browser(client.app, f"203.0.113.{n}") for n in (50, 51, 52)]
+        for device in devices:
+            assert device.post("/auth/login", json=RIGHT).status_code == 200
+        answers = [
+            device.post("/auth/login", json=wrong).status_code for device in devices
+        ]
+
+    assert answers == [401, 401, 429]

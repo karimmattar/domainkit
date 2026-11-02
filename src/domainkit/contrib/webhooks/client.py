@@ -21,7 +21,7 @@ import httpx2
 from domainkit.http.guard import tls_context
 
 from .guard import UnsafeTarget, checked_address, checked_url
-from .settings import WebhookSettings
+from .settings import WebhooksSettings
 
 MAX_ERROR_LENGTH: Final = 500
 
@@ -57,7 +57,7 @@ async def post(
     url: str,
     body: bytes,
     headers: Mapping[str, str],
-    config: WebhookSettings,
+    config: WebhooksSettings,
     *,
     allow_http: bool,
 ) -> Outcome:
@@ -99,7 +99,7 @@ async def _send(
     address: str,
     body: bytes,
     headers: Mapping[str, str],
-    config: WebhookSettings,
+    config: WebhooksSettings,
 ) -> int:
     """Send to ``address``, naming ``url``'s host; return the status code."""
     host = url.raw_host.decode("ascii")

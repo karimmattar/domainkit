@@ -16,7 +16,7 @@ A worker outlives database outages: it logs each failure, waits longer each
 time (up to ``OUTAGE_MAX_PAUSE``), and carries on. A message whose outcome
 could not be written runs again once its lock expires.
 
-A stopping worker gives running messages ``SHUTDOWN_TIMEOUT`` to finish, then
+A stopping worker gives running messages ``DRAIN_TIMEOUT`` to finish, then
 cancels the rest. A cancelled message goes back to the outbox, due at once,
 and the cut-short run does not count as an attempt.
 
@@ -34,6 +34,7 @@ step in the transaction that records it as done.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import secrets
@@ -50,11 +51,14 @@ from weakref import WeakKeyDictionary
 
 from pydantic import ValidationError
 from sqlalchemy import (
+    ColumnElement,
     DateTime,
     Delete,
+    and_,
     delete,
     func,
     literal,
+    not_,
     or_,
     select,
     update,
@@ -67,7 +71,7 @@ from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
 from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
-from domainkit.db import connections
+from domainkit.db import connections, dbclock
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
@@ -76,7 +80,7 @@ from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
 from domainkit.utils.module_loading import import_string
 
-from . import dbclock, ordering
+from . import ordering
 from .budget import Budget
 from .outbox import CHANNEL, message_row, notifies, notify_committed, write
 from .registry import (
@@ -113,6 +117,7 @@ from .tables import (
     FINISHED,
     PENDING,
     SENSITIVE,
+    UNKNOWN_SINCE,
     WAITING,
     messages,
 )
@@ -165,6 +170,10 @@ HANDLED: Final = "handled"
 """The outcome of a message the inbox shows a run committed before; it is done."""
 SUPERSEDED: Final = "superseded"
 """The outcome of a run that lost its lease: another worker holds the message."""
+UNKNOWN: Final = "unknown"
+"""The outcome of a message whose target this worker does not know, yet.
+
+It waits for a worker that does, within ``UNKNOWN_TARGET_GRACE``."""
 
 
 class UnknownTarget(LookupError, DomainkitError):
@@ -173,6 +182,52 @@ class UnknownTarget(LookupError, DomainkitError):
 
 class AttemptsExhausted(RuntimeError, DomainkitError):
     """The worker stopped (crashed, killed) during the message's last attempt."""
+
+
+class HandlerCancelled(RuntimeError, DomainkitError):
+    """The handler raised ``CancelledError`` while the worker was not stopping it.
+
+    It awaited something that was cancelled (a task, a future): a failure of
+    the run, retried and counted as any other, not a stop (CONC-17).
+    """
+
+
+def _failure(caught: BaseException) -> Exception:
+    """``caught`` as the run's failure; re-raise a cancellation of the worker's own.
+
+    A ``CancelledError`` while the worker's task is being cancelled is the
+    worker stopping: it goes on. One the handler raised by itself becomes
+    ``HandlerCancelled``.
+    """
+    if isinstance(caught, Exception):
+        return caught
+    task = asyncio.current_task()
+    if task is None or task.cancelling():
+        raise caught
+    failure = HandlerCancelled(
+        "The handler raised CancelledError, though the worker was not stopping "
+        "it: it awaited something that was cancelled."
+    )
+    failure.__cause__ = caught
+    return failure
+
+
+def _without_sighting(headers: dict[str, Any]) -> dict[str, Any]:
+    """``headers`` without the first sighting of an unknown target.
+
+    The sighting belongs to one stay of one message in the outbox: a chain's
+    next step, a run that went on another way, or a dead letter given back
+    gets a grace of its own if its target is unknown (SEC-16c-2).
+    """
+    return {name: value for name, value in headers.items() if name != UNKNOWN_SINCE}
+
+
+def _seen_unknown(headers: dict[str, Any]) -> datetime | None:
+    """When a worker first found the message's target unknown, if one did."""
+    try:
+        return datetime.fromisoformat(str(headers[UNKNOWN_SINCE]))
+    except (KeyError, ValueError):
+        return None
 
 
 class InvalidData(ValueError, DomainkitError):
@@ -194,6 +249,38 @@ def _without_input(exc: BaseException) -> BaseException:
         for error in exc.errors()
     )
     return InvalidData(f"{exc.title}: {problems}").with_traceback(exc.__traceback__)
+
+
+PERIODIC: Final = "periodic"
+"""Starts the ``dedupe_key`` of a periodic task's slot."""
+CRON: Final = "cron"
+"""Starts the ``dedupe_key`` of a cron task's run."""
+_KEY_LENGTH: Final = 255
+"""The longest ``dedupe_key`` the outbox stores."""
+_NUMBER_LENGTH: Final = 20
+"""Room kept in a slot's key for its number (a slot, a timestamp)."""
+
+
+def slot_prefix(kind: str, key: str) -> str:
+    """The start of the ``dedupe_key`` of a scheduled run of task ``key``.
+
+    The number of the slot or run follows it. A task name too long to leave
+    room for it is replaced by its SHA-256, so every key fits the column
+    (CONC-16).
+    """
+    prefix = f"{kind}:{key}:"
+    if len(prefix) + _NUMBER_LENGTH <= _KEY_LENGTH:
+        return prefix
+    return f"{kind}:sha256-{hashlib.sha256(key.encode()).hexdigest()}:"
+
+
+def _claimed_at(message: "Claimed") -> datetime:
+    """When ``message`` was claimed, by the outbox's clock (``dbclock``).
+
+    Claims return it; a message claimed some other way reads this process's
+    clock.
+    """
+    return message.started_at or _now()
 
 
 def _sensitive(message: "Claimed", spec: TaskSpec | None) -> bool:
@@ -252,6 +339,8 @@ class Claimed:
     lock_id: uuid.UUID
     ordering_key: str | None = None
     """Its key: the next message of the key waits until this one finishes."""
+    started_at: datetime | None = None
+    """When the claim began, by the clock that decides on the outbox (``dbclock``)."""
 
 
 _CLAIMED: Final = (
@@ -263,6 +352,7 @@ _CLAIMED: Final = (
     messages.c.attempts,
     messages.c.max_attempts,
     messages.c.ordering_key,
+    messages.c.started_at,
 )
 """The columns a claim returns (``Claimed`` without its lock)."""
 
@@ -338,6 +428,13 @@ class Outage:
 
     async def failed(self, exc: Exception, stop: asyncio.Event) -> None:
         """Log the failure, then wait (less, if ``stop`` is set meanwhile)."""
+        pause = self.note(exc)
+        with suppress(TimeoutError):
+            async with asyncio.timeout(pause):
+                await stop.wait()
+
+    def note(self, exc: Exception) -> float:
+        """Count and log the failure; return the pause before trying again."""
         self.failures += 1
         pause = self.pause()
         logger.error(
@@ -350,9 +447,7 @@ class Outage:
             pause,
             exc_info=exc,
         )
-        with suppress(TimeoutError):
-            async with asyncio.timeout(pause):
-                await stop.wait()
+        return pause
 
     def recovered(self) -> None:
         """Log the end of an outage, if one was going on."""
@@ -470,7 +565,15 @@ class Worker:
         self._limiter: Backend | None = None
         self._rate_slots: dict[str, float] = {}
         self._wake: asyncio.Event | None = None
-        self.relay_promoted: Callable[[ordering.Promoted], Awaitable[None]] | None = (
+        self._scheduling = Outage(
+            self.database,
+            self.config.POLL_INTERVAL,
+            doing="queue the periodic tasks in",
+            meanwhile="messages still run; queueing them again",
+            back="Queueing the periodic tasks in %r works again",
+        )
+        self._schedule_after = float("-inf")
+        self._relay_promoted: Callable[[ordering.Promoted], Awaitable[None]] | None = (
             None
         )
         """Called with each message made pending because the one before it
@@ -508,7 +611,7 @@ class Worker:
     async def run(self, stop: asyncio.Event) -> None:
         """Process messages until ``stop`` is set, then finish the running ones.
 
-        They get ``SHUTDOWN_TIMEOUT`` seconds; then, or when ``run`` itself is
+        They get ``DRAIN_TIMEOUT`` seconds; then, or when ``run`` itself is
         cancelled, the rest are cancelled and go back to the outbox. Old
         messages are cleaned up meanwhile, and on PostgreSQL commits wake
         the worker between polls.
@@ -525,17 +628,13 @@ class Worker:
             ]
             try:
                 while not stop.is_set():
-                    try:
-                        await self.schedule_periodic()
-                    except Exception as exc:  # noqa: BLE001 - logged; it waits.
-                        await outage.failed(exc, stop)
-                        continue
+                    await self._schedule()
                     slots = await self.budget.acquire(self.config.BATCH_SIZE, stop=stop)
                     if not slots:
                         break
                     wake.clear()  # A commit from here on wakes the next wait.
                     try:
-                        claimed = await self.claim(slots)
+                        claimed = await self._claim(slots)
                     except BaseException as exc:
                         self.budget.release(slots)
                         if not isinstance(exc, Exception):
@@ -557,7 +656,7 @@ class Worker:
                         await pause(wake, polls.wait(wake.listening))
                         if wake.is_set():
                             polls.reset()
-                await finish(running, self.config.SHUTDOWN_TIMEOUT)
+                await finish(running, self.config.DRAIN_TIMEOUT)
                 await wind_down(helpers, HELPER_GRACE)
             finally:
                 for helper in helpers:
@@ -569,12 +668,12 @@ class Worker:
         At most ``BATCH_SIZE`` run at once, and no more than the budget
         allows, so workers sharing it (``runworker --once``) stay within it.
         """
-        await self.schedule_periodic()
+        await self._schedule()
         processed = 0
         while True:
             slots = await self.budget.acquire(self.config.BATCH_SIZE)
             try:
-                claimed = await self.claim(slots)
+                claimed = await self._claim(slots)
             except BaseException:
                 self.budget.release(slots)
                 raise
@@ -589,7 +688,7 @@ class Worker:
     async def _process_holding(self, message: "Claimed") -> None:
         """Process ``message``, then give back the slot its claim took."""
         try:
-            await self.process(message)
+            await self._process(message)
         finally:
             self.budget.release()
 
@@ -614,7 +713,7 @@ class Worker:
             due = due.where(messages.c.queue.in_(self.queues))
         return due.scalar_subquery()
 
-    async def claim(self, limit: int) -> list[Claimed]:
+    async def _claim(self, limit: int) -> list[Claimed]:
         """Lock up to ``limit`` due messages for this worker."""
         dialect = self.dialect
         now = dbclock.now(dialect)
@@ -630,11 +729,25 @@ class Worker:
             )
             .returning(*_CLAIMED)
         )
-        async with self.engine.begin() as connection:
-            rows = (await connection.execute(statement)).all()
+        rows = await self._claiming(statement, lock_id)
         return [Claimed(**row._mapping, lock_id=lock_id) for row in rows]
 
-    async def relay(self, broker: Broker, limit: int) -> int:
+    async def _claiming(self, statement: Any, lock_id: uuid.UUID) -> list[Row[Any]]:  # noqa: ANN401
+        """Run a claim under ``lock_id``; give its messages back if it is cut off.
+
+        The driver may commit the claim as its caller is cancelled (a stop,
+        or the code running the worker cancelling it): the messages would
+        stay locked for ``VISIBILITY_TIMEOUT``, an attempt spent, and one on
+        its last attempt would die unrun (CONC-14).
+        """
+        try:
+            async with self.engine.begin() as connection:
+                return list((await connection.execute(statement)).all())
+        except asyncio.CancelledError:
+            await _shielded(self._give_back(lock_id), "give back a claim cut off")
+            raise
+
+    async def _relay(self, broker: Broker, limit: int) -> int:
         """Publish up to ``limit`` due messages to ``broker``; return how many went.
 
         Each message is published as a pointer: its id, this database, and
@@ -644,9 +757,11 @@ class Worker:
         any reason (a refusal, its deadline, a cancellation), is unlocked
         at once, so the next round sends it again.
         """
-        return await self._relay(broker, self._due(dbclock.now(self.dialect), limit))
+        return await self._publish_due(
+            broker, self._due(dbclock.now(self.dialect), limit)
+        )
 
-    async def relay_ids(self, broker: Broker, ids: Sequence[uuid.UUID]) -> int:
+    async def _relay_ids(self, broker: Broker, ids: Sequence[uuid.UUID]) -> int:
         """Publish just-committed messages now, those due and not yet taken.
 
         They go ``BATCH_SIZE`` at a time: one lock per batch, and at most
@@ -655,10 +770,10 @@ class Worker:
         relayed = 0
         for chunk in batched(ids, self.config.BATCH_SIZE, strict=False):
             due = self._due(dbclock.now(self.dialect), None, chunk)
-            relayed += await self._relay(broker, due)
+            relayed += await self._publish_due(broker, due)
         return relayed
 
-    async def _relay(self, broker: Broker, due: Any) -> int:  # noqa: ANN401
+    async def _publish_due(self, broker: Broker, due: Any) -> int:  # noqa: ANN401
         """Lease the ``due`` messages, publish their pointers, settle the leases."""
         dialect = self.dialect
         lock_id = uuid.uuid4()
@@ -793,7 +908,24 @@ class Worker:
                 .values(locked_until=None, lock_id=None)
             )
 
-    async def take_over(
+    async def _give_back(self, lock_id: uuid.UUID) -> None:
+        """Give back the messages claimed under ``lock_id``, their attempt not spent.
+
+        For a claim cut off as it committed: nothing of them ran.
+        """
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(messages)
+                .where(messages.c.lock_id == lock_id)
+                .values(
+                    locked_until=None,
+                    lock_id=None,
+                    attempts=messages.c.attempts - 1,
+                    started_at=None,
+                )
+            )
+
+    async def _take_over(
         self, message_id: uuid.UUID, relay_lock: uuid.UUID
     ) -> Claimed | None:
         """Claim a delivered message, unless it ran, moved on, or is running.
@@ -820,11 +952,10 @@ class Worker:
             )
             .returning(*_CLAIMED)
         )
-        async with self.engine.begin() as connection:
-            row = (await connection.execute(statement)).first()
-        return None if row is None else Claimed(**row._mapping, lock_id=lock_id)
+        rows = await self._claiming(statement, lock_id)
+        return Claimed(**rows[0]._mapping, lock_id=lock_id) if rows else None
 
-    async def process(self, message: Claimed) -> None:
+    async def _process(self, message: Claimed) -> None:
         """Run one message under its original request id and actor; never raises.
 
         A message no request queued (a periodic task, a command's) runs as
@@ -902,7 +1033,8 @@ class Worker:
             async with deadlines.timeout(timeout):
                 result = await self._execute(message, run)
             follow_up = self._follow_up(message, result)
-        except Exception as exc:  # noqa: BLE001 - logged and retried by _failed.
+        except (Exception, asyncio.CancelledError) as caught:  # noqa: BLE001
+            exc = _failure(caught)  # Raises a cancellation of the worker's own.
             # The run's own record, whatever the handler made of the error.
             if run.lost:
                 return self._superseded(message)
@@ -914,6 +1046,8 @@ class Worker:
                     message.target,
                 )
                 return HANDLED
+            if isinstance(exc, UnknownTarget) and (since := self._unknown_for(message)):
+                return await self._wait_for_target(message, exc, since)
             permanent = isinstance(exc, UnknownTarget | AttemptsExhausted) or (
                 spec is not None
                 and not retryable(exc, spec.retry_on, spec.dont_retry_on)
@@ -946,6 +1080,57 @@ class Worker:
         self._rate_slots[spec.key] = slot + period / limit
         return slot - now
 
+    def _unknown_for(self, message: Claimed) -> datetime | None:
+        """When ``message``'s target was first found unknown, while it may still wait.
+
+        None once ``UNKNOWN_TARGET_GRACE`` has passed since (at once, for 0):
+        the message is then dead-lettered.
+        """
+        now = _claimed_at(message)
+        since = _seen_unknown(message.headers) or now
+        waited = (now - since).total_seconds()
+        return since if waited < self.config.UNKNOWN_TARGET_GRACE else None
+
+    async def _wait_for_target(
+        self, message: Claimed, exc: UnknownTarget, since: datetime
+    ) -> str:
+        """Give back a message whose target is unknown here; return the outcome.
+
+        A worker of an older release, during a rolling deploy, does not know
+        a task or handler the new code added (or a task moved to another
+        module, whose default name changed). The message keeps its place,
+        and its ordering key's, without spending an attempt, and comes back
+        after a delay that doubles, until ``UNKNOWN_TARGET_GRACE`` has passed
+        since a worker first found it unknown (CONC-15), by the clock that
+        decides on the outbox, as its due times are (SEC-16c-2).
+        """
+        waited = (_claimed_at(message) - since).total_seconds()
+        left = self.config.UNKNOWN_TARGET_GRACE - waited
+        delay = min(
+            max(waited, self.config.RETRY_BASE_SECONDS),
+            self.config.RETRY_MAX_SECONDS,
+            left,
+        )
+        await self._release(
+            message,
+            status=PENDING,
+            attempts=messages.c.attempts - 1,
+            available_at=dbclock.at(self.dialect, delay),
+            started_at=None,
+            last_error=f"{type(exc).__name__}: {exc}"[:_ERROR_LENGTH],
+            headers={**message.headers, UNKNOWN_SINCE: since.isoformat()},
+        )
+        logger.warning(
+            "%s %s: %s Waiting for a worker that knows it (a deploy rolling "
+            "out?); trying again in %.1fs, dead-lettered after %s",
+            message.kind,
+            message.target,
+            exc,
+            delay,
+            (since + timedelta(seconds=self.config.UNKNOWN_TARGET_GRACE)).isoformat(),
+        )
+        return UNKNOWN
+
     def _follow_up(self, message: Claimed, result: object) -> dict[str, Any] | None:
         """The outbox row of the chain's next step, if ``message`` has one."""
         chain = message.headers.get(CHAIN)
@@ -953,7 +1138,7 @@ class Worker:
             return None
         target, *rest = chain
         spec = get_task(target)
-        headers = {**message.headers, **trace_headers()}
+        headers = {**_without_sighting(message.headers), **trace_headers()}
         headers.pop(CHAIN)
         if rest:
             headers[CHAIN] = rest
@@ -1010,20 +1195,26 @@ class Worker:
         Return whether this run still held it.
         """
         dialect = self.dialect
+        if UNKNOWN_SINCE in message.headers and "headers" not in values:
+            # Its target ran, or it left another way: the sighting is over.
+            values = {**values, "headers": _without_sighting(message.headers)}
         statement = (
             update(messages)
             .where(messages.c.id == message.id, messages.c.lock_id == message.lock_id)
             .values(locked_until=None, lock_id=None, **values)
         )
-        leaves = values.get("status") not in WAITING
+        # The key whose line the message leaves (done or dead), if any.
+        key = None if values.get("status") in WAITING else message.ordering_key
         promoted: ordering.Promoted | None = None
         async with self.engine.begin() as connection:
+            if key is not None:  # The key's turn first, as every writer's (CONC-19).
+                await ordering.take_turns(connection, dialect, {key: 0})
             released = (await connection.execute(statement)).rowcount
             if follow_up is not None and released:
                 await write(connection, dialect, [follow_up])
-            if leaves and released and message.ordering_key is not None:
+            if key is not None and released:
                 promoted = await ordering.promote(
-                    connection, dialect, message.ordering_key
+                    connection, dialect, key, turn_taken=True
                 )
                 if (
                     promoted is not None
@@ -1051,9 +1242,9 @@ class Worker:
         """
         if self._wake is not None:
             self._wake.set()
-        if self.relay_promoted is not None:
+        if self._relay_promoted is not None:
             try:
-                await self.relay_promoted(promoted)
+                await self._relay_promoted(promoted)
             except Exception:  # The relay publishes it later.
                 logger.exception(
                     "Could not publish message %s, next of its key; the relay will",
@@ -1125,7 +1316,8 @@ class Worker:
         if permanent or message.attempts >= message.max_attempts:
             blanked: dict[str, object] = {}
             if _sensitive(message, spec):
-                blanked = {"payload": {}, "headers": {**message.headers, BLANKED: True}}
+                headers = _without_sighting(message.headers)
+                blanked = {"payload": {}, "headers": {**headers, BLANKED: True}}
             await self._release(
                 message,
                 status=DEAD,
@@ -1195,7 +1387,24 @@ class Worker:
         """
         await self._finish(message, values)
 
-    async def schedule_periodic(self) -> None:
+    async def _schedule(self) -> None:
+        """Queue the periodic tasks (``schedule_periodic``); never raise.
+
+        Scheduling and claiming are apart: a failure to queue them is logged
+        and tried again after a pause that doubles while it keeps failing,
+        up to ``OUTAGE_MAX_PAUSE``, while due messages still run (CONC-16).
+        An outage of the outbox fails the claim too, which then waits.
+        """
+        if clock.monotonic() < self._schedule_after:
+            return
+        try:
+            await self._schedule_periodic()
+        except Exception as exc:  # noqa: BLE001 - logged; claiming goes on.
+            self._schedule_after = clock.monotonic() + self._scheduling.note(exc)
+            return
+        self._scheduling.recovered()
+
+    async def _schedule_periodic(self) -> None:
         """Queue each periodic task once per interval or cron time, across workers.
 
         A cron task's next run is queued ahead, as soon as the one before is
@@ -1216,7 +1425,7 @@ class Worker:
             rows.append(
                 self._periodic_row(
                     spec,
-                    dedupe_key=f"periodic:{spec.key}:{slot}",
+                    dedupe_key=f"{slot_prefix(PERIODIC, spec.key)}{slot}",
                     available_at=datetime.fromtimestamp(slot * seconds, UTC),
                 )
             )
@@ -1232,7 +1441,7 @@ class Worker:
             rows.append(
                 self._periodic_row(
                     spec,
-                    dedupe_key=f"cron:{spec.key}:{int(run.timestamp())}",
+                    dedupe_key=f"{slot_prefix(CRON, spec.key)}{int(run.timestamp())}",
                     available_at=run,
                 )
             )
@@ -1447,7 +1656,32 @@ class Worker:
             .limit(literal(size, literal_execute=True))
             .with_for_update(skip_locked=True)
         )
+        if (slots := self._slots_kept(dialect)) is not None:
+            old = old.where(slots)
         return delete(messages).where(messages.c.id.in_(old.scalar_subquery()))
+
+    def _slots_kept(self, dialect: str) -> ColumnElement[bool] | None:
+        """Keep each periodic task's run until its slot ends, retention or not.
+
+        Its row's ``dedupe_key`` is what stops every worker, a restarted one
+        included, from queuing the slot again; a slot longer than
+        ``RETENTION_SECONDS`` would otherwise run again once cleanup deleted
+        it (CONC-13). Only tasks with such slots add a condition. None if
+        none has one.
+        """
+        kept = [
+            and_(
+                messages.c.dedupe_key.startswith(
+                    slot_prefix(PERIODIC, spec.key), autoescape=True
+                ),
+                messages.c.available_at > dbclock.at(dialect, -every.total_seconds()),
+            )
+            for spec, every in periodic_tasks()
+            if every.total_seconds() > self.config.RETENTION_SECONDS
+        ]
+        if not kept:
+            return None
+        return or_(messages.c.dedupe_key.is_(None), not_(or_(*kept)))
 
     async def run_cleanup_when_due(self) -> None:
         """Run the cleanups every ``CLEANUP_INTERVAL`` seconds.

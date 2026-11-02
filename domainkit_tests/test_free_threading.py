@@ -63,7 +63,6 @@ from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.auth.models import Group, User
 from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
-from domainkit.contrib.contenttypes import InstalledModel, content_type_key
 from domainkit.contrib.idempotency import statements as idempotency_statements
 from domainkit.contrib.idempotency.middleware import PURGE_BATCH, Sweeps
 from domainkit.contrib.messaging import MessagingSettings, dispatch
@@ -73,6 +72,7 @@ from domainkit.db import uow as sql_uow
 from domainkit.db.connections import (
     _begin_snapshot,
     _drop_detail,
+    _enforce_foreign_keys,
     _keep_cut_off,
     _read_alone,
     _read_alone_no_params,
@@ -84,6 +84,8 @@ from domainkit.db.connections import (
     create_engine,
     create_read_engine,
 )
+from domainkit.db.models import InstalledModel
+from domainkit.db.models import model_key as content_type_key
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import access, live, metrics, ratelimit
 from domainkit.http import client as http_client
@@ -1105,6 +1107,7 @@ def test_throttled_logs_lose_no_count_to_sweeps_and_flushes_on_threads(
     assert counting.events == THREADS * 2_000
 
 
+@pytest.mark.engines_on_threads
 @pytest.mark.usefixtures("database_access")
 def test_loops_on_threads_get_their_own_engines(
     monkeypatch: pytest.MonkeyPatch,
@@ -1133,6 +1136,7 @@ def test_loops_on_threads_get_their_own_engines(
         assert len(list(engines)) <= THREADS * LOOPS // 2 + 1  # Unclosed loops'.
 
 
+@pytest.mark.engines_on_threads
 @pytest.mark.usefixtures("database_access")
 def test_loops_on_threads_keep_their_own_isolated_engines(
     monkeypatch: pytest.MonkeyPatch,
@@ -1210,7 +1214,7 @@ def test_engines_never_share_a_listener() -> None:
         (create_read_engine, network, read),
         (create_engine, network, [_keep_cut_off, _drop_detail, _set_local]),
         (create_engine, unpinged, unpinged_listeners),
-        (create_engine, local, [_drop_detail, _begin_snapshot]),
+        (create_engine, local, [_drop_detail, _enforce_foreign_keys, _begin_snapshot]),
     ]:
         first, second = own_listeners(build(config)), own_listeners(build(config))
 
@@ -1524,6 +1528,7 @@ def read_only_bind(reads: Reads = Reads.TRANSACTION) -> AsyncEngine:
 
 
 @pytest.mark.usefixtures("database_access")
+@pytest.mark.engines_on_threads
 def test_loops_on_threads_keep_their_own_read_only_binds() -> None:
     """Each loop's read-only sessions share one bind per engine; closing drops it."""
     network = "postgresql+asyncpg://app@db.invalid/app"  # Never connected to.

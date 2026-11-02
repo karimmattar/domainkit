@@ -95,19 +95,19 @@ async def test_claims_pass_over_messages_another_worker_holds(
             select(messages.c.id).where(messages.c.id.in_(held)).with_for_update()
         )
         async with asyncio.timeout(5):  # Without SKIP LOCKED this waits forever.
-            claimed = {message.id for message in await Worker().claim(100)}
+            claimed = {message.id for message in await Worker()._claim(100)}
         await other.rollback()
 
     assert claimed == set(due) - held
     async with asyncio.timeout(5):
-        assert {message.id for message in await Worker().claim(100)} == held
+        assert {message.id for message in await Worker()._claim(100)} == held
 
 
 async def test_concurrent_workers_never_claim_the_same_message(
     due: list[uuid.UUID],
 ) -> None:
     """Four workers claiming at once split the twenty messages between them."""
-    batches = await asyncio.gather(*(Worker().claim(5) for _ in range(4)))
+    batches = await asyncio.gather(*(Worker()._claim(5) for _ in range(4)))
     claimed = [message.id for batch in batches for message in batch]
 
     assert sorted(claimed) == sorted(due)

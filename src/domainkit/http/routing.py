@@ -57,13 +57,6 @@ from starlette._utils import get_route_path
 from starlette.routing import BaseRoute, Match, Mount, Route, Router, WebSocketRoute
 from starlette.types import Receive, Scope, Send
 
-__all__ = [
-    "RouteIndex",
-    "flatten_routes",
-    "index_routes",
-    "serves_itself",
-]
-
 _INCLUDED: Final[type[BaseRoute] | None] = getattr(
     fastapi_routing, "_IncludedRouter", None
 )

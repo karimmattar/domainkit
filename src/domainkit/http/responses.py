@@ -52,7 +52,6 @@ from pydantic_core import PydanticSerializationError, to_json
 from starlette import responses
 
 __all__ = [
-    "BuiltJSONResponse",
     "JSONResponse",
     "json_native",
 ]

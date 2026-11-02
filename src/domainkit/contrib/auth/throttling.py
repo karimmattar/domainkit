@@ -34,6 +34,7 @@ import threading
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Final
 
 from fastapi import Request, status
@@ -43,7 +44,7 @@ from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.http.errors import APIError
-from domainkit.http.ratelimit import Backend, Decision, client_group
+from domainkit.http.ratelimit import RATE_LIMITED, Backend, Decision, client_group
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -54,8 +55,35 @@ AUDIT = "domainkit.contrib.audit"
 MAX_REFUSALS = 10_000
 """Throttled keys remembered, to audit each once per period."""
 
-type Limit = tuple[str, str | None]
-"""A count's key, and its rate (None: not counted)."""
+
+@dataclass(frozen=True, slots=True)
+class Window:
+    """A rate held in fixed windows: at most its limit from each period's start.
+
+    A plain rate is a bucket that refills smoothly (``http.ratelimit``): a
+    period after an idle stretch can see about twice its limit. A window
+    counts at most ``limit`` attempts in each period, aligned on the epoch
+    (each UTC day for ``"100/day"``), as a daily bound must (SEC-16a-2): a
+    burst of ``limit`` is let through, and nothing more until the next
+    period starts.
+    """
+
+    rate: str
+    """``"100/day"``: the limit, and the period of each window."""
+
+    def bucket(self, now: float) -> tuple[str, int, float, int]:
+        """The window ``now`` (epoch seconds) falls in, as a bucket that never refills.
+
+        Its key's suffix, limit, and the bucket's period, past which one
+        attempt would be refilled: ``limit + 1`` windows, so none is within
+        this one; and the window's own period.
+        """
+        limit, period = parse_rate(self.rate)
+        return f"@{int(now // period)}", limit, float(period * (limit + 1)), period
+
+
+type Limit = tuple[str, str | Window | None]
+"""A count's key, and its rate or window (None: not counted)."""
 
 
 class Attempt:
@@ -64,7 +92,7 @@ class Attempt:
     def __init__(self, counter: Backend | None) -> None:
         """Count in ``counter`` (None: nothing is counted)."""
         self.counter = counter
-        self.counted: list[tuple[str, int, int]] = []
+        self.counted: list[tuple[str, int, float]] = []
         """The ``(key, limit, period)`` counts the attempt took."""
 
     async def succeeded(self) -> None:
@@ -86,16 +114,15 @@ async def throttle(
     *,
     action: str,
     detail: str,
-    code: str,
 ) -> Attempt:
     """Count an attempt against each of ``keys``; refuse it past ``rate``.
 
     Raises:
-        APIError: 429, with ``detail`` and ``code``, past the rate for a key;
+        APIError: 429 ``rate_limited``, with ``detail``, past the rate for a key;
             503 if it cannot be counted, failing closed (``fails_closed``).
     """
     limits = [(key, rate) for key in keys]
-    return await attempt(request, limits, action=action, detail=detail, code=code)
+    return await attempt(request, limits, action=action, detail=detail)
 
 
 async def attempt(
@@ -104,7 +131,6 @@ async def attempt(
     *,
     action: str,
     detail: str,
-    code: str,
 ) -> Attempt:
     """Count an attempt against each ``(key, rate)``; refuse it past a rate.
 
@@ -112,14 +138,14 @@ async def attempt(
     was not made. Call ``succeeded()`` on the result once the check holds.
 
     Raises:
-        APIError: 429, with ``detail`` and ``code``, past the rate for a key;
+        APIError: 429 ``rate_limited``, with ``detail``, past the rate for a key;
             503 ``throttle_unavailable`` if the counter could not count it,
             failing closed (``fails_closed``).
     """
     counted = [(key, rate) for key, rate in limits if rate is not None]
     taken = Attempt(limiter(request) if counted else None)
-    for key, rate in counted:
-        limit, period = parse_rate(rate)
+    for name, rate in counted:
+        key, limit, period, audited = _bucket(name, rate)
         decision = await limiter(request).hit(key, limit, period)
         if decision.allowed and decision.counted:
             taken.counted.append((key, limit, period))
@@ -129,10 +155,19 @@ async def attempt(
         await taken.succeeded()  # Refused, so not made: give back what it took.
         if decision.allowed:
             raise _uncounted(decision)
-        if first_refusal(request, key, period):
+        if first_refusal(request, key, audited):
             await audit_refusal(action, "throttled")
-        raise _throttled(decision, detail, code)
+        raise _throttled(decision, detail)
     return taken
+
+
+def _bucket(key: str, rate: str | Window) -> tuple[str, int, float, int]:
+    """The key, limit, and period a count is hit with; its period for audits."""
+    if isinstance(rate, Window):
+        suffix, limit, period, window = rate.bucket(clock.now().timestamp())
+        return key + suffix, limit, period, window
+    limit, every = parse_rate(rate)
+    return key, limit, every, every
 
 
 def fails_closed() -> bool:
@@ -156,7 +191,6 @@ async def count_failure(
     *,
     action: str,
     detail: str,
-    code: str,
 ) -> None:
     """Count a check that failed, after it was made; refuse past ``rate``.
 
@@ -165,7 +199,7 @@ async def count_failure(
     The count bounds the work and the audit rows failures cost.
 
     Raises:
-        APIError: 429, with ``detail`` and ``code``, past the rate.
+        APIError: 429 ``rate_limited``, with ``detail``, past the rate.
     """
     if rate is None:
         return
@@ -174,15 +208,15 @@ async def count_failure(
     if not decision.allowed:
         if first_refusal(request, key, period):
             await audit_refusal(action, "throttled")
-        raise _throttled(decision, detail, code)
+        raise _throttled(decision, detail)
 
 
-def _throttled(decision: Decision, detail: str, code: str) -> APIError:
-    """The 429 of a refused attempt."""
+def _throttled(decision: Decision, detail: str) -> APIError:
+    """The 429 of a refused attempt: ``rate_limited``, as every 429 is (WEB-25)."""
     return APIError(
         status.HTTP_429_TOO_MANY_REQUESTS,
         detail,
-        code=code,
+        code=RATE_LIMITED,
         headers={"Retry-After": str(math.ceil(decision.retry_after))},
     )
 

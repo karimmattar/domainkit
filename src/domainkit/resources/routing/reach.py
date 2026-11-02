@@ -17,13 +17,18 @@ permission grants), and must not wait for a connection while this request
 holds one.
 """
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Final, Self
 
 from starlette.requests import HTTPConnection
 
-from domainkit.ddd.exceptions import PermissionDenied
+from domainkit.ddd.exceptions import (
+    ConcurrentUpdate,
+    PermissionDenied,
+    PreconditionFailed,
+)
 from domainkit.ddd.query import CriteriaLike, F, Selection
 from domainkit.ddd.repository import Repository
 from domainkit.ddd.uow import UnitOfWork
@@ -190,9 +195,12 @@ async def on_one[T](
     parent, or such a rule there is nothing to check. Otherwise the
     aggregate is read within reach first, and ``run`` is given the unit of
     work to do it in: the same, open (see the module), unless a rule had to
-    look at the aggregate between.
+    look at the aggregate between. Then ``run`` is held to the version the
+    rule saw (``pinned``): one changed meanwhile is 409, never written past
+    the rule (SEC-16a-1).
 
     Raises:
+        ConcurrentUpdate: The aggregate changed after a rule looked at it.
         NotFound: The aggregate is out of the caller's reach.
         NotAuthenticated: An anonymous caller was refused the aggregate.
         PermissionDenied: A rule refuses the caller the aggregate.
@@ -202,12 +210,51 @@ async def on_one[T](
         async with uow:
             aggregate = await load(router, uow, context.request, context.ids)
         await check_object_permissions(context.request, aggregate, *rules)
-        return await run(uow)
+        with pinned(router, context, aggregate.version):
+            return await run(uow)
     if router.parent is None and router.scope is None:
         return await run(uow)
     async with uow:
         await load(router, uow, context.request, context.ids)
         return await run(Joined(uow))
+
+
+CHANGED_SINCE_CHECKED: Final = (
+    "This record changed while it was being checked; read it again and retry."
+)
+"""The detail of a write refused because its aggregate moved since a rule saw it."""
+
+
+@contextmanager
+def pinned(
+    router: "ResourceRouter", context: RouteContext, version: int | None
+) -> Iterator[None]:
+    """Hold the aggregate the path names to ``version``, the one a rule saw.
+
+    A rule that looks at objects is asked outside the write's transaction
+    (WEB-16), so the write holds the aggregate to the version it was asked
+    about: one another request changed in between (given to another owner,
+    frozen) answers 409 ``concurrent_update``, as a generic write does
+    (SEC-16a-1). A service that never loads it through its repository
+    writes nothing of it, and is let be. With ``If-Match`` the request
+    named a version itself: a change is its 412. ``version`` None holds
+    nothing.
+
+    Raises:
+        ConcurrentUpdate: The aggregate is no longer at ``version``.
+    """
+    if version is None:
+        yield
+        return
+    uow = context.uow
+    try:
+        with uow.expect(router.model, context.ids[router.lookup], {version}) as held:
+            held.checked = True  # Not loaded, not written: nothing to refuse.
+            yield
+    except PreconditionFailed as exc:
+        if context.if_match is not None:
+            raise
+        raise ConcurrentUpdate(CHANGED_SINCE_CHECKED) from exc
 
 
 async def keep_in_reach(
@@ -242,19 +289,22 @@ async def conditionally[T](
     """Run ``change``, holding the aggregate to the request's ``If-Match``.
 
     Raises:
-        PreconditionRequired: The resource requires ``If-Match``.
+        PreconditionRequired: The resource requires ``If-Match``, and the
+            request sent none, or ``*``, which names no version.
         PreconditionFailed: The aggregate is not at a version it names.
         RuntimeError: The service never loaded the aggregate, so
             ``If-Match`` could not be checked.
     """
     header = context.if_match
+    versions = None if header is None else expected_versions(header)
+    if versions is None and router.require_if_match:
+        # ``*`` names no version: under the requirement it is no If-Match (WEB-22).
+        raise PreconditionRequired
     if header is None:
-        if router.require_if_match:
-            raise PreconditionRequired
         return await change()
     id_ = context.ids[router.lookup]
     model = router.model
-    with context.uow.expect(model, id_, expected_versions(header)) as expected:
+    with context.uow.expect(model, id_, versions) as expected:
         result = await change()
     if not expected.checked:
         raise RuntimeError(

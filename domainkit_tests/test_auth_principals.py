@@ -638,7 +638,7 @@ def test_json_web_tokens_kept_and_read_build_the_same_user(
     missed, hit, reads = run_async(scenario())
     assert reads == []
     assert view(missed.user) == view(hit.user)
-    assert missed.session == hit.session is not None
+    assert missed.login == hit.login is not None
     assert hit.scheme == "jwt"
 
 

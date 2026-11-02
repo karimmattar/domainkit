@@ -12,6 +12,7 @@ from domainkit.apps.hooks import (
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.db.hooks import on_stage
 from domainkit.db.routing import router
 from domainkit.ddd import DomainError
 from domainkit.money import Money, MoneyError
@@ -20,6 +21,9 @@ from .settings import LimitDefault, LimitsSettings
 
 MESSAGING: Final = "domainkit.contrib.messaging"
 ACCOUNTING: Final = "domainkit.contrib.accounting"
+PROXY: Final = "CLF"
+"""A currency of four places, which a default for every currency (``"*"``) is
+checked in: its amounts are read in each currency's own units."""
 
 
 class LimitsConfig(DomainConfig):
@@ -34,7 +38,8 @@ class LimitsConfig(DomainConfig):
         """Check the routing and the defaults; map the table; register the hooks.
 
         With the ledger installed, its postings are counted against limits
-        (``on_booking``): the limits live in the ledger's database, or
+        (``on_stage_entry``, and ``on_stage`` as each posting commits): the
+        limits live in the ledger's database, or
         ``setup()`` fails (``limits.E001``). A default of ``LIMITS.DEFAULTS``
         that is not a limit fails it too (``limits.E002``). With messaging,
         old usage is purged on a schedule (``tasks``).
@@ -64,11 +69,12 @@ class LimitsConfig(DomainConfig):
         on_export_subject(self.export_person)
         on_deployment_warnings(self.weak_settings)
         if registry.is_installed(ACCOUNTING):
-            from domainkit.contrib.accounting import on_booking
+            from domainkit.contrib.accounting.hooks import on_stage_entry
 
-            from .postings import enforce
+            from .postings import count_staged, enforce
 
-            on_booking(enforce)
+            on_stage_entry(enforce)
+            on_stage(count_staged)
         if registry.is_installed(MESSAGING):
             from .tasks import register
 
@@ -112,7 +118,7 @@ class LimitsConfig(DomainConfig):
 def default_problems(defaults: tuple[LimitDefault, ...]) -> list[CheckMessage]:
     """``limits.E002``: defaults that are not limits, or that share a key."""
     from .models import Direction, Limit, Window
-    from .usage import default_rule
+    from .usage import ANY_CURRENCY, default_rule
 
     problems: list[CheckMessage] = []
     seen: set[tuple[object, ...]] = set()
@@ -120,15 +126,16 @@ def default_problems(defaults: tuple[LimitDefault, ...]) -> list[CheckMessage]:
         where = f"LIMITS['DEFAULTS'][{number}] ({default.code!r})"
         try:
             rule = default_rule(default)
+            code = PROXY if rule.currency == ANY_CURRENCY else rule.currency
             Limit.define(
                 rule.code,
                 rule.kind,
-                rule.currency,
+                code,
                 direction=Direction(default.direction),
                 subject=rule.subject,
-                per_transaction=_money(default.per_transaction, rule.currency),
+                per_transaction=_money(default.per_transaction, code),
                 window=None if default.window is None else Window(default.window),
-                max_amount=_money(default.max_amount, rule.currency),
+                max_amount=_money(default.max_amount, code),
                 max_count=rule.max_count,
                 time_zone=rule.time_zone,
                 note=default.note,

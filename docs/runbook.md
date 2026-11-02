@@ -84,6 +84,108 @@ handler, attempts, and last error.
 `python manage.py messages --retry ID` (or `--retry all`). A dead message
 is kept until retried or cancelled; it never runs again on its own.
 
+## A key's messages stall
+
+**You see** `messaging_outbox_messages{status="held"}` that does not fall,
+while the pending messages are run: messages wait behind an earlier one of
+their ordering key ([messaging.md](contrib/messaging.md#one-at-a-time-per-key-ordering-keys)).
+
+**Check:**
+
+1. `python manage.py messages --held` lists the waiting messages, by key.
+2. Is the key's earlier message dead? `messages --dead`: a key waits
+   behind its dead letter until it is retried or cancelled.
+3. Is it waiting for a task or handler no worker knows? The worker logs
+   "Waiting for a worker that knows it", until
+   `MESSAGING.UNKNOWN_TARGET_GRACE` passes.
+4. Did a worker of a release before 1.0 run during a deploy? It finishes
+   a keyed message without making the next one pending; the worker logs
+   "Made message ... pending: its ordering key had held messages and none
+   pending" when its cleanup round releases such a key.
+
+**Do:**
+
+- A dead letter in front: fix the cause, then `messages --retry ID`, which
+  puts it back in its place, before the key's next message; or
+  `messages --cancel ID` to let the rest go.
+- An unknown target: deploy the workers that know it (workers before web
+  processes, [operations.md](operations.md#migrations-in-a-rollout)).
+- No message of the key pending at all: `python manage.py messages
+  --release` makes the first held message of each such key pending now,
+  audited with your name, instead of waiting for a cleanup round.
+
+## The key service is unreachable
+
+**You see** new processes fail to start, naming the provider and what
+failed (`KeyProviderError`): each process unwraps `KEYS.DATA_KEYS` at
+startup, and does not start without them. Processes already running keep
+serving: they hold the data keys in memory and call the service no more.
+`manage.py keys generate`, `rewrap`, and `reencrypt` fail too.
+
+**Check:**
+
+1. Can the host reach the service? AWS KMS's regional endpoint (or
+   `KEYS.AWS_KMS.ENDPOINT`), or `KEYS.VAULT.URL`, within `KEYS.TIMEOUT`.
+2. Are the credentials valid? An expired web identity token, a container
+   credentials endpoint the pod cannot reach, an expired Vault token.
+3. Does the role still have `Decrypt` (Vault: `decrypt`) on the key, and
+   the key its state? A disabled or scheduled-for-deletion KMS key refuses
+   every unwrap ([keys.md](contrib/keys.md#providers)).
+
+**Do:**
+
+- Keep the running processes: do not restart or scale them down until the
+  service answers, as their replacements cannot start.
+- Restore access (network, credentials, the key's policy), then start new
+  processes; nothing needs re-encrypting.
+- Never set `KEYS.ALLOW_LOCAL_KEK` to get past an outage: values sealed
+  under the KMS's data keys stay unreadable without it, and new ones would
+  be sealed under a key derived from `SECRET_KEY`.
+
+## The ledger does not verify
+
+**You see** `python manage.py accounting verify` fail (it exits 1), or
+`accounting.E001` and `accounting.E002` refuse to start: an entry that
+does not balance, a balance that is not the sum of its postings, an
+account's `held` that is not the sum of its active holds, or the
+append-only triggers missing or changed
+([accounting.md](contrib/accounting.md#reports)).
+
+**Check:**
+
+1. What the command printed: each entry or account, and what differs.
+2. `auditlog --action accounting.entry_posted` for the entries named: the
+   trail's `amounts` and `digest` say what each entry moved when it was
+   posted, sealed and anchored with the trail.
+3. `auditverify`: whether the trail itself was rewritten.
+4. Who held the schema owner's role: the triggers keep rows from changing
+   for every other role.
+
+**Do:**
+
+- Treat it as an incident: the books changed outside the ledger's code.
+- Missing or changed triggers: `python manage.py migrate` makes them
+  afresh, as the owner.
+- Correct the books with reversals and new entries, never by editing rows,
+  once the cause is known, and keep the command's output with the
+  incident.
+
+## A backup is restored
+
+**You see** nothing: a restore is planned, after data loss or for an
+incident.
+
+**Do,** as [operations.md](operations.md#backups-and-restores) says:
+
+1. Before restoring, list the erasures made since the backup's time
+   (`manage.py auditlog --action privacy.erase`), and keep the list
+   outside the databases being restored.
+2. Restore, then run `manage.py privacy erase --subject <id>` for each:
+   the backup holds the erased people's keys and data again
+   ([keys.md](contrib/keys.md#backups-taken-before-an-erasure)).
+3. Run `auditverify`, and keep what it reports about anchors the restore
+   lost with the incident ([auditverify fails](#auditverify-fails)).
+
 ## A circuit breaker opens
 
 Two breakers protect the service from a dependency that fails:

@@ -9,16 +9,17 @@ the [public API](../api.md), under its compatibility policy.
 
 A double-entry ledger: accounts, journal entries, holds, periods, reconciliation.
 
-- `CAPTURES`: The source of the entries captures post; each one's reference is the hold's id.
-- `REVERSALS`: The source of reversing entries; each one's reference is the reversed entry's id.
+- `CAPTURE_SOURCE`: The source of the entries captures post; each one's reference is the hold's id.
+- `REVERSAL_SOURCE`: The source of reversing entries; each one's reference is the reversed entry's id.
 - `Account`: An account of the chart: one currency, one type, open or closed.
 - `AccountClosed`: An account was closed: it takes no more postings or holds.
 - `AccountCodeTaken`: Another account has that code.
 - `AccountId`: An account's id (a `UUID`).
-- `AccountIsClosed`: A posting or a hold on an account that is closed.
 - `AccountNotEmpty`: Closing an account that still has a balance, or holds.
 - `AccountNotFound`: No account has that id or code.
+- `AccountNotOpen`: A posting or a hold on an account that is closed.
 - `AccountOpened`: An account was opened.
+- `AccountReconciled`: An account's statement lines were matched to its postings (FIN-90).
 - `AccountStatus`: Whether an account takes postings.
 - `AccountType`: What an account counts, which decides its normal balance.
 - `AccountingSettings`: How the ledger posts, holds, and reconciles; every key is optional.
@@ -26,9 +27,12 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `CaptureHold`: Post the hold's amount (or `amount`, less) out of its account into another.
 - `CloseAccount`: Close an account with nothing on it.
 - `ClosePeriod`: Close a period: no entry may be dated in it afterwards.
+- `EarlierPeriodOpen`: Closing a period while one before it is still open.
 - `Entry`: A posted journal entry: balanced lines, never changed once posted.
+- `EntryAmount`: What one entry moved on one account: its debits and its credits there.
 - `EntryId`: A journal entry's id (a `UUID`).
 - `EntryNotFound`: No journal entry has that id.
+- `EntryNotReversible`: Reversing a reversal: it would move the money of the entry it undid again.
 - `EntryPosted`: A journal entry was posted; `reverses` names the entry it undoes.
 - `Hold`: An amount reserved on an account until it is captured, released, or expires.
 - `HoldFinished`: A hold was captured into an entry, released, or expired (`status`).
@@ -48,9 +52,9 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `Period`: Dates entries may be booked on, from `starts_on` to `ends_on` included.
 - `PeriodClosed`: An accounting period was closed: no entry may be dated in it any more.
 - `PeriodId`: An accounting period's id (a `UUID`).
-- `PeriodIsClosed`: An entry dated in a period that is closed.
 - `PeriodNameTaken`: Another period has that name.
 - `PeriodNotFound`: No accounting period has that id.
+- `PeriodNotOpen`: An entry, or a new period, dated on or before the end of a closed period.
 - `PeriodOpened`: An accounting period was opened.
 - `PeriodStatus`: Whether a period takes entries.
 - `PeriodsOverlap`: A new period whose dates another period covers, or that ends before it starts.
@@ -59,9 +63,9 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `Posting`: One line of a posted entry: an amount on one side of one account.
 - `ReferenceReused`: A source and reference that name an entry or a hold made otherwise.
 - `ReleaseHold`: Make a hold's amount available again, without posting anything.
-- `ReversalNotReversible`: Reversing a reversal: it would move the money of the entry it undid again.
 - `ReverseEntry`: Post the entry that undoes another, dated `booked_on` (default: today).
 - `Side`: A posting's side.
+- `StatementImported`: A statement's lines were imported for an account (FIN-90).
 - `TrialBalance`: Every account with a balance or movements in a period, and the totals.
 - `UnbalancedEntry`: An entry whose debits and credits differ in some currency.
 - `capture_hold`: Capture a hold into an entry; capturing it again returns it as captured.
@@ -70,7 +74,6 @@ A double-entry ledger: accounts, journal entries, holds, periods, reconciliation
 - `defer_entry`: Post `command`'s entry once `uow` commits, through the outbox, once.
 - `expire_holds`: Release every active hold whose time is up, each in its own transaction.
 - `general_ledger`: The postings dated in a period, streamed as CSV or JSON, with totals.
-- `on_booking`: See every entry as it is booked: `(uow, entry, accounts)`; raise to refuse it.
 - `open_account`: Open an account; another with the same code is `account_code_taken`.
 - `open_period`: Open a period; one whose dates another covers is refused.
 - `place_hold`: Reserve an amount on an account, or return the hold placed under its reference.
@@ -94,8 +97,8 @@ The ledger over HTTP: accounts, entries, holds, periods, reports, reconciliation
 
 Hook points the ledger offers other apps (ADR 0101).
 
-- `on_booking`: See every entry as it is booked: `(uow, entry, accounts)`; raise to refuse it.
-- `on_posting`: Check an entry before `post_entry` posts it: `(command)`; raising refuses it.
+- `on_post_entry`: Check an entry before `post_entry` posts it: `(command)`; raising refuses it.
+- `on_stage_entry`: See every entry as it is booked: `(uow, entry, accounts)`; raise to refuse it.
 
 ## `domainkit.contrib.accounting.reconciliation`
 
@@ -134,9 +137,10 @@ Reports of a period: the trial balance and the general ledger, as CSV and JSON.
 
 Maker-checker: commands that run only once other people approve them.
 
-- `CAPTURES`: The guarded action of a hold's capture over its currency's threshold.
-- `ENTRIES`: The guarded action of postings over their currency's threshold.
-- `SUPERUSERS`: The guarded action of making a user a superuser.
+- `CAPTURE_HOLD`: The guarded action of a hold's capture over its currency's threshold.
+- `GRANT_SUPERUSER`: The guarded action of making a user a superuser.
+- `POST_ENTRY`: The guarded action of postings over their currency's threshold.
+- `REVERSE_ENTRY`: The guarded action of a reversal over its currency's threshold.
 - `AlreadyDecided`: This person approved or rejected the request already (409).
 - `ApprovalGiven`: One person approved a request; `approvals` of `required` so far.
 - `ApprovalNotNeeded`: No policy asks for approval of this command: call it directly.
@@ -157,7 +161,7 @@ Maker-checker: commands that run only once other people approve them.
 - `MakerNotAllowed`: Whoever submitted the command may not make it (any more).
 - `NotTheMaker`: Only whoever submitted a request may cancel it.
 - `Policy`: Who approves a command, how many of them, and for how long it waits.
-- `PolicyGone`: The request's guard or policy no longer exists: it is neither decided nor run.
+- `PolicyRemoved`: The request's guard or policy no longer exists: it is neither decided nor run.
 - `RejectRequest`: Reject a request, as `approver`, for `reason`.
 - `RequestApproved`: A request has its approvals; its command is queued to run.
 - `RequestCancelled`: The maker withdrew a request.
@@ -178,12 +182,12 @@ Maker-checker: commands that run only once other people approve them.
 - `approve_request`: Approve a request; the approval that completes it queues its command.
 - `approved`: Whether `command` is the approved command of `action` being run.
 - `cancel_request`: Withdraw a pending request, as its maker.
+- `current_run`: The approved command being run here, if any.
 - `execute_request`: Run an approved request's command, once (the task `EXECUTE`).
 - `expire_requests`: Expire the pending requests whose time is up; how many there were.
 - `fingerprint`: SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
 - `guard`: Register the guard of a use case decorated `requires_approval(action)`.
 - `guards`: Every registered guard, by action.
-- `on_guard`: The guards the installed domains registered: `on_guard(Guard(...))`.
 - `refuse_if_guarded`: Refuse `action` done outside approvals, if a guard is registered for it.
 - `reject_request`: Reject a request for a reason; one rejection ends it.
 - `requires_approval`: Guard a use case: called directly, it needs no approval, or is refused.
@@ -231,6 +235,7 @@ An append-only audit trail: who did what, when, from where.
 - `forget_anonymous`: Delete the keys of anonymous callers' days before `before`.
 - `pseudonym_of`: The pseudonym `value` of `field` has in the trail for `subject`.
 - `record`: Record an action in its own transaction (denials, failures, reads).
+- `recorded`: The details of each row of `action` in the trail, `per` rows at a time.
 - `seal`: Seal the rows of `database`'s trail not sealed yet; count them.
 - `seal_all`: Seal, then anchor, every audited database; what each one got.
 - `verify`: Check `database`'s chain against its rows, and against `ledger`.
@@ -245,14 +250,9 @@ Records' history over HTTP, for staff (Django admin's "History").
 
 Signed checkpoints of the audit chain: where it may be pruned, what is exported.
 
-- `EXPORT_FORMAT`: What an export says it is.
-- `FORMAT`: What a checkpoint document says it is; another value is refused.
 - `Checkpoint`: The chain of `database` had `link` at seal `seq`, as signed.
 - `CheckpointInvalid`: A checkpoint, or an export, that does not verify: never trust it.
 - `check_export`: Check an export offline, with the public key alone; its checkpoints by database.
-- `key_id`: A short name of `public_key`: the first 16 hex digits of its SHA-256.
-- `load_public_key`: The Ed25519 public key in `pem`, as a verifier pins it.
-- `signing_key`: The key `AUDIT.CHECKPOINT_KEY` holds; only the commands that sign read it.
 
 ## `domainkit.contrib.audit.history`
 
@@ -284,6 +284,13 @@ Retention that keeps the chain: prune below a signed checkpoint; export checkpoi
 - `export`: Every audited database's checkpoints, and one of its head, signed.
 - `prune`: Prune `database`'s trail below a checkpoint of its last seal before `before`.
 
+## `domainkit.contrib.audit.testing`
+
+The audit trail as tests read it: its rows, as records.
+
+- `RecordedEntry`: One row of the audit trail, as it was written.
+- `audit_entries`: The trail's entries, oldest first, those matching every filter given.
+
 ## `domainkit.contrib.audit.tables`
 
 The audit trail: append-only, one row per recorded action, sealed in a chain.
@@ -294,13 +301,7 @@ The audit trail: append-only, one row per recorded action, sealed in a chain.
 
 Content types: one row per kind of stored object (Django's `contenttypes`).
 
-- `DEFAULT_PERMISSIONS`: Actions that get a permission for every content type, unless `Meta` says.
 - `ContentType`: A kind of stored object: its domain label and lower-case class name.
-- `InstalledModel`: A mapped class of an installed domain, and what it declares.
-- `ModelOptions`: What a mapped class declares about itself (Django's `Meta`).
-- `content_type_key`: The `(domain, model)` of a mapped class.
-- `installed_models`: Every class mapped onto a table that an installed domain holds now.
-- `model_options`: Read `cls.Meta`: `verbose_name`, `default_permissions`, `permissions`.
 - `sync_content_types`: Insert a row for every installed model; return ids by `(domain, model)`.
 
 ## `domainkit.contrib.evidence`
@@ -392,6 +393,7 @@ Limits on money movements: per transaction, per window, per subject, per currenc
 - `ACTOR`: The kind of subject that is who acts: the request's actor.
 - `HOLDER`: The kind of subject that is the holder an account is kept for.
 - `ChangeLimit`: Set a limit's bounds, all of them: one left out is None (no bound).
+- `CurrencyNotLimited`: A movement in a currency none of its subject's limits names (FIN-89).
 - `Direction`: Which movements of a subject a limit counts.
 - `InvalidLimit`: A limit, or a movement checked against limits, that cannot be as written.
 - `Limit`: What one kind of subject may move in one currency and direction.
@@ -405,13 +407,14 @@ Limits on money movements: per transaction, per window, per subject, per currenc
 - `LimitsSettings`: Default limits, and how long usage is kept; every key is optional.
 - `LimitsUnitOfWork`: One transaction on the limits, wherever `limits` is routed.
 - `Movement`: An amount of money moving, and the subjects whose limits it counts against.
+- `MovementOutOfRange`: A movement larger than usage keeps: `NUMERIC(18, 4)` (SEC-16b-5).
 - `RemoveLimit`: Remove a limit: a default of the settings with its key applies again.
 - `SetLimit`: Make the limit of this key, or set the bounds of the one there is.
 - `TransactionLimitExceeded`: A movement over the most one movement may be (`per_transaction`).
 - `Usage`: What one subject used of one limit in its current window.
 - `Window`: The time a limit's sum and count are taken over.
 - `change_limit`: Set a limit's bounds.
-- `check`: Refuse `movements` as `consume` would now, counting nothing.
+- `check_movements`: Refuse `movements` as `consume` would now, counting nothing.
 - `consume`: Count `movements` against their subjects' limits, or refuse them.
 - `define_limit`: Make a limit; another of its key is `limit_taken` (409).
 - `purge_usage`: Delete usage older than `LIMITS.KEEP_USAGE`, and subjects idle as long.
@@ -492,15 +495,6 @@ Operator queries: queue depth, lag, listings, retries, and cancelling.
 - `release_stalled`: Make the next message of each stalled ordering key pending; how many.
 - `retry_dead`: Return dead messages (one, or all) to the queue with fresh attempts.
 
-## `domainkit.contrib.messaging.dbclock`
-
-The clock that decides when outbox work is due and when locks expire.
-
-- `Moment`: A time to compare or store: a value, or the database's clock in SQL.
-- `at`: `seconds` from now (earlier when negative), on the database's clock.
-- `now`: The current time as a database of `dialect` should see it.
-- `uses_database`: Report whether the database's clock decides on `dialect` right now.
-
 ## `domainkit.contrib.messaging.testing`
 
 pytest fixtures for code that publishes events and queues background work.
@@ -560,7 +554,7 @@ Permissions on single objects (django-guardian's grants), for users or groups.
 - `ObjectPermission`: `permission` on one object, for one user or one group.
 - `ObjectPermissionBackend`: Permissions granted on an object to a user or to one of their groups.
 - `ObjectPermissionGranted`: A user or a group may now do something to one object.
-- `ObjectPermissionId`: NewType creates simple unique types with almost zero runtime overhead.
+- `ObjectPermissionId`: A grant's id: a UUID typed apart from other ids.
 - `ObjectPermissionRepository`: Grants: find them with `about(...)`.
 - `ObjectPermissionRevoked`: A grant on one object was taken back.
 - `ObjectPermissionsUnitOfWork`: One transaction on the grants of one database (the objects').
@@ -575,6 +569,7 @@ Permissions on single objects (django-guardian's grants), for users or groups.
 
 Privacy requests and retention across installed domains (GDPR's rights).
 
+- `ErasureHeld`: A person's data must be kept for now: nothing of it was erased (FIN-94).
 - `PersonalDataErased`: An aggregate's personal fields were erased, at a request or by retention.
 - `PersonalModel`: An aggregate of an installed domain with fields marked `Personal`.
 - `Policy`: A domain's `Retention`, resolved to a table and its dating column.
@@ -586,8 +581,8 @@ Privacy requests and retention across installed domains (GDPR's rights).
 - `export_subject`: Every field marked `Personal` about `subject`, as JSON-ready data.
 - `personal_models`: Every installed aggregate with personal fields.
 - `problems`: What keeps privacy requests or retention from working, as sentences.
-- `purge`: Apply every domain's `RETENTION`, on every database it uses.
-- `retention_policies`: Every installed domain's `RETENTION`, resolved.
+- `purge`: Apply every domain's `retention`, on every database it uses.
+- `retention_policies`: Every installed domain's `retention`, resolved.
 
 ## `domainkit.contrib.webhooks`
 
@@ -595,7 +590,7 @@ Outgoing webhooks: committed events, signed and delivered to subscribed URLs.
 
 - `InvalidSignature`: A delivery that is not signed with the secret, or is stale.
 - `UnsafeTarget`: A webhook URL that may not be called; the message never quotes it.
-- `WebhookSettings`: Where deliveries run, how often they are tried, and what they may reach.
+- `WebhooksSettings`: Where deliveries run, how often they are tried, and what they may reach.
 - `expose`: Send committed `event_type` events to the subscribers of `name`.
 - `new_secret`: Return a new random secret, `whsec_` and 32 bytes in base64.
 - `queue_deliveries`: Queue a delivery of one event to each subscriber; return how many.
@@ -616,23 +611,6 @@ The self-service webhooks API: a subject manages its own subscriptions only.
 - `owned_router`: The self-service routes, with `owner` naming whose subscriptions are whose.
 - `router`: The self-service routes, for subscriptions owned by the user's id.
 - `user_owner`: The owner of a user's subscriptions: the user's id, as text.
-
-## `domainkit.contrib.webhooks.guard`
-
-Which webhook URLs may be called: the guard against server-side request forgery.
-
-- `MAX_URL_LENGTH`: The longest URL a guarded call accepts, in characters.
-- `METADATA_ADDRESSES`: Build an immutable unordered collection of unique elements.
-- `METADATA_HOSTS`: Build an immutable unordered collection of unique elements.
-- `NAT64`: This class represents and manipulates 128-bit IPv6 networks.
-- `Address`: An IPv4 or IPv6 address.
-- `Network`: An IPv4 or IPv6 network.
-- `UnsafeTarget`: A webhook URL that may not be called; the message never quotes it.
-- `checked_address`: The address to connect to for `url`, once all of its host's pass.
-- `checked_url`: Parse `url` and check everything that does not need a lookup.
-- `judged`: The address whose kind decides: an IPv4 address inside an IPv6 one.
-- `lookup`: Every address `host` resolves to, on the guard's threads (`resolver`).
-- `refusal`: Why `address` may not be called, or None if it may.
 
 ## `domainkit.contrib.webhooks.signing`
 

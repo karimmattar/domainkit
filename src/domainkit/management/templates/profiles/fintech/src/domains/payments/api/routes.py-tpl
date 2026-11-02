@@ -17,11 +17,12 @@ from domainkit.ddd import DomainError
 from domainkit.http.access import HasPermissions, Require
 from domainkit.money import Money
 from fastapi import APIRouter, Depends, Header, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from domains.payments.application import services
 from domains.payments.application.commands import MakeTransfer, RegisterCard
 from domains.payments.domain.model import (
+    CURRENCIES,
     Card,
     CardId,
     CardNotFound,
@@ -82,10 +83,18 @@ class CardOut(BaseModel):
 
 
 class TransferIn(BaseModel):
-    """A transfer: how much, and to which of the caller's cards."""
+    """A transfer: how much, in a currency transfers are made in, and to which card."""
 
     card_id: UUID
     amount: Money
+
+    @field_validator("amount")
+    @classmethod
+    def _made_in(cls, amount: Money) -> Money:
+        """Refuse a currency transfers are not made in (422), before any step."""
+        if amount.currency.code not in CURRENCIES:
+            raise ValueError(f"Transfers are made in {', '.join(CURRENCIES)}.")
+        return amount
 
 
 class AuthorizationOut(BaseModel):

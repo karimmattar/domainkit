@@ -110,7 +110,22 @@ SETTLE_TIMEOUT: Final = 5.0
 SETTLE_TASK: Final = "domainkit.idempotency.settle"
 HEADER: Final = "idempotency-key"
 REPLAYED: Final = "Idempotent-Replayed"
-_STORED_HEADERS: Final = frozenset({"content-type", "location", "content-language"})
+_STORED_HEADERS: Final = frozenset(
+    {
+        "content-type",
+        "location",
+        "content-language",
+        # The replay stands for the answer: the version it made, how it may
+        # be cached, and a deprecation the route announced (WEB-21).
+        "etag",
+        "cache-control",
+        "vary",
+        "deprecation",
+        "sunset",
+        "link",
+    }
+)
+"""The headers of a kept response that its replays carry."""
 UNSEEN_BODIES: Final = frozenset(
     {"http.response.pathsend", "http.response.zerocopysend"}
 )
@@ -215,7 +230,7 @@ class _Spool:
         """Everything written, as one value."""
         if self._file is None:
             return b"".join(self._parts)
-        return await asyncio.to_thread(_read_all, self._file)
+        return await asyncio.to_thread(_read_all, self._file, self.size)
 
     def close(self) -> None:
         """Let go of what is held; the file, if any, is deleted."""
@@ -233,10 +248,14 @@ def _spill(parts: Iterable[bytes]) -> IO[bytes]:
     return file
 
 
-def _read_all(file: IO[bytes]) -> bytes:
-    """All of ``file``, from its start."""
+def _read_all(file: IO[bytes], size: int) -> bytes:
+    """The ``size`` bytes of ``file``, from its start.
+
+    Read by their size: an unsized ``read()`` grows its buffer as it goes,
+    and on Python 3.15 holds about a ninth more than the file for a time.
+    """
     file.seek(0)
-    return file.read()
+    return file.read(size)
 
 
 class Sweeps:

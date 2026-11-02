@@ -88,7 +88,7 @@ def register(config: AccountingSettings) -> None:
     A refused entry is dead-lettered at once (``REFUSALS``): running it
     again would be refused again, until someone changes the books
     (``messages --retry``). A posting that lost its race
-    ``ACCOUNTING.RETRY_ATTEMPTS`` times (``ConcurrentUpdate``) is retried
+    ``ACCOUNTING.MAX_ATTEMPTS`` times (``ConcurrentUpdate``) is retried
     by the worker, with its backoff: posting is idempotent by source and
     reference, so a retry books the entry once.
     """

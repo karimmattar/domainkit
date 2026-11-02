@@ -1,10 +1,13 @@
 """Settings of ``domainkit.contrib.messaging``: ``MESSAGING = {...}``."""
 
+import warnings
+from collections.abc import Mapping
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from domainkit.conf import DEFAULT_DB_ALIAS
+from domainkit.deprecation import DomainkitDeprecationWarning
 
 from .retry import MAX_DELAY
 
@@ -44,8 +47,20 @@ class MessagingSettings(BaseModel):
 
     At most 65,535: RabbitMQ's prefetch, which it sets, is a 16-bit count.
     """
-    SHUTDOWN_TIMEOUT: float = Field(default=20.0, ge=0, le=3600)
-    """Seconds a stopping worker lets running messages finish; the rest run again."""
+    DRAIN_TIMEOUT: float = Field(default=20.0, ge=0, le=3600)
+    """Seconds a stopping worker lets running messages finish; the rest run again.
+
+    0.12 called it ``SHUTDOWN_TIMEOUT``, the name of the process's whole
+    shutdown budget too; the old key still works, with a warning, until 2.0.
+    """
+    UNKNOWN_TARGET_GRACE: float = Field(default=3600.0, ge=0, le=MAX_DELAY)
+    """Seconds a message naming a task or handler no worker knows waits for one.
+
+    A rolling deploy's older workers do not know what the new code added;
+    the message comes back, with a doubling delay, until a worker that
+    knows it runs it, or this has passed: then it is dead-lettered. 0
+    dead-letters it at once.
+    """
     RETENTION_SECONDS: float = Field(default=7 * 24 * 3600.0, gt=0, le=MAX_DELAY)
     """How long finished messages are kept; dead ones are kept until retried."""
     CLEANUP_INTERVAL: float = Field(default=3600.0, gt=0, le=24 * 3600)
@@ -65,6 +80,24 @@ class MessagingSettings(BaseModel):
     """On PostgreSQL: commits wake idle workers at once (``LISTEN``/``NOTIFY``)."""
     METRICS_TTL: float = Field(default=15.0, ge=0, le=3600)
     """Seconds the outbox gauges are reused between scrapes (0: count every time)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def rename_shutdown_timeout(cls, data: object) -> object:
+        """Read 0.12's ``SHUTDOWN_TIMEOUT`` as ``DRAIN_TIMEOUT``, with a warning."""
+        if not isinstance(data, Mapping) or "SHUTDOWN_TIMEOUT" not in data:
+            return data
+        warnings.warn(
+            "MESSAGING.SHUTDOWN_TIMEOUT is now MESSAGING.DRAIN_TIMEOUT; "
+            "the old key is removed in domainkit 2.0.",
+            DomainkitDeprecationWarning,
+            stacklevel=2,
+        )
+        renamed = {
+            key: value for key, value in data.items() if key != "SHUTDOWN_TIMEOUT"
+        }
+        renamed.setdefault("DRAIN_TIMEOUT", data["SHUTDOWN_TIMEOUT"])
+        return renamed
 
     @model_validator(mode="after")
     def check_idle_polls(self) -> Self:

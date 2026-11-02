@@ -25,7 +25,8 @@ from domainkit.contrib.accounting import (
 )
 from domainkit.contrib.accounting.tables import entries
 from domainkit.contrib.approvals import (
-    CAPTURES,
+    CAPTURE_HOLD,
+    REVERSE_ENTRY,
     ApprovalRequest,
     ApprovalRequired,
     ApprovalsUnitOfWork,
@@ -33,7 +34,7 @@ from domainkit.contrib.approvals import (
     InterestedParty,
     InvalidArguments,
     Policy,
-    PolicyGone,
+    PolicyRemoved,
     RejectRequest,
     RequestStatus,
     RequestTampered,
@@ -88,7 +89,7 @@ async def hold_of(account_id: Any, amount: str, reference: str) -> Any:  # noqa:
 async def test_a_large_capture_runs_once_approved_and_a_small_one_at_once() -> None:
     """Over the threshold, a capture is a request like a posting; under, it runs.
 
-    Its reversal (what a capture posted, undone) is not asked again.
+    Its reversal moves as much back, so it needs approval too (FIN-88).
     """
     cash, sales = await books()
     small, large = (
@@ -105,7 +106,7 @@ async def test_a_large_capture_runs_once_approved_and_a_small_one_at_once() -> N
     with refused(ApprovalRequired):
         await capture_hold(capture, AccountingUnitOfWork())
 
-    request = await submit_command(CAPTURES, capture, maker="maker")
+    request = await submit_command(CAPTURE_HOLD, capture, maker="maker")
     assert request.policy == "accounting.large_capture"
     await approve(request, "ann")
     await approve(request, "bob")
@@ -115,11 +116,16 @@ async def test_a_large_capture_runs_once_approved_and_a_small_one_at_once() -> N
     async with AccountingUnitOfWork() as uow:
         captured = await uow.holds.get(large.id)
         assert captured.entry_id is not None
-    reversal = await reverse_entry(
-        ReverseEntry(entry_id=captured.entry_id, booked_on=TODAY),
-        AccountingUnitOfWork(),
-    )
-    assert reversal.reverses == captured.entry_id
+    undo = ReverseEntry(entry_id=captured.entry_id, booked_on=TODAY)
+    with refused(ApprovalRequired):
+        await reverse_entry(undo, AccountingUnitOfWork())
+    reversing = await submit_command(REVERSE_ENTRY, undo, maker="maker")
+    assert reversing.policy == "accounting.large_reversal"
+    await approve(reversing, "ann")
+    await approve(reversing, "bob")
+    await drain()
+    assert (await stored(reversing.id)).status is RequestStatus.EXECUTED
+    assert await count(entries, entries.c.reverses == captured.entry_id) == 1
 
 
 async def test_an_approved_run_books_only_what_it_approved() -> None:
@@ -135,7 +141,7 @@ async def test_an_approved_run_books_only_what_it_approved() -> None:
             hold_id=hold.id, counter_account_id=sales.id, booked_on=TODAY
         )
 
-    with running(uuid.uuid4(), CAPTURES, capture(first)), refused(ApprovalRequired):
+    with running(uuid.uuid4(), CAPTURE_HOLD, capture(first)), refused(ApprovalRequired):
         await capture_hold(capture(second), AccountingUnitOfWork())
     entry = sale(cash, sales, "5000.00", "s-1")
     with (
@@ -264,12 +270,12 @@ async def test_a_request_whose_policy_is_gone_is_neither_decided_nor_run() -> No
     registry.clear()
     setup()
     with refused(
-        PolicyGone,
+        PolicyRemoved,
         r"^The request's guard or policy no longer exists; it is neither decided "
         r"nor run\.$",
     ):
         await approve(pending, "ann")
-    with refused(PolicyGone):
+    with refused(PolicyRemoved):
         await reject_request(
             RejectRequest(request_id=pending.id, approver="ann", reason="No."),
             ApprovalsUnitOfWork(),

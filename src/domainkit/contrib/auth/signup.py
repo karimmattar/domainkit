@@ -132,7 +132,6 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
         [address_key(request, "signup"), email_key("signup", email)],
         action="auth.signup",
         detail="Too many requests for mail; try again later.",
-        code="throttled",
     )
     model = get_user_model()
     fields = {model.USERNAME_FIELD: body.username, cast(str, model.EMAIL_FIELD): email}
@@ -191,7 +190,6 @@ async def confirm_signup(body: SignupConfirmIn, request: Request) -> None:
         address_key(request, "signup-confirm"),
         action="auth.signup",
         detail="Too many attempts; try again later.",
-        code="throttled",
     )
     await audit_refusal("auth.signup", "invalid_token")
     raise InvalidLink
@@ -291,9 +289,14 @@ def _account(
 async def _make_account(
     uow: AuthUnitOfWork, pending: PendingSignup, password: PasswordHash
 ) -> None:
-    """Add the user the signup asked for, its address verified by the link."""
+    """Add the user the signup asked for, its address verified by the link.
+
+    The password is kept in the history, as every password stored is
+    (``AUTH.PASSWORD_HISTORY``, AUTH-15).
+    """
     user = _account(uow.users.model, pending, password)
     # Startup checks that the user model can (AbstractUser can).
     cast(AbstractUser, user).verify_email()
     await uow.users.add(user)
+    await uow.passwords.record(user.id, password)
     user.record(UserSignedUp(user_id=user.id))

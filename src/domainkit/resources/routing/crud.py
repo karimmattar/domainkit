@@ -21,7 +21,9 @@ from typing import TYPE_CHECKING
 from fastapi import Response, status
 from pydantic import BaseModel
 
+from domainkit.ddd.exceptions import ConcurrentUpdate
 from domainkit.ddd.fields import FieldInfo, fields_of
+from domainkit.http.access import Rule
 
 from ..access import ADD, CHANGE, DELETE
 from ..events import RecordChanged, RecordCreated, RecordDeleted
@@ -201,11 +203,12 @@ class CrudRoutes:
         given = changes(context.body)
         if router.policy is not None:
             await router.policy.check_changes(request, given)
+        seen = await self.checked(context, self.changing)
 
         async def apply() -> Aggregate:
             async with context.uow as uow:
                 aggregate = await reach.load(router, uow, request, context.ids)
-                await reach.check_object(request, aggregate, self.changing)
+                _unchanged(aggregate, seen)
                 names = []
                 for name, value in given.items():
                     new = to_domain(self.fields[name], value)
@@ -229,15 +232,38 @@ class CrudRoutes:
         aggregate = await reach.conditionally(router, context, apply)
         return await presenting.answer(router, context, aggregate, DEFAULT, 200)
 
+    async def checked(self, context: RouteContext, rules: Sequence[Rule]) -> int | None:
+        """Ask ``rules`` about the aggregate before a write; the version they saw.
+
+        The aggregate is read in a unit of work of its own, closed before
+        the rules run, as for a command (``reach.on_one``): a rule may read
+        the database itself (object permission grants), and must not wait
+        for a connection while this request holds one (WEB-16). None when
+        no rule looks at objects.
+
+        Raises:
+            NotFound: The aggregate is out of the caller's reach.
+            NotAuthenticated: An anonymous caller was refused the aggregate.
+            PermissionDenied: A rule refuses the caller the aggregate.
+        """
+        if not reach.asks_objects(rules):
+            return None
+        async with context.uow as uow:
+            aggregate = await reach.load(self.router, uow, context.request, context.ids)
+        await reach.check_object(context.request, aggregate, rules)
+        version: int = aggregate.version
+        return version
+
     async def deleted(self, context: RouteContext) -> Response:
         """``DELETE``: remove the aggregate; ``204``."""
         router = self.router
         request = context.request
+        seen = await self.checked(context, self.deleting)
 
         async def apply() -> None:
             async with context.uow as uow:
                 aggregate = await reach.load(router, uow, request, context.ids)
-                await reach.check_object(request, aggregate, self.deleting)
+                _unchanged(aggregate, seen)
                 aggregate.record(
                     RecordDeleted(model=self.label, record_id=str(aggregate.id))
                 )
@@ -246,6 +272,16 @@ class CrudRoutes:
 
         await reach.conditionally(router, context, apply)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _unchanged(aggregate: Aggregate, seen: int | None) -> None:
+    """Refuse to write an aggregate that changed since the rules saw it.
+
+    Raises:
+        ConcurrentUpdate: Its version is not ``seen`` (None: nothing to hold).
+    """
+    if seen is not None and aggregate.version != seen:
+        raise ConcurrentUpdate(reach.CHANGED_SINCE_CHECKED)
 
 
 def _check_plain(

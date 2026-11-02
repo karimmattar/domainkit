@@ -16,7 +16,7 @@ requests.
 """
 
 from collections.abc import Callable, Sequence
-from typing import Final, Protocol, runtime_checkable
+from typing import ClassVar, Final, Protocol, runtime_checkable
 
 from starlette.requests import HTTPConnection
 
@@ -46,8 +46,11 @@ class HasModelPermission(BasePermission):
     """Users granted ``<domain>.<action>_<model>``, the model resolved per request.
 
     It asks ``HasPermissions`` for the key, so whatever that rule checks
-    (the backends, and any limit on the credentials) applies alike.
+    (the backends, and any limit on the credentials) applies alike: it
+    checks scopes, so credentials limited to the key pass it (WEB-15).
     """
+
+    bounds_scopes: ClassVar[bool] = True
 
     def __init__(self, action: str, model: ModelLike) -> None:
         """Check ``action`` on ``model``."""

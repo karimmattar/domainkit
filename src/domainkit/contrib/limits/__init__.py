@@ -24,10 +24,12 @@ over HTTP, by model permission. See ``docs/contrib/limits.md`` and ADR 0123.
 """
 
 from .exceptions import (
+    CurrencyNotLimited,
     InvalidLimit,
     LimitExceeded,
     LimitNotFound,
     LimitTaken,
+    MovementOutOfRange,
     TransactionLimitExceeded,
 )
 from .models import (
@@ -53,13 +55,14 @@ from .services import (
 )
 from .settings import LimitDefault, LimitsSettings
 from .uow import LimitsUnitOfWork
-from .usage import Usage, check, consume, purge_usage, release, usage_of
+from .usage import Usage, check_movements, consume, purge_usage, release, usage_of
 
 __all__ = [
     "ACCOUNT",
     "ACTOR",
     "HOLDER",
     "ChangeLimit",
+    "CurrencyNotLimited",
     "Direction",
     "InvalidLimit",
     "Limit",
@@ -73,13 +76,14 @@ __all__ = [
     "LimitsSettings",
     "LimitsUnitOfWork",
     "Movement",
+    "MovementOutOfRange",
     "RemoveLimit",
     "SetLimit",
     "TransactionLimitExceeded",
     "Usage",
     "Window",
     "change_limit",
-    "check",
+    "check_movements",
     "consume",
     "define_limit",
     "purge_usage",

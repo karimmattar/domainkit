@@ -14,7 +14,10 @@ Staff hand out only what they have. Only superusers make, unmake, or
 change superusers. Other staff cannot grant permissions, or groups with
 permissions, they lack themselves, and cannot change a user or group that
 holds such a permission: setting a password is as good as becoming the
-user. Where ``domainkit.contrib.approvals`` guards making superusers
+user. Grants on single objects count as model permissions do: staff
+change no user, and join no one to a group, holding a grant on an object
+they lack, unless they hold its permission on the whole model (AUTH-14).
+Where ``domainkit.contrib.approvals`` guards making superusers
 (``APPROVALS.SUPERUSER_APPROVALS``), no one makes one here
 (``approval_required``): an approved ``auth.grant_superuser`` request
 does. Changes are recorded as events, so the audit trail shows who
@@ -25,7 +28,7 @@ import dataclasses
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Annotated, Any, Final, Self, get_type_hints
+from typing import Annotated, Any, Final, Self, cast, get_type_hints
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
@@ -50,7 +53,14 @@ from domainkit.resources.access import ModelLike
 from domainkit.utils.decimals import jsonable
 
 from .access import IsAdminUser, IsSuperuser
-from .backends import ModelBackend, get_all_permissions, get_backends
+from .backends import (
+    ModelBackend,
+    ObjectGrant,
+    backends_without_object_grants,
+    get_all_permissions,
+    get_backends,
+    object_grants,
+)
 from .events import UserLoggedOut
 from .exceptions import (
     GroupNotFound,
@@ -446,6 +456,7 @@ async def set_user_groups(
         wanted = await uow.groups.get_many_by_name(body.groups)
         added = [group for group in wanted if group not in user.groups]
         await _may_grant(actor, _keys(*added))
+        await _may_hold(actor, await _grants_of(*added))
         for group in [group for group in user.groups if group not in wanted]:
             user.leave(group)
         for group in added:
@@ -585,9 +596,9 @@ def _approval_needed() -> None:
     With ``APPROVALS.SUPERUSER_APPROVALS``, an approved request makes them.
     """
     if registry.is_installed(APPROVALS):
-        from domainkit.contrib.approvals import SUPERUSERS, refuse_if_guarded
+        from domainkit.contrib.approvals import GRANT_SUPERUSER, refuse_if_guarded
 
-        refuse_if_guarded(SUPERUSERS)
+        refuse_if_guarded(GRANT_SUPERUSER)
 
 
 def _superusers_only(actor: AnyUser, message: str) -> None:
@@ -617,11 +628,9 @@ async def _may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
             "Only superusers may change inactive users while other backends "
             "grant permissions.",
         )
-    await _may_grant(
-        actor,
-        granted | _keys(*user.groups),
-        "You can only change users whose permissions you have",
-    )
+    refusal = "You can only change users whose permissions you have"
+    await _may_grant(actor, granted | _keys(*user.groups), refusal)
+    await _may_hold(actor, await object_grants(user), refusal)
 
 
 async def _not_the_last_superuser(uow: AuthUnitOfWork) -> None:
@@ -633,12 +642,10 @@ async def _not_the_last_superuser(uow: AuthUnitOfWork) -> None:
 
 
 async def _may_change_group(actor: AnyUser, group: Group) -> None:
-    """Refuse to change a group that grants what ``actor`` lacks."""
-    await _may_grant(
-        actor,
-        group.permission_keys(),
-        "You can only change groups whose permissions you have",
-    )
+    """Refuse to change a group that grants what ``actor`` lacks, on objects too."""
+    refusal = "You can only change groups whose permissions you have"
+    await _may_grant(actor, group.permission_keys(), refusal)
+    await _may_hold(actor, await object_grants(group), refusal)
 
 
 async def _may_grant(
@@ -651,6 +658,45 @@ async def _may_grant(
         return
     if missing := sorted(set(keys) - await get_all_permissions(actor)):
         raise PermissionDenied(f"{refusal}; you lack {', '.join(missing)}.")
+
+
+async def _may_hold(
+    actor: AnyUser,
+    grants: Iterable[ObjectGrant],
+    refusal: str = "You can only grant permissions you have",
+) -> None:
+    """Refuse to hand out (or touch) grants on objects ``actor`` does not hold.
+
+    A grant is held through its permission on the whole model, or the same
+    grant on the object (``object_grants``). Superusers hold every one.
+    While a backend does not list its grants (``object_grants`` left as
+    ``BaseBackend``'s), only superusers pass (SEC-16a-5). A refusal names
+    how many grants are lacked, not the objects.
+    """
+    if actor.is_superuser:
+        return
+    if unlisted := backends_without_object_grants():
+        raise PermissionDenied(
+            "Only superusers may change users and groups while a backend does "
+            f"not list its grants on objects (object_grants): {', '.join(unlisted)}."
+        )
+    wanted = set(grants)
+    if not wanted:
+        return
+    model = await get_all_permissions(actor)
+    # Staff are stored users: the routes' rules refuse anyone else.
+    held = await object_grants(cast(AbstractBaseUser, actor))
+    lacked = {grant for grant in wanted if grant.permission not in model} - held
+    if lacked:
+        # How many, not which: staff need not learn where the target holds grants.
+        raise PermissionDenied(
+            f"{refusal}; you lack {len(lacked)} of its grants on single objects."
+        )
+
+
+async def _grants_of(*groups: Group) -> set[ObjectGrant]:
+    """Every grant on objects the groups hold."""
+    return {grant for group in groups for grant in await object_grants(group)}
 
 
 def _keys(*groups: Group) -> set[str]:

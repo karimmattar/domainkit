@@ -5,7 +5,16 @@ from config.settings.base import *
 ENVIRONMENT = "test"
 ALLOWED_HOSTS = ["testserver"]
 SECRET_KEY = "domainkit-insecure-test-key"
-DATABASES = {"default": {"URL": "sqlite+aiosqlite:///:memory:"}}
+# In-memory SQLite, unless {{ prefix }}TEST_DATABASE_URL names PostgreSQL, as
+# production runs: then {{ prefix }}TEST_DATABASE_OWNER_URL names the schema
+# owner, and the tests run as the application's own row-level role
+# (docs/testing.md, "Test databases").
+DATABASES = {
+    "default": {
+        "URL": env.str("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:"),
+        "MIGRATION_URL": env.str("TEST_DATABASE_OWNER_URL", None),
+    }
+}
 LEDGERS = {"evidence": {"URL": "memory://"}}
 # One hash iteration: fast tests. Staging and production refuse it.
 AUTH = {

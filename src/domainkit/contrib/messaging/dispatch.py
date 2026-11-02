@@ -109,13 +109,13 @@ class BrokerWorkers:
         self.budget = budget or Budget(config.CONCURRENCY)
         self._outboxes = {worker.database: worker for worker in workers}
         for worker in self.workers:
-            worker.relay_promoted = self._relayer(worker)
+            worker._relay_promoted = self._relayer(worker)
 
     def outbox(self, database: str) -> Worker | None:
         """The worker of ``database``'s outbox, if it hosts domains."""
         if database not in self._outboxes and database in _hosting_aliases():
             worker = Worker(self.config, database=database, budget=self.budget)
-            worker.relay_promoted = self._relayer(worker)
+            worker._relay_promoted = self._relayer(worker)
             self._outboxes[database] = worker
         return self._outboxes.get(database)
 
@@ -127,14 +127,14 @@ class BrokerWorkers:
         """
 
         async def relay(promoted: Promoted) -> None:
-            await worker.relay_ids(brokers[self.alias], [promoted.id])
+            await worker._relay_ids(brokers[self.alias], [promoted.id])
 
         return relay
 
     async def run(self, stop: asyncio.Event) -> None:
         """Relay and consume until ``stop`` is set; then finish the running ones.
 
-        Running deliveries get ``SHUTDOWN_TIMEOUT`` seconds, counted from the
+        Running deliveries get ``DRAIN_TIMEOUT`` seconds, counted from the
         stop; then, or when ``run`` itself is cancelled, the rest are
         cancelled, and their messages go back to the outbox. A broker that
         is lost or stalled at shutdown cannot skip that drain, nor hold it
@@ -190,9 +190,9 @@ class BrokerWorkers:
         await task
 
     async def _stop_consuming(self, subscription: Subscription) -> float:
-        """Stop new deliveries; return what is left of ``SHUTDOWN_TIMEOUT``."""
+        """Stop new deliveries; return what is left of ``DRAIN_TIMEOUT``."""
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.config.SHUTDOWN_TIMEOUT
+        deadline = loop.time() + self.config.DRAIN_TIMEOUT
         try:
             async with asyncio.timeout(STOP_CONSUMING_TIMEOUT):
                 await subscription.cancel()
@@ -221,9 +221,9 @@ class BrokerWorkers:
             try:
                 while not stop.is_set():
                     wake.clear()
+                    await worker._schedule()
                     try:
-                        await worker.schedule_periodic()
-                        relayed = await worker.relay(broker, batch)
+                        relayed = await worker._relay(broker, batch)
                     except Exception as exc:  # noqa: BLE001 - logged; it waits.
                         await outage.failed(exc, stop)
                         continue
@@ -293,12 +293,12 @@ class BrokerWorkers:
                 "Dropped message %s: %r hosts no outbox here", message_id, database
             )
             return
-        claimed = await worker.take_over(message_id, relay_lock)
+        claimed = await worker._take_over(message_id, relay_lock)
         if claimed is None:
             observe_skipped()
             logger.debug("Skipped message %s: done, running, or moved on", message_id)
         else:
-            await worker.process(claimed)
+            await worker._process(claimed)
 
 
 class _Consuming:
@@ -500,7 +500,7 @@ class CommitPublisher:
             except BrokerError:
                 observe_left("breaker", len(ids))
                 return
-        await self._worker(database).relay_ids(broker, ids)
+        await self._worker(database)._relay_ids(broker, ids)
 
     def _broker(self) -> Watched:
         """``BROKER``, watched by the breaker; replaced with the broker itself."""

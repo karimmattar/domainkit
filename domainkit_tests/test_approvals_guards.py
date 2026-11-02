@@ -21,16 +21,15 @@ from domainkit.contrib.approvals import (
     GrantSuperuser,
     Guard,
     Policy,
-    PolicyGone,
+    PolicyRemoved,
     Threshold,
     UnknownAction,
     approved,
     guard,
     guards,
-    on_guard,
     requires_approval,
 )
-from domainkit.contrib.approvals.guards import check, guard_for, running
+from domainkit.contrib.approvals.guards import check, guard_for, on_guard, running
 from domainkit.ddd import Command
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsAuthenticated
@@ -144,13 +143,22 @@ def test_a_policy_takes_rules_and_their_classes() -> None:
 
 
 def test_thresholds_sum_per_currency_and_never_mix_them() -> None:
-    """Over means more than the limit, in that currency; others are never over."""
+    """Over means more than the limit, in that currency; others are always over.
+
+    A currency no amount names fails closed (FIN-89), unless ``"*"`` gives
+    one for all of them, read in each one's own units.
+    """
     threshold = Threshold({"USD": "100", "EGP": Money.of("5000", "EGP")})
     usd = Money.of("50", "USD")
 
     assert not threshold.exceeded_by([usd, usd])
     assert threshold.exceeded_by([usd, usd, Money.of("0.01", "USD")])
-    assert not threshold.exceeded_by([Money.of("1000000", "EUR")])
+    assert threshold.exceeded_by([Money.of("0.01", "EUR")])
+    every = Threshold({"*": "1000", "USD": "100"})  # "*" first: USD still read.
+    assert not every.exceeded_by([Money.of("1000", "EUR"), usd])
+    assert every.exceeded_by([Money.of("1000.01", "EUR")])
+    assert every.exceeded_by([Money.of("100.01", "USD")])
+    assert every.any == Decimal(1000)
     assert not threshold.exceeded_by([Money.of("5000", "EGP")])
     assert threshold.exceeded_by([Money.of("5000.01", "EGP")])
     assert threshold.limits["USD"].amount == Decimal("100.00")
@@ -164,6 +172,9 @@ def test_thresholds_sum_per_currency_and_never_mix_them() -> None:
         {"USD": "-1"},
         {"USD": 1.5},
         {"USD": Money.of("1", "EUR")},
+        {"*": "-1"},
+        {"*": "1e3"},
+        {"*": 1000},
     ],
 )
 def test_a_threshold_is_an_exact_amount_of_its_currency(
@@ -246,7 +257,7 @@ def test_two_guards_of_one_name_and_none_without_policies_are_refused(
     with pytest.raises(ImproperlyConfigured, match="Two guards"):
         guards()
     with pytest.raises(ImproperlyConfigured, match="at least one policy"):
-        Guard("tests.empty", Refund, refund, object, ())
+        Guard("tests.refund", Refund, refund, object, ())
     with pytest.raises(
         ImproperlyConfigured,
         match=r"^A guarded action's name is dotted lower-case words "
@@ -613,7 +624,7 @@ async def test_approvers_by_group_and_the_rule_asked_of_them(installed: None) ->
     for gone in (request(action="tests.gone"), request(policy="tests.gone")):
         for asked in (MayApprove(), IsApprover()):
             with pytest.raises(
-                PolicyGone,
+                PolicyRemoved,
                 match=r"^The request's guard or policy no longer exists; it is "
                 r"neither decided nor run\.$",
             ):
@@ -757,3 +768,65 @@ def test_names_and_thresholds_at_their_bounds() -> None:
         Guard("Refund", Refund, refund, object, (POLICY,))
     assert Threshold({"USD": "0"}).exceeded_by([Money.of("0.01", "USD")])
     assert Threshold({"USD": "0.50"}).limits["USD"] == Money.of("0.50", "USD")
+
+
+async def test_without_auth_a_runs_maker_is_left_to_the_project(
+    installed: None,
+) -> None:
+    """No user store to ask: a maker's id, a user's or not, is not checked."""
+    from domainkit.contrib.approvals.services import _check_maker
+
+    registered = register(permission="tests.add_refund")
+
+    await _check_maker(registered, str(uuid.uuid4()))  # Not refused.
+    await _check_maker(registered, "a-service")
+
+
+async def test_an_approver_rule_is_asked_about_the_request(installed: None) -> None:
+    """A policy's own rule decides with the connection, the principal, the request."""
+    from domainkit.contrib.approvals.models import ApprovalRequest
+    from domainkit.contrib.approvals.rules import IsApprover
+    from domainkit.http.access import BasePermission
+
+    asked: list[tuple[object, object, object]] = []
+
+    class Treasurer(BasePermission):
+        async def has_permission(self, request: Any, user: Any) -> bool:  # noqa: ANN401
+            return True
+
+        async def has_object_permission(
+            self,
+            request: Any,  # noqa: ANN401
+            user: Any,  # noqa: ANN401
+            obj: object,
+        ) -> bool:
+            asked.append((request, user, obj))
+            return True
+
+    guard(
+        "tests.refund",
+        refund,
+        unit_of_work=object,
+        policies=[Policy("tests.refunds", approver_rule=Treasurer())],
+        domain="alpha",
+    )
+    request = ApprovalRequest.submit(
+        "tests.refund",
+        {},
+        maker="m",
+        policy="tests.refunds",
+        required=1,
+        permission=None,
+        group=None,
+        expires_at=clock.now() + timedelta(days=1),
+    )
+    connection, member = object(), someone()
+
+    assert await IsApprover().has_object_permission(connection, member, request)  # type: ignore[arg-type]
+    assert asked == [(connection, member, request)]
+
+
+def test_a_guard_keeps_the_rule_its_maker_must_meet(installed: None) -> None:
+    """``maker_rule`` is the guard's, as given."""
+    rule = IsAuthenticated()
+    assert register(maker_rule=rule).maker_rule is rule

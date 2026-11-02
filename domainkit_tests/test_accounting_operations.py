@@ -16,13 +16,15 @@ from sqlalchemy.exc import OperationalError
 
 from domainkit import setup
 from domainkit.apps import registry
-from domainkit.apps.hooks import on_erase_subject, on_export_subject
+from domainkit.apps.hooks import on_erase_subject, on_export_subject, on_retain_subject
 from domainkit.checks import CheckFailed
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import (
     AccountingUnitOfWork,
+    AccountStatus,
     AccountType,
+    CloseAccount,
     InsufficientFunds,
     Line,
     PeriodNotFound,
@@ -30,6 +32,7 @@ from domainkit.contrib.accounting import (
     PostEntry,
     ReferenceReused,
     ReleaseHold,
+    close_account,
     expire_holds,
     general_ledger,
     place_hold,
@@ -49,6 +52,7 @@ from domainkit.contrib.accounting.tables import accounts, postings, statement_li
 from domainkit.contrib.accounting.tasks import EXPIRE_HOLDS, POST_ENTRY
 from domainkit.contrib.messaging.registry import get_task
 from domainkit.contrib.messaging.retry import retryable
+from domainkit.contrib.privacy import ErasureHeld
 from domainkit.db import connections
 from domainkit.ddd import ConcurrentUpdate
 from domainkit.exceptions import ImproperlyConfigured
@@ -388,7 +392,12 @@ async def test_a_holders_accounts_are_exported_oldest_first_then_by_id(
 
 @pytest.mark.usefixtures("books")
 async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
-    """Export lists their accounts and postings, in order; erasure keeps the books."""
+    """Export lists their accounts and postings, in order; erasure keeps the books.
+
+    Erasure is held while one of their accounts has money on it, also when
+    it erases (SEC-16b-4); done, it names one pseudonym as the holder of
+    all of them (FIN-94), and closes them.
+    """
     await period()
     bank = await account("1000")
     with freeze_time(NOW + timedelta(hours=1)):
@@ -429,11 +438,36 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
             early = entry.id
     (export,) = on_export_subject.of("accounting")
     (erase,) = on_erase_subject.of("accounting")
+    (hold,) = on_retain_subject.of("accounting")
+    assert await hold.call("subject-1", "asked") == (
+        "Holds an open account with money on it or held: close it first."
+    )
+    assert await hold.call("subject-2", "asked") is None
 
     exported = await export.call("subject-1")
     nothing = await export.call("subject-2")
-    erased = await erase.call("subject-1", "asked")
-    again = await erase.call("subject-1", "asked")
+    with refused(ErasureHeld) as held:  # Checked again as it erases: 8.00 owed.
+        await erase.call("subject-1", "asked")
+    payee = await account("3000")
+    with freeze_time(NOW + timedelta(minutes=5)):
+        await post_entry(
+            PostEntry(
+                source="tests",
+                reference="paid-out",
+                booked_on=date(2026, 10, 21),
+                lines=(
+                    Line.debit(wallet.id, usd("8")),
+                    Line.credit(payee.id, usd("8")),
+                ),
+            ),
+            AccountingUnitOfWork(),
+        )
+    with freeze_time(NOW + timedelta(minutes=6)):
+        old = await account("2002", type=AccountType.LIABILITY, holder="subject-1")
+        await close_account(CloseAccount(account_id=old.id), AccountingUnitOfWork())
+    with freeze_time(NOW + timedelta(minutes=10)):
+        erased = await erase.call("subject-1", "asked")
+        again = await erase.call("subject-1", "asked")
 
     first, second = cast(list[dict[str, Any]], exported["accounts"])
     assert first == {
@@ -462,13 +496,27 @@ async def test_a_holders_accounts_are_exported_and_unlinked() -> None:
         ("late", "m"),
         ("last", ""),
     ]
-    assert (nothing, erased, again) == ({}, {"accounts": 2}, {})
+    assert held.value.held == {  # type: ignore[attr-defined]
+        "accounting": "Holds an open account with money on it or held: close it first."
+    }
+    assert (nothing, erased, again) == ({}, {"accounts": 3}, {})
     async with AccountingUnitOfWork(readonly=True) as uow:
         stored = await uow.accounts.get(wallet.id)
-    assert (stored.holder, stored.version, stored.balance) == (
-        None,
-        5,
-        Decimal("8.0000"),
+        empty = await uow.accounts.get(savings.id)
+        closed = await uow.accounts.get(old.id)
+        others = await uow.accounts.get(bank.id)  # Funded, no holder's: open.
+    assert stored.holder is not None
+    assert stored.holder.startswith("erased:")
+    assert (empty.holder, stored.version, stored.balance) == (
+        stored.holder,
+        6,
+        Decimal("0.0000"),
+    )
+    assert {stored.status, empty.status} == {AccountStatus.CLOSED}
+    assert (stored.closed_at, closed.closed_at, others.status) == (
+        NOW + timedelta(minutes=10),
+        NOW + timedelta(minutes=6),
+        AccountStatus.OPEN,
     )
     assert await export.call("subject-1") == {}
 
@@ -944,5 +992,37 @@ async def test_verify_finds_a_held_amount_its_holds_do_not_add_up_to() -> None:
 
     assert [(p.kind, p.id, p.detail) for p in problems] == [
         ("held_differs", str(card.id), "1000: held 1.0000, active holds 5.0000"),
-        ("held_differs", str(other.id), "1001: held 4.0000, active holds 0"),
+        ("held_differs", str(other.id), "1001: held 4.0000, active holds 0.0000"),
     ]
+
+
+@pytest.mark.usefixtures("books")
+async def test_only_an_open_account_with_money_on_it_or_held_holds_an_erasure() -> None:
+    """Empty, or closed: no hold; a balance, or a hold alone: held (FIN-94)."""
+    from domainkit.contrib.accounting.personal import hold_erasure
+
+    await period()
+    bank = await account("1000")
+    empty = await account("2001", type=AccountType.LIABILITY, holder="empty")
+    held = await account("2002", type=AccountType.LIABILITY, holder="held")
+    funded = await account("2003", type=AccountType.LIABILITY, holder="funded")
+    await post_entry(
+        PostEntry(
+            source="tests",
+            reference="fund",
+            booked_on=date(2026, 10, 10),
+            lines=(Line.debit(bank.id, usd("5")), Line.credit(funded.id, usd("5"))),
+        ),
+        AccountingUnitOfWork(),
+    )
+    await place_hold(
+        PlaceHold(account_id=held.id, amount=usd("2"), source="cards", reference="h"),
+        AccountingUnitOfWork(),
+    )
+    await close_account(CloseAccount(account_id=empty.id), AccountingUnitOfWork())
+    reason = "Holds an open account with money on it or held: close it first."
+
+    assert await hold_erasure("empty") is None
+    assert await hold_erasure("nobody") is None
+    assert await hold_erasure("held") == reason
+    assert await hold_erasure("funded") == reason

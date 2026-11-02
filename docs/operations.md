@@ -5,7 +5,7 @@ runs, how to configure it, how to change its schema without downtime, what
 to watch, and how to back it up. It orders what the reference pages say,
 and links them for the detail. [runbook.md](runbook.md) is what to do when
 an alarm fires; [security.md](security.md) is the hardening checklist;
-[upgrading.md](upgrading.md) moves a project to a new minor version.
+[upgrading.md](upgrading.md) moves a project to a new version.
 
 ## What runs
 
@@ -123,7 +123,12 @@ rollout, as a job, not in each web process's start:
    prints the SQL, for review, without touching the schema.
 2. The migration job runs `python manage.py migrate` with the new code,
    while the old code still serves.
-3. The new code rolls out.
+3. The new code rolls out. With messaging, roll the workers out first
+   when the release adds tasks or durable handlers, and the web processes
+   first when it removes them: a worker that does not know a message's
+   task gives it back, and dead-letters it after
+   `MESSAGING.UNKNOWN_TARGET_GRACE`
+   ([messaging.md](contrib/messaging.md)).
 
 Between steps 2 and 3, the old code runs against the new schema. Keep each
 release's schema change one the old code survives, and spread a breaking
@@ -164,7 +169,7 @@ another once its lease expires, so handlers must be idempotent.
 - **More throughput.** Add worker processes; they share the outbox safely.
   Give a busy queue workers of its own with `--queue`.
 - **Shutdown.** A stopping worker gives running messages
-  `MESSAGING.SHUTDOWN_TIMEOUT` (20 seconds), then shuts down within
+  `MESSAGING.DRAIN_TIMEOUT` (20 seconds), then shuts down within
   `SHUTDOWN_TIMEOUT`: give worker pods a grace period of 45 seconds
   ([runtime.md](runtime.md#workers-and-the-outbox)).
 - **Metrics.** `runworker --metrics-port 9100` serves the worker's
@@ -229,6 +234,12 @@ and test restores.
   outbox's database in the same backup as the domains' tables when they
   are one database, so a restore never holds a change without its
   messages, or messages without their change.
+- **The key service.** With `domainkit.contrib.keys`, a backup opens only
+  with the data keys that sealed it: keep `KEYS.DATA_KEYS` (wrapped) with
+  the configuration's history, and never destroy a KEK version in the key
+  service while a backup still needs it. A subject's key is in the
+  backup, in the database it seals: crypto-shredding reaches a backup
+  only when its erasures are applied to it (below).
 - **The ledger.** Back up immudb as its documentation says. Its state
   must never go back: a restored ledger that is older than what the
   service verified before is what a rollback attack looks like.
@@ -239,6 +250,13 @@ and test restores.
   do not try to make it go away. Messages that ran after the restore point
   run again (handlers are idempotent), and messages written after it are
   lost with their changes.
+- **Erasures after a restore.** A backup from before an erasure still
+  holds the person's keys and their values (crypto-shredding reaches only
+  copies made afterwards). Before restoring, list the erasures made since
+  the backup's time (`manage.py auditlog --action privacy.erase`), keep the
+  list outside the databases being restored, and run `manage.py privacy
+  erase --subject <id>` for each once restored
+  ([contrib/keys.md](contrib/keys.md#backups-taken-before-an-erasure)).
 - **SQLite** is for development and tests: one file, on one host.
 - **Fixtures are not backups.** `loaddata` only adds rows (`--replace`
   replaces stored ones), and writes no guarded table (users, permissions,
@@ -308,16 +326,22 @@ starting points; tune them to the service.
 | `cache_errors_total` | it grows | [A cache fails](runbook.md#a-cache-fails) |
 | `db_pool_connections{state="checked_out"}` | at the pool's size for minutes | [Requests are shed](runbook.md#requests-are-shed) |
 | `tasks_restarted_total` | it grows | [A background task restarts](runbook.md#a-background-task-restarts) |
+| `messaging_outbox_messages{status="held"}` | it does not fall for an hour while pending messages run | [A key's messages stall](runbook.md#a-keys-messages-stall) |
 
 `auditverify` failing, and `/ready` answering `503` on every replica, are
-alarms too.
+alarms too; so are a process that fails to start with `KeyProviderError`
+([The key service is unreachable](runbook.md#the-key-service-is-unreachable)),
+and `manage.py accounting verify`, run daily where the ledger is
+installed, exiting 1 ([The ledger does not verify](runbook.md#the-ledger-does-not-verify)).
 
 ## Upgrades
 
-Upgrade one minor version at a time, reading
-[upgrading.md](upgrading.md): each **Breaking** change says how to keep
-the old behaviour, and each deprecated name works, with a warning, until
-the next minor. Run the test suite with deprecations as errors
-(`pytest -W error::DeprecationWarning`) to find the deprecated names a
-project still uses, then `makemigrations` (a contrib app's tables may have changed) and
-`check` with the production settings, before the rollout.
+Read [upgrading.md](upgrading.md) for the version, and follow its steps:
+within 1.x a minor release breaks nothing, and each deprecated name works,
+with a warning, until 2.0; from 0.12, its "0.12 to 1.0" section is one
+upgrade, applied in the order it gives. Find the deprecated names a
+project still uses with the tests and
+`-W error::domainkit.deprecation.DomainkitDeprecationWarning`, run
+`makemigrations` and `migrate` (a contrib app's tables may have changed)
+before the tests, and `check` with the production settings, before the
+rollout.

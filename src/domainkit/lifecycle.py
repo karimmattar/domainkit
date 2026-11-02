@@ -66,7 +66,6 @@ __all__ = [
     "closers",
     "register",
     "serving",
-    "shutdown_timeout",
     "unregister",
 ]
 

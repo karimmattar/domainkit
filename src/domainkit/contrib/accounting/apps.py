@@ -8,6 +8,7 @@ from domainkit.apps.hooks import (
     on_deployment_warnings,
     on_erase_subject,
     on_export_subject,
+    on_retain_subject,
     on_startup,
 )
 from domainkit.checks import CheckMessage
@@ -46,6 +47,7 @@ class AccountingConfig(DomainConfig):
         start_mappers()
         on_migrated(protect)
         on_startup(check_protection)
+        on_retain_subject(self.hold_erasure)
         on_erase_subject(self.erase_holder)
         on_export_subject(self.export_holder)
         on_deployment_warnings(self.weak_settings)
@@ -78,8 +80,14 @@ class AccountingConfig(DomainConfig):
             )
         ]
 
+    async def hold_erasure(self, subject: str, reason: str) -> str | None:
+        """Hold the erasure of a holder of an open account with money on it."""
+        from .personal import hold_erasure
+
+        return await hold_erasure(subject)
+
     async def erase_holder(self, subject: str, reason: str) -> Mapping[str, int]:
-        """Unlink ``subject`` from the accounts kept for them; the books stay."""
+        """Pseudonymise ``subject`` as the holder of their accounts; the books stay."""
         from .personal import erase_subject
 
         return await erase_subject(subject)

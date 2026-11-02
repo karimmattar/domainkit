@@ -29,6 +29,9 @@ from domainkit.exceptions import DomainkitError
 
 logger = logging.getLogger(__name__)
 
+_MAX_DURABLE_NAME: Final = 255
+"""The longest name of a durable handler: the outbox's ``target`` column."""
+
 DEFAULT_HANDLER_TIMEOUT: Final = 10.0
 """Seconds an in-process handler may run, unless settings or ``subscribe`` say."""
 
@@ -51,6 +54,12 @@ class DomainEvent(metaclass=MessageMeta):
 
 
 type EventHandler[E: DomainEvent] = Callable[[E], Awaitable[None]]
+
+
+def _handler_name(handler: Callable[..., object]) -> str:
+    """``module.QualName`` of ``handler``: its messages' key when it is durable."""
+    module = getattr(handler, "__module__", "?")
+    return f"{module}.{getattr(handler, '__qualname__', handler)}"
 
 
 class HandlerTimedOut(TimeoutError, DomainkitError):
@@ -110,13 +119,26 @@ class EventBus:
         worker's task policies instead. Threads that subscribe the same
         handler at once subscribe it once.
 
+        A durable handler's name, ``module.QualName``, is the key of its
+        messages in the outbox, which stores at most
+        255 characters of it.
+
         Raises:
-            ValueError: ``timeout`` is not positive, or the handler is durable.
+            ValueError: ``timeout`` is not positive, or the handler is durable;
+                or a durable handler's name is longer than the outbox stores.
         """
         if timeout is not None and (durable or not 0 < timeout < float("inf")):
             raise ValueError(
                 "timeout is a positive number of seconds, for in-process handlers."
             )
+        if durable:
+            name = _handler_name(handler)
+            if len(name) > _MAX_DURABLE_NAME:
+                raise ValueError(
+                    f"A durable handler's name is the key of its messages, of at "
+                    f"most {_MAX_DURABLE_NAME} characters; {name[:60]!r}... "
+                    f"has {len(name)}: define it in a shorter module or name."
+                )
         with self._lock:
             subscriptions = self._handlers.setdefault(event_type, [])
             if not any(

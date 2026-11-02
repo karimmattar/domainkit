@@ -41,12 +41,6 @@ from .uow import AuthUnitOfWork
 
 __all__ = [
     "DEVICE_COOKIE",
-    "MAX_DEVICES",
-    "PROVEN_CEILING",
-    "device_key",
-    "hand_out",
-    "proven_device",
-    "proven_limits",
 ]
 
 DEVICE_COOKIE: Final = "dk_device"

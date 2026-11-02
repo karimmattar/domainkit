@@ -16,6 +16,13 @@ name's object (the same object, so ``isinstance`` and ``except`` hold)::
 
     __getattr__ = moved(__name__, {"Require": "domainkit.http.access"}, "0.11")
 
+A name that was renamed keeps its old name the same way, with ``renamed``,
+which maps each old name to the new one's dotted path::
+
+    __getattr__ = renamed(
+        __name__, {"on_check": "domainkit.apps.hooks.on_ready"}, "2.0"
+    )
+
 Projects find their uses before upgrading by turning the warning into an
 error in their test settings::
 
@@ -29,6 +36,7 @@ from importlib import import_module
 __all__ = [
     "DomainkitDeprecationWarning",
     "moved",
+    "renamed",
 ]
 
 
@@ -58,5 +66,32 @@ def moved(
             stacklevel=2,
         )
         return getattr(import_module(target), name)
+
+    return __getattr__
+
+
+def renamed(
+    module: str, names: Mapping[str, str], removed_in: str
+) -> Callable[[str], object]:
+    """A module ``__getattr__`` for ``names`` that were renamed: old name to new path.
+
+    The new path is dotted, module and name (``domainkit.apps.hooks.on_ready``).
+    Each use of an old name warns with ``DomainkitDeprecationWarning``, naming
+    the new one and the release that removes the old, and returns the new
+    name's object. Any other name raises ``AttributeError``.
+    """
+
+    def __getattr__(name: str) -> object:
+        target = names.get(name)
+        if target is None:
+            raise AttributeError(f"module {module!r} has no attribute {name!r}")
+        warnings.warn(
+            f"{module}.{name} is now {target}; use the new name. "
+            f"The old name is removed in {removed_in}.",
+            DomainkitDeprecationWarning,
+            stacklevel=2,
+        )
+        new_module, _, new_name = target.rpartition(".")
+        return getattr(import_module(new_module), new_name)
 
     return __getattr__

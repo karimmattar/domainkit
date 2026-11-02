@@ -12,7 +12,7 @@ class Retention:
     purge`` applies them::
 
         class ClinicConfig(DomainConfig):
-            RETENTION = (
+            retention = (
                 Retention(
                     table="clinic_access_log",
                     field="accessed_at",

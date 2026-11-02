@@ -7,8 +7,10 @@ AES-256-GCM under *data keys* that are themselves wrapped by a
 *key-encryption key* (KEK) held in a key management service (AWS KMS or
 HashiCorp Vault), and bound to the row they belong to. A field about a
 person can be sealed under that person's own key, which erasing them
-destroys: every copy of what it sealed, backups included, is then
-unreadable. The decisions are in
+destroys: what it sealed is then unreadable in the database, its replicas,
+and every backup or dump taken from then on. A backup taken before the
+erasure still holds the key, and the service's data keys still unwrap it;
+see [backups taken before an erasure](#backups-taken-before-an-erasure). The decisions are in
 [ADR 0119](../adr/0119-wrap-data-keys-under-a-kms-key-through-a-port-and-name-the-key-in-every-sealed-value.md)
 (keys and the envelope) and
 [ADR 0120](../adr/0120-seal-encrypted-fields-in-the-orm-bound-to-their-row-and-shred-a-person-by-destroying-their-key.md)
@@ -27,9 +29,9 @@ KEYS = {
 }
 ```
 
-The cloud providers call through `domainkit.http.client`
-(`pip install "domainkit[httpclient]"`); AES-GCM needs `cryptography`
-(`domainkit[mfa]`).
+`pip install "domainkit[keys]"` installs what they need: `cryptography`
+for AES-GCM, and `domainkit.http.client`, through which the cloud
+providers call.
 
 ## Encrypting a field
 
@@ -185,8 +187,10 @@ A project can pass any `domainkit.keys.KeyProvider` to its own
   seals again every value under a retired key, remakes blind indexes
   made under one, and wraps every subject's key again, in batches
   (`--batch-size`, 500 rows a transaction) that each commit on their own;
-  a row changed meanwhile is left for the next run, and a value that does
-  not open is counted and left alone (the command then fails). It is
+  a batch's rows are locked as they are read (on SQLite, the database's
+  write lock), and written back in one statement per kind of change, so
+  a write to them waits for the batch; a value that does not open is
+  counted and left alone (the command then fails). It is
   audited (`operator.keys_reencrypt`). `manage.py keys status` counts, per
   column, what each key seals; `--check` fails while a retired key still
   seals anything. Then remove the retired key.
@@ -195,13 +199,17 @@ A project can pass any `domainkit.keys.KeyProvider` to its own
 
 A subject's key is 32 random bytes, made when their first value is
 sealed, stored in `domainkit_keys_subject_keys` (wrapped under the current
-data key) in the same database and transaction as the row. The app
+data key) in the same database and transaction as the row. A query's
+rows read the keys of their subjects together, in one statement (500 keys
+a statement) once the query has loaded, and its transaction holds them
+from then on; a streamed query (`yield_per`) reads them row by row. The app
 registers on `erase_subject`, so `manage.py privacy erase --subject <id>`
 ([privacy.md](../privacy.md)) erases the person's `Personal` fields, then
 destroys their keys in every database that hosts domains
 (`shred_subject`), and records how many (`privacy.copies_erased`,
 `{"subject_keys": 1}`). From then on, every value sealed under those keys
-reads as None, in the database and in every backup or dump of it.
+reads as None, in the database, its replicas, and every backup or dump
+taken after the erasure.
 
 An erasure runs in transactions of its own, so a transaction making the
 person's first key at the same time is not seen. The erasure therefore
@@ -230,6 +238,33 @@ What remains:
 
 A transaction that read a person's key before the erasure may still write
 with it; what it writes reads as None afterwards.
+
+### Backups taken before an erasure
+
+A subject's key is stored in the database it seals values in, wrapped
+under a data key the service keeps (DOCS-14). A backup, a point-in-time
+recovery, or a dump taken *before* the erasure holds that key: restored,
+or read with the service's data keys, it opens the person's values
+again. Erasure reaches such a copy only once it has expired, or once it
+has been restored and the erasure applied to it again. So:
+
+- **Bound how long backups are kept**, and name that retention in your
+  records of processing: until a backup taken before an erasure expires,
+  the person's data is in it. A team that needs a shorter bound for
+  people's keys than for the rest of the data puts the tables with
+  `Encrypted(subject=...)` fields, and their keys, in a database of their
+  own (`DATABASE_ROUTING`; the keys app keeps a subject's keys in each
+  database that hosts domains, beside the rows they seal), and keeps that
+  database's backups for less time.
+- **Apply recorded erasures again after every restore.** Each erasure is
+  recorded in the audit trail (`privacy.erase`, its subject as the
+  target): before restoring, list those made since the backup's time with
+  `manage.py auditlog --action privacy.erase --limit N`, keep the list
+  outside the database being restored, and once restored run `manage.py
+  privacy erase --subject <id>` for each again. Erasing is idempotent.
+  Keep the audit trail in a database of its own (`AUDIT.DATABASE`), with
+  its own backups, so the list survives the restore of the others
+  ([operations.md](../operations.md#backups-and-restores)).
 
 ## Settings
 

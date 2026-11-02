@@ -87,8 +87,8 @@ async def test_a_finished_message_is_stamped_by_the_database(skew: Skew) -> None
     skew(HOUR)
     worker = Worker(MessagingSettings(**FAST))
 
-    (claimed,) = await worker.claim(1)
-    await worker.process(claimed)
+    (claimed,) = await worker._claim(1)
+    await worker._process(claimed)
 
     assert await stamped_now("finished_at")
 
@@ -155,7 +155,7 @@ async def test_a_keyed_message_written_ahead_is_due_at_once(skew: Skew) -> None:
     await enqueue(step, key="a", label="a0")
     skew(timedelta(0))
 
-    assert len(await Worker(config()).claim(1)) == 1
+    assert len(await Worker(config())._claim(1)) == 1
 
 
 async def locked_for(minutes: int) -> None:

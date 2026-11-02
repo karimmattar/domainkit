@@ -1,93 +1,90 @@
 # Upgrading
 
-How to move a project to a new minor version, and what each one asks of
-it. A minor version may change a default or break a behaviour, each listed
-here with the setting that keeps the old one, and it removes only names
-the minor before deprecated ([versioning.md](versioning.md)). Patch
-releases change nothing a project relies on: take them as they come.
+How to move a project to a new version, and what each one asks of it.
+From 1.0, a minor version adds and fixes, and may deprecate, but breaks
+nothing [versioning.md](versioning.md) calls public: a deprecated name
+keeps working, with a warning, until the next major version removes it.
+Patch releases change nothing a project relies on: take them as they come.
+Before 1.0, each minor version could change a default or break a
+behaviour; the sections from 0.9 to 1.0 below list each, with the setting
+that keeps the old one where there is one.
 
 ## How to upgrade
 
-Upgrade one minor at a time, from its newest patch release (0.9.2, then
-0.10.x):
+Within 1.x, upgrade to the newest minor, from any 1.x release. From 0.12,
+follow [0.12 to 1.0](#012-to-10): 0.13, 0.14 and 0.15 were never
+published, so 0.12.1 is the release 1.0 follows. From an older release,
+reach 0.12.1 first, one minor at a time, through the published releases
+0.9.3, 0.10.1, 0.11.0, and 0.12.1 (0.9.2, 0.10.0, 0.11.1 and 0.11.2 were
+never published), with each section below.
 
-1. Read the section below for the version you move to.
-2. Raise the version in the project's `pyproject.toml`, and install.
-3. Run the tests with deprecations as errors,
-   `pytest -W error::DeprecationWarning`, so each deprecated name the
-   project still uses fails, naming its replacement. Replace them all:
-   they are removed in the next minor.
+1. Read the section for the version you move to.
+2. On the version you have, run the tests with domainkit's deprecations as
+   errors, `pytest -W error::domainkit.deprecation.DomainkitDeprecationWarning`,
+   so each deprecated name the project still uses fails, naming its
+   replacement. Replace them all: they are removed in the next major
+   version (before 1.0, the next minor).
+3. Raise the version in the project's `pyproject.toml`, and install.
 4. `python manage.py makemigrations`: a contrib app's tables may have
-   changed. Review the revision, then `migrate` it in a test database.
-5. `python manage.py check` with the production settings and variables,
+   changed. Review the revision, then `migrate` it. The test databases are
+   built from the project's revisions, so the tests need it.
+5. Run the tests again, deprecations as errors, for the names this version
+   deprecates.
+6. `python manage.py check` with the production settings and variables,
    for the deployment checks this version adds.
-6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
+7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
-## 0.13 to 0.14
+## 0.12 to 1.0
 
-### Breaking changes
+1.0 is the first release since 0.12.1. Everything 0.13, 0.14, and 0.15
+changed reaches a project with it, as one upgrade. Most of 1.0 is new and
+asks nothing until a project turns it on: money, the ledger, encrypted
+fields, approvals, limits, step-up. This section lists what does change
+for a 0.12 project, in the order to apply it. No setting of 0.12 changed
+its default but `ERROR_FORMAT` and `OPENAPI_OPERATION_IDS` (below), and no
+dependency's range changed but the `immudb` extra's protobuf floor.
 
-- **An open live connection no longer keeps its login alive**
-  (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
-  WebSocket or event stream wrote the login's last use, so a page left
-  open kept its login for good; they write none now, and the connection
-  closes once its login idles out. Nothing changes without
-  `IDLE_TIMEOUT`. **Fix:** a page that should stay open sends a request
-  now and then, or the project raises `IDLE_TIMEOUT`.
-- **A JSON Web Token issued longer ago than `AUTH.IDLE_TIMEOUT` is
-  refused** (SEC-15c-1), whatever its `ACCESS_TOKEN_TTL`: a JSON Web Token
-  login's use is its refreshes. Nothing changes without `IDLE_TIMEOUT`, or
-  with an access token that lives no longer than it (the default, 5
-  minutes, is shorter than the 5-minute floor plus its tenth). **Fix:**
-  refresh before the timeout, or raise it.
-- **Auth has three new tables** (FIN-29, FIN-30, FIN-42):
-  `domainkit_step_ups`, `domainkit_sca_challenges`, and
-  `domainkit_password_history`. No default changed, and only `StepUp`,
-  the step-up and transaction routes, `PASSWORD_HISTORY`, and
-  `PASSWORD_CHANGE_ON_FIRST_USE` read and write them; but deleting or
-  erasing a user deletes the user's rows there, and the hourly purge of
-  tokens and `cleartokens` clear old ones, so each fails until the
-  database has them. **Fix:** run `makemigrations` and `migrate` in each
-  project that installs auth, before the new version serves.
-- **Messaging's outbox gained columns, a status, and a table** (FIN-19).
-  The outbox has `ordering_key` and `sequence` columns, a `held` status,
-  and an index, `ix_domainkit_messages_ordering`, and messaging has a
-  table of ordering keys, `domainkit_ordering_keys`, in every database
-  that holds an outbox. Workers claim through the new columns, so they
-  fail until the database has them. **Fix:** run `makemigrations` and
-  `migrate` in each project that installs messaging, before the new
-  version's workers start. Stop the 0.13 workers before any 0.14 process
-  (a web process too) writes a message with an ordering key: a 0.13
-  worker finishes such a message without making the next of its key
-  pending, and the key waits until a 0.14 worker's cleanup round, or
-  `messages --release`, releases it (SEC-14c-3). `messages` prints a
-  `held` line after `pending`: a script that reads its lines by position
-  reads them by name instead. Nothing keeps the old schema.
-- **An amount in SQL is multiplied or divided by a number, not by another
-  amount** (TEST-11). `amount * other` and `amount / other`, where `other`
-  is an amount too (an `ExactDecimal` column, money's amount column
-  included, or a parameter or literal typed as one), raise `TypeError`
-  when the expression is built. On SQLite they gave minor units times
-  minor units (9.95 times a typed 2 was 1990.00); on PostgreSQL they gave
-  the product. **Fix:** give the factor as a number: a plain `Decimal` or
-  an untyped `bindparam("rate")`, or a column declared `Integer` or
-  `Numeric` (a rate is not an amount); `+` and `-` between amounts are
-  unchanged.
-- **A factor of an amount in SQL has at most 9 places** (TEST-07).
-  `amount * factor` and `amount / factor`, with `factor` a value or a
-  bound parameter, refuse a factor of more places (`ValueError`), where
-  they used to compute with it (and on SQLite counted a bound one as an
-  amount). **Fix:** round the factor to 9 places with the rule the domain
-  needs, or compute the product in Python with `Money.multiply`.
+1. **On 0.12.1, clear its deprecations.** Run the tests with
+   `-W error::domainkit.deprecation.DomainkitDeprecationWarning`. Each
+   warning 0.12 gives is a removal in 1.0: a `DomainConfig` hook method
+   (`startup`, `erase_subject`, ...) moves to a function registered in
+   `ready()`, and `expect_version` to `uow.expect` ([Removed](#removed-in-10-deprecated-in-012)).
+2. **Change what 1.0 changes** for the project, from the lists below: the
+   problem details, the personal tokens' re-authentication, the `CurrentUser`
+   routes, the amounts in SQL, the tests that reach the database without
+   `db`. Searching the project for each name finds them.
+3. **Raise domainkit**: `domainkit[...]>=1.0,<2` in `pyproject.toml`, and
+   install. The extras are the same, with `keys` (encrypted fields) and
+   `audit` (signed checkpoints) for the features that need them.
+4. **Make the revision before running anything.**
+   `python manage.py makemigrations -m "domainkit 1.0"` writes one
+   revision for the contrib apps the project installs: auth's
+   `domainkit_step_ups`, `domainkit_sca_challenges`, and
+   `domainkit_password_history`; the outbox's `ordering_key` and
+   `sequence` columns, its index `ix_domainkit_messages_ordering`, and
+   `domainkit_ordering_keys`. It only adds: 0.12's code runs against the
+   new schema. Review it, and `migrate`. Until the database has it, the
+   tests fail (`no column named ordering_key`), workers cannot claim, and
+   deleting a user fails.
+5. **Run the tests**, deprecations as errors: the names 1.0 deprecated
+   ([below](#deprecated-removed-in-20)) fail with their replacement, and
+   a test that reaches the database without requesting `db` fails with
+   `DatabaseAccessRefused`, naming the fixture to request.
+6. **`python manage.py check`** with the production settings and
+   variables. 1.0 refuses a route that only reads `CurrentUser`
+   (`security.E101`), and warns about tasks without a name
+   (`messaging.W001`).
+7. **Deploy in this order**: run the migration job; stop every 0.12
+   worker; start the 1.0 workers; then roll out the 1.0 web processes. A
+   0.12 worker finishes a message with an ordering key without making the
+   next of its key pending, so the key waits for a 1.0 worker's cleanup
+   round (or `messages --release`); and a worker that does not know a
+   message's task waits for one that does
+   ([operations.md](operations.md#migrations-in-a-rollout)).
 
-## 0.12 to 0.13
+### Removed in 1.0 (deprecated in 0.12)
 
-### Breaking changes
-
-Upgrade from 0.12 with deprecations as errors first: the removals below
-were each deprecated in 0.12, with a warning that named its replacement.
-Each item says what fails and what to write instead, and, where there is
-a way, how to keep the old behaviour for as long as the project needs it.
+Each was deprecated in 0.12, with a warning that named its replacement.
 
 - **A domain that defines a removed hook method fails `setup()`**
   (DSGN-03). `startup`, `shutdown`, `check`, `seed`, `erase_subject`,
@@ -107,12 +104,15 @@ a way, how to keep the old behaviour for as long as the project needs it.
           on_erase_subject(erase_documents)  # domainkit.apps.hooks
   ```
 
-  The refusal stays until 1.0
-  ([ADR 0111](adr/0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md)).
+  The refusal stays through 1.x, until 2.0, so a method left behind is
+  never silently skipped: an `erase_subject` nothing called would keep a
+  person's data through an erasure that reports success
+  ([ADR 0111](adr/0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md)
+  and its amendment).
 - **`HookPoint` takes no `method=`** (DSGN-03). It named the
   `DomainConfig` method a point called too; `HookPoint("x", method="...")`
-  raises `TypeError`. **Fix:** drop the argument:
-  `HookPoint("x", arguments=1, awaited=True)`.
+  raises `TypeError`. 0.12 did not warn of it. **Fix:** drop the
+  argument: `HookPoint("x", arguments=1, awaited=True)`.
 - **`expect_version` is gone** (DSGN-14). `from
   domainkit.ddd.preconditions import expect_version` raises `ImportError`,
   and no expectation is held for the whole context any more. **Fix:** hold
@@ -120,6 +120,178 @@ a way, how to keep the old behaviour for as long as the project needs it.
   `with uow.expect(Order, order_id, versions):` in place of `with
   expect_version(Order, order_id, versions):`. The expectation is still checked
   again in each transaction of the unit of work (SEC-12a-6).
+
+### The schema and the deploy
+
+- **Auth has three new tables** (FIN-29, FIN-30, FIN-42):
+  `domainkit_step_ups`, `domainkit_sca_challenges`, and
+  `domainkit_password_history`. Only `StepUp`, the step-up and
+  transaction routes, `PASSWORD_HISTORY`, and
+  `PASSWORD_CHANGE_ON_FIRST_USE` read and write them; but deleting or
+  erasing a user deletes the user's rows there, and the hourly purge of
+  tokens and `cleartokens` clear old ones, so each fails until the
+  database has them. **Fix:** run `makemigrations` and `migrate` in each
+  project that installs auth, before 1.0 serves.
+- **Messaging's outbox gained columns, a status, and a table** (FIN-19).
+  The outbox has `ordering_key` and `sequence` columns, a `held` status,
+  and an index, `ix_domainkit_messages_ordering`, and messaging has a
+  table of ordering keys, `domainkit_ordering_keys`, in every database
+  that holds an outbox. Workers claim through the new columns, so they
+  fail until the database has them. **Fix:** run `makemigrations` and
+  `migrate` in each project that installs messaging, before 1.0's
+  workers start. Stop the 0.12 workers before any 1.0 process (a web
+  process too) writes a message with an ordering key: a 0.12 worker
+  finishes such a message without making the next of its key pending,
+  and the key waits until a 1.0 worker's cleanup round, or
+  `messages --release`, releases it (SEC-14c-3). `messages` prints a
+  `held` line after `pending`: a script that reads its lines by position
+  reads them by name instead. Nothing keeps the old schema.
+- **A message for an unknown task or handler waits before it dies**
+  (CONC-15). It is given back, its attempt not spent, until
+  `MESSAGING.UNKNOWN_TARGET_GRACE` (an hour) has passed, then
+  dead-lettered as before. A message whose target no deploy brings back
+  is dead-lettered an hour later, and an ordered key waits behind it
+  meanwhile. **Fix:** nothing, usually; `MESSAGING =
+  {"UNKNOWN_TARGET_GRACE": 0}` keeps the old behaviour. Deploy workers
+  before web processes when a release adds tasks or handlers, and name
+  tasks (`@task(name=...)`): `check` warns about the others where
+  deployed (`messaging.W001`).
+- **`migrate` makes the audit trail's triggers afresh on every run**
+  (FIN-74). With `domainkit.contrib.audit` on PostgreSQL, the triggers
+  that keep `domainkit_audit_log` and `domainkit_audit_seals`
+  append-only, and their functions, are made again after each `migrate`,
+  so one dropped, disabled, or changed is put back. A revision that calls
+  `protect(op)` still applies. **Fix:** run `migrate` as the role that
+  owns the tables, as before; an `unprotect(op)` lasts until the next
+  `migrate`.
+- **Revisions are rendered in batch mode** (DATA-13), on PostgreSQL too,
+  so they apply on SQLite. Nothing to do; a revision written before is
+  unchanged.
+- **SQLite checks foreign keys** (DATA-18). Every connection runs
+  `PRAGMA foreign_keys = ON`: a row naming no parent is refused, as on
+  PostgreSQL, and `ON DELETE CASCADE` deletes children. `migrate` checks
+  the rows already stored and refuses, naming the tables, rows that name
+  a missing parent. **Fix:** delete or repair those rows (`PRAGMA
+  foreign_key_check` lists them), then migrate again; a test that stored
+  a child without its parent stores the parent first.
+- **The `immudb` extra needs protobuf 6.33.5 or later** (INFRA-15). The
+  floor was 5.27.0, which has two advisories. **Fix:** a project that pins
+  protobuf below 6.33.5 lifts the pin; immudb's SDK works with 6.33.5 to
+  7.x.
+
+### Errors and the API
+
+- **Errors are RFC 9457 problem details by default** (DSGN-26).
+  `ERROR_FORMAT` defaults to `"problem+json"`: every error is
+  `application/problem+json` with `type`, `title`, `status`, and
+  `instance`, and keeps `detail`, `code`, `request_id`, and `errors`
+  where they were. A client that reads those fields is unaffected; one
+  that checks for `application/json` is not. **To keep the old
+  behaviour:** `ERROR_FORMAT = "domainkit"`.
+- **Operation ids are route names by default** (DSGN-26).
+  `OPENAPI_OPERATION_IDS` defaults to `"route_name"`, as every generated
+  project already set it, so a generated client's method names change for
+  a project that did not. **To keep the old behaviour:**
+  `OPENAPI_OPERATION_IDS = "fastapi"`.
+- **Every 429 answers `rate_limited`** (WEB-25). A route's `Throttle` and
+  auth's code, link, and signup throttles answered `throttled`, and its
+  login and password throttles `login_throttled`. **Fix:** a client that
+  switched on either switches on `rate_limited`, or on the status, and
+  waits as `Retry-After` says. Every code is listed in
+  [reference/problems.md](reference/problems.md).
+- **`If-Match: *` no longer satisfies `require_if_match`** (WEB-22): it is
+  `428 precondition_required`, as a write without `If-Match`. **Fix:**
+  clients send the `ETag` of the version they change.
+- **A lost race is a 409, wherever it surfaces** (FIN-78). A lost
+  optimistic race flushed before the commit (by a query, a savepoint, or
+  an `on_stage` hook such as the audit trail's) raised SQLAlchemy's
+  `StaleDataError` and answered 500; it is `ConcurrentUpdate`, 409
+  `concurrent_update`, and `uow.run(retry=...)` runs it again. **Fix:**
+  nothing; a client that retried on 500 retries on 409.
+- **A live connection's lifetime is at most a day** (WEB-24):
+  `WEBSOCKET_MAX_LIFETIME`, `SSE_MAX_LIFETIME`, and a route's
+  `LiveLimits(max_lifetime=...)` above 86,400 seconds are refused at
+  startup. **Fix:** lower them; clients reconnect. A route that turns
+  re-authorization off (`LiveLimits(reauth_interval=None)`) is warned
+  about where deployed (`live.W002`).
+
+### Users and logins
+
+- **A route that only reads `CurrentUser` declares no rule** (DSGN-17).
+  Staging and production refuse to start with one (`security.E101`), and
+  `check` lists it. **Fix:** add `dependencies=[Public]` to a route that
+  anyone may call, or take `AuthenticatedUser` where a login is meant.
+- **Making a personal token asks the user to authenticate again, and the
+  token ends** (AUTH-16). `POST /auth/tokens` needs a step-up within 5
+  minutes from users with a second factor, and the `password` in the body
+  from the others; tokens work `AUTH.PERSONAL_TOKEN_MAX_AGE` (90 days) at
+  most, and `expires_in_days: null` is refused; `login` is no longer a
+  token's name. **Fix:** clients send the password, or step up first;
+  `AUTH = {"PERSONAL_TOKEN_MAX_AGE": None}` keeps tokens that never end.
+  Tokens already made keep their lifetime.
+- **An account takes 100 wrong passwords a day at most** (AUTH-19), from
+  `AUTH.ACCOUNT_LOGIN_RATE`, beside `LOGIN_RATE`. A user whose account a
+  stranger floods logs in from the browsers they used before; a new one
+  waits for the day, or a password reset. **Fix:** nothing, or set the
+  rate (`None` keeps 0.12's, with no daily bound, and `check` warns of it
+  where deployed, `auth.W006`).
+- **Turning a second factor on ends the user's other logins and tokens**
+  (AUTH-20), personal tokens and registered certificates
+  included. **Fix:** make personal tokens, and register certificates,
+  after turning it on.
+- **An open live connection no longer keeps its login alive**
+  (SEC-15c-2). With `AUTH.IDLE_TIMEOUT`, the re-checks of an open
+  WebSocket or event stream wrote the login's last use, so a page left
+  open kept its login for good; they write none now, and the connection
+  closes once its login idles out. Nothing changes without
+  `IDLE_TIMEOUT`. **Fix:** a page that should stay open sends a request
+  now and then, or the project raises `IDLE_TIMEOUT`.
+- **A JSON Web Token issued longer ago than `AUTH.IDLE_TIMEOUT` is
+  refused** (SEC-15c-1), whatever its `ACCESS_TOKEN_TTL`: a JSON Web Token
+  login's use is its refreshes. Nothing changes without `IDLE_TIMEOUT`, or
+  with an access token that lives no longer than it (the default, 5
+  minutes, is shorter than the 5-minute floor plus its tenth). **Fix:**
+  refresh before the timeout, or raise it.
+
+### The worker and tasks
+
+- **Task names are at most 255 characters** (CONC-16): `@task` and
+  `@periodic` refuse a longer `name=` (or module path) with
+  `ImproperlyConfigured`, and `event_bus.subscribe(..., durable=True)` a
+  durable handler whose `module.QualName` is longer, with `ValueError`.
+  PostgreSQL refused their messages anyway. **Fix:** a shorter `name=`, or
+  a shorter module or name for the handler.
+- **A handler's own `CancelledError` is a failure** (CONC-17). One raised
+  while the worker is not stopping (a cancelled task or future awaited)
+  is retried with backoff, counts as an attempt, and dead-letters the
+  message after `max_attempts`, as `HandlerCancelled`; it used to be
+  retried at once, uncounted, for ever. **Fix:** nothing; a handler that
+  cancels on purpose raises another error.
+- **`Worker`'s mechanics are private** (DSGN-22). `claim`, `relay`,
+  `relay_ids`, `take_over`, `process`, `schedule_periodic`, and
+  `relay_promoted` start with `_`. **Fix:** run a worker with `run` or
+  `run_once`; `contrib.messaging.admin` releases stalled messages.
+
+### Amounts in SQL
+
+- **An amount in SQL is multiplied or divided by a number, not by another
+  amount** (TEST-11). `amount * other` and `amount / other`, where `other`
+  is an amount too (an `ExactDecimal` column, or a parameter or literal
+  typed as one), raise `TypeError` when the expression is built. On
+  SQLite they gave minor units times minor units (9.95 times a typed 2
+  was 1990.00); on PostgreSQL they gave the product. **Fix:** give the
+  factor as a number: a plain `Decimal` or an untyped
+  `bindparam("rate")`, or a column declared `Integer` or `Numeric` (a
+  rate is not an amount); `+` and `-` between amounts are unchanged.
+- **A factor of an amount in SQL has at most 9 places** (TEST-07).
+  `amount * factor` and `amount / factor`, with `factor` a value or a
+  bound parameter, refuse a factor of more places (`ValueError`), where
+  they used to compute with it (and on SQLite counted a bound one as an
+  amount). **Fix:** round the factor to 9 places with the rule the domain
+  needs, or compute the product in Python with `Money.multiply`.
+
+### Tests
+
 - **A test that did not request the database is refused it** (TEST-08).
   The pytest plugin raises `domainkit.db.DatabaseAccessRefused` when a
   test reaches the test databases without requesting `db`, or a fixture
@@ -132,6 +304,172 @@ a way, how to keep the old behaviour for as long as the project needs it.
   behaviour:** `@pytest.mark.allow_database` on a test, or `pytestmark =
   pytest.mark.allow_database` in a module; or, for the whole suite,
   `domainkit_allow_database = true` under `[tool.pytest.ini_options]`.
+- **The `settings` fixture reads settings read-only** (TEST-19): a test
+  that changed a mapping in place (`settings.CACHES["x"] = ...`) gets
+  `TypeError`. **Fix:** assign the whole setting,
+  `settings.CACHES = {**settings.CACHES, "x": {...}}`, which is validated
+  and undone when the test ends.
+
+### Names that left the public API
+
+- **Internals left the public API** (DSGN-22). No longer listed, still
+  importable unchanged until 2.0, then gone: `domainkit.http.routing`
+  (it rests on FastAPI's internals; `FLATTEN_ROUTERS` is the public
+  switch), `domainkit.contrib.webhooks.guard` (`UnsafeTarget` stays in
+  `domainkit.contrib.webhooks`), `http.responses.BuiltJSONResponse`,
+  `http.CURSOR_PATTERN`, `http.middleware.request_path`,
+  `db.create_engine` and `db.mapper_registry`, `conf.describe_errors`
+  and `unwrap_settings`, `storage.check_name` and `new_name`,
+  `lifecycle.shutdown_timeout`, `debug.statement_shape`,
+  `architecture.iter_imports`, `FRAMEWORK_PACKAGES`, `LAYERS`,
+  `DOMAIN_ALLOWED_PREFIXES`, and `project_rules`, the device-proof
+  helpers of `contrib.auth.devices` but `DEVICE_COOKIE`, and
+  `audit.checkpoints`' `FORMAT`, `EXPORT_FORMAT`, `key_id`,
+  `load_public_key`, and `signing_key`. **Fix:** copy what a project used.
+- **`Credentials` takes `login=`, not `session=`** (DSGN-28). The field
+  that holds a JWT login's family is `login`; reading `session` still
+  works, with a warning, until 2.0. **Fix:** a custom authentication
+  class that builds `Credentials(..., session=...)` passes `login=`.
+
+### Deprecated, removed in 2.0
+
+Each old name works through 1.x, warning with
+`DomainkitDeprecationWarning` (DSGN-23, DSGN-24, DSGN-29):
+
+- `on_check` of `domainkit.apps.hooks` is `on_ready`: it is the readiness
+  probe, not `manage.py check`'s.
+- `DomainConfig.RETENTION` is `retention`, as its siblings are written.
+- `MESSAGING.SHUTDOWN_TIMEOUT` is `MESSAGING.DRAIN_TIMEOUT`, apart from
+  the process's `SHUTDOWN_TIMEOUT`.
+- `domainkit.contrib.messaging.dbclock` is `domainkit.db.dbclock`.
+- `domainkit.contrib.contenttypes`' `DEFAULT_PERMISSIONS`,
+  `InstalledModel`, `ModelOptions`, `installed_models`, and
+  `model_options` are `domainkit.db.models`' (`content_type_key` is
+  `model_key`).
+- `contrib.webhooks.WebhookSettings` is `WebhooksSettings`.
+- `Credentials.session` is `Credentials.login`.
+
+`apps.E002`, which refuses a hook method 1.0 removed, stays until 2.0
+too.
+
+### Projects that ran 0.13 to 0.15 from source
+
+The money API, the ledger, keys and encrypted fields, approvals, limits,
+and step-up are new in 1.0 for a 0.12 project. A project that used them
+from `main` before 1.0 also meets these changes, made before any release
+had them.
+
+- **Names renamed before release** (DSGN-23, DSGN-28,
+  [ADR 0125](adr/0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md)),
+  with no alias:
+
+  | Was | Is |
+  | --- | --- |
+  | `contrib.accounting.on_booking`, `accounting.hooks.on_posting` | `accounting.hooks.on_stage_entry`, `on_post_entry` |
+  | `apps.hooks.on_erase_check` | `apps.hooks.on_retain_subject` |
+  | `contrib.accounting.CAPTURES`, `REVERSALS` (sources) | `CAPTURE_SOURCE`, `REVERSAL_SOURCE` |
+  | `contrib.approvals.ENTRIES`, `CAPTURES`, `REVERSES`, `SUPERUSERS` (actions) | `POST_ENTRY`, `CAPTURE_HOLD`, `REVERSE_ENTRY`, `GRANT_SUPERUSER` |
+  | `AccountIsClosed`, `PeriodIsClosed` | `AccountNotOpen`, `PeriodNotOpen` (codes unchanged) |
+  | `ReversalNotReversible` (`reversal_not_reversible`) | `EntryNotReversible` (`entry_not_reversible`) |
+  | `approvals.PolicyGone` (`policy_not_found`) | `PolicyRemoved` (`policy_removed`) |
+  | `approvals.on_guard` | not public: `guard()` registers |
+  | `contrib.limits.check` | `check_movements` |
+  | `ACCOUNTING.RETRY_ATTEMPTS` | `ACCOUNTING.MAX_ATTEMPTS` |
+  | `AUTH.PASSWORD_PRESET` | `AUTH.PRESET` |
+  | `keys.ring`'s `FORMAT`, `forget_held`, `sealed_key`; `keys.aws`' `sign` and credential loaders | not public (DSGN-22) |
+
+- **A backend that does not list its grants on objects leaves users to
+  superusers** (SEC-16a-5). While a backend of `AUTH.BACKENDS` other than
+  `ModelBackend` keeps `BaseBackend.object_grants`, only superusers change
+  users and groups through the admin API, and `check` warns
+  (`auth.W007`). **Fix:** answer `object_grants(holder)` in each such
+  backend: with the grants it holds, or an empty set if it grants on no
+  object.
+- **Accounts may not go negative unless opened so** (FIN-97).
+  `may_go_negative` defaults to `False` (`Account.open`, `OpenAccount`,
+  `POST /accounts`): an account opened without it refuses what would
+  leave less than nothing available. **Fix:** open clearing, settlement,
+  and external accounts with `may_go_negative=True`; those already stored
+  keep the flag they were opened with.
+- **A currency a threshold or a limit does not name is refused**
+  (FIN-89). With `APPROVALS.ENTRY_THRESHOLDS` set, an entry in another
+  currency needs approval; a subject bounded by limits in some currency
+  is refused (`currency_not_limited`) a movement in another. **Fix:**
+  name every currency the ledger or the project moves, or give an amount
+  for all of them: `"*": "10000"` in `ENTRY_THRESHOLDS`, `"currency": "*"`
+  in a default of `LIMITS.DEFAULTS`.
+- **The books are closed up to the latest closed period's end** (FIN-87).
+  No entry is dated on or before it, in a period or in a gap, whatever
+  `REQUIRE_PERIOD` says; no period is opened there; and a period closes
+  only once those before it are closed (`earlier_period_open`). **Fix:**
+  close periods in date order; date corrections in an open period, as
+  reversals.
+- **Reversals over the thresholds need approval** (FIN-88). With
+  `ENTRY_THRESHOLDS`, reversing an entry over them is refused
+  (`approval_required`): submit `accounting.reverse_entry` with
+  `{"entry_id": ..., "booked_on": ...}`; its makers need
+  `accounting.reverse_entry`. An approved reversal is counted against
+  limits and frees nothing. **Fix:** route large corrections through
+  approvals.
+- **Limits keep the movements of bounded subjects only** (PERF-26,
+  revising SEC-15b-5). A subject no window bounds keeps no usage; a limit
+  set, changed, or enabled mid-window counts the ledger's postings since
+  its start, for accounts and holders. An actor's movements, and those a
+  project counts with `consume` outside the ledger, count from when a
+  window bounds them. **Fix:** set limits before their window starts
+  where it matters for actors and a project's own kinds; old usage rows
+  of unbounded subjects age out with `KEEP_USAGE`.
+- **`EntryPosted` has `amounts` and `digest`** (FIN-96), both required.
+  **Fix:** code that builds an `EntryPosted` itself passes them; the
+  ledger does.
+- **Erasure keeps the books and the approvals, pseudonymised** (FIN-94).
+  `privacy erase` is held (`ErasureHeld`; the command names why) while
+  the person holds an open account with money on it or held; done, their
+  accounts name one `erased:` holder instead of none, and their approval
+  requests keep their commands, sealed again for the pseudonym. **Fix:**
+  close a customer's accounts before erasing them; register
+  `on_retain_subject` in a domain whose records a law asks to keep.
+- **Erasure closes the person's accounts, and checks again as it erases**
+  (SEC-16b-4). The ledger's `on_erase_subject` hook raises `ErasureHeld`
+  when money landed after the check, and closes the open accounts it
+  pseudonymises (all empty by then); the hooks of the domains that hold
+  erasures run before anything else is erased. **Fix:** nothing, unless
+  an `on_erase_subject` hook of a domain with an `on_retain_subject`
+  relied on running after the aggregates were erased.
+- **The ledger's movements are counted against limits at the commit**
+  (SEC-16b-2). `enforce` works an entry's movements out as it is booked;
+  `count_staged` (an `on_stage` hook) counts them as the posting commits,
+  after its other `on_stage_entry` hooks and its own work, under a
+  shared lock of each ledger kind that counting back takes alone. A
+  refusal (`limit_exceeded`) is still raised by `post_entry` and the
+  other services, and still rolls the posting back. **Fix:** an
+  `on_stage_entry` hook that read the entry's usage in the same
+  transaction reads it after the commit. Limits add the table
+  `domainkit_limits_kept` (SEC-16b-9): run `makemigrations` and `migrate`.
+- **Removing a limit counts back** (SEC-16b-3) for the limit of its code
+  that then applies; a movement of more than usage keeps (14 digits) is
+  refused, `MovementOutOfRange` (422 `amount_out_of_range`, SEC-16b-5).
+- **`maker_rule` is checked again when an approved request runs**
+  (SEC-16b-7), on the maker with no credentials. **Fix:** a guard whose
+  `maker_rule` reads the submitting request (scopes, a step-up) checks
+  that in its route instead.
+- **`accounting verify` compares the books with the trail** (SEC-16b-6):
+  with `domainkit.contrib.audit`, an entry not as its `EntryPosted`
+  recorded it is `entry_differs`, and fails the command. **Fix:** nothing;
+  investigate what it names.
+- **A hold's default expiry is on the database's clock**: `HOLD_TTL`
+  counts from the database's present on PostgreSQL, and a given
+  `expires_at` is checked against it, as its expiry is (FIN-99).
+- **Derived schemas leave `Encrypted` fields out** (DSGN-19). `schema_for`
+  without `include`, `crud=True` with `writable=ALL_FIELDS`, and the admin
+  no longer show or take a field stored encrypted. **Fix:** name it where
+  it should be served: `schema_for(Card, include=["id", "number"])`,
+  `writable=[..., "number"]`, or the admin's `schema=`; a create body that
+  needs it names it in `writable`.
+- **A missing money check is added** (DATA-20). `makemigrations` writes
+  the both-or-neither check of every nullable money pair the database
+  lacks, also of a pair made optional. **Fix:** run `makemigrations` and
+  `migrate`; a row holding half a pair fails the check: repair it first.
 
 ## 0.11 to 0.12
 

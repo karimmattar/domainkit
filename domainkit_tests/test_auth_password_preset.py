@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from domainkit import clock
+from domainkit.apps import registry
 from domainkit.checks import CheckFailed
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import (
@@ -50,7 +51,7 @@ from domainkit_tests.test_auth_http import (
 from domainkit_tests.test_auth_stepup import enrol, now_code
 
 VALIDATORS = "domainkit.contrib.auth.validators"
-PCI = {"PASSWORD_PRESET": "pci-dss-4"}
+PCI = {"PRESET": "pci-dss-4"}
 STRONG = ["Kq7-zv93-Lmw2", "Pw4-tt81-Xcv9", "Rr5-yy62-Bnm3", "Ss6-uu73-Qaz4"]
 """Passwords the preset takes: 13 characters, letters and digits."""
 
@@ -61,7 +62,10 @@ def test_letters_and_digits() -> None:
     for good in ("abc1", "1a", "مرحبا١"):
         validator.validate(good)
     for bad in ("abcdefgh", "12345678", "!!!!----", ""):
-        with pytest.raises(PasswordValidationError, match="letters and digits"):
+        with pytest.raises(
+            PasswordValidationError,
+            match=r"^This password must contain both letters and digits\.$",
+        ):
             validator.validate(bad)
     assert validator.help_text() == (
         "Your password must contain at least one letter and one digit."
@@ -88,7 +92,7 @@ def test_the_preset_sets_what_is_left_unset() -> None:
     )
     assert preset_contradictions(config) == []
     assert (
-        plain.PASSWORD_PRESET,
+        plain.PRESET,
         plain.PASSWORD_HISTORY,
         plain.PASSWORD_CHANGE_ON_FIRST_USE,
         plain.LOGIN_RATE,
@@ -102,7 +106,7 @@ def test_the_preset_sets_what_is_left_unset() -> None:
 def test_presets_are_named() -> None:
     """An unknown preset is refused; so are histories past 24."""
     with pytest.raises(ValueError, match="pci-dss-4"):
-        AuthSettings(PASSWORD_PRESET="pci-dss-3")
+        AuthSettings(PRESET="pci-dss-3")
     with pytest.raises(ValueError, match="less than or equal to 24"):
         AuthSettings(PASSWORD_HISTORY=25)
 
@@ -177,7 +181,7 @@ def test_settings_that_contradict_the_preset_are_refused(
     [problem] = refused.value.messages
     assert getattr(problem, "id", None) == "auth.E010"
     assert found in str(problem)
-    assert "AUTH.PASSWORD_PRESET 'pci-dss-4' is contradicted" in str(problem)
+    assert "AUTH.PRESET 'pci-dss-4' is contradicted" in str(problem)
 
 
 @pytest.mark.parametrize(
@@ -193,8 +197,11 @@ def test_settings_that_contradict_the_preset_are_refused(
 def test_stricter_settings_keep_the_preset(
     use_auth: UseAuth, setting: dict[str, Any]
 ) -> None:
-    """What asks more than PCI holds."""
+    """What asks more than PCI holds, as given, not the preset's."""
     use_auth(**PCI, **setting)
+
+    [(name, value)] = setting.items()
+    assert getattr(registry.settings(AuthSettings), name) == value
 
 
 # The history ------------------------------------------------------------------------
@@ -261,8 +268,10 @@ def test_nothing_is_kept_without_the_settings(identity: Api) -> None:
     assert history_rows() == []
 
 
-def test_unusable_passwords_are_not_kept(identity: Api) -> None:
-    """Nor checked against."""
+def test_unusable_passwords_are_not_kept(
+    identity: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Nor checked against: no hasher is looked for them, nothing logged."""
     create_user("alice", None)
     identity(PASSWORD_HISTORY=4)
 
@@ -274,9 +283,11 @@ def test_unusable_passwords_are_not_kept(identity: Api) -> None:
             await uow.users.set_password(user, STRONG[0])
             await uow.commit()
 
-    run_async(set_one())
+    with caplog.at_level("WARNING", logger="domainkit.security"):
+        run_async(set_one())
 
     assert len(history_rows()) == 1
+    assert caplog.messages == []
 
 
 def test_each_user_keeps_their_own(identity: Api) -> None:
@@ -759,7 +770,7 @@ def test_signed_in_password_checks_count_as_logins_when_set(identity: Api) -> No
     assert guesses == [400, 400]
     assert (login_after.status_code, login_after.json()["code"]) == (
         429,
-        "login_throttled",
+        "rate_limited",
     )
 
 
@@ -775,7 +786,7 @@ def test_wrong_logins_hold_back_signed_in_checks_when_set(identity: Api) -> None
 
     held = change(client, headers, STRONG[0], STRONG[1])
 
-    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
     assert "throttled" in [row["details"]["reason"] for row in audited("auth.login")]
 
 
@@ -859,3 +870,17 @@ def test_changepassword_sets_no_temporary_password_without_the_setting(
 
     assert log_in(client, STRONG[1]).status_code == 200
     assert history_rows() == []
+
+
+def test_every_contradiction_is_named_in_one_error(use_auth: UseAuth) -> None:
+    """``auth.E010`` lists them, then says how to keep the preset."""
+    with pytest.raises(CheckFailed) as refused:
+        use_auth(**PCI, PASSWORD_HISTORY=3, PASSWORD_CHANGE_ON_FIRST_USE=False)
+
+    [problem] = refused.value.messages
+    assert str(problem) == (
+        "AUTH.PRESET 'pci-dss-4' is contradicted: PASSWORD_HISTORY is 3, "
+        "under 4 (8.3.7); PASSWORD_CHANGE_ON_FIRST_USE is off: passwords staff set "
+        "are not changed at their first use (8.3.5). Leave these settings out for "
+        "the preset's, or drop the preset."
+    )

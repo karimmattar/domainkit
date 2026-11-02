@@ -17,7 +17,7 @@ from domainkit.clock import freeze_time
 from domainkit_tests.conftest import Api, UseAuth
 from domainkit_tests.test_auth_http import JWT, bearer, create_user, login
 
-PCI = {"PASSWORD_PRESET": "pci-dss-4"}
+PCI = {"PRESET": "pci-dss-4"}
 LONG_JWT: dict[str, Any] = {
     **JWT,
     "JWT": {**JWT["JWT"], "ACCESS_TOKEN_TTL": timedelta(hours=1)},

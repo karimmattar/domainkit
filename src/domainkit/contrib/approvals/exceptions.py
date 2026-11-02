@@ -106,7 +106,7 @@ class RequestTampered(Conflict):
     code = "request_tampered"
 
 
-class PolicyGone(Conflict):
+class PolicyRemoved(Conflict):
     """The request's guard or policy no longer exists: it is neither decided nor run."""
 
-    code = "policy_not_found"
+    code = "policy_removed"

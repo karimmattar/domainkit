@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.limits import (
+    CurrencyNotLimited,
     Direction,
     LimitExceeded,
     LimitsUnitOfWork,
@@ -22,7 +23,7 @@ from domainkit.contrib.limits import (
     TransactionLimitExceeded,
     Usage,
     Window,
-    check,
+    check_movements,
     consume,
     purge_usage,
     release,
@@ -35,6 +36,7 @@ from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.ddd import ReadOnlyError
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import Money
+from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.test_limits import (
     books,  # noqa: F401 - the fixture.
     egp,
@@ -131,7 +133,10 @@ async def test_a_month_and_a_count_bound_together() -> None:
 
 
 async def test_per_transaction_bounds_each_movement_and_needs_no_window() -> None:
-    """Over the most one may be, refused; at it, taken, and counted all the same."""
+    """Over the most one may be, refused; at it, taken, and kept nowhere.
+
+    No window bounds the subject, so nothing of its movements is kept (PERF-26).
+    """
     await limit(code="each", per_transaction=egp("50"))
     with refused(TransactionLimitExceeded):
         await spend(paid("50.01"))
@@ -146,16 +151,21 @@ async def test_per_transaction_bounds_each_movement_and_needs_no_window() -> Non
         None,
     )
     async with connections.engine().connect() as connection:
-        assert await connection.scalar(select(func.count()).select_from(usage)) == 2
+        assert await connection.scalar(select(func.count()).select_from(usage)) == 0
 
 
 async def test_only_the_subjects_limits_in_its_currency_and_direction_count() -> None:
-    """Another holder, currency, or direction is bounded by its own limits only."""
+    """Another holder or direction is bounded by its own limits only.
+
+    Another currency is bounded too: no limit of the holder names dollars,
+    so dollars out of it are refused (FIN-89).
+    """
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     with freeze_time(NOON):
         await spend(paid("100"))
         await spend(paid("100", holder="h-2"))
-        await spend(Movement(Money.of("500", "USD"), {"holder": "h-1"}))
+        with refused(CurrencyNotLimited):
+            await spend(Movement(Money.of("500", "USD"), {"holder": "h-1"}))
         await spend(Movement(egp("500"), {"holder": "h-1"}, Direction.IN))
         await spend(Movement(egp("500"), {"merchant": "m-1"}))
         with refused(LimitExceeded):
@@ -239,18 +249,18 @@ async def test_check_counts_nothing_and_says_what_consume_would() -> None:
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     with freeze_time(NOON):
         async with LimitsUnitOfWork(readonly=True) as uow:
-            await check(uow, paid("100"))
-            await check(uow, Movement(egp("1000"), {"merchant": "m-1"}))
+            await check_movements(uow, paid("100"))
+            await check_movements(uow, Movement(egp("1000"), {"merchant": "m-1"}))
             with refused(LimitExceeded):
-                await check(uow, paid("101"))
+                await check_movements(uow, paid("101"))
         await spend(paid("60"))
         async with LimitsUnitOfWork(readonly=True) as uow:
-            await check(uow, paid("40"))
+            await check_movements(uow, paid("40"))
             with refused(LimitExceeded):
-                await check(uow, paid("41"))
+                await check_movements(uow, paid("41"))
             # An account without limits is judged first: the holder still is.
             with refused(LimitExceeded):
-                await check(uow, paid("41", account="a-1"))
+                await check_movements(uow, paid("41", account="a-1"))
         assert await used() == [("daily", egp("60"), 1)]
 
 
@@ -258,7 +268,7 @@ async def test_a_check_of_a_subject_that_never_moved_counts_nothing_used() -> No
     """A count of one fits a subject with no row yet."""
     await limit(code="once", window=Window.DAY, max_count=1)
     async with LimitsUnitOfWork(readonly=True) as uow:
-        await check(uow, paid("1", holder="new"))
+        await check_movements(uow, paid("1", holder="new"))
 
 
 async def test_subjects_of_one_name_are_apart_by_kind_direction_and_currency() -> None:
@@ -273,7 +283,7 @@ async def test_subjects_of_one_name_are_apart_by_kind_direction_and_currency() -
         await spend(Movement(Money.of("30", "USD"), {"holder": "x"}))
         await spend(Movement(egp("40"), {"holder": "x"}))
         async with LimitsUnitOfWork(readonly=True) as uow:
-            await check(uow, Movement(egp("50"), {"holder": "x"}))
+            await check_movements(uow, Movement(egp("50"), {"holder": "x"}))
         assert await used("x", direction=Direction.OUT, currency="EGP") == [
             ("daily", egp("50"), 2)
         ]
@@ -352,7 +362,35 @@ async def test_purge_deletes_in_batches(monkeypatch: pytest.MonkeyPatch) -> None
     with freeze_time(NOON) as clock:
         await spend(*(paid("1") for _ in range(5)))
         clock.move_to(NOON + timedelta(days=36))
-        assert await purge_usage() == 5
+        with CapturedQueries() as queries:
+            assert await purge_usage() == 5
+    deletes = [
+        each
+        for each in queries.statements
+        if "DELETE FROM domainkit_limits_usage" in each
+    ]
+    assert len(deletes) == 3  # 2, 2, then the 1 that ends it.
+
+
+async def test_a_subject_with_usage_left_is_kept_however_long_ago_it_began() -> None:
+    """A subject whose newer usage is left keeps its row, however old the row.
+
+    Only a subject a window bounds has a row and usage (PERF-26).
+    """
+    await limit(
+        code="steady", subject="h-steady", window=Window.DAY, max_amount=egp("1000")
+    )
+    with freeze_time(NOON) as clock:
+        await spend(paid("1", holder="h-steady"))
+        clock.move_to(NOON + timedelta(days=30))
+        await spend(paid("1", holder="h-steady"))
+        clock.move_to(NOON + timedelta(days=36))
+        assert await purge_usage() == 1
+    async with connections.engine().connect() as connection:
+        kept = await connection.scalars(select(subjects.c.subject))
+        assert list(kept) == ["h-steady"]
+        left = await connection.scalar(select(func.count()).select_from(usage))
+        assert left == 1
 
 
 async def test_usage_names_its_window_and_what_is_left() -> None:
@@ -392,6 +430,13 @@ async def test_counting_needs_an_open_unit_of_work_that_writes_on_their_database
     with pytest.raises(ReadOnlyError) as readonly:
         async with LimitsUnitOfWork(readonly=True) as uow:
             await release(uow, "k")
+    with pytest.raises(
+        ReadOnlyError,
+        match=r"^LimitsUnitOfWork is read-only; movements are counted in one that "
+        r"writes\.$",
+    ):
+        async with LimitsUnitOfWork(readonly=True) as uow:
+            await consume(uow, paid("1"))
     with pytest.raises(RuntimeError) as closed:
         await consume(LimitsUnitOfWork(), paid("1"))
     with pytest.raises(ValueError, match=r"^Give at least one movement\.$"):
@@ -428,21 +473,31 @@ async def test_counting_needs_an_open_unit_of_work_that_writes_on_their_database
     )
 
 
-async def test_a_limit_set_partway_through_a_window_counts_what_moved_before() -> None:
-    """Every movement is counted: a limit made later sees the morning's (SEC-15b-5)."""
+async def test_a_limit_set_partway_through_a_window_counts_from_then_here() -> None:
+    """Counted by ``consume`` alone, a subject no window bounded kept nothing.
+
+    Only a subject a window bounds keeps its movements (PERF-26): the
+    morning's 60, outside the ledger, is not there to count, and a limit
+    set at noon counts from then. The ledger's postings are counted back
+    (``test_limits_earlier``; SEC-15b-5's proof).
+    """
     with freeze_time(datetime(2026, 10, 30, 9, tzinfo=UTC)):
         await spend(paid("60"))
         await spend(paid("10", holder="h-2"))
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     with freeze_time(NOON):
+        await spend(paid("100"))
         with refused(LimitExceeded):
-            await spend(paid("41"))
-        await spend(paid("40"))
-        assert await used() == [("daily", egp("100"), 2)]
+            await spend(paid("1"))
+        assert await used() == [("daily", egp("100"), 1)]
 
 
 async def test_lifting_an_exemption_counts_what_the_subject_moved_meanwhile() -> None:
-    """Exempt, then not: the exempt movements of the window count again."""
+    """Exempt, then not: outside the ledger, the exempt movements were not kept.
+
+    The ledger's postings are counted back when an exemption is lifted
+    (``test_limits_earlier``); ``consume``'s alone are not kept (PERF-26).
+    """
     await limit(code="daily", window=Window.DAY, max_amount=egp("100"))
     await limit(
         code="daily",
@@ -454,15 +509,41 @@ async def test_lifting_an_exemption_counts_what_the_subject_moved_meanwhile() ->
     with freeze_time(datetime(2026, 10, 30, 9, tzinfo=UTC)):
         await spend(paid("90"))
     await limit(code="daily", subject="h-1", window=Window.DAY, max_amount=egp("100"))
-    with freeze_time(NOON), refused(LimitExceeded):
-        await spend(paid("11"))
+    with freeze_time(NOON):
+        await spend(paid("100"))
+        with refused(LimitExceeded):
+            await spend(paid("1"))
 
 
 async def test_a_limit_that_gains_a_window_counts_the_windows_movements() -> None:
-    """Per transaction alone, then also a day: the day's movements count."""
+    """Per transaction alone, then also a day: counted from then, off the ledger."""
     await limit(code="each", per_transaction=egp("80"))
     with freeze_time(datetime(2026, 10, 30, 9, tzinfo=UTC)):
         await spend(paid("80"))
     await limit(code="each", per_transaction=egp("80"), window=Window.DAY, max_count=1)
-    with freeze_time(NOON), refused(LimitExceeded):
+    with freeze_time(NOON):
         await spend(paid("1"))
+        with refused(LimitExceeded):
+            await spend(paid("1"))
+
+
+async def test_limits_live_in_one_sql_database_routing_names() -> None:
+    """Routed to a shard group, the limits' alias names the setting that routes it."""
+    from domainkit.contrib.limits.uow import limits_alias
+
+    with (
+        override_settings(
+            DATABASES={
+                "default": {"URL": "sqlite+aiosqlite://"},
+                "a": {"URL": "sqlite+aiosqlite://"},
+                "b": {"URL": "sqlite+aiosqlite://"},
+            },
+            SHARDS={"books": {"DATABASES": ["a", "b"]}},
+            DATABASE_ROUTING={"limits": "books"},
+        ),
+        pytest.raises(
+            ImproperlyConfigured,
+            match=r"^DATABASE_ROUTING\['limits'\] = 'books' must name a SQL alias ",
+        ),
+    ):
+        limits_alias()

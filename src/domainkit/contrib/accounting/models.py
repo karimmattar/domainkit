@@ -32,17 +32,17 @@ from domainkit.ddd import (
     MaxLength,
     ValueObject,
 )
-from domainkit.money import Currency, Money, currency
+from domainkit.money import AmountOutOfRange, Currency, Money, currency
 from domainkit.utils.decimals import decimal_text
 
 from .exceptions import (
-    AccountIsClosed,
     AccountNotEmpty,
+    AccountNotOpen,
     HoldNotActive,
     InsufficientFunds,
     InvalidAmount,
     InvalidEntry,
-    PeriodIsClosed,
+    PeriodNotOpen,
     PeriodsOverlap,
     UnbalancedEntry,
 )
@@ -161,6 +161,17 @@ def ledger_currency(code: str) -> Currency:
     return unit
 
 
+def fits(value: Decimal) -> Decimal:
+    """``value``, if the ledger's columns hold it: ``PRECISION - SCALE`` digits.
+
+    Raises:
+        AmountOutOfRange: It has more digits before the point (FIN-91).
+    """
+    if value and value.adjusted() >= PRECISION - SCALE:
+        raise AmountOutOfRange("The amount is larger than the ledger keeps.")
+    return value
+
+
 def _text(value: str, limit: int, error: str) -> str:
     """``value`` if it has at most ``limit`` characters, else ``InvalidEntry``."""
     if len(value) > limit:
@@ -183,13 +194,56 @@ class AccountClosed(DomainEvent):
     account_id: AccountId
 
 
+class StatementImported(DomainEvent):
+    """A statement's lines were imported for an account (FIN-90).
+
+    ``digest`` is the SHA-256 of the lines as stored (their ids, dates,
+    amounts, references, and descriptions), so the trail names the very
+    statement whoever imported it sent.
+    """
+
+    account_id: AccountId
+    statement: str
+    imported: int
+    skipped: int
+    digest: str
+
+
+class AccountReconciled(DomainEvent):
+    """An account's statement lines were matched to its postings (FIN-90).
+
+    ``matched`` counts the matches by rule; ``breaks`` what was left.
+    """
+
+    account_id: AccountId
+    run_id: UUID
+    matched: dict[str, int]
+    breaks: int
+
+
+class EntryAmount(ValueObject):
+    """What one entry moved on one account: its debits and its credits there."""
+
+    account_id: AccountId
+    debits: Money
+    credits: Money
+
+
 class EntryPosted(DomainEvent):
-    """A journal entry was posted; ``reverses`` names the entry it undoes."""
+    """A journal entry was posted; ``reverses`` names the entry it undoes.
+
+    ``amounts`` are what it moved on each of its accounts, by account id,
+    and ``digest`` is the SHA-256 of its date, description, and lines (its
+    ``fingerprint``): the audit trail that records the event, sealed and
+    anchored, vouches for every posting (FIN-96).
+    """
 
     entry_id: EntryId
     source: str
     reference: str
     booked_on: date
+    amounts: tuple[EntryAmount, ...]
+    digest: str
     reverses: EntryId | None = None
 
 
@@ -249,8 +303,8 @@ class Account(AggregateRoot[AccountId]):
 
     ``holder`` names the subject it is kept for, such as a customer's
     wallet; ``privacy export`` lists that subject's accounts. An account
-    that ``may_go_negative`` is False refuses whatever would leave less
-    than nothing available.
+    refuses whatever would leave less than nothing available, unless it was
+    opened with ``may_go_negative``.
     """
 
     class Meta:
@@ -267,7 +321,9 @@ class Account(AggregateRoot[AccountId]):
     currency: Annotated[str, MaxLength(8)]
     status: AccountStatus = AccountStatus.OPEN
     holder: Annotated[str, MaxLength(MAX_TEXT)] | None = None
-    may_go_negative: bool = True
+    may_go_negative: bool = False
+    """Whether what it has available may fall below zero: only an account
+    opened so (a clearing or a settlement account), never by default (FIN-97)."""
     balance: Annotated[Decimal, Digits(PRECISION, SCALE)] = ZERO
     held: Annotated[Decimal, Digits(PRECISION, SCALE)] = ZERO
     opened_at: datetime = field(default_factory=_now)
@@ -282,7 +338,7 @@ class Account(AggregateRoot[AccountId]):
         currency: str,
         *,
         holder: str | None = None,
-        may_go_negative: bool = True,
+        may_go_negative: bool = False,
     ) -> Self:
         """Open an account, recording ``AccountOpened``.
 
@@ -331,7 +387,7 @@ class Account(AggregateRoot[AccountId]):
     def _checked(self, amount: Money) -> Decimal:
         """``amount``'s value, if the account is open and of its currency."""
         if self.status is AccountStatus.CLOSED:
-            raise AccountIsClosed("The account is closed.")
+            raise AccountNotOpen("The account is closed.")
         if amount.currency.code != self.currency:
             raise InvalidEntry("An amount is not in its account's currency.")
         return amount.amount
@@ -340,43 +396,67 @@ class Account(AggregateRoot[AccountId]):
         """Change the balance by ``amount`` on ``side``.
 
         Raises:
-            AccountIsClosed: The account is closed.
+            AccountNotOpen: The account is closed.
             InvalidEntry: ``amount`` is in another currency.
             InsufficientFunds: It may not go negative, and less than nothing
                 would be available.
+            AmountOutOfRange: The balance would be larger than the ledger keeps.
         """
         value = self._checked(amount)
         balance = self.balance + (value if side is self.normal_balance else -value)
         if not self.may_go_negative and balance - self.held < ZERO:
             raise InsufficientFunds("The account does not have enough available.")
-        self.balance = balance
+        self.balance = fits(balance)
 
     def reserve(self, amount: Money) -> None:
         """Hold ``amount`` back from what is available.
 
         Raises:
-            AccountIsClosed: The account is closed.
+            AccountNotOpen: The account is closed.
             InvalidEntry: ``amount`` is in another currency.
             InsufficientFunds: It may not go negative and has less available.
+            AmountOutOfRange: What it holds would be larger than the ledger keeps.
         """
         value = self._checked(amount)
         if not self.may_go_negative and self.available < value:
             raise InsufficientFunds("The account does not have enough available.")
-        self.held += value
+        self.held = fits(self.held + value)
 
     def unreserve(self, value: Decimal) -> None:
         """Make ``value`` available again: a hold finished."""
         self.held -= value
 
+    def imported(
+        self, statement: str, imported: int, skipped: int, digest: str
+    ) -> None:
+        """Record that a statement was imported for it (``StatementImported``)."""
+        self.record(
+            StatementImported(
+                account_id=self.id,
+                statement=statement,
+                imported=imported,
+                skipped=skipped,
+                digest=digest,
+            )
+        )
+
+    def reconciled(self, run_id: UUID, matched: dict[str, int], breaks: int) -> None:
+        """Record that it was reconciled (``AccountReconciled``)."""
+        self.record(
+            AccountReconciled(
+                account_id=self.id, run_id=run_id, matched=matched, breaks=breaks
+            )
+        )
+
     def close(self) -> None:
         """Close the account, recording ``AccountClosed``.
 
         Raises:
-            AccountIsClosed: It is closed already.
+            AccountNotOpen: It is closed already.
             AccountNotEmpty: It has a balance, or active holds.
         """
         if self.status is AccountStatus.CLOSED:
-            raise AccountIsClosed("The account is closed.")
+            raise AccountNotOpen("The account is closed.")
         if self.balance != ZERO or self.held != ZERO:
             raise AccountNotEmpty("Only an account with nothing on it can be closed.")
         self.status = AccountStatus.CLOSED
@@ -413,20 +493,39 @@ def fingerprint(
     reverses: EntryId | None,
 ) -> str:
     """A digest of what an entry books, to tell a retry from another entry."""
-    document = {
-        "booked_on": booked_on.isoformat(),
-        "description": description,
-        "reverses": None if reverses is None else str(reverses),
-        "lines": [
-            [
+    return digest(
+        booked_on,
+        description,
+        reverses,
+        [
+            (
                 str(line.account_id),
                 line.side.value,
                 decimal_text(line.amount.amount),
                 line.amount.currency.code,
                 line.memo,
-            ]
+            )
             for line in lines
         ],
+    )
+
+
+def digest(
+    booked_on: date,
+    description: str,
+    reverses: UUID | None,
+    lines: Sequence[tuple[str, str, str, str, str]],
+) -> str:
+    """``fingerprint``, of lines as text: account, side, amount, currency, memo.
+
+    ``verify_ledger`` takes it of the stored postings, to compare with the
+    trail's ``EntryPosted`` (SEC-16b-6).
+    """
+    document = {
+        "booked_on": booked_on.isoformat(),
+        "description": description,
+        "reverses": None if reverses is None else str(reverses),
+        "lines": [list(line) for line in lines],
     }
     text = json.dumps(document, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
@@ -474,6 +573,7 @@ class Entry(AggregateRoot[EntryId]):
             InvalidEntry: The source, reference, description, a memo, or
                 the number of lines is out of bounds.
             InvalidAmount: A line's amount is not more than zero.
+            AmountOutOfRange: A line's amount is larger than the ledger keeps.
             UnbalancedEntry: Debits and credits differ in some currency.
         """
         if not SOURCE.fullmatch(source):
@@ -493,7 +593,7 @@ class Entry(AggregateRoot[EntryId]):
             _text(line.memo, MAX_TEXT, "A memo has at most 255 characters.")
             if line.amount.amount <= ZERO:
                 raise InvalidAmount("An amount is more than zero.")
-            sums[line.amount.currency.code, line.side] += line.amount.amount
+            sums[line.amount.currency.code, line.side] += fits(line.amount.amount)
         for code in {code for code, _ in sums}:
             if sums[code, Side.DEBIT] != sums[code, Side.CREDIT]:
                 raise UnbalancedEntry(
@@ -527,6 +627,8 @@ class Entry(AggregateRoot[EntryId]):
                 source=source,
                 reference=reference,
                 booked_on=booked_on,
+                amounts=_amounts(lines),
+                digest=entry.fingerprint,
                 reverses=reverses,
             )
         )
@@ -545,6 +647,20 @@ class Entry(AggregateRoot[EntryId]):
             Line(line.account_id, line.side.opposite, line.amount, line.memo)
             for line in self.lines()
         ]
+
+
+def _amounts(lines: Sequence[Line]) -> tuple[EntryAmount, ...]:
+    """What ``lines`` move on each account, per currency, by the accounts' ids."""
+    moved: dict[tuple[AccountId, str], dict[Side, Money]] = {}
+    for line in lines:
+        zero = Money.zero(line.amount.currency)
+        key = (line.account_id, line.amount.currency.code)
+        sides = moved.setdefault(key, {Side.DEBIT: zero, Side.CREDIT: zero})
+        sides[line.side] += line.amount
+    return tuple(
+        EntryAmount(account_id, sides[Side.DEBIT], sides[Side.CREDIT])
+        for (account_id, _), sides in sorted(moved.items())
+    )
 
 
 class Hold(AggregateRoot[HoldId]):
@@ -578,15 +694,21 @@ class Hold(AggregateRoot[HoldId]):
         source: str,
         reference: str,
         expires_at: datetime,
+        *,
+        now: datetime | None = None,
     ) -> Self:
         """Reserve ``amount`` on ``account`` until ``expires_at``; ``HoldPlaced``.
+
+        ``now`` is the present it is placed at, and checks ``expires_at``
+        against: the database's clock (``place_hold``), which decides when
+        it expires; ``domainkit.clock``'s by default.
 
         Raises:
             InvalidEntry: The source or reference is malformed, or
                 ``expires_at`` has no time zone, has passed, or is more than
                 ``LONGEST_HOLD`` (366 days) away.
             InvalidAmount: The amount is not more than zero.
-            AccountIsClosed, InsufficientFunds: As ``Account.reserve``.
+            AccountNotOpen, InsufficientFunds: As ``Account.reserve``.
         """
         if not SOURCE.fullmatch(source):
             raise InvalidEntry(
@@ -599,7 +721,7 @@ class Hold(AggregateRoot[HoldId]):
             raise InvalidAmount("An amount is more than zero.")
         if expires_at.utcoffset() is None:
             raise InvalidEntry("A hold's expiry needs a time zone.")
-        now = _now()
+        now = _now() if now is None else now
         if not now < expires_at <= now + LONGEST_HOLD:
             raise InvalidEntry("A hold expires in the future, within 366 days.")
         account.reserve(amount)
@@ -611,6 +733,7 @@ class Hold(AggregateRoot[HoldId]):
             source=source,
             reference=reference,
             expires_at=expires_at,
+            placed_at=now,
         )
         hold.record(
             HoldPlaced(hold_id=hold.id, account_id=account.id, expires_at=expires_at)
@@ -627,24 +750,32 @@ class Hold(AggregateRoot[HoldId]):
         return (self.account_id, self.money) == (account_id, amount)
 
     def finish(
-        self, account: Account, status: HoldStatus, entry_id: EntryId | None = None
+        self,
+        account: Account,
+        status: HoldStatus,
+        entry_id: EntryId | None = None,
+        *,
+        now: datetime | None = None,
     ) -> None:
         """Give the amount back to ``account`` and end as ``status``.
 
         ``entry_id`` is the entry a capture posts, which ``HoldFinished``
         names; the capture sets ``entry_id`` once the entry is written.
+        ``now`` is the database's present, which decides whether the hold
+        has expired (FIN-99); None: ``domainkit.clock``'s.
 
         Raises:
             HoldNotActive: It finished already, or has expired and is
                 captured.
         """
+        moment = now or _now()
         if self.status is not HoldStatus.ACTIVE:
             raise HoldNotActive("The hold was captured, released, or has expired.")
-        if status is HoldStatus.CAPTURED and self.expires_at <= _now():
+        if status is HoldStatus.CAPTURED and self.expires_at <= moment:
             raise HoldNotActive("The hold was captured, released, or has expired.")
         account.unreserve(self.amount)
         self.status = status
-        self.finished_at = _now()
+        self.finished_at = moment
         self.record(
             HoldFinished(
                 hold_id=self.id,
@@ -695,16 +826,16 @@ class Period(AggregateRoot[PeriodId]):
         """Refuse an entry dated in this period if it is closed.
 
         Raises:
-            PeriodIsClosed: The period is closed.
+            PeriodNotOpen: The period is closed.
         """
         if self.status is PeriodStatus.CLOSED:
-            raise PeriodIsClosed("The entry's date is in a closed period.")
+            raise PeriodNotOpen("The entry's date is in a closed period.")
 
     def close(self) -> None:
         """Close the period, recording ``PeriodClosed``.
 
         Raises:
-            PeriodIsClosed: It is closed already.
+            PeriodNotOpen: It is closed already.
         """
         self.takes()
         self.status = PeriodStatus.CLOSED

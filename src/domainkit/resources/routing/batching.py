@@ -15,6 +15,7 @@ spent, the batch answers as one that does not retry.
 """
 
 import dataclasses
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -22,10 +23,13 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from fastapi import Response, status
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
+from domainkit.context import UNMATCHED_PATH, current_request
 from domainkit.ddd.messages import Command
 from domainkit.ddd.uow import UnitOfWork
 from domainkit.exceptions import DomainkitError
+from domainkit.http.access import check_object_permissions
 from domainkit.http.responses import BuiltJSONResponse
+from domainkit.reporting import report_error
 from domainkit.utils.text import snake_case
 
 from ..access import ADD, CHANGE, DELETE
@@ -35,6 +39,7 @@ from ..batches import (
     BatchResult,
     Enlisted,
     Undo,
+    crashed,
     failure,
     not_applied,
 )
@@ -50,6 +55,8 @@ if TYPE_CHECKING:
 
     from . import ResourceRouter
     from .reach import Joined
+
+logger = logging.getLogger(__name__)
 
 type Render = Callable[[], Awaitable[BatchResult]]
 """How an item that ran is answered, once the batch's outcome is known."""
@@ -171,10 +178,12 @@ class BatchRoute:
         retry = self.retry
         uow = context.uow
 
-        async def settle(each: BaseModel, work: UnitOfWork) -> Render:
+        async def settle(
+            each: BaseModel, work: UnitOfWork, pending: dict[object, int] | None = None
+        ) -> Render:
             try:
                 if retry is None or payload.atomic:
-                    return await self.attempt(context, fixed, each, work)
+                    return await self.attempt(context, fixed, each, work, pending)
                 run = partial(self.attempt, context, fixed, each, work)
                 return await work.run(run, retry=retry)
             except Exception as exc:
@@ -186,23 +195,10 @@ class BatchRoute:
                 return _Settled(refused)
 
         if not payload.atomic:
-            renders = [await settle(each, uow) for each in payload.items]
+            renders = await _one_by_one(context, payload.items, settle)
             results = [await render() for render in renders]
-        elif retry is None:
-            results = await _atomically(uow, payload.items, settle)
         else:
-            whole = dataclasses.replace(retry, retry_on=(*retry.retry_on, _LostRace))
-            try:
-                results = await uow.run(
-                    partial(_atomically, uow, payload.items, settle), retry=whole
-                )
-            except _LostRace as lost:
-                refused = failure(lost.exc)
-                if refused is None:  # Not a refusal: raised, as without retry.
-                    for note in getattr(lost, "__notes__", ()):
-                        lost.exc.add_note(note)
-                    raise lost.exc from None
-                results = _undone(len(payload.items), lost.at, refused)
+            results = await self.atomic(context, payload.items, settle)
         answer = BatchAnswer(
             results=results,
             failed=sum(
@@ -216,14 +212,97 @@ class BatchRoute:
             status_code=status.HTTP_207_MULTI_STATUS,
         )
 
+    async def atomic(
+        self,
+        context: RouteContext,
+        items: Sequence[BaseModel],
+        settle: Callable[[BaseModel, UnitOfWork, dict[object, int]], Awaitable[Render]],
+    ) -> list[BatchResult]:
+        """Run every item in one transaction, after their object rules allow them.
+
+        Each aggregate is held, at the first item acting on it, to the
+        version its rules saw (``check_objects``, ``reach.pinned``); the
+        items after it find it in this transaction. With ``retry``, the
+        whole batch runs again when it loses a race.
+        """
+        uow = context.uow
+        seen, refused = await self.check_objects(context, items)
+        if refused is not None:
+            return refused
+
+        async def atomically() -> list[BatchResult]:
+            pending = dict(seen)  # Taken out as their first items run.
+
+            async def held(each: BaseModel, work: UnitOfWork) -> Render:
+                return await settle(each, work, pending)
+
+            return await _atomically(uow, items, held)
+
+        retry = self.retry
+        if retry is None:
+            return await atomically()
+        whole = dataclasses.replace(retry, retry_on=(*retry.retry_on, _LostRace))
+        try:
+            return await uow.run(atomically, retry=whole)
+        except _LostRace as lost:
+            failed = failure(lost.exc)
+            if failed is None:  # Not a refusal: raised, as without retry.
+                for note in getattr(lost, "__notes__", ()):
+                    lost.exc.add_note(note)
+                raise lost.exc from None
+            return _undone(len(items), lost.at, failed)
+
+    async def check_objects(
+        self, context: RouteContext, items: Sequence[BaseModel]
+    ) -> tuple[dict[object, int], list[BatchResult] | None]:
+        """Ask the object rules about each item's aggregate, before an atomic batch.
+
+        Each aggregate is read in a unit of work of its own, closed before
+        the rules run, as for a command (``reach.on_one``): a rule may read
+        the database itself (object permission grants), and must not wait
+        for a connection while the batch's transaction holds one (WEB-16).
+        The version each rule saw, by aggregate id, for the batch to hold its
+        aggregate to (``reach.pinned``, SEC-16a-1); and the answer of the
+        first item refused, the rest undone, or None when every item may go
+        on. Nothing is read when no rule looks at objects.
+
+        Raises:
+            Exception: What reading an aggregate or a rule raised, if it is
+                no refusal (a bug).
+        """
+        router = self.router
+        seen: dict[object, int] = {}
+        if not (self.detail and self.objects):
+            return seen, None
+        for at, each in enumerate(items):
+            id_ = getattr(each, router.lookup)
+            ids = {**context.ids, router.lookup: id_}
+            try:
+                async with context.uow as uow:
+                    aggregate = await reach.load(router, uow, context.request, ids)
+                await check_object_permissions(context.request, aggregate, *self.rules)
+            except Exception as exc:
+                refused = failure(exc)
+                if refused is None:
+                    raise
+                return seen, _undone(len(items), at, refused)
+            seen.setdefault(id_, aggregate.version)
+        return seen, None
+
     async def attempt(
         self,
         context: RouteContext,
         fixed: Mapping[str, object],
         each: BaseModel,
         work: UnitOfWork,
+        pending: dict[object, int] | None = None,
     ) -> Render:
-        """Run one item in ``work``; how to answer it, once the batch is done."""
+        """Run one item in ``work``; how to answer it, once the batch is done.
+
+        ``pending`` are the versions an atomic batch's rules saw, by id: the
+        item that first acts on an aggregate holds it to its version, and
+        takes it out (``reach.pinned``).
+        """
         router = self.router
         arguments = changes(each)
         id_ = arguments.pop(router.lookup, None)
@@ -243,7 +322,11 @@ class BatchRoute:
                     router, own, lambda: self.service(built, uow)
                 )
 
-            result = await reach.on_one(router, own, self.rules, self.objects, run)
+            # An atomic batch asked the object rules before its transaction.
+            objects = self.objects and not isinstance(work, Enlisted)
+            version = None if pending is None else pending.pop(id_, None)
+            with reach.pinned(router, own, version):
+                result = await reach.on_one(router, own, self.rules, objects, run)
         else:
             result = await self.service(built, work)
         return lambda: presenting.batch_result(
@@ -280,6 +363,47 @@ async def _atomically(
     if failed is None:
         return [await render() for render in renders]
     return _undone(len(items), len(renders) - 1, failed)
+
+
+async def _one_by_one(
+    context: RouteContext,
+    items: Sequence[BaseModel],
+    settle: Callable[[BaseModel, UnitOfWork], Awaitable[Render]],
+) -> list[Render]:
+    """Run each item as a use case of its own, in order; stop at an unexpected error.
+
+    An unexpected error of the first item fails the request, as a request
+    of its own would fail. Past it, the items before it may have committed,
+    so the batch still answers each one (WEB-17): the item that raised is a
+    500, logged and reported as the request's error would be, and the rest
+    are not run (``424``).
+    """
+    renders: list[Render] = []
+    for at, each in enumerate(items):
+        try:
+            renders.append(await settle(each, context.uow))
+        except Exception as exc:
+            if not renders:
+                raise
+            _report(context, exc)
+            renders.append(_Settled(crashed()))
+            renders.extend(_Settled(not_applied()) for _ in items[at + 1 :])
+            break
+    return renders
+
+
+def _report(context: RouteContext, exc: Exception) -> None:
+    """Log and report an item's error, as ``RequestContextMiddleware`` would."""
+    request = current_request()
+    method = context.request.method
+    path = request.path if request is not None else UNMATCHED_PATH
+    logger.error("Unhandled error in a batch item of %s %s", method, path, exc_info=exc)
+    report_error(
+        exc,
+        request_id=request.request_id if request is not None else None,
+        method=method,
+        path=path,
+    )
 
 
 def _undone(count: int, at: int, failed: BatchResult) -> list[BatchResult]:

@@ -27,6 +27,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from pydantic import ValidationError
+from starlette.requests import HTTPConnection
 
 from domainkit import clock
 from domainkit.apps import registry
@@ -40,6 +41,7 @@ from .exceptions import (
     ApprovalRequired,
     FingerprintMismatch,
     InvalidArguments,
+    MakerNotAllowed,
     RequestNotPending,
     RequestTampered,
 )
@@ -51,16 +53,22 @@ from .models import (
     RequestId,
     RequestStatus,
 )
+from .rules import _instance
 from .settings import ApprovalsSettings
 from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias
 
 logger = logging.getLogger(__name__)
+AUTH: Final = "domainkit.contrib.auth"
 EXECUTE: Final = "domainkit.approvals.execute"
 """The task that runs an approved request's command (``tasks``)."""
 EXPIRE_BATCH: Final = 500
 """Requests one round of ``expire_requests`` expires at most."""
 MAKER: Final = "A maker's id has 1 to 255 characters."
 APPROVER: Final = "An approver's id has 1 to 255 characters."
+_RUN: Final = HTTPConnection(
+    {"type": "http", "method": "POST", "path": f"/{EXECUTE}", "headers": []}
+)
+"""The connection a run checks a guard's ``maker_rule`` on: no credentials."""
 
 
 def config() -> ApprovalsSettings:
@@ -214,7 +222,7 @@ async def approve_request(
     Raises:
         RequestNotFound: No request has that id.
         RequestTampered: Its seal does not hold.
-        PolicyGone: Its guard or policy no longer exists.
+        PolicyRemoved: Its guard or policy no longer exists.
         RequestNotPending: It is decided already, or has expired.
         MakerCannotDecide: The approver submitted it.
         InterestedParty: The command is about the approver.
@@ -236,7 +244,7 @@ def _parties(request: ApprovalRequest) -> frozenset[str]:
     """The people the request's command is about, who may not decide it.
 
     Raises:
-        PolicyGone: The request's guard or policy no longer exists.
+        PolicyRemoved: The request's guard or policy no longer exists.
         InvalidArguments: Its arguments no longer make its command.
     """
     guard, _ = policy_of(request)
@@ -254,7 +262,7 @@ async def reject_request(
     Raises:
         RequestNotFound: As for ``approve_request``.
         RequestTampered: As for ``approve_request``.
-        PolicyGone: As for ``approve_request``.
+        PolicyRemoved: As for ``approve_request``.
         RequestNotPending: As for ``approve_request``.
         MakerCannotDecide: As for ``approve_request``.
         InterestedParty: As for ``approve_request``.
@@ -344,6 +352,41 @@ def _rebuild(guard: Guard, request: ApprovalRequest) -> object:
             "The request holds another command than the one approved."
         )
     return command
+
+
+async def _check_maker(guard: Guard, maker: str) -> None:
+    """Refuse a run for a maker who may no longer make the command (FIN-93).
+
+    With ``domainkit.contrib.auth`` installed, a maker that is a user's id
+    must still be an active user, holding the guard's maker permission if
+    it names one and passing its ``maker_rule`` if it has one (SEC-16b-7):
+    a clerk dismissed, a customer frozen, or staff demoted after
+    submitting runs nothing. The rule sees the user on a connection of
+    no credentials (``_RUN``): a rule about the submitting request itself
+    (its scopes, a step-up) was checked when the request was submitted,
+    and one that needs such credentials refuses here. A maker that names
+    no user (a principal of the project's own) is left to the project.
+
+    Raises:
+        MakerNotAllowed: The user is gone, inactive, lacks the permission,
+            or fails the maker rule.
+    """
+    if not registry.is_installed(AUTH):
+        return
+    try:
+        user_id = UUID(maker)
+    except ValueError:
+        return
+    from domainkit.contrib.auth import get_user, has_perm
+
+    user = await get_user(user_id)
+    rule = _instance(guard.maker_rule)
+    if (
+        user is None
+        or (guard.permission is not None and not await has_perm(user, guard.permission))
+        or (rule is not None and not await rule.has_permission(_RUN, user))
+    ):
+        raise MakerNotAllowed("Whoever submitted this command may no longer make it.")
 
 
 async def _read(request_id: UUID) -> ApprovalRequest:
@@ -452,8 +495,9 @@ async def execute_request(request_id: UUID, token: str | None = None) -> None:
     request's run token, which the run spends. A request that is not
     approved (it ran, or failed), or a token that is not its own (a message
     queued again), runs nothing; a request whose seal does not hold fails
-    (``request_tampered``). A command that is not what was approved, or
-    whose guard or policy is gone, fails the request, and so does a
+    (``request_tampered``). A command that is not what was approved, whose
+    guard or policy is gone, or whose maker may no longer make it
+    (``maker_not_allowed``: FIN-93) fails the request, and so does a
     refusal of the use case's (a ``DomainError`` other than
     ``ConcurrentUpdate``), with the refusal's code. Anything else is
     raised, for the worker to retry.
@@ -475,13 +519,16 @@ async def execute_request(request_id: UUID, token: str | None = None) -> None:
         try:
             guard, _ = policy_of(request)
             command = _rebuild(guard, request)
+            await _check_maker(guard, request.maker)
         except DomainError as exc:
             await _finish(request_id, token, exc.code)
             return
         uow = guard.unit_of_work()
         marking = _marking(uow, request_id, token)
         try:
-            with running(request.id, request.action, command, request.maker):
+            with running(
+                request.id, request.action, command, request.maker, request.required
+            ):
                 await guard(command, marking or uow)
         except AlreadyHandled:  # It committed in another database, then the run ended.
             await _finish(request_id, token)

@@ -4,7 +4,7 @@
 one and raises ``InvalidPassword`` with all the rules a password breaks.
 By default a password may not look like the user's own details, must have
 at least 8 characters, may not be one of 20,000 common passwords, and may
-not be only digits. ``AUTH.PASSWORD_PRESET = "pci-dss-4"`` asks for 12
+not be only digits. ``AUTH.PRESET = "pci-dss-4"`` asks for 12
 characters, letters and digits both (``LettersAndDigitsValidator``), and
 none of the user's last four passwords (``AUTH.PASSWORD_HISTORY``, checked
 where the password is stored, ``UserRepository.set_password``).
@@ -237,7 +237,7 @@ def password_help_texts() -> list[str]:
 
 
 def preset_contradictions(config: AuthSettings) -> list[str]:
-    """What ``config`` sets against its ``PASSWORD_PRESET``; empty without one.
+    """What ``config`` sets against its ``PRESET``; empty without one.
 
     For ``"pci-dss-4"``: validators that take passwords under 12
     characters, or without letters and digits both (8.3.6); a history of
@@ -249,7 +249,7 @@ def preset_contradictions(config: AuthSettings) -> list[str]:
     access token works unrefreshed); and password checks of signed-in users
     counted apart from logins (8.3.4, ``PASSWORD_CHECKS_COUNT_AS_LOGINS``).
     """
-    if config.PASSWORD_PRESET != PCI_DSS_4:
+    if config.PRESET != PCI_DSS_4:
         return []
     found = []
     validators = load_validators(config.PASSWORD_VALIDATORS)

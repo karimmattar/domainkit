@@ -109,9 +109,13 @@ class TransactionNotAuthorized(PermissionDenied):
 class InvalidTransaction(BusinessRuleViolation):
     """The amount, payee, or purpose cannot be authorized as given."""
 
+    code = "invalid_transaction"
+
 
 class TransactionNotFound(NotFound):
     """No transaction of the user waits under that id (404)."""
+
+    code = "transaction_not_found"
 
 
 async def request_authorization(

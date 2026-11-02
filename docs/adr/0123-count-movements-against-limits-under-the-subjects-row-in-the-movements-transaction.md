@@ -1,6 +1,6 @@
 # 0123. Count movements against limits under the subject's row, in the movement's transaction
 
-- Status: Accepted; amended 2026-10-31 (at the end)
+- Status: Accepted; amended 2026-10-31 and 2026-11-01 (at the end)
 - Date: 2026-10-31
 
 ## Context
@@ -174,3 +174,89 @@ A holder or an actor that limits cannot take as a subject (a control
 character, more than 255 characters) refused every posting to its
 accounts once limits were installed; it is counted under its digest
 instead (`ledger_subject`).
+
+## Amendment (2026-11-01, the 0.15 audit)
+
+- **Only bounded subjects keep their movements** (PERF-26, revising
+  SEC-15b-5). Counting every movement of every subject, to keep the
+  promise that a limit set mid-window sees what moved before it, wrote
+  three usage rows per two-line entry for subjects no limit names (a
+  bank's clearing and fee accounts: tens of gigabytes a month at a
+  million entries a day) and taxed every posting. Now `consume` keeps the
+  movements of the subjects a window bounds only. The promise is kept
+  where the movements are on record: when a limit with a window is set,
+  changed, or enabled for accounts or holders, `count_earlier` counts
+  the ledger's postings since the window began, in the transaction that
+  sets it, entry by entry, skipping reversed entries and what was
+  counted already. An actor's movements are not in the ledger, nor are a
+  project's own kinds counted through `consume`: they count from when a
+  window bounds them. Considered: a per-kind switch (`COUNT_KINDS`), and
+  daily totals per subject; both still write for subjects no limit names.
+- **Currencies fail closed** (FIN-89): a subject some limit bounds in one
+  currency is refused a movement in another (`currency_not_limited`),
+  unless a default for every currency (`"currency": "*"`) bounds it,
+  its amounts read in each currency's units. A limit disabled for a
+  subject (an exemption) names its currency only.
+- **An approved reversal counts** (FIN-88). A reversal releases what its
+  entry counted, a refund's semantics; one booked while an approved
+  request runs (a reversal over the thresholds, now guarded) is counted
+  as a movement instead and releases nothing, so undoing an approved
+  payout does not free the holder's limit to draw it again.
+- **What stays open** (PERF-27): a window is still a sum over its
+  movements, under the subject's lock; a limit on a busy subject (a
+  merchant's incoming payments, a service actor) costs a sum over every
+  movement of its window. Running totals per subject and bucket would
+  bound it; the usage table's shape allows adding them after 1.0.
+
+## Amendment (2026-11-01, the SEC-16b review)
+
+- **The ledger counts at the commit** (SEC-16b-2). A limit set while a
+  posting was in flight never counted it: the posting's `enforce` found
+  no limit, so kept no usage (PERF-26), and `count_earlier` ran before
+  the posting committed, so did not see it. Three fixes were weighed.
+  Keeping usage for every kind some limit names brings back the rows
+  PERF-26 removed, and still misses the first limit of a kind. Locking
+  per kind, direction, and currency in `enforce`, shared, and in
+  `count_earlier`, alone, makes a limit wait for every posting in flight
+  for as long as it runs, hooks and all (the review's PoC holds one
+  open), and a posting that already locked a bounded subject's row then
+  waits for the limit while the limit waits for that row. Chosen: the
+  ledger's `enforce` works an entry's movements out as it is booked,
+  and `count_staged`, an `on_stage` hook, counts them as the posting
+  commits, after the rest of its work, under a shared transaction lock
+  of each ledger kind (`counting(kind)`, account and holder, whatever
+  the currency or direction, so a default for every currency is covered
+  and a limit takes one lock); `count_earlier` takes its kind's lock
+  alone before it reads. A posting that took the shared lock first
+  commits before the limit counts back, and is counted; one that takes
+  it later reads the limit, committed. A posting holds the lock only
+  from its commit's start, so a limit waits for commits, not for
+  postings' work, and subject rows are only locked after it, so no
+  wait goes round. The cost, measured on the `posting` rung (PostgreSQL
+  16, a holder with a daily limit): 13 statements a posting become 14,
+  11,764 calls 11,973 (+1.8%); CPU time moved within the noise (11.2 ms
+  to 11.4 ms, then 10.7 ms). SQLite runs one writer at a time; counting
+  back there takes the write lock first, as a posting's count does.
+- **Removing a limit counts back** (SEC-16b-3) for the limit of its code
+  that then applies to the removed one's subjects (the default an
+  exemption shadowed, or a default of its key). A default added to the
+  settings by a deploy is not counted back: no transaction sets it, and
+  counting back every default on every start is a scan per default for
+  nothing most of the time. It starts with an empty window; set it as a
+  stored limit to have it count back.
+- **An approved reversal is marked** (SEC-16b-9): the limits'
+  `domainkit_limits_kept` keeps its entry's id when `count_staged`
+  counts it, so `count_earlier` counts it as a movement, and the entry
+  it reverses as not undone, as `enforce` did. The mark is the limits',
+  not the ledger's: whether a reversal frees what it undid is a rule of
+  limits (FIN-88), and the ledger's rows are append-only and older than
+  it. Marks go with the usage, after `KEEP_USAGE`, longer than any
+  window.
+- **Counting back is chunked** (SEC-16b-8): subjects' rows are made and
+  read 1,000 at a time, so a limit for every subject counts back however
+  many moved in its window (asyncpg binds 32,767 parameters a statement).
+- **A movement past the columns is refused** (SEC-16b-5): a movement
+  sums an entry's postings for its subject, so it may pass
+  `NUMERIC(18, 4)` when no posting does; `Movement` refuses it,
+  `MovementOutOfRange` (422 `amount_out_of_range`), and counting back
+  does the same.

@@ -4,9 +4,11 @@ import asyncio
 import getpass
 import io
 from collections.abc import Callable, Iterable
+from types import SimpleNamespace
 
 import pytest
 
+from domainkit.conf import override_settings
 from domainkit.conf.env import project_prefix
 from domainkit.contrib.auth import (
     AbstractBaseUser,
@@ -17,6 +19,7 @@ from domainkit.contrib.auth import (
 from domainkit.contrib.auth.management.commands import changepassword, createsuperuser
 from domainkit.management import CommandError, call_command
 from domainkit.management.base import BaseCommand, run_async
+from domainkit_tests.conftest import FAST_HASHER
 
 STRONG = "vy3!Tq-pX9#mR2"
 
@@ -193,6 +196,11 @@ def test_createsuperuser_usage(auth_project: str) -> None:
         "<PREFIX>SUPERUSER_<FIELD>" in text
     )
     assert createsuperuser._label("first_name") == "First name"
+    assert (
+        "--temporary, --no-temporary the user changes the password at the first "
+        "login (default: with --noinput, under AUTH.PASSWORD_CHANGE_ON_FIRST_USE)"
+        in text
+    )
 
 
 def test_createsuperuser_without_input(
@@ -328,3 +336,89 @@ def test_changepassword_finds_the_user(
 
     with pytest.raises(CommandError, match="'ghost' does not exist"):
         run_async(changepassword.Command()._save("ghost", STRONG, temporary=False))
+
+
+def test_createsuperuser_bypasses_nothing_where_deployed(
+    auth_project: str,
+    prompts: Prompts,
+    output: tuple[io.StringIO, io.StringIO],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In staging and production, a refused password is asked again (AUTH-18).
+
+    The command reads the environment alone: the deployment checks, which a
+    database without TLS fails, are not what this test is about.
+    """
+    asked = prompts(
+        createsuperuser.Command,
+        plain=["admin", "admin@example.com"],
+        secret=["1234", "1234", STRONG, STRONG],
+    )
+    stdout, stderr = output
+    monkeypatch.setattr(
+        createsuperuser, "settings", SimpleNamespace(ENVIRONMENT="production")
+    )
+    call_command("createsuperuser", stdout=stdout, stderr=stderr)
+
+    admin = stored("admin")
+    assert admin is not None
+    assert check_password(STRONG, admin.password.value)
+    assert BYPASS not in asked
+
+
+@pytest.mark.parametrize(
+    ("options", "temporary"),
+    [((), True), (("--no-temporary",), False)],
+)
+def test_createsuperuser_from_the_environment_sets_a_temporary_password(
+    auth_project: str,
+    monkeypatch: pytest.MonkeyPatch,
+    options: tuple[str, ...],
+    temporary: bool,
+) -> None:
+    """Under ``PASSWORD_CHANGE_ON_FIRST_USE``, a password whoever deploys holds too."""
+    monkeypatch.setenv(f"{project_prefix()}SUPERUSER_PASSWORD", STRONG)
+    with override_settings(
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER], "PASSWORD_CHANGE_ON_FIRST_USE": True}
+    ):
+        call_command(
+            "createsuperuser",
+            "--noinput",
+            "--username",
+            "root",
+            "--email",
+            "root@example.com",
+            *options,
+            stdout=io.StringIO(),
+        )
+        root = stored("root")
+        assert root is not None
+
+        async def must_change() -> bool:
+            async with AuthUnitOfWork() as uow:
+                return await uow.passwords.must_change(root.id)
+
+        assert run_async(must_change()) is temporary
+
+
+def test_createsuperuser_asked_sets_a_lasting_password(
+    auth_project: str, prompts: Prompts
+) -> None:
+    """Typed by the operator for themselves: no change at first use, unless asked."""
+    prompts(
+        createsuperuser.Command,
+        plain=["admin", "admin@example.com"],
+        secret=[STRONG, STRONG],
+    )
+    with override_settings(
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER], "PASSWORD_CHANGE_ON_FIRST_USE": True}
+    ):
+        call_command("createsuperuser", stdout=io.StringIO())
+        admin = stored("admin")
+        assert admin is not None
+
+        async def must_change() -> bool:
+            async with AuthUnitOfWork() as uow:
+                return await uow.passwords.must_change(admin.id)
+
+        assert run_async(must_change()) is False

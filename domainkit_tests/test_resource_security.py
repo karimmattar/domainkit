@@ -5,10 +5,12 @@ keep to the field policy and the caller's scope; a stale ``If-Match``
 writes nothing; fields hidden from a caller are not theirs to change.
 """
 
+import copy
 from decimal import Decimal
 from typing import Any
 
 import pytest
+from pydantic import AliasChoices, AliasPath, BaseModel, Field
 from starlette.requests import HTTPConnection
 
 from domainkit.contrib.auth import AnyUser, current_user
@@ -340,3 +342,77 @@ def test_write_bodies_name_every_permission_a_field_needs() -> None:
     assert described.model_fields["stock"].description == (
         "Changed only by users granted shop.change_stock and shop.view_cost."
     )
+
+
+class ChangedMeanwhile(BasePermission):
+    """Allows the gadget, while another client stores a new version of it."""
+
+    def __init__(self, store: InMemoryGadgets) -> None:
+        """Change gadgets of ``store``."""
+        self.store = store
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: AnyUser, obj: object
+    ) -> bool:
+        """Allow, and store the gadget again at the next version."""
+        assert isinstance(obj, Gadget)
+        newer = copy.copy(obj)
+        newer.version = obj.version + 1
+        self.store.items[obj.id] = newer
+        return True
+
+
+def test_generic_writes_refuse_what_changed_after_the_rule_saw_it(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The rule is asked outside the write (WEB-16); a change between is 409."""
+    use_auth()
+    resource = gadgets(
+        store, crud=True, writable=ALL_FIELDS, rule=ChangedMeanwhile(store)
+    )
+    client = client_of(resource)
+    known = names(store)
+
+    patched = client.patch(f"{LOCATION}{known['a']}", json={"stock": 9})
+    deleted = client.delete(f"{LOCATION}{known['b']}")
+
+    assert (patched.status_code, patched.json()["code"]) == (409, "concurrent_update")
+    assert (deleted.status_code, deleted.json()["code"]) == (409, "concurrent_update")
+    assert patched.json()["detail"] == (
+        "This record changed while it was being checked; read it again and retry."
+    )
+    assert store.items[known["a"]].stock != 9
+    assert known["b"] in store.items
+
+
+class Renamed(BaseModel):
+    """A command's answer that reads the hidden price under other names."""
+
+    name: str
+    shown: Decimal = Field(validation_alias="price")
+    either: Decimal = Field(validation_alias=AliasChoices("missing", "price"))
+    path: Decimal = Field(validation_alias=AliasPath("price"))
+    stock: int | None = Field(default=None, validation_alias=AliasPath("stock"))
+
+
+def test_a_returns_schema_cannot_rename_a_hidden_field_into_view(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Fields read from a hidden attribute are left out, whatever they are called."""
+    use_auth()
+    resource = gadgets(store, policy=FieldPolicy(visible={"price": "shop.view_cost"}))
+    resource.command_route(
+        RenameGadget, service=rename, body=RenameIn, path="/rename", returns=Renamed
+    )
+    client = client_of(resource)
+    known = names(store)
+
+    hidden = client.post(
+        f"{LOCATION}{known['a']}/rename", json={"name": "x"}, headers=as_("changer")
+    ).json()
+    seen = client.post(
+        f"{LOCATION}{known['a']}/rename", json={"name": "y"}, headers=as_("root")
+    ).json()
+
+    assert set(hidden) == {"name", "stock"}
+    assert set(seen) == {"name", "shown", "either", "path", "stock"}

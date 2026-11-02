@@ -1,7 +1,7 @@
 """Personal tokens: scopes, self-service, and when tokens were last used."""
 
 import io
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -39,8 +39,9 @@ def make(
     headers: dict[str, str],
     **body: Any,  # noqa: ANN401 - fields.
 ) -> Any:  # noqa: ANN401 - a response.
-    """Post a personal token."""
-    return client.post("/auth/tokens", json={"name": "ci", **body}, headers=headers)
+    """Post a personal token, with the password (users without a second factor)."""
+    body = {"name": "ci", "password": PASSWORD, **body}
+    return client.post("/auth/tokens", json=body, headers=headers)
 
 
 def user_session(client: TestClient, username: str = "alice") -> dict[str, str]:
@@ -331,14 +332,108 @@ def test_token_requests_are_bounded(
     assert field in str(response.json()["errors"])
 
 
-def test_tokens_may_work_until_revoked(identity: Api) -> None:
-    """``expires_in_days: null``: no end."""
+def test_tokens_may_work_until_revoked_where_the_project_allows(
+    identity: Api,
+) -> None:
+    """``expires_in_days: null``: no end, only with no ``PERSONAL_TOKEN_MAX_AGE``."""
+    create_user("alice")
+    client = identity(PERSONAL_TOKEN_MAX_AGE=None)
+
+    body = make(client, user_session(client), expires_in_days=None).json()
+    default = make(client, user_session(client)).json()
+    week = make(client, user_session(client), expires_in_days=7).json()
+
+    assert body["expires_at"] is None
+    assert lifetime_of(default) == timedelta(days=90)
+    assert lifetime_of(week) == timedelta(days=7)
+
+
+def lifetime_of(token: dict[str, Any]) -> timedelta:
+    """How long a token made just now works, to the day."""
+    made = datetime.fromisoformat(token["created_at"])
+    ends = datetime.fromisoformat(token["expires_at"])
+    return timedelta(days=round((ends - made) / timedelta(days=1)))
+
+
+def test_tokens_work_the_longest_the_project_allows(identity: Api) -> None:
+    """``PERSONAL_TOKEN_MAX_AGE``: 90 days by default; longer asks are refused."""
+    create_user("alice")
+    client = identity(PERSONAL_TOKEN_MAX_AGE=timedelta(days=30))
+    headers = user_session(client)
+
+    default = make(client, headers).json()
+    shorter = make(client, headers, expires_in_days=7).json()
+    longest = make(client, headers, expires_in_days=30).json()
+    refused = [make(client, headers, expires_in_days=days) for days in (31, None)]
+
+    assert [lifetime_of(each) for each in (default, shorter, longest)] == [
+        timedelta(days=30),
+        timedelta(days=7),
+        timedelta(days=30),
+    ]
+    assert {(each.status_code, each.json()["code"]) for each in refused} == {
+        (422, "token_lifetime_too_long")
+    }
+    assert refused[0].json()["detail"] == (
+        "A token works 30 days at most here; ask for fewer."
+    )
+    plain = identity()
+    assert make(plain, user_session(plain), expires_in_days=None).status_code == 422
+
+
+def test_making_a_token_needs_the_password_again(identity: Api) -> None:
+    """Without a second factor: the password, counted with the user's checks."""
+    alice = create_user("alice")
+    client = identity()
+    headers = user_session(client)
+
+    missing = client.post("/auth/tokens", json={"name": "ci"}, headers=headers)
+    wrong = make(client, headers, password="not-it")
+
+    assert (missing.status_code, missing.json()["code"]) == (400, "password_required")
+    assert (wrong.status_code, wrong.json()["code"]) == (400, "wrong_password")
+    assert [token["name"] for token in stored_tokens(alice)] == ["login"]
+    assert [row["details"] for row in audited("auth.token_create")] == [
+        {"reason": "wrong_password"}
+    ]
+
+
+def test_making_a_token_needs_a_fresh_step_up_with_a_second_factor(
+    identity: Api,
+) -> None:
+    """With a second factor: a step-up of these credentials within 5 minutes."""
+    from domainkit_tests.test_auth_stepup import enrol, now_code, step_up
+
+    create_user("alice")
+    client = identity()
+    headers = user_session(client)
+    with freeze_time(datetime(2026, 5, 4, 9, tzinfo=UTC)) as frozen:
+        secret = enrol(client, headers, frozen)
+        unasked = make(client, headers)
+        assert step_up(client, headers, now_code(secret, frozen)).status_code == 200
+        stepped = make(client, headers, name="after")
+        frozen.tick(301)
+        stale = make(client, headers, name="stale")
+
+    assert (unasked.status_code, unasked.json()["code"]) == (401, "step_up_required")
+    assert stepped.status_code == 201
+    assert stale.status_code == 401
+    assert [row["details"] for row in audited("auth.token_create")] == [
+        {"reason": "step_up_required"},
+        {"reason": "step_up_required"},
+    ]
+
+
+def test_no_personal_token_is_named_as_logins_are(identity: Api) -> None:
+    """``login`` names logins' tokens: a personal token so named would be one."""
     create_user("alice")
     client = identity()
 
-    body = make(client, user_session(client), expires_in_days=None).json()
+    refused = make(client, user_session(client), name="login")
 
-    assert body["expires_at"] is None
+    assert refused.status_code == 422
+    with pytest.raises(CommandError, match="names logins' tokens"):
+        call_command("createtoken", "alice", "--name", "login", stdout=io.StringIO())
 
 
 def test_last_use_is_written_at_most_every_five_minutes(identity: Api) -> None:

@@ -66,13 +66,36 @@ wallet = await open_account(
   places than its currency, is refused as `domainkit.money` refuses it
   (`unknown_currency`, `inexact_amount`, 422).
 - `held` is what its active holds reserve, and `available` the balance
-  less that. An account that `may_go_negative=False` refuses a posting or
-  a hold that would leave less than nothing available
-  (`insufficient_funds`); others may be overdrawn.
+  less that. An account refuses a posting or a hold that would leave
+  less than nothing available (`insufficient_funds`), unless it is
+  opened with `may_go_negative=True`, as a clearing, settlement, or
+  external account is: no account is overdrawn by default (FIN-97).
+- A line, a balance, or what an account holds is at most 14 digits
+  before the point (the columns are `NUMERIC(18, 4)`); past that it is
+  refused, `amount_out_of_range` (422).
 - `holder` names the person the account is kept for: `privacy export`
   lists their accounts and postings; `privacy erase` keeps the books (the
-  law asks for them, and they are append-only) and unlinks the person
-  from them, clearing `holder`. It is the only field erasure clears:
+  law asks a business to keep them for years, and they are append-only)
+  and pseudonymises them: their accounts name one `erased:` holder, the
+  same for all of them, so the books still show which were one person's
+  (FIN-94). While the person holds an open account with money on it or
+  held, the erasure is held (`erasure_held`): a business does not erase
+  someone it still owes, or who owes it; close the accounts first. The
+  erasure checks again as it renames the accounts, which locks them, so
+  money that landed after the first check holds it then, before anything
+  else is erased; and it closes the person's open accounts, empty by
+  then, so none takes money for an erased holder (SEC-16b-4).
+- **Settling a held erasure.** Anyone who can credit a wallet or place a
+  hold on it can keep its holder's erasure held. Settle first: release
+  the holds (`release_hold`), pay what is owed out to the person, or to a
+  suspense account the business keeps for unclaimed money (a liability
+  of its own, `may_go_negative=False`, with no holder), with an entry the
+  business books, then close each account (`close_account`) and erase.
+  Closed accounts take no more money, so the erasure then goes through;
+  the law's deadline for answering the request (a month under the GDPR)
+  is the business's to keep, and `privacy.erase` recorded as denied, with
+  its reason, is the evidence of when it was asked.
+  `holder` is the only field erasure changes:
   codes, names, descriptions, memos, references, and statement lines are
   kept as written, and a code is shown by every report and by the audit
   trail's `AccountOpened`. Keep personal data out of all of them, as the
@@ -117,7 +140,7 @@ entry = await post_entry(
   then its accounts by ascending id, so two entries that share accounts
   wait for each other in one order and never deadlock; their balances
   move in the same transaction, so no update is lost. A transaction that
-  loses a race anyway runs again, whole, up to `RETRY_ATTEMPTS` times
+  loses a race anyway runs again, whole, up to `MAX_ATTEMPTS` times
   ([databases.md](../databases.md#running-work-again)). On SQLite
   postings run one at a time.
 - **Never changed.** `reverse_entry(ReverseEntry(entry_id=...))` posts the
@@ -125,7 +148,7 @@ entry = await post_entry(
   unless `booked_on` says; an entry is reversed once (its source is
   `accounting.reversal`, its reference the entry's id), and reversing it
   again returns that reversal. A reversal is not reversed
-  (`reversal_not_reversible`, 422): that would book the entry it undid
+  (`entry_not_reversible`, 422): that would book the entry it undid
   again, past the checks a new entry meets (limits, approvals); post the
   entry again instead, under a reference of its own. On PostgreSQL,
   triggers that `migrate` makes afresh each time refuse every update,
@@ -139,13 +162,13 @@ entry = await post_entry(
   `contrib.audit` when it is installed.
 - **Checks before posting.** An app may refuse an entry before
   `post_entry` takes any lock: it registers `async def hook(command)` on
-  `domainkit.contrib.accounting.hooks.on_posting` in `ready()`, and
+  `domainkit.contrib.accounting.hooks.on_post_entry` in `ready()`, and
   raises. `domainkit.contrib.approvals` refuses there the entries over
   `APPROVALS.ENTRY_THRESHOLDS` that no approved request posts
   (`approval_required`, 403; [approvals.md](approvals.md#large-postings)).
 - **Checks as entries are booked.** An app sees every entry as it is
   booked: a function registered in its `ready()` with
-  `on_booking(hook)` (from `domainkit.contrib.accounting`) is awaited as
+  `on_stage_entry(hook)` (from `domainkit.contrib.accounting.hooks`) is awaited as
   `hook(uow, entry, accounts)` in the posting's transaction, after its
   accounts and period are locked and their balances moved, for entries
   posted, reversals, and captures. Raising refuses the entry; rows it
@@ -175,7 +198,7 @@ under the inbox (ADR 0094): a message run again after its entry
 committed is skipped, and a second message about the same entry returns
 the first one's. A refused entry (a closed period, say) is dead-lettered
 at once; `messages --retry` runs it again once the books allow it. A
-posting that lost its race `RETRY_ATTEMPTS` times (`ConcurrentUpdate`)
+posting that lost its race `MAX_ATTEMPTS` times (`ConcurrentUpdate`)
 is not refused: the worker runs it again after its backoff, and the
 source and reference book it once.
 
@@ -200,7 +223,8 @@ await capture_hold(
 ```
 
 A hold reserves an amount on an account until it is captured, released,
-or expires (`expires_at`, or `HOLD_TTL` from now). `expires_at` is a
+or expires (`expires_at`, or `HOLD_TTL` from now, on the database's clock as its
+expiry is). `expires_at` is a
 time with its zone, in the future and at most 366 days away
 (`invalid_entry` otherwise; over HTTP, a time without a zone is a
 validation error, 422). It moves no balance:
@@ -209,7 +233,9 @@ entry is. A capture posts an entry out of the account (the side that
 lowers its balance) and into `counter_account_id`, of the whole hold or
 less, and releases the rest; capturing again returns the captured hold.
 `release_hold` gives it back. An expired hold cannot be captured
-(`hold_not_active`); with messaging, the worker releases expired holds
+(`hold_not_active`); whether it has expired is the database's clock's to
+say on PostgreSQL, so hosts whose clocks disagree agree on it (FIN-99).
+With messaging, the worker releases expired holds
 every `EXPIRE_HOLDS_EVERY`, and `manage.py accounting expireholds` does
 the same on demand. Until then an expired hold still counts against
 `available`. Without messaging, `check` warns in staging and production
@@ -242,6 +268,13 @@ in the period that are under way, and every posting after it is refused.
 A closed period stays closed: corrections go in an open one, as
 reversals.
 
+The books are closed up to the last day of the latest closed period
+(FIN-87): no entry is dated there, in a period or in a gap between
+periods, whatever `REQUIRE_PERIOD` says (`period_closed`); no period is
+opened that starts there; and a period closes only once every period
+before it is closed (`earlier_period_open`). So a closed period's report
+reads the same for good: no later entry moves its opening balances.
+
 ## Reports
 
 ```python
@@ -269,7 +302,32 @@ async for piece in general_ledger(october.id, "csv"):  # or "json", streamed
   apostrophe.
 - `verify_ledger()` (and `manage.py accounting verify`) checks the books
   themselves: every entry balances, every balance is the sum of its
-  postings, and every account's `held` the sum of its active holds.
+  postings, and every account's `held` the sum of its active holds. The
+  database compares, and only what differs comes back, streamed. With
+  the audit trail installed, it also compares each entry with the
+  `EntryPosted` the trail recorded for it, 500 entries at a time: the
+  digest of its stored date, description, and postings, and its source
+  and reference, must be the trail's (`entry_differs`, naming the
+  account whose amounts differ, or an entry the trail has and the books
+  do not; SEC-16b-6). Entries whose trail rows were pruned or excluded
+  (`AUDIT.EXCLUDE`), or posted before 0.15, are not compared; that the
+  trail is as written is `auditverify`'s to say.
+- An entry's `posted_at` is the host's clock, as it is drafted (reading
+  the database's would cost a round trip a posting): a limit set later
+  counts back the postings since its window began by it, so keep the
+  hosts' clocks in step with the database's (NTP); a skew of seconds
+  moves only entries posted at a window's edge.
+- The trial balance is one statement, the chart joined in it, however
+  many accounts moved; the general ledger is read in pieces of 500
+  postings, each in a short transaction of its own, so a slow reader
+  holds no connection. A closed period's never changes, so its pieces
+  read as one.
+- The audit trail vouches for each entry: `EntryPosted` carries, per
+  account and currency, its debits and credits (`amounts`), and the
+  SHA-256 of its date, description, and lines (`digest`), sealed and
+  anchored with the trail (FIN-96). A rewrite of postings and balances
+  that `verify_ledger`'s sums cannot see, by whoever can drop the
+  triggers, no longer matches the trail, and `verify_ledger` says so.
 
 ## Reconciliation
 
@@ -312,7 +370,15 @@ await breaks_of(bank.id)  # what is still unmatched
   candidate. Matches are recorded with their rule. What is left is
   recorded as **breaks**: lines without a posting, and postings without a
   line dated within the days the statements cover. Each run replaces the
-  account's breaks.
+  account's breaks. `ByAmountAndDate` looks for a line's postings by
+  amount, and every rule runs on a thread, so a long statement stalls no
+  request.
+- Every import and every run is recorded on the account, over HTTP as
+  from `manage.py accounting`: `StatementImported` (the statement's
+  name, the lines imported and skipped, and a SHA-256 of its lines) and
+  `AccountReconciled` (the run, the matches by rule, the breaks left), so
+  the audit trail names who imported a statement and who reconciled
+  (FIN-90).
 - A project's own rule is a class with a `name` and `match(lines,
   postings, window)` returning pairs (`MatchingRule`), added by path:
   `ACCOUNTING = {"MATCHING_RULES": [..., "payments.reconciliation.BySettlementId"]}`.
@@ -384,7 +450,7 @@ ACCOUNTING = {"REQUIRE_PERIOD": True, "MATCH_WINDOW_DAYS": 3}
 | --- | --- | --- |
 | `MAX_LINES` | `100` | Lines one entry may have (2 to 1000). |
 | `REQUIRE_PERIOD` | `True` | Refuse an entry dated where no period is open; `False` books it without a period, unless a closed one covers its date. |
-| `RETRY_ATTEMPTS` | `5` | Runs of a posting, the first included, when its transaction lost a race (at most 10). |
+| `MAX_ATTEMPTS` | `5` | Runs of a posting, the first included, when its transaction lost a race (at most 10). |
 | `HOLD_TTL` | 7 days | How long a hold lasts when placed without `expires_at` (at most 366 days). |
 | `EXPIRE_HOLDS_EVERY` | 1 minute | How often the worker releases expired holds, with messaging (1 second to 1 day). |
 | `MATCH_WINDOW_DAYS` | `3` | Days a statement line's date may be from its posting's (at most 31). |

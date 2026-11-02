@@ -47,9 +47,9 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from sqlalchemy.sql.dml import Delete
 
+from domainkit.db import dbclock
 from domainkit.exceptions import ImproperlyConfigured
 
-from . import dbclock
 from .tables import HELD, KEYED, PENDING, WAITING, messages, ordering_keys
 
 type Executor = AsyncSession | AsyncConnection
@@ -140,15 +140,17 @@ class Promoted:
 
 
 async def promote(
-    connection: AsyncConnection, dialect: str, key: str
+    connection: AsyncConnection, dialect: str, key: str, *, turn_taken: bool = False
 ) -> Promoted | None:
     """Make ``key``'s next held message pending, unless one is pending already.
 
     Called after the transaction recorded a message of ``key`` as finished
-    (or cancelled), it takes the key's turn first, so the commits that
-    write the key's messages come before it or after it, never beside it.
+    (or cancelled), it takes the key's turn first, unless the transaction
+    took it already (``turn_taken``), so the commits that write the key's
+    messages come before it or after it, never beside it.
     """
-    await take_turns(connection, dialect, {key: 0})
+    if not turn_taken:
+        await take_turns(connection, dialect, {key: 0})
     statement = (
         update(messages)
         .where(

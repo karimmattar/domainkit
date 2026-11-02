@@ -46,7 +46,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
         self.groups = GroupRepository(session)
         self.permissions = PermissionStore(session)
         self.principals = PrincipalStore(session)
-        self.tokens = TokenStore(session)
+        self.tokens = TokenStore(session, self.lock)
         self.mfa = MfaStore(session)
         self.signups = SignupStore(session)
         self.step_ups = StepUpStore(session)

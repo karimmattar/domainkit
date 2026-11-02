@@ -64,7 +64,7 @@ How the adapters reach their service was chosen by measurement:
   development and tests. `domainkit.keys.aws.AwsKmsKeyProvider`:
   `GenerateDataKey`, `Decrypt` (naming the key, so KMS refuses another
   key's blob), `ReEncrypt`, each carrying the encryption context
-  `{"domainkit": "data-key"}`, signed by `domainkit.keys.aws.sign`.
+  `{"domainkit": "data-key"}`, signed by `keys.aws.sign` (internal since 1.0).
   `domainkit.keys.vault.VaultTransitKeyProvider`: `datakey/plaintext`,
   `decrypt`, `rewrap`, with a token (or an async callable for a renewed
   one) and Vault Enterprise's namespace. The cloud adapters call through

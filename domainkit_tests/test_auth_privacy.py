@@ -127,9 +127,13 @@ def alice_with_everything(client: TestClient, clock: list[float]) -> tuple[UUID,
         "alice", email="alice@example.com", first_name="Alice", last_name="Smith"
     )
     access = login(client, "alice")["access_token"]
-    enrol(client, bearer(access), clock)
-    made = client.post("/auth/tokens", json={"name": "ci"}, headers=bearer(access))
+    made = client.post(
+        "/auth/tokens",
+        json={"name": "ci", "password": PASSWORD},
+        headers=bearer(access),
+    )
     assert made.status_code == 201
+    enrol(client, bearer(access), clock)
 
     async def register() -> None:
         async with AuthUnitOfWork() as uow:

@@ -306,8 +306,14 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             raise duplicate from exc
 
     async def _rollback(self) -> None:
-        """Roll the session's transaction back."""
+        """Roll the session's transaction back, then read again what it expired.
+
+        A rollback expires every loaded aggregate; read lazily, that would
+        need I/O outside ``await`` (``MissingGreenlet``), so they are read
+        again now, as stored (DATA-19). Those added since are gone.
+        """
         await self.session.rollback()
+        await reload_expired(self.session)
 
     async def lock(self, name: str, *, nowait: bool = False) -> None:
         """Hold the lock called ``name`` until the transaction ends.

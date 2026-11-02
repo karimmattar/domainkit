@@ -85,7 +85,10 @@ class PaymentsConfig(DomainConfig):
   command it approved: a guarded service called from inside it with
   another command is refused like any other.
 - `maker_rule=` is an access rule a maker must pass to submit over HTTP,
-  besides `permission` (`IsSuperuser()` for making superusers);
+  besides `permission` (`IsSuperuser()` for making superusers), and
+  again when the approved command runs, on the maker as a user then,
+  with no credentials (a rule about the submitting request's own scopes
+  or step-up is checked at submission only, and refuses at the run);
   `parties=` names, for a command, the people it is about (the payee of
   a payment, the user a grant promotes): they may not approve or reject
   it (`interested_party`, 403), and their approvals never count.
@@ -120,7 +123,7 @@ Policy(
 - **A policy that is gone stays gone.** A request is decided and run
   only under the guard and the policy it was submitted under. Once a
   deploy renames or removes either, its pending requests are neither
-  approved nor rejected (`policy_not_found`, 409), never under
+  approved nor rejected (`policy_removed`, 409), never under
   `APPROVE_RULE` or no rule instead, and an approved one fails with that
   code; the maker cancels it, or it expires.
 - **Content.** `when` reads the command, so a policy may apply only to
@@ -175,10 +178,16 @@ await approve_request(
   grants, and watch the audit trail for both (`auth.user_created`,
   `auth.user_permission_granted`, `auth.user_joined_group`).
 - **Splitting.** A threshold judges one command. Ten postings of 999
-  dollars under a 1,000-dollar threshold need no approval, nor does an
-  amount moved through a currency without one. Bound what an actor may
-  move in a window with `domainkit.contrib.limits`, which counts every
-  entry booked; approved ones count against their maker.
+  dollars under a 1,000-dollar threshold need no approval. Bound what an
+  actor may move in a window with `domainkit.contrib.limits`, which
+  counts every entry booked against the subjects a window bounds;
+  approved ones count against their maker. A currency no threshold
+  names needs approval at any amount.
+- **A maker who leaves.** An approved command runs only while its maker,
+  a user, is active, holds the guard's maker permission, and passes its
+  `maker_rule` (SEC-16b-7); otherwise the request fails
+  (`maker_not_allowed`). Deactivate a person, or take
+  the permission back, and what they left waiting runs nothing.
 
 The approval that completes a request queues its command through the
 outbox, in the same transaction ([messaging](messaging.md)): it is
@@ -212,7 +221,7 @@ message is delivered, after checking that it is what was approved:
 
 A request that fails a check is `failed`, with the refusal's code as its
 `reason` (`request_tampered`, `fingerprint_mismatch`,
-`invalid_arguments`, `policy_not_found` if the guard or its policy is
+`invalid_arguments`, `policy_removed` if the guard or its policy is
 gone), and runs nothing. So does one whose use case
 refuses it (a `DomainError`, such as `insufficient_funds`): the maker may
 submit it again. A use case that lost a race (`ConcurrentUpdate`) or
@@ -261,33 +270,46 @@ debits in that currency) needs `ENTRY_APPROVALS` approvals by holders of
 themselves. `post_entry` refuses it otherwise (`approval_required`),
 whether called over HTTP, from code, or from a message (`defer_entry`
 dead-letters it). Its makers submit it as the action `accounting.post_entry`
-(`ENTRIES`), with the body `POST /entries` takes, and need
+(`POST_ENTRY`), with the body `POST /entries` takes, and need
 `accounting.add_entry` to.
 
 A hold's capture is guarded the same way, as `accounting.capture_hold`
-(`CAPTURES`, policy `accounting.large_capture`): a hold reserves any
+(`CAPTURE_HOLD`, policy `accounting.large_capture`): a hold reserves any
 amount, unapproved, and its capture is what moves it, into an account
 the capture names. Captures over the threshold are refused
 (`approval_required`); submit `{"hold_id": ..., "counter_account_id":
 ..., "amount": ...}`, and the makers need `accounting.capture_hold`.
 
-Both are checked twice: before `post_entry` takes a lock (`on_posting`),
-and as every entry is booked (`on_booking`), from the entry itself, so a
+Both are checked twice: before `post_entry` takes a lock (`on_post_entry`),
+and as every entry is booked (`on_stage_entry`), from the entry itself, so a
 path around the command (a capture, lines a hook could not read) books
 nothing over the threshold unapproved. A booked entry passes only as the
 approved request being run: the posting with its source and reference,
 or the capture of its hold. `PostEntry` keeps its `lines` as a tuple,
-however they are given. Reversals are not guarded: a reversal moves back
-what an entry moved; `domainkit.contrib.limits` counts it. A currency
-without an amount is not guarded. The ledger's own semantics are
+however they are given. A reversal is guarded the same way, as
+`accounting.reverse_entry` (`REVERSE_ENTRY`, policy `accounting.large_reversal`):
+it moves as much as the entry it undoes, back, so undoing a payout two
+people approved takes two people too; submit `{"entry_id": ...,
+"booked_on": ...}`, and the makers need `accounting.reverse_entry`. Run
+approved, it counts against limits as a movement and frees nothing (a
+reversal on one person's say gives back what its entry counted). A
+currency without an amount needs approval, whatever the amount, unless
+`"*"` gives one for every currency. The ledger's own semantics are
 unchanged.
+
+The run of any approved request whose policy asked at least
+`ENTRY_APPROVALS` approvals passes the thresholds for the entries its
+command books, so a project's own guarded payout posts its entry
+without a second request; a run of the ledger's own guards books only
+what it approved. A policy of fewer approvals still has its large
+entries refused.
 
 ## Making superusers
 
 With `SUPERUSER_APPROVALS` above 0 and `domainkit.contrib.auth`
 installed, the auth admin API refuses to make a user a superuser, on
 create or change (`approval_required`); unmaking one is not guarded. A
-superuser submits `auth.grant_superuser` (`SUPERUSERS`) with
+superuser submits `auth.grant_superuser` (`GRANT_SUPERUSER`) with
 `{"user_id": ...}` instead: only a superuser may submit one, as only a
 superuser makes one without approvals. `SUPERUSER_APPROVALS` other
 superusers approve it (or, with `SUPERUSER_APPROVERS` set, holders of
@@ -367,7 +389,7 @@ The maker and the approvers are the principal's id, whatever
 authenticates requests. Refusals answer with their codes:
 `maker_cannot_decide`, `interested_party`, and `not_the_maker` (403),
 `already_decided`, `fingerprint_mismatch`, `request_not_pending`,
-`request_tampered`, and `policy_not_found` (409),
+`request_tampered`, and `policy_removed` (409),
 `invalid_arguments` and `approval_not_needed` (422), `unknown_action`
 and `approval_request_not_found` (404).
 
@@ -391,14 +413,22 @@ approvers are the actors of `approval_given`, and listed in
 `request_executed`. Reasons are kept on the request, not in the trail.
 
 `privacy export` lists the requests a person made, with their commands,
-and the decisions they took. `privacy erase` keeps the record that a
-request was made and decided, but unlinks the person: their pending
-requests are cancelled, the commands of their requests and the reasons
-they wrote are blanked (the fingerprint stays, and proves what was
-approved), and their id becomes one `erased:` id, so a request still
-shows that its maker and approvers were different people. A request of
-theirs approved but not run yet no longer verifies, and fails rather
-than runs.
+and the decisions they took. `privacy erase` keeps the record of who
+approved what, which a business must keep (a payment's authorisation,
+the evidence of who checked whom), pseudonymised (FIN-94): their id
+becomes one `erased:` id wherever they are maker or approver, so a
+request still shows that its maker and approvers were different people;
+the commands and the decisions stay as they were, and the seals are made
+again for the pseudonym, so the record still verifies (only seals that
+held: an erasure launders no row changed around the application). Their
+pending requests are cancelled, an approved one of theirs not run yet
+fails (`maker_not_allowed`) rather than runs, and the reasons they wrote,
+free text, are blanked. This is pseudonymisation, not anonymisation: the
+pseudonym links back to the person through what else is kept (the trail's
+actors, `request_executed`'s approvers, the business's own records), and
+a request about the person rather than by them keeps their id in its
+command (`parties`: the user `grant_superuser` promotes, a payee), so the
+record is still personal data, kept because the law asks.
 
 ## Settings
 
@@ -408,7 +438,7 @@ than runs.
 | `EXPIRE_EVERY` | 5 minutes | How often the worker expires the requests whose time is up (at most 1 day). |
 | `APPROVE_RULE` | `None` | Import path of an access rule (an instance, or a class taking no arguments) whoever approves must pass as well, unless the policy names its own; a path that is not a rule fails `setup()`. |
 | `MAX_ARGUMENTS_BYTES` | `65536` | The largest command a request holds, as JSON (1 KiB to 1 MiB). |
-| `ENTRY_THRESHOLDS` | `{}` | Per currency, the amount (text) over which `accounting.post_entry` needs approval; empty: postings are not guarded. An amount not exact in its currency fails `setup()`. |
+| `ENTRY_THRESHOLDS` | `{}` | Per currency, the amount (text) over which `accounting.post_entry`, `capture_hold`, and `reverse_entry` need approval; empty: they are not guarded. A currency it does not name always needs approval, unless `"*"` gives an amount for every one (read in each currency's units). An amount not exact in its currency fails `setup()`. |
 | `ENTRY_APPROVALS` | `2` | Approvals a posting over its threshold needs (at most 10). |
 | `ENTRY_APPROVERS` | `"accounting.add_entry"` | The permission whoever approves a posting holds. |
 | `SUPERUSER_APPROVALS` | `0` | Approvals making a superuser needs (at most 10); 0: it is not guarded. |

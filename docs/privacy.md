@@ -165,11 +165,11 @@ at once; others only expire.
 | Kept responses (`domainkit.contrib.idempotency`) | Each response the subject asked for, or whose request committed an event about them. The key stays, so a retry gets 409 `idempotency_response_unavailable` and never runs again | A response about the subject that another caller got, with no event naming them, until `IDEMPOTENCY.TTL_SECONDS` (24 hours by default). Then a key that committed is kept as a tombstone for `IDEMPOTENCY.TOMBSTONE_SECONDS` (7 days): without its response, its headers, or whom it was about, only a one-way hash of the caller and the key, which erasure and exports cannot find or link to anyone, as an erased key keeps |
 | Outbox messages (`domainkit.contrib.messaging`) | Dead messages about the subject: their arguments are blanked, and `messages --retry` refuses them | Pending ones run as planned, and are blanked when done; the erasure logs how many, so run it again once they have run (what they wrote, such as a new delivery, is erased then). Done and cancelled messages hold no arguments. Error texts (`last_error`) keep what an exception said, for `MESSAGING.RETENTION_SECONDS` (7 days) once finished, and for good while dead: keep personal data out of exception messages. The inbox (`domainkit_inbox`) holds handler names, message ids, and times only |
 | Limits set for a person, and their counted movements (`domainkit.contrib.limits`) | Both: each limit whose subject is the person is removed (audited, `LimitRemoved`), and the usage of each kind of subject they are; `privacy export` lists them first | The audit trail's `LimitSet` rows, which name the subject's id, as every row names its actor's ([limits.md](contrib/limits.md#privacy)) |
-| Accounts kept for a person (`domainkit.contrib.accounting`) | The link: each account's `holder` is cleared, the one field in which the ledger keeps the subject; `privacy export` lists their accounts and postings first | The books themselves: balances, entries, and postings, which the law asks to keep and which are append-only. Account codes and names, references, descriptions, memos, and statement lines are kept as written, so nothing names the subject after erasure only if the project kept personal data out of them: an opaque code, never the person's id ([accounting.md](contrib/accounting.md#accounts)) |
-| Encrypted fields (`domainkit.contrib.keys`) | The subject's keys, in every hosting database, so every value sealed for them reads as None, in backups, replicas, and dumps too; and the blind indexes of those values | Their ciphertext, which nothing opens; values of theirs sealed under a data key instead (a field with no subject); blind indexes outside the rows naming them ([keys.md](contrib/keys.md#erasing-a-person-crypto-shredding)) |
-| Approval requests (`domainkit.contrib.approvals`) | The link: the subject's id, as maker or approver, becomes one `erased:` id; their pending requests are cancelled, and the commands they submitted and the reasons they wrote are blanked; `privacy export` lists their requests and decisions first | The record that each request was made and decided, by different people, and its fingerprint; reasons others wrote. A request of theirs approved but not run yet fails rather than runs ([approvals.md](contrib/approvals.md#audit-and-privacy)) |
+| Accounts kept for a person (`domainkit.contrib.accounting`) | The link: each account's `holder`, the one field in which the ledger keeps the subject, names one `erased:` pseudonym, the same for all their accounts; `privacy export` lists their accounts and postings first. While they hold an open account with money on it or held, the erasure is held (`erasure_held`) | The books themselves: balances, entries, and postings, which the law asks to keep and which are append-only. Account codes and names, references, descriptions, memos, and statement lines are kept as written, so nothing names the subject after erasure only if the project kept personal data out of them: an opaque code, never the person's id ([accounting.md](contrib/accounting.md#accounts)) |
+| Encrypted fields (`domainkit.contrib.keys`) | The subject's keys, in every hosting database, so every value sealed for them reads as None, in replicas, and in backups and dumps taken afterwards (one taken before still opens them until it expires, or is restored and the erasure applied again: [keys.md](contrib/keys.md#backups-taken-before-an-erasure)); and the blind indexes of those values | Their ciphertext, which nothing opens; values of theirs sealed under a data key instead (a field with no subject); blind indexes outside the rows naming them ([keys.md](contrib/keys.md#erasing-a-person-crypto-shredding)) |
+| Approval requests (`domainkit.contrib.approvals`) | The link: the subject's id, as maker or approver, becomes one `erased:` id, and the seals are made again for it; their pending requests are cancelled, an approved one of theirs not run yet fails, and the reasons they wrote are blanked; `privacy export` lists their requests and decisions first | The record of who approved what, which a business must keep: each request's command as approved, its decisions, and its fingerprint, verifying; reasons others wrote ([approvals.md](contrib/approvals.md#audit-and-privacy)) |
 | Caches | Nothing | Each cache's timeout (the principal cache: `AUTH.PRINCIPAL_CACHE.TTL`, 5 seconds) |
-| Logs, error reports, backups, replicas, exports written to files | Nothing, but the encrypted fields of the subject, whose keys are gone | Your retention of each: name it in your records of processing |
+| Logs, error reports, backups, replicas, exports written to files | Nothing, but the encrypted fields of the subject, whose keys are gone, in copies made after the erasure | Your retention of each: name it in your records of processing; a backup from before the erasure holds the subject's keys too |
 
 A domain of your own that keeps copies (a search index, a read model, a
 CSV it sends) erases and exports them the same way: it registers hooks in
@@ -199,13 +199,63 @@ class SearchConfig(DomainConfig):
 
 A domain's hooks are summed into one record of what it erased, and its
 exports merged under its label. Until 0.12 these were the methods
-`erase_subject` and `export_subject` of `DomainConfig`; 0.13 removed them,
-and `setup()` refuses a domain that still defines one (`apps.E002`), as
-nothing would call it.
+`erase_subject` and `export_subject` of `DomainConfig`; 1.0 removed them,
+and `setup()` refuses a domain that still defines one (`apps.E002`, through
+1.x), as nothing would call it.
 
 Return counts by kind, lower case, whole numbers: anything else is
 refused, since it would go into the audit trail. Count copies left to
 finish under `pending`; the erasure then warns to run it again.
+
+### What the law keeps: holding an erasure
+
+GDPR's right to erasure gives way where a law asks a business to keep a
+record (Article 17(3)(b)): a bank keeps its books, a payment's
+authorisation, and who approved it, for as long as its regulator asks
+(five to ten years, as a rule). Before any data is erased, every domain's
+`on_retain_subject` hooks are asked whether the person's data must be kept
+for now; one sentence from any of them holds the whole erasure: nothing
+is erased, `privacy.erase` is recorded as denied with each domain's
+sentence, and `ErasureHeld` (`erasure_held`) is raised, which
+`privacy erase` reports, naming them (FIN-94). The erasing hooks run only
+once every check let it go on. A check and the erasure are two
+transactions, so what changed between them may hold it after all: the
+`on_erase_subject` hooks of the domains that hold erasures run first,
+before anything else is erased, and one may raise `ErasureHeld` itself,
+having checked again under its own locks (the ledger does, SEC-16b-4),
+recorded as denied the same way. Only a second holding domain that holds
+it then leaves what the first erased:
+
+```python
+from domainkit.apps.hooks import on_retain_subject
+
+
+async def hold_loans(subject: str, reason: str) -> str | None:
+    if await loans.open_for(subject):
+        return "Has a loan still running: the contract is kept until it ends."
+    return None
+
+
+class LendingConfig(DomainConfig):
+    def ready(self) -> None:
+        on_retain_subject(hold_loans)
+```
+
+The ledger holds the erasure of a holder of an open account with money
+on it or held, and closes their open accounts as it erases, so none
+takes money for an erased holder; [accounting.md](contrib/accounting.md#accounts)
+says how to settle one held. What the law asks to keep after the
+relationship ends, the ledger and approvals keep pseudonymised, not
+deleted: the books and the evidence of who checked whom, with the
+person's id replaced by one `erased:` id. **That is pseudonymisation,
+not anonymisation**: the record still links to the person through what
+else is kept (the trail's actors and `request_executed`'s approvers,
+the accounts' history, the business's own records), and the ids of
+others a request is about (`parties`: a payee, the user a grant
+promotes) stay as written in its command, so the erased data is still
+personal data under the GDPR, kept for the reason the law gives. A
+sentence is shown to the operator and recorded: never put the person's
+data in it.
 
 ## Retention: `privacy purge`
 
@@ -219,7 +269,7 @@ from domainkit.contrib.privacy import Retention
 
 
 class ClinicConfig(DomainConfig):
-    RETENTION = (
+    retention = (
         # Delete access log rows after 90 days.
         Retention(
             table="clinic_access_log", field="accessed_at", keep=timedelta(days=90)
