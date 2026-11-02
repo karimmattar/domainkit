@@ -33,6 +33,9 @@ and a status.
 
 ### Added
 
+- `F(...).year(2026)`, `.month(2026, 3)`, and `.on(day)` (Django's
+  `__year`, `__month`, and `__date`): a period on a date or datetime
+  field, compiled to a range an index answers, in UTC.
 - `F(...).regex(pattern)` and `.iregex(pattern)` (Django's `regex` and
   `iregex`): `~` and `~*` on PostgreSQL, Python's `re` on SQLite and in
   memory. A pattern that does not compile is an `InvalidQuery`, and a

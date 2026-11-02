@@ -43,6 +43,7 @@ return is tracked, so the events it records are published on commit.
 | `.startswith(t)`, `.istartswith(t)` | `startswith`, `istartswith` | starts with it |
 | `.endswith(t)`, `.iendswith(t)` | `endswith`, `iendswith` | ends with it |
 | `.regex(p)`, `.iregex(p)` | `regex`, `iregex` | matches the regular expression (in code only) |
+| `.year(2026)`, `.month(2026, 3)`, `.on(day)` | `__year`, `__month`, `__date` | in that period, UTC; a range an index answers |
 | `F("x").lookup("gte", v)` | any | by name, as `x__gte` |
 
 `regex` runs as `~` on PostgreSQL and as Python's `re.search` on SQLite
