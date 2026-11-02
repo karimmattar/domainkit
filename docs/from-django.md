@@ -31,6 +31,10 @@ together.
 | `select_for_update()` | `get_for_update`, `get_many_for_update`, `uow.lock(name)` ([payments recipe](recipes/payments.md)) |
 | Database routers, read replicas | `DATABASE_ROUTING`, `REPLICAS`, `readonly=True` ([read replica recipe](recipes/read-replica.md)) |
 | Soft delete (packages) | Built in ([queries.md](queries.md#soft-delete)) |
+| `TextChoices`, `IntegerChoices`, `get_FOO_display()` | `TextChoices` and `IntegerChoices` (`domainkit.ddd`): `Status.PAID.label`, `Status.choices()` |
+| `get_or_create`, `update_or_create`, `in_bulk` | The same names, and `get_many` ([queries.md](queries.md#several-aggregates-at-once)) |
+| `aggregate(Count(...), Sum(...))` | `repository.aggregate(n=Count(), total=Sum("amount"))` ([queries.md](queries.md#counting-and-totals)) |
+| `iterator()`, `explain()` | `stream(batch=...)`, `explain()` ([queries.md](queries.md#reading-many)) |
 | `dumpdata`, `loaddata`, `flush` | The same commands ([reference/commands.md](reference/commands.md#data-fixtures-flush-and-seeds)) |
 
 ## The API

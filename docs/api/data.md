@@ -161,6 +161,7 @@ Domain-driven design building blocks ("seedwork").
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
 - `InMemoryRepository`: Dictionary-backed repository for unit tests and prototypes.
+- `IntegerChoices`: Whole-number values, each with a label: `HIGH = 3, "High"`.
 - `InvalidField`: A field was given a value its markers rule out (`MaxLength`, `Range`, ...).
 - `InvalidQuery`: A query names a field, lookup, or value its aggregate cannot take.
 - `LockNotAvailable`: Another transaction holds the row's lock, and the caller would not wait.
@@ -190,6 +191,7 @@ Domain-driven design building blocks ("seedwork").
 - `SoftDeletable`: Mixin for aggregates that are marked deleted rather than removed.
 - `Specification`: A named business rule about aggregates, for Python and for queries.
 - `Sum`: The total of a number field.
+- `TextChoices`: Text values, each with a label: `PAID = "paid", "Paid in full"`.
 - `UnitOfWork`: Transaction boundary; subclasses expose repositories as attributes.
 - `UnknownField`: A query names a field the class does not have.
 - `Unset`: The type of `UNSET`: a field the request left out, as opposed to None.
@@ -199,6 +201,13 @@ Domain-driven design building blocks ("seedwork").
 - `fields_about`: What `values` hold about `subject`, and about nobody else.
 - `in_memory`: A unit of work whose repositories, made from its annotations, keep everything in memory.
 - `use_case`: Make an async function a use case: its command is made from its parameters.
+
+## `domainkit.ddd.choices`
+
+Enums whose members carry a label to show: Django's `TextChoices`.
+
+- `IntegerChoices`: Whole-number values, each with a label: `HIGH = 3, "High"`.
+- `TextChoices`: Text values, each with a label: `PAID = "paid", "Paid in full"`.
 
 ## `domainkit.ddd.preconditions`
 

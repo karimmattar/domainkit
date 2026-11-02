@@ -5,6 +5,7 @@ This package depends only on the standard library, ``domainkit.utils``,
 imports nothing but ``domainkit.ddd`` stays free of frameworks and I/O.
 """
 
+from domainkit.ddd.choices import IntegerChoices, TextChoices
 from domainkit.ddd.events import (
     DomainEvent,
     EventBus,
@@ -88,6 +89,7 @@ __all__ = [
     "F",
     "HandlerTimedOut",
     "InMemoryRepository",
+    "IntegerChoices",
     "InvalidField",
     "InvalidQuery",
     "LockNotAvailable",
@@ -117,6 +119,7 @@ __all__ = [
     "SoftDeletable",
     "Specification",
     "Sum",
+    "TextChoices",
     "UnitOfWork",
     "UnknownField",
     "Unset",

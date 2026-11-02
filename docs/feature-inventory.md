@@ -23,7 +23,7 @@ framework, for the reason given.
 | Char, Text, Integer, Decimal, Boolean, Date, DateTime, Duration, UUID, JSON fields | Python types in the field's hint | Yes | |
 | `EmailField`, `URLField`, `SlugField`, `GenericIPAddressField` | Write a value object | No: ready-made types | C3 |
 | `choices` | An `Enum` field | Yes | |
-| `get_FOO_display()`, choice labels | None | No | C7 |
+| `get_FOO_display()`, choice labels | `TextChoices` and `IntegerChoices`: `member.label`, `choices()` | Yes | C7 |
 | `null`, `default` | `X \| None`, dataclass defaults | Yes | |
 | `db_default`, `GeneratedField` | A hand-written column in `table_for(..., *extra)` | Partial | C7 |
 | `unique=True`, `db_index=True` | A constraint or index passed in `extra` | Partial: no marker on the field | C7 |

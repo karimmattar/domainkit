@@ -33,6 +33,10 @@ and a status.
 
 ### Added
 
+- `TextChoices` and `IntegerChoices` (`domainkit.ddd`): enums whose
+  members carry a label, given (`PAID = "paid", gettext_lazy("Paid")`) or
+  made from the name; `Status.PAID.label`, `Status.choices()`, and
+  `Status.labels()` (Django's choices and `get_FOO_display()`).
 - `repository.aggregate(criteria, **measures)` with `Count`, `Sum`, `Avg`,
   `Min`, and `Max` (`domainkit.ddd`): measures over the aggregates
   selected, in one statement, nothing loaded (Django's `aggregate()`).
