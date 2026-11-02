@@ -33,6 +33,9 @@ and a status.
 
 ### Added
 
+- Recipes, walked end to end like the others: service accounts with API
+  keys (an authentication class, and settings of the project's own
+  through `SETTINGS_CLASS`), and a permission rule of your own.
 - Signup takes the user model's other `REQUIRED_FIELDS` under `fields`
   (`AbstractBaseUser.signup_fields()`): each converted to its type and
   checked by its markers at once, kept with the pending signup, and set on

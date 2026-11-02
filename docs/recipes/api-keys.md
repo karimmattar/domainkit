@@ -2,7 +2,8 @@
 
 Another service calls the API with a key in a header of its own, as
 `X-API-Key: <key>`, and acts as a user made for it. An authentication
-class of your own reads the header; everything after it (permissions,
+class of your own reads the header, and a setting of the project's own
+holds the keys; everything after it (permissions,
 rate limits, the audit trail) sees an ordinary user
 ([authentication](../auth/authentication.md#other-credentials)).
 
@@ -18,17 +19,39 @@ python manage.py makemigrations -m "auth"
 python manage.py migrate
 ```
 
-The keys are never stored: the environment holds each key's SHA-256
-digest and the user it logs in as, `API_KEYS=<digest>=<username>,...`.
-A leaked environment then names no key, and replacing a key is a
-redeployment with a new digest.
+The keys are never stored: a setting of the project's own holds each
+key's SHA-256 digest and the user it logs in as. A leaked environment
+then names no key, and replacing a key is a redeployment with a new
+digest. A name the framework does not declare belongs to the project's
+settings schema, which startup validates with the rest
+([settings](../reference/settings.md)):
+
+```python title="src/config/schema.py (new file)"
+"""The project's own settings, validated with the framework's."""
+
+from domainkit.conf import Settings
+
+
+class ProjectSettings(Settings):
+    """``API_KEYS`` beside every setting domainkit declares."""
+
+    API_KEYS: dict[str, str] = {}  # noqa: RUF012 - pydantic copies it.
+    """Each API key's SHA-256 digest, and the username it logs in as."""
+```
+
+The environment lists the pairs, `SERVICE_API_API_KEYS=<digest>=billing,...`:
+
+```python title="src/config/settings/base.py"
+SETTINGS_CLASS = "config.schema.ProjectSettings"
+API_KEYS = dict(pair.split("=", 1) for pair in env.list("API_KEYS", []))
+```
 
 ```python title="src/config/api_keys.py (new file)"
 """Service accounts: ``X-API-Key: <key>`` logs in as the key's user."""
 
 import hashlib
-import os
 
+from domainkit.conf import settings
 from domainkit.contrib.auth import (
     AuthenticationFailed,
     AuthUnitOfWork,
@@ -43,12 +66,6 @@ def digest(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
-def keys() -> dict[str, str]:
-    """``API_KEYS``: each key's digest, and the username it logs in as."""
-    pairs = (each.split("=", 1) for each in os.environ.get("API_KEYS", "").split(","))
-    return {pair[0]: pair[1] for pair in pairs if len(pair) == 2}
-
-
 class ApiKeyAuthentication(BaseAuthentication):
     """A request with ``X-API-Key`` is its key's user's, or refused."""
 
@@ -59,7 +76,7 @@ class ApiKeyAuthentication(BaseAuthentication):
         key = connection.headers.get("x-api-key")
         if key is None:
             return None
-        username = keys().get(digest(key))
+        username = settings.API_KEYS.get(digest(key))
         if username is None:
             raise AuthenticationFailed("Unknown API key.")
         async with AuthUnitOfWork() as uow:
@@ -96,6 +113,7 @@ from typing import Any
 
 import pytest
 from config.api_keys import digest
+from domainkit.conf import override_settings
 from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.http import get_asgi_application
 from domainkit.testing import AsyncTestClient
@@ -111,27 +129,22 @@ async def me(key: str) -> tuple[int, Any]:
     return answer.status_code, answer.json()
 
 
-async def test_a_service_calls_as_its_user(
-    db: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_service_calls_as_its_user(db: None) -> None:
     """The key's digest names the user; the key itself is stored nowhere."""
-    monkeypatch.setenv("API_KEYS", f"{digest(KEY)}=billing")
     async with AuthUnitOfWork() as uow:
         await uow.users.create_user("billing")
         await uow.commit()
 
-    status, body = await me(KEY)
+    with override_settings(API_KEYS={digest(KEY): "billing"}):
+        status, body = await me(KEY)
 
     assert (status, body["username"]) == (200, "billing")
 
 
-async def test_a_key_nobody_was_given_is_refused(
-    db: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_key_nobody_was_given_is_refused(db: None) -> None:
     """401, as a wrong password is."""
-    monkeypatch.setenv("API_KEYS", f"{digest(KEY)}=billing")
-
-    status, body = await me("a-guessed-key")
+    with override_settings(API_KEYS={digest(KEY): "billing"}):
+        status, body = await me("a-guessed-key")
 
     assert (status, body["code"]) == (401, "authentication_failed")
 ```
