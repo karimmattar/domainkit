@@ -515,6 +515,16 @@ def test_auditlog_reads_one_database_and_filters(project: None, tmp_path: Path) 
         assert run("audit", "log", "--limit", "1").count("\n") == 1
 
 
+def test_history_names_one_record(project: None) -> None:
+    """``audit history`` needs ``--target`` or ``--aggregate``, not both."""
+    for args in ((), ("--target", "t-1", "--aggregate", "note_id=1")):
+        with pytest.raises(CommandError) as refused:
+            run("audit", "history", *args)
+        assert str(refused.value) == (
+            "Name the record: --target, or --aggregate FIELD=ID."
+        )
+
+
 def test_auditlog_reads_aggregate_ids_after_the_first_equals(project: None) -> None:
     """``FIELD=ID``: the id may hold ``=``; it may not be empty."""
     asyncio.run(write_rows((EARLIER, 1, {"code": "a=b"})))
