@@ -8,6 +8,8 @@ for one created), another schema, or nothing.
 """
 
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
+from email.utils import format_datetime, parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Response, status
@@ -147,19 +149,46 @@ async def respond(
     status_code: int = status.HTTP_200_OK,
     headers: Mapping[str, str] | None = None,
     if_none_match: str | None = None,
+    modified: datetime | None = None,
+    if_modified_since: str | None = None,
 ) -> Response:
-    """One aggregate as JSON, tagged; ``304`` if ``If-None-Match`` names the tag."""
+    """One aggregate as JSON, tagged; ``304`` if the caller's copy is current.
+
+    It is current when ``If-None-Match`` names the tag or, without one,
+    when ``modified`` (``Last-Modified``) is no later than
+    ``If-Modified-Since``, to the second.
+    """
     _, body, etag = await tagged(router, context, aggregate)
-    if none_match(if_none_match, etag):
-        return Response(
-            status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag}
-        )
+    tags = {"ETag": etag}
+    if modified is not None:
+        tags["Last-Modified"] = format_datetime(modified.astimezone(UTC), usegmt=True)
+    if none_match(if_none_match, etag) or (
+        if_none_match is None and unmodified(modified, if_modified_since)
+    ):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=tags)
     return Response(
         body,
         status_code=status_code,
         media_type="application/json",
-        headers={**(headers or {}), "ETag": etag},
+        headers={**(headers or {}), **tags},
     )
+
+
+def unmodified(modified: datetime | None, since: str | None) -> bool:
+    """Whether ``modified`` is no later than the HTTP date ``since``, to the second.
+
+    A date that does not parse, or one without a zone, counts as absent
+    (RFC 9110: the condition is then ignored).
+    """
+    if modified is None or since is None:
+        return False
+    try:
+        held = parsedate_to_datetime(since)
+    except (TypeError, ValueError):
+        return False
+    if held.tzinfo is None:
+        return False
+    return modified.replace(microsecond=0) <= held
 
 
 def dump(

@@ -95,9 +95,9 @@ framework, for the reason given.
 | API versioning | Prefixes, `Deprecation` headers | Partial | |
 | OpenAPI, browsable API | OpenAPI and its docs pages | Yes | |
 | `ETag`, `If-Match`, `If-None-Match` | Built in | Yes | |
-| `Last-Modified`, `If-Modified-Since` | None | No | C6 |
+| `Last-Modified`, `If-Modified-Since` | `ResourceRouter(..., last_modified="updated_at")` | Yes | C6 |
 | `cache_page`, low-level cache | `domainkit.cache`, page caching | Yes | |
-| `GZipMiddleware` | None | No | C6 |
+| `GZipMiddleware` | `domainkit.http.compression.GZipMiddleware`, set by `GZIP_MINIMUM_SIZE` and `GZIP_LEVEL` | Yes | C6 |
 | `StreamingHttpResponse`, `FileResponse` | Streaming responses; files through `domainkit.storage` | Yes | |
 | CSRF, `SECURE_*`, HSTS, CSP, clickjacking | Built-in middleware and settings | Yes | |
 | CORS (`django-cors-headers`) | Built-in middleware | Yes | |

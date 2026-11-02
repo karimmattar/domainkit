@@ -36,6 +36,7 @@ RESERVED: Final = frozenset(
         "body",
         "if_match",
         "if_none_match",
+        "if_modified_since",
         "parameters",
     }
 )
@@ -155,6 +156,7 @@ class RouteContext:
     ``Selection``, or criteria."""
     if_match: str | None = None
     if_none_match: str | None = None
+    if_modified_since: str | None = None
     provided: Mapping[str, object] = dataclasses.field(default_factory=dict)
     """The values of a command's ``provide`` dependencies, by field."""
 

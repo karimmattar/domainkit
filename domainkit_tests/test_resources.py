@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
+from email.utils import format_datetime
 from types import SimpleNamespace
 from typing import Annotated, Any, Final
 from unittest.mock import Mock
@@ -2066,3 +2067,39 @@ def test_resource_body_limits_are_checked(store: InMemoryGadgets) -> None:
         gadgets(store).command_route(
             RenameGadget, service=rename, body=RenameIn, path="/a", body_limit=0
         )
+
+
+def test_last_modified_answers_304_while_unchanged(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``Last-Modified`` from a field; ``If-Modified-Since`` yields to ETags."""
+    use_auth()
+    client = client_of(gadgets(store, last_modified="made_at"))
+    gadget = next(iter(store.items.values()))
+    url = f"/gadgets/{gadget.id}"
+
+    read = client.get(url, headers=as_("viewer"))
+    stamp = read.headers["Last-Modified"]
+
+    def since(value: str, **more: str) -> int:
+        headers = as_("viewer", **{"If-Modified-Since": value}, **more)
+        return client.get(url, headers=headers).status_code
+
+    unchanged = client.get(url, headers=as_("viewer", **{"If-Modified-Since": stamp}))
+    openapi = client_of(gadgets(store)).get("/openapi.json").json()
+
+    assert stamp == format_datetime(gadget.made_at, usegmt=True)
+    assert (unchanged.status_code, unchanged.headers["Last-Modified"]) == (304, stamp)
+    assert since("Mon, 01 Jan 2001 00:00:00 GMT") == 200  # Changed since.
+    assert since("soon") == 200  # Not a date: ignored.
+    assert since("Sun, 01 Jan 2099 00:00:00 -0000") == 200  # No zone: ignored.
+    assert since(stamp, **{"If-None-Match": '"x"'}) == 200  # The ETag decides.
+    assert "If-Modified-Since" not in str(openapi)
+
+
+def test_last_modified_names_a_datetime_field(store: InMemoryGadgets) -> None:
+    """Checked when the model is known."""
+    with pytest.raises(TypeError, match="datetime field of Gadget, not 'name'"):
+        gadgets(store, last_modified="name")
+    with pytest.raises(TypeError, match="not 'nowhere'"):
+        gadgets(store, last_modified="nowhere")

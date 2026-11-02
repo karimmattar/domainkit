@@ -33,6 +33,14 @@ and a status.
 
 ### Added
 
+- `domainkit.http.compression.GZipMiddleware` (Django's): compresses
+  responses of `GZIP_MINIMUM_SIZE` bytes or more (500) at `GZIP_LEVEL` (6)
+  for clients that accept gzip. Not listed by default; see BREACH in its
+  docs.
+- `ResourceRouter(..., last_modified="updated_at")`: reading one aggregate
+  sends `Last-Modified`, and `If-Modified-Since` answers `304` while it is
+  current; `If-None-Match` decides when both are sent. Routes without it
+  read no more headers than before.
 - `Meta.ordering` on an aggregate (Django's): `filter`, `first`,
   `paginate`, `stream`, and resource lists that name no ordering follow
   it, then the id. It is checked once per class.
