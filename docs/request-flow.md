@@ -160,15 +160,15 @@ per request:
 
 | Request | SQL statements | Transactions | Python calls |
 | --- | --- | --- | --- |
-| A write through a hand-written route | 1 | 1 | 2,141 |
-| A read through `ResourceRouter` | 1 | 1 | 2,282 |
-| A command through `ResourceRouter` | 1 | 1 | 3,008 |
+| A write through a hand-written route | 1 | 1 | 2,139 |
+| A read through `ResourceRouter` | 1 | 1 | 2,359 |
+| A command through `ResourceRouter` | 1 | 1 | 3,083 |
 
 Of a command's calls, domainkit's resource routing (stages 3 to 6 and 9)
 makes about 40, SQLAlchemy about 690, and FastAPI most of the rest,
 resolving the endpoint's parameters on every request (stage 3). A resource
 route reads `If-Match` and `If-None-Match` from the request itself rather
 than as FastAPI parameters, which saved 255 calls a command and 235 a read,
-a setting read once is kept on `settings`, which saved about 90 more, and
-the domain that owns a unit of work is worked out once, not per request;
+and keeping each setting once read and working out a unit of work's
+domain once saved about 30 more;
 the budgets in `benchmarks/budgets.toml` hold the gain.

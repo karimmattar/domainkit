@@ -51,7 +51,7 @@ pings = 0
 modules = 788
 
 [rungs.default-json]
-calls = 550
+calls = 551
 statements = 0
 transactions = 0
 checkouts = 0
@@ -67,7 +67,7 @@ pings = 0
 modules = 790
 
 [rungs.template-json]
-calls = 665
+calls = 666
 statements = 0
 transactions = 0
 checkouts = 0
@@ -83,7 +83,7 @@ pings = 0
 modules = 818
 
 [rungs.read]
-calls = 1738
+calls = 1812
 statements = 1
 transactions = 1
 checkouts = 1
@@ -91,7 +91,7 @@ pings = 1
 modules = 818
 
 [rungs.resource-list]
-calls = 2898
+calls = 3025
 statements = 1
 transactions = 1
 checkouts = 1
@@ -99,7 +99,7 @@ pings = 1
 modules = 818
 
 [rungs.write]
-calls = 2141
+calls = 2139
 statements = 1
 transactions = 1
 checkouts = 1
@@ -107,7 +107,7 @@ pings = 1
 modules = 818
 
 [rungs.resource-read]
-calls = 2282
+calls = 2359
 statements = 1
 transactions = 1
 checkouts = 1
@@ -115,7 +115,7 @@ pings = 1
 modules = 818
 
 [rungs.resource-command]
-calls = 3008
+calls = 3083
 statements = 1
 transactions = 1
 checkouts = 1
@@ -123,7 +123,7 @@ pings = 1
 modules = 818
 
 [rungs.keyed-write]
-calls = 3617
+calls = 3615
 statements = 4
 transactions = 3
 checkouts = 3
@@ -131,7 +131,7 @@ pings = 3
 modules = 819
 
 [rungs.money-write]
-calls = 2267
+calls = 2265
 statements = 1
 transactions = 1
 checkouts = 1
@@ -139,7 +139,7 @@ pings = 1
 modules = 887
 
 [rungs.posting]
-calls = 11968
+calls = 11949
 statements = 14
 transactions = 1
 checkouts = 1
@@ -147,7 +147,7 @@ pings = 1
 modules = 887
 
 [rungs.encrypted-read]
-calls = 1781
+calls = 1855
 statements = 1
 transactions = 1
 checkouts = 1

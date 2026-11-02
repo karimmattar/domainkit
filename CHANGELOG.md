@@ -17,19 +17,19 @@ and a status.
   keep their 4,096-character bound (422) and their OpenAPI entries; the
   422s they can answer are documented with domainkit's error schema.
 - The benchmark ladder has a `resource-list` rung, a `ResourceRouter` page
-  of 20 items, budgeted at 3,074 calls in one statement: a list page now
+  of 20 items, budgeted at 3,025 calls in one statement: a list page now
   has a budget, as a read and a write have.
 - `settings` keeps a value once read, so later reads are an attribute
   lookup, not a call; replacing the settings (`override_settings`, a
   reload) drops what was kept, under a lock, and a value read while they
-  change is never kept. About 90 fewer calls a request on every rung that
-  reads the database (`resource-list` 159), and the ladder's budgets hold
-  the new counts.
+  change is never kept: 13 to 17 fewer calls a request.
 - A unit of work finds the domain that owns it, and so its database, once
   per module while the installed domains stay the same, not by walking
   every installed domain on each request; `DATABASE_ROUTING` is still read
   each time. `clock.now()` and `clock.monotonic()` take one lookup when no
-  clock is frozen. About 20 fewer calls a request.
+  clock is frozen: about 17 fewer calls a request. The ladder's budgets
+  hold the new counts (a command 3,083 calls, a read 2,359, a list page
+  3,025).
 
 ### Added
 
@@ -88,6 +88,13 @@ and a status.
   (`domainkit.db.dbclock`), the model names of `contrib.contenttypes`
   (`domainkit.db.models`'), `contrib.webhooks.WebhookSettings`
   (`WebhooksSettings`), and `Credentials.session` (`login`).
+
+### Fixed
+
+- A reconciliation cancelled while its matching rule fails no longer has
+  that failure reported as unhandled on Python 3.14.6, which logs an
+  exception of a shielded task once its waiter was cancelled: the run
+  waits for the rule's thread with `asyncio.wait`.
 
 ## [1.5.0] - 2026-11-02
 
