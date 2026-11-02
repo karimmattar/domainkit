@@ -61,6 +61,9 @@ from domainkit.ddd.fields import (
     Digits,
     FieldInfo,
     MaxLength,
+    MinLength,
+    Pattern,
+    Range,
     Sensitive,
     fields_of,
     primitive,
@@ -275,24 +278,55 @@ def _shape(field: FieldInfo, hint: object, *, write: bool) -> tuple[Any, Present
 
 def _scalar(field: FieldInfo, kind: type, hint: object, *, write: bool) -> Any:  # noqa: ANN401 - a type.
     """Text, amounts, integers, and times with their limits; other types as hinted."""
-    if kind is str and (limit := field.marker(MaxLength)) is not None:
-        return Annotated[str, Field(max_length=limit.length)]
+    if kind is str and (text := _text_limits(field)):
+        return Annotated[str, Field(**text)]
+    bounds = _bounds(field)
     if kind is Decimal:
         if (digits := field.marker(Digits)) is None:
-            return Annotated[Decimal, FIXED_POINT]
+            return Annotated[Decimal, Field(**bounds), FIXED_POINT]
         return Annotated[
             Decimal,
-            Field(max_digits=digits.precision, decimal_places=digits.scale),
+            Field(max_digits=digits.precision, decimal_places=digits.scale, **bounds),
             FIXED_POINT,
         ]
     if write and kind is Money:
         digits = field.marker(Digits) or Digits(18, 4)  # MoneyColumns' default.
         return Annotated[Money, AfterValidator(_held_in(digits))]
     if write and kind is int:
-        return Annotated[int, Field(ge=-INT64, lt=INT64)]
+        return Annotated[
+            int,
+            Field(ge=max(-INT64, bounds.get("ge", -INT64)), lt=INT64, **_upper(bounds)),
+        ]
+    if kind in {int, float} and bounds:
+        return Annotated[kind, Field(**bounds)]
     if write and kind is datetime:
         return AwareDatetime
     return hint if kind in {list, tuple, dict} else kind
+
+
+def _text_limits(field: FieldInfo) -> dict[str, Any]:
+    """``Field`` options for ``MaxLength``, ``MinLength``, and ``Pattern``."""
+    limits: dict[str, Any] = {}
+    if (longest := field.marker(MaxLength)) is not None:
+        limits["max_length"] = longest.length
+    if (shortest := field.marker(MinLength)) is not None:
+        limits["min_length"] = shortest.length
+    if (pattern := field.marker(Pattern)) is not None:
+        limits["pattern"] = f"^(?:{pattern.regex})$"
+    return limits
+
+
+def _bounds(field: FieldInfo) -> dict[str, Any]:
+    """``Field`` options for a ``Range``: ``ge`` and ``le``, as it has them."""
+    if (span := field.marker(Range)) is None:
+        return {}
+    bounds = {"ge": span.min, "le": span.max}
+    return {name: value for name, value in bounds.items() if value is not None}
+
+
+def _upper(bounds: dict[str, Any]) -> dict[str, Any]:
+    """The upper bound of ``bounds`` only (an int's lower one is merged)."""
+    return {"le": bounds["le"]} if "le" in bounds else {}
 
 
 def _held_in(digits: Digits) -> Callable[[Money], Money]:

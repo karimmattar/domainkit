@@ -12,6 +12,11 @@ Limits that storage needs, and that the domain should state anyway, are
         name: Annotated[str, MaxLength(200)]
         price: Annotated[Decimal, Digits(12, 2)]
 
+Others say what input may hold; the API checks them before a use case
+runs, and OpenAPI shows them: ``MinLength(3)``, ``Pattern(r"[A-Z]{3}-[0-9]{4}")``,
+and ``Range(min=1, max=100)``. A rule that must hold however a value is
+made belongs in the domain too: a value object that checks itself.
+
 A value object with a single field (``ProductName(value: str)``) counts as
 that field's value: it is compared, ordered, and searched by it, as the
 column holding it is.
@@ -32,6 +37,7 @@ derived schema says what it is.
 
 import dataclasses
 import math
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -100,6 +106,57 @@ class MaxLength:
             raise ValueError(
                 f"MaxLength needs a length of at least 1, not {self.length}."
             )
+
+
+@dataclass(frozen=True, slots=True)
+class MinLength:
+    """``Annotated`` metadata: text of at least ``length`` characters."""
+
+    length: int
+
+    def __post_init__(self) -> None:
+        """Refuse lengths below one."""
+        if self.length < 1:
+            raise ValueError(
+                f"MinLength needs a length of at least 1, not {self.length}."
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class Pattern:
+    """``Annotated`` metadata: text that matches ``regex`` from end to end.
+
+    The API checks it with pydantic's engine, which has no look-arounds or
+    back-references; write ``[0-9]`` for digits, since a class of any digit
+    also matches the digits of other scripts.
+    """
+
+    regex: str
+
+    def __post_init__(self) -> None:
+        """Refuse a pattern that does not compile."""
+        try:
+            re.compile(self.regex)
+        except re.error as exc:
+            raise ValueError(f"Pattern {self.regex!r} is not a regex: {exc}.") from None
+
+
+@dataclass(frozen=True, slots=True)
+class Range:
+    """``Annotated`` metadata: a number from ``min`` to ``max``, both included.
+
+    Either may be None, for no bound on that side.
+    """
+
+    min: int | Decimal | float | None = None
+    max: int | Decimal | float | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse an empty range, and one without a bound."""
+        if self.min is None and self.max is None:
+            raise ValueError("Range needs min, max, or both.")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(f"Range has min {self.min} above max {self.max}.")
 
 
 @dataclass(frozen=True, slots=True)

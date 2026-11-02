@@ -44,6 +44,7 @@ Enforce the dependency rules of a domain-driven package layout.
 
 - `FORBIDDEN_LAYERS`: Layers of the same domain that each layer must not import.
 - `FORBIDDEN_LIBRARIES`: Libraries each layer must not import.
+- `LAYER_MODULES`: The simple layout's modules, and the layer each one is.
 - `PUBLIC_SURFACE`: Parts of a domain that other domains may import.
 - `LayerRules`: The rules one check applies; the defaults are the tables above.
 - `Violation`: One import that breaks a rule.
