@@ -1,7 +1,8 @@
 """``flags``: list and change feature flags and dynamic settings."""
 
 import json
-from argparse import ArgumentParser
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from domainkit.contrib.flags.exceptions import FlagNotFound
@@ -9,7 +10,7 @@ from domainkit.contrib.flags.models import DynamicSetting, Flag
 from domainkit.contrib.flags.store import NAME, declared, declared_settings
 from domainkit.contrib.flags.uow import FlagsUnitOfWork
 from domainkit.ddd import DomainError
-from domainkit.management import BaseCommand, CommandError
+from domainkit.management import ActionCommand, CommandError, action, option
 
 EVERYONE = {"on": True, "off": False, "rules": None}
 """``--everyone`` values: on or off for all, or decided by the rules."""
@@ -17,7 +18,7 @@ HIDDEN = "********"
 """What is shown of a secret setting's value."""
 
 
-class Command(BaseCommand):
+class Command(ActionCommand):
     """``list``, ``set``, ``delete`` flags; ``settings`` and ``setting`` values.
 
     Changes go through ``FlagsUnitOfWork``, so they are audited and drop
@@ -25,44 +26,61 @@ class Command(BaseCommand):
     """
 
     help = "List or change feature flags (set, delete) and dynamic settings."
-    operator_actions = True
+    default_action = "list"
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Declare the actions and their options."""
-        actions = parser.add_subparsers(dest="action")
-        actions.add_parser("list", help="every flag and its rules")
-        change = actions.add_parser("set", help="create a flag or change its rules")
-        change.add_argument("name")
-        change.add_argument("--everyone", choices=sorted(EVERYONE))
-        change.add_argument("--percentage", type=int)
-        change.add_argument("--users", nargs="*", metavar="USER_ID")
-        change.add_argument("--groups", nargs="*", metavar="GROUP")
-        change.add_argument("--note")
-        remove = actions.add_parser("delete", help="delete a flag (off for everyone)")
-        remove.add_argument("name")
-        actions.add_parser("settings", help="every dynamic setting and its value")
-        value = actions.add_parser("setting", help="set a dynamic setting (JSON)")
-        value.add_argument("key")
-        value.add_argument("value", nargs="?", help="the value, as JSON")
-        value.add_argument(
-            "--reset", action="store_true", help="go back to the default"
-        )
+    @action(name="list", help="every flag and its rules (the default)")
+    async def listed(self) -> None:
+        """One line per flag."""
+        with _refusals():
+            await self._list()
 
-    async def handle(self, *, action: str | None, **options: Any) -> None:  # noqa: ANN401
-        """Run the action (``list`` by default)."""
-        try:
-            if action == "set":
-                await self._set(**options)
-            elif action == "delete":
-                await self._delete(options["name"])
-            elif action == "settings":
-                await self._settings()
-            elif action == "setting":
-                await self._setting(options["key"], options["value"], options["reset"])
-            else:
-                await self._list()
-        except DomainError as exc:
-            raise CommandError(exc.message) from None
+    @action(
+        name="set",
+        help="create a flag or change its rules",
+        options=[
+            option("name"),
+            option("--everyone", choices=sorted(EVERYONE)),
+            option("--percentage", type=int),
+            option("--users", nargs="*", metavar="USER_ID"),
+            option("--groups", nargs="*", metavar="GROUP"),
+            option("--note"),
+        ],
+        operator=True,
+    )
+    async def set_flag(self, **options: Any) -> None:  # noqa: ANN401 - the options.
+        """Create the flag, or change the rules given."""
+        with _refusals():
+            await self._set(**options)
+
+    @action(
+        help="delete a flag (off for everyone)",
+        options=[option("name")],
+        operator=True,
+    )
+    async def delete(self, *, name: str) -> None:
+        """Delete the flag."""
+        with _refusals():
+            await self._delete(name)
+
+    @action(help="every dynamic setting and its value")
+    async def settings(self) -> None:
+        """One line per dynamic setting."""
+        with _refusals():
+            await self._settings()
+
+    @action(
+        help="set a dynamic setting (JSON)",
+        options=[
+            option("key"),
+            option("value", nargs="?", help="the value, as JSON"),
+            option("--reset", action="store_true", help="go back to the default"),
+        ],
+        operator=True,
+    )
+    async def setting(self, *, key: str, value: str | None, reset: bool) -> None:
+        """Set the setting, or reset it."""
+        with _refusals():
+            await self._setting(key, value, reset)
 
     async def _list(self) -> None:
         """One line per flag."""
@@ -168,3 +186,16 @@ def _describe(flag: Flag) -> str:
         )
     note = f"  ({flag.note})" if flag.note else ""
     return f"{flag.id}: {rule}{note}"
+
+
+@contextmanager
+def _refusals() -> Iterator[None]:
+    """Report a flag or setting the domain refuses as the command's error.
+
+    Raises:
+        CommandError: The domain refused.
+    """
+    try:
+        yield
+    except DomainError as exc:
+        raise CommandError(exc.message) from None

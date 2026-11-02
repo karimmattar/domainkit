@@ -164,3 +164,27 @@ def test_only_actions_that_operate_take_an_operator() -> None:
         ("show", None, ""),
         ("erase", "ann", "test_management_actions erase"),
     ]
+
+
+class Listing(Tool):
+    """A command that lists when no action is named."""
+
+    default_action = "count"
+
+    @action(help="count things", options=[option("subject", nargs="?", default="all")])
+    def count(self, *, subject: str) -> None:  # type: ignore[override]
+        """Remember the call."""
+        self.ran.append(("count", {"subject": subject}))
+
+
+def test_a_default_action_runs_when_none_is_named() -> None:
+    """``flags`` alone is ``flags list``: ``default_action``."""
+    listing = Listing()
+
+    run(listing)
+    run(listing, "count", "pears")
+
+    assert listing.ran == [
+        ("count", {"subject": "all"}),
+        ("count", {"subject": "pears"}),
+    ]

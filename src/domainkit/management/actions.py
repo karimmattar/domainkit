@@ -111,6 +111,9 @@ class ActionCommand(BaseCommand):
 
     common_options: Sequence[Option] = ()
     """Options every action takes, after its own (as ``--database``)."""
+    default_action: str | None = None
+    """The action the command runs when none is named (as ``flags``: ``list``);
+    None makes naming one required."""
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Declare one sub-parser per action, with its options.
@@ -118,11 +121,15 @@ class ActionCommand(BaseCommand):
         Raises:
             TypeError: The class declares no action, or two with one name.
         """
-        actions = parser.add_subparsers(dest="action", required=True)
+        actions = parser.add_subparsers(
+            dest="action", required=self.default_action is None
+        )
+        self._parsers: dict[str, ArgumentParser] = {}
         for declared in self.declared_actions().values():
             sub = actions.add_parser(
                 declared.name, help=declared.help, description=declared.help
             )
+            self._parsers[declared.name] = sub
             for each in (*declared.options, *self.common_options):
                 sub.add_argument(*each.names, **each.settings)
             if self._operates(declared):
@@ -133,6 +140,13 @@ class ActionCommand(BaseCommand):
 
     def execute(self, **options: object) -> None:
         """Run the action, as its operator if it is one that operates."""
+        if options.get("action") is None and self.default_action is not None:
+            defaults = {
+                each.dest: each.default
+                for each in self._parsers[self.default_action]._actions
+                if each.dest != "help"
+            }
+            options = {**defaults, **options, "action": self.default_action}
         declared = self.declared_actions().get(str(options.get("action")))
         if declared is not None and self._operates(declared):
             self.operator_actions = True

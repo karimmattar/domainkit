@@ -210,7 +210,7 @@ OPERATED: Final = {
         "createtoken",
         "resetmfa",
     ],
-    "domainkit.contrib.flags": ["flags"],
+    "domainkit.contrib.flags": ["flags set", "flags delete", "flags setting"],
     "domainkit.contrib.messaging": [
         "messages retry",
         "messages cancel",
