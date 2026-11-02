@@ -884,8 +884,18 @@ GENERATE = [
         *("--field", "quantity:int", "--field", "at:datetime"),
     ],
     ["addevent", "catalog", "Category", "CategoryNoted", "--no-handler"],
+    ["startdomain", "billing", "--aggregate", "Invoice"],
+    [
+        "addcommand",
+        "billing",
+        "Invoice",
+        "VoidInvoice",
+        *("--field", "reason:str:100", "--field", "at:datetime?"),
+    ],
+    ["addcommand", "billing", "Invoice", "SendInvoice"],
 ]
-"""Every generator, as ``python manage.py`` would get them."""
+"""Every generator, as ``python manage.py`` would get them: a layered domain,
+and a four-file one."""
 MANAGE = [("makemigrations", "-m", "catalog"), ("migrate",), ("check",)]
 """The commands that read the project's settings, run by its ``manage.py``."""
 
@@ -1700,3 +1710,82 @@ def test_startdomain_names_the_aggregates_by_the_plural_it_is_given(
     assert 'table_for(Note, "notes_memos", domain="notes")' in orm.read_text(
         encoding="utf-8"
     )
+
+
+@pytest.fixture
+def desk(
+    make_package: MakePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Shop:
+    """``gen.desk``, a four-file domain with the aggregate ``Ticket``."""
+    make_package("gen", {})
+    monkeypatch.setattr(generators_module, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+    domain = Shop(tmp_path, "desk")
+    run(
+        "startdomain",
+        "desk",
+        aggregate="Ticket",
+        parent="gen",
+        tests_dir=domain.tests.parent,
+    )
+    return domain
+
+
+def test_addcommand_grows_a_four_file_domain(desk: Shop) -> None:
+    """The method and event in domain.py, a @use_case, a route, and its test."""
+    output = desk("addcommand", "Ticket", "CloseTicket", fields=["reason:str:100"])
+
+    assert output.startswith("Added CloseTicket to gen.desk:\n")
+    model = desk.read("domain.py")
+    assert model.index("class TicketClosed(DomainEvent):") < model.index(
+        "class Ticket(AggregateRoot[TicketId]):"
+    )
+    assert "    def close(self, *, reason: str) -> None:" in model
+    controllers = desk.read("controllers.py")
+    assert "async def close_ticket(" in controllers
+    assert "ticket.close(reason=reason)" in controllers
+    routes = desk.read("routes.py")
+    assert routes.index('path="/close")') < routes.index("router.include_router(")
+    assert "in_memory(DeskUnitOfWork, events=bus)" in desk.test("test_close_ticket.py")
+    assert check_domain("gen.desk") == []
+
+
+@pytest.mark.parametrize(
+    ("args", "fields", "message"),
+    [
+        (("Ticket", "RenameTicket"), [], "already defines Ticket.rename"),
+        (("Ticket", "CloseTicket"), ["ticket_id:uuid"], "comes from the path"),
+        (("Ticket", "CloseTicket"), ["owner:ref:Ticket"], "added to a four-file"),
+        (("Desk", "CloseDesk"), [], "has no aggregate Desk"),
+        (("Ticket", "CloseTicket", "--plural", "cases"), [], "has no resource cases"),
+    ],
+)
+def test_addcommand_refuses_what_a_four_file_domain_cannot_take(
+    desk: Shop, args: tuple[str, ...], fields: list[str], message: str
+) -> None:
+    """Taken names, the path's id, references, and missing pieces."""
+    aggregate, command, *rest = args
+    options: dict[str, Any] = {"fields": fields}
+    if rest:
+        options["plural"] = rest[1]
+    with pytest.raises(CommandError, match=message):
+        desk("addcommand", aggregate, command, **options)
+
+
+def test_a_four_file_domain_needs_its_unit_of_work(desk: Shop) -> None:
+    """A domain.py without the unit of work is not as startdomain made it."""
+    path = desk.package / "domain.py"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("DeskUnitOfWork", "Desks"),
+        encoding="utf-8",
+    )
+    with pytest.raises(CommandError, match="has no unit of work DeskUnitOfWork"):
+        desk("addcommand", "Ticket", "CloseTicket")
+
+
+def test_layered_generators_refuse_a_four_file_domain(desk: Shop) -> None:
+    """Addquery and addevent grow layered domains only, and say so."""
+    with pytest.raises(CommandError, match="is a four-file domain"):
+        desk("addevent", "Ticket", "TicketSeen")
+    with pytest.raises(CommandError, match="is a four-file domain"):
+        desk("addquery", "Ticket", "TicketsNamed", by=["name"])

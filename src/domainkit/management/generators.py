@@ -25,7 +25,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 from domainkit.conf.env import project_root
 from domainkit.management.base import BaseCommand, CommandError
@@ -772,6 +772,9 @@ class Domain:
     tests: Path
     sources: dict[Path, Source] = field(default_factory=dict)
     created: dict[Path, str] = field(default_factory=dict)
+    simple: bool = False
+    """Laid out in four files (``domain.py``, ``controllers.py``, ``models.py``,
+    ``routes.py``), as ``startdomain`` makes a domain, not in layers."""
 
     @staticmethod
     def add_arguments(parser: ArgumentParser) -> None:
@@ -812,18 +815,13 @@ class Domain:
             CommandError: It is outside the project, or not a domain package.
         """
         within(directory, root, "domain")
-        if not (directory / "domain" / "model.py").is_file():
-            if (directory / "domain.py").is_file():
-                raise CommandError(
-                    f"{directory} is a four-file domain: add the command, query, "
-                    "or event to domain.py, controllers.py, and routes.py by hand. "
-                    "The generators grow domains made with startdomain --layered."
-                )
+        simple = (directory / "domain.py").is_file()
+        if not simple and not (directory / "domain" / "model.py").is_file():
             raise CommandError(f"{directory} is not a domain made by startdomain.")
         package = ".".join(
             directory.resolve().relative_to(_source_root(directory)).parts
         )
-        return cls(name, package, directory, tests)
+        return cls(name, package, directory, tests, simple=simple)
 
     @property
     def camel(self) -> str:
@@ -995,6 +993,9 @@ class AggregateGenerator(Generator[Planned]):
                 generators made it.
         """
 
+    simple_layout: ClassVar[bool] = False
+    """Whether it grows four-file domains too, not only layered ones."""
+
     def plan(
         self,
         *,
@@ -1005,8 +1006,19 @@ class AggregateGenerator(Generator[Planned]):
         tests_dir: Path | None,
         **options: Any,  # noqa: ANN401 - the command's own options.
     ) -> Planned:
-        """Find the domain, name the aggregate, and plan the edits."""
+        """Find the domain, name the aggregate, and plan the edits.
+
+        Raises:
+            CommandError: The domain is laid out in four files and this
+                generator grows layered ones only.
+        """
         target = Domain.named(domain, parent, tests_dir)
+        if target.simple and not self.simple_layout:
+            raise CommandError(
+                f"{target.directory} is a four-file domain: add to domain.py, "
+                "controllers.py, and routes.py by hand, or with addcommand. "
+                "This generator grows domains made with startdomain --layered."
+            )
         return self.plan_for(target, Names.of(aggregate, plural), **options)
 
     def apply(self, plan: Planned) -> str:

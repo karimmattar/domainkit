@@ -38,6 +38,7 @@ class Command(AggregateGenerator):
     """Add a command, its use case, its route, and tests to an aggregate."""
 
     help = "Add a task command to an aggregate: the method, use case, route, tests."
+    simple_layout = True
 
     def add_options(self, parser: ArgumentParser) -> None:
         """Accept the command, its fields, and its event."""
@@ -62,7 +63,11 @@ class Command(AggregateGenerator):
         """Plan the command, its event, use case, route, and tests."""
         verb = verb_of(class_name(command, "command name"), names.cls)
         happened = class_name(event or f"{names.cls}{past_tense(verb)}", "event name")
-        add_command(domain, names, command, happened, parse_fields(fields))
+        specs = parse_fields(fields)
+        if domain.simple:
+            add_use_case(domain, names, command, happened, specs)
+        else:
+            add_command(domain, names, command, happened, specs)
         return Planned(domain, command)
 
 
@@ -511,5 +516,155 @@ def test_{service}_route(admin_client: TestClient) -> None:
 
     assert answer.status_code == 200, answer.json()
     assert answer.json()["id"] == created.json()["id"]
+''',
+    )
+
+
+def add_use_case(
+    domain: Domain, names: Names, command: str, event: str, specs: list[FieldSpec]
+) -> None:
+    """Plan the edits that add ``command`` to an aggregate of a four-file domain.
+
+    ``domain.py`` gets the method and its event, ``controllers.py`` the
+    ``@use_case`` that loads the aggregate and calls it, ``routes.py`` its
+    route, and the tests a test of the use case.
+
+    Raises:
+        CommandError: A name it would define is taken, or a file is not as
+            ``startdomain`` made it.
+    """
+    A, a, many = names.cls, names.snake, names.plural
+    method = snake_case(verb_of(command, A))
+    service = snake_case(command)
+    model = domain.edit("domain.py")
+    controllers = domain.edit("controllers.py")
+    routes = domain.edit("routes.py")
+    unit = f"{domain.camel}UnitOfWork"
+    if not model.defines(A):
+        raise CommandError(f"{domain.package} has no aggregate {A}.")
+    if not model.defines(unit):
+        raise CommandError(f"{model.path} has no unit of work {unit}.")
+    if not routes.defines(many):
+        raise CommandError(f"{routes.path} has no resource {many}; pass --plural.")
+    for source, name in (
+        (model, f"{A}.{method}"),
+        (model, event),
+        (controllers, service),
+    ):
+        if source.defines(name):
+            raise CommandError(f"{source.path} already defines {name}.")
+    for spec in specs:
+        if spec.name == f"{a}_id":
+            raise CommandError(f"{spec.name!r} comes from the path; leave it out.")
+        if spec.kind == "ref":
+            raise CommandError(
+                "A reference field is added to a four-file domain by hand: "
+                f"{spec.name}: Reference[...Id]."
+            )
+        for module, name in spec.plain_imports():
+            model.import_names(module, name)
+            controllers.import_names(module, name)
+    parameters = "".join(
+        f", {spec.name}: {spec.domain_type()}{spec.default()}" for spec in specs
+    )
+    values = "".join(f", {spec.name}={spec.name}" for spec in specs)
+    fields = "".join(f"\n    {spec.name}: {spec.plain()}" for spec in specs)
+    rest = event.removeprefix(A)
+    what = (
+        f"A {names.title} was {words(rest)}" if rest and rest != event else words(event)
+    )
+    model.import_names("domainkit.ddd", "DomainEvent")
+    model.insert_before_class(
+        A,
+        f'''class {event}(DomainEvent):
+    """{what[0].upper()}{what[1:]}."""
+
+    {a}_id: {A}Id{fields}
+''',
+    )
+    model.add_to_class(
+        A,
+        [
+            "",
+            f"def {method}(self{', *' if specs else ''}{parameters}) -> None:",
+            f'    """{words(method).capitalize()} the {names.title}."""',
+            f"    self.record({event}({a}_id=self.id{values}))",
+        ],
+    )
+    controllers.import_names("uuid", "UUID")
+    controllers.import_names("domainkit.ddd", "use_case")
+    controllers.import_names(domain.module("domain"), A, f"{A}Id", unit)
+    arguments = "".join(f", {spec.name}={spec.name}" for spec in specs)
+    controllers.append(
+        f'''
+
+@use_case
+async def {service}(uow: {unit}, {a}_id: UUID{parameters}) -> {A}:
+    """{words(method).capitalize()} a {names.title}."""
+    {a} = await uow.{many}.get({A}Id({a}_id))
+    {a}.{method}({arguments.removeprefix(", ")})
+    return {a}
+'''
+    )
+    path = method.replace("_", "-")
+    routes.insert_before(
+        f"router.include_router({many})",
+        [f'{many}.use_case(controllers.{service}, path="/{path}")'],
+    )
+    _use_case_test(domain, names, command, method, service, event, specs)
+
+
+def _use_case_test(
+    domain: Domain,
+    names: Names,
+    command: str,
+    method: str,
+    service: str,
+    event: str,
+    specs: list[FieldSpec],
+) -> None:
+    """The use case's test, on an in-memory unit of work."""
+    a, many = names.snake, names.plural
+    unit = f"{domain.camel}UnitOfWork"
+    imports = sorted(
+        {
+            f"from {module} import {name}"
+            for spec in specs
+            for module, name in spec.type.example_imports
+        }
+    )
+    examples = "".join(f", {spec.name}={spec.domain_example()}" for spec in specs)
+    domain.create(
+        domain.tests / f"test_{service}.py",
+        f'''"""``{service}``, on an in-memory unit of work."""
+
+{chr(10).join(imports)}
+
+import pytest
+from domainkit.ddd import DomainEvent, EventBus, in_memory
+
+from {domain.package} import controllers
+from {domain.module("domain")} import {event}, {unit}
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_{service}_publishes_{snake_case(event)}() -> None:
+    """The use case loads the {names.title}, changes it, and commits once."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: {event}) -> None:
+        published.append(event)
+
+    bus.subscribe({event}, collect)
+    uow = in_memory({unit}, events=bus)
+    {a} = await controllers.create_{a}(uow, name="First")
+
+    changed = await controllers.{service}(uow, {a}_id={a}.id{examples})
+
+    assert changed is await uow.{many}.get({a}.id)
+    assert [type(each) for each in published] == [{event}]
+    assert uow.committed == 2
 ''',
     )

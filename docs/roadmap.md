@@ -98,9 +98,10 @@ Measured on the guide's shop, one aggregate with four commands:
 
 ## Then
 
-1. **Generators for the four-file layout.** `addcommand`, `addquery`, and
-   `addevent` grow layered domains only; teach them `controllers.py` and
-   `routes.py`, then make the tutorial use the simple layout.
+1. **Generators for the four-file layout.** `addcommand` grows four-file
+   domains (a `@use_case`, its route, its test); `addquery` and `addevent`
+   still grow layered ones only. Teach them too, then make the tutorial
+   use the simple layout.
 2. **Field rules that hold everywhere.** Today `MinLength`, `Pattern`, and
    `Range` are checked at the API; a value object checks itself everywhere.
    Let an aggregate check its markers when it is made and changed, so a

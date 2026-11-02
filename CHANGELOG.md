@@ -33,6 +33,11 @@ and a status.
 
 ### Added
 
+- `addcommand` grows a four-file domain: the aggregate's method and its
+  event in `domain.py`, a `@use_case` in `controllers.py`, its route in
+  `routes.py`, and a test on `in_memory(...)`. The generated code passes
+  its tests, ruff, and mypy `--strict`. `addquery` and `addevent` say a
+  four-file domain is grown by hand or by `addcommand`.
 - `repository.values(query, *fields)` (Django's `values()`): the fields
   of the aggregates a query selects, as dicts, in one statement that names
   only their columns; nothing is loaded or tracked. Fields of the
