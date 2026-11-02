@@ -83,6 +83,7 @@ nav:
       - recipes/behind-a-proxy.md
       - recipes/read-replica.md
       - recipes/api-keys.md
+      - recipes/permission-rules.md
   - Guides:
       - resources.md
       - validation.md

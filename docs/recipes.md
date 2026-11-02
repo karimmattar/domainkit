@@ -20,6 +20,9 @@ for you, that is a bug: please report it.
 - [Service accounts with API keys](recipes/api-keys.md): an
   authentication class of your own, `X-API-Key` logging in as a service's
   user, the keys kept as digests.
+- [A permission rule of your own](recipes/permission-rules.md): a
+  `BasePermission` that asks whether the caller verified their address,
+  on a route of the project's own.
 
 Each starts from `domainkit init`; [the tutorial](tutorial.md) explains
 what that makes, and [deploying.md](deploying.md) what to do before the
