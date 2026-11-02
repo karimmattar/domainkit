@@ -67,8 +67,9 @@ from typing import Any, Final, Self
 
 from domainkit import clock, deadlines
 from domainkit.ddd.events import DomainEvent, EventBus, event_bus
+from domainkit.ddd.exceptions import CheckFailed
 from domainkit.ddd.preconditions import Expectation, check_loaded, expectation
-from domainkit.ddd.query import RowLock
+from domainkit.ddd.query import RowLock, declared_checks
 from domainkit.ddd.repository import Mark, Repository, RowLocks
 from domainkit.exceptions import DomainkitError
 
@@ -575,16 +576,23 @@ class UnitOfWork(ABC):
 
 
 def _clean(aggregates: Iterable[Any]) -> None:
-    """Run each aggregate's own ``clean()`` before it is stored.
+    """Run each aggregate's ``clean()``, then its ``Meta.checks``, before storing it.
 
-    The base's does nothing, so it is skipped.
+    The base's ``clean()`` does nothing, so it is skipped.
 
     Raises:
         DomainError: An aggregate's ``clean()`` refuses what it holds.
+        CheckFailed: An aggregate breaks one of its ``Meta.checks``.
     """
     for aggregate in aggregates:
         if not getattr(type(aggregate).clean, "__domainkit_noop__", False):
             aggregate.clean()
+        for name, rule in declared_checks(type(aggregate)).items():
+            if not rule.evaluate(aggregate):
+                raise CheckFailed(
+                    f"{type(aggregate).__name__} breaks its check {name!r}.",
+                    check=name,
+                )
 
 
 async def _sleep(seconds: float) -> None:

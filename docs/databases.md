@@ -712,6 +712,44 @@ message; the constraint settles two requests that both pass the check.
 Auth's username and group name columns name `UsernameTaken` and
 `GroupNameTaken`.
 
+## Checks
+
+A rule every stored aggregate keeps, on its own fields, goes in
+`Meta.checks` (Django's `CheckConstraint`), named, as criteria:
+
+```python
+class Item(AggregateRoot[ItemId]):
+    stock: int
+    cap: int | None = None
+    status: Status = Status.OPEN
+
+    class Meta:
+        checks = {
+            "stock_not_negative": F("stock") >= 0,
+            "cap_under_1000": F("cap").isnull() | (F("cap") < 1000),
+            "status_known": F("status").in_([Status.OPEN, Status.SHUT]),
+        }
+```
+
+Each holds twice. A unit of work refuses to commit an aggregate that
+breaks one, after its `clean()`, with `CheckFailed` (a
+`BusinessRuleViolation` naming the `check`; 422 `check_violation`), in
+memory as in SQL. And `table_for` writes it as a check constraint,
+`ck_<table>_<name>`, so a row written past the domain (a script, another
+service, raw SQL) is refused too, with the same code. `makemigrations`
+adds a check declared on a table that exists; drop one you remove with
+`op.drop_constraint` in the revision.
+
+A condition holds on a present value only, as in a query: a field that
+may be missing breaks `F("cap") < 1000` when it is missing, unless the
+check says `isnull()`. A check compares fields stored in a column of
+their own (not a child's, nor money's parts) with numbers, text, booleans,
+and enum members, with `==`, `!=`, `<`, `<=`, `>`, `>=`, `in_`, `range`,
+and `isnull`, joined by `&`, `|`, and `~`: those are written the same on
+PostgreSQL and SQLite. Anything else (a text pattern, an amount, a date,
+a rule across fields) is refused when the table is made; keep it in
+`clean()`.
+
 ## Units of work and their repositories
 
 A domain's unit of work names its repositories once, as annotations, in

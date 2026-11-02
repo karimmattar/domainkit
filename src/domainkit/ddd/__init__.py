@@ -16,6 +16,7 @@ from domainkit.ddd.events import (
 )
 from domainkit.ddd.exceptions import (
     BusinessRuleViolation,
+    CheckFailed,
     ConcurrentUpdate,
     Conflict,
     DomainError,
@@ -76,6 +77,7 @@ __all__ = [
     "AggregateRoot",
     "Avg",
     "BusinessRuleViolation",
+    "CheckFailed",
     "Command",
     "ConcurrentUpdate",
     "Conflict",

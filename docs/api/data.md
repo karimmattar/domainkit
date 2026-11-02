@@ -144,6 +144,7 @@ Domain-driven design building blocks ("seedwork").
 - `AggregateRoot`: Entry point to a consistency boundary; records events as it changes.
 - `Avg`: The mean of a number field: exact for a `Decimal` field.
 - `BusinessRuleViolation`: The request is well-formed but breaks an invariant of the model.
+- `CheckFailed`: An aggregate breaks one of its `Meta.checks` at commit.
 - `Command`: Request to change state, named in the imperative.
 - `ConcurrentUpdate`: Someone else changed the aggregate first; reload it and try again.
 - `Conflict`: The operation clashes with the current state, such as a duplicate.

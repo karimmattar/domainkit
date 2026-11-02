@@ -22,6 +22,7 @@ together.
 | Django | domainkit |
 | --- | --- |
 | `models.Model` | An aggregate (`AggregateRoot`), plain Python, and its table from its fields (`table_for`) ([databases.md](databases.md#tables-from-domain-classes)) |
+| `Meta.constraints`, `Meta.indexes`, `Meta.ordering` | `Meta.unique`, `Meta.checks`, `Meta.indexes`, `Meta.ordering` on the aggregate ([databases.md](databases.md#checks)) |
 | `ForeignKey` to a child, inlines | Child entities, stored and deleted with their aggregate ([databases.md](databases.md#child-entities)) |
 | `ForeignKey` to another model | A `Reference` by id: aggregates load one at a time |
 | `Model.objects.filter(...)` | `repository.filter(F("name") == ...)`, the same in SQL and in memory ([queries.md](queries.md#querying-a-repository)) |

@@ -33,6 +33,12 @@ and a status.
 
 ### Added
 
+- `Meta.checks` on an aggregate (Django's `CheckConstraint`): named
+  criteria such as `{"stock_not_negative": F("stock") >= 0}`. A unit of
+  work refuses to commit an aggregate that breaks one with `CheckFailed`
+  (422 `check_violation`), in memory as in SQL; `table_for` writes each
+  as a check constraint `ck_<table>_<name>`, and `makemigrations` adds one
+  declared on a table that exists.
 - `addquery` grows a four-file domain: the query and its handler in
   `controllers.py`, its `query_route` in `routes.py`, and a test on
   `in_memory(...)`. With `addcommand` and `addevent`, every generator now
