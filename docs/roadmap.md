@@ -98,10 +98,9 @@ Measured on the guide's shop, one aggregate with four commands:
 
 ## Then
 
-1. **Generators for the four-file layout.** `addcommand` and `addevent`
-   grow four-file domains (a `@use_case` and its route; an event and its
-   `@handles` handler); `addquery` still grows layered ones only. Teach it
-   too, then make the tutorial use the simple layout.
+1. **The tutorial on the four-file layout.** `addcommand`, `addquery`,
+   and `addevent` grow four-file domains (done); the tutorial still
+   builds a layered one.
 2. **Field rules that hold everywhere.** Today `MinLength`, `Pattern`, and
    `Range` are checked at the API; a value object checks itself everywhere.
    Let an aggregate check its markers when it is made and changed, so a

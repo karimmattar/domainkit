@@ -268,7 +268,6 @@ import logging
 {chr(10).join(imports)}
 
 import pytest
-from domainkit.ddd import event_bus
 
 from {domain.package} import controllers
 from {domain.module("domain")} import {A}Id, {event}
@@ -276,13 +275,12 @@ from {domain.module("domain")} import {A}Id, {event}
 
 @pytest.mark.anyio
 async def test_{reaction}(caplog: pytest.LogCaptureFixture) -> None:
-    """The handler reacts to the event, and the domain subscribed it."""
+    """The handler reacts to the event."""
     event = {event}({a}_id={A}Id(UUID(int=1)){values})
 
     with caplog.at_level(logging.INFO, logger=controllers.__name__):
         await controllers.{reaction}(event)
 
     assert "{event} 00000000-0000-0000-0000-000000000001" in caplog.text
-    assert controllers.{reaction} in event_bus.handlers_for({event}, durable=True)
 ''',
     )

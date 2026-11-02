@@ -11,6 +11,9 @@
 
 Each ``--by`` names a field of the aggregate; the query's field has the
 aggregate's type, so a value object stays one.
+
+In a four-file domain, the query and its handler go in ``controllers.py``,
+beside the use cases, and the route in ``routes.py``.
 """
 
 import ast
@@ -43,6 +46,7 @@ class Command(AggregateGenerator):
     """Add a query, its handler, its route, and tests to an aggregate."""
 
     help = "Add a query on an aggregate: the message, handler, route, and tests."
+    simple_layout = True
 
     def add_options(self, parser: ArgumentParser) -> None:
         """Accept the query, what it filters by, and its path."""
@@ -76,7 +80,8 @@ class Command(AggregateGenerator):
             raise CommandError(
                 f"{route!r} is not a path of lowercase words: /by-owner."
             )
-        add_query(domain, names, query, fields, route)
+        add = add_simple_query if domain.simple else add_query
+        add(domain, names, query, fields, route)
         return Planned(domain, query)
 
 
@@ -277,5 +282,103 @@ def test_{handler}_route(admin_client: TestClient) -> None:
 
     assert answer.status_code == 200, answer.json()
     assert [each["id"] for each in answer.json()["items"]] == [body["id"]]
+''',
+    )
+
+
+def add_simple_query(
+    domain: Domain, names: Names, query: str, fields: list[str], path: str
+) -> None:
+    """Plan the query and its handler in ``controllers.py``, its route, and test.
+
+    Raises:
+        CommandError: A name it would define is taken, a field is not one
+            the query can take, or a file is not as ``startdomain`` made it.
+    """
+    A, a, many = names.cls, names.snake, names.plural
+    handler = snake_case(query)
+    unit = f"{domain.camel}UnitOfWork"
+    model = domain.edit("domain.py")
+    controllers = domain.edit("controllers.py")
+    routes = domain.edit("routes.py")
+    if not model.defines(A):
+        raise CommandError(f"{domain.package} has no aggregate {A}.")
+    if not routes.defines(many):
+        raise CommandError(f"{routes.path} has no resource {many}; pass --plural.")
+    for name in (query, handler):
+        if controllers.defines(name):
+            raise CommandError(f"{controllers.path} already defines {name}.")
+    annotations = {name: _annotation(model, A, name) for name in fields}
+    for annotation in annotations.values():
+        for name in sorted(_names(annotation)):
+            if hasattr(builtins, name):
+                continue
+            origin = model.origin(name)
+            if model.defines(name) and not origin:
+                controllers.import_names(domain.module("domain"), name)
+            elif origin is not None:
+                controllers.import_names(origin, name)
+            else:
+                raise CommandError(
+                    f"{model.path} does not say where {name} comes from."
+                )
+    controllers.import_names("domainkit.ddd", "Query")
+    controllers.import_names("domainkit.ddd.query", "F")
+    controllers.import_names(domain.module("domain"), A, unit)
+    declared = "".join(
+        f"\n    {name}: {ast.unparse(hint)}" for name, hint in annotations.items()
+    )
+    conditions = [f'F("{name}") == query.{name}' for name in fields]
+    criteria = (
+        " & ".join(f"({each})" for each in conditions)
+        if len(conditions) > 1
+        else (conditions or ["None"])[0]
+    )
+    which = f" with the query's {enumeration(fields)}" if fields else ""
+    controllers.append(
+        f'''
+
+class {query}(Query):
+    """{words(query).capitalize()}."""
+{declared}
+
+
+async def {handler}(query: {query}, uow: {unit}) -> list[{A}]:
+    """The first {LIMIT} {words(many)}{which}."""
+    async with uow:
+        page = await uow.{many}.paginate({criteria}, limit={LIMIT})
+    return page.items
+'''
+    )
+    routes.insert_before(
+        f"router.include_router({many})",
+        [
+            f"{many}.query_route(",
+            f'    controllers.{query}, handler=controllers.{handler}, path="{path}"',
+            ")",
+        ],
+    )
+    arguments = ", ".join(f"{name}={a}.{name}" for name in fields)
+    domain.create(
+        domain.tests / f"test_{handler}.py",
+        f'''"""``{query}``, on an in-memory unit of work."""
+
+import pytest
+from domainkit.ddd import in_memory
+
+from {domain.package} import controllers
+from {domain.module("domain")} import {unit}
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_{handler}_finds_what_it_asks_for() -> None:
+    """The {names.title} that matches the query is found."""
+    uow = in_memory({unit})
+    {a} = await controllers.create_{a}(uow, name="First")
+
+    found = await controllers.{handler}(controllers.{query}({arguments}), uow)
+
+    assert found == [{a}]
 ''',
     )

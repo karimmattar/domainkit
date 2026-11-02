@@ -901,6 +901,8 @@ GENERATE = [
         *("--field", "amount:decimal:10:2", "--field", "at:datetime"),
     ],
     ["addevent", "billing", "Invoice", "InvoiceViewed", "--no-handler"],
+    ["addquery", "billing", "Invoice", "InvoicesNamed", "--by", "name"],
+    ["addquery", "billing", "Invoice", "EveryInvoice", "--path", "/every"],
 ]
 """Every generator, as ``python manage.py`` would get them: a layered domain,
 and a four-file one."""
@@ -1832,7 +1834,55 @@ def test_addevent_keeps_a_handler_name_once(desk: Shop) -> None:
         desk("addevent", "Ticket", "TicketGone")
 
 
-def test_addquery_refuses_a_four_file_domain(desk: Shop) -> None:
-    """Addquery grows layered domains only, and says so."""
-    with pytest.raises(CommandError, match="is a four-file domain"):
-        desk("addquery", "Ticket", "TicketsNamed", by=["name"])
+def test_addquery_grows_a_four_file_domain(desk: Shop) -> None:
+    """The query and its handler in controllers.py, its route, and its test."""
+    output = desk("addquery", "Ticket", "TicketsNamed", by=["name"])
+
+    assert output.startswith("Added TicketsNamed to gen.desk:\n")
+    controllers = desk.read("controllers.py")
+    assert "class TicketsNamed(Query):\n" in controllers
+    assert "    name: TicketName\n" in controllers
+    assert 'page = await uow.tickets.paginate(F("name") == query.name' in controllers
+    assert "controllers.TicketsNamed, handler=controllers.tickets_named" in (
+        desk.read("routes.py")
+    )
+    assert (desk.tests / "test_tickets_named.py").is_file()
+    assert check_domain("gen.desk") == []
+    for args, message in [
+        (("Ticket", "TicketsNamed"), "already defines TicketsNamed"),
+        (("Desk", "DesksNamed"), "has no aggregate Desk"),
+        (("Ticket", "TicketsDue", "--plural", "cases"), "has no resource cases"),
+    ]:
+        aggregate, query, *rest = args
+        options: dict[str, Any] = {"by": ["name"]}
+        if rest:
+            options["plural"] = rest[1]
+        with pytest.raises(CommandError, match=message):
+            desk("addquery", aggregate, query, **options)
+
+
+def test_addquery_needs_to_know_where_a_field_type_comes_from(desk: Shop) -> None:
+    """A type domain.py uses but neither defines nor imports is refused."""
+    path = desk.package / "domain.py"
+    text = path.read_text(encoding="utf-8").replace(
+        "    name: TicketName", "    name: TicketName\n    code: Mystery = None"
+    )
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(CommandError, match="does not say where Mystery comes from"):
+        desk("addquery", "Ticket", "TicketsCoded", by=["code"])
+
+
+def test_addquery_imports_field_types_as_domain_py_has_them(desk: Shop) -> None:
+    """A builtin needs nothing; an imported type is imported from its origin."""
+    path = desk.package / "domain.py"
+    text = "from datetime import date\n" + path.read_text(encoding="utf-8").replace(
+        "    name: TicketName",
+        "    name: TicketName\n    count: int = 0\n    day: date = date(2026, 1, 1)",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    desk("addquery", "Ticket", "TicketsOnDay", by=["count", "day"])
+
+    controllers = desk.read("controllers.py")
+    assert "from datetime import date" in controllers
+    assert "    count: int\n    day: date\n" in controllers

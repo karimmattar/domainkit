@@ -547,10 +547,12 @@ it, it also installs the domain and mounts its router.
 `startdomain --layered` writes a package per layer instead, on the whole
 kit: an aggregate with a value object, a collection of child entities, and
 an id-only reference; its filters, `PATCH`, commands, and `DELETE`; and
-tests at every layer. The generators below grow layered domains;
-`addcommand` grows a four-file one too: the method and its event in
+tests at every layer. The generators below grow both layouts. In a
+four-file domain, `addcommand` writes the method and its event in
 `domain.py`, a `@use_case` in `controllers.py`, its route in `routes.py`,
-and a test on `in_memory(...)`.
+and a test on `in_memory(...)`; `addquery` the query and its handler in
+`controllers.py` and its route; `addevent` the event in `domain.py` and a
+`@handles` handler in `controllers.py`.
 `startdomain catalog --aggregate Product --minimal`
 writes a smaller layered one, in the same four layers: an aggregate with a name
 that must not be blank, commands to create and rename it, its table, its

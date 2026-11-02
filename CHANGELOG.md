@@ -33,6 +33,10 @@ and a status.
 
 ### Added
 
+- `addquery` grows a four-file domain: the query and its handler in
+  `controllers.py`, its `query_route` in `routes.py`, and a test on
+  `in_memory(...)`. With `addcommand` and `addevent`, every generator now
+  grows both layouts.
 - `@handles(Event, durable=..., timeout=...)` (`domainkit.ddd`, Django's
   `@receiver`): marks a handler; a four-file domain's default
   `DomainConfig` subscribes the handlers its `controllers.py` defines and
