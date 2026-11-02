@@ -112,4 +112,4 @@ def test_a_payout_rewritten_on_both_sides_is_found_by_verify(project: str) -> No
     # The trail still says 5,000.00: the evidence is there, unread.
     assert "5000" in str(run_async(vouched()))
     with pytest.raises(CommandError):
-        call_command("accounting", "verify", "--operator", "t", stdout=io.StringIO())
+        call_command("accounting", "verify", stdout=io.StringIO())

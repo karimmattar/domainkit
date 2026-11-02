@@ -667,7 +667,9 @@ def actions(monkeypatch: pytest.MonkeyPatch) -> list[Action]:
 def run(*args: str) -> str:
     """``accounting`` with ``args``; what it printed."""
     output = io.StringIO()
-    call_command("accounting", *args, "--operator", "tester", stdout=output)
+    operates = args[0] in {"expireholds", "import", "reconcile"}
+    operator = ("--operator", "tester") if operates else ()
+    call_command("accounting", *args, *operator, stdout=output)
     return output.getvalue()
 
 
@@ -688,21 +690,27 @@ def test_the_command_says_what_each_argument_is() -> None:
     """Its ``--help``, as an operator reads it."""
     from domainkit.contrib.accounting.management.commands.accounting import Command
 
-    usage = Command().create_parser("manage.py", "accounting").format_help()
-    assert " ".join(usage.split()) == (
-        "usage: manage.py accounting [-h] [--format {csv,json}] [--output OUTPUT] "
-        "[--operator NAME] {trialbalance,ledger,verify,expireholds,import,"
-        "reconcile,unmatched} [target] [file] Write a period's trial balance or "
-        "general ledger, check the books, release expired holds, import a "
-        "statement, reconcile an account, or list what is unmatched. positional "
-        "arguments: {trialbalance,ledger,verify,expireholds,import,reconcile,"
-        "unmatched} target the period (name or id) to report, or the account "
-        "(code or id) to import into, reconcile, or list file import: the "
-        "statement's CSV file options: -h, --help show this help message and exit "
-        "--format {csv,json} --output OUTPUT write the report there instead of "
-        "stdout --operator NAME who runs this, for the audit trail (default: "
-        "$DOMAINKIT_OPERATOR, else your login name, else uid-<n>)"
+    parser = Command().create_parser("manage.py", "accounting")
+    usage = " ".join(parser.format_help().split())
+    choices = parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+
+    def of(action: str) -> str:
+        return " ".join(choices[action].format_help().split())  # type: ignore[index]
+
+    assert (
+        "{trialbalance,ledger,verify,expireholds,import,reconcile,unmatched}"
+    ) in usage
+    assert of("ledger").startswith(
+        "usage: manage.py accounting ledger [-h] [--format {csv,json}] "
+        "[--output OUTPUT] [PERIOD]"
     )
+    assert "PERIOD the period, by name or id" in of("trialbalance")
+    assert "--output OUTPUT write the report there instead of stdout" in of("ledger")
+    assert "ACCOUNT the account, by code or id file the statement's CSV file" in (
+        of("import")
+    )
+    assert "--operator NAME" in of("reconcile")
+    assert "--operator" not in of("verify")
 
 
 def test_the_command_writes_reports(project: str, tmp_path: Path) -> None:
