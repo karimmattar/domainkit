@@ -40,8 +40,9 @@ names each Django feature and platform need, what exists, and the step
 that closes its gap.
 
 After C7, the core closed the inventory's last open rows of its own: the
-`Email`, `URL`, `Slug`, and `IPAddress` field types; `Meta.ordering`;
-`GZipMiddleware` and `Last-Modified`; and `values()` projections.
+`Email`, `URL`, `Slug`, and `IPAddress` field types; `Meta.ordering` and
+`Meta.checks`; `GZipMiddleware` and `Last-Modified`; and `values()`
+projections.
 
 ## Then: adapters on the core
 
@@ -105,10 +106,10 @@ Measured on the guide's shop, one aggregate with four commands:
    `Range` are checked at the API; a value object checks itself everywhere.
    Let an aggregate check its markers when it is made and changed, so a
    script or a task meets the same limits, with the error as a 422.
-3. **Custom user fields end to end.** Auth's signup takes only a username
-   and an email: let it take the user model's `REQUIRED_FIELDS`, and let
-   `clean_field` and `create` checks come from field markers, so a phone
-   number needs one line.
+3. **Custom user fields end to end** (done). Signup takes the user
+   model's `REQUIRED_FIELDS` under `fields`, and a field's markers hold
+   at signup, in the admin API, and in scripts, so a phone number is one
+   line.
 4. **One page per extension point**, each with a working, tested example:
    an authentication class (API keys), a permission rule, a cache backend,
    a broker, an SMS or mail backend, and settings of a domain's own

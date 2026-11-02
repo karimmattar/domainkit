@@ -343,11 +343,15 @@ until `AUTH.SIGNUP_ENABLED` is on:
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"username", "email"}` | `202`; `422` for fields that do not fit; `429 rate_limited`. |
+| `POST /signup` | anyone | `{"username", "email", "fields"}` | `202`; `422` for fields that do not fit; `429 rate_limited`. |
 | `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
 
-The fields are checked at once (`422`), which tells nothing about other
-accounts; no password is taken. Then the request is kept as a pending
+`fields` holds the user model's other `REQUIRED_FIELDS`
+(`signup_fields()`; none for the default `User`), every one, as
+`{"phone": "+3161234567"}`: each is converted to its field's type and
+checked by its markers, and a missing one is `422 invalid_user_field`,
+another field `422 unknown_user_field`. The fields are checked at once
+(`422`), which tells nothing about other accounts; no password is taken. Then the request is kept as a pending
 signup, and it answers `202`, doing the same work whatever accounts
 exist. The worker mails the address: when neither the username (in any
 case) nor the address has an account, a link (`AUTH.SIGNUP_URL` with the

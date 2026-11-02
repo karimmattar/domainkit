@@ -33,6 +33,12 @@ and a status.
 
 ### Added
 
+- Signup takes the user model's other `REQUIRED_FIELDS` under `fields`
+  (`AbstractBaseUser.signup_fields()`): each converted to its type and
+  checked by its markers at once, kept with the pending signup, and set on
+  the account it makes. Startup refuses `REQUIRED_FIELDS` that name a field
+  the model lacks or one that changes through its own methods. Pending
+  signups gain a nullable `fields` column: run `makemigrations`.
 - `Meta.checks` on an aggregate (Django's `CheckConstraint`): named
   criteria such as `{"stock_not_negative": F("stock") >= 0}`. A unit of
   work refuses to commit an aggregate that breaks one with `CheckFailed`

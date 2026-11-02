@@ -106,9 +106,9 @@ or the user model is lost there.
 ```python
 # accounts/models.py
 class Account(AbstractUser):
-    phone: str = ""
+    phone: Annotated[str, MaxLength(32), Pattern(r"\+[0-9]{8,15}")] = ""
     risk_flag: bool = False
-    REQUIRED_FIELDS = ("email", "phone")  # what createsuperuser asks for
+    REQUIRED_FIELDS = ("email", "phone")  # createsuperuser and /signup ask for
     EDITABLE_FIELDS = AbstractUser.EDITABLE_FIELDS | {"phone"}  # staff may change
 
 
@@ -122,6 +122,14 @@ accounts = Table(
     info={"domain": "accounts"},
 )
 ```
+
+A field's markers hold wherever the user is made or changed: at signup,
+in the admin API, in `createsuperuser`, and in a script, with a `422`
+naming the field over HTTP. So `phone` above needs no `clean_field` and
+no `create` override. `REQUIRED_FIELDS` other than the username and the
+email (`signup_fields()`) are what `POST /signup` takes under `fields`
+([logging in](logging-in.md)); startup refuses a name the model lacks,
+or one that changes through its own methods.
 
 Staff see and change only the fields a model names. `EDITABLE_FIELDS`
 lists what the admin API may change (`email`, `first_name`, and
