@@ -1484,7 +1484,7 @@ def test_the_command_runs_as_its_operator(
     monkeypatch.setenv("DOMAINKIT_OPERATOR", "from-env")
 
     with freeze_time(NOW):
-        run("--operator", "dpo-1", "purge")  # Before the action.
+        run("purge", "--operator", "dpo-1")  # After the action, as for any.
         run("purge")
 
     actors = {row["actor"] for row in run_async(audited("privacy.purge"))}

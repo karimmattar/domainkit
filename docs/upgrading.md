@@ -72,6 +72,15 @@ Only `retry`, `cancel`, and `release` take `--operator`.
 `evidence verify KEY`. `webhooks` keeps its actions; each takes only its
 own options now, and only `replay` takes `--operator`.
 
+### `--operator` follows the action
+
+Every command of several actions takes `--operator` after its action,
+and only on the actions that change something: `privacy --operator alice
+purge` is `privacy purge --operator alice`; `flags --operator alice set
+beta` is `flags set beta --operator alice`. Listings and checks
+(`flags list`, `accounting verify`, `approvals list`, `limits list`)
+take none.
+
 ## 0.12 to 1.0
 
 1.0 is the first release since 0.12.1. Everything 0.13, 0.14, and 0.15

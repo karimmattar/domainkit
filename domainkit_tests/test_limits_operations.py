@@ -256,6 +256,7 @@ def test_the_command_refuses_enabling_and_disabling_at_once() -> None:
         run("set", "x", "--kind", "k", "--currency", "KWD", "--enable", "--disable")
 
 
+@pytest.mark.usefixtures("project")
 def test_the_command_sets_lists_and_shows_usage() -> None:
     """``set`` makes or changes; ``list`` shows all; ``usage`` shows the windows."""
     assert run("list") == "No limits.\n"

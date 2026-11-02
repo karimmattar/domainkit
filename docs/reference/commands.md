@@ -93,17 +93,18 @@ and `keys reencrypt`; `dumpdata --include-guarded`, which copies credentials out
 and `dumpdata --decrypt`, which copies encrypted values out in clear;
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `resealmfa`, `createtoken`, `changepassword`, `createsuperuser`,
-`addcertificate`, `cleartokens`, `flags`, `webhooks replay`, `accounting`
-(its `import`, `reconcile`, and `expireholds`), `approvals` (its
-`expire`), and `limits` (its `set` and `purge`). Their listings
-(`flags list`, `accounting verify`, `approvals list`, ...) take the
-operator too but record nothing; `evidence`, `audit log`, `audit verify`, `messages
-status` and `list`, and `webhooks subscriptions` and `deliveries` only read and take none.
+`addcertificate`, `cleartokens`, `flags set`, `delete`, and `setting`,
+`webhooks replay`, `accounting import`, `reconcile`, and `expireholds`,
+`approvals expire`, and `limits set` and `purge`. A command of several
+actions takes `--operator` after the action, and only on the actions that
+change something: its listings and checks (`flags list`, `accounting verify`,
+`approvals list`, `messages status`, `audit log`, `evidence`, ...) only read
+and take none.
 The operator is, in this order:
 
-1. `--operator NAME` (before the action for `privacy`:
-   `privacy --operator alice purge`, and for `flags`: `flags --operator
-   alice set beta --everyone on`);
+1. `--operator NAME`, after the action of a command of several
+   (`privacy purge --operator alice`, `flags set beta --everyone on
+   --operator alice`);
 2. the `DOMAINKIT_OPERATOR` environment variable;
 3. the login name `getpass.getuser()` reports: the `LOGNAME`, `USER`,
    `LNAME`, or `USERNAME` environment variable, else the name of the

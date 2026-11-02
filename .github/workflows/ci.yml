@@ -1219,6 +1219,7 @@ jobs:
           - name: management-4
             mutants: >-
               domainkit.apps.config.* domainkit.management.base.*
+              domainkit.management.actions.*
               domainkit.management.commands.addcommand.*
               domainkit.management.commands.addquery.*
               domainkit.management.commands.cache.*

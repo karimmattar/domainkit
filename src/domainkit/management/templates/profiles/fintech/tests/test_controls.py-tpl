@@ -49,8 +49,6 @@ def test_operators_changes_name_the_operator(client: TestClient) -> None:
     """A limit set from the command line is audited as the operator's."""
     call_command(
         "limits",
-        "--operator",
-        "ops-alice",
         "set",
         "payments.customer",
         "--kind",
@@ -59,6 +57,8 @@ def test_operators_changes_name_the_operator(client: TestClient) -> None:
         "USD",
         "--per-transaction",
         "500.00",
+        "--operator",
+        "ops-alice",
     )
     entries = client.run(audit_entries, actor="operator:ops-alice")
 

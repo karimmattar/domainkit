@@ -35,6 +35,12 @@ and a status.
 - **Breaking:** `evidence --subject S` is `evidence list S`, and
   `evidence --verify KEY` is `evidence verify KEY`. `webhooks`' actions
   take only their own options, and only `replay` takes `--operator`.
+- **Breaking:** every command of several actions (`keys`, `flags`,
+  `limits`, `privacy`, `approvals`, `accounting`, `cache`, `broker`, and
+  those above) is an `ActionCommand`: `--operator` comes after the action
+  (`privacy purge --operator alice`), and only the actions that change data
+  take it; their listings and checks (`flags list`, `accounting verify`,
+  `approvals list`) no longer do.
 
 ## [1.5.0] - 2026-11-02
 
