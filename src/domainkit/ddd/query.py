@@ -39,6 +39,7 @@ query messages, a different thing.
 """
 
 import dataclasses
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -94,6 +95,8 @@ class Lookup(StrEnum):
     IN = "in"
     RANGE = "range"
     ISNULL = "isnull"
+    REGEX = "regex"
+    IREGEX = "iregex"
 
 
 TEXT_LOOKUPS: Final = frozenset(
@@ -112,6 +115,8 @@ CASE_FOLDED: Final = frozenset(
     {Lookup.IEXACT, Lookup.ICONTAINS, Lookup.ISTARTSWITH, Lookup.IENDSWITH}
 )
 """Text lookups that ignore case."""
+PATTERN_LOOKUPS: Final = frozenset({Lookup.REGEX, Lookup.IREGEX})
+"""Lookups that take a regular expression; in code only, never over HTTP."""
 ORDERING_LOOKUPS: Final = frozenset(
     {Lookup.GT, Lookup.GTE, Lookup.LT, Lookup.LTE, Lookup.RANGE}
 )
@@ -468,6 +473,20 @@ class F:
     def iendswith(self, text: str) -> Condition:
         """Ends with ``text``, ignoring case."""
         return Condition(self.name, Lookup.IENDSWITH, text)
+
+    def regex(self, pattern: str) -> Condition:
+        """Matches the regular expression ``pattern`` (Django's ``regex``).
+
+        Write patterns both engines read alike, as PostgreSQL's and
+        Python's expressions differ at the edges (no ``(?P<name>)`` or
+        lookbehind in SQL). Never take a pattern from a caller: some take
+        exponential time.
+        """
+        return Condition(self.name, Lookup.REGEX, pattern)
+
+    def iregex(self, pattern: str) -> Condition:
+        """Matches the regular expression ``pattern``, ignoring case."""
+        return Condition(self.name, Lookup.IREGEX, pattern)
 
     def lookup(self, lookup: Lookup | str, value: object) -> Condition:
         """The condition ``lookup`` names, as in ``amount__gte``."""
@@ -897,11 +916,18 @@ def _bound_value(info: FieldInfo, lookup: Lookup, value: object) -> object:
                 f"isnull takes True or False, not {type(value).__name__}."
             )
         return value
-    if lookup in TEXT_LOOKUPS:
+    if lookup in TEXT_LOOKUPS or lookup in PATTERN_LOOKUPS:
         if not info.text:
             raise InvalidQuery(f"{info.name} is not text; {lookup} does not apply.")
         if not isinstance(value, str):
             raise InvalidQuery(f"{lookup} takes text, not {type(value).__name__}.")
+        if lookup in PATTERN_LOOKUPS:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise InvalidQuery(
+                    f"{value!r} is not a regular expression: {exc}."
+                ) from None
         return value
     if lookup is Lookup.EXACT:
         return info.coerce(value)
@@ -978,6 +1004,9 @@ def _compare(current: object, lookup: Lookup, value: object) -> bool:
     if lookup in _COMPARISONS:
         return _COMPARISONS[lookup](left, primitive(value))
     text, piece = str(left), str(value)
+    if lookup in PATTERN_LOOKUPS:
+        flags = re.IGNORECASE if lookup is Lookup.IREGEX else 0
+        return re.search(piece, text, flags) is not None
     if lookup in CASE_FOLDED:
         text, piece = text.lower(), piece.lower()
     return _TEXT_TESTS[lookup](text, piece)

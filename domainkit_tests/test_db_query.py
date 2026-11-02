@@ -1050,3 +1050,36 @@ async def test_measures_that_do_not_fit_are_refused() -> None:
     with pytest.raises(InvalidQuery, match="cannot be measured"):
         Max("secret").bind(Purse)
     assert Count("cash").bind(Purse) == Count("cash")
+
+
+async def test_regular_expressions_match_as_in_memory(tables: None) -> None:
+    """``regex`` and ``iregex``, in SQL as in Python, on both databases."""
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    queries = [
+        F("name").regex(r"^[ab]"),
+        F("name").iregex(r"^[ab]"),
+        F("name").regex("c$"),
+    ]
+
+    async with GadgetsUnitOfWork() as uow:
+        for criteria in queries:
+            found = sorted(each.name for each in await uow.gadgets.filter(criteria))
+            expected = sorted(each.name for each in await fake.filter(criteria))
+            assert found == expected
+        assert sorted(each.name for each in await uow.gadgets.filter(queries[1])) == [
+            "A_c",
+            "a%b",
+            "b/c",
+        ]
+
+
+async def test_patterns_that_cannot_apply_are_refused() -> None:
+    """A pattern that does not compile, or a field that is not text."""
+    fake = InMemoryGadgets([])
+
+    with pytest.raises(InvalidQuery, match="is not a regular expression"):
+        await fake.filter(F("name").regex("(unclosed"))
+    with pytest.raises(InvalidQuery, match="stock is not text"):
+        await fake.filter(F("stock").iregex("1"))

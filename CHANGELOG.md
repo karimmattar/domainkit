@@ -33,6 +33,11 @@ and a status.
 
 ### Added
 
+- `F(...).regex(pattern)` and `.iregex(pattern)` (Django's `regex` and
+  `iregex`): `~` and `~*` on PostgreSQL, Python's `re` on SQLite and in
+  memory. A pattern that does not compile is an `InvalidQuery`, and a
+  `FilterSet` refuses to offer them: a caller's pattern can take
+  exponential time.
 - `makemessages`: finds the messages each domain's code marks for
   translation (`gettext`, `_`, `ngettext`, `pgettext`, `npgettext`, and
   their `_lazy` forms, read with `ast`, nothing imported) and updates

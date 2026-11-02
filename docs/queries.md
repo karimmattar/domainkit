@@ -42,7 +42,13 @@ return is tracked, so the events it records are published on commit.
 | `.contains(t)`, `.icontains(t)` | `contains`, `icontains` | holds the text |
 | `.startswith(t)`, `.istartswith(t)` | `startswith`, `istartswith` | starts with it |
 | `.endswith(t)`, `.iendswith(t)` | `endswith`, `iendswith` | ends with it |
+| `.regex(p)`, `.iregex(p)` | `regex`, `iregex` | matches the regular expression (in code only) |
 | `F("x").lookup("gte", v)` | any | by name, as `x__gte` |
+
+`regex` runs as `~` on PostgreSQL and as Python's `re.search` on SQLite
+and in memory: write patterns both read alike (no lookbehind or named
+groups). A `FilterSet` does not offer it: a pattern from a caller can
+take exponential time, so take a pattern from code only.
 
 Combine criteria with `&`, `|`, and `~` (never `and`, `or`, `not`: criteria
 refuse to be true or false, so the mistake fails loudly). An ordering is

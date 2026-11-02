@@ -58,6 +58,7 @@ from domainkit.ddd.fields import (
 )
 from domainkit.ddd.query import (
     ORDERING_LOOKUPS,
+    PATTERN_LOOKUPS,
     TEXT_LOOKUPS,
     And,
     Criteria,
@@ -139,6 +140,11 @@ class Filter:
         )
         if Lookup.RANGE in self.lookups:
             raise ValueError("Offer gte and lte instead of range.")
+        if PATTERN_LOOKUPS & set(self.lookups):
+            raise ValueError(
+                "regex and iregex are not offered over HTTP: a caller's pattern "
+                "can take exponential time. Offer icontains, or match in code."
+            )
         self.field = field
         self.max_length = max_length
         self.name = ""

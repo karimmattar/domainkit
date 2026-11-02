@@ -282,6 +282,17 @@ def _compare(
             return column < value
         case Lookup.LTE:
             return column <= value
+        case Lookup.REGEX | Lookup.IREGEX:
+            text: ColumnElement[str] = type_coerce(column, String())
+            pattern, flags = str(value), None
+            if lookup is Lookup.IREGEX:
+                # SQLite's REGEXP is Python's re.search, and SQLAlchemy drops
+                # flags there: ignore case with an inline flag instead.
+                if dialect == "sqlite":
+                    pattern = f"(?i){pattern}"
+                else:
+                    flags = "i"
+            return text.regexp_match(literal(pattern, String()), flags=flags)
         case _:
             return _text(column, lookup, str(value), dialect)
 
