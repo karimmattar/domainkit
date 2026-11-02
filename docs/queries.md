@@ -196,6 +196,32 @@ keep short. A stored value longer than its field declares (SQLite does
 not enforce `MaxLength`) still gets a cursor: it is logged, and refused
 when it comes back.
 
+## Reading many
+
+`stream` reads everything a query selects, a batch at a time (Django's
+`iterator()`): each batch is one statement that starts after the last
+aggregate of the one before, so no statement returns more than `batch`
+rows and none stays open between batches.
+
+```python
+async with ShopUnitOfWork(readonly=True) as uow:
+    async for order in uow.orders.stream(F("status") == "paid", batch=500):
+        write_line(order)
+```
+
+What it yields is tracked as `filter`'s is, so a unit of work that writes
+commits changes made to it; read a large table through a read-only one.
+A query with a `limit` or an `offset` is refused: a page is `paginate`'s.
+
+`explain` gives the database's plan for what `filter` would run (SQL
+repositories): `EXPLAIN` on PostgreSQL, where `analyze=True` also runs it
+and reports the time, and `EXPLAIN QUERY PLAN` on SQLite. The values stay
+bound parameters, and nothing is loaded.
+
+```python
+print(await uow.orders.explain(F("customer_id") == customer_id))
+```
+
 ## Filters over HTTP
 
 A `FilterSet` declares, per field, which lookups clients may use, and turns

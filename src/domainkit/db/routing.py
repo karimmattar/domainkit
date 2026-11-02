@@ -96,6 +96,8 @@ class DatabaseRouter:
 
     _turns: Final = itertools.count()
     """Read-only units of work take turns on an alias's replicas."""
+    _owners: tuple[int, dict[str, str | None]] = (-1, {})
+    """The domain that owns each module asked about, for one registry generation."""
 
     def target_for(self, label: str) -> str:
         """The target holding the tables and sessions of domain ``label``."""
@@ -104,16 +106,21 @@ class DatabaseRouter:
     def target_for_module(self, module: str) -> str:
         """The target of the installed domain that contains ``module``.
 
-        Code outside every installed domain uses ``default``.
+        Code outside every installed domain uses ``default``. Which domain
+        owns a module is worked out once per module while the installed
+        domains stay the same; the target is read from the settings each time.
         """
-        owners = [
-            config
-            for config in registry
-            if module == config.name or module.startswith(f"{config.name}.")
-        ]
-        if not owners:
-            return DEFAULT_DB_ALIAS
-        return self.target_for(max(owners, key=lambda config: len(config.name)).label)
+        generation, owners = self._owners
+        if generation != registry.generation:
+            generation, owners = registry.generation, {}
+            self._owners = (generation, owners)
+        try:
+            label = owners[module]
+        except KeyError:
+            label = _owner(module)
+            if registry.generation == generation:
+                owners[module] = label
+        return DEFAULT_DB_ALIAS if label is None else self.target_for(label)
 
     def is_shard_group(self, target: str) -> bool:
         """Whether ``target`` names a shard group."""
@@ -242,6 +249,18 @@ class DatabaseRouter:
 def _unique(items: Iterable[str]) -> tuple[str, ...]:
     """Drop repeats, keeping the first occurrence of each item."""
     return tuple(dict.fromkeys(items))
+
+
+def _owner(module: str) -> str | None:
+    """The label of the innermost installed domain containing ``module``, if any."""
+    owners = [
+        config
+        for config in registry
+        if module == config.name or module.startswith(f"{config.name}.")
+    ]
+    if not owners:
+        return None
+    return max(owners, key=lambda config: len(config.name)).label
 
 
 router: Final = DatabaseRouter()

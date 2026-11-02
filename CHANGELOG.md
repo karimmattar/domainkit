@@ -25,9 +25,20 @@ and a status.
   change is never kept. About 90 fewer calls a request on every rung that
   reads the database (`resource-list` 159), and the ladder's budgets hold
   the new counts.
+- A unit of work finds the domain that owns it, and so its database, once
+  per module while the installed domains stay the same, not by walking
+  every installed domain on each request; `DATABASE_ROUTING` is still read
+  each time. `clock.now()` and `clock.monotonic()` take one lookup when no
+  clock is frozen. About 20 fewer calls a request.
 
 ### Added
 
+- `repository.stream(query, batch=500)`: everything a query selects, read
+  a batch at a time by keyset, each batch one statement (Django's
+  `iterator()`).
+- `repository.explain(query, analyze=False)` on SQL repositories: the
+  database's plan for what `filter` would run, values still bound
+  (Django's `explain()`).
 - `docs/request-flow.md`: the path a command takes, from the middleware to
   the answer and the worker after it, what can refuse it at each stage,
   and what each stage costs on the benchmark ladder.

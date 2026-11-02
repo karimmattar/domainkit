@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from domainkit import setup
+from domainkit.apps import registry
 from domainkit.conf import (
     UNSET,
     DatabaseConfig,
@@ -16,7 +17,7 @@ from domainkit.conf import (
     override_settings,
     settings,
 )
-from domainkit.db import connections
+from domainkit.db import connections, routing
 from domainkit.db.routing import (
     ShardMap,
     bucket_for,
@@ -372,6 +373,36 @@ def test_the_innermost_domain_decides(
 
         assert router.target_for_module("outer.inner.domain.model") == "tenants"
         assert router.target_for_module("outer.domain.model") == "default"
+
+
+def test_module_owners_are_kept_while_the_domains_stay(
+    two_shards: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ownership is worked out once per module; routing is read each time.
+
+    Installing other domains drops what was kept, and an answer worked out
+    while they change is given but not kept.
+    """
+    setup()
+    router.target_for_module(ALPHA)
+    asked: list[str] = []
+    monkeypatch.setattr(routing, "_owner", lambda module: asked.append(module))
+
+    with override_settings(DATABASE_ROUTING={"alpha": "default"}):
+        assert router.target_for_module(ALPHA) == "default"
+    assert router.target_for_module(ALPHA) == "tenants"
+    assert asked == []
+
+    def changing(module: str) -> str:
+        asked.append(module)
+        registry.generation += 1
+        return "alpha"
+
+    monkeypatch.setattr(routing, "_owner", changing)
+    registry.generation += 1
+    assert router.target_for_module(ALPHA) == "tenants"
+    assert router.target_for_module(ALPHA) == "tenants"
+    assert asked == [ALPHA, ALPHA]
 
 
 def test_apps_choose_where_their_tables_live(two_shards: None) -> None:

@@ -57,11 +57,11 @@ framework, for the reason given.
 | `annotate()`, `values()`, `values_list()`, `only()`, `defer()` | None | No: read models (projections) | C4 |
 | `select_related`, `prefetch_related` | An aggregate loads whole, children included | n/a | |
 | `select_for_update(nowait, skip_locked)` | `get_for_update`, `RowLock` | Yes | |
-| `iterator()`, `aiterator()` | None | No: streaming reads | C6 |
+| `iterator()`, `aiterator()` | `stream(query, batch=...)`, keyset batches ([queries.md](queries.md)) | Yes | C6 |
 | `F()` expressions in updates | None | No | C7 |
 | `Case`, `When`, `Subquery`, `Window`, database functions | SQLAlchemy inside a repository of the project's own | Partial: by hand | |
 | `raw()`, `connection.cursor()` | The session of a SQL repository | Partial: by hand | |
-| `explain()` | None | No | C6 |
+| `explain()` | `explain(query, analyze=...)` on SQL repositories | Yes | C6 |
 | `using()`, routers, replicas | `database`, `DATABASE_ROUTING`, `REPLICAS`, `readonly=True` | Yes | |
 
 ### Transactions and migrations

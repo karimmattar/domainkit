@@ -764,3 +764,45 @@ async def test_a_page_costs_its_query_and_its_childrens(tables: None) -> None:
             await uow.gadgets.paginate(limit=2, after=page.next_position, count=True)
         with assert_num_queries(1):
             await uow.gadgets.exists(F("parts.sku") == "X1")
+
+
+async def test_streams_read_everything_in_batches(tables: None) -> None:
+    """``stream`` yields what ``filter`` does, ``batch`` rows a statement."""
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    query = Selection(F("price") > Decimal(0), ordering=["-price"])
+    expected = [each.id for each in await fake.filter(query)]
+    async with GadgetsUnitOfWork() as uow:
+        streamed = [each.id async for each in uow.gadgets.stream(query, batch=2)]
+        assert [each.id for each in uow.gadgets.seen] == streamed
+        everything = [each.id async for each in uow.gadgets.stream(batch=10)]
+    assert streamed == expected == [each.id async for each in fake.stream(query)]
+    assert sorted(everything) == sorted(each.id for each in items)
+
+
+async def test_a_stream_is_not_a_page(tables: None) -> None:
+    """A limit, an offset, or an empty batch is refused before any read."""
+    async with GadgetsUnitOfWork() as uow:
+        with pytest.raises(ValueError, match="at least one aggregate"):
+            await anext(uow.gadgets.stream(batch=0))
+        with pytest.raises(ValueError, match="paginate"):
+            await anext(uow.gadgets.stream(Selection(limit=3)))
+        with pytest.raises(ValueError, match="paginate"):
+            await anext(uow.gadgets.stream(Selection(offset=1)))
+
+
+async def test_explain_gives_the_plan_with_values_bound(tables: None) -> None:
+    """The database's plan for a query; nothing is loaded or tracked."""
+    await store(*dataset())
+    query = Selection(F("name") == "x' OR 1=1 --", ordering=["-price"], lock=RowLock())
+    async with GadgetsUnitOfWork() as uow:
+        plan = await uow.gadgets.explain(query)
+        assert uow.gadgets.seen == ()
+        if ON_POSTGRES:
+            assert "gadgets" in plan
+            assert "actual time" in await uow.gadgets.explain(query, analyze=True)
+        else:
+            assert "gadgets" in plan.lower()
+            with pytest.raises(ValueError, match="PostgreSQL's"):
+                await uow.gadgets.explain(query, analyze=True)

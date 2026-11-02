@@ -14,18 +14,53 @@ from collections.abc import Hashable
 from typing import Any, Final
 
 from sqlalchemy import Delete, Select, Update, delete, func, literal, select, update
+from sqlalchemy.engine import Row
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm.attributes import instance_state
+from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.sql.elements import ClauseElement
+from sqlalchemy.sql.expression import Executable
 
 from domainkit.db.encrypted import guarded_attributes
 from domainkit.db.money import money_columns
 from domainkit.db.query import column_of, compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import AggregateRoot, Repository
 from domainkit.ddd.fields import InvalidQuery, fields_of
-from domainkit.ddd.query import ID, Criteria, CriteriaLike, Selection
+from domainkit.ddd.query import ID, Criteria, CriteriaLike, Selection, as_query
 from domainkit.ddd.repository import LockNotAvailable
 from domainkit.money import Money
+
+
+class Explain(Executable, ClauseElement):
+    """``EXPLAIN`` of a statement, its parameters still bound."""
+
+    inherit_cache = False
+
+    def __init__(self, statement: Select[Any], *, analyze: bool) -> None:
+        """Plan ``statement``; ``analyze`` runs it too (PostgreSQL)."""
+        self.statement = statement
+        self.analyze = analyze
+
+
+@compiles(Explain)
+def _explain(element: Explain, compiler: SQLCompiler, **options: Any) -> str:  # noqa: ANN401 - the compiler's options.
+    """``EXPLAIN [ANALYZE]`` on PostgreSQL, ``EXPLAIN QUERY PLAN`` on SQLite."""
+    if compiler.dialect.name == "sqlite":
+        prefix = "EXPLAIN QUERY PLAN"
+    else:
+        prefix = "EXPLAIN ANALYZE" if element.analyze else "EXPLAIN"
+    planned = compiler.process(element.statement, **options)
+    # The rows are the plan's, not the SELECT's: read them untyped.
+    compiler._result_columns = []
+    return f"{prefix} {planned}"
+
+
+def _plan_line(row: Row[Any]) -> str:
+    """One step of a plan: PostgreSQL's line, or SQLite's detail column."""
+    return str(row[-1])
+
 
 LOCK_NOT_AVAILABLE: Final = "55P03"
 """PostgreSQL's SQLSTATE for a row lock that ``NOWAIT`` would not wait for."""
@@ -62,12 +97,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         shows what the lock holder committed.
         """
         model = self.aggregate_type
-        statement = self._where(select(model), query.criteria)
-        statement = (
-            statement.order_by(*compile_ordering(query.ordering, model))
-            .offset(query.offset or None)
-            .limit(query.limit)
-        )
+        statement = self._select(query)
         lock = query.lock
         if lock is None:
             return list(await self.session.scalars(statement))
@@ -85,6 +115,38 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
                     "The data is being changed by another request; try again."
                 ) from exc
             raise
+
+    def _select(self, query: Selection) -> Select[Any]:
+        """The ``SELECT`` of the bound ``query``: where, order, offset, limit."""
+        model = self.aggregate_type
+        return (
+            self._where(select(model), query.criteria)
+            .order_by(*compile_ordering(query.ordering, model))
+            .offset(query.offset or None)
+            .limit(query.limit)
+        )
+
+    async def explain(
+        self, query: Selection | CriteriaLike | None = None, *, analyze: bool = False
+    ) -> str:
+        """The database's plan for ``filter(query)``, one line per step.
+
+        Django's ``explain()``: ``EXPLAIN`` on PostgreSQL (``analyze=True``
+        runs the query and adds what it cost), ``EXPLAIN QUERY PLAN`` on
+        SQLite. The values stay bound parameters. Nothing is loaded or
+        tracked; a locking query is planned without its lock.
+
+        Raises:
+            ValueError: ``analyze`` on a database that cannot.
+        """
+        dialect = self.session.get_bind().dialect.name
+        if analyze and dialect != "postgresql":
+            raise ValueError(f"EXPLAIN ANALYZE is PostgreSQL's, not {dialect!r}'s.")
+        prepared = self._prepare(as_query(query))
+        rows = await self.session.execute(
+            Explain(self._select(prepared.replace(lock=None)), analyze=analyze)
+        )
+        return "\n".join(_plan_line(row) for row in rows)
 
     async def _count(self, criteria: Criteria | None) -> int:
         """``SELECT count(*)`` of the matches."""

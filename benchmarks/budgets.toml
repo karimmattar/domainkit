@@ -43,7 +43,7 @@ pings = 0
 modules = 787
 
 [rungs.default]
-calls = 415
+calls = 414
 statements = 0
 transactions = 0
 checkouts = 0
@@ -51,7 +51,7 @@ pings = 0
 modules = 788
 
 [rungs.default-json]
-calls = 551
+calls = 550
 statements = 0
 transactions = 0
 checkouts = 0
@@ -59,7 +59,7 @@ pings = 0
 modules = 788
 
 [rungs.template]
-calls = 531
+calls = 529
 statements = 0
 transactions = 0
 checkouts = 0
@@ -67,7 +67,7 @@ pings = 0
 modules = 790
 
 [rungs.template-json]
-calls = 667
+calls = 665
 statements = 0
 transactions = 0
 checkouts = 0
@@ -75,7 +75,7 @@ pings = 0
 modules = 790
 
 [rungs.me]
-calls = 780
+calls = 775
 statements = 0
 transactions = 0
 checkouts = 0
@@ -83,7 +83,7 @@ pings = 0
 modules = 818
 
 [rungs.read]
-calls = 1755
+calls = 1738
 statements = 1
 transactions = 1
 checkouts = 1
@@ -91,7 +91,7 @@ pings = 1
 modules = 818
 
 [rungs.resource-list]
-calls = 2915
+calls = 2898
 statements = 1
 transactions = 1
 checkouts = 1
@@ -99,7 +99,7 @@ pings = 1
 modules = 818
 
 [rungs.write]
-calls = 2160
+calls = 2141
 statements = 1
 transactions = 1
 checkouts = 1
@@ -107,7 +107,7 @@ pings = 1
 modules = 818
 
 [rungs.resource-read]
-calls = 2299
+calls = 2282
 statements = 1
 transactions = 1
 checkouts = 1
@@ -115,7 +115,7 @@ pings = 1
 modules = 818
 
 [rungs.resource-command]
-calls = 3027
+calls = 3008
 statements = 1
 transactions = 1
 checkouts = 1
@@ -123,7 +123,7 @@ pings = 1
 modules = 818
 
 [rungs.keyed-write]
-calls = 3637
+calls = 3617
 statements = 4
 transactions = 3
 checkouts = 3
@@ -131,7 +131,7 @@ pings = 3
 modules = 819
 
 [rungs.money-write]
-calls = 2290
+calls = 2267
 statements = 1
 transactions = 1
 checkouts = 1
@@ -139,7 +139,7 @@ pings = 1
 modules = 887
 
 [rungs.posting]
-calls = 11995
+calls = 11968
 statements = 14
 transactions = 1
 checkouts = 1
@@ -147,7 +147,7 @@ pings = 1
 modules = 887
 
 [rungs.encrypted-read]
-calls = 1802
+calls = 1781
 statements = 1
 transactions = 1
 checkouts = 1
@@ -155,7 +155,7 @@ pings = 1
 modules = 887
 
 [rungs.step-up]
-calls = 1695
+calls = 1673
 statements = 1
 transactions = 1
 checkouts = 1
@@ -164,7 +164,7 @@ modules = 887
 
 # The 429 is a problem+json body by default since 1.0 (ADR 0125): +20.
 [rungs.throttled]
-calls = 503
+calls = 498
 statements = 0
 transactions = 0
 checkouts = 0
