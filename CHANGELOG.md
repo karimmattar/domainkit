@@ -9,6 +9,12 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `docs/request-flow.md`: the path a command takes, from the middleware to
+  the answer and the worker after it, what can refuse it at each stage,
+  and what each stage costs on the benchmark ladder.
+
 ## [1.5.0] - 2026-11-02
 
 Making domainkit simpler to learn and to start with, from building a first
