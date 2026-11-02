@@ -63,16 +63,20 @@ class BaseCommand:
         )
         self.add_arguments(parser)
         if self.operator_actions:
-            parser.add_argument(
-                "--operator",
-                metavar="NAME",
-                help="who runs this, for the audit trail (default: "
-                "$DOMAINKIT_OPERATOR, else your login name, else uid-<n>)",
-            )
+            self.add_operator_argument(parser)
         return parser
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Declare the command's options."""
+
+    def add_operator_argument(self, parser: ArgumentParser) -> None:
+        """Take ``--operator``, for a command with ``operator_actions``."""
+        parser.add_argument(
+            "--operator",
+            metavar="NAME",
+            help="who runs this, for the audit trail (default: "
+            "$DOMAINKIT_OPERATOR, else your login name, else uid-<n>)",
+        )
 
     def run_from_argv(self, argv: Sequence[str]) -> None:
         """Parse ``[prog, command, *args]`` and execute."""

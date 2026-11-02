@@ -1026,15 +1026,16 @@ def test_the_command_says_what_each_action_does() -> None:
         "each key seals reencrypt seal everything still under a retired key again "
         "options:"
     ) in keys_help()
-    assert keys_help("generate").endswith(
-        " --id KEY_ID its id in DATA_KEYS (default: today's date)"
+    assert (" --id KEY_ID its id in DATA_KEYS (default: today's date)") in keys_help(
+        "generate"
     )
-    assert keys_help("status").endswith(
+    assert (
         " --check fail while anything is sealed under a retired key (keys.W001)"
-    )
-    assert keys_help("reencrypt").endswith(
+    ) in keys_help("status")
+    assert (
         " --batch-size BATCH_SIZE rows per transaction (default: 500)"
-    )
+    ) in keys_help("reencrypt")
+    assert " --operator NAME who runs this" in keys_help("reencrypt")
 
 
 def test_status_names_every_retired_key(database_url: str, tmp_path: Path) -> None:

@@ -2,7 +2,8 @@
 
 import json
 import re
-from argparse import ArgumentParser
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from domainkit import clock
 from domainkit.apps import registry
@@ -11,10 +12,10 @@ from domainkit.contrib.keys.operations import BATCH_SIZE
 from domainkit.contrib.keys.settings import KEY_ID_PATTERN
 from domainkit.keys import KeyProviderError
 from domainkit.keys.ring import keyring
-from domainkit.management import BaseCommand, CommandError
+from domainkit.management import ActionCommand, CommandError, action, option
 
 
-class Command(BaseCommand):
+class Command(ActionCommand):
     """Manage the data keys of ``KEYS`` and what they seal."""
 
     help = (
@@ -25,53 +26,57 @@ class Command(BaseCommand):
     operator_actions = True
     """A re-encryption is audited as the operator who ran it."""
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Declare the four actions and their options."""
-        actions = parser.add_subparsers(dest="action", required=True)
-        generate = actions.add_parser("generate", help="make a data key, wrapped")
-        generate.add_argument(
-            "--id", dest="key_id", help="its id in DATA_KEYS (default: today's date)"
-        )
-        actions.add_parser(
-            "rewrap", help="print DATA_KEYS wrapped under the KEK's newest version"
-        )
-        status = actions.add_parser("status", help="count what each key seals")
-        status.add_argument(
-            "--check",
-            action="store_true",
-            help="fail while anything is sealed under a retired key (keys.W001)",
-        )
-        again = actions.add_parser(
-            "reencrypt", help="seal everything still under a retired key again"
-        )
-        again.add_argument(
-            "--batch-size",
-            type=int,
-            default=BATCH_SIZE,
-            help=f"rows per transaction (default: {BATCH_SIZE})",
-        )
+    @action(
+        help="make a data key, wrapped",
+        options=[
+            option(
+                "--id",
+                dest="key_id",
+                help="its id in DATA_KEYS (default: today's date)",
+            )
+        ],
+    )
+    async def generate(self, *, key_id: str | None = None) -> None:
+        """Print a new data key, wrapped, as a ``DATA_KEYS`` entry."""
+        with _provider_errors():
+            await self._generate(key_id or clock.today().isoformat())
 
-    async def handle(
-        self,
-        *,
-        action: str,
-        key_id: str | None = None,
-        check: bool = False,
-        batch_size: int = BATCH_SIZE,
-        **options: object,
-    ) -> None:
-        """Run the action."""
-        try:
-            if action == "generate":
-                await self._generate(key_id or clock.today().isoformat())
-            elif action == "rewrap":
-                await self._rewrap()
-            elif action == "status":
-                await self._status(check=check)
-            else:
-                await self._reencrypt(batch_size)
-        except KeyProviderError as exc:
-            raise CommandError(str(exc)) from None
+    @action(help="print DATA_KEYS wrapped under the KEK's newest version")
+    async def rewrap(self) -> None:
+        """Print ``DATA_KEYS`` wrapped under the KEK's newest version."""
+        with _provider_errors():
+            await self._rewrap()
+
+    @action(
+        help="count what each key seals",
+        options=[
+            option(
+                "--check",
+                action="store_true",
+                help="fail while anything is sealed under a retired key (keys.W001)",
+            )
+        ],
+    )
+    async def status(self, *, check: bool = False) -> None:
+        """Count what each key seals."""
+        with _provider_errors():
+            await self._status(check=check)
+
+    @action(
+        help="seal everything still under a retired key again",
+        options=[
+            option(
+                "--batch-size",
+                type=int,
+                default=BATCH_SIZE,
+                help=f"rows per transaction (default: {BATCH_SIZE})",
+            )
+        ],
+    )
+    async def reencrypt(self, *, batch_size: int = BATCH_SIZE) -> None:
+        """Seal everything still under a retired key again."""
+        with _provider_errors():
+            await self._reencrypt(batch_size)
 
     async def _generate(self, key_id: str) -> None:
         """Print a new data key, wrapped, as a ``DATA_KEYS`` entry."""
@@ -157,3 +162,16 @@ class Command(BaseCommand):
                 f"{done.failed} value(s) did not open: tampered, or sealed under a "
                 "key the ring no longer holds. They were left as they are."
             )
+
+
+@contextmanager
+def _provider_errors() -> Iterator[None]:
+    """Report a key provider's refusal as the command's error.
+
+    Raises:
+        CommandError: The provider refused.
+    """
+    try:
+        yield
+    except KeyProviderError as exc:
+        raise CommandError(str(exc)) from None

@@ -16,16 +16,21 @@ from typing import TextIO
 
 from domainkit.conf import settings
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.management.actions import ActionCommand, Option, action, option
 from domainkit.management.base import BaseCommand, CommandError
 
 BUILTIN_COMMANDS = "domainkit.management.commands"
 
 __all__ = [
+    "ActionCommand",
     "BaseCommand",
     "CommandError",
+    "Option",
+    "action",
     "call_command",
     "execute_from_command_line",
     "get_commands",
+    "option",
 ]
 
 

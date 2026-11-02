@@ -265,11 +265,24 @@ Structured logging: JSON for log pipelines, escaped text for terminals.
 
 Run management commands: `python manage.py <command>`.
 
+- `ActionCommand`: A command whose first argument picks one of its `@action` methods.
 - `BaseCommand`: One `manage.py` command, in `<package>.management.commands.<name>`.
 - `CommandError`: Stop the command and print the message; the process exits with `returncode`.
+- `Option`: One option of an action: `ArgumentParser.add_argument`'s arguments.
+- `action`: Declare a method of an `ActionCommand` as one of its actions.
 - `call_command`: Run command `name` from code; `options` override parsed defaults.
 - `execute_from_command_line`: Dispatch `argv` (default `sys.argv`) to a command and exit on errors.
 - `get_commands`: Map each command name to the package that provides it.
+- `option`: An option of an action, as `parser.add_argument(*names, **settings)` takes it.
+
+## `domainkit.management.actions`
+
+Commands of several actions: `manage.py <command> <action> [options]`.
+
+- `ActionCommand`: A command whose first argument picks one of its `@action` methods.
+- `Option`: One option of an action: `ArgumentParser.add_argument`'s arguments.
+- `action`: Declare a method of an `ActionCommand` as one of its actions.
+- `option`: An option of an action, as `parser.add_argument(*names, **settings)` takes it.
 
 ## `domainkit.management.base`
 

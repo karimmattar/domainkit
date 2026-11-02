@@ -5,6 +5,33 @@ Run as `python manage.py <command>`; `init` runs before a project exists, as
 the `PATH`). Domains add their own in `management/commands/<name>.py`
 with a `Command(BaseCommand)` class; `handle` may be `async`.
 
+A command that does more than one thing has one shape:
+`manage.py <command> <action> [options]`. Subclass `ActionCommand` and
+declare each action as a method; its options are its own, and `--help`
+lists them:
+
+```python
+from domainkit.management import ActionCommand, action, option
+
+
+class Command(ActionCommand):
+    help = "Manage the catalog's prices."
+
+    @action(
+        help="raise every price by a percentage",
+        options=[option("percent", type=int), option("--dry-run", action="store_true")],
+    )
+    async def raise_prices(self, *, percent: int, dry_run: bool) -> None: ...
+
+    @action(help="list the prices")
+    async def show(self) -> None: ...
+```
+
+`python manage.py prices raise-prices 5 --dry-run` runs `raise_prices(percent=5,
+dry_run=True)`: an action is named after its method, `_` written `-`, unless
+`@action(name=...)` names it. A command with `operator_actions` takes
+`--operator` after any action.
+
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `init` | `name`, `[directory]`, `--profile fintech` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. What it writes passes the project's own `ruff check` and `ruff format --check`; its dev group installs ruff, which formats what the generators write. `--profile fintech` writes a bank's controls on and wired, with a guarded sample transfer and its tests, which also pass `mypy --strict`, and production settings that pass `check --deploy` once their secrets are set ([fintech.md](../fintech.md), ADR 0124). |
