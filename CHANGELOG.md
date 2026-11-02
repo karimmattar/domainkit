@@ -19,6 +19,12 @@ and a status.
 - The benchmark ladder has a `resource-list` rung, a `ResourceRouter` page
   of 20 items, budgeted at 3,074 calls in one statement: a list page now
   has a budget, as a read and a write have.
+- `settings` keeps a value once read, so later reads are an attribute
+  lookup, not a call; replacing the settings (`override_settings`, a
+  reload) drops what was kept, under a lock, and a value read while they
+  change is never kept. About 90 fewer calls a request on every rung that
+  reads the database (`resource-list` 159), and the ladder's budgets hold
+  the new counts.
 
 ### Added
 

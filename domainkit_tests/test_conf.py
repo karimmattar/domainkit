@@ -593,6 +593,43 @@ def test_configure_reset_and_module_variable(
     assert lazy.configured is False
 
 
+def test_values_read_are_kept_until_the_settings_are_replaced(tmp_path: Path) -> None:
+    """A read is kept on the proxy; replacing the settings forgets it."""
+    lazy = LazySettings(Env(env_file=tmp_path / "missing"))
+    lazy.configure("domainkit_tests.settings")
+
+    assert lazy.ALLOWED_HOSTS == ("testserver",)
+    assert vars(lazy)["ALLOWED_HOSTS"] == ("testserver",)
+    with lazy.override(ALLOWED_HOSTS=("example.com",)):
+        assert "ALLOWED_HOSTS" not in vars(lazy)
+        assert lazy.ALLOWED_HOSTS == ("example.com",)
+    assert lazy.ALLOWED_HOSTS == ("testserver",)
+    lazy.configure("domainkit_tests.other_settings")
+    assert lazy.SETTINGS_MODULE == "domainkit_tests.other_settings"
+
+
+def test_a_value_read_while_the_settings_change_is_not_kept(tmp_path: Path) -> None:
+    """A read that races a replacement returns its value but keeps nothing."""
+    lazy = LazySettings(Env(env_file=tmp_path / "missing"))
+    lazy.configure("domainkit_tests.settings")
+    first = lazy.unwrap()
+    second = first.model_copy(update={"ALLOWED_HOSTS": ("example.com",)})
+
+    class Racing:
+        """Settings whose read replaces the loaded ones, as another thread would."""
+
+        @property
+        def ALLOWED_HOSTS(self) -> tuple[str, ...]:
+            lazy._wrapped = second
+            return first.ALLOWED_HOSTS
+
+    lazy._wrapped = Racing()  # type: ignore[assignment]
+
+    assert lazy.ALLOWED_HOSTS == ("testserver",)
+    assert "ALLOWED_HOSTS" not in vars(lazy)
+    assert lazy.ALLOWED_HOSTS == ("example.com",)
+
+
 def test_global_configure_and_reset(monkeypatch: pytest.MonkeyPatch) -> None:
     """The module-level helpers act on the shared settings object."""
     monkeypatch.setenv(

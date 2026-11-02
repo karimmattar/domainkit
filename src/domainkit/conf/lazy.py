@@ -1,6 +1,7 @@
 """Lazy settings proxy that imports and validates the selected settings module."""
 
 import importlib
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Final
@@ -77,6 +78,10 @@ def _schema(value: object) -> type[Settings]:
     )
 
 
+_KEEPING: Final = threading.Lock()
+"""Held while a value is kept on the proxy, and while the settings are replaced."""
+
+
 class LazySettings:
     """Load settings on first access, like ``django.conf.settings``."""
 
@@ -91,18 +96,40 @@ class LazySettings:
         return self._wrapped is not None
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - proxies any setting.
-        """Load settings on first use, then delegate attribute access."""
+        """Load settings on first use, then delegate attribute access.
+
+        The value is kept on the proxy, as Django keeps it: the next read
+        of the setting is an ordinary attribute, with no call. Replacing
+        the settings (``override``, ``configure``, ``reset``) forgets them.
+        """
         if name.startswith("_"):
             raise AttributeError(name)
-        return getattr(self._setup(), name)
+        wrapped = self._setup()
+        value = getattr(wrapped, name)
+        with _KEEPING:
+            # Kept only if the settings it came from are still the ones
+            # loaded: a thread that read them while another replaced them
+            # must not keep an old value past the replacement.
+            if self.__dict__.get("_wrapped") is wrapped:
+                self.__dict__[name] = value
+        return value
 
     def __setattr__(self, name: str, value: object) -> None:
-        """Settings are read-only at runtime; tests use ``override_settings``."""
+        """Settings are read-only at runtime; tests use ``override_settings``.
+
+        Replacing the loaded settings forgets every value read from them.
+        """
         if not name.startswith("_"):
             raise AttributeError(
                 "Settings are read-only; use override_settings() in tests."
             )
-        super().__setattr__(name, value)
+        if name != "_wrapped":
+            super().__setattr__(name, value)
+            return
+        with _KEEPING:
+            super().__setattr__(name, value)
+            for kept in [each for each in self.__dict__ if not each.startswith("_")]:
+                del self.__dict__[kept]
 
     def unwrap(self) -> Settings:
         """Return the loaded ``Settings`` object itself (loading it if needed)."""
