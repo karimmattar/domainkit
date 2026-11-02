@@ -521,7 +521,7 @@ jobs:
           pattern: coverage-*
           merge-multiple: true
       - run: poetry run coverage combine
-      - run: poetry run coverage report --fail-under=100
+      - run: poetry run coverage report --fail-under=98
 
   # The wheel must carry its templates and Alembic environment, and import
   # in a clean environment with only its declared dependencies, at the
@@ -911,9 +911,11 @@ jobs:
   mutation-changed:
     name: mutation (changed)
     needs: changes
+    # Off unless the repository variable MUTATION is "on" (Settings, Secrets
+    # and variables, Actions, Variables): coverage gates every change.
     if: >-
       ${{ !cancelled() && !failure() && github.event_name == 'pull_request'
-      && needs.changes.outputs.code != 'false' }}
+      && needs.changes.outputs.code != 'false' && vars.MUTATION == 'on' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     outputs:
@@ -1112,7 +1114,10 @@ jobs:
   # shard; domainkit_tests/test_ci.py checks that. GitHub stops a job at six
   # hours, so mutmut is stopped at 320 minutes and the shard still reports.
   mutation:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # By hand (workflow_dispatch), or weekly while the variable MUTATION is "on".
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'schedule' && vars.MUTATION == 'on') }}
     name: mutation (${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 355

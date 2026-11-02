@@ -330,16 +330,11 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
     runs the whole suite: a release reuses that run.
     """
     every = set(jobs())
-    assert running("schedule") == {
-        "audit",
-        "semgrep",
-        "newest",
-        "oldest",
-        "mutation",
-    }
+    assert running("schedule") == {"audit", "semgrep", "newest", "oldest"}
     sharded = {"mutation-changed-shard", "mutation-changed-summary"}
-    assert running("pull_request") == every - {"mutation", "docs", "attest"} - sharded
-    assert "mutation-changed" in running("pull_request")
+    mutating = {"mutation", "mutation-changed"} | sharded
+    assert running("pull_request") == every - {"docs", "attest"} - mutating
+    assert "mutation-changed" not in running("pull_request")
     assert running("pull_request", shards="[1,2]") == running("pull_request") | sharded
     assert running("pull_request", code="false") == {
         "changes",

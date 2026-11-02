@@ -255,8 +255,8 @@ source = ["src"]
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
-# Every run, with or without servers; CI's coverage job also requires 100%
-# of all runs combined.
+# Every run, with or without servers, and CI's coverage job of all runs
+# combined.
 fail_under = 98
 precision = 2
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
