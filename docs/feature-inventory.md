@@ -28,7 +28,7 @@ framework, for the reason given.
 | `db_default`, `GeneratedField` | A hand-written column in `table_for(..., *extra)` | Partial | C7 |
 | `unique=True`, `db_index=True` | `Unique()` and `Indexed()` on the field | Yes | C7 |
 | `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | `Meta.unique` and `Meta.indexes` on the aggregate; a check constraint in `extra` | Partial: checks are SQLAlchemy's, in `extra` | C7 |
-| `Meta.ordering` | A `FilterSet`'s `default_ordering`; repositories order by id | Partial | C7 |
+| `Meta.ordering` | `Meta.ordering` on the aggregate: queries that name none follow it, then the id | Yes | C7 |
 | Validators (`MaxLengthValidator`, `RegexValidator`, `MinValueValidator`, ...) | `MaxLength`, `MinLength`, `Pattern`, `Range` markers, checked by the object, the request, and OpenAPI ([validation.md](validation.md)) | Yes | |
 | `clean()`, `full_clean()`, `clean_fields()` | `clean()`, run when made and before every commit; fields checked whenever set | Yes | |
 | `ForeignKey` to a child | Child entities, stored with their aggregate | Yes | |

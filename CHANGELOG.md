@@ -33,6 +33,9 @@ and a status.
 
 ### Added
 
+- `Meta.ordering` on an aggregate (Django's): `filter`, `first`,
+  `paginate`, `stream`, and resource lists that name no ordering follow
+  it, then the id. It is checked once per class.
 - `Email`, `URL`, `Slug`, and `IPAddress` field types (`domainkit.ddd`),
   Django's `EmailField`, `URLField`, `SlugField`, and
   `GenericIPAddressField`: `Annotated[str, ...]` of the markers, so the

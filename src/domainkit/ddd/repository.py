@@ -34,9 +34,11 @@ from domainkit.ddd.query import (
     CriteriaLike,
     F,
     Measure,
+    Ordering,
     RowLock,
     Selection,
     as_criteria,
+    as_ordering,
     as_query,
     following,
     order,
@@ -266,7 +268,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             PreconditionFailed: The use case expects another version of an
                 aggregate found.
         """
-        found = await self._filter(self._prepare(as_query(query)))
+        found = await self._filter(self._prepare(self._ordered(as_query(query))))
         for aggregate in found:
             check_expected(aggregate, self._expected)
             self._track(aggregate)
@@ -339,7 +341,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         """
         if limit < 1:
             raise ValueError(f"A page holds at least one item, not {limit}.")
-        base = as_query(query)
+        base = self._ordered(as_query(query))
         ordering = total_ordering(base.ordering)
         found = await self.filter(
             base.replace(ordering=ordering, limit=limit + 1, offset=offset, after=after)
@@ -376,7 +378,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         """
         if batch < 1:
             raise ValueError(f"A batch holds at least one aggregate, not {batch}.")
-        base = as_query(query)
+        base = self._ordered(as_query(query))
         if base.limit is not None or base.offset:
             raise ValueError(
                 "stream() reads everything a query selects; take a page with "
@@ -572,6 +574,13 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         joined = parts[0] if len(parts) == 1 else parts[0] & parts[1]
         return joined.bind(model)
 
+    def _ordered(self, query: Selection) -> Selection:
+        """``query``, in the aggregate's ``Meta.ordering`` if it names none."""
+        if query.ordering:
+            return query
+        default = default_ordering(self.aggregate_type)
+        return query.replace(ordering=default) if default else query
+
     def _prepare(self, query: Selection) -> Selection:
         """``query`` bound to the aggregate: total ordering, position as criteria."""
         model = self.aggregate_type
@@ -649,6 +658,26 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
     ) -> dict[str, object]:
         """Work out the bound ``measures`` over what ``criteria`` select."""
         raise NotImplementedError(f"{type(self).__name__} cannot aggregate.")
+
+
+@cache
+def default_ordering(model: type) -> tuple[Ordering, ...]:
+    """The aggregate's ``Meta.ordering`` (Django's), checked.
+
+    Queries that name no ordering are in it, then by id.
+
+    Raises:
+        TypeError: It is not a tuple of field names, as ``("-placed_at",)``.
+        InvalidQuery: A name is no field of the model, or one that does not
+            sort.
+    """
+    declared = getattr(getattr(model, "Meta", None), "ordering", ())
+    if isinstance(declared, str) or not isinstance(declared, (tuple, list)):
+        raise TypeError(
+            f"{model.__qualname__}.Meta.ordering is a tuple of field names, as "
+            f"('-placed_at',), not {declared!r}."
+        )
+    return tuple(as_ordering(each).bind(model) for each in declared)
 
 
 def _is_deleted(aggregate: object) -> bool:

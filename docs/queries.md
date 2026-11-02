@@ -54,6 +54,16 @@ take exponential time, so take a pattern from code only.
 Combine criteria with `&`, `|`, and `~` (never `and`, `or`, `not`: criteria
 refuse to be true or false, so the mistake fails loudly). An ordering is
 `F("x").asc()`, `F("x").desc()`, or Django's `"x"` and `"-x"`.
+A query that names no ordering is in the aggregate's `Meta.ordering`
+(Django's), then by id; without one, by id:
+
+```python
+class Order(AggregateRoot[OrderId]):
+    placed_at: datetime
+
+    class Meta:
+        ordering = ("-placed_at",)
+```
 
 `Selection(criteria, ordering=..., limit=..., offset=..., after=...,
 lock=..., include_deleted=...)` is a frozen value; `where(...)` adds

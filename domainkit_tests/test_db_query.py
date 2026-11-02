@@ -42,6 +42,7 @@ from domainkit.ddd import (
     ReadOnlyError,
     UnknownField,
 )
+from domainkit.ddd import repository as ddd_repository
 from domainkit.ddd.query import (
     ID,
     Avg,
@@ -57,6 +58,7 @@ from domainkit.ddd.query import (
     Sum,
     Within,
 )
+from domainkit.ddd.repository import default_ordering
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet
 from domainkit.money import Money
@@ -1184,3 +1186,60 @@ async def test_what_update_rows_cannot_compute_is_refused(
         monkeypatch.setattr(db_repository, "guarded_attributes", lambda _: {"name"})
         with pytest.raises(InvalidQuery, match="in two calls"):
             await uow.gadgets.update_rows(None, name="x", stock=F("stock") + 1)
+
+
+class Ranked(Gadget):
+    """Gadgets listed by price, highest first, unless a query says otherwise."""
+
+    class Meta:
+        """The default order."""
+
+        ordering = ("-price", "name")
+
+
+def test_meta_ordering_is_the_default_order() -> None:
+    """Checked once, as orderings; a model without one has none."""
+    assert default_ordering(Ranked) == (Ordering("price", True), Ordering("name"))
+    assert default_ordering(Gadget) == ()
+
+
+async def test_queries_without_an_ordering_follow_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``filter``, ``first``, ``paginate``, and ``stream``; a query's own wins."""
+    items = dataset()
+    fake = InMemoryGadgets(items)
+    meta = default_ordering(Ranked)
+    monkeypatch.setattr(ddd_repository, "default_ordering", lambda model: meta)
+    ranked = Selection(ordering=["-price", "name"])
+    by_price = [each.name for each in await fake.filter(ranked)]
+    by_name = sorted(each.name for each in items)
+
+    assert [each.name for each in await fake.filter()] == by_price
+    assert (await fake.first()).name == by_price[0]  # type: ignore[union-attr]
+    page = await fake.paginate(limit=2)
+    assert [each.name for each in page.items] == by_price[:2]
+    assert [each.name async for each in fake.stream(batch=2)] == by_price
+    named = await fake.filter(Selection(ordering=["name"]))
+    assert [each.name for each in named] == by_name
+
+
+def test_a_meta_ordering_that_cannot_work_is_refused() -> None:
+    """A bare string, or a field that does not sort."""
+
+    class Bare(AggregateRoot[int]):
+        name: str
+
+        class Meta:
+            ordering = "name"
+
+    class Unsortable(AggregateRoot[int]):
+        tags: list[str]
+
+        class Meta:
+            ordering = ("tags",)
+
+    with pytest.raises(TypeError, match="tuple of field names"):
+        default_ordering(Bare)
+    with pytest.raises(InvalidQuery):
+        default_ordering(Unsortable)
