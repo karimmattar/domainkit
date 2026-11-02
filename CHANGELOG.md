@@ -32,6 +32,9 @@ and a status.
   `messages retry ID|all`, `messages cancel ID`, and `messages release`,
   each with `--database` after it. Only `retry`, `cancel`, and `release`
   take `--operator`.
+- **Breaking:** `evidence --subject S` is `evidence list S`, and
+  `evidence --verify KEY` is `evidence verify KEY`. `webhooks`' actions
+  take only their own options, and only `replay` takes `--operator`.
 
 ## [1.5.0] - 2026-11-02
 

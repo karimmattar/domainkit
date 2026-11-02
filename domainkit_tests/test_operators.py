@@ -217,7 +217,7 @@ OPERATED: Final = {
         "messages release",
     ],
     "domainkit.contrib.privacy": ["privacy"],
-    "domainkit.contrib.webhooks": ["webhooks"],
+    "domainkit.contrib.webhooks": ["webhooks replay"],
     "domainkit": ["flush", "loaddata", "partitions"],
 }
 """The commands, and actions, that change or erase stored data or credentials."""

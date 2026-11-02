@@ -59,8 +59,8 @@ dry_run=True)`: an action is named after its method, `_` written `-`, unless
 | `seed` | `[LABEL ...]` | Run installed domains' `on_seed` hooks, in `INSTALLED_DOMAINS` order. |
 | `openapi` | `--output`, `--indent`, `--diff OLD` | Print or write the OpenAPI schema; `--diff` lists breaking changes since `OLD` and exits 1 if any (see [The API surface](responses.md#the-api-surface)). |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
-| `messages` | `--pending\|--held\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--release`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them (`--held`: those waiting for an earlier message of their ordering key), requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked; one with an ordering key goes back in its place), cancel a message no worker runs, or release ordering keys left with held messages and none pending; retries, cancels and releases are audited (messaging; [operators](#operators)). |
-| `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
+| `messages` | `status`, `list pending\|held\|locked\|dead [--queue] [--limit]`, `retry ID\|all`, `cancel ID`, `release`; `--database` after any | Count an outbox's messages and show each queue's lag (`status`), list them (`held`: those waiting for an earlier message of their ordering key), requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked; one with an ordering key goes back in its place), cancel a message no worker runs, or release ordering keys left with held messages and none pending; retries, cancels and releases take `--operator` and are audited (messaging; [operators](#operators)). |
+| `webhooks` | `subscriptions`, `deliveries [--status] [--subscription]`, `replay [ID ...] [--failed] [--subscription]`; `--limit` after any | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `approvals` | `list [--status STATUS] [--limit N]`, `show ID`, `expire`, `--operator` | List approval requests (pending by default), show one with its command and decisions, or expire those whose time is up; expiries are audited (approvals; see [approvals.md](../contrib/approvals.md#from-the-command-line), [operators](#operators)). |
 | `accounting` | `trialbalance\|ledger PERIOD [--format csv\|json] [--output FILE]`, `verify`, `expireholds`, `import ACCOUNT FILE`, `reconcile ACCOUNT`, `unmatched ACCOUNT`, `--operator` | Write a period's trial balance or general ledger, check that every entry balances and every balance sums its postings (fails otherwise), release expired holds, import a bank statement (CSV) into an account, reconcile it, or list what is unmatched; a period by name or id, an account by code or id; imports, reconciliations, and expiries are audited (accounting; see [accounting.md](../contrib/accounting.md#from-the-command-line), [operators](#operators)). |
 | `limits` | `list [--kind K]`, `usage KIND SUBJECT [--currency C]`, `set CODE --kind K --currency C [--subject S] [--direction in\|out] [--per-transaction A] [--window W] [--max-amount A] [--max-count N] [--time-zone Z] [--note T] [--enable\|--disable]`, `purge`, `--operator` | List the limits, stored and from `LIMITS.DEFAULTS`, show a subject's usage of each window, make a limit or change the bounds given (`none` clears one), or delete usage older than `LIMITS.KEEP_USAGE`; changes are audited as the operator's, and so is `purge` (limits; see [limits.md](../contrib/limits.md#from-the-command-line), [operators](#operators)). |
@@ -72,7 +72,7 @@ dry_run=True)`: an action is named after its method, `_` written `-`, unless
 | `audit prune` | `--keep-days`, `--database`, `--operator` | Delete audit rows sealed more than `--keep-days` (at least `AUDIT.MIN_RETENTION`) ago below a signed checkpoint recorded on the ledger, which `audit verify` then starts the chain from; refused if the chain up to it does not verify. Each run is audited (audit; [operators](#operators)). |
 | `audit forget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
 | `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](../privacy.md), [operators](#operators)). |
-| `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
+| `evidence` | `list SUBJECT [--limit]`, `verify KEY` | List a subject's evidence, or verify one record (evidence). |
 | `keys` | `generate [--id ID]`, `rewrap`, `status [--check]`, `reencrypt [--batch-size N]`, `--operator` | Print a new data key wrapped by `KEYS.PROVIDER`, or `KEYS.DATA_KEYS` wrapped under the KEK's newest version; count what each data key seals (`--check` fails while a retired one still does, `keys.W001`); or seal everything under a retired key again under `CURRENT_KEY`, in batches, audited (keys; see [keys.md](../contrib/keys.md#rotating), [operators](#operators)). |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput`, `--temporary`/`--no-temporary` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>`, and with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` the password it reads is to change at the first login, unless `--no-temporary`. A password the validators refuse is kept on request only without `AUTH.PRESET` and outside staging and production (auth; see [auth.md](../auth.md)). |
 | `changepassword` | `[username] [--temporary/--no-temporary]` | Set a user's password, asked twice and validated; the user's tokens end (auth). With `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`, the password of a user named is to change at the first login, unless `--no-temporary`; `--temporary` asks it for any. |
@@ -87,17 +87,18 @@ dry_run=True)`: an action is named after its method, `_` written `-`, unless
 
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
-`domainkit.contrib.audit` installed): `messages retry` and `--cancel`,
+`domainkit.contrib.audit` installed): `messages retry`, `cancel`, and `release`,
 `audit forget`, `audit prune`, `loaddata`, `flush`, `partitions --prune`, `privacy`,
 and `keys reencrypt`; `dumpdata --include-guarded`, which copies credentials out (0.12),
 and `dumpdata --decrypt`, which copies encrypted values out in clear;
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `resealmfa`, `createtoken`, `changepassword`, `createsuperuser`,
-`addcertificate`, `cleartokens`, `flags`, `webhooks`, `accounting`
+`addcertificate`, `cleartokens`, `flags`, `webhooks replay`, `accounting`
 (its `import`, `reconcile`, and `expireholds`), `approvals` (its
 `expire`), and `limits` (its `set` and `purge`). Their listings
-(`flags list`, `webhooks deliveries`, `accounting verify`, `approvals list`, ...) take the
-operator too but record nothing; `evidence`, `audit log`, and `audit verify` only read and take none.
+(`flags list`, `accounting verify`, `approvals list`, ...) take the
+operator too but record nothing; `evidence`, `audit log`, `audit verify`, `messages
+status` and `list`, and `webhooks subscriptions` and `deliveries` only read and take none.
 The operator is, in this order:
 
 1. `--operator NAME` (before the action for `privacy`:

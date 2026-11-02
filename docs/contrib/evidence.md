@@ -66,8 +66,8 @@ recorded = await evidence_store().verify(receipt)  # raises EvidenceTampered
 forget, so an erasure request could not be met. Store references or
 digests, or encrypt personal fields with keys you can destroy.
 
-`python manage.py evidence --subject customer:42` lists a subject's records;
-`evidence --verify <key>` proves one.
+`python manage.py evidence list customer:42` lists a subject's records;
+`evidence verify <key>` proves one.
 
 **Deployments need `SUBJECT_KEY`**: staging and production refuse to start
 without it. Generate a value once, keep it in your secret store, and read

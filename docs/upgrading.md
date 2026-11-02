@@ -66,6 +66,12 @@ the request path of an operator's run names the action (`audit forget`).
 
 Only `retry`, `cancel`, and `release` take `--operator`.
 
+### `evidence` takes an action
+
+`evidence --subject S` is `evidence list S`, and `evidence --verify KEY` is
+`evidence verify KEY`. `webhooks` keeps its actions; each takes only its
+own options now, and only `replay` takes `--operator`.
+
 ## 0.12 to 1.0
 
 1.0 is the first release since 0.12.1. Everything 0.13, 0.14, and 0.15
