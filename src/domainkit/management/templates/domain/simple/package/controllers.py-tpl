@@ -1,43 +1,33 @@
-"""What the {{ domain }} domain does: commands, and the use cases that run them.
+"""What the {{ domain }} domain does: one async function per use case.
 
-A command is what a client asks for (data only). A use case opens the unit
-of work, loads, calls the aggregate's methods, and commits. No HTTP and no
-SQL here, so the API, a script, and a test all run the same code.
+``@use_case`` makes each a command (``controllers.create_{{ aggregate }}.command``
+is ``Create{{ Aggregate }}(name=...)``) from its parameters after the unit of
+work, and runs it inside that unit of work: opened, then committed, or rolled
+back if it raises. So a use case only loads, calls the aggregate's methods,
+and returns. No HTTP and no SQL here: the API, a script, and a test all run
+the same code.
 """
 
 from uuid import UUID
 
-from domainkit.ddd import Command
+from domainkit.ddd import use_case
 
-from {{ package }}.domain import {{ Aggregate }}, {{ Aggregate }}Id, {{ Domain }}UnitOfWork
+from {{ package }}.domain import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Name, {{ Domain }}UnitOfWork
 
 
-class Create{{ Aggregate }}(Command):
+@use_case
+async def create_{{ aggregate }}(uow: {{ Domain }}UnitOfWork, name: {{ Aggregate }}Name) -> {{ Aggregate }}:
     """Create a {{ aggregate }} called ``name``."""
-
-    name: str
-
-
-class Rename{{ Aggregate }}(Command):
-    """Give a {{ aggregate }} another name."""
-
-    {{ aggregate }}_id: UUID
-    name: str
-
-
-async def create_{{ aggregate }}(command: Create{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
-    """Create and store a {{ aggregate }}."""
-    {{ aggregate }} = {{ Aggregate }}.create(command.name)
-    async with uow:
-        await uow.{{ aggregates }}.add({{ aggregate }})
-        await uow.commit()
+    {{ aggregate }} = {{ Aggregate }}.create(name)
+    await uow.{{ aggregates }}.add({{ aggregate }})
     return {{ aggregate }}
 
 
-async def rename_{{ aggregate }}(command: Rename{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
-    """Rename a {{ aggregate }}."""
-    async with uow:
-        {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id(command.{{ aggregate }}_id))
-        {{ aggregate }}.rename(command.name)
-        await uow.commit()
+@use_case
+async def rename_{{ aggregate }}(
+    uow: {{ Domain }}UnitOfWork, {{ aggregate }}_id: UUID, name: {{ Aggregate }}Name
+) -> {{ Aggregate }}:
+    """Give a {{ aggregate }} another name."""
+    {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id({{ aggregate }}_id))
+    {{ aggregate }}.rename(name)
     return {{ aggregate }}

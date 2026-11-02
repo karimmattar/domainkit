@@ -43,11 +43,8 @@ async def test_create_and_rename_commit_once_each() -> None:
     """The name is trimmed, and each use case commits its change."""
     uow = Fake{{ Domain }}UnitOfWork()
 
-    {{ aggregate }} = await controllers.create_{{ aggregate }}(
-        controllers.Create{{ Aggregate }}(name=" First "), uow
-    )
-    command = controllers.Rename{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id, name="Second")
-    await controllers.rename_{{ aggregate }}(command, uow)
+    {{ aggregate }} = await controllers.create_{{ aggregate }}(uow, name=" First ")
+    await controllers.rename_{{ aggregate }}(uow, {{ aggregate }}_id={{ aggregate }}.id, name="Second")
 
     assert uow.{{ aggregates }}.items == {{{ aggregate }}.id: {{ aggregate }}}
     assert ({{ aggregate }}.name, uow.commits) == ("Second", 2)
@@ -67,6 +64,6 @@ async def test_a_blank_name_is_refused_before_anything_is_stored() -> None:
     uow = Fake{{ Domain }}UnitOfWork()
 
     with pytest.raises(Invalid{{ Aggregate }}Name):
-        await controllers.create_{{ aggregate }}(controllers.Create{{ Aggregate }}(name="   "), uow)
+        await controllers.create_{{ aggregate }}(uow, name="   ")
 
     assert (uow.{{ aggregates }}.items, uow.commits) == ({}, 0)

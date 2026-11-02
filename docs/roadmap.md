@@ -11,6 +11,7 @@ around them.
 | --- | --- |
 | A domain is many packages and files | `startdomain` writes four files, one per layer: `domain.py`, `controllers.py`, `models.py`, `routes.py`. `--layered` keeps packages for large domains. |
 | A custom user model takes six manual steps, and the docs put it where `check` refuses it | `startdomain accounts --user` writes it, installs it, and fills in `AUTH`; the test settings keep it. |
+| A use case is a command class, a service, a schema, and a route line | `@use_case` on one async function; `ResourceRouter.use_case` makes its route. |
 | Only `MaxLength` limits text | `MinLength`, `Pattern`, and `Range`, checked in request bodies and shown in OpenAPI. |
 
 ## First: revamp the core
@@ -57,12 +58,12 @@ Measured on the guide's shop, one aggregate with four commands:
 
 ### The target design
 
-- **A use case is one function.** `@controller` on `async def restock(uow,
-  product_id: UUID, quantity: Annotated[int, Range(min=1)]) -> Product` is
-  enough: the command, its request schema, its route, its OpenAPI, and its
-  permission (`change_product`) are derived from the signature, and the
-  unit of work is opened and committed around it. `Command` classes stay
-  for messages that travel (tasks, approvals).
+- **A use case is one function** (done in 1.5). `@use_case` on `async def
+  restock(uow, product_id: UUID, quantity: Annotated[int, Range(min=1)]) ->
+  Product` is enough: the command, its request schema, its route, its
+  OpenAPI, and its permission (`change_product`) are derived from the
+  signature, and the unit of work is opened and committed around it.
+  `Command` classes stay for messages that travel (tasks, approvals).
 - **An aggregate's storage is declared, not written.** `class
   CatalogStore(Store): products = Repository(Product)` makes the port, the
   SQLAlchemy unit of work, the table (from the fields), the mapping, and an

@@ -77,6 +77,7 @@ from domainkit.ddd.messages import Command
 from domainkit.ddd.messages import Query as QueryMessage
 from domainkit.ddd.query import resolve
 from domainkit.ddd.uow import Retry, UnitOfWork
+from domainkit.ddd.usecases import UseCase
 from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
 from domainkit.http.middleware import body_limit
@@ -353,6 +354,41 @@ class ResourceRouter(APIRouter):
             body_limit=body_limit,
             retry=retry,
         ).declare()
+
+    def use_case(
+        self,
+        use_case: UseCase[Any],
+        *,
+        body: type[BaseModel] | None = None,
+        provide: Mapping[str, Callable[..., object]] | None = None,
+        **options: Any,  # noqa: ANN401 - command_route's other options.
+    ) -> None:
+        """Add the route of a ``@use_case``: ``command_route`` for its command.
+
+        ``body`` defaults to a schema of the command's fields, with their
+        ``Annotated`` limits, but those the path or ``provide`` gives (the
+        resource's ``lookup``, as ``product_id``, and ``parent_field``); a
+        command they give whole takes no body. Its route is named after the
+        use case, and one declared ``-> None`` answers ``204``. Other
+        options are ``command_route``'s.
+        """
+        if body is None:
+            given = {self.lookup, *(provide or {})}
+            if self.parent_field is not None:
+                given.add(self.parent_field)
+            sent = [name for name in use_case.fields if name not in given]
+            if sent:
+                body = schema_for(use_case.command, write=True, include=sent)
+        options.setdefault("name", use_case.name)
+        if use_case.returns_nothing:
+            options.setdefault("returns", None)
+        self.command_route(
+            use_case.command,
+            service=use_case.run,
+            body=body,
+            provide=provide,
+            **options,
+        )
 
     def batch_route(
         self,

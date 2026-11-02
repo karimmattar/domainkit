@@ -54,6 +54,7 @@ from domainkit.ddd.repository import (
     SoftDeletable,
 )
 from domainkit.ddd.uow import DeferredTask, ReadOnlyError, Retry, UnitOfWork
+from domainkit.ddd.usecases import UseCase, use_case
 
 __all__ = [
     "UNSET",
@@ -102,7 +103,9 @@ __all__ = [
     "UnitOfWork",
     "UnknownField",
     "Unset",
+    "UseCase",
     "ValueObject",
     "event_bus",
     "fields_about",
+    "use_case",
 ]

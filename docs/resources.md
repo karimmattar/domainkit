@@ -56,6 +56,47 @@ aggregate to it) for one of your own. The id's path parameter is
 criteria. Every route, its parameters, and the errors it may answer with
 are in OpenAPI.
 
+## Use cases
+
+The shortest way to a command route is one async function. `@use_case`
+makes its `Command` from the parameters after the unit of work, and runs it
+inside that unit of work: opened, then committed, or rolled back if it
+raises. `ResourceRouter.use_case` declares its route:
+
+```python
+from domainkit.ddd import Range, use_case
+
+
+@use_case
+async def restock(
+    uow: CatalogUnitOfWork,
+    product_id: UUID,
+    quantity: Annotated[int, Range(min=1, max=1000)],
+) -> Product:
+    """Add items to a product's stock."""
+    product = await uow.products.get(ProductId(product_id))
+    product.restock(quantity)
+    return product
+
+
+products.use_case(restock, path="/restock")  # POST /products/{product_id}/restock
+```
+
+- The body is made from the parameters the path and `provide` do not
+  give, with their limits: `{"quantity": 0}` is `422` before the function
+  runs, and a body that sends `product_id` is refused, since the path
+  names it.
+- The route is named after the function (`restock`), asks the
+  permission of its action (`change_product` on one product, `add_product`
+  on the collection), and answers with the aggregate the function returns;
+  one declared `-> None` answers `204`.
+- `body=`, `returns=`, `method=`, `rule=`, `provide=`, and the other
+  options of `command_route` apply.
+- In tests and scripts, call it: `await restock(uow, product_id=...,
+  quantity=3)`. `restock.command` is its `Command` (`Restock`), and
+  `restock.run(command, uow)` the `service(command, uow)` that tasks and
+  `command_route` take.
+
 ## Commands
 
 Task-based commands are the norm: each request is one use case, and the

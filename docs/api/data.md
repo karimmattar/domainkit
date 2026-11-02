@@ -185,9 +185,11 @@ Domain-driven design building blocks ("seedwork").
 - `UnitOfWork`: Transaction boundary; subclasses expose repositories as attributes.
 - `UnknownField`: A query names a field the class does not have.
 - `Unset`: The type of `UNSET`: a field the request left out, as opposed to None.
+- `UseCase`: A use case: its command, and how to run it in a unit of work.
 - `ValueObject`: Immutable value defined only by its attributes; equal values are equal.
 - `event_bus`: Process-wide bus used by units of work unless they are given another.
 - `fields_about`: What `values` hold about `subject`, and about nobody else.
+- `use_case`: Make an async function a use case: its command is made from its parameters.
 
 ## `domainkit.ddd.preconditions`
 

@@ -5,7 +5,7 @@ permission: ``{{ domain }}.view_{{ model }}`` to read, ``add_`` to create,
 ``change_`` for other commands; superusers have them all.
 """
 
-from domainkit.resources import ModelActions, ResourceRouter, schema_for
+from domainkit.resources import ModelActions, ResourceRouter
 from fastapi import APIRouter
 
 from {{ package }} import controllers
@@ -20,9 +20,6 @@ async def get_unit_of_work() -> SqlAlchemy{{ Domain }}UnitOfWork:
     return SqlAlchemy{{ Domain }}UnitOfWork()
 
 
-# What clients send: made from the aggregate's fields, with their limits.
-{{ Aggregate }}In = schema_for({{ Aggregate }}, write=True, include=["name"])
-
 {{ aggregates }} = ResourceRouter(
     "/{{ aggregates }}",  # GET /{{ aggregates }}, GET /{{ aggregates }}/{{{ aggregate }}_id}
     model={{ Aggregate }},
@@ -30,13 +27,8 @@ async def get_unit_of_work() -> SqlAlchemy{{ Domain }}UnitOfWork:
     repository=lambda uow: uow.{{ aggregates }},
     rule=ModelActions({{ Aggregate }}),
 )
-{{ aggregates }}.command_route(
-    controllers.Create{{ Aggregate }}, service=controllers.create_{{ aggregate }}, body={{ Aggregate }}In
-)
-{{ aggregates }}.command_route(
-    controllers.Rename{{ Aggregate }},
-    service=controllers.rename_{{ aggregate }},
-    body={{ Aggregate }}In,
-    path="/rename",
-)
+# Each use case is a route; its body is made from its parameters, with their
+# limits, and the {{ aggregate }}'s id comes from the path.
+{{ aggregates }}.use_case(controllers.create_{{ aggregate }})  # POST /{{ aggregates }}
+{{ aggregates }}.use_case(controllers.rename_{{ aggregate }}, path="/rename")  # POST /{{ aggregates }}/{id}/rename
 router.include_router({{ aggregates }})

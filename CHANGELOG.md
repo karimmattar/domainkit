@@ -29,6 +29,18 @@ release starts).
 - `startdomain <name> --user` writes the project's own user model
   (`models.py`: a `User` subclassing `AbstractUser`, and its table),
   installs the domain, and names both in `AUTH`.
+- `@use_case` (`domainkit.ddd`): a use case is one async function,
+  `async def restock(uow, product_id: UUID, quantity: Annotated[int,
+  Range(min=1)]) -> Product`. Its `Command` is made from the parameters
+  after the unit of work (`restock.command`, with their limits); calling it
+  (`await restock(uow, product_id=..., quantity=...)`) opens the unit of
+  work, runs the function, and commits, or rolls back if it raises; and
+  `restock.run(command, uow)` is the `service(command, uow)` that routes,
+  tasks, and tests call. `ResourceRouter.use_case(restock, path=...)`
+  declares its route: the body is made from the parameters the path and
+  `provide` do not give, the route is named after the function, and one
+  declared `-> None` answers `204`. The four-file domain's
+  `controllers.py` is written with it.
 - Field markers beside `MaxLength`: `MinLength(n)`, `Pattern(regex)`, and
   `Range(min=..., max=...)` (`domainkit.ddd`). Request schemas check them
   before a use case runs, and OpenAPI shows them; a single-field value

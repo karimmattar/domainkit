@@ -21,6 +21,9 @@ from domainkit.ddd import (
 
 {{ Aggregate }}Id = NewType("{{ Aggregate }}Id", UUID)
 NAME_LENGTH: Final = 200
+# A field type, written once: the aggregate, the use cases, and the request
+# schemas made from them all check it.
+{{ Aggregate }}Name = Annotated[str, MaxLength(NAME_LENGTH)]
 
 
 # Errors. Each becomes an HTTP answer by itself: NotFound is 404, and a
@@ -51,7 +54,7 @@ class {{ Aggregate }}Renamed(DomainEvent):
 class {{ Aggregate }}(AggregateRoot[{{ Aggregate }}Id]):
     """One {{ aggregate }}; change it only through its methods."""
 
-    name: Annotated[str, MaxLength(NAME_LENGTH)]
+    name: {{ Aggregate }}Name
 
     @classmethod
     def create(cls, name: str) -> Self:
