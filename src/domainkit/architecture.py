@@ -4,6 +4,11 @@ Each domain package has four layers; dependencies point inward only::
 
     api  ->  infrastructure  ->  application  ->  domain
 
+A layer is a package (``domain/``, ``application/``, ...) or, in the simple
+layout ``startdomain`` writes by default, one module: ``domain.py`` (the
+domain layer), ``controllers.py`` (application), ``models.py``
+(infrastructure), and ``routes.py`` (api). The same rules hold either way.
+
 - ``domain``: the standard library, ``domainkit.ddd``, ``domainkit.clock``,
   ``domainkit.money``, and its own domain layer. No frameworks, no I/O, no
   settings.
@@ -35,6 +40,7 @@ if TYPE_CHECKING:
 __all__ = [
     "FORBIDDEN_LAYERS",
     "FORBIDDEN_LIBRARIES",
+    "LAYER_MODULES",
     "PUBLIC_SURFACE",
     "LayerRules",
     "Violation",
@@ -44,6 +50,16 @@ __all__ = [
 
 LAYERS: Final = ("domain", "application", "infrastructure", "api")
 """Layer packages of a domain, innermost first."""
+
+LAYER_MODULES: Final = MappingProxyType(
+    {
+        "domain": "domain",
+        "controllers": "application",
+        "models": "infrastructure",
+        "routes": "api",
+    }
+)
+"""The simple layout's modules, and the layer each one is."""
 
 DOMAIN_ALLOWED_PREFIXES: Final = ("domainkit.ddd", "domainkit.clock", "domainkit.money")
 """Non-stdlib modules a domain layer may import (besides its own layer)."""
@@ -68,7 +84,7 @@ FORBIDDEN_LAYERS: Final = {
 }
 """Layers of the same domain that each layer must not import."""
 
-PUBLIC_SURFACE: Final = ("application", "domain.events")
+PUBLIC_SURFACE: Final = ("application", "domain.events", "controllers")
 """Parts of a domain that other domains may import."""
 
 FRAMEWORK_PACKAGES: Final = ("domainkit",)
@@ -261,7 +277,11 @@ def _layer_rule(
         return None
     if layer is None:
         return None
-    forbidden = [f"{package}.{name}" for name in rules.forbidden_layers.get(layer, ())]
+    forbidden = [
+        f"{package}.{name}"
+        for outer in rules.forbidden_layers.get(layer, ())
+        for name in _names_of(outer)
+    ]
     if _within(imported, forbidden):
         return f"the {layer} layer must not depend on outer layers"
     if _within(imported, rules.forbidden_libraries.get(layer, ())):
@@ -308,8 +328,17 @@ def _resolve(module: str, is_package: bool, level: int, target: str | None) -> s
 
 def _layer(package: str, module: str, rules: LayerRules) -> str | None:
     """Return the layer ``module`` belongs to, or None for top-level modules."""
+    if module == package:
+        return None
     first = module.removeprefix(f"{package}.").partition(".")[0]
-    return first if module != package and first in rules.layers else None
+    if first in rules.layers:
+        return first
+    return LAYER_MODULES.get(first)
+
+
+def _names_of(layer: str) -> tuple[str, ...]:
+    """The package name of ``layer``, and its simple layout module's."""
+    return (layer, *(name for name, of in LAYER_MODULES.items() if of == layer))
 
 
 def _within(name: str, prefixes: Iterable[str]) -> bool:

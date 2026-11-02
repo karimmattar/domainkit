@@ -1,0 +1,72 @@
+"""Use-case tests with an in-memory unit of work: no database, no HTTP."""
+
+import pytest
+from domainkit.ddd import EventBus, InMemoryRepository
+
+from {{ package }} import controllers
+from {{ package }}.domain import (
+    {{ Aggregate }},
+    {{ Aggregate }}Id,
+    {{ Aggregate }}Renamed,
+    {{ Aggregate }}Repository,
+    {{ Domain }}UnitOfWork,
+    Invalid{{ Aggregate }}Name,
+)
+
+pytestmark = pytest.mark.anyio
+
+
+class InMemory{{ Aggregate }}Repository(
+    InMemoryRepository[{{ Aggregate }}, {{ Aggregate }}Id], {{ Aggregate }}Repository
+):
+    """Dictionary-backed ``{{ Aggregate }}Repository``; it answers queries as SQL does."""
+
+
+class Fake{{ Domain }}UnitOfWork({{ Domain }}UnitOfWork):
+    """Unit of work that counts commits instead of writing anywhere."""
+
+    def __init__(self) -> None:
+        """Start empty, on a private event bus."""
+        super().__init__(events=EventBus())
+        self.{{ aggregates }} = InMemory{{ Aggregate }}Repository()
+        self.commits = 0
+
+    async def _commit(self) -> None:
+        """Count the commit."""
+        self.commits += 1
+
+    async def _rollback(self) -> None:
+        """Nothing to undo: ``rollback()`` puts the repositories back."""
+
+
+async def test_create_and_rename_commit_once_each() -> None:
+    """The name is trimmed, and each use case commits its change."""
+    uow = Fake{{ Domain }}UnitOfWork()
+
+    {{ aggregate }} = await controllers.create_{{ aggregate }}(
+        controllers.Create{{ Aggregate }}(name=" First "), uow
+    )
+    command = controllers.Rename{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id, name="Second")
+    await controllers.rename_{{ aggregate }}(command, uow)
+
+    assert uow.{{ aggregates }}.items == {{{ aggregate }}.id: {{ aggregate }}}
+    assert ({{ aggregate }}.name, uow.commits) == ("Second", 2)
+
+
+def test_renaming_records_an_event() -> None:
+    """The aggregate alone, in plain Python: a rename is recorded as an event."""
+    {{ aggregate }} = {{ Aggregate }}.create("First")
+
+    {{ aggregate }}.rename("Second")
+
+    assert [type(event) for event in {{ aggregate }}.pull_events()] == [{{ Aggregate }}Renamed]
+
+
+async def test_a_blank_name_is_refused_before_anything_is_stored() -> None:
+    """The aggregate's rule holds in every use case."""
+    uow = Fake{{ Domain }}UnitOfWork()
+
+    with pytest.raises(Invalid{{ Aggregate }}Name):
+        await controllers.create_{{ aggregate }}(controllers.Create{{ Aggregate }}(name="   "), uow)
+
+    assert (uow.{{ aggregates }}.items, uow.commits) == ({}, 0)

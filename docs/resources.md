@@ -484,12 +484,26 @@ API.
 
 ## Generators
 
-`startdomain` writes a domain on this kit: an aggregate with a value
-object, a collection of child entities, and an id-only reference; its
-filters, `PATCH`, commands, and `DELETE`; and tests at every layer. In a
-project laid out as `init` makes it, it also installs the domain and
-mounts its router. `startdomain catalog --aggregate Product --minimal`
-writes a smaller one, in the same four layers: an aggregate with a name
+`startdomain catalog --aggregate Product` writes a domain in four files,
+one per layer, which `check` holds to its layer as it does packages:
+
+| File | Layer | Holds |
+| --- | --- | --- |
+| `domain.py` | domain | The aggregate, its rules, errors, and events; the repository and unit-of-work ports. Plain Python. |
+| `controllers.py` | application | The commands, and the use cases that run them. Other domains use this domain through it. |
+| `models.py` | infrastructure | The table (`table_for`), the repository, the unit of work, and `start_mappers()`, which the domain's default `DomainConfig` calls: no `apps.py`. |
+| `routes.py` | api | The resource and who may call it. |
+
+with an aggregate that has a name, commands to create and rename it, and
+tests of the use cases and the API. In a project laid out as `init` makes
+it, it also installs the domain and mounts its router.
+
+`startdomain --layered` writes a package per layer instead, on the whole
+kit: an aggregate with a value object, a collection of child entities, and
+an id-only reference; its filters, `PATCH`, commands, and `DELETE`; and
+tests at every layer. The generators below grow layered domains only.
+`startdomain catalog --aggregate Product --minimal`
+writes a smaller layered one, in the same four layers: an aggregate with a name
 that must not be blank, commands to create and rename it, its table, its
 resource, an in-memory unit of work, and two tests; 13 files of the
 package where the full one has 15, and 15 names from domainkit where it
@@ -498,7 +512,7 @@ generator needs them. Then the generators add to either, every layer at
 once, with tests:
 
 ```bash
-python manage.py startdomain catalog --aggregate Product
+python manage.py startdomain catalog --aggregate Product --layered
 python manage.py startaggregate catalog Category \
     --field title:str:100 --field parent:ref:Category? --field price:decimal
 python manage.py addcommand catalog Product PublishProduct --field at:datetime

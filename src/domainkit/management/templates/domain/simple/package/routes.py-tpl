@@ -1,0 +1,42 @@
+"""The HTTP API of the {{ domain }} domain (docs/resources.md).
+
+Reads are generic; each change is a command. Every route needs its model
+permission: ``{{ domain }}.view_{{ model }}`` to read, ``add_`` to create,
+``change_`` for other commands; superusers have them all.
+"""
+
+from domainkit.resources import ModelActions, ResourceRouter, schema_for
+from fastapi import APIRouter
+
+from {{ package }} import controllers
+from {{ package }}.domain import {{ Aggregate }}
+from {{ package }}.models import SqlAlchemy{{ Domain }}UnitOfWork
+
+router = APIRouter(tags=["{{ domain }}"])
+
+
+async def get_unit_of_work() -> SqlAlchemy{{ Domain }}UnitOfWork:
+    """A unit of work on the database; tests may override this dependency."""
+    return SqlAlchemy{{ Domain }}UnitOfWork()
+
+
+# What clients send: made from the aggregate's fields, with their limits.
+{{ Aggregate }}In = schema_for({{ Aggregate }}, write=True, include=["name"])
+
+{{ aggregates }} = ResourceRouter(
+    "/{{ aggregates }}",  # GET /{{ aggregates }}, GET /{{ aggregates }}/{{{ aggregate }}_id}
+    model={{ Aggregate }},
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.{{ aggregates }},
+    rule=ModelActions({{ Aggregate }}),
+)
+{{ aggregates }}.command_route(
+    controllers.Create{{ Aggregate }}, service=controllers.create_{{ aggregate }}, body={{ Aggregate }}In
+)
+{{ aggregates }}.command_route(
+    controllers.Rename{{ Aggregate }},
+    service=controllers.rename_{{ aggregate }},
+    body={{ Aggregate }}In,
+    path="/rename",
+)
+router.include_router({{ aggregates }})

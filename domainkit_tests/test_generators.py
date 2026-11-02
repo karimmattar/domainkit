@@ -89,6 +89,7 @@ def shop(
         aggregate="Product",
         parent="gen",
         tests_dir=domain.tests.parent,
+        layered=True,
     )
     return domain
 
@@ -819,7 +820,7 @@ def test_a_regular_verbs_event_keeps_the_name_it_had(verb: str) -> None:
 
 
 GENERATE = [
-    ["startdomain", "catalog", "--aggregate", "Product"],
+    ["startdomain", "catalog", "--aggregate", "Product", "--layered"],
     [
         "startaggregate",
         "catalog",
@@ -1031,6 +1032,7 @@ def test_startdomain_installs_only_unless_told_not_to(
         root,
         install=install_it,
         minimal=True,
+        layered=True,
     )
 
     output = startdomain.Command(stdout=io.StringIO()).apply(plan)

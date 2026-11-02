@@ -288,8 +288,13 @@ def _after_docstring(tree: ast.Module) -> int:
     return 0
 
 
-def install(package: str, domain: str, root: Path) -> list[str]:
+def install(
+    package: str, domain: str, root: Path, *, routes: str = "api.routes"
+) -> list[str]:
     """Add ``package`` to ``INSTALLED_DOMAINS`` and mount its router, if safe.
+
+    ``routes`` is the module of the router within the package: ``routes`` in
+    the simple layout, ``api.routes`` in the layered one.
 
     Safe means the project is laid out as ``init`` makes it, the settings
     list ``INSTALLED_DOMAINS`` literally (without comments inside), and
@@ -301,7 +306,9 @@ def install(package: str, domain: str, root: Path) -> list[str]:
         settings, urls = Source.read(settings_path), Source.read(urls_path)
     except CommandError:
         return []
-    if not (_add_installed(settings, package) and _mount(urls, package, domain)):
+    if not (
+        _add_installed(settings, package) and _mount(urls, package, domain, routes)
+    ):
         return []
     settings.save()
     urls.save()
@@ -357,9 +364,9 @@ def _span(text: str, node: ast.expr) -> tuple[int, int]:
     )
 
 
-def _mount(urls: Source, package: str, domain: str) -> bool:
+def _mount(urls: Source, package: str, domain: str, routes: str) -> bool:
     """Import the domain's router and include it in ``router``; False if unsafe."""
-    module = f"{package}.api.routes"
+    module = f"{package}.{routes}"
     alias = f"{domain}_router"
     tree = urls.tree()
     if "router" not in top_level_names(tree) or urls.defines(alias):

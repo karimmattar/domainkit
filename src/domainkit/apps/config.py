@@ -5,6 +5,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, ClassVar, Final
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from domainkit.db.routing import DatabaseRouter
 
 CONFIG_MODULE = "apps"
+MODELS_MODULE: Final = "models"
+"""The simple layout's ORM module, which ``ready()`` maps by default."""
 PACKAGE_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 """A dotted package name, as ``domainkit.contrib.messaging``."""
 MAX_REQUIREMENTS: Final = 32
@@ -201,7 +204,19 @@ class DomainConfig:
         return configs[0](name, module)
 
     def ready(self) -> None:
-        """Wire the domain once settings are loaded: ORM mappers, event handlers."""
+        """Wire the domain once settings are loaded: ORM mappers, event handlers.
+
+        By default, a domain in the simple layout (``startdomain``'s) has its
+        ``models.py`` imported, so its tables are known, and its
+        ``start_mappers()`` called, if it has one. A ``DomainConfig`` of the
+        domain's own (``apps.py``) replaces this.
+        """
+        name = f"{self.name}.{MODELS_MODULE}"
+        if find_spec(name) is None:
+            return
+        start = getattr(import_module(name), "start_mappers", None)
+        if callable(start):
+            start()
 
     def holds_table(self, table: "Table") -> bool:
         """Whether ``table``, tagged with this domain, is in use now.

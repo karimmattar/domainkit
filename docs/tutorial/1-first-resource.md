@@ -34,7 +34,7 @@ installed already.
 ## Add a domain
 
 ```bash
-python manage.py startdomain accounts --aggregate Account
+python manage.py startdomain accounts --aggregate Account --layered
 python manage.py makemigrations -m "create accounts"
 python manage.py migrate
 ```
@@ -50,9 +50,11 @@ each layer to its own imports:
 | `api/` | `routes.py`: the resource, its filters, and who may call it. |
 
 This is the fuller domain the next parts build on: notes, an owner, an
-event. `startdomain <name> --minimal` writes a smaller one, for a domain of
-your own: an aggregate with a name, two commands, a table, a resource, and
-two tests ([resources.md](../resources.md#generators)).
+event, and a package per layer, which the generators of part 2 grow
+(`--layered`). Without the flag, `startdomain <name>` writes the simple
+layout: four files, one per layer (`domain.py`, `controllers.py`,
+`models.py`, `routes.py`), with the same rules
+([resources.md](../resources.md#generators)).
 
 `startdomain` added the domain to `INSTALLED_DOMAINS` and mounted its
 router at `/api/v1/accounts` in `src/config/urls.py`. The resource is
