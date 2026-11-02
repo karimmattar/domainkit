@@ -150,6 +150,10 @@ and a status.
 
 ### Changed
 
+- **Breaking:** with signup on and a user model whose `REQUIRED_FIELDS`
+  name more than the username and the email, `POST /signup` requires them
+  under `fields` (422 `invalid_user_field` without them); it used to leave
+  them at their defaults ([upgrading](docs/upgrading.md)).
 - **Breaking:** the five audit commands are one, `audit`: `auditlog` is
   `audit log` (and, with `--target` or `--aggregate`, `audit history`),
   `auditseal` is `audit seal`, `auditverify` is `audit verify` (and, with
