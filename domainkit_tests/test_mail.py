@@ -372,7 +372,7 @@ def test_deployments_refuse_development_backends(
 
     with pytest.raises(
         ImproperlyConfigured,
-        match=f"for development and tests; use one that delivers mail in {environment}",
+        match=f"deploy.E004: .* use one that delivers mail in {environment}",
     ):
         install(BACKEND=backend, settings=deployed)
 

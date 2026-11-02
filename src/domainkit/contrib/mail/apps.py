@@ -1,10 +1,10 @@
 """Install ``domainkit.contrib.mail`` (with ``domainkit.contrib.messaging``)."""
 
 from domainkit.apps import DomainConfig, Requirement, registry
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.messaging import task
-from domainkit.exceptions import ImproperlyConfigured
 
 from .delivery import SEND_TASK, get_backend, send_queued
 from .settings import MailSettings
@@ -37,7 +37,13 @@ class MailConfig(DomainConfig):
         )(send_queued)
         backend = get_backend()
         if not backend.deployable and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-            raise ImproperlyConfigured(
-                f"MAIL.BACKEND {config.BACKEND!r} is for development and tests; "
-                f"use one that delivers mail in {settings.ENVIRONMENT}."
+            raise CheckFailed(
+                "MAIL settings cannot be deployed",
+                [
+                    CheckMessage(
+                        "deploy.E004",
+                        f"MAIL.BACKEND {config.BACKEND!r} is for development and "
+                        f"tests; use one that delivers mail in {settings.ENVIRONMENT}",
+                    )
+                ],
             )

@@ -712,8 +712,10 @@ def test_deployments_need_a_subject_key(environment: str) -> None:
     registry.clear()
 
     assert str(refused.value) == (
-        f"EVIDENCE.SUBJECT_KEY is required in {environment}: a random secret of "
-        "32 characters or more, kept for as long as the evidence."
+        "EVIDENCE settings cannot be deployed:\n"
+        f"  security.E019: EVIDENCE.SUBJECT_KEY is required in {environment}\n"
+        "    Hint: A random secret of 32 characters or more, kept for as long as "
+        "the evidence: the development key is public."
     )
 
 

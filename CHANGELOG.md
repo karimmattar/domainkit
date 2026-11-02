@@ -42,6 +42,12 @@ and a status.
   take it; their listings and checks (`flags list`, `accounting verify`,
   `approvals list`) no longer do.
 
+- The refusals of a deployment by `contrib.mail`, `contrib.notifications`,
+  and `contrib.evidence` carry check ids, as the core's do: `deploy.E004`
+  (a development mail backend), `deploy.E005` and `deploy.E006` (a
+  development SMS or push backend), and `security.E019` (no evidence
+  subject key), each with its hint (DSGN-32).
+
 ### Removed
 
 - **Breaking:** the names 1.0 renamed and deprecated, so each name has one
