@@ -118,7 +118,7 @@ framework, for the reason given.
 | `send_mail`, backends (SMTP, console, memory) | `contrib.mail` | Yes | |
 | `mail_admins`, error emails | `domainkit.reporting` (Sentry) | Partial | |
 | `gettext`, `compilemessages`, time zones | `domainkit.i18n`, `compilemessages` | Yes | |
-| `makemessages` | None | No | C7 |
+| `makemessages` | The same command: messages found with `ast`, translations kept, unused ones obsolete | Yes | C7 |
 | Custom management commands, `call_command` | `BaseCommand`, the same shape | Yes | |
 | System checks, `register()` | `check`, `--deploy`, custom checks | Yes | |
 | `TestCase`, `Client`, `override_settings`, `assertNumQueries`, `LiveServerTestCase` | pytest fixtures, `override_settings`, `assert_num_queries`, `live_server` | Yes | |

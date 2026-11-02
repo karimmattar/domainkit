@@ -33,6 +33,13 @@ and a status.
 
 ### Added
 
+- `makemessages`: finds the messages each domain's code marks for
+  translation (`gettext`, `_`, `ngettext`, `pgettext`, `npgettext`, and
+  their `_lazy` forms, read with `ast`, nothing imported) and updates
+  `<domain>/locale/<locale>/LC_MESSAGES/messages.po`: new messages
+  untranslated, translations and fuzzy flags kept, unused ones kept as
+  obsolete entries. `--all` updates every locale a domain has; `--check`
+  fails in CI when a catalog is behind its code.
 - `Unique()` and `Indexed()` field markers, and `Meta.unique` and
   `Meta.indexes` on an aggregate (`domainkit.ddd`): `table_for` makes each
   a constraint or an index named after its table and fields, cut to 63

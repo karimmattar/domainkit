@@ -62,6 +62,7 @@ BUILTINS = {
     "flush",
     "init",
     "loaddata",
+    "makemessages",
     "makemigrations",
     "migrate",
     "openapi",
