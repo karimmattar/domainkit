@@ -813,6 +813,12 @@ class Domain:
         """
         within(directory, root, "domain")
         if not (directory / "domain" / "model.py").is_file():
+            if (directory / "domain.py").is_file():
+                raise CommandError(
+                    f"{directory} is a four-file domain: add the command, query, "
+                    "or event to domain.py, controllers.py, and routes.py by hand. "
+                    "The generators grow domains made with startdomain --layered."
+                )
             raise CommandError(f"{directory} is not a domain made by startdomain.")
         package = ".".join(
             directory.resolve().relative_to(_source_root(directory)).parts

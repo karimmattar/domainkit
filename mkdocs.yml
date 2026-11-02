@@ -149,5 +149,6 @@ nav:
           - api/contrib.md
       - API reference: reference/api/index.md
       - versioning.md
+      - roadmap.md
       - Decisions: adr/README.md
       - audit/0.9.0.md

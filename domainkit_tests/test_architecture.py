@@ -438,7 +438,7 @@ def test_the_simple_layout_holds_each_file_to_its_layer(
     make_package(
         "flat",
         {
-            "shop/__init__.py": "",
+            "shop/__init__.py": "import sqlalchemy\n",  # no layer: no rule
             "shop/domain.py": "import sqlalchemy\nfrom domainkit.ddd import Command\n",
             "shop/controllers.py": (
                 "from flat.shop.domain import x\nfrom flat.shop.models import y\n"

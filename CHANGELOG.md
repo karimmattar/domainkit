@@ -9,6 +9,46 @@ and a status.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-02
+
+Making domainkit simpler to learn and to start with, from building a first
+application on 1.0 ([docs/roadmap.md](docs/roadmap.md) has the plan this
+release starts).
+
+### Added
+
+- `startdomain` writes a domain in four files by default, one per layer:
+  `domain.py` (the aggregate, its rules, errors, events, and ports),
+  `controllers.py` (commands and use cases), `models.py` (the table, the
+  repository, and the unit of work), and `routes.py` (the HTTP API), with
+  tests of the use cases and the API. `check` holds each file to its layer
+  as it holds packages (`domainkit.architecture.LAYER_MODULES`), and other
+  domains use one only through its `controllers.py`. A domain without
+  `apps.py` has its `models.py` imported and its `start_mappers()` called
+  by the default `DomainConfig`.
+- `startdomain <name> --user` writes the project's own user model
+  (`models.py`: a `User` subclassing `AbstractUser`, and its table),
+  installs the domain, and names both in `AUTH`.
+- Field markers beside `MaxLength`: `MinLength(n)`, `Pattern(regex)`, and
+  `Range(min=..., max=...)` (`domainkit.ddd`). Request schemas check them
+  before a use case runs, and OpenAPI shows them; a single-field value
+  object's markers are its field's.
+- `domainkit.contrib.auth.tables.abstract_user_columns` and
+  `abstract_base_user_columns` are public: the columns a custom user table
+  starts with.
+
+### Changed
+
+- **Breaking:** `startdomain` without flags writes the four-file layout.
+  `startdomain --layered` writes the package per layer of 1.0 (the
+  tutorial's), which `addcommand`, `addquery`, and `addevent` grow;
+  `--minimal` implies `--layered`.
+- Projects made by `init` start with `AUTH = {}` in the base settings, and
+  their test settings extend it (`AUTH = {**AUTH, ...}`) instead of
+  replacing it, so a custom user model holds in the tests too.
+- The docs place a custom user model in `models.py` (or `infrastructure/`):
+  in `domain/`, as 1.0's docs showed, `check` refused it.
+
 ## [1.0.0] - 2026-11-01
 
 The first release since 0.12.1, and the first with a stable public API:
