@@ -1,6 +1,7 @@
 """``limits``: list limits, show a subject's usage, set a limit, purge old usage."""
 
-from argparse import ArgumentParser
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Final
 
 from sqlalchemy import select
@@ -20,14 +21,14 @@ from domainkit.contrib.limits.usage import (
 )
 from domainkit.db import connections
 from domainkit.ddd import DomainError
-from domainkit.management import BaseCommand, CommandError
+from domainkit.management import ActionCommand, CommandError, action, option
 from domainkit.money import Money, MoneyError
 
 NONE: Final = "none"
 """What clears a bound: ``--max-count none``."""
 
 
-class Command(BaseCommand):
+class Command(ActionCommand):
     """``list`` limits, a subject's ``usage``, ``set`` a limit, ``purge`` usage.
 
     ``set`` changes limits through ``LimitsUnitOfWork``, so each change is
@@ -35,57 +36,68 @@ class Command(BaseCommand):
     """
 
     help = "List limits, show a subject's usage, set a limit, or purge old usage."
-    operator_actions = True
+    default_action = "list"
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Declare the actions and their options."""
-        actions = parser.add_subparsers(dest="action")
-        listing = actions.add_parser("list", help="every limit, stored or default")
-        listing.add_argument("--kind")
-        used = actions.add_parser("usage", help="what a subject used of its limits")
-        used.add_argument("kind")
-        used.add_argument("subject")
-        used.add_argument("--currency")
-        change = actions.add_parser("set", help="make a limit or change its bounds")
-        change.add_argument("code")
-        change.add_argument("--kind", required=True)
-        change.add_argument("--currency", required=True)
-        change.add_argument(
-            "--subject", default="", help="one subject; none: every one"
-        )
-        change.add_argument(
-            "--direction", choices=[each.value for each in Direction], default="out"
-        )
-        change.add_argument("--per-transaction", help=f"an amount, or {NONE}")
-        change.add_argument(
-            "--window", choices=[*(each.value for each in Window), NONE]
-        )
-        change.add_argument("--max-amount", help=f"an amount, or {NONE}")
-        change.add_argument("--max-count", help=f"a count, or {NONE}")
-        change.add_argument("--time-zone")
-        change.add_argument("--note")
-        switch = change.add_mutually_exclusive_group()
-        switch.add_argument("--enable", action="store_true")
-        switch.add_argument("--disable", action="store_true")
-        actions.add_parser("purge", help="delete usage older than LIMITS.KEEP_USAGE")
+    @action(
+        name="list",
+        help="every limit, stored or default (the default)",
+        options=[option("--kind")],
+    )
+    async def listed(self, *, kind: str | None) -> None:
+        """One line per limit."""
+        with _refusals():
+            await self._list(kind)
 
-    async def handle(self, *, action: str | None, **options: Any) -> None:  # noqa: ANN401
-        """Run the action (``list`` by default)."""
-        try:
-            if action == "usage":
-                await self._usage(
-                    options["kind"], options["subject"], options["currency"]
-                )
-            elif action == "set":
-                await self._set(**options)
-            elif action == "purge":
-                async with self.recorded("limits.purge") as recorded:
-                    recorded["usage"] = deleted = await purge_usage()
-                self.write(f"Deleted the usage of {deleted} movement(s).")
-            else:
-                await self._list(options.get("kind"))
-        except (DomainError, MoneyError) as exc:
-            raise CommandError(str(exc)) from None
+    @action(
+        help="what a subject used of its limits",
+        options=[option("kind"), option("subject"), option("--currency")],
+    )
+    async def usage(self, *, kind: str, subject: str, currency: str | None) -> None:
+        """One line per limit the subject has used."""
+        with _refusals():
+            await self._usage(kind, subject, currency)
+
+    @action(
+        name="set",
+        help="make a limit or change its bounds",
+        options=[
+            option("code"),
+            option("--kind", required=True),
+            option("--currency", required=True),
+            option("--subject", default="", help="one subject; none: every one"),
+            option(
+                "--direction",
+                choices=[each.value for each in Direction],
+                default="out",
+            ),
+            option("--per-transaction", help=f"an amount, or {NONE}"),
+            option("--window", choices=[*(each.value for each in Window), NONE]),
+            option("--max-amount", help=f"an amount, or {NONE}"),
+            option("--max-count", help=f"a count, or {NONE}"),
+            option("--time-zone"),
+            option("--note"),
+            option("--enable", action="store_true", help="turn the limit on"),
+            option("--disable", action="store_true", help="turn the limit off"),
+        ],
+        operator=True,
+    )
+    async def configure(self, **options: Any) -> None:  # noqa: ANN401 - the options.
+        """Make or change the limit.
+
+        Raises:
+            CommandError: Both ``--enable`` and ``--disable``.
+        """
+        if options["enable"] and options["disable"]:
+            raise CommandError("--enable and --disable cannot go together.")
+        with _refusals():
+            await self._set(**options)
+
+    @action(help="delete usage older than LIMITS.KEEP_USAGE", operator=True)
+    async def purge(self) -> None:
+        """Delete old usage, and say how much."""
+        async with self.recorded("limits.purge") as recorded:
+            recorded["usage"] = deleted = await purge_usage()
+        self.write(f"Deleted the usage of {deleted} movement(s).")
 
     async def _list(self, kind: str | None) -> None:
         """One line per limit: the stored ones, then the defaults they leave."""
@@ -238,3 +250,16 @@ def _described_usage(usage: Usage) -> str:
         parts.append(f"of {usage.max_count}")
     since = usage.since.isoformat() if usage.since is not None else ""
     return f"{usage.code}: {' '.join(parts)} since {since} ({usage.direction})"
+
+
+@contextmanager
+def _refusals() -> Iterator[None]:
+    """Report a limit the domain refuses as the command's error.
+
+    Raises:
+        CommandError: The domain, or an amount, refused.
+    """
+    try:
+        yield
+    except (DomainError, MoneyError) as exc:
+        raise CommandError(str(exc)) from None
