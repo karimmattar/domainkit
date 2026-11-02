@@ -34,7 +34,7 @@ framework, for the reason given.
 | `ForeignKey` to a child | Child entities, stored with their aggregate | Yes | |
 | `ForeignKey` to another model | `Reference[OtherId]` by id | Yes | |
 | `OneToOneField` | `Annotated[Reference[XId], Unique()]` | Yes | C7 |
-| `ManyToManyField` | None | No: a list of references stored in a link table | C7 |
+| `ManyToManyField` | A list of child entities holding a `Reference`: their table is the link table ([databases.md](databases.md#many-to-many)) | Yes | C7 |
 | `GenericForeignKey` | `contrib.contenttypes` ids | Partial | |
 | Signals (`post_save`, `post_delete`) | Domain events, published after the commit | Yes | |
 | `pre_save` | `on_stage` hooks | Partial | |
@@ -58,7 +58,7 @@ framework, for the reason given.
 | `select_related`, `prefetch_related` | An aggregate loads whole, children included | n/a | |
 | `select_for_update(nowait, skip_locked)` | `get_for_update`, `RowLock` | Yes | |
 | `iterator()`, `aiterator()` | `stream(query, batch=...)`, keyset batches ([queries.md](queries.md)) | Yes | C6 |
-| `F()` expressions in updates | None | No | C7 |
+| `F()` expressions in updates | `update_rows(..., stock=F("stock") - 1)`: `+`, `-`, `*` computed in SQL | Yes | C7 |
 | `Case`, `When`, `Subquery`, `Window`, database functions | SQLAlchemy inside a repository of the project's own | Partial: by hand | |
 | `raw()`, `connection.cursor()` | The session of a SQL repository | Partial: by hand | |
 | `explain()` | `explain(query, analyze=...)` on SQL repositories | Yes | C6 |
@@ -74,7 +74,7 @@ framework, for the reason given.
 | `makemigrations`, `migrate`, `showmigrations`, `squashmigrations` | The same commands, on Alembic | Yes | |
 | `sqlmigrate` | `migrate REVISION --sql --from PREVIOUS`, rendered offline by Alembic | Yes | C7 |
 | Data migrations (`RunPython`, `RunSQL`) | Alembic operations, by hand | Partial | |
-| `inspectdb` | None | No | C7 |
+| `inspectdb` | The same command: aggregates and `table_for` calls printed from the tables, to start from | Yes | C7 |
 | `dumpdata`, `loaddata`, `flush`, `dbshell`, `shell`, `diffsettings` | The same commands | Yes | |
 
 ### Requests, the API, and security

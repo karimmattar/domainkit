@@ -221,6 +221,7 @@ Expected versions: change an aggregate only if it is still as the caller saw it.
 
 Queries over aggregates: criteria, ordering, and specifications.
 
+- `Arithmetic`: A field's value changed by a number, computed by the database.
 - `Avg`: The mean of a number field: exact for a `Decimal` field.
 - `Count`: How many aggregates there are, or how many have the field set.
 - `Criteria`: A condition on aggregates; combine them with `&`, `|`, and `~`.

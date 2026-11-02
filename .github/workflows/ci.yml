@@ -1224,6 +1224,7 @@ jobs:
               domainkit.management.commands.addquery.*
               domainkit.management.commands.cache.*
               domainkit.management.commands.compilemessages.*
+              domainkit.management.commands.inspectdb.*
               domainkit.management.commands.loaddata.*
               domainkit.management.commands.makemessages.*
               domainkit.management.commands.migrate.*

@@ -61,6 +61,7 @@ BUILTINS = {
     "dumpdata",
     "flush",
     "init",
+    "inspectdb",
     "loaddata",
     "makemessages",
     "makemigrations",

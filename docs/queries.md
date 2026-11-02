@@ -383,6 +383,12 @@ holds. `delete_rows` deletes for good, soft-deletable rows too; child rows
 go only where their foreign key says `ON DELETE CASCADE`. `None` as the
 criteria means every row; deleted rows only with `include_deleted=True`.
 
+A value may be computed from the row's own (Django's `F()` in an
+update): `update_rows(F("sku") == sku, stock=F("stock") - 1)` subtracts
+in the database, in one statement, so two updates at once never read and
+overwrite each other. `+`, `-`, and `*` take an `int` or a `Decimal`, on
+fields of whole numbers or decimals; a missing value stays missing.
+
 ## Soft delete
 
 An aggregate that inherits `SoftDeletable` is marked deleted instead of

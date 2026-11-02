@@ -33,6 +33,15 @@ and a status.
 
 ### Added
 
+- `inspectdb`: prints aggregates for an existing database's tables, to
+  start from: a field per column with its hint (`MaxLength` for sized
+  text, `Digits` for decimals, `| None` when nullable), required fields
+  first, and the `table_for` call; a table without a single `id` key says
+  what it needs. Nothing is written to the database.
+- `update_rows` computes a value from each row's own (Django's `F()` in
+  an update): `stock=F("stock") - 1` subtracts in the database, in one
+  statement. `+`, `-`, and `*` take an `int` or a `Decimal`, on number
+  fields; text, flags, money, and encrypted fields are refused.
 - `F(...).year(2026)`, `.month(2026, 3)`, and `.on(day)` (Django's
   `__year`, `__month`, and `__date`): a period on a date or datetime
   field, compiled to a range an index answers, in UTC.

@@ -10,7 +10,9 @@ loading aggregates: no invariant is checked, and no event is recorded. They
 are an escape hatch for infrastructure code (see ADR 0022).
 """
 
-from collections.abc import Hashable
+import operator
+from collections.abc import Callable, Hashable, Mapping
+from decimal import Decimal
 from typing import Any, Final
 
 from sqlalchemy import Delete, Select, Update, delete, func, literal, select, update
@@ -29,8 +31,16 @@ from domainkit.db.money import money_columns
 from domainkit.db.orm import metadata
 from domainkit.db.query import column_of, compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import AggregateRoot, Repository
-from domainkit.ddd.fields import InvalidQuery, fields_of
-from domainkit.ddd.query import ID, Criteria, CriteriaLike, Measure, Selection, as_query
+from domainkit.ddd.fields import FieldInfo, InvalidQuery, base_type, fields_of
+from domainkit.ddd.query import (
+    ID,
+    Arithmetic,
+    Criteria,
+    CriteriaLike,
+    Measure,
+    Selection,
+    as_query,
+)
 from domainkit.ddd.repository import LockNotAvailable
 from domainkit.money import Money
 
@@ -62,6 +72,49 @@ def _explain(element: Explain, compiler: SQLCompiler, **options: Any) -> str:  #
 def _plan_line(row: Row[Any]) -> str:
     """One step of a plan: PostgreSQL's line, or SQLite's detail column."""
     return str(row[-1])
+
+
+_OPERATORS: Final[dict[str, Callable[[Any, Any], Any]]] = {
+    "+": operator.add,
+    "-": operator.sub,
+    "*": operator.mul,
+}
+
+
+def _computed(
+    mapper: Any,  # noqa: ANN401 - SQLAlchemy's Mapper.
+    fields: Mapping[str, FieldInfo],
+    name: str,
+    value: Arithmetic,
+) -> Any:  # noqa: ANN401 - a SQL expression.
+    """``name``'s new value as SQL: ``value.field <operator> value.operand``.
+
+    Raises:
+        InvalidQuery: The fields are not numbers stored in columns of their
+            own (money, encrypted), or the operand is not a number.
+    """
+    for each in (name, value.field):
+        info = fields.get(each)
+        kind = base_type(info.kind) if info is not None else None
+        if (
+            info is None
+            or info.encrypted
+            or kind is None
+            or kind is bool
+            or not issubclass(kind, (int, Decimal))
+        ):
+            raise InvalidQuery(
+                f"update_rows computes only whole numbers and decimals; "
+                f"{each!r} is not one."
+            )
+    operand = value.operand
+    if isinstance(operand, bool) or not isinstance(operand, (int, Decimal)):
+        raise InvalidQuery(
+            f"F({value.field!r}) {value.operator} takes an int or a Decimal, "
+            f"not {type(operand).__name__}."
+        )
+    column = column_of(mapper, value.field)
+    return _OPERATORS[value.operator](column, operand)
 
 
 LOCK_NOT_AVAILABLE: Final = "55P03"
@@ -245,6 +298,9 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         for name, value in values.items():
             if name in {ID, "version"} or name not in fields:
                 raise InvalidQuery(f"update_rows cannot set {name!r}.")
+            if isinstance(value, Arithmetic):
+                changes[name] = _computed(mapper, fields, name, value)
+                continue
             if (money := money_columns(mapper, name)) is None:
                 column_of(mapper, name)
                 changes[name] = given[name] = fields[name].coerce(value)
@@ -261,6 +317,11 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
             raise InvalidQuery("update_rows needs at least one value to set.")
         scope = self._scope(criteria, include_deleted=include_deleted)
         if set(given) & guarded_attributes(mapper):
+            if len(given) < len(values):
+                raise InvalidQuery(
+                    "update_rows cannot compute a value (F) while it sets an "
+                    "encrypted field: set them in two calls."
+                )
             found = list(await self.session.scalars(self._where(select(model), scope)))
             for aggregate in found:
                 for name, value in given.items():
