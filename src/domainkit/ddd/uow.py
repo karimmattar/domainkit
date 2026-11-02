@@ -217,6 +217,9 @@ class UnitOfWork(ABC):
 
     readonly: bool = False
     """Refuse to commit; the SQL unit of work reads from a replica if it can."""
+    committed: int = 0
+    """How many times this unit of work has committed: what a test checks
+    after a use case (``assert uow.committed == 1``)."""
     _commits: _Commits | None = None
     """Counted while ``run`` runs. Set on the instance only then, as is
     ``_named_locks``: ``repositories()`` walks the instance's attributes."""
@@ -359,6 +362,7 @@ class UnitOfWork(ABC):
         deferred, self._deferred = self._deferred, []
         await self._stage(events, deferred)
         await self._commit()
+        self.committed += 1
         if self._commits is not None:
             self._commits.count += 1
         if self._expected:

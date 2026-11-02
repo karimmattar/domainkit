@@ -53,6 +53,7 @@ from domainkit.ddd.repository import (
     RowLocks,
     SoftDeletable,
 )
+from domainkit.ddd.stores import in_memory
 from domainkit.ddd.uow import DeferredTask, ReadOnlyError, Retry, UnitOfWork
 from domainkit.ddd.usecases import UseCase, use_case
 
@@ -107,5 +108,6 @@ __all__ = [
     "ValueObject",
     "event_bus",
     "fields_about",
+    "in_memory",
     "use_case",
 ]

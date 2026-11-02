@@ -41,6 +41,13 @@ release starts).
   `provide` do not give, the route is named after the function, and one
   declared `-> None` answers `204`. The four-file domain's
   `controllers.py` is written with it.
+- Storage is declared: a unit of work's repository annotations
+  (`products: ProductRepository`, or `Repository[Product, ProductId]`) are
+  enough. `SqlAlchemyUnitOfWork.create_repositories` makes a SQL repository
+  for each by default, and `in_memory(CatalogUnitOfWork)`
+  (`domainkit.ddd`) is the unit of work tests use, without a fake class.
+  `UnitOfWork.committed` counts commits. The four-file domain's
+  `models.py` is its table, a one-line unit of work, and `start_mappers`.
 - Field markers beside `MaxLength`: `MinLength(n)`, `Pattern(regex)`, and
   `Range(min=..., max=...)` (`domainkit.ddd`). Request schemas check them
   before a use case runs, and OpenAPI shows them; a single-field value

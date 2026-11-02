@@ -12,6 +12,7 @@ around them.
 | A domain is many packages and files | `startdomain` writes four files, one per layer: `domain.py`, `controllers.py`, `models.py`, `routes.py`. `--layered` keeps packages for large domains. |
 | A custom user model takes six manual steps, and the docs put it where `check` refuses it | `startdomain accounts --user` writes it, installs it, and fills in `AUTH`; the test settings keep it. |
 | A use case is a command class, a service, a schema, and a route line | `@use_case` on one async function; `ResourceRouter.use_case` makes its route. |
+| One aggregate's storage is eight hand-written pieces | The unit of work's annotations: SQL repositories and `in_memory(...)` for tests are made from them. |
 | Only `MaxLength` limits text | `MinLength`, `Pattern`, and `Range`, checked in request bodies and shown in OpenAPI. |
 
 ## First: revamp the core
@@ -64,11 +65,11 @@ Measured on the guide's shop, one aggregate with four commands:
   OpenAPI, and its permission (`change_product`) are derived from the
   signature, and the unit of work is opened and committed around it.
   `Command` classes stay for messages that travel (tasks, approvals).
-- **An aggregate's storage is declared, not written.** `class
-  CatalogStore(Store): products = Repository(Product)` makes the port, the
-  SQLAlchemy unit of work, the table (from the fields), the mapping, and an
-  in-memory twin for tests; a repository of its own is a subclass only when
-  it adds queries.
+- **An aggregate's storage is declared, not written** (done in 1.5). The
+  unit of work's annotations (`products: ProductRepository`) make the SQL
+  repositories and an in-memory twin for tests (`in_memory`); a repository
+  class of its own is written only when the port adds queries. Tables stay
+  one `table_for` line each.
 - **One validation path.** Field markers and a `clean()` method are
   checked by the aggregate itself when it is made or changed (the API
   derives its schema from the same markers), and the user model is an

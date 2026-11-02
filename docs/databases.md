@@ -658,6 +658,47 @@ message; the constraint settles two requests that both pass the check.
 Auth's username and group name columns name `UsernameTaken` and
 `GroupNameTaken`.
 
+## Units of work and their repositories
+
+A domain's unit of work names its repositories once, as annotations, in
+`domain.py`; the SQL unit of work, and the in-memory one for tests, are
+made from them:
+
+```python
+# domain.py: the port, plain Python
+class ProductRepository(Repository[Product, ProductId]):
+    def not_found(self, id_: ProductId) -> ProductNotFound: ...
+
+
+class CatalogUnitOfWork(UnitOfWork, ABC):
+    products: ProductRepository
+    brands: Repository[Brand, BrandId]  # no port of its own
+
+
+# models.py: in SQL
+class SqlAlchemyCatalogUnitOfWork(SqlAlchemyUnitOfWork, CatalogUnitOfWork):
+    """The catalog's repositories, in its database."""
+
+
+# tests: in memory
+uow = in_memory(CatalogUnitOfWork)
+await controllers.create_product(uow, name="Tea")
+assert uow.committed == 1
+```
+
+- `SqlAlchemyUnitOfWork.create_repositories` makes, for each annotation, a
+  `SqlAlchemyRepository` that implements the port, bound to the
+  transaction's session. Override it only to build them otherwise.
+- A port that declares a query of its own (an abstract method) needs a
+  class that writes it. Annotate that class on the SQL unit of work
+  (`products: SqlAlchemyProductRepository`), and pass the in-memory one to
+  `in_memory(CatalogUnitOfWork, products=InMemoryProducts())`. Without one,
+  both name the method that is missing.
+- `in_memory` keeps each repository in a dictionary that answers queries
+  as SQL does; a rollback puts them back as they were, and committed
+  events go to a bus of its own (`events=` to listen). `uow.committed`
+  counts commits on any unit of work.
+
 ## Transactions
 
 A SQL unit of work is one transaction. By default it runs at the
@@ -817,7 +858,8 @@ caller may move money out of that wallet
   partitions and locking for real.
 - In-memory repositories answer queries as the database does
   ([queries.md](queries.md#what-a-query-means-everywhere)), so use cases
-  can be tested without one.
+  can be tested without one: `in_memory(CatalogUnitOfWork)`
+  ([Units of work](#units-of-work-and-their-repositories)).
 - domainkit's own suite runs its database tests on SQLite, and on PostgreSQL
   when `DOMAINKIT_TEST_POSTGRES_URL` is set. Its immudb tests run when
   `DOMAINKIT_TEST_IMMUDB_URL` is set. CI sets both.

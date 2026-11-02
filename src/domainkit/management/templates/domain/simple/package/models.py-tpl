@@ -1,37 +1,23 @@
-"""How the {{ domain }} domain is stored: its table, repository, and unit of work.
+"""How the {{ domain }} domain is stored: its table, and its unit of work in SQL.
 
 ``table_for`` makes the table from the aggregate's fields, so a field is
-declared once, in domain.py; run ``makemigrations`` after changing one. The
-domain's default ``DomainConfig`` calls ``start_mappers()`` at startup.
+declared once, in domain.py; run ``makemigrations`` after changing one.
+The unit of work's repositories come from ``{{ Domain }}UnitOfWork``'s
+annotations: a SQL repository for each. A port that declares a query of
+its own needs a class that writes it here, annotated on the unit of work
+(``{{ aggregates }}: SqlAlchemy{{ Aggregate }}Repository``). The domain's default
+``DomainConfig`` calls ``start_mappers()`` at startup.
 """
 
-from domainkit.db import (
-    SqlAlchemyRepository,
-    SqlAlchemyUnitOfWork,
-    map_imperatively,
-    table_for,
-)
-from sqlalchemy.ext.asyncio import AsyncSession
+from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively, table_for
 
-from {{ package }}.domain import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Repository, {{ Domain }}UnitOfWork
+from {{ package }}.domain import {{ Aggregate }}, {{ Domain }}UnitOfWork
 
 {{ aggregates }} = table_for({{ Aggregate }}, "{{ table }}", domain="{{ domain }}")
 
 
-class SqlAlchemy{{ Aggregate }}Repository(
-    SqlAlchemyRepository[{{ Aggregate }}, {{ Aggregate }}Id], {{ Aggregate }}Repository
-):
-    """{{ Aggregate }} storage in the ``{{ table }}`` table."""
-
-    model = {{ Aggregate }}
-
-
 class SqlAlchemy{{ Domain }}UnitOfWork(SqlAlchemyUnitOfWork, {{ Domain }}UnitOfWork):
     """One database transaction over the {{ domain }} repositories."""
-
-    def create_repositories(self, session: AsyncSession) -> None:
-        """Bind the repositories to ``session``."""
-        self.{{ aggregates }} = SqlAlchemy{{ Aggregate }}Repository(session)
 
 
 def start_mappers() -> None:
