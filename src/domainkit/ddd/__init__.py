@@ -41,12 +41,18 @@ from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.personal import Counted, Personal, fields_about
 from domainkit.ddd.query import (
+    Avg,
+    Count,
     Criteria,
     F,
+    Max,
+    Measure,
+    Min,
     Ordering,
     RowLock,
     Selection,
     Specification,
+    Sum,
 )
 from domainkit.ddd.repository import (
     InMemoryRepository,
@@ -62,10 +68,12 @@ from domainkit.ddd.usecases import UseCase, use_case
 __all__ = [
     "UNSET",
     "AggregateRoot",
+    "Avg",
     "BusinessRuleViolation",
     "Command",
     "ConcurrentUpdate",
     "Conflict",
+    "Count",
     "Counted",
     "Criteria",
     "DeferredTask",
@@ -83,7 +91,10 @@ __all__ = [
     "InvalidField",
     "InvalidQuery",
     "LockNotAvailable",
+    "Max",
     "MaxLength",
+    "Measure",
+    "Min",
     "MinLength",
     "MultipleFound",
     "NotFound",
@@ -105,6 +116,7 @@ __all__ = [
     "Sensitive",
     "SoftDeletable",
     "Specification",
+    "Sum",
     "UnitOfWork",
     "UnknownField",
     "Unset",

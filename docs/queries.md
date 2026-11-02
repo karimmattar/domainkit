@@ -130,6 +130,32 @@ late = await uow.invoices.filter(Overdue(today) & ~Disputed())
 `is_satisfied_by` evaluates the criteria in Python by default. A subclass may
 decide it in Python instead, but must keep its criteria in step.
 
+## Counting and totals
+
+`aggregate` works out measures over what the criteria select, in one
+statement, without loading anything (Django's `aggregate()`):
+
+```python
+from domainkit.ddd import Avg, Count, Max, Min, Sum
+
+await uow.orders.aggregate(
+    F("status") == "paid",
+    orders=Count(),
+    revenue=Sum("total"),
+    mean=Avg("total"),
+    first=Min("placed_at"),
+)
+# {"orders": 3, "revenue": Decimal("42.00"), "mean": Decimal("14.00"), "first": ...}
+```
+
+`Count()` counts the aggregates, `Count("field")` those with the field
+set. `Sum` and `Avg` take a number field, `Min` and `Max` any field whose
+values sort, and each leaves out aggregates without a value: over none, it
+is None. Totals and extremes keep the field's type, exact on SQLite too;
+the mean of a `Decimal` field is a `Decimal`. A money field is counted but
+not summed: its amounts are measured per currency, with the currency in
+the criteria. A measure that does not fit its field is an `InvalidQuery`.
+
 ## Pages
 
 `paginate` returns a `Page`: up to `limit` aggregates, whether more follow,

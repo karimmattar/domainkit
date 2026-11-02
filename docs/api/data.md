@@ -141,10 +141,12 @@ Domain-driven design building blocks ("seedwork").
 
 - `UNSET`: A field left out of a partial change (`PatchModel`, `UpdateX` commands).
 - `AggregateRoot`: Entry point to a consistency boundary; records events as it changes.
+- `Avg`: The mean of a number field: exact for a `Decimal` field.
 - `BusinessRuleViolation`: The request is well-formed but breaks an invariant of the model.
 - `Command`: Request to change state, named in the imperative.
 - `ConcurrentUpdate`: Someone else changed the aggregate first; reload it and try again.
 - `Conflict`: The operation clashes with the current state, such as a duplicate.
+- `Count`: How many aggregates there are, or how many have the field set.
 - `Counted`: `Annotated` metadata: the audit trail keeps how many items, not which.
 - `Criteria`: A condition on aggregates; combine them with `&`, `|`, and `~`.
 - `DeferredTask`: Background work queued by `UnitOfWork.defer`.
@@ -162,7 +164,10 @@ Domain-driven design building blocks ("seedwork").
 - `InvalidField`: A field was given a value its markers rule out (`MaxLength`, `Range`, ...).
 - `InvalidQuery`: A query names a field, lookup, or value its aggregate cannot take.
 - `LockNotAvailable`: Another transaction holds the row's lock, and the caller would not wait.
+- `Max`: The largest value of a field whose values sort.
 - `MaxLength`: `Annotated` metadata: text of at most `length` characters.
+- `Measure`: What `repository.aggregate` works out over the aggregates selected.
+- `Min`: The smallest value of a field whose values sort.
 - `MinLength`: `Annotated` metadata: text of at least `length` characters.
 - `MultipleFound`: A lookup that expects one aggregate met several (`get_or_create`).
 - `NotFound`: The requested aggregate does not exist.
@@ -184,6 +189,7 @@ Domain-driven design building blocks ("seedwork").
 - `Sensitive`: A type whose values no schema shows or takes, such as a password hash.
 - `SoftDeletable`: Mixin for aggregates that are marked deleted rather than removed.
 - `Specification`: A named business rule about aggregates, for Python and for queries.
+- `Sum`: The total of a number field.
 - `UnitOfWork`: Transaction boundary; subclasses expose repositories as attributes.
 - `UnknownField`: A query names a field the class does not have.
 - `Unset`: The type of `UNSET`: a field the request left out, as opposed to None.
@@ -204,12 +210,18 @@ Expected versions: change an aggregate only if it is still as the caller saw it.
 
 Queries over aggregates: criteria, ordering, and specifications.
 
+- `Avg`: The mean of a number field: exact for a `Decimal` field.
+- `Count`: How many aggregates there are, or how many have the field set.
 - `Criteria`: A condition on aggregates; combine them with `&`, `|`, and `~`.
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
+- `Max`: The largest value of a field whose values sort.
+- `Measure`: What `repository.aggregate` works out over the aggregates selected.
+- `Min`: The smallest value of a field whose values sort.
 - `Ordering`: Sort by one field of the aggregate itself.
 - `RowLock`: Lock the rows a query returns until the transaction ends (`FOR UPDATE`).
 - `Selection`: Which aggregates to load, in which order, and how many.
 - `Specification`: A named business rule about aggregates, for Python and for queries.
+- `Sum`: The total of a number field.
 
 ## `domainkit.ledger`
 

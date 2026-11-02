@@ -33,6 +33,11 @@ and a status.
 
 ### Added
 
+- `repository.aggregate(criteria, **measures)` with `Count`, `Sum`, `Avg`,
+  `Min`, and `Max` (`domainkit.ddd`): measures over the aggregates
+  selected, in one statement, nothing loaded (Django's `aggregate()`).
+  Exact on SQLite: a mean is a total over a count, and a `Decimal` field's
+  stays a `Decimal`.
 - `repository.get_or_create(criteria, create)` and
   `update_or_create(criteria, update, create)`: the one aggregate the
   criteria select, or a new one stored at once in a savepoint; when

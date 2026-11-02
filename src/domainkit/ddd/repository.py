@@ -24,6 +24,7 @@ from typing import Any, Final, Literal, cast, overload
 from domainkit import clock
 from domainkit.ddd._dataclass import EntityMeta
 from domainkit.ddd.exceptions import Conflict, DuplicateValue, MultipleFound, NotFound
+from domainkit.ddd.fields import primitive
 from domainkit.ddd.model import AggregateRoot
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.preconditions import Expectation, check_expected
@@ -32,6 +33,7 @@ from domainkit.ddd.query import (
     Criteria,
     CriteriaLike,
     F,
+    Measure,
     RowLock,
     Selection,
     as_criteria,
@@ -289,6 +291,35 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         """Whether any aggregate meets ``criteria``."""
         return await self._exists(
             self._scope(criteria, include_deleted=include_deleted)
+        )
+
+    async def aggregate(
+        self,
+        criteria: CriteriaLike | None = None,
+        *,
+        include_deleted: bool = False,
+        **measures: Measure,
+    ) -> dict[str, object]:
+        """Measures over the aggregates ``criteria`` select, in one statement.
+
+        Django's ``aggregate()``::
+
+            await uow.orders.aggregate(
+                F("status") == "paid", orders=Count(), revenue=Sum("total_cents")
+            )  # {"orders": 3, "revenue": 4200}
+
+        Nothing is loaded or tracked.
+
+        Raises:
+            TypeError: No measure is given.
+            InvalidQuery: A measure does not fit its field (``Measure.bind``).
+        """
+        if not measures:
+            raise TypeError("aggregate() takes measures, as total=Sum('amount').")
+        model = self.aggregate_type
+        bound = {name: measure.bind(model) for name, measure in measures.items()}
+        return await self._aggregate(
+            self._scope(criteria, include_deleted=include_deleted), bound
         )
 
     async def paginate(
@@ -613,6 +644,12 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         """Whether the bound ``criteria`` select anything."""
         return await self._count(criteria) > 0
 
+    async def _aggregate(
+        self, criteria: Criteria | None, measures: dict[str, Measure]
+    ) -> dict[str, object]:
+        """Work out the bound ``measures`` over what ``criteria`` select."""
+        raise NotImplementedError(f"{type(self).__name__} cannot aggregate.")
+
 
 def _is_deleted(aggregate: object) -> bool:
     """Whether ``aggregate`` is soft-deleted."""
@@ -695,6 +732,24 @@ class InMemoryRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
     async def _count(self, criteria: Criteria | None) -> int:
         """Count the matches."""
         return len(self._matching(criteria))
+
+    async def _aggregate(
+        self, criteria: Criteria | None, measures: dict[str, Measure]
+    ) -> dict[str, object]:
+        """Each measure over the matching aggregates' values that are set."""
+        matching = self._matching(criteria)
+        answer: dict[str, object] = {}
+        for name, measure in measures.items():
+            if measure.field is None:
+                answer[name] = len(matching)
+                continue
+            values = [
+                value
+                for aggregate in matching
+                if (value := primitive(getattr(aggregate, measure.field))) is not None
+            ]
+            answer[name] = measure.present(self.aggregate_type, measure.compute(values))
+        return answer
 
     def _matching(self, criteria: Criteria | None) -> list[AggregateT]:
         """The stored aggregates that meet the bound ``criteria``."""

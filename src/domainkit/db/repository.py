@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.sql.compiler import SQLCompiler
-from sqlalchemy.sql.elements import ClauseElement
+from sqlalchemy.sql.elements import ClauseElement, ColumnElement
 from sqlalchemy.sql.expression import Executable
 
 from domainkit.db.encrypted import guarded_attributes
@@ -30,7 +30,7 @@ from domainkit.db.orm import metadata
 from domainkit.db.query import column_of, compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import AggregateRoot, Repository
 from domainkit.ddd.fields import InvalidQuery, fields_of
-from domainkit.ddd.query import ID, Criteria, CriteriaLike, Selection, as_query
+from domainkit.ddd.query import ID, Criteria, CriteriaLike, Measure, Selection, as_query
 from domainkit.ddd.repository import LockNotAvailable
 from domainkit.money import Money
 
@@ -164,6 +164,39 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
             Explain(self._select(prepared.replace(lock=None)), analyze=analyze)
         )
         return "\n".join(_plan_line(row) for row in rows)
+
+    async def _aggregate(
+        self, criteria: Criteria | None, measures: dict[str, Measure]
+    ) -> dict[str, object]:
+        """One ``SELECT`` of every measure; a mean as its total over its count.
+
+        Totals, smallest, and largest values come back in the column's type,
+        exact on SQLite too (``ExactDecimal``); a mean is divided here, so a
+        ``Decimal`` field's stays a ``Decimal``.
+        """
+        model = self.aggregate_type
+        mapper = mapper_of(model)
+        columns: list[ColumnElement[Any]] = []
+        for measure in measures.values():
+            if measure.field is None:
+                columns.append(func.count())
+                continue
+            money = money_columns(mapper, measure.field)  # Counted by its amount.
+            column = money[0] if money else column_of(mapper, measure.field)
+            if measure.function == "avg":
+                columns += [func.sum(column), func.count(column)]
+            else:
+                columns.append(getattr(func, measure.function)(column))
+        statement = self._where(select(*columns).select_from(model), criteria)
+        row = iter((await self.session.execute(statement)).one())
+        answer: dict[str, object] = {}
+        for name, measure in measures.items():
+            value = next(row)
+            if measure.function == "avg":
+                count = next(row)
+                value = value / count if count else None
+            answer[name] = measure.present(model, value)
+        return answer
 
     async def _count(self, criteria: Criteria | None) -> int:
         """``SELECT count(*)`` of the matches."""

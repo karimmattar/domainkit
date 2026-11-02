@@ -33,6 +33,7 @@ from domainkit.db.query import compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import (
     AggregateRoot,
     DuplicateValue,
+    Encrypted,
     Entity,
     EventBus,
     InvalidQuery,
@@ -41,9 +42,23 @@ from domainkit.ddd import (
     ReadOnlyError,
     UnknownField,
 )
-from domainkit.ddd.query import ID, Criteria, F, Ordering, RowLock, Selection, Within
+from domainkit.ddd.query import (
+    ID,
+    Avg,
+    Count,
+    Criteria,
+    F,
+    Max,
+    Min,
+    Ordering,
+    RowLock,
+    Selection,
+    Sum,
+    Within,
+)
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet
+from domainkit.money import Money
 from domainkit.testing import AsyncTestClient, assert_num_queries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.gadgets import (
@@ -966,3 +981,72 @@ async def test_the_conveniences_work_in_memory_too() -> None:
         ["renamed", "new"],
         ["new", "renamed"],
     )
+
+
+async def test_aggregate_measures_in_one_statement(tables: None) -> None:
+    """Counts, totals, means, and extremes, as the in-memory repository has them."""
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    measures: dict[str, Any] = {
+        "gadgets": Count(),
+        "stocked": Count("stock"),
+        "stock": Sum("stock"),
+        "revenue": Sum("price"),
+        "mean": Avg("price"),
+        "mean_stock": Avg("stock"),
+        "cheapest": Min("price"),
+        "first": Min("made_at"),
+        "last_name": Max("name"),
+        "label": Max("label"),
+    }
+    expected = {
+        "gadgets": 5,
+        "stocked": 3,
+        "stock": 6,
+        "revenue": Decimal("14.25"),
+        "mean": Decimal("2.85"),
+        "mean_stock": 2.0,
+        "cheapest": Decimal("-1.25"),
+        "first": MADE,
+        "last_name": "é中\\",
+        "label": Label("É中\\"),
+    }
+    async with GadgetsUnitOfWork() as uow:
+        with assert_num_queries(1):
+            measured = await uow.gadgets.aggregate(**measures)
+        none = await uow.gadgets.aggregate(
+            F("name") == "nothing", n=Count(), total=Sum("price"), mean=Avg("stock")
+        )
+        assert uow.gadgets.seen == ()
+    assert measured == expected == await fake.aggregate(**measures)
+    assert none == {"n": 0, "total": None, "mean": None}
+    assert await fake.aggregate(F("name") == "nothing", mean=Avg("stock")) == {
+        "mean": None
+    }
+
+
+async def test_measures_that_do_not_fit_are_refused() -> None:
+    """A measure needs a field it fits, and a call needs a measure."""
+    fake = InMemoryGadgets([])
+    for measure, message in [
+        (Sum(None), "measures a field"),
+        (Sum("name"), "not a number"),
+        (Avg("active"), "not a number"),
+        (Max("parts"), "child entities"),
+        (Min("nowhere"), "nowhere"),
+    ]:
+        with pytest.raises(InvalidQuery, match=message):
+            await fake.aggregate(measured=measure)
+    with pytest.raises(TypeError, match="takes measures"):
+        await fake.aggregate()
+
+    class Purse(AggregateRoot[int]):
+        cash: Money
+        secret: Annotated[str, Encrypted(subject="id")]
+
+    with pytest.raises(InvalidQuery, match="per currency"):
+        Sum("cash").bind(Purse)
+    with pytest.raises(InvalidQuery, match="cannot be measured"):
+        Max("secret").bind(Purse)
+    assert Count("cash").bind(Purse) == Count("cash")
