@@ -12,8 +12,9 @@ import inspect
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, Any, Final, cast
 
-from fastapi import Body, Depends, Header, Path, Request, status
+from fastapi import Body, Depends, Path, Request, status
 from fastapi import Query as QueryParameters
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 
 from domainkit.ddd.uow import UnitOfWork
@@ -54,10 +55,10 @@ OPTIONAL: Final = (
     "parameters",
     "page",
     "filters",
-    "if_match",
-    "if_none_match",
 )
 """Parameters some routes take, which the context names alike."""
+MAX_HEADER: Final = 4096
+"""The longest ``If-Match`` or ``If-None-Match`` a route reads."""
 
 
 def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None:
@@ -79,7 +80,7 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None
         ),
         responses=_responses(router, spec, rules),
         dependencies=[Depends(Require(*rules))] if rules else None,
-        openapi_extra=_extra(spec),
+        openapi_extra=_extra(router, spec),
     )
     router.operations.append(
         Operation(
@@ -114,13 +115,18 @@ def _endpoint(
     )
     optional = tuple(each for each in OPTIONAL if each in taken)
     provided = tuple((f"{PROVIDED}{field}", field) for field in spec.provided)
+    headers = _headers(router, spec)
 
     async def endpoint(**values: Any) -> object:  # noqa: ANN401 - the route's parameters.
+        request = values["request"]
+        conditions = _read_headers(request, headers) if headers else {}
         context = RouteContext(
-            request=values["request"],
+            request=request,
             uow=values["uow"],
             ids={each: values[each] for each in ids},
             provided={field: values[key] for key, field in provided},
+            if_match=conditions.get("if_match"),
+            if_none_match=conditions.get("if_none_match"),
             **{each: values[each] for each in optional},
         )
         if parent is not None:
@@ -160,18 +166,6 @@ def _parameters(router: "ResourceRouter", spec: RouteSpec) -> list[inspect.Param
                     "filters", Annotated[object, Depends(router.filters_dependency)]
                 )
             )
-    if spec.reads:
-        parameters.append(_header("if_none_match", "If-None-Match", IF_NONE_MATCH))
-    if spec.detail and spec.writes:
-        parameters.append(
-            _header(
-                "if_match",
-                "If-Match",
-                "Required: the ETag of the version you change; 412 if it changed since."
-                if router.require_if_match
-                else "The ETag of the version you change; 412 if it changed since.",
-            )
-        )
     if spec.body is not None:
         parameters.append(parameter("body", Annotated[spec.body, Body()]))
     if spec.asked is not None:
@@ -185,16 +179,57 @@ def _parameters(router: "ResourceRouter", spec: RouteSpec) -> list[inspect.Param
     return parameters
 
 
-def _header(name: str, alias: str, description: str) -> inspect.Parameter:
-    """An optional header parameter of at most 4,096 characters."""
-    return parameter(
-        name,
-        Annotated[
-            str | None,
-            Header(alias=alias, max_length=4096, description=description),
-        ],
-        None,
-    )
+def _headers(
+    router: "ResourceRouter", spec: RouteSpec
+) -> tuple[tuple[str, str, str], ...]:
+    """The conditional headers the route reads: the field, the header, its doc.
+
+    They are read from the request itself, not resolved by FastAPI as
+    parameters: the work is the same on every request, and FastAPI's costs
+    a route about as much as the rest of its routing (C6).
+    """
+    found: list[tuple[str, str, str]] = []
+    if spec.reads:
+        found.append(("if_none_match", "If-None-Match", IF_NONE_MATCH))
+    if spec.detail and spec.writes:
+        found.append(
+            (
+                "if_match",
+                "If-Match",
+                "Required: the ETag of the version you change; 412 if it changed since."
+                if router.require_if_match
+                else "The ETag of the version you change; 412 if it changed since.",
+            )
+        )
+    return tuple(found)
+
+
+def _read_headers(
+    request: Request, headers: tuple[tuple[str, str, str], ...]
+) -> dict[str, str | None]:
+    """Each conditional header the route reads, by its context's field.
+
+    Raises:
+        RequestValidationError: One is longer than ``MAX_HEADER``: 422, as
+            for any parameter out of bounds.
+    """
+    found: dict[str, str | None] = {}
+    for field, header, _ in headers:
+        value = request.headers.get(header)
+        if value is not None and len(value) > MAX_HEADER:
+            raise RequestValidationError(
+                [
+                    {
+                        "type": "string_too_long",
+                        "loc": ("header", header.lower()),
+                        "msg": f"String should have at most {MAX_HEADER} characters",
+                        "input": value,
+                        "ctx": {"max_length": MAX_HEADER},
+                    }
+                ]
+            )
+        found[field] = value
+    return found
 
 
 def _responses(
@@ -213,7 +248,7 @@ def _responses(
     if spec.body is not None:
         codes.append(status.HTTP_408_REQUEST_TIMEOUT)
     exporting = spec.listing and len(router.media_types) > 1
-    if spec.listing or spec.asked is not None:
+    if spec.listing or spec.asked is not None or _headers(router, spec):
         codes.append(status.HTTP_422_UNPROCESSABLE_CONTENT)
     if exporting:
         codes.append(status.HTTP_406_NOT_ACCEPTABLE)
@@ -239,11 +274,27 @@ def _responses(
     return responses
 
 
-def _extra(spec: RouteSpec) -> dict[str, Any] | None:
-    """What OpenAPI says beyond FastAPI: ``PATCH`` takes JSON Merge Patch too."""
-    if spec.body is None or spec.method != "PATCH":
-        return None
-    return {"requestBody": {"content": {MERGE_PATCH: {"schema": inline(spec.body)}}}}
+def _extra(router: "ResourceRouter", spec: RouteSpec) -> dict[str, Any] | None:
+    """What OpenAPI says beyond FastAPI.
+
+    The conditional headers the route reads itself; and ``PATCH`` takes
+    JSON Merge Patch too.
+    """
+    extra: dict[str, Any] = {}
+    if headers := _headers(router, spec):
+        extra["parameters"] = [
+            {
+                "name": header,
+                "in": "header",
+                "required": False,
+                "description": description,
+                "schema": {"type": "string", "maxLength": MAX_HEADER},
+            }
+            for _, header, description in headers
+        ]
+    if spec.body is not None and spec.method == "PATCH":
+        extra["requestBody"] = {"content": {MERGE_PATCH: {"schema": inline(spec.body)}}}
+    return extra or None
 
 
 def parameter(

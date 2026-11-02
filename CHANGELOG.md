@@ -9,6 +9,14 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- A resource route reads `If-Match` and `If-None-Match` from the request
+  rather than as FastAPI parameters: 255 fewer calls a command and 235 a
+  read, on the benchmark ladder, whose budgets now hold it. The headers
+  keep their 4,096-character bound (422) and their OpenAPI entries; the
+  422s they can answer are documented with domainkit's error schema.
+
 ### Added
 
 - `docs/request-flow.md`: the path a command takes, from the middleware to

@@ -99,7 +99,7 @@ pings = 1
 modules = 818
 
 [rungs.resource-read]
-calls = 2622
+calls = 2389
 statements = 1
 transactions = 1
 checkouts = 1
@@ -107,7 +107,7 @@ pings = 1
 modules = 818
 
 [rungs.resource-command]
-calls = 3357
+calls = 3116
 statements = 1
 transactions = 1
 checkouts = 1
