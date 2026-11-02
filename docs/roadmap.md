@@ -19,32 +19,42 @@ around them.
 
 Building an application on 1.0 showed the core is hard to follow before it
 is hard to extend. Before more features, each part of the core gets one
-obvious way to do each task, measured on the benchmark ladder and covered
-at 98% or more:
+obvious way to do each task. The steps run in this order, one at a time;
+a step is done when it has a design note here, tests covering its new code
+at 98% or more, a freshly generated project passing its tests and mypy,
+and one pushed commit.
 
-1. **Structure.** One public home per name, and one shape per kind of
-   thing (the audit's DSGN-29 to -33: names with two homes, three shapes of
-   management command, two encryption systems, apps that refuse a
-   deployment without a check id). Fewer layers of indirection between a
-   route and the database.
-2. **Data flow.** One path a request takes, written down and drawn:
-   route, command, use case, aggregate, unit of work, events. Commands and
-   routes derived from a use case's signature, so a use case is written
-   once instead of three times (command class, service, route line).
-3. **Validation.** Field markers (`MaxLength`, `MinLength`, `Pattern`,
-   `Range`) checked by the aggregate itself when it is made and changed,
-   not only by request bodies, with Django's `clean()` as the hook for
-   rules across fields; every refusal a 422 with the field's name.
-4. **Speed.** Budgets on the ladder for the common paths (a read, a
-   write, a list page), and the per-request work that does not depend on
-   the request moved to startup.
-5. **Django's conveniences**, where a domain-driven shape allows them:
-   `get_or_create` and `update_or_create`, bulk writes, aggregations
-   (`Count`, `Sum`) on a repository, choices from an `Enum` with labels,
-   constraints and indexes declared on the aggregate (`Meta`), and the
-   commands people reach for first (`inspectdb`, `sqlmigrate`). Each is
-   checked against what the repository and `table_for` already do before
-   it is built.
+| # | Step | What changes | Status |
+| --- | --- | --- | --- |
+| C1 | A use case is one function | `@use_case` makes the command, the request body, and the transaction from one async function; `ResourceRouter.use_case` its route. | Done |
+| C2 | Storage is declared | The unit of work's annotations make the SQL repositories and `in_memory(...)` for tests. | Done |
+| C3 | One validation path | Field markers (`MaxLength`, `MinLength`, `Pattern`, `Range`) checked by the object itself whenever a field is set (aggregates, entities, value objects, commands); `clean()` for rules across fields, run when the object is made and on each aggregate before every commit; a refusal is a 422 naming the field. Loading from the database checks nothing. | In progress |
+| C4 | One request flow | Route, command, use case, aggregate, commit, events after commit, outbox: written down and drawn, and the layers between a route and the database that the drawing does not need removed. | Next |
+| C5 | Structure | One public home per name, one shape per kind of thing (the audit's DSGN-29 to -33: names with two homes, three shapes of management command, two encryption systems). | |
+| C6 | Speed | Budgets on the benchmark ladder for a read, a write, and a list page; per-request work that does not depend on the request moved to startup. | |
+| C7 | Django's conveniences | `get_or_create`, `update_or_create`, bulk writes, `Count` and `Sum` on a repository, `Enum` choices with labels, constraints and indexes declared on the aggregate (`Meta`). Each checked against what the repository and `table_for` already do before it is built. | |
+| C8 | Proof | The guide's shop rebuilt on the new core; its lines of code, before and after, recorded here. | |
+
+Steps C1 to C8 are the core's; the [feature inventory](feature-inventory.md)
+names each Django feature and platform need, what exists, and the step
+that closes its gap.
+
+## Then: adapters on the core
+
+Each adapter is a port in the core (the shape every provider fills) and
+its providers behind settings, with an in-memory one for tests, built
+after the core steps above:
+
+| # | Adapter | Providers |
+| --- | --- | --- |
+| A1 | Object storage | S3 and S3-compatible (AWS S3, Huawei OBS, MinIO, Cloudflare R2, Alibaba OSS), Google Cloud Storage, Azure Blob; presigned URLs; thumbnails and virus scanning as upload hooks |
+| A2 | Identity providers | OpenID Connect and OAuth 2 login (Google, Microsoft, Apple, GitHub, Keycloak, Okta, Auth0, Cognito, Huawei IAM), SAML 2.0, LDAP; providers linked to one user; captcha; audited impersonation |
+| A3 | Devices | Passkeys (WebAuthn); device binding: a device's key registered, requests signed with it, devices listed and revoked, trusted for step-up |
+| A4 | Notification providers | SMS (Twilio, Vonage, SNS, Unifonic, Huawei SMN), push (FCM, APNs, Huawei Push Kit), email by API (SES, SendGrid, Mailgun, Postmark) |
+| A5 | Key management | A provider interface for `contrib.keys`; Huawei Cloud KMS, Google Cloud KMS, Azure Key Vault, PKCS#11 HSMs |
+| A6 | Brokers | Kafka, NATS, Redis Streams, SQS beside RabbitMQ |
+| A7 | Multi-tenancy | A tenant per request; rows, caches, and limits scoped to it; a database or schema per tenant |
+| A8 | Search and places | PostgreSQL full-text search, OpenSearch, Meilisearch; PostGIS fields and lookups |
 
 ### What the core asks of an application today
 

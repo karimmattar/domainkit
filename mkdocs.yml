@@ -150,5 +150,6 @@ nav:
       - API reference: reference/api/index.md
       - versioning.md
       - roadmap.md
+      - feature-inventory.md
       - Decisions: adr/README.md
       - audit/0.9.0.md

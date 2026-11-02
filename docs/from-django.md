@@ -66,3 +66,6 @@ What has no Django name: aggregates and their rules, commands, the
 transactional outbox, the inbox, the audit trail and its seals, evidence
 records, and idempotency keys. [resources.md](resources.md) and
 [the optional apps](contrib.md) start there.
+
+Every Django feature, with what domainkit has and the step that adds what
+it lacks, is in the [feature inventory](feature-inventory.md).
