@@ -12,6 +12,7 @@ from domainkit.ddd.events import (
     EventHandler,
     HandlerTimedOut,
     event_bus,
+    handles,
 )
 from domainkit.ddd.exceptions import (
     BusinessRuleViolation,
@@ -137,6 +138,7 @@ __all__ = [
     "ValueObject",
     "event_bus",
     "fields_about",
+    "handles",
     "in_memory",
     "use_case",
 ]

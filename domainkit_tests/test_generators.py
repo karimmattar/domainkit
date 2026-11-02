@@ -893,6 +893,14 @@ GENERATE = [
         *("--field", "reason:str:100", "--field", "at:datetime?"),
     ],
     ["addcommand", "billing", "Invoice", "SendInvoice"],
+    [
+        "addevent",
+        "billing",
+        "Invoice",
+        "InvoicePaid",
+        *("--field", "amount:decimal:10:2", "--field", "at:datetime"),
+    ],
+    ["addevent", "billing", "Invoice", "InvoiceViewed", "--no-handler"],
 ]
 """Every generator, as ``python manage.py`` would get them: a layered domain,
 and a four-file one."""
@@ -1783,9 +1791,48 @@ def test_a_four_file_domain_needs_its_unit_of_work(desk: Shop) -> None:
         desk("addcommand", "Ticket", "CloseTicket")
 
 
-def test_layered_generators_refuse_a_four_file_domain(desk: Shop) -> None:
-    """Addquery and addevent grow layered domains only, and say so."""
-    with pytest.raises(CommandError, match="is a four-file domain"):
+def test_addevent_grows_a_four_file_domain(desk: Shop) -> None:
+    """The event in domain.py, and a @handles handler the domain subscribes."""
+    output = desk("addevent", "Ticket", "TicketSeen", fields=["count:int"])
+
+    assert output.startswith("Added TicketSeen to gen.desk:\n")
+    model = desk.read("domain.py")
+    assert model.index("class TicketSeen(DomainEvent):") < model.index(
+        "class Ticket(AggregateRoot[TicketId]):"
+    )
+    controllers = desk.read("controllers.py")
+    assert "@handles(TicketSeen, durable=True)\nasync def on_ticket_seen(" in (
+        controllers
+    )
+    assert "logger = logging.getLogger(__name__)" in controllers
+    assert (desk.tests / "test_on_ticket_seen.py").is_file()
+    assert check_domain("gen.desk") == []
+
+    desk("addevent", "Ticket", "TicketShut")  # Its logger is there already.
+    assert desk.read("controllers.py").count("import logging") == 1
+    desk("addevent", "Ticket", "TicketSkipped", handler=False)
+    assert "on_ticket_skipped" not in desk.read("controllers.py")
+    with pytest.raises(CommandError, match="already defines TicketSeen"):
         desk("addevent", "Ticket", "TicketSeen")
+    with pytest.raises(CommandError, match="ticket_id is the event's"):
+        desk("addevent", "Ticket", "TicketMoved", fields=["ticket_id:uuid"])
+    with pytest.raises(CommandError, match="has no aggregate Desk"):
+        desk("addevent", "Desk", "DeskMoved")
+
+
+def test_addevent_keeps_a_handler_name_once(desk: Shop) -> None:
+    """A handler of the name already in controllers.py is refused."""
+    path = desk.package / "controllers.py"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text + "\n\nasync def on_ticket_gone() -> None:\n    pass\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CommandError, match="already defines on_ticket_gone"):
+        desk("addevent", "Ticket", "TicketGone")
+
+
+def test_addquery_refuses_a_four_file_domain(desk: Shop) -> None:
+    """Addquery grows layered domains only, and says so."""
     with pytest.raises(CommandError, match="is a four-file domain"):
         desk("addquery", "Ticket", "TicketsNamed", by=["name"])

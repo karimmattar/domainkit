@@ -197,6 +197,21 @@ outbox: `durable=True` stores the call with the commit, and a worker runs it
 and retries it ([contrib.md](contrib.md)). Durable handlers take no
 `timeout`; the worker's task policies apply.
 
+In a four-file domain, mark the handler where it is written, in
+`controllers.py` (Django's `@receiver`); the domain subscribes it when it
+is ready, with no `apps.py`:
+
+```python
+from domainkit.ddd import handles
+
+
+@handles(InvoicePaid, durable=True)
+async def notify_crm(event: InvoicePaid) -> None: ...
+```
+
+A handler may handle several events, one `@handles` each. The mark
+subscribes nothing by itself, so importing the module in a test does not.
+
 ## Stores that stay bounded
 
 Background work in the stores is bounded too:

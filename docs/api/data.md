@@ -206,6 +206,7 @@ Domain-driven design building blocks ("seedwork").
 - `ValueObject`: Immutable value defined only by its attributes; equal values are equal.
 - `event_bus`: Process-wide bus used by units of work unless they are given another.
 - `fields_about`: What `values` hold about `subject`, and about nobody else.
+- `handles`: Mark a handler for `event_type` events (Django's `@receiver`).
 - `in_memory`: A unit of work whose repositories, made from its annotations, keep everything in memory.
 - `use_case`: Make an async function a use case: its command is made from its parameters.
 

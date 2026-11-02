@@ -256,3 +256,60 @@ class EventBus:
 
 event_bus: Final = EventBus()
 """Process-wide bus used by units of work unless they are given another."""
+
+_HANDLES: Final = "__domainkit_handles__"
+"""Where a handler keeps the events ``@handles`` marks it for."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Mark:
+    """One ``@handles``: the event, and how the handler runs."""
+
+    event_type: type[DomainEvent]
+    durable: bool
+    timeout: float | None
+
+
+def handles[H: Callable[..., Awaitable[None]]](
+    event_type: type[DomainEvent],
+    *,
+    durable: bool = False,
+    timeout: float | None = None,
+) -> Callable[[H], H]:
+    """Mark a handler for ``event_type`` events (Django's ``@receiver``).
+
+    The mark subscribes nothing by itself: a four-file domain's
+    ``controllers.py`` is read when the domain is ready, and its marked
+    handlers are subscribed to ``event_bus`` then (``subscribe_marked``),
+    as ``subscribe(event_type, handler, durable=..., timeout=...)`` would.
+    A handler may handle several events.
+    """
+
+    def mark(handler: H) -> H:
+        marks: list[_Mark] = handler.__dict__.setdefault(_HANDLES, [])
+        marks.append(_Mark(event_type, durable, timeout))
+        return handler
+
+    return mark
+
+
+def subscribe_marked(module: Any, bus: EventBus | None = None) -> int:  # noqa: ANN401 - any module.
+    """Subscribe the handlers ``module`` defines and ``@handles`` marks.
+
+    Handlers it only imports are left to the module that defines them.
+    Returns how many subscriptions it made.
+
+    Raises:
+        ValueError: A mark ``subscribe`` refuses (see there).
+    """
+    target = event_bus if bus is None else bus
+    made = 0
+    for value in vars(module).values():
+        if getattr(value, "__module__", None) != module.__name__:
+            continue
+        for mark in getattr(value, _HANDLES, ()):
+            target.subscribe(
+                mark.event_type, value, durable=mark.durable, timeout=mark.timeout
+            )
+            made += 1
+    return made

@@ -59,6 +59,7 @@ together.
 | --- | --- |
 | `django.contrib.auth`, `createsuperuser` | `domainkit.contrib.auth`, the same command; tokens, JWTs, cookie sessions ([auth.md](auth.md)) |
 | Signals (`post_save`) | Domain events, published after the commit; `durable=True` runs them in the worker ([messaging](contrib/messaging.md)) |
+| `@receiver` | `@handles(Event, durable=...)` in a four-file domain's `controllers.py` ([runtime.md](runtime.md#event-handlers)) |
 | Celery tasks and beat | `@task`, `uow.defer(...)`, `@periodic`, run by `runworker` from an outbox ([messaging](contrib/messaging.md)) |
 | The cache framework, `cache_page` | `domainkit.cache`, and whole-response caching ([cache.md](cache.md)) |
 | `send_mail`, email templates | `domainkit.contrib.mail`, through the outbox ([mail.md](mail.md)) |

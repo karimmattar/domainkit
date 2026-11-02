@@ -33,6 +33,12 @@ and a status.
 
 ### Added
 
+- `@handles(Event, durable=..., timeout=...)` (`domainkit.ddd`, Django's
+  `@receiver`): marks a handler; a four-file domain's default
+  `DomainConfig` subscribes the handlers its `controllers.py` defines and
+  marks when it is ready, so it needs no `apps.py`. `addevent` grows a
+  four-file domain with it: the event in `domain.py`, the handler in
+  `controllers.py`, and its test.
 - `addcommand` grows a four-file domain: the aggregate's method and its
   event in `domain.py`, a `@use_case` in `controllers.py`, its route in
   `routes.py`, and a test on `in_memory(...)`. The generated code passes
