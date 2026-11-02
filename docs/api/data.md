@@ -161,6 +161,7 @@ Domain-driven design building blocks ("seedwork").
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
 - `InMemoryRepository`: Dictionary-backed repository for unit tests and prototypes.
+- `Indexed`: `Annotated` metadata: queries look the field up; give it an index.
 - `IntegerChoices`: Whole-number values, each with a label: `HIGH = 3, "High"`.
 - `InvalidField`: A field was given a value its markers rule out (`MaxLength`, `Range`, ...).
 - `InvalidQuery`: A query names a field, lookup, or value its aggregate cannot take.
@@ -192,6 +193,7 @@ Domain-driven design building blocks ("seedwork").
 - `Specification`: A named business rule about aggregates, for Python and for queries.
 - `Sum`: The total of a number field.
 - `TextChoices`: Text values, each with a label: `PAID = "paid", "Paid in full"`.
+- `Unique`: `Annotated` metadata: no two aggregates hold the same value.
 - `UnitOfWork`: Transaction boundary; subclasses expose repositories as attributes.
 - `UnknownField`: A query names a field the class does not have.
 - `Unset`: The type of `UNSET`: a field the request left out, as opposed to None.

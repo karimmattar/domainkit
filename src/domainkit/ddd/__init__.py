@@ -28,6 +28,7 @@ from domainkit.ddd.exceptions import (
 from domainkit.ddd.fields import (
     Digits,
     Encrypted,
+    Indexed,
     InvalidQuery,
     MaxLength,
     MinLength,
@@ -35,6 +36,7 @@ from domainkit.ddd.fields import (
     Range,
     Reference,
     Sensitive,
+    Unique,
     UnknownField,
 )
 from domainkit.ddd.messages import UNSET, Command, Query, Unset
@@ -89,6 +91,7 @@ __all__ = [
     "F",
     "HandlerTimedOut",
     "InMemoryRepository",
+    "Indexed",
     "IntegerChoices",
     "InvalidField",
     "InvalidQuery",
@@ -120,6 +123,7 @@ __all__ = [
     "Specification",
     "Sum",
     "TextChoices",
+    "Unique",
     "UnitOfWork",
     "UnknownField",
     "Unset",

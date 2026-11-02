@@ -33,6 +33,12 @@ and a status.
 
 ### Added
 
+- `Unique()` and `Indexed()` field markers, and `Meta.unique` and
+  `Meta.indexes` on an aggregate (`domainkit.ddd`): `table_for` makes each
+  a constraint or an index named after its table and fields, cut to 63
+  characters with a digest (Django's `unique=True`, `db_index=True`, and
+  `Meta`). A duplicate is the usual 409 `duplicate_value`, naming the
+  fields.
 - `TextChoices` and `IntegerChoices` (`domainkit.ddd`): enums whose
   members carry a label, given (`PAID = "paid", gettext_lazy("Paid")`) or
   made from the name; `Status.PAID.label`, `Status.choices()`, and

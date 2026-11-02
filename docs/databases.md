@@ -630,6 +630,31 @@ PostgreSQL would store differently.
 
 ## Unique values
 
+A field declares that its values are unique, or looked up often, with
+`Unique()` or `Indexed()`; several fields together go in the aggregate's
+`Meta` (Django's `unique=True`, `db_index=True`, and `Meta.constraints`
+and `Meta.indexes`):
+
+```python
+class Member(AggregateRoot[MemberId]):
+    email: Annotated[str, MaxLength(254), Unique()]
+    status: Annotated[Status, Indexed()]
+    region: Annotated[str, MaxLength(4)]
+    number: int
+
+    class Meta:
+        unique = (("region", "number"),)
+        indexes = (("status", "region"),)
+```
+
+`table_for` makes each a constraint or an index named after its table
+and fields (`uq_members_region_number`), cut to PostgreSQL's 63
+characters with a digest when longer, so migrations can alter and drop
+them. A money field counts as its currency and amount columns; a child
+entity or an encrypted field cannot be one (an encrypted field is looked
+up by its `blind_index`). A one-to-one reference is
+`Annotated[Reference[UserId], Unique()]`.
+
 When a unique constraint or a primary key refuses a value, the unit of work
 raises `DuplicateValue`, a `Conflict` that answers 409 with the code
 `duplicate_value`. It does so at `commit()`, and also when an earlier flush

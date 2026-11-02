@@ -26,14 +26,14 @@ framework, for the reason given.
 | `get_FOO_display()`, choice labels | `TextChoices` and `IntegerChoices`: `member.label`, `choices()` | Yes | C7 |
 | `null`, `default` | `X \| None`, dataclass defaults | Yes | |
 | `db_default`, `GeneratedField` | A hand-written column in `table_for(..., *extra)` | Partial | C7 |
-| `unique=True`, `db_index=True` | A constraint or index passed in `extra` | Partial: no marker on the field | C7 |
-| `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | SQLAlchemy items in `extra` | Partial: not declared on the aggregate | C7 |
+| `unique=True`, `db_index=True` | `Unique()` and `Indexed()` on the field | Yes | C7 |
+| `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | `Meta.unique` and `Meta.indexes` on the aggregate; a check constraint in `extra` | Partial: checks are SQLAlchemy's, in `extra` | C7 |
 | `Meta.ordering` | A `FilterSet`'s `default_ordering`; repositories order by id | Partial | C7 |
 | Validators (`MaxLengthValidator`, `RegexValidator`, `MinValueValidator`, ...) | `MaxLength`, `MinLength`, `Pattern`, `Range` markers, checked by the object, the request, and OpenAPI ([validation.md](validation.md)) | Yes | |
 | `clean()`, `full_clean()`, `clean_fields()` | `clean()`, run when made and before every commit; fields checked whenever set | Yes | |
 | `ForeignKey` to a child | Child entities, stored with their aggregate | Yes | |
 | `ForeignKey` to another model | `Reference[OtherId]` by id | Yes | |
-| `OneToOneField` | A `Reference` | Partial: no unique marker | C7 |
+| `OneToOneField` | `Annotated[Reference[XId], Unique()]` | Yes | C7 |
 | `ManyToManyField` | None | No: a list of references stored in a link table | C7 |
 | `GenericForeignKey` | `contrib.contenttypes` ids | Partial | |
 | Signals (`post_save`, `post_delete`) | Domain events, published after the commit | Yes | |
