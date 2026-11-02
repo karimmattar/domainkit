@@ -184,7 +184,7 @@ incident.
    the backup holds the erased people's keys and data again
    ([keys.md](contrib/keys.md#backups-taken-before-an-erasure)).
 3. Run `audit verify`, and keep what it reports about anchors the restore
-   lost with the incident ([audit verify fails](#audit verify-fails)).
+   lost with the incident ([audit verify fails](#audit-verify-fails)).
 
 ## A circuit breaker opens
 
