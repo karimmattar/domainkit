@@ -335,6 +335,18 @@ Files: a storage port, on the file system or in memory.
 - `StoredFile`: A file open for reading; close it, or use it in `async with`.
 - `storages`: The process-wide storages: `storages["default"]`.
 
+## `domainkit.storage.azure`
+
+`AzureBlobStorage`: files in an Azure Blob Storage container.
+
+- `AzureBlobStorage`: Files in one container of an Azure Storage account.
+
+## `domainkit.storage.gcs`
+
+`GCSStorage`: files in a Google Cloud Storage bucket (`domainkit[cloud]`).
+
+- `GCSStorage`: Files in one Google Cloud Storage bucket.
+
 ## `domainkit.storage.remote`
 
 What object stores share: ranged reads, parts, presigned URLs.

@@ -100,6 +100,14 @@ keys = [
     "httpx2 (>=2.13.0,<3.0.0)",
     "httpcore2 (>=2.13.0,<3.0.0)",
 ]
+# Cloud adapters (domainkit.cloud, domainkit.storage's S3, GCS, and Azure
+# storages): their calls go through domainkit.http.client, and Google's
+# service accounts sign with RSA.
+cloud = [
+    "cryptography (>=50.0.2,<51.0.0)",
+    "httpx2 (>=2.13.0,<3.0.0)",
+    "httpcore2 (>=2.13.0,<3.0.0)",
+]
 # The IANA time zones for cron schedules where the system has none (Windows).
 tzdata = ["tzdata (>=2025.2)"]
 # uvloop's event loop for management commands and runserver (EVENT_LOOP).

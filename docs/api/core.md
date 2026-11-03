@@ -76,6 +76,30 @@ The framework's clock: the one place domainkit reads the time.
 - `now`: Return the current time, aware and in UTC (the frozen clock's, if any).
 - `today`: Return today's date in UTC (the frozen clock's, if any).
 
+## `domainkit.cloud`
+
+Credentials for cloud services, shared by the adapters that call them.
+
+- `CloudAuthError`: A cloud service refused the credentials, or could not be asked for a token.
+- `TokenSource`: Access tokens per scope, each kept until five minutes before it expires.
+
+## `domainkit.cloud.azure`
+
+Microsoft Entra ID tokens, and Azure Storage's Shared Key (`domainkit[cloud]`).
+
+- `EntraApplication`: An application registered in Entra ID, with a client secret.
+- `ManagedIdentity`: The identity Azure gives this host, through its instance metadata service.
+- `blob_sas`: A service SAS for one blob: the query string to append to its URL.
+- `shared_key`: The `Authorization` header Azure Storage's Shared Key gives this request.
+
+## `domainkit.cloud.google`
+
+OAuth tokens for a Google service account (`domainkit[cloud]`).
+
+- `GoogleAccount`: Who calls Google's APIs: an email, and access tokens per scope.
+- `MetadataAccount`: The account Google Cloud runs this code as, through the metadata server.
+- `ServiceAccount`: A service account from its key file: it signs its own token requests.
+
 ## `domainkit.conf`
 
 Django-style settings access.

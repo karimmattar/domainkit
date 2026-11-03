@@ -1181,7 +1181,7 @@ jobs:
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*
               domainkit.db.partitioning.* domainkit.db.routing.*
               domainkit.db.snapshots.* domainkit.db.squashing.* domainkit.db.types.*
-              domainkit.storage.* domainkit.money.*
+              domainkit.storage.* domainkit.cloud.* domainkit.money.*
           - name: messaging
             mutants: >-
               domainkit.contrib.messaging.* domainkit.broker.*
