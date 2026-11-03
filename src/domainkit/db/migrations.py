@@ -63,6 +63,7 @@ from domainkit.utils.formatting import format_python
 ENV_DIR: Final = Path(__file__).with_name("migration_env")
 _DATABASE: Final = "database"
 _TARGET: Final = "target"
+_SCHEMA: Final = "schema"
 
 
 class ForeignKeyViolation(DomainkitError):
@@ -139,7 +140,10 @@ def migration_targets() -> tuple[str, ...]:
 
 
 def alembic_config(
-    database: str = DEFAULT_DB_ALIAS, *, output: TextIO | None = None
+    database: str = DEFAULT_DB_ALIAS,
+    *,
+    output: TextIO | None = None,
+    schema: str | None = None,
 ) -> Config:
     """Build the Alembic configuration for an alias or a target.
 
@@ -164,6 +168,7 @@ def alembic_config(
         config.set_main_option(key, value.replace("%", "%%"))
     config.attributes[_DATABASE] = alias
     config.attributes[_TARGET] = target
+    config.attributes[_SCHEMA] = schema
     return config
 
 
@@ -374,26 +379,61 @@ async def _migrated(database: DatabaseConfig, alias: str) -> None:
         await engine.dispose()
 
 
-def upgrade(target: str = "head", database: str = DEFAULT_DB_ALIAS) -> None:
+def upgrade(
+    target: str = "head",
+    database: str = DEFAULT_DB_ALIAS,
+    *,
+    tenant: str | None = None,
+) -> None:
     """Apply revisions up to ``target`` on the alias ``database``.
 
+    With ``tenant``, in that tenant's schema, made if missing, which keeps
+    its own revision (``TENANCY.SCHEMA_DATABASES``, PostgreSQL).
+
     Raises:
         ForeignKeyViolation: On SQLite, a row names a parent that does not
             exist, once the revisions ran.
     """
-    command.upgrade(alembic_config(_single_alias(database)), target)
+    schema = None if tenant is None else _tenant_schema(database, tenant)
+    command.upgrade(alembic_config(_single_alias(database), schema=schema), target)
     _run(_check_foreign_keys(connections.config(database)))
 
 
-def downgrade(target: str, database: str = DEFAULT_DB_ALIAS) -> None:
+def downgrade(
+    target: str, database: str = DEFAULT_DB_ALIAS, *, tenant: str | None = None
+) -> None:
     """Revert alias ``database`` down to ``target`` (``base`` reverts everything).
 
+    With ``tenant``, that tenant's schema.
+
     Raises:
         ForeignKeyViolation: On SQLite, a row names a parent that does not
             exist, once the revisions ran.
     """
-    command.downgrade(alembic_config(_single_alias(database)), target)
+    schema = None if tenant is None else _tenant_schema(database, tenant)
+    command.downgrade(alembic_config(_single_alias(database), schema=schema), target)
     _run(_check_foreign_keys(connections.config(database)))
+
+
+def _tenant_schema(database: str, tenant: str) -> str:
+    """The schema of ``tenant`` on ``database``, which must keep one per tenant.
+
+    Raises:
+        ImproperlyConfigured: ``database`` is not one of
+            ``TENANCY.SCHEMA_DATABASES``, or is not PostgreSQL.
+    """
+    from domainkit.tenancy import tenant_schema
+
+    config = settings.TENANCY
+    if config is None or database not in config.SCHEMA_DATABASES:
+        raise ImproperlyConfigured(
+            f"{database!r} keeps no schema per tenant: add it to "
+            "TENANCY.SCHEMA_DATABASES."
+        )
+    url = make_url(connections.config(database).URL.get_secret_value())
+    if url.get_backend_name() != "postgresql":
+        raise ImproperlyConfigured("A schema per tenant needs PostgreSQL.")
+    return tenant_schema(tenant)
 
 
 def _single_alias(database: str) -> str:
@@ -619,7 +659,14 @@ def _configure_and_run(connection: Connection) -> None:
     if connection.dialect.name == "sqlite":  # Outside a transaction, as it must.
         connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
         connection.commit()
+    schema = context.config.attributes.get(_SCHEMA)
+    if schema is not None:  # A tenant's: its tables and its revision.
+        connection.exec_driver_sql(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        connection.exec_driver_sql(f'SET search_path TO "{schema}"')
+        connection.commit()
+        connection.dialect.default_schema_name = schema
     context.configure(
+        version_table_schema=schema,
         connection=connection,
         target_metadata=metadata,
         # Batch mode on every database, so a revision written against

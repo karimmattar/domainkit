@@ -1051,3 +1051,19 @@ msgstr "استغرقت خدمة تعتمد عليها هذه الخدمة وقت
 
 msgid "A service this one depends on answered with more than can be read."
 msgstr "ردّت خدمة تعتمد عليها هذه الخدمة بأكثر مما يمكن قراءته."
+
+#. domainkit.contrib.auth and domainkit.http.uploads: impersonation, captcha, scanning
+msgid "Impersonation is off (AUTH.IMPERSONATION_TTL)."
+msgstr "انتحال الهوية معطّل (AUTH.IMPERSONATION_TTL)."
+
+msgid "Only active users can be impersonated."
+msgstr "لا يمكن انتحال هوية إلا المستخدمين النشطين."
+
+msgid "Staff cannot impersonate themselves."
+msgstr "لا يمكن للموظفين انتحال هوياتهم."
+
+msgid "The captcha was missing or not solved."
+msgstr "اختبار التحقق مفقود أو لم يُحَل."
+
+msgid "The virus scan refused the file."
+msgstr "رفض فحص الفيروسات الملف."

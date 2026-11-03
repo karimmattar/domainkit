@@ -26,10 +26,13 @@ from starlette.requests import Request
 
 from domainkit.apps import registry
 from domainkit.contrib.auth import AbstractBaseUser
-from domainkit.contrib.auth.access import _impersonated, proof_of
+from domainkit.contrib.auth.integration import (
+    check_password_again,
+    impersonated,
+    proof_of,
+    utc_now,
+)
 from domainkit.contrib.auth.models import UserId
-from domainkit.contrib.auth.stepup import check_password_again
-from domainkit.contrib.auth.tokens import utc_now
 
 from .events import PasskeyAdded
 from .exceptions import (
@@ -101,7 +104,7 @@ async def reauthenticate(
         ReauthenticationRequired: Neither, or an impersonation.
         APIError: The password is wrong, or its checks are throttled.
     """
-    if _impersonated(request):
+    if impersonated(request):
         raise ReauthenticationRequired
     if password is not None:
         await check_password_again(request, user, password, action)

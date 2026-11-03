@@ -20,7 +20,7 @@ from uuid import UUID
 
 from domainkit.apps import registry
 from domainkit.contrib.auth import AbstractBaseUser, AbstractUser
-from domainkit.contrib.auth.events import UserSignedUp
+from domainkit.contrib.auth.integration import UserSignedUp
 from domainkit.contrib.auth.models import UserId
 
 from .exceptions import EmailTaken, IdentityTaken, LastWayIn, NoAccount, UnknownProvider

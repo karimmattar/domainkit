@@ -31,7 +31,7 @@ from types import SimpleNamespace
 from typing import Annotated, Any, Final, Self, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -462,7 +462,10 @@ async def log_out_user(
     responses=_errors(*CHANGE),
 )
 async def impersonate(
-    user_id: UUID, body: ImpersonateIn, actor: Annotated[AnyUser, _users("change")]
+    user_id: UUID,
+    body: ImpersonateIn,
+    response: Response,
+    actor: Annotated[AnyUser, _users("change")],
 ) -> ImpersonationOut:
     """Act as an active user for ``AUTH.IMPERSONATION_TTL``, for ``reason``.
 
@@ -475,6 +478,7 @@ async def impersonate(
         PermissionDenied: Impersonation is off, the user is the staff
             member, or holds more than them.
     """
+    response.headers["Cache-Control"] = "no-store"  # The answer is a token.
     ttl = auth_settings().IMPERSONATION_TTL
     if ttl is None:
         raise PermissionDenied("Impersonation is off (AUTH.IMPERSONATION_TTL).")

@@ -34,6 +34,7 @@ step in the transaction that records it as done.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -74,6 +75,7 @@ from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections, dbclock
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
+from domainkit.ddd.tenancy import tenant
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tasks import spawn
@@ -956,7 +958,7 @@ class Worker:
         return Claimed(**rows[0]._mapping, lock_id=lock_id) if rows else None
 
     async def _process(self, message: Claimed) -> None:
-        """Run one message under its original request id and actor; never raises.
+        """Run one message as its request's id, actor, and tenant; never raises.
 
         A message no request queued (a periodic task, a command's) runs as
         ``SYSTEM_ACTOR``; one an anonymous request queued, without an actor.
@@ -977,6 +979,7 @@ class Worker:
         started = time.perf_counter()
         with (
             bind_request(context),
+            _as_tenant(message.headers.get("tenant")),
             remote_parent(message.headers),
             span("message.process", kind=message.kind, target=message.target),
             _attempting(message),
@@ -1850,3 +1853,13 @@ async def _first(*events: asyncio.Event) -> None:
     finally:
         for waiter in waiting:
             waiter.cancel()
+
+
+@contextlib.contextmanager
+def _as_tenant(tenant_id: object) -> Iterator[None]:
+    """Serve ``tenant_id``, the tenant of the request that queued the message."""
+    if not tenant_id:
+        yield
+        return
+    with tenant(tenant_id):
+        yield

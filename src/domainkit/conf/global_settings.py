@@ -609,6 +609,42 @@ class StorageConfig(BaseModel):
     """Keyword arguments of the class, such as ``{"location": "/srv/files"}``."""
 
 
+class TenancyConfig(BaseModel):
+    """``TENANCY``: how a request names its tenant, and where its data lives."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    SUBDOMAIN_OF: str | None = Field(default=None, pattern=r"^[a-z0-9.-]+$")
+    """``example.com``: ``acme.example.com`` is served as the tenant ``acme``."""
+    HEADER: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]+$")
+    """A header that names the tenant (``X-Tenant``), when there is no subdomain;
+    with ``MEMBERSHIP``, as any caller may send any value."""
+    RESOLVER: str | None = None
+    """Dotted path to a function of the request (async or not) that returns
+    its tenant, or None; it replaces ``SUBDOMAIN_OF`` and ``HEADER``."""
+    MEMBERSHIP: str | None = None
+    """Dotted path to a function of the user and a tenant id (async or not):
+    whether the user may act in that tenant (``403 not_a_member`` if not)."""
+    REQUIRED: bool = True
+    """Refuse a request that names no tenant (``400 tenant_not_named``)."""
+    EXEMPT_PATHS: tuple[str, ...] = ("/health",)
+    """Paths that start with one of these may name no tenant."""
+    SCHEMA: str = Field(
+        default="tenant_{tenant}", pattern=r"^[a-z_]*\{tenant\}[a-z_]*$"
+    )
+    """A tenant's PostgreSQL schema, on the ``SCHEMA_DATABASES``."""
+    SCHEMA_DATABASES: tuple[str, ...] = ()
+    """Database aliases (PostgreSQL) whose every table lives in a schema per
+    tenant: their units of work use the current tenant's."""
+
+    @model_validator(mode="after")
+    def _one_way(self) -> Self:
+        """``SUBDOMAIN_OF`` and ``HEADER`` are two ways: one at most."""
+        if self.SUBDOMAIN_OF is not None and self.HEADER is not None:
+            raise ValueError("name the tenant by SUBDOMAIN_OF or by HEADER, not both")
+        return self
+
+
 class ScannerConfig(BaseModel):
     """``UPLOAD_SCANNER``: the virus scanner every upload streams through."""
 
@@ -839,6 +875,8 @@ class Settings(BaseModel):
     """File storages by alias (``domainkit.storage``); none unless set."""
     UPLOAD_SCANNER: ScannerConfig | None = None
     """The virus scanner ``save_upload`` streams uploads through; none unless set."""
+    TENANCY: TenancyConfig | None = None
+    """Multi-tenancy (``domainkit.tenancy``); None: one tenant, no scoping."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
     EVENT_HANDLER_TIMEOUT: float = Field(default=10.0, gt=0, le=3600)

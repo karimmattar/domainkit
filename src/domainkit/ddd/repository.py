@@ -46,6 +46,13 @@ from domainkit.ddd.query import (
     resolve,
     total_ordering,
 )
+from domainkit.ddd.tenancy import (
+    TENANT_ID_FIELD,
+    TenantOwned,
+    claim,
+    row_tenant,
+    visible,
+)
 
 DELETED_AT: Final = "deleted_at"
 LOCK_TIMEOUT: Final = 10.0
@@ -188,7 +195,8 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         return model
 
     async def add(self, aggregate: AggregateT) -> None:
-        """Store a new aggregate."""
+        """Store a new aggregate (a ``TenantOwned`` one, the current tenant's)."""
+        claim(aggregate)
         await self._add(aggregate)
         self._track(aggregate)
 
@@ -209,14 +217,19 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
     ) -> AggregateT | None:
         """Return the aggregate with ``id_``, or None.
 
-        A soft-deleted aggregate counts as missing unless ``include_deleted``.
+        A soft-deleted aggregate counts as missing unless ``include_deleted``,
+        and a ``TenantOwned`` one of another tenant always does.
 
         Raises:
             PreconditionFailed: The use case expects another version of it
                 (see ``domainkit.ddd.preconditions``).
         """
         aggregate = await self._get(id_)
-        if aggregate is None or (_is_deleted(aggregate) and not include_deleted):
+        if (
+            aggregate is None
+            or (_is_deleted(aggregate) and not include_deleted)
+            or not visible(aggregate)
+        ):
             return None
         check_expected(aggregate, self._expected)
         self._track(aggregate)
@@ -527,6 +540,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         if found is not None:
             return found, False
         aggregate = create()
+        claim(aggregate)
         try:
             await self._add_now(aggregate)
         except DuplicateValue:
@@ -600,14 +614,22 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
     def _scope(
         self, criteria: CriteriaLike | None, *, include_deleted: bool
     ) -> Criteria | None:
-        """``criteria`` bound to the aggregate, soft-deleted ones left out."""
+        """``criteria`` bound to the aggregate, as every read sees it.
+
+        Soft-deleted aggregates are left out, and a ``TenantOwned`` one's
+        rows are the current tenant's only.
+        """
         model = self.aggregate_type
         parts = [] if criteria is None else [as_criteria(criteria)]
         if issubclass(model, SoftDeletable) and not include_deleted:
             parts.append(F(DELETED_AT).isnull())
+        if issubclass(model, TenantOwned) and (owner := row_tenant()) is not None:
+            parts.append(F(TENANT_ID_FIELD) == owner)
         if not parts:
             return None
-        joined = parts[0] if len(parts) == 1 else parts[0] & parts[1]
+        joined = parts[0]
+        for part in parts[1:]:
+            joined &= part
         return joined.bind(model)
 
     def _ordered(self, query: Selection) -> Selection:

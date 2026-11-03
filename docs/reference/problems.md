@@ -107,6 +107,7 @@ How each status is reached, and which fields a body holds, is in
 | `invalid_password` | 422 | `InvalidPassword` (contrib.auth.exceptions): The password breaks the configured rules (``PASSWORD_VALIDATORS``). |
 | `invalid_setting_value` | 422 | `InvalidSettingValue` (contrib.flags.exceptions): The value does not fit the dynamic setting's type. |
 | `invalid_statement` | 422 | `InvalidStatement` (contrib.accounting.exceptions): A statement that cannot be imported: its format, or one of its lines. |
+| `invalid_tenant` | 400 | domainkit.tenancy: The tenant the request names is not a tenant id. |
 | `invalid_token` | 400 | contrib.auth.mfa: The login has expired; log in again. contrib.auth.recovery: The link is invalid or has expired. |
 | `invalid_transaction` | 422 | `InvalidTransaction` (contrib.auth.sca): The amount, payee, or purpose cannot be authorized as given. |
 | `invalid_user_field` | 422 | `InvalidUserField` (contrib.auth.exceptions): A value does not fit the type of the user field it is for. |
@@ -129,6 +130,7 @@ How each status is reached, and which fields a body holds, is in
 | `no_open_period` | 422 | `NoOpenPeriod` (contrib.accounting.exceptions): No accounting period covers the entry's date (``REQUIRE_PERIOD``). |
 | `no_second_factor` | 409 | contrib.auth.stepup: Turn on a second factor first: confirming it is you needs one. |
 | `no_session` | 400 | contrib.auth.cookies: This request has no browser session. |
+| `not_a_member` | 403 | domainkit.tenancy: `TENANCY.MEMBERSHIP` says the caller does not belong to the tenant. |
 | `not_acceptable` | 406 | resources.renderers: This resource cannot answer in a media type the request accepts. |
 | `not_applied` | 424 | resources.batches: Another item of the batch failed, so nothing was applied. |
 | `not_authenticated` | 401 | http.access: Authentication credentials were not provided. |
@@ -164,6 +166,9 @@ How each status is reached, and which fields a body holds, is in
 | `signup_taken` | 409 | contrib.auth.signup: An account already uses this username or this address; sign up again with another username, or log in. |
 | `step_up_required` | 401 | contrib.auth.access: Confirm it is you: authenticate again to do this. |
 | `step_up_unsupported` | 400 | contrib.auth.stepup: These credentials cannot step up: log in, then step up. |
+| `tenant_mismatch` | 403 | `TenantMismatch` (ddd.tenancy): An aggregate of another tenant was handed to this tenant's repository. |
+| `tenant_not_named` | 400 | domainkit.tenancy: The request names no tenant, where `TENANCY.REQUIRED`. |
+| `tenant_required` | 403 | `TenantRequired` (ddd.tenancy): Tenant data was asked for with no tenant current. |
 | `throttle_unavailable` | 503 | contrib.auth.throttling: Attempts cannot be counted right now; try again later. |
 | `token_lifetime_too_long` | 422 | contrib.auth.personal_tokens: A personal token asked for longer than `AUTH.PERSONAL_TOKEN_MAX_AGE`, or for no end. |
 | `token_not_found` | 404 | contrib.auth.personal_tokens: No such token. |

@@ -50,6 +50,7 @@ from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
+from domainkit.ddd.tenancy import scoped_key
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError, error_response
 from domainkit.http.middleware import (
@@ -174,7 +175,7 @@ class MemoryBackend:
         server's threads, or free-threaded Python) never interleave.
         """
         with self._lock:
-            return self._hit(key, limit, period)
+            return self._hit(scoped_key(key), limit, period)
 
     def _hit(self, key: str, limit: int, period: float) -> Decision:
         """``hit``, with the lock held."""
@@ -229,6 +230,7 @@ class MemoryBackend:
 
         A caller left owing nothing is forgotten.
         """
+        key = scoped_key(key)
         with self._lock:
             caller = self._callers.get(key)
             if caller is None:
@@ -347,7 +349,10 @@ class RedisBackend:
             return await self._fall_back(key, limit, period, let_through)
         try:
             allowed, debt = await cache.call(
-                store.gcra, f"{cache.namespace}ratelimit:{key}", interval, tolerance
+                store.gcra,
+                f"{cache.namespace}ratelimit:{scoped_key(key)}",
+                interval,
+                tolerance,
             )
         except CacheUnavailable:  # The cache cools down and says so itself.
             return await self._fall_back(key, limit, period, let_through)
@@ -398,7 +403,9 @@ class RedisBackend:
         interval = period * 1_000_000 / limit
         with contextlib.suppress(CacheError):
             await cache.call(
-                store.gcra_refund, f"{cache.namespace}ratelimit:{key}", interval
+                store.gcra_refund,
+                f"{cache.namespace}ratelimit:{scoped_key(key)}",
+                interval,
             )
 
 

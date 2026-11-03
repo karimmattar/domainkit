@@ -412,3 +412,24 @@ Passkeys, their challenges, and bound devices.
 Push notifications to a user: to every app of theirs that gave a token.
 
 - `notify_user`: Queue a notification to each of the user's tokens; how many.
+
+## `domainkit.contrib.auth.integration`
+
+What apps built on auth use: log a user in, step them up, hear of them.
+
+- `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
+- `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
+- `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
+- `SteppedUp`: A user authenticated again, for acts that ask for it (`StepUp`).
+- `TokenOut`: Tokens (OAuth 2's token response): send `Authorization: Bearer ...`.
+- `UserDeleted`: A user was deleted.
+- `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
+- `challenge`: A challenge, if `user` has a second factor; None if not.
+- `check_password_again`: Check the user's password again, counted with their other password checks.
+- `impersonated`: Whether staff act as the user on `connection` (an impersonation).
+- `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `proof_of`: The step-up of the connection's credentials, read once a request.
+- `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).
+- `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
+- `stepping_credentials`: The request's credentials, if they can keep a step-up.
+- `utc_now`: The current time in UTC.

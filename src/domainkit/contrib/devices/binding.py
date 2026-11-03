@@ -37,7 +37,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from starlette.requests import HTTPConnection, Request
 
 from domainkit.apps import registry
-from domainkit.contrib.auth.tokens import utc_now
+from domainkit.contrib.auth.integration import utc_now
 from domainkit.http.access import BasePermission
 
 from .exceptions import DeviceSignatureRefused, UnsupportedKey

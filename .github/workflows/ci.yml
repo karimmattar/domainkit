@@ -1138,7 +1138,7 @@ jobs:
               domainkit.contrib.auth.authentication.* domainkit.contrib.auth.cookies.*
               domainkit.contrib.auth.metrics.* domainkit.contrib.auth.permissions.*
               domainkit.contrib.auth.signup.* domainkit.contrib.auth.tokens.*
-              domainkit.contrib.auth.captcha.*
+              domainkit.contrib.auth.captcha.* domainkit.contrib.auth.integration.*
           - name: auth-2
             mutants: >-
               domainkit.contrib.auth.devices.*
@@ -1243,6 +1243,7 @@ jobs:
           - name: domain
             mutants: >-
               domainkit.resources.* domainkit.ddd.* domainkit.testing.* domainkit.i18n.*
+              domainkit.tenancy.*
           - name: keys
             mutants: >-
               domainkit.keys.* domainkit.db.encrypted.* domainkit.contrib.keys.*

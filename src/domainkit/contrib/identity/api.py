@@ -27,8 +27,12 @@ from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.auth import AbstractBaseUser
-from domainkit.contrib.auth.api import MfaChallengeOut, TokenOut, issue_login
-from domainkit.contrib.auth.mfa import challenge
+from domainkit.contrib.auth.integration import (
+    MfaChallengeOut,
+    TokenOut,
+    challenge,
+    issue_login,
+)
 from domainkit.contrib.auth.models import UserId
 from domainkit.http.access import IsUnscoped, Public, Require
 

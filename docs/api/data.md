@@ -408,3 +408,17 @@ Apache Kafka (`kafka://`, `kafka+ssl://`) as a work queue (the `kafka` extra).
 Amazon SQS (`sqs://<region>`) as a work queue, through its JSON API.
 
 - `SqsBroker`: Work queues on Amazon SQS (see the module).
+
+## `domainkit.ddd.tenancy`
+
+The tenant being served, and the aggregates that belong to one.
+
+- `TenantMismatch`: An aggregate of another tenant was handed to this tenant's repository (403).
+- `TenantOwned`: Mixin for aggregates each of which belongs to one tenant.
+- `TenantRequired`: Tenant data was asked for with no tenant current (403).
+- `all_tenants`: Read and change every tenant's rows inside the block, on purpose.
+- `check_tenant_id`: `value` as a tenant id.
+- `current_tenant`: The tenant being served, if any.
+- `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
+- `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
+- `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).

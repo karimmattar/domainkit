@@ -147,6 +147,7 @@ def client(
                 f"{AUTHENTICATION}.cookies.CookieAuthentication",
             ],
             "JWT": {"SIGNING_KEY": "jwt-key-0123456789abcdefghijklmnopqrstuv"},
+            "IMPERSONATION_TTL": 600,
         },
     ):
         setup()
@@ -207,6 +208,15 @@ def answers(client: TestClient) -> dict[str, list[Response]]:
         f"/auth/sca/{asked['challenge']}/confirm",
         "/auth/sca/{challenge_id}/confirm",
         json={"code": code_at(secret, clock[0])},
+        headers=root,
+    )
+
+    customer = create_user("customer")
+    call(
+        "POST",
+        f"/admin/auth/users/{customer}/impersonate",
+        "/admin/auth/users/{user_id}/impersonate",
+        json={"reason": "ticket 42"},
         headers=root,
     )
 

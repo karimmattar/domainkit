@@ -119,6 +119,7 @@ Django-style settings access.
 - `Settings`: Validated, read-only settings; extra names are checked at `setup()`.
 - `ShardConfig`: One `SHARDS` group: SQL databases that share a schema, split by key.
 - `StorageConfig`: One `STORAGES` entry: a `Storage` class and its arguments (Django's).
+- `TenancyConfig`: `TENANCY`: how a request names its tenant, and where its data lives.
 - `configure`: Load `module_name` now instead of `<PREFIX>SETTINGS_MODULE`.
 - `load_settings`: Validate every public UPPERCASE name of `module_name`.
 - `override_settings`: Temporarily replace settings, re-running schema validation.
@@ -462,3 +463,18 @@ Huawei Cloud KMS (Data Encryption Workshop) as a `KeyProvider`.
 A hardware security module, through PKCS#11, as a `KeyProvider`.
 
 - `Pkcs11KeyProvider`: Data keys under an AES key inside an HSM (see the module).
+
+## `domainkit.tenancy`
+
+Multi-tenancy: a tenant per request; its rows, caches, limits, and database.
+
+- `TenantMiddleware`: Serve each request as its tenant (see the module).
+- `TenantMismatch`: An aggregate of another tenant was handed to this tenant's repository (403).
+- `TenantOwned`: Mixin for aggregates each of which belongs to one tenant.
+- `TenantRequired`: Tenant data was asked for with no tenant current (403).
+- `all_tenants`: Read and change every tenant's rows inside the block, on purpose.
+- `current_tenant`: The tenant being served, if any.
+- `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
+- `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
+- `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).
+- `tenant_schema`: The PostgreSQL schema of `tenant_id` (`TENANCY.SCHEMA`).

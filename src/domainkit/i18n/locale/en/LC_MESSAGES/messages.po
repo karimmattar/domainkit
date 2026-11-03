@@ -1041,3 +1041,19 @@ msgstr ""
 
 msgid "A service this one depends on answered with more than can be read."
 msgstr ""
+
+#. domainkit.contrib.auth and domainkit.http.uploads: impersonation, captcha, scanning
+msgid "Impersonation is off (AUTH.IMPERSONATION_TTL)."
+msgstr ""
+
+msgid "Only active users can be impersonated."
+msgstr ""
+
+msgid "Staff cannot impersonate themselves."
+msgstr ""
+
+msgid "The captcha was missing or not solved."
+msgstr ""
+
+msgid "The virus scan refused the file."
+msgstr ""

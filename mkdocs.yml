@@ -90,6 +90,7 @@ nav:
       - request-flow.md
       - queries.md
       - databases.md
+      - tenancy.md
       - money.md
       - Users and permissions:
           - auth.md

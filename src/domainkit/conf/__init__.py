@@ -30,6 +30,7 @@ from domainkit.conf.global_settings import (
     Settings,
     ShardConfig,
     StorageConfig,
+    TenancyConfig,
 )
 from domainkit.conf.lazy import (
     SETTINGS_MODULE_VARIABLE,
@@ -68,6 +69,7 @@ __all__ = [
     "Settings",
     "ShardConfig",
     "StorageConfig",
+    "TenancyConfig",
     "configure",
     "load_settings",
     "override_settings",

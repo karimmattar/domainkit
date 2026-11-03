@@ -14,6 +14,7 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
 from domainkit.db.routing import router
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management.base import BaseCommand, CommandError
 
 SYMBOLIC: Final = frozenset({"head", "heads", "base"})
@@ -67,6 +68,13 @@ class Command(BaseCommand):
             help="record TARGET as applied without running anything",
         )
         parser.add_argument(
+            "--tenant",
+            action="append",
+            default=[],
+            help="migrate this tenant's schema on TENANCY.SCHEMA_DATABASES "
+            "(made if missing); repeat for several",
+        )
+        parser.add_argument(
             "--from",
             dest="start",
             metavar="REVISION",
@@ -84,11 +92,26 @@ class Command(BaseCommand):
         sql: bool,
         fake: bool,
         start: str | None,
+        tenant: list[str],
         **options: object,
     ) -> None:
-        """Apply, revert, plan, print, or record revisions on each database."""
+        """Apply, revert, plan, print, or record revisions on each database.
+
+        The databases of ``TENANCY.SCHEMA_DATABASES`` hold a schema per
+        tenant, migrated with ``--tenant`` only.
+        """
         if start is not None and not sql:
             raise CommandError("--from goes with --sql.")
+        tenanted = () if settings.TENANCY is None else settings.TENANCY.SCHEMA_DATABASES
+        if tenant:
+            if plan or sql or fake:
+                raise CommandError(
+                    "--tenant migrates; it takes no --plan, --sql, --fake."
+                )
+            for alias in tenanted if database is None else (database,):
+                for name in tenant:
+                    self._migrate_tenant(alias, target, name, downgrade=downgrade)
+            return
         if (
             downgrade
             and not (plan or sql)
@@ -106,6 +129,11 @@ class Command(BaseCommand):
                 "target with --database."
             )
         for alias in (alias for name in targets for alias in router.aliases_of(name)):
+            if alias in tenanted:
+                self.write(
+                    f"Database {alias!r} keeps a schema per tenant: use --tenant."
+                )
+                continue
             try:
                 if plan:
                     self._plan(alias, target, downgrade=downgrade)
@@ -131,6 +159,21 @@ class Command(BaseCommand):
                 if "Multiple head" in str(exc):
                     hint = " Run 'manage.py makemigrations --merge' first."
                 raise CommandError(f"{exc}{hint}") from exc
+
+    def _migrate_tenant(
+        self, alias: str, target: str, tenant: str, *, downgrade: bool
+    ) -> None:
+        """Move one tenant's schema of one database."""
+        try:
+            if downgrade:
+                migrations.downgrade(target, alias, tenant=tenant)
+            else:
+                migrations.upgrade(target, alias, tenant=tenant)
+        except migrations.DatabaseUnreachable as exc:
+            raise unreachable(alias, exc) from None
+        except (AlembicError, ImproperlyConfigured, ValueError) as exc:
+            raise CommandError(str(exc)) from exc
+        self.write(f"Tenant {tenant!r} on {alias!r} is at {target}.")
 
     def _plan(self, alias: str, target: str, *, downgrade: bool) -> None:
         """List what moving one database to ``target`` would run."""

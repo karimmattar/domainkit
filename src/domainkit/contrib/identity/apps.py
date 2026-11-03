@@ -27,7 +27,7 @@ class IdentityConfig(DomainConfig):
                 "DATABASE_ROUTING: 'identity' must be routed with 'auth': a login "
                 "reads both in one transaction."
             )
-        from domainkit.contrib.auth.events import UserDeleted
+        from domainkit.contrib.auth.integration import UserDeleted
 
         event_bus.subscribe(UserDeleted, forget_identities)
 

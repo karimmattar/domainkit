@@ -41,18 +41,19 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.apps import registry
-from domainkit.contrib.auth import AbstractBaseUser
-from domainkit.contrib.auth.api import PASSWORD_MAX_LENGTH, TokenOut, issue_login
+from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
 from domainkit.contrib.auth.authentication import Credentials, Proof
-from domainkit.contrib.auth.models import UserId
-from domainkit.contrib.auth.stepup import (
+from domainkit.contrib.auth.integration import (
+    PASSWORD_MAX_LENGTH,
     StepUpOut,
+    TokenOut,
+    issue_login,
     record_step_up,
     step_up_answer,
     stepping_credentials,
+    utc_now,
 )
-from domainkit.contrib.auth.tokens import utc_now
-from domainkit.contrib.auth.uow import AuthUnitOfWork
+from domainkit.contrib.auth.models import UserId
 from domainkit.http.access import IsUnscoped, Public, Require
 
 from .binding import DeviceSigned, device_key

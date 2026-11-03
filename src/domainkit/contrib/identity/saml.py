@@ -39,7 +39,8 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, Response, status
 from fastapi.responses import RedirectResponse
 
-from domainkit.contrib.auth.tokens import utc_now
+from domainkit.contrib.auth.integration import utc_now
+from domainkit.exceptions import DomainkitError
 from domainkit.http.access import Public
 
 from .exceptions import EmailTaken, NoAccount, UnknownProvider
@@ -68,7 +69,7 @@ MAX_RESPONSE: Final = 1_000_000
 NS: Final = {"samlp": PROTOCOL, "saml": ASSERTION}
 
 
-class AssertionRefused(Exception):
+class AssertionRefused(DomainkitError):
     """The response does not prove a login; the reason is logged, never shown."""
 
 

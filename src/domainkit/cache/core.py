@@ -29,6 +29,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from domainkit import deadlines
 from domainkit.cache.base import CacheError, CacheUnavailable, Store
 from domainkit.conf import CacheConfig
+from domainkit.ddd.tenancy import scoped_key
 from domainkit.deadlines import Deadline, current_deadline
 from domainkit.tasks import spawn
 
@@ -154,12 +155,16 @@ class Cache:
         self._computing: dict[str, _Computation] = {}
 
     def make_key(self, key: str) -> str:
-        """Return the full key stored for ``key``: namespace, version, key."""
+        """Return the full key stored for ``key``: namespace, version, key.
+
+        While a tenant is served (``domainkit.tenancy``), the key is the
+        tenant's own: tenants never read each other's entries.
+        """
         if not key or len(key) > MAX_KEY_LENGTH:
             raise ValueError(
                 f"Cache keys have 1 to {MAX_KEY_LENGTH} characters; hash long ones."
             )
-        return self._prefix + key
+        return self._prefix + scoped_key(key)
 
     @overload
     async def get(self, key: str) -> Any: ...  # noqa: ANN401 - JSON values.

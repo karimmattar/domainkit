@@ -11,7 +11,7 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.contrib.auth import AuthUnitOfWork
-from domainkit.contrib.auth.tokens import utc_now
+from domainkit.contrib.auth.integration import utc_now
 
 from .tables import challenges, devices, passkeys, push_tokens
 from .webauthn import b64encode

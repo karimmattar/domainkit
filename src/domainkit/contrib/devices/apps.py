@@ -28,7 +28,7 @@ class DevicesConfig(DomainConfig):
                 "reads both in one transaction."
             )
         from domainkit.apps import registry
-        from domainkit.contrib.auth.events import UserDeleted
+        from domainkit.contrib.auth.integration import UserDeleted
 
         event_bus.subscribe(UserDeleted, forget_devices)
         if registry.is_installed("domainkit.contrib.notifications"):

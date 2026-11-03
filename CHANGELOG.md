@@ -11,6 +11,15 @@ and a status.
 
 ### Added
 
+- Multi-tenancy (A7): `TENANCY` and `domainkit.tenancy.TenantMiddleware`
+  give each request its tenant (subdomain, header, or a resolver, with a
+  membership check). `TenantOwned` aggregates are scoped by their
+  repositories: reads and bulk changes see the tenant's rows only, adds
+  set it, another's is refused, and no tenant reads nothing unless
+  `all_tenants()`. A shard group takes the tenant's database; a
+  `SCHEMA_DATABASES` alias works in the tenant's PostgreSQL schema
+  (`migrate --tenant`). Cache keys and rate-limit counts are each
+  tenant's own; logs name it; queued tasks run as it.
 - Brokers beside RabbitMQ (A6), chosen by `BROKERS` URL: Redis Streams
   (`redis(s)://`), NATS JetStream (`nats(+tls)://`, the `nats` extra),
   Kafka (`kafka(+ssl)://`, the `kafka` extra), and Amazon SQS

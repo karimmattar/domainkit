@@ -24,6 +24,8 @@ from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 
+from domainkit.exceptions import DomainkitError
+
 ES256: Final = -7
 EDDSA: Final = -8
 RS256: Final = -257
@@ -41,7 +43,7 @@ AT: Final = 0x40
 ED: Final = 0x80
 
 
-class WebAuthnError(ValueError):
+class WebAuthnError(DomainkitError, ValueError):
     """What came from the browser does not hold; the message says why."""
 
 
