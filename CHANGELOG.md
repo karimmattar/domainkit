@@ -11,6 +11,10 @@ and a status.
 
 ### Added
 
+- Fuzz tests of every parser of untrusted input (`test_fuzz.py`): query
+  strings through a filter set, entity tags, trace headers, signed values,
+  WebAuthn data, `Accept`, and `Accept-Language` answer or refuse anything,
+  never with a 500; the weekly run tries fifty times the examples.
 - OpenSSF Scorecard checks the repository's practices on pushes to `main`
   and weekly (`.github/workflows/scorecard.yml`); its findings go to code
   scanning, and its score to the README's badge.

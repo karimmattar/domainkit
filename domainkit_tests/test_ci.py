@@ -1129,6 +1129,17 @@ def test_the_newest_job_audits_what_pip_resolves() -> None:
     assert any(".newest/bin/python -m pip_audit" in each for each in newest)
 
 
+def test_the_weekly_run_fuzzes_the_parsers_of_untrusted_input() -> None:
+    """test_fuzz.py with the fuzz profile, on the schedule only."""
+    [fuzz] = [
+        step
+        for step in jobs()["newest"]["steps"]
+        if "--hypothesis-profile fuzz" in step.get("run", "")
+    ]
+    assert fuzz["if"] == "github.event_name == 'schedule'"
+    assert "domainkit_tests/test_fuzz.py" in fuzz["run"]
+
+
 def ci_images() -> set[str]:
     """Every image CI starts: services, and ``docker run`` lines."""
     text = (WORKFLOWS / "ci.yml").read_text()
