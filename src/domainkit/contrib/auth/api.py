@@ -40,6 +40,7 @@ from .authentication import (
     get_authenticators,
 )
 from .backends import authenticate, get_all_permissions
+from .captcha import captcha
 from .devices import (
     PROVEN_CEILING,
     device_key,
@@ -168,7 +169,7 @@ class MfaChallengeOut(BaseModel):
 
 @router.post(
     "/login",
-    dependencies=[Public],
+    dependencies=[Public, captcha("login")],
     response_model_exclude_none=True,
     responses={
         status.HTTP_202_ACCEPTED: {"model": MfaChallengeOut},

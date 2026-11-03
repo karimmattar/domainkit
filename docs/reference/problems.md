@@ -39,6 +39,8 @@ How each status is reached, and which fields a body holds, is in
 | `authentication_failed` | 401 | `AuthenticationFailed` (contrib.auth.authentication): Credentials were presented and do not hold. |
 | `bad_request` | 400 | Starlette or FastAPI. |
 | `business_rule_violation` | 422 | `BusinessRuleViolation` (ddd.exceptions): The request is well-formed but breaks an invariant of the model. |
+| `captcha_failed` | 400 | contrib.auth.captcha: The captcha was missing or not solved. |
+| `captcha_unavailable` | 503 | `CaptchaUnavailable` (contrib.auth.captcha): The captcha provider could not check the token: 503. |
 | `check_violation` | 422 | http.errors: A value breaks a rule of the data: it is out of the range or set the database accepts. |
 | `concurrent_update` | 409 | `ConcurrentUpdate` (ddd.exceptions): Someone else changed the aggregate first; reload it and try again. |
 | `conflict` | 409 | `Conflict` (ddd.exceptions): The operation clashes with the current state, such as a duplicate. |

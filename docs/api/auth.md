@@ -105,6 +105,13 @@ Who a user is, and what they may do (Django's authentication backends).
 - `has_perms`: Whether `user` has every one of `perms` (on `obj`).
 - `object_grants`: What every backend grants `holder` (a user or a group) on single objects.
 
+## `domainkit.contrib.auth.captcha`
+
+A captcha on the routes bots try: login, signup, password reset.
+
+- `CaptchaUnavailable`: The captcha provider could not check the token: 503.
+- `captcha`: A dependency that checks the captcha of `action`, if it is `ON`.
+
 ## `domainkit.contrib.auth.certificates`
 
 Client certificates (mutual TLS): a certificate someone checked names its user.
