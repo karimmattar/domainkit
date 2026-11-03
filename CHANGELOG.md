@@ -332,6 +332,10 @@ and a status.
 
 ### Fixed
 
+- The cache-store and broker recipes close their SQLite file under the
+  lock their calls hold: a call still running on its thread when the store
+  or the broker closed could crash the process.
+
 - Generated code says "an account", "An order", never "a account"; and a
   command's new event joins the other events in a four-file `domain.py`,
   above the aggregate's heading, not under it.

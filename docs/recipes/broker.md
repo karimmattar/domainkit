@@ -90,9 +90,18 @@ class SqliteBroker(PullBroker):
         return SqlitePuller(self, [self.prefix + queue for queue in queues])
 
     async def close(self) -> None:
-        """Let deliveries finish, then close the file."""
+        """Let deliveries finish, then close the file.
+
+        Under the lock: a fetch cancelled with the pump may still be running
+        on its thread, and closing the file under it would crash.
+        """
         await super().close()
-        self.db.close()
+
+        def locked() -> None:
+            with self.lock:
+                self.db.close()
+
+        await asyncio.to_thread(locked)
 
 
 class SqlitePuller(Puller):
