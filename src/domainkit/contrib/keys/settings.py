@@ -1,6 +1,6 @@
 """Settings of ``domainkit.contrib.keys``: ``KEYS = {...}``."""
 
-from typing import Annotated, Final, Literal, Self
+from typing import Annotated, Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
@@ -11,7 +11,26 @@ REGION_PATTERN: Final = r"^[a-z]{2}(-[a-z]+)+-[0-9]{1,2}$"
 """An AWS region, such as ``eu-west-1`` or ``us-gov-west-1``."""
 DEVELOPMENT_KEY: Final = "dev"
 """The id of the data key derived from ``SECRET_KEY`` when ``DATA_KEYS`` is empty."""
-PROVIDER_PREFIXES: Final = {"local": "local:", "aws-kms": "aws-kms:", "vault": "vault:"}
+PROVIDER_PREFIXES: Final = {
+    "local": "local:",
+    "aws-kms": "aws-kms:",
+    "vault": "vault:",
+    "gcp-kms": "gcp-kms:",
+    "azure-key-vault": "azure-kv:",
+    "huawei-kms": "huawei-kms:",
+    "pkcs11": "pkcs11:",
+}
+"""What each provider's wrapped keys start with (``custom``: its class's ``name``)."""
+SETTING_OF: Final = {
+    "aws-kms": "AWS_KMS",
+    "vault": "VAULT",
+    "gcp-kms": "GCP_KMS",
+    "azure-key-vault": "AZURE_KEY_VAULT",
+    "huawei-kms": "HUAWEI_KMS",
+    "pkcs11": "PKCS11",
+    "custom": "CUSTOM",
+}
+"""The key of each provider's settings."""
 
 type KeyId = Annotated[str, Field(pattern=KEY_ID_PATTERN)]
 
@@ -48,6 +67,84 @@ class VaultSettings(BaseModel):
     """Vault Enterprise's namespace, sent as ``X-Vault-Namespace``."""
 
 
+class GcpKmsSettings(BaseModel):
+    """``KEYS["GCP_KMS"]``: the Cloud KMS key data keys are wrapped under."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    KEY_NAME: str = Field(
+        pattern=r"^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+$"
+    )
+    """``projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>``."""
+    CREDENTIALS_FILE: str | None = None
+    """A service account's key file; None: the metadata server's account."""
+
+
+class AzureKeyVaultSettings(BaseModel):
+    """``KEYS["AZURE_KEY_VAULT"]``: the Key Vault key data keys are wrapped under."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    VAULT_URL: str = Field(pattern=r"^https://[^\s/?#]+/?$")
+    """``https://<vault>.vault.azure.net``, or a Managed HSM's URL."""
+    KEY_NAME: str = Field(min_length=1, max_length=127, pattern=r"^[A-Za-z0-9-]+$")
+    ALGORITHM: Literal["RSA-OAEP-256", "RSA-OAEP", "A256KW"] = "RSA-OAEP-256"
+    TENANT_ID: str | None = None
+    CLIENT_ID: str | None = None
+    """With ``TENANT_ID`` and ``CLIENT_SECRET``, an Entra application; alone,
+    a user-assigned managed identity; neither, the system-assigned one."""
+    CLIENT_SECRET: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def _application(self) -> Self:
+        """A tenant and a secret go together."""
+        if (self.TENANT_ID is None) != (self.CLIENT_SECRET is None):
+            raise ValueError("TENANT_ID and CLIENT_SECRET go together, with CLIENT_ID.")
+        if self.TENANT_ID is not None and self.CLIENT_ID is None:
+            raise ValueError("An Entra application needs CLIENT_ID.")
+        return self
+
+
+class HuaweiKmsSettings(BaseModel):
+    """``KEYS["HUAWEI_KMS"]``: the master key data keys are wrapped under."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    KEY_ID: str = Field(min_length=1, max_length=64)
+    REGION: str = Field(pattern=r"^[a-z]{2}(-[a-z]+)+-[0-9]{1,2}$")
+    """Such as ``ap-southeast-3`` or ``cn-north-4``."""
+    PROJECT_ID: str = Field(min_length=1, max_length=64, pattern=r"^[0-9a-f]+$")
+    ACCESS_KEY: str = Field(min_length=1)
+    SECRET_KEY: SecretStr = Field(min_length=1)
+    ENDPOINT: str | None = Field(default=None, pattern=r"^https://[^\s/?#]+/?$")
+    """None: ``https://kms.<REGION>.myhuaweicloud.com``."""
+
+
+class Pkcs11Settings(BaseModel):
+    """``KEYS["PKCS11"]``: the HSM, its token, and its AES key."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    LIBRARY: str = Field(min_length=1)
+    """The vendor's PKCS#11 library (``/usr/lib/softhsm/libsofthsm2.so``)."""
+    TOKEN_LABEL: str = Field(min_length=1, max_length=32)
+    PIN: SecretStr = Field(min_length=1)
+    KEY_LABEL: str = Field(min_length=1, max_length=64, pattern=r"^[^:]+$")
+    """The AES-256 key new data keys are wrapped under."""
+    RETIRED_LABELS: tuple[Annotated[str, Field(pattern=r"^[^:]+$")], ...] = ()
+    """Older keys that still unwrap, until ``rewrap`` moves their data keys."""
+
+
+class CustomProviderSettings(BaseModel):
+    """``KEYS["CUSTOM"]``: a ``KeyProvider`` of the project's, and its options."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    CLASS: str = Field(min_length=1)
+    """Dotted path to a ``KeyProvider`` with ``from_options(options, timeout=)``."""
+    OPTIONS: dict[str, Any] = Field(default_factory=dict)
+
+
 class KeysSettings(BaseModel):
     """Where the key-encryption key is, and the data keys it wraps.
 
@@ -60,13 +157,30 @@ class KeysSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    PROVIDER: Literal["local", "aws-kms", "vault"] = "local"
+    PROVIDER: Literal[
+        "local",
+        "aws-kms",
+        "vault",
+        "gcp-kms",
+        "azure-key-vault",
+        "huawei-kms",
+        "pkcs11",
+        "custom",
+    ] = "local"
     """``local``: a KEK derived from ``SECRET_KEY`` (development and tests);
-    ``aws-kms`` (``AWS_KMS``); ``vault`` (``VAULT``)."""
+    ``aws-kms`` (``AWS_KMS``), ``vault`` (``VAULT``), ``gcp-kms``
+    (``GCP_KMS``), ``azure-key-vault`` (``AZURE_KEY_VAULT``), ``huawei-kms``
+    (``HUAWEI_KMS``), ``pkcs11`` (``PKCS11``), or a class of the project's
+    (``CUSTOM``)."""
     ALLOW_LOCAL_KEK: bool = False
     """Let staging and production use the local KEK (``keys.E001`` otherwise)."""
     AWS_KMS: AwsKmsSettings | None = None
     VAULT: VaultSettings | None = None
+    GCP_KMS: GcpKmsSettings | None = None
+    AZURE_KEY_VAULT: AzureKeyVaultSettings | None = None
+    HUAWEI_KMS: HuaweiKmsSettings | None = None
+    PKCS11: Pkcs11Settings | None = None
+    CUSTOM: CustomProviderSettings | None = None
     DATA_KEYS: dict[KeyId, str] = Field(default_factory=dict, max_length=MAX_DATA_KEYS)
     """Data keys by id, each wrapped by ``PROVIDER`` (at most 16). Empty with
     the local provider: one development key, ``dev``, derived from ``SECRET_KEY``."""
@@ -92,12 +206,15 @@ class KeysSettings(BaseModel):
             raise ValueError('PROVIDER "aws-kms" needs AWS_KMS (KEY_ID, REGION).')
         if self.PROVIDER == "vault" and self.VAULT is None:
             raise ValueError('PROVIDER "vault" needs VAULT (URL, KEY, TOKEN).')
+        setting = SETTING_OF.get(self.PROVIDER)
+        if setting is not None and getattr(self, setting) is None:
+            raise ValueError(f"PROVIDER {self.PROVIDER!r} needs {setting}.")
         if self.PROVIDER != "local" and not self.DATA_KEYS:
             raise ValueError(
                 f"PROVIDER {self.PROVIDER!r} needs DATA_KEYS: make one with "
                 "'manage.py keys generate'."
             )
-        prefix = PROVIDER_PREFIXES[self.PROVIDER]
+        prefix = PROVIDER_PREFIXES.get(self.PROVIDER, "")
         if wrong := sorted(
             key_id
             for key_id, wrapped in self.DATA_KEYS.items()

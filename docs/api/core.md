@@ -437,3 +437,28 @@ Calls to AWS's APIs, signed with SigV4 (`domainkit.keys.aws`).
 
 - `credential_source`: The key pair given, or the environment's credentials.
 - `signed_request`: Send `body` to `url`, signed for `service` in `region`.
+
+## `domainkit.keys.gcp`
+
+Google Cloud KMS as a `KeyProvider`.
+
+- `GcpKmsKeyProvider`: Data keys under one Cloud KMS key (see the module).
+
+## `domainkit.keys.azure`
+
+Azure Key Vault (or Managed HSM) as a `KeyProvider`.
+
+- `AzureKeyVaultKeyProvider`: Data keys under one Key Vault key (see the module).
+
+## `domainkit.keys.huawei`
+
+Huawei Cloud KMS (Data Encryption Workshop) as a `KeyProvider`.
+
+- `HuaweiKmsKeyProvider`: Data keys under one Huawei KMS master key (see the module).
+- `sign`: `headers` with `X-Sdk-Date` and an `SDK-HMAC-SHA256` signature.
+
+## `domainkit.keys.pkcs11`
+
+A hardware security module, through PKCS#11, as a `KeyProvider`.
+
+- `Pkcs11KeyProvider`: Data keys under an AES key inside an HSM (see the module).

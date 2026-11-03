@@ -11,6 +11,12 @@ and a status.
 
 ### Added
 
+- Key providers (A5) for `domainkit.contrib.keys`: Google Cloud KMS,
+  Azure Key Vault (or a Managed HSM), Huawei Cloud KMS, and an HSM
+  through PKCS#11 (the `pkcs11` extra, tested against SoftHSM), each a
+  `KEYS.PROVIDER` with its settings; `custom` names a project's own
+  `KeyProvider`, made by its `from_options`. Wrapped keys name their
+  provider and, where the service versions keys, the version.
 - Notification providers (A4), through `domainkit.http.client` with no
   SDK: text messages by Twilio, Vonage, Amazon SNS, Unifonic, and Huawei
   Cloud (`notifications.sms`); push by FCM, APNs over HTTP/2, and Huawei

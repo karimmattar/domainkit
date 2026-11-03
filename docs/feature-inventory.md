@@ -142,7 +142,7 @@ framework, for the reason given.
 | Device binding: register a device's key, sign requests with it, list and revoke devices, trusted devices for step-up | `POST /devices`, `DeviceSigned` (each signature once, across processes), `/devices/step-up` | Yes | A3 |
 | Push tokens per device | `/devices/push-tokens`, `notify_user`; tokens a service forgot are dropped ([devices.md](auth/devices.md#push-tokens)) | Yes | A4 |
 | Key management: local keys, AWS KMS, HashiCorp Vault | `contrib.keys`, envelope encryption, rotation, re-encryption | Yes | |
-| Key management: Huawei Cloud KMS, Google Cloud KMS, Azure Key Vault, an HSM through PKCS#11 | None | No: a provider interface first | A5 |
+| Key management: Huawei Cloud KMS, Google Cloud KMS, Azure Key Vault, an HSM through PKCS#11 | `KEYS.PROVIDER` `gcp-kms`, `azure-key-vault`, `huawei-kms`, `pkcs11`, or a project's (`custom`, `KeyProvider.from_options`) ([keys.md](contrib/keys.md#providers)) | Yes | A5 |
 | SMS providers (Twilio, Vonage, AWS SNS, Unifonic, Huawei SMN) | `domainkit.contrib.notifications.sms`: Twilio, Vonage, SNS, Unifonic, Huawei Cloud's Message & SMS ([mail.md](mail.md#text-messages-and-push-notifications)) | Yes | A4 |
 | Push providers (Firebase FCM, APNs, Huawei Push Kit) | `domainkit.contrib.notifications.push`: FCM v1, APNs over HTTP/2, Push Kit; a backend per platform | Yes | A4 |
 | Email providers by API (AWS SES, SendGrid, Mailgun, Postmark) | `domainkit.contrib.mail.providers` ([mail.md](mail.md#backends)) | Yes | A4 |

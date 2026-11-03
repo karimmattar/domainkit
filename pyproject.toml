@@ -116,6 +116,8 @@ identity = [
     "httpx2 (>=2.13.0,<3.0.0)",
     "httpcore2 (>=2.13.0,<3.0.0)",
 ]
+# Key-encryption keys in an HSM (domainkit.keys.pkcs11), through PKCS#11.
+pkcs11 = ["python-pkcs11 (>=0.10.1,<0.11.0)", "cryptography (>=50.0.2,<51.0.0)"]
 # Push notifications (domainkit.contrib.notifications.push): FCM, APNs
 # over HTTP/2 (h2) with an ES256 provider token, Huawei Push Kit.
 push = [

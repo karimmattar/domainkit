@@ -70,7 +70,8 @@ class KeysConfig(DomainConfig):
                     f"KEYS.PROVIDER is 'local' in {settings.ENVIRONMENT}: the key "
                     "that wraps the data keys derives from SECRET_KEY, so anyone "
                     "who reads the settings can open every encrypted field.",
-                    hint='Set KEYS.PROVIDER to "aws-kms" or "vault", or '
+                    hint="Set KEYS.PROVIDER to a key service (aws-kms, vault, "
+                    "gcp-kms, azure-key-vault, huawei-kms, pkcs11, custom), or "
                     "KEYS.ALLOW_LOCAL_KEK = True to accept it.",
                 )
             )

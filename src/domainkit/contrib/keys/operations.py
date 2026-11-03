@@ -49,11 +49,20 @@ from domainkit.db.encrypted import (
 from domainkit.db.fixtures import tables_of
 from domainkit.db.routing import router
 from domainkit.encryption import DecryptionFailed
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.keys import KeyProvider, LocalKeyProvider
 from domainkit.keys.ring import DATA, FORMAT, SUBJECT, Keyring, forget_held, sealed_key
 from domainkit.signing import derive_keys, secret_keys
 
-from .settings import DEVELOPMENT_KEY, KeysSettings
+from .settings import (
+    DEVELOPMENT_KEY,
+    AzureKeyVaultSettings,
+    CustomProviderSettings,
+    GcpKmsSettings,
+    HuaweiKmsSettings,
+    KeysSettings,
+    Pkcs11Settings,
+)
 from .store import TableSubjectKeyStore, clear_indexes, erase
 from .tables import subject_keys
 
@@ -86,7 +95,100 @@ def provider_for(config: KeysSettings) -> KeyProvider:
             namespace=vault.NAMESPACE,
             timeout=config.TIMEOUT,
         )
-    return LocalKeyProvider.from_secret_key()
+    if config.PROVIDER == "local":
+        return LocalKeyProvider.from_secret_key()
+    return _other_provider(config)
+
+
+def _other_provider(config: KeysSettings) -> KeyProvider:
+    """The providers added beside AWS KMS and Vault, configured.
+
+    Raises:
+        ImproperlyConfigured: ``CUSTOM.CLASS`` is no ``KeyProvider``, or
+            its keys are not its own.
+    """
+    if config.PROVIDER == "gcp-kms":
+        from domainkit.keys.gcp import GcpKmsKeyProvider
+
+        gcp = cast(GcpKmsSettings, config.GCP_KMS)
+        return GcpKmsKeyProvider(
+            gcp.KEY_NAME,
+            credentials_file=gcp.CREDENTIALS_FILE,
+            timeout=config.TIMEOUT,
+        )
+    if config.PROVIDER == "azure-key-vault":
+        return _azure(
+            cast(AzureKeyVaultSettings, config.AZURE_KEY_VAULT), config.TIMEOUT
+        )
+    if config.PROVIDER == "huawei-kms":
+        from domainkit.keys.huawei import HuaweiKmsKeyProvider
+
+        huawei = cast(HuaweiKmsSettings, config.HUAWEI_KMS)
+        return HuaweiKmsKeyProvider(
+            huawei.KEY_ID,
+            region=huawei.REGION,
+            project_id=huawei.PROJECT_ID,
+            access_key=huawei.ACCESS_KEY,
+            secret_key=huawei.SECRET_KEY.get_secret_value(),
+            endpoint=huawei.ENDPOINT,
+            timeout=config.TIMEOUT,
+        )
+    if config.PROVIDER == "pkcs11":
+        from domainkit.keys.pkcs11 import Pkcs11KeyProvider
+
+        hsm = cast(Pkcs11Settings, config.PKCS11)
+        return Pkcs11KeyProvider(
+            hsm.LIBRARY,
+            token_label=hsm.TOKEN_LABEL,
+            pin=hsm.PIN.get_secret_value(),
+            key_label=hsm.KEY_LABEL,
+            retired_labels=hsm.RETIRED_LABELS,
+        )
+    return _custom(cast(CustomProviderSettings, config.CUSTOM), config)
+
+
+def _azure(azure: AzureKeyVaultSettings, timeout: float) -> KeyProvider:
+    """Key Vault, called as the Entra application or the managed identity."""
+    from domainkit.cloud.azure import EntraApplication, ManagedIdentity
+    from domainkit.keys.azure import AzureKeyVaultKeyProvider
+
+    credential = (
+        EntraApplication(
+            azure.TENANT_ID,
+            cast(str, azure.CLIENT_ID),
+            cast(SecretStr, azure.CLIENT_SECRET).get_secret_value(),
+        )
+        if azure.TENANT_ID is not None
+        else ManagedIdentity(client_id=azure.CLIENT_ID)
+    )
+    return AzureKeyVaultKeyProvider(
+        azure.VAULT_URL,
+        azure.KEY_NAME,
+        credential=credential,
+        algorithm=azure.ALGORITHM,
+        timeout=timeout,
+    )
+
+
+def _custom(custom: CustomProviderSettings, config: KeysSettings) -> KeyProvider:
+    """The project's provider, from its options; its data keys must be its own."""
+    from domainkit.utils.module_loading import import_string
+
+    try:
+        cls = import_string(custom.CLASS)
+    except ImportError as exc:
+        raise ImproperlyConfigured(f"KEYS.CUSTOM.CLASS: {exc}") from exc
+    if not (isinstance(cls, type) and issubclass(cls, KeyProvider)):
+        raise ImproperlyConfigured(
+            f"KEYS.CUSTOM.CLASS: {custom.CLASS!r} is not a KeyProvider."
+        )
+    provider: KeyProvider = cls.from_options(custom.OPTIONS, timeout=config.TIMEOUT)
+    if wrong := sorted(k for k, v in config.DATA_KEYS.items() if not provider.owns(v)):
+        raise ImproperlyConfigured(
+            f"KEYS.DATA_KEYS {', '.join(wrong)} were not wrapped by {cls.__name__} "
+            f"(they do not start with {provider.name + ':'!r})."
+        )
+    return provider
 
 
 def ring_for(config: KeysSettings) -> Keyring:
