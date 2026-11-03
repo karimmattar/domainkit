@@ -34,26 +34,23 @@ installed already.
 ## Add a domain
 
 ```bash
-python manage.py startdomain accounts --aggregate Account --layered
+python manage.py startdomain accounts --aggregate Account
 python manage.py makemigrations -m "create accounts"
 python manage.py migrate
 ```
 
-`src/domains/accounts/` is a bounded context in four layers. `check` keeps
-each layer to its own imports:
+`src/domains/accounts/` is a bounded context in four files, one per
+layer. `check` keeps each file to its own imports:
 
-| Layer | Holds |
+| File | Holds |
 | --- | --- |
-| `domain/` | The `Account` aggregate: a name that must not be blank, notes, its owner, and the rule that an archived account cannot change. Plain Python, no I/O. |
-| `application/` | The commands (`CreateAccount`, `ArchiveAccount`, ...) and the use cases that run them in a unit of work. |
-| `infrastructure/` | The table, derived from the aggregate's fields, and the SQLAlchemy unit of work. |
-| `api/` | `routes.py`: the resource, its filters, and who may call it. |
+| `domain.py` | The business: the `Account` aggregate, a name that must not be blank, its errors and events, and the ports (repository, unit of work) storage fills. Plain Python, no I/O. |
+| `controllers.py` | What the domain does: one `@use_case` function per change (`create_account`, `rename_account`), run inside a unit of work. |
+| `models.py` | How it is stored: the table, derived from the aggregate's fields, and the SQL unit of work. |
+| `routes.py` | The HTTP API: the resource, its use cases as routes, and who may call them. |
 
-This is the fuller domain the next parts build on: notes, an owner, an
-event, and a package per layer, which the generators of part 2 grow
-(`--layered`). Without the flag, `startdomain <name>` writes the simple
-layout: four files, one per layer (`domain.py`, `controllers.py`,
-`models.py`, `routes.py`), with the same rules
+A domain that grows large can keep a package per layer instead
+(`startdomain <name> --layered`); the rules are the same
 ([resources.md](../resources.md#generators)).
 
 `startdomain` added the domain to `INSTALLED_DOMAINS` and mounted its
@@ -105,7 +102,7 @@ unset PASSWORD
 ```
 
 Open an account. The answer is `201 Created`, with the new account's
-`Location` and its `ETag`; the account belongs to the caller (`owner_id`):
+`Location` and its `ETag`:
 
 ```bash
 curl -i http://127.0.0.1:8000/api/v1/accounts/accounts -H "Authorization: Bearer $TOKEN" \
@@ -119,10 +116,9 @@ ID=$(curl -s http://127.0.0.1:8000/api/v1/accounts/accounts -H "Authorization: B
   | python -c "import json, sys; print(json.load(sys.stdin)['items'][0]['id'])")
 ```
 
-A name of blanks is refused by the aggregate itself: the `AccountName`
-value object in `domain/model.py` raises `InvalidAccountName`, a
-`BusinessRuleViolation`, which the HTTP layer answers `422` with the code
-`invalid_account_name`:
+A name of blanks is refused by the aggregate itself: `Account.create` in
+`domain.py` raises `InvalidAccountName`, a `BusinessRuleViolation`, which
+the HTTP layer answers `422` with the code `invalid_account_name`:
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/accounts/accounts -H "Authorization: Bearer $TOKEN" \

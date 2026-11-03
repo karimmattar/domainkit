@@ -118,9 +118,10 @@ Measured on the guide's shop, one aggregate with four commands:
 
 ## Then
 
-1. **The tutorial on the four-file layout.** `addcommand`, `addquery`,
-   and `addevent` grow four-file domains (done); the tutorial still
-   builds a layered one.
+1. **The tutorial on the four-file layout** (done). It builds the bank on
+   `domain.py`, `controllers.py`, `models.py`, and `routes.py`; a handler
+   is a `@handles` function, and `test_walkthroughs.py` plays it as
+   written.
 2. **Field rules that hold everywhere** (done, C3). An aggregate checks
    its markers when it is made and changed, so a script or a task meets
    the same limits as the API, with the error as a 422.

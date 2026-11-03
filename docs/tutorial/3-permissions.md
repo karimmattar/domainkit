@@ -7,7 +7,7 @@ more, and shows where the rule that decides it lives.
 ## Who may call a route
 
 Each route of the accounts resource needs a model permission, which
-`startdomain` wrote into `src/domains/accounts/api/routes.py`:
+`startdomain` wrote into `src/domains/accounts/routes.py`:
 
 ```text
 accounts = ResourceRouter(..., rule=ModelActions(Account))

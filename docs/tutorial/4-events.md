@@ -7,36 +7,25 @@ back, the reaction is never stored; if the worker crashes, it runs again.
 
 ## Write a handler
 
-Handlers live in `application/handlers.py`. Add one that records each
-deposit in the log (a real one would update a statement, or tell another
-service):
+A handler is an async function of the event, marked with `@handles`, in
+`controllers.py`: the domain subscribes every marked handler of that file
+when it starts. Add one that records each deposit in the log (a real one
+would update a statement, or tell another service):
 
-```python title="src/domains/accounts/application/handlers.py"
-from domains.accounts.domain.events import AccountDeposited
+```python title="src/domains/accounts/controllers.py"
+import logging
+
+from domainkit.ddd import handles
+
+from domains.accounts.domain import AccountDeposited
+
+logger = logging.getLogger(__name__)
 
 
+@handles(AccountDeposited, durable=True)
 async def log_deposit(event: AccountDeposited) -> None:
     """Log each deposit; the worker may run it twice, which is harmless."""
     logger.info("Deposited %s into account %s", event.amount, event.account_id)
-```
-
-Subscribe it in `apps.py`, where the domain connects its layers once
-settings are loaded. Replace `ready` with this one:
-
-```python title="src/domains/accounts/apps.py"
-from domains.accounts.application.handlers import log_deposit
-from domains.accounts.domain.events import AccountDeposited
-
-
-class AccountsConfig(DomainConfig):
-    ...
-
-    def ready(self) -> None:
-        """Connect the layers once settings are loaded."""
-        start_mappers()
-        # Durable: stored with the commit, run (and retried) by the worker.
-        event_bus.subscribe(AccountCreated, log_account_created, durable=True)
-        event_bus.subscribe(AccountDeposited, log_deposit, durable=True)
 ```
 
 `durable=True` is what puts the reaction in the outbox. Without it, the
@@ -58,7 +47,7 @@ curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorizatio
 ```
 
 Stop the server, and look at the outbox. The deposit's message waits
-there, beside those of the accounts opened so far:
+there:
 
 ```bash
 python manage.py messages list pending
