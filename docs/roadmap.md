@@ -141,5 +141,6 @@ Measured on the guide's shop, one aggregate with four commands:
    code through the outbox, keeps only its keyed digest, tries it
    `MAX_ATTEMPTS` times, limits sends per number and per user, and keeps
    the number verified ([phones.md](auth/phones.md)).
-6. **A learning path in plain words**: the tutorial on the four-file
-   layout, a glossary, and the commands a day of work needs.
+6. **A learning path in plain words** (done): the tutorial on the
+   four-file layout, then [learning.md](learning.md): the order to read
+   the guides in, a glossary, and the commands a day of work needs.
