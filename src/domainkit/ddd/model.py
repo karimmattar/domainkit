@@ -49,6 +49,17 @@ class Entity[IdT: Hashable](metaclass=EntityMeta):
 
     clean.__domainkit_noop__ = True  # type: ignore[attr-defined]
 
+    def before_save(self) -> None:
+        """Set what is derived from the other fields (Django's ``pre_save``).
+
+        Runs on each aggregate before every commit of a unit of work that
+        saw it, just before ``clean()``: fill a slug from a title, total
+        the lines of an order. It may change fields, which are checked as
+        ever; it should not record events, which say what was asked for.
+        """
+
+    before_save.__domainkit_noop__ = True  # type: ignore[attr-defined]
+
     def __eq__(self, other: object) -> bool:
         """Compare by type and identity, never by attribute values."""
         return (

@@ -25,7 +25,7 @@ framework, for the reason given.
 | `choices` | An `Enum` field | Yes | |
 | `get_FOO_display()`, choice labels | `TextChoices` and `IntegerChoices`: `member.label`, `choices()` | Yes | C7 |
 | `null`, `default` | `X \| None`, dataclass defaults | Yes | |
-| `db_default`, `GeneratedField` | A hand-written column in `table_for(..., *extra)` | Partial | C7 |
+| `db_default`, `GeneratedField` | `DatabaseDefault(sql)` and `Generated(sql)` on the field: a server default, and a column the database works out, read back as rows are written ([databases.md](databases.md#columns-the-database-fills)) | Yes | |
 | `unique=True`, `db_index=True` | `Unique()` and `Indexed()` on the field | Yes | C7 |
 | `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | `Meta.unique`, `Meta.indexes`, and `Meta.checks` (criteria, held at commit and by the database) on the aggregate | Yes | C7 |
 | `Meta.ordering` | `Meta.ordering` on the aggregate: queries that name none follow it, then the id | Yes | C7 |
@@ -37,7 +37,7 @@ framework, for the reason given.
 | `ManyToManyField` | A list of child entities holding a `Reference`: their table is the link table ([databases.md](databases.md#many-to-many)) | Yes | C7 |
 | `GenericForeignKey` | `contrib.contenttypes` ids | Partial | |
 | Signals (`post_save`, `post_delete`) | Domain events, published after the commit | Yes | |
-| `pre_save` | `on_stage` hooks | Partial | |
+| `pre_save` | `before_save()` on the aggregate, before every commit, then `clean()` ([validation.md](validation.md#fields-worked-out-before-a-commit-before_save)); `on_stage` hooks across domains | Yes | |
 
 ### Queries
 
@@ -73,7 +73,7 @@ framework, for the reason given.
 | Savepoints | `uow.savepoint()` | Yes | |
 | `makemigrations`, `migrate`, `showmigrations`, `squashmigrations` | The same commands, on Alembic | Yes | |
 | `sqlmigrate` | `migrate REVISION --sql --from PREVIOUS`, rendered offline by Alembic | Yes | C7 |
-| Data migrations (`RunPython`, `RunSQL`) | Alembic operations, by hand | Partial | |
+| Data migrations (`RunPython`, `RunSQL`) | `makemigrations --empty`, then `op.execute` or `op.get_bind()` with tables described in the revision ([databases.md](databases.md#data-migrations)) | Yes | |
 | `inspectdb` | The same command: aggregates and `table_for` calls printed from the tables, to start from | Yes | C7 |
 | `dumpdata`, `loaddata`, `flush`, `dbshell`, `shell`, `diffsettings` | The same commands | Yes | |
 

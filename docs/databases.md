@@ -88,6 +88,46 @@ its own file.
 Moving a domain to another target is a settings change plus a migration, but
 its existing rows are yours to copy.
 
+### Data migrations
+
+A change to rows rather than tables (Django's `RunPython` and `RunSQL`)
+is a revision of its own. `makemigrations --empty` writes one to fill
+in, after the schema change it follows:
+
+```bash
+python manage.py makemigrations --empty -m "split full names"
+```
+
+Its `upgrade()` runs inside the migration's transaction. SQL goes through
+`op.execute`; work in Python reads and writes through `op.get_bind()`,
+with a table described in the revision itself, as it is at that point in
+history, never the domain's classes, which keep changing after it:
+
+```python
+import sqlalchemy as sa
+from alembic import op
+
+people = sa.table("crm_people", sa.column("id"), sa.column("name"), sa.column("given_name"))
+
+
+def upgrade() -> None:
+    """Fill given_name from the first word of name."""
+    connection = op.get_bind()
+    for row in connection.execute(sa.select(people.c.id, people.c.name)):
+        connection.execute(
+            people.update()
+            .where(people.c.id == row.id)
+            .values(given_name=row.name.split(" ", 1)[0])
+        )
+
+
+def downgrade() -> None:
+    """Nothing to undo: name is kept."""
+```
+
+A large table is better changed in batches by a command run after the
+deploy than in one migration that holds its lock.
+
 ## Sharding
 
 A shard group is several SQL databases with the same schema. A **shard key**
@@ -711,6 +751,34 @@ first, as `create_user` does for usernames, still gives a friendlier
 message; the constraint settles two requests that both pass the check.
 Auth's username and group name columns name `UsernameTaken` and
 `GroupNameTaken`.
+
+## Columns the database fills
+
+Two markers leave a column's value to the database, as Django's
+`db_default` and `GeneratedField` do:
+
+```python
+class Line(AggregateRoot[LineId]):
+    price_cents: int
+    quantity: int
+    total_cents: Annotated[int, Generated("price_cents * quantity")] = 0
+    state: Annotated[str, MaxLength(10), DatabaseDefault("'open'")] = "open"
+```
+
+- `DatabaseDefault(sql)` gives the column a server default. The
+  aggregate's own default still fills a new aggregate; the database's
+  fills rows written without the column: by another writer, and the rows
+  a migration adds the column to, so `makemigrations` writes a migration
+  that needs no hand to fill the rows that exist.
+- `Generated(sql, stored=True)` makes the column the database's to work
+  out from the row's other columns (`GENERATED ALWAYS AS (...) STORED`).
+  Rows are written without it, and it is read back as they are written
+  (`RETURNING`), so the aggregate holds the database's value after
+  `add`, after a change, and once loaded. `stored=False` works it out on
+  each read, where the database can (PostgreSQL before 18 cannot).
+
+The SQL is the database's: keep to what both SQLite and PostgreSQL read
+when the tests run on SQLite.
 
 ## Checks
 

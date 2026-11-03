@@ -576,15 +576,17 @@ class UnitOfWork(ABC):
 
 
 def _clean(aggregates: Iterable[Any]) -> None:
-    """Run each aggregate's ``clean()``, then its ``Meta.checks``, before storing it.
+    """Run each aggregate's ``before_save()``, ``clean()``, then ``Meta.checks``.
 
-    The base's ``clean()`` does nothing, so it is skipped.
+    The base's ``before_save()`` and ``clean()`` do nothing, so they are skipped.
 
     Raises:
         DomainError: An aggregate's ``clean()`` refuses what it holds.
         CheckFailed: An aggregate breaks one of its ``Meta.checks``.
     """
     for aggregate in aggregates:
+        if not getattr(type(aggregate).before_save, "__domainkit_noop__", False):
+            aggregate.before_save()
         if not getattr(type(aggregate).clean, "__domainkit_noop__", False):
             aggregate.clean()
         for name, rule in declared_checks(type(aggregate)).items():
