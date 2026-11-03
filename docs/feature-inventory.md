@@ -116,7 +116,7 @@ framework, for the reason given.
 | The admin site (HTML) | An admin API, actions, the audit trail as `LogEntry` | Partial: no HTML interface | |
 | Celery tasks and beat | `@task`, `uow.defer`, `@periodic`, `runworker` | Yes | |
 | `send_mail`, backends (SMTP, console, memory) | `contrib.mail` | Yes | |
-| `mail_admins`, error emails | `domainkit.reporting` (Sentry) | Partial | |
+| `mail_admins`, error emails | `MAIL["ADMINS"]`, `mail_admins()`, and `report_to_admins` in `ERROR_REPORTERS`: each error's type, place, and frames, no values, at most once per `ADMINS_EVERY` ([mail.md](mail.md#telling-the-admins)) | Yes | |
 | `gettext`, `compilemessages`, time zones | `domainkit.i18n`, `compilemessages` | Yes | |
 | `makemessages` | The same command: messages found with `ast`, translations kept, unused ones obsolete | Yes | C7 |
 | Custom management commands, `call_command` | `BaseCommand`, the same shape | Yes | |
