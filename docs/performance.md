@@ -41,7 +41,7 @@ pings; modules are what the rung's process holds once it served.
 | `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 3,083 | 1/1/1/1 | 817 | 2,500 |
 | `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,615 (10,977) | 4/3/3/3 | 814 | 3,548 |
 | `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,265 | 1/1/1/1 | 882 | 1,777 |
-| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 11,949 | 14/1/1/1 | 882 | 10,884 |
+| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 8,364 | 14/1/1/1 | 889 | 7,216 |
 | `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,855 | 1/1/1/1 | 882 | 1,584 |
 | `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,673 | 1/1/1/1 | 882 | 1,348 |
 | `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 498 (4,401) | 0/0/0/0 | 813 | 188 |
@@ -91,12 +91,12 @@ What the rungs show:
   hooks run on every request (ADR 0065). domainkit turns its telemetry off,
   and its own rungs gained far more than that.
 - **A posting is the dearest request**: 14 statements in one
-  transaction, and nearly six times a plain write's calls. The ledger locks its
+  transaction, and about four times a plain write's calls (8,364; 11,973
+  before PERF-33 made the statements it runs on every posting once). The ledger locks its
   accounts and moves their balances (8 statements); `contrib.limits`
   takes its shared lock of the ledger's kinds as the posting commits
   (SEC-16b-2), reads the limits, locks the holder's row, sums its day's
-  usage, and records each subject's movement (6 more), and builds those statements
-  for each request. Without limits installed, a posting was 8 statements
+  usage, and records each subject's movement (6 more). Without limits installed, a posting was 8 statements
   and about 6,000 calls (PERF-26).
 - **An encrypted field costs a few microseconds a value** (5 to 6 µs to
   seal or open one, `timeit`): the `encrypted-read` rung costs 43 calls

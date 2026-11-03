@@ -156,7 +156,7 @@ modules = 889
 memory = 109
 
 [rungs.posting]
-calls = 11949
+calls = 8364
 statements = 14
 transactions = 1
 checkouts = 1

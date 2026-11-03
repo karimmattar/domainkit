@@ -132,6 +132,11 @@ and a status.
 
 ### Changed
 
+- A ledger posting under limits costs 8,364 calls instead of 11,973 (PERF-33):
+  it books the entry it checked, and the statements limits and the ledger
+  run on every posting are made once, so SQLAlchemy neither builds them
+  nor walks them for a cache key per request.
+
 - A resource route reads `If-Match` and `If-None-Match` from the request
   rather than as FastAPI parameters: 255 fewer calls a command and 235 a
   read, on the benchmark ladder, whose budgets now hold it. The headers
