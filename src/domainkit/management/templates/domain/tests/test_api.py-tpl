@@ -20,7 +20,7 @@ VIEW = "{{ domain }}.view_{{ model }}"
 
 
 def create(client: TestClient, name: str) -> dict[str, Any]:
-    """Create a {{ aggregate }}; return its JSON."""
+    """Create {{ a_aggregate }}; return its JSON."""
     created = client.post(URL, json={"name": name})
     assert created.status_code == 201, created.json()
     body: dict[str, Any] = created.json()
@@ -116,7 +116,7 @@ def test_listings_filter_order_and_page(admin_client: TestClient) -> None:
 def test_durable_handler_runs_in_the_worker(
     admin_client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Creating a {{ aggregate }} queues the durable handler; the worker runs it."""
+    """Creating {{ a_aggregate }} queues the durable handler; the worker runs it."""
     created = create(admin_client, "Queued")
     caplog.set_level(logging.INFO, logger="{{ package }}.application.handlers")
 

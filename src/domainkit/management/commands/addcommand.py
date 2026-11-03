@@ -333,7 +333,7 @@ def _domain_layer(
     events.import_names("domainkit.ddd", "DomainEvent")
     rest = event.removeprefix(A)
     what = (
-        f"A {names.title} was {words(rest)}" if rest and rest != event else words(event)
+        f"{names.A_title} was {words(rest)}" if rest and rest != event else words(event)
     )
     events.append(
         f'''
@@ -366,7 +366,7 @@ def _application_layer(
     commands.append(
         f'''
 class {command}(Command):
-    """{words(method).capitalize()} a {names.title}."""
+    """{words(method).capitalize()} {names.a_title}."""
 
     {a}_id: UUID{fields}
 '''
@@ -380,7 +380,7 @@ class {command}(Command):
     services.append(
         f'''
 async def {service}(command: {command}, uow: {unit}) -> {A}:
-    """{words(method).capitalize()} a {names.title}."""
+    """{words(method).capitalize()} {names.a_title}."""
     async with uow:
         {a} = await uow.{many}.get({A}Id(command.{a}_id))
         {a}.{method}({arguments})
@@ -571,7 +571,7 @@ def add_use_case(
     fields = "".join(f"\n    {spec.name}: {spec.plain()}" for spec in specs)
     rest = event.removeprefix(A)
     what = (
-        f"A {names.title} was {words(rest)}" if rest and rest != event else words(event)
+        f"{names.A_title} was {words(rest)}" if rest and rest != event else words(event)
     )
     model.import_names("domainkit.ddd", "DomainEvent")
     model.insert_before_class(
@@ -600,7 +600,7 @@ def add_use_case(
 
 @use_case
 async def {service}(uow: {unit}, {a}_id: UUID{parameters}) -> {A}:
-    """{words(method).capitalize()} a {names.title}."""
+    """{words(method).capitalize()} {names.a_title}."""
     {a} = await uow.{many}.get({A}Id({a}_id))
     {a}.{method}({arguments.removeprefix(", ")})
     return {a}

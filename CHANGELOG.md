@@ -296,6 +296,9 @@ and a status.
 
 ### Fixed
 
+- Generated code says "an account", "An order", never "a account"; and a
+  command's new event joins the other events in a four-file `domain.py`,
+  above the aggregate's heading, not under it.
 - A reconciliation cancelled while its matching rule fails no longer has
   that failure reported as unhandled on Python 3.14.6, which logs an
   exception of a shielded task once its waiter was cancelled: the run

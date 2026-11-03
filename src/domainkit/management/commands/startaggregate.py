@@ -151,13 +151,13 @@ class {A}Repository(Repository[{A}, {A}Id]):
     events.append(
         f'''
 class {A}Created(DomainEvent):
-    """A {names.title} was created."""
+    """{names.A_title} was created."""
 
     {a}_id: UUID
 
 
 class {A}Deleted(DomainEvent):
-    """A {names.title} was deleted."""
+    """{names.A_title} was deleted."""
 
     {a}_id: UUID
 '''
@@ -182,12 +182,12 @@ def _application_layer(domain: Domain, names: Names, specs: list[FieldSpec]) -> 
     commands.append(
         f'''
 class Create{A}(Command):
-    """Create a {names.title}."""
+    """Create {names.a_title}."""
 {fields}
 
 
 class Delete{A}(Command):
-    """Delete a {names.title}."""
+    """Delete {names.a_title}."""
 
     {a}_id: UUID
 '''
@@ -206,7 +206,7 @@ class Delete{A}(Command):
     services.append(
         f'''
 async def create_{a}(command: Create{A}, uow: {unit}) -> {A}:
-    """Create and store a {names.title}."""
+    """Create and store {names.a_title}."""
     {a} = {A}.create({arguments})
     async with uow:
         await uow.{many}.add({a})
@@ -215,7 +215,7 @@ async def create_{a}(command: Create{A}, uow: {unit}) -> {A}:
 
 
 async def delete_{a}(command: Delete{A}, uow: {unit}) -> None:
-    """Delete a {names.title}."""
+    """Delete {names.a_title}."""
     async with uow:
         {a} = await uow.{many}.get({A}Id(command.{a}_id))
         {a}.delete()
@@ -435,7 +435,7 @@ def _transfers(domain: Domain, names: Names, spec: FieldSpec) -> None:
     model.import_names(domain.module("domain.events"), event)
     errors = f'''
 class {short}(BusinessRuleViolation):
-    """A {names.title} transfers at most the {what} it holds."""
+    """{names.A_title} transfers at most the {what} it holds."""
 '''
     if not model.defines(invalid):
         errors = f'''
@@ -474,7 +474,7 @@ class {invalid}(BusinessRuleViolation):
     events.append(
         f'''
 class {event}(DomainEvent):
-    """An amount of a {names.title}'s {what} went to another."""
+    """An amount of {names.a_title}'s {what} went to another."""
 
     {a}_id: UUID
     to: UUID

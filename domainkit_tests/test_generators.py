@@ -1886,3 +1886,35 @@ def test_addquery_imports_field_types_as_domain_py_has_them(desk: Shop) -> None:
     controllers = desk.read("controllers.py")
     assert "from datetime import date" in controllers
     assert "    count: int\n    day: date\n" in controllers
+
+
+def test_an_aggregate_starting_with_a_vowel_reads_an(
+    make_package: MakePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``an account``, ``An account``: never ``a account``; ``a user`` stays."""
+    make_package("gen", {})
+    monkeypatch.setattr(generators_module, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+    domain = Shop(tmp_path, "bank")
+    run(
+        "startdomain",
+        "bank",
+        aggregate="Account",
+        parent="gen",
+        tests_dir=domain.tests.parent,
+    )
+    domain("addcommand", "Account", "DepositAccount", fields=["amount:int"])
+
+    written = "".join(domain.read(name) for name in ("domain.py", "controllers.py"))
+
+    assert "An account was deposited." in written
+    model = domain.read("domain.py")
+    # The new event joins the events, above the aggregate's own heading.
+    assert model.index("class AccountDeposited") < model.index("# The aggregate.")
+    assert "Create an account called" in written
+    assert not re.search(r"\b[Aa] account\b", written)
+    assert [generators_module.article(word) for word in ("item", "user", "order")] == [
+        "an",
+        "a",
+        "an",
+    ]

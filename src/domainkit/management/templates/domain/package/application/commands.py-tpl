@@ -6,33 +6,33 @@ from domainkit.ddd import UNSET, Command, Unset
 
 
 class Create{{ Aggregate }}(Command):
-    """Create a {{ aggregate }} called ``name``, owned by ``owner_id``."""
+    """Create {{ a_aggregate }} called ``name``, owned by ``owner_id``."""
 
     name: str
     owner_id: UUID
 
 
 class Update{{ Aggregate }}(Command):
-    """Change what was sent of a {{ aggregate }}; the rest stays (``PATCH``)."""
+    """Change what was sent of {{ a_aggregate }}; the rest stays (``PATCH``)."""
 
     {{ aggregate }}_id: UUID
     name: str | Unset = UNSET
 
 
 class Archive{{ Aggregate }}(Command):
-    """Make a {{ aggregate }} read-only."""
+    """Make {{ a_aggregate }} read-only."""
 
     {{ aggregate }}_id: UUID
 
 
 class Add{{ Aggregate }}Note(Command):
-    """Add a note to a {{ aggregate }}."""
+    """Add a note to {{ a_aggregate }}."""
 
     {{ aggregate }}_id: UUID
     text: str
 
 
 class Delete{{ Aggregate }}(Command):
-    """Delete a {{ aggregate }} and its notes."""
+    """Delete {{ a_aggregate }} and its notes."""
 
     {{ aggregate }}_id: UUID

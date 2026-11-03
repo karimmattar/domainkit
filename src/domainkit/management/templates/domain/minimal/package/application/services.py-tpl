@@ -6,7 +6,7 @@ from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id
 
 
 async def create_{{ aggregate }}(command: Create{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
-    """Create and store a {{ aggregate }}."""
+    """Create and store {{ a_aggregate }}."""
     {{ aggregate }} = {{ Aggregate }}.create(command.name)
     async with uow:
         await uow.{{ aggregates }}.add({{ aggregate }})
@@ -15,7 +15,7 @@ async def create_{{ aggregate }}(command: Create{{ Aggregate }}, uow: {{ Domain 
 
 
 async def rename_{{ aggregate }}(command: Rename{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
-    """Rename a {{ aggregate }}."""
+    """Rename {{ a_aggregate }}."""
     async with uow:
         {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id(command.{{ aggregate }}_id))
         {{ aggregate }}.rename(command.name)
