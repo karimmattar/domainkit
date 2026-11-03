@@ -11,6 +11,12 @@ and a status.
 
 ### Added
 
+- Backends from installed packages: a package offers them by name in the
+  `domainkit.backends` entry points, and a setting names one without its
+  module path (`"BACKEND": "sqlite-queue"`), for caches, brokers, storage,
+  search, upload scanning, mail, text messages, and push. Only the named
+  backend is loaded; an unknown name suggests the nearest, and one two
+  packages offer differently is refused.
 - The benchmark ladder gates each rung's peak memory (MiB, within a
   tenth of its budget) and reports the time its process took to start.
 - Fuzz tests of every parser of untrusted input (`test_fuzz.py`): query

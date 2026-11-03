@@ -144,7 +144,7 @@ def configured_scanner() -> Scanner | None:
     """
     from domainkit.conf import settings
     from domainkit.exceptions import ImproperlyConfigured
-    from domainkit.utils.module_loading import import_string
+    from domainkit.utils.module_loading import import_backend
 
     config = settings.UPLOAD_SCANNER
     if config is None:
@@ -153,7 +153,7 @@ def configured_scanner() -> Scanner | None:
     if held is not None and held[0] == config:
         return held[1]
     try:
-        scanner = import_string(config.BACKEND)(**config.OPTIONS)
+        scanner = import_backend(config.BACKEND)(**config.OPTIONS)
     except (ImportError, TypeError) as exc:
         raise ImproperlyConfigured(f"UPLOAD_SCANNER: {exc}") from exc
     if not isinstance(scanner, Scanner):

@@ -49,11 +49,11 @@ def connect_broker(config: BrokerConfig) -> Broker:
     Raises:
         ImproperlyConfigured: Its extra is not installed.
     """
-    from domainkit.utils.module_loading import import_string
+    from domainkit.utils.module_loading import import_backend, import_string
 
     if config.BACKEND is not None:
         try:
-            custom = import_string(config.BACKEND)
+            custom = import_backend(config.BACKEND)
         except ImportError as exc:
             raise ImproperlyConfigured(f"BROKERS BACKEND: {exc}") from exc
         if not (isinstance(custom, type) and issubclass(custom, Broker)):

@@ -76,6 +76,12 @@ CORS_NAME: Final = r"^(?:\*|[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64})$"
 """A method or header name a CORS answer lists (RFC 9110 token), or ``*``."""
 ORIGIN: Final = r"^(?:\*|[A-Za-z][A-Za-z0-9+.-]*://[^\s/,]{1,253})$"
 DOTTED_PATH: Final = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){1,15}$"
+BACKEND_NAME: Final = (
+    r"^([A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){1,15}"
+    r"|[A-Za-z0-9][A-Za-z0-9_-]{0,63})$"
+)
+"""A backend's dotted path, or the name an installed package offers it by
+(``domainkit.utils.module_loading.import_backend``)."""
 """A class by module and name: ``accounts.infrastructure.cache.FileStore``."""
 """A CORS origin: ``*``, or a scheme and host (and port), without a path."""
 """A header value a setting gives: printable ASCII, no line breaks, bounded."""
@@ -405,7 +411,7 @@ class CacheConfig(BaseModel):
     """Fail ``/ready`` while this cache is unreachable (off: the service copes)."""
     SENTINEL_PASSWORD: SecretStr | None = None
     """``redis+sentinel://``: the Sentinels' own password, if they ask for one."""
-    BACKEND: str | None = Field(default=None, pattern=DOTTED_PATH)
+    BACKEND: str | None = Field(default=None, pattern=BACKEND_NAME)
     """Dotted path to a ``domainkit.cache.Store`` of the project's own, made
     as ``Store(config)`` once per event loop; its ``URL`` is the store's to
     read, with a scheme of its choosing. None: the store ``URL`` names."""
@@ -532,7 +538,7 @@ class BrokerConfig(BaseModel):
     """Partitions of each topic a Kafka broker creates: consumers at most."""
     REPLICAS: int = Field(default=3, ge=1, le=10)
     """Copies of each partition a Kafka broker creates (1 for one server)."""
-    BACKEND: str | None = Field(default=None, pattern=DOTTED_PATH)
+    BACKEND: str | None = Field(default=None, pattern=BACKEND_NAME)
     """Dotted path to a ``domainkit.broker.Broker`` of the project's own, made
     as ``Broker(config)`` once per event loop; its ``URL`` is the broker's to
     read, with a scheme of its choosing. None: the adapter ``URL`` names."""
