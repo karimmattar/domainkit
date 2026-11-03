@@ -161,11 +161,13 @@ class Inbox:
 @pytest.mark.parametrize(
     ("options", "message"),
     [
-        ({"URL": "kafka://host"}, "a broker URL starts with"),
-        ({"URL": "amqp:///vhost", "PREFIX": "x"}, "an AMQP URL needs a host"),
-        ({"URL": "amqps://mq.internal/"}, "RabbitMQ brokers need a PREFIX"),
+        ({"URL": "ftp://host"}, "a broker URL starts with"),
+        ({"URL": "amqp:///vhost", "PREFIX": "x"}, "a broker URL needs a host"),
+        ({"URL": "amqps://mq.internal/"}, "brokers need a PREFIX"),
+        ({"URL": "kafka://h:1,h:99999", "PREFIX": "x"}, "port"),
+        ({"URL": "sqs://eu-west-1", "PREFIX": "x", "TLS_CA": "ca.pem"}, "TLS URL"),
         ({"URL": "memory://", "PREFIX": "a b"}, "String should match pattern"),
-        ({"URL": "amqp://h/", "PREFIX": "x", "TLS_CA": "ca.pem"}, "need an amqps"),
+        ({"URL": "amqp://h/", "PREFIX": "x", "TLS_CA": "ca.pem"}, "need a TLS URL"),
         (
             {"URL": "amqps://h/", "PREFIX": "x", "TLS_KEY": "k.pem"},
             "TLS_CERT and TLS_KEY go together",
@@ -207,7 +209,7 @@ def test_broker_url_properties() -> None:
     ("broker", "message"),
     [
         ({"URL": "memory://"}, "memory:// brokers serve one process"),
-        ({"URL": "amqp://billing:pw@mq.internal/", "PREFIX": "b"}, "need amqps://"),
+        ({"URL": "amqp://billing:pw@mq.internal/", "PREFIX": "b"}, "need TLS"),
         (
             {"URL": "amqps://billing:pw@mq.internal/?no_verify_ssl=1", "PREFIX": "b"},
             "must verify the server certificate",

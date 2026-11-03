@@ -486,6 +486,31 @@ but the queue grows. Add workers before a backlog gets that long. Quorum queues 
 their delivery limit (20 by default); for the worker that is harmless, as
 the relay publishes such a message again after `REPUBLISH_AFTER`.
 
+### Other brokers
+
+The same worker takes its work from Redis Streams, NATS JetStream, Kafka,
+or Amazon SQS: set `URL` to their scheme ([BROKERS](../reference/backends.md)).
+These are asked for messages: a subscription runs one pump that asks for
+as many as its prefetch has room for, hands each to a task of its own,
+and holds the slot until the message is answered. A broker that cannot
+be reached is logged and asked again after a pause growing to 30 seconds:
+the outbox stays the record, so an outage delays work and loses none.
+
+| Broker | Queues | A message not answered |
+| --- | --- | --- |
+| Redis Streams (`redis://`, `rediss://`) | a stream `<PREFIX>:<queue>`, one consumer group; answered messages are deleted | claimed by another consumer after `REDELIVER_AFTER` (`XAUTOCLAIM`) |
+| NATS JetStream (`nats://`, `nats+tls://`) | one stream `<PREFIX>` with work-queue retention, a durable pull consumer per queue; a message id published twice is stored once | handed out again after `REDELIVER_AFTER` (its `ack_wait`) |
+| Kafka (`kafka://`, `kafka+ssl://`) | a topic `<PREFIX>.<queue>` of `PARTITIONS` partitions and `REPLICAS` copies, one consumer group; positions are committed as far as every earlier message is answered | read again by the worker that takes its partition |
+| Amazon SQS (`sqs://<region>`) | a queue `<PREFIX>-<queue>`, made with `REDELIVER_AFTER` as its visibility timeout | visible again after `REDELIVER_AFTER` |
+
+A requeued message comes back at once: added again (Redis, Kafka),
+negatively acknowledged (NATS), or made visible (SQS). Keep
+`REDELIVER_AFTER` above `TASK_TIMEOUT`, or a slow task runs twice (the
+inbox skips the second run, but it costs a worker). Kafka's partitions
+bound how many workers share a queue. Staging and production refuse
+these without TLS (`rediss://`, `nats+tls://`, `kafka+ssl://`; SQS is
+HTTPS) or without credentials.
+
 **Upgrading to 0.5.** The outbox gained a `queue` column (default
 `default`). Run `python manage.py makemigrations` and `migrate` in each
 project that installs messaging.

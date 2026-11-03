@@ -31,11 +31,45 @@ def rabbitmq_broker(config: BrokerConfig) -> Broker:
     return RabbitMQBroker(config)
 
 
+ADAPTERS: Final = {
+    "redis": ("domainkit.broker.redis_streams.RedisStreamsBroker", "redis"),
+    "rediss": ("domainkit.broker.redis_streams.RedisStreamsBroker", "redis"),
+    "nats": ("domainkit.broker.nats_jetstream.NatsBroker", "nats"),
+    "nats+tls": ("domainkit.broker.nats_jetstream.NatsBroker", "nats"),
+    "kafka": ("domainkit.broker.kafka.KafkaBroker", "kafka"),
+    "kafka+ssl": ("domainkit.broker.kafka.KafkaBroker", "kafka"),
+    "sqs": ("domainkit.broker.sqs.SqsBroker", "cloud"),
+}
+"""The adapter of each scheme beside RabbitMQ's, and the extra it needs."""
+
+
+def connect_broker(config: BrokerConfig) -> Broker:
+    """The adapter ``config.URL``'s scheme names (RabbitMQ for ``amqp(s)``).
+
+    Raises:
+        ImproperlyConfigured: Its extra is not installed.
+    """
+    if config.scheme not in ADAPTERS:
+        return rabbitmq_broker(config)
+    from domainkit.utils.module_loading import import_string
+
+    path, extra = ADAPTERS[config.scheme]
+    try:
+        adapter = import_string(path)
+    except ImportError as exc:  # pragma: no cover - only without the extra.
+        raise ImproperlyConfigured(
+            f"{config.scheme}:// brokers need the {extra} extra: "
+            f"pip install 'domainkit[{extra}]'."
+        ) from exc
+    broker: Broker = adapter(config)
+    return broker
+
+
 class BrokerHandler:
     """Create each configured broker on first use, per event loop."""
 
-    def __init__(self, connect: BrokerFactory = rabbitmq_broker) -> None:
-        """Use ``connect`` to build RabbitMQ brokers (tests may replace it)."""
+    def __init__(self, connect: BrokerFactory = connect_broker) -> None:
+        """Use ``connect`` to build brokers but ``memory://`` (tests may replace it)."""
         self._connect = connect
         self._brokers: WeakKeyDictionary[
             asyncio.AbstractEventLoop, dict[str, tuple[BrokerConfig, Broker]]

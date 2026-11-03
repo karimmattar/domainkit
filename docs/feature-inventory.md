@@ -146,7 +146,7 @@ framework, for the reason given.
 | SMS providers (Twilio, Vonage, AWS SNS, Unifonic, Huawei SMN) | `domainkit.contrib.notifications.sms`: Twilio, Vonage, SNS, Unifonic, Huawei Cloud's Message & SMS ([mail.md](mail.md#text-messages-and-push-notifications)) | Yes | A4 |
 | Push providers (Firebase FCM, APNs, Huawei Push Kit) | `domainkit.contrib.notifications.push`: FCM v1, APNs over HTTP/2, Push Kit; a backend per platform | Yes | A4 |
 | Email providers by API (AWS SES, SendGrid, Mailgun, Postmark) | `domainkit.contrib.mail.providers` ([mail.md](mail.md#backends)) | Yes | A4 |
-| Message brokers: RabbitMQ; Kafka, NATS, Redis Streams, AWS SQS | `RabbitMQBroker`, memory | Partial | A6 |
+| Message brokers: RabbitMQ; Kafka, NATS, Redis Streams, AWS SQS | `RabbitMQBroker`, `RedisStreamsBroker`, `NatsBroker`, `KafkaBroker`, `SqsBroker`, memory ([messaging.md](contrib/messaging.md#other-brokers)) | Yes | A6 |
 | Cache: Redis, memory | `domainkit.cache` | Yes | |
 | Tracing (OpenTelemetry), metrics (Prometheus), errors (Sentry), structured logs | Built in | Yes | |
 | Health and readiness probes | Built in | Yes | |

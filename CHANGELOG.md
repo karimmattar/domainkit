@@ -11,6 +11,13 @@ and a status.
 
 ### Added
 
+- Brokers beside RabbitMQ (A6), chosen by `BROKERS` URL: Redis Streams
+  (`redis(s)://`), NATS JetStream (`nats(+tls)://`, the `nats` extra),
+  Kafka (`kafka(+ssl)://`, the `kafka` extra), and Amazon SQS
+  (`sqs://<region>`, no SDK). They share one pump (`domainkit.broker.pull`)
+  that asks for as many messages as the prefetch has room for and backs
+  off while a broker is down. `REDELIVER_AFTER`, `PARTITIONS`, and
+  `REPLICAS` are new `BROKERS` keys; `security.E013` takes any TLS scheme.
 - Key providers (A5) for `domainkit.contrib.keys`: Google Cloud KMS,
   Azure Key Vault (or a Managed HSM), Huawei Cloud KMS, and an HSM
   through PKCS#11 (the `pkcs11` extra, tested against SoftHSM), each a

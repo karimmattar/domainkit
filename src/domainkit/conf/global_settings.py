@@ -465,8 +465,25 @@ class CacheConfig(BaseModel):
         return bool(parse_redis_url(self.URL.get_secret_value()).password)
 
 
-BROKER_SCHEMES: Final = frozenset({"amqp", "amqps", "memory"})
+BROKER_SCHEMES: Final = frozenset(
+    {
+        "amqp",
+        "amqps",
+        "memory",
+        "redis",
+        "rediss",
+        "nats",
+        "nats+tls",
+        "kafka",
+        "kafka+ssl",
+        "sqs",
+    }
+)
 """URL schemes of message brokers (``BROKERS``)."""
+BROKER_TLS_SCHEMES: Final = frozenset(
+    {"amqps", "rediss", "nats+tls", "kafka+ssl", "sqs"}
+)
+"""Schemes whose connections are encrypted (SQS's always are: HTTPS)."""
 NAME_PATTERN: Final = r"^[A-Za-z0-9_.-]{1,64}$"
 """Queue names and broker prefixes: safe in AMQP names and routing keys."""
 
@@ -482,9 +499,14 @@ class BrokerConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     URL: SecretStr
-    """``amqps://user:password@host:5671/vhost`` (RabbitMQ), or ``memory://``."""
+    """``amqps://user:password@host:5671/vhost`` (RabbitMQ),
+    ``rediss://:password@host:6379/0`` (Redis Streams),
+    ``nats+tls://user:password@host:4222`` (NATS JetStream),
+    ``kafka+ssl://host1:9093,host2:9093`` (Kafka), ``sqs://<region>``
+    (Amazon SQS), or ``memory://``."""
     PREFIX: str | None = Field(default=None, pattern=NAME_PATTERN)
-    """Starts every exchange and queue name; RabbitMQ brokers must set one."""
+    """Starts every exchange, stream, topic, and queue name; every broker but
+    ``memory://`` must set one."""
     TLS_CA: Path | None = None
     """CA bundle for ``amqps://``; default: the system's."""
     TLS_CERT: Path | None = None
@@ -494,25 +516,49 @@ class BrokerConfig(BaseModel):
     """Seconds to connect before the attempt counts as failed."""
     PUBLISH_TIMEOUT: float = Field(default=10.0, gt=0)
     """Seconds to wait for the broker to confirm a published message."""
+    REDELIVER_AFTER: float = Field(default=300.0, gt=0, le=43200)
+    """Seconds a message taken and not answered waits before another consumer
+    may take it (Redis, NATS, SQS); RabbitMQ and Kafka hand it on when its
+    consumer goes away."""
+    PARTITIONS: int = Field(default=6, ge=1, le=1000)
+    """Partitions of each topic a Kafka broker creates: consumers at most."""
+    REPLICAS: int = Field(default=3, ge=1, le=10)
+    """Copies of each partition a Kafka broker creates (1 for one server)."""
 
     @model_validator(mode="after")
     def check_url(self) -> Self:
-        """Accept AMQP URLs with a host and a prefix, or the in-memory broker."""
-        parts = urlsplit(self.URL.get_secret_value())
+        """Accept a broker URL with a host and a prefix, or the in-memory broker."""
+        url = self.URL.get_secret_value()
+        parts = urlsplit(url)
         if parts.scheme not in BROKER_SCHEMES:
-            raise ValueError("a broker URL starts with amqp://, amqps://, or memory://")
-        _check_port(parts)
+            raise ValueError(
+                "a broker URL starts with amqp(s)://, redis(s)://, nats(+tls)://, "
+                "kafka(+ssl)://, sqs://, or memory://"
+            )
+        if parts.scheme.startswith("kafka"):
+            for server in parts.netloc.rpartition("@")[2].split(","):
+                _check_port(urlsplit(f"kafka://{server}"))
+        else:
+            _check_port(parts)
         if parts.scheme != "memory":
-            if not parts.hostname:
-                raise ValueError("an AMQP URL needs a host: amqps://user:pw@host/vhost")
+            if not parts.netloc.rpartition("@")[2]:
+                raise ValueError(
+                    "a broker URL needs a host (a region for sqs://): "
+                    "amqps://user:pw@host/vhost"
+                )
             if self.PREFIX is None:
                 raise ValueError(
-                    "RabbitMQ brokers need a PREFIX, unique among the services "
-                    "that share the virtual host"
+                    "brokers need a PREFIX, unique among the services that "
+                    "share the server"
                 )
         tls = (self.TLS_CA, self.TLS_CERT, self.TLS_KEY)
-        if parts.scheme != "amqps" and any(tls):
-            raise ValueError("TLS_CA, TLS_CERT and TLS_KEY need an amqps:// URL")
+        if (parts.scheme not in BROKER_TLS_SCHEMES or parts.scheme == "sqs") and any(
+            tls
+        ):
+            raise ValueError(
+                "TLS_CA, TLS_CERT and TLS_KEY need a TLS URL: amqps://, rediss://, "
+                "nats+tls://, or kafka+ssl://"
+            )
         if (self.TLS_CERT is None) != (self.TLS_KEY is None):
             raise ValueError("TLS_CERT and TLS_KEY go together")
         return self
@@ -533,9 +579,19 @@ class BrokerConfig(BaseModel):
         return all(value == "0" for value in options.get("no_verify_ssl", ()))
 
     def has_credentials(self) -> bool:
-        """Report whether the broker logs in as a real user, not RabbitMQ's guest."""
+        """Report whether the broker logs in as a real user, not RabbitMQ's guest.
+
+        A user, a password (Redis's), or a client certificate; SQS signs
+        every call with AWS credentials.
+        """
         parts = urlsplit(self.URL.get_secret_value())
-        user = parts.username or ("" if self.TLS_CERT is None else "certificate")
+        if self.scheme == "sqs":
+            return True
+        user = (
+            parts.username
+            or ("password" if parts.password else "")
+            or ("" if self.TLS_CERT is None else "certificate")
+        )
         return user not in {"", "guest"}
 
 
@@ -1348,9 +1404,11 @@ class Settings(BaseModel):
             ),
             _StoreRule(
                 "security.E013",
-                "network brokers need amqps:// (TLS)",
+                "network brokers need TLS (amqps, rediss, nats+tls, kafka+ssl)",
                 "BROKERS",
-                lambda broker: broker.is_network() and broker.scheme != "amqps",
+                lambda broker: (
+                    broker.is_network() and broker.scheme not in BROKER_TLS_SCHEMES
+                ),
             ),
             _StoreRule(
                 "security.E014",

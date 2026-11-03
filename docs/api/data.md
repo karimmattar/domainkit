@@ -376,3 +376,35 @@ Virus scanning of uploads, as they are stored.
 - `Scanner`: Checks content as it streams past, and refuses it at the end.
 - `ScannerUnavailable`: The virus scanner could not scan the upload: 503, nothing kept.
 - `configured_scanner`: The `UPLOAD_SCANNER`, made once per configuration; None if unset.
+
+## `domainkit.broker.pull`
+
+What the brokers that are asked for messages share: Redis, NATS, Kafka, SQS.
+
+- `Fetched`: A message a puller took: its queue, body, id, and the broker's handle.
+- `PullBroker`: A broker that is asked for messages (see the module).
+- `Puller`: Asks one broker for the messages of a subscription's queues.
+
+## `domainkit.broker.redis_streams`
+
+Redis Streams (`redis://`, `rediss://`) as a work queue (the `redis` extra).
+
+- `RedisStreamsBroker`: Work queues on Redis Streams (see the module).
+
+## `domainkit.broker.nats_jetstream`
+
+NATS JetStream (`nats://`, `nats+tls://`) as a work queue (the `nats` extra).
+
+- `NatsBroker`: Work queues on NATS JetStream (see the module).
+
+## `domainkit.broker.kafka`
+
+Apache Kafka (`kafka://`, `kafka+ssl://`) as a work queue (the `kafka` extra).
+
+- `KafkaBroker`: Work queues on Kafka topics (see the module).
+
+## `domainkit.broker.sqs`
+
+Amazon SQS (`sqs://<region>`) as a work queue, through its JSON API.
+
+- `SqsBroker`: Work queues on Amazon SQS (see the module).

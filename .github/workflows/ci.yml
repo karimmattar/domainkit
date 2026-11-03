@@ -146,9 +146,13 @@ jobs:
         run: pipx install "poetry==${POETRY_VERSION}"
       - if: needs.changes.outputs.code != 'false'
         run: poetry sync --all-extras --with dev
-      # SoftHSM: the PKCS#11 key provider is tested against a real token.
+      # SoftHSM: the PKCS#11 key provider is tested against a real token;
+      # Redis and NATS: the Redis Streams and JetStream brokers, against
+      # servers the tests start.
       - if: needs.changes.outputs.code != 'false'
-        run: sudo apt-get install -y --no-install-recommends softhsm2
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends softhsm2 redis-server nats-server
       - if: needs.changes.outputs.code != 'false'
         run: >-
           poetry run pytest -n auto --dist worksteal --cov --cov-report=term
