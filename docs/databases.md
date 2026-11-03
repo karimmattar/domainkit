@@ -752,6 +752,37 @@ message; the constraint settles two requests that both pass the check.
 Auth's username and group name columns name `UsernameTaken` and
 `GroupNameTaken`.
 
+## References to any aggregate
+
+A `Reference[InvoiceId]` names one kind of aggregate. A comment that may be
+about an invoice or a payment holds an `ObjectRef` instead (Django's
+`GenericForeignKey`): the model's key, as content types name it
+(`billing.invoice`), and the aggregate's id:
+
+```python
+from domainkit.ddd.refs import ObjectRef
+
+
+class Comment(AggregateRoot[CommentId]):
+    about: ObjectRef
+    text: Annotated[str, MaxLength(2000)]
+```
+
+```python
+from domainkit.db.refs import load, model_of, ref_to
+
+comment = Comment(id=..., about=ref_to(invoice), text="Paid late")
+on_it = await uow.comments.filter(F("about") == ref_to(invoice))
+invoice = await load(uow, comment.about)  # None once it is gone
+model_of(comment.about)  # the Invoice class
+```
+
+The field is one text column, `billing.invoice:<id>`. The database keeps
+no foreign key on it (the target may be in any table), so a reference may
+outlive what it names: `load` then answers None. Prefer a `Reference` when
+the kind is known; an `ObjectRef` is for the few things that may point at
+anything (comments, tags, audit notes).
+
 ## Columns the database fills
 
 Two markers leave a column's value to the database, as Django's

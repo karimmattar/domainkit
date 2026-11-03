@@ -461,3 +461,18 @@ Meilisearch as a `SearchBackend`.
 OpenSearch (or Elasticsearch) as a `SearchBackend`.
 
 - `OpenSearchBackend`: Indexes in an OpenSearch cluster (see the module).
+
+## `domainkit.ddd.refs`
+
+A reference to an aggregate of any kind (Django's `GenericForeignKey`).
+
+- `ObjectRef`: An aggregate of any installed model: its key, and its id as text.
+
+## `domainkit.db.refs`
+
+`ObjectRef` columns, and references to the aggregates they name.
+
+- `ObjectRefType`: An `ObjectRef`, as `domain.model:id` text.
+- `load`: The aggregate `ref` names, read in `uow`'s transaction; None if gone.
+- `model_of`: The class `ref` names.
+- `ref_to`: A reference to `aggregate`, an instance of an installed model.

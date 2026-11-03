@@ -11,6 +11,12 @@ and a status.
 
 ### Added
 
+- The feature inventory's last partial rows: `before_save()` on aggregates
+  (`pre_save`); `DatabaseDefault` and `Generated` columns (`db_default`,
+  `GeneratedField`); `ObjectRef` references to an aggregate of any model
+  (`GenericForeignKey`); `mail_admins` and `report_to_admins` error mails
+  to `MAIL["ADMINS"]`; `api_version(request)`; and data migrations with
+  `makemigrations --empty`, documented.
 - `CACHES` and `BROKERS` entries take a `BACKEND`: a `Store` or a `Broker`
   of the project's own, made from the entry, its `URL` of a scheme of its
   choosing. Three recipes walk the extension points left: an SMS provider,

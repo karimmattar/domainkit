@@ -577,6 +577,10 @@ def column_type(field: FieldInfo) -> TypeEngine[Any]:
         from domainkit.db.places import PointType
 
         return PointType()
+    if _is_ref(kind):
+        from domainkit.db.refs import ObjectRefType
+
+        return ObjectRefType()
     raise TypeError(
         f"{_where(field)}: no column type for {kind.__name__}; pass a Column "
         "for it, or call register_column_type."
@@ -597,6 +601,12 @@ def _is_point(kind: type) -> bool:
     """Whether ``kind`` is ``Point``: places load only for projects that use them."""
     places = sys.modules.get("domainkit.ddd.places")
     return places is not None and kind is places.Point
+
+
+def _is_ref(kind: type) -> bool:
+    """Whether ``kind`` is ``ObjectRef``: refs load only for projects that use them."""
+    refs = sys.modules.get("domainkit.ddd.refs")
+    return refs is not None and kind is refs.ObjectRef
 
 
 def _registered(kind: type) -> TypeEngine[Any] | None:

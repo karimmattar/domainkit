@@ -1205,7 +1205,7 @@ jobs:
               domainkit.db.fixtures.* domainkit.db.migrations.* domainkit.db.orm.*
               domainkit.db.query.* domainkit.db.repository.* domainkit.db.uow.*
               domainkit.ledger.* domainkit.db.money.*
-              domainkit.db.models.* domainkit.db.places.*
+              domainkit.db.models.* domainkit.db.places.* domainkit.db.refs.*
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*

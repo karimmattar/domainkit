@@ -35,7 +35,7 @@ framework, for the reason given.
 | `ForeignKey` to another model | `Reference[OtherId]` by id | Yes | |
 | `OneToOneField` | `Annotated[Reference[XId], Unique()]` | Yes | C7 |
 | `ManyToManyField` | A list of child entities holding a `Reference`: their table is the link table ([databases.md](databases.md#many-to-many)) | Yes | C7 |
-| `GenericForeignKey` | `contrib.contenttypes` ids | Partial | |
+| `GenericForeignKey` | `ObjectRef` on the field: one column, `domain.model:id`; `ref_to`, `model_of`, and `load` ([databases.md](databases.md#references-to-any-aggregate)) | Yes | |
 | Signals (`post_save`, `post_delete`) | Domain events, published after the commit | Yes | |
 | `pre_save` | `before_save()` on the aggregate, before every commit, then `clean()` ([validation.md](validation.md#fields-worked-out-before-a-commit-before_save)); `on_stage` hooks across domains | Yes | |
 
