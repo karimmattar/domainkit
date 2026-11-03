@@ -116,7 +116,9 @@ def upgrade() -> None:
             )
         )
         batch_op.add_column(
-            sa.Column("archived", sa.Boolean(), nullable=False, server_default=sa.false())
+            sa.Column(
+                "archived", sa.Boolean(), nullable=False, server_default=sa.false()
+            )
         )
 ```
 

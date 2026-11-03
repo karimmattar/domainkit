@@ -107,7 +107,9 @@ history, never the domain's classes, which keep changing after it:
 import sqlalchemy as sa
 from alembic import op
 
-people = sa.table("crm_people", sa.column("id"), sa.column("name"), sa.column("given_name"))
+people = sa.table(
+    "crm_people", sa.column("id"), sa.column("name"), sa.column("given_name")
+)
 
 
 def upgrade() -> None:

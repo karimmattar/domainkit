@@ -79,7 +79,12 @@ The routes call three functions a script or a use case may call too, in
 a `PhonesUnitOfWork` it commits:
 
 ```python
-from domainkit.contrib.phones import PhonesUnitOfWork, WrongCode, confirm_code, send_code
+from domainkit.contrib.phones import (
+    PhonesUnitOfWork,
+    WrongCode,
+    confirm_code,
+    send_code,
+)
 
 async with PhonesUnitOfWork() as uow:
     pending = await send_code(uow, user.id, "+33 6 12 34 56 78")
