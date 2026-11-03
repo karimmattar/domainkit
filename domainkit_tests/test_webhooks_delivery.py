@@ -54,8 +54,10 @@ WEBHOOKS = "domainkit.contrib.webhooks"
 ALPHA = "domainkit_tests.sample_domains.alpha"
 SETTINGS: dict[str, Any] = {
     "ALLOWED_PRIVATE_NETWORKS": ["127.0.0.0/8"],
-    "TIMEOUT": 2,
-    "CONNECT_TIMEOUT": 1,
+    # Room for a loaded CI runner: these tests' receivers answer at once, and
+    # none waits for a timeout (test_webhooks.py's hung receivers do).
+    "TIMEOUT": 10,
+    "CONNECT_TIMEOUT": 10,
     "RETRY_BASE_SECONDS": 0.001,
     "RETRY_MAX_SECONDS": 0.001,
     "MAX_ATTEMPTS": 3,
@@ -929,7 +931,7 @@ async def test_deliveries_run_as_the_settings_say(hooks: Receiver) -> None:
     spec = tasks.get_task(delivery_module.DELIVER)
 
     assert spec is not None
-    assert (spec.max_attempts, spec.timeout) == (3, 2 + 30.0)
+    assert (spec.max_attempts, spec.timeout) == (3, SETTINGS["TIMEOUT"] + 30.0)
     assert spec.backoff == Backoff(0.001, 0.001)
 
 
