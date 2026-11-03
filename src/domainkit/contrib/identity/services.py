@@ -124,7 +124,9 @@ async def account_for(name: str, claims: Claims) -> AbstractBaseUser:
         user.record(UserSignedUp(user_id=user.id))
         await uow.identities.link(user.id, name, claims.subject, claims.email)
         await uow.commit()
-    logger.info("An account was made for a new %s identity.", name)
+    # A configured provider's name; line breaks dropped all the same.
+    shown = name.replace("\r", "").replace("\n", "")
+    logger.info("An account was made for a new %s identity.", shown)
     return user
 
 

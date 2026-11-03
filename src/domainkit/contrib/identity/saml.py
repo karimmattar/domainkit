@@ -129,7 +129,9 @@ async def saml_acs(
         claims = verified_claims(config, saml_response, f"_{flow.nonce}", utc_now())
         user = await account_for(provider_key(name), claims)
     except AssertionRefused as exc:
-        logger.warning("A SAML response from %s was refused: %s.", name, exc)
+        # A configured provider's name; line breaks dropped all the same.
+        shown = name.replace("\r", "").replace("\n", "")
+        logger.warning("A SAML response from %s was refused: %s.", shown, exc)
         return _onward(frontend, error="saml_refused")
     except (NoAccount, EmailTaken) as exc:
         return _onward(frontend, error=exc.code)
