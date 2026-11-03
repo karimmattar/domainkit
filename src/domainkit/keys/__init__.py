@@ -12,7 +12,7 @@ port to that service::
     key = await provider.unwrap(made.wrapped)   # The same 32 bytes.
     wrapped = await provider.rewrap(made.wrapped)  # Under the KEK's newest version.
 
-Three adapters:
+The adapters:
 
 - ``LocalKeyProvider``: a KEK derived from ``SECRET_KEY`` (and its
   fallbacks), for development and tests; ``domainkit.contrib.keys`` refuses
@@ -20,6 +20,14 @@ Three adapters:
 - ``domainkit.keys.aws.AwsKmsKeyProvider``: AWS KMS, signed with SigV4.
 - ``domainkit.keys.vault.VaultTransitKeyProvider``: HashiCorp Vault's
   transit engine.
+- ``domainkit.keys.gcp.GcpKmsKeyProvider``: Google Cloud KMS.
+- ``domainkit.keys.azure.AzureKeyVaultKeyProvider``: Azure Key Vault, or a
+  Managed HSM.
+- ``domainkit.keys.huawei.HuaweiKmsKeyProvider``: Huawei Cloud KMS.
+- ``domainkit.keys.pkcs11.Pkcs11KeyProvider``: an HSM, through PKCS#11.
+
+A project's own subclasses ``KeyProvider`` (and may override
+``from_options``), named by ``KEYS.CUSTOM``.
 
 The cloud adapters call through ``domainkit.http.client`` (``domainkit[httpclient]``),
 which logs a call's method, origin and path only: never a body, so never a
@@ -34,9 +42,9 @@ import binascii
 import hashlib
 import secrets
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Final
+from typing import Any, ClassVar, Final, Self
 
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
@@ -111,6 +119,15 @@ class KeyProvider(ABC):
             UnknownKey: The provider cannot unwrap it.
             KeyProviderError: The service failed.
         """
+
+    @classmethod
+    def from_options(cls, options: Mapping[str, Any], *, timeout: float) -> Self:
+        """A provider from ``KEYS.CUSTOM.OPTIONS``: ``cls(**options)``.
+
+        A project's provider overrides it to read its own options (and use
+        ``timeout``, the seconds each call may take).
+        """
+        return cls(**options)
 
     def owns(self, wrapped: str) -> bool:
         """Whether ``wrapped`` names this provider as the one that wrapped it."""

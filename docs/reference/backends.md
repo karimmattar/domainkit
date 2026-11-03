@@ -120,8 +120,14 @@ Each `STORAGES` entry:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `BACKEND` | `domainkit.storage.FileSystemStorage` | Dotted path to a `domainkit.storage.Storage` class: `FileSystemStorage`, `MemoryStorage` (tests; refused in staging and production), or your own. |
+| `BACKEND` | `domainkit.storage.FileSystemStorage` | Dotted path to a `domainkit.storage.Storage` class: `FileSystemStorage`, `MemoryStorage` (tests; refused in staging and production), `domainkit.storage.s3.S3Storage`, `domainkit.storage.gcs.GCSStorage`, `domainkit.storage.azure.AzureBlobStorage` ([uploads.md](../uploads.md#object-storage)), or your own. |
 | `OPTIONS` | `{}` | The class's keyword arguments. `FileSystemStorage` takes `location` (an absolute directory), `base_url` (where a web server serves it, if one does), `file_mode` (`0o600`), and `directory_mode` (`0o700`). |
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `UPLOAD_SCANNER` | `None` | The virus scanner `save_upload` streams every upload through ([uploads.md](../uploads.md#virus-scanning)): `BACKEND`, a `domainkit.storage.scanning.Scanner` class (`ClamAVScanner` by default), and `OPTIONS`, its keyword arguments (`host`, `port` 3310, `timeout` 30 seconds). None: uploads are not scanned. |
+| `SEARCH` | `None` | The search engine `domainkit.search.search_backend()` returns ([search.md](../search.md#search-engines)): `BACKEND`, a `SearchBackend` class (`MemorySearchBackend` by default; `domainkit.search.meilisearch.MeilisearchBackend`, `domainkit.search.opensearch.OpenSearchBackend`), and `OPTIONS`, its keyword arguments. None: no search engine. |
+| `TENANCY` | `None` | Multi-tenancy ([tenancy.md](../tenancy.md)): how a request names its tenant (`SUBDOMAIN_OF`, `HEADER`, `RESOLVER`), who may act in it (`MEMBERSHIP`), whether one must be named (`REQUIRED`, `EXEMPT_PATHS`), and the databases that keep a schema per tenant (`SCHEMA_DATABASES`, `SCHEMA`). None: one tenant, nothing scoped. |
 
 ## Brokers
 
@@ -136,9 +142,12 @@ Each `BROKERS` entry:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `URL` | required | `amqps://user:password@host:5671/vhost` or `amqp://...` (RabbitMQ, through aio-pika; the `rabbitmq` extra), or `memory://` (one process, for tests and development). aiormq URL options (`?heartbeat=30`) apply. Kept secret. |
-| `PREFIX` | required for RabbitMQ | Starts every exchange and queue name (`[A-Za-z0-9_.-]`, up to 64): `<PREFIX>.work`, `<PREFIX>.<queue>`. Unique among the services sharing a virtual host. |
-| `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`amqps://` only). |
-| `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`amqps://` only). |
+| `URL` | required | `amqps://user:password@host:5671/vhost` or `amqp://...` (RabbitMQ, through aio-pika; the `rabbitmq` extra); `rediss://:password@host:6379/0` or `redis://...` (Redis Streams; the `redis` extra); `nats+tls://user:password@host:4222` or `nats://...` (NATS JetStream; the `nats` extra); `kafka+ssl://host1:9093,host2:9093` or `kafka://...` (Kafka, a user and password signing in with SCRAM-SHA-512; the `kafka` extra); `sqs://<region>`, or `sqs://KEY:SECRET@<region>`, `?endpoint=` for another endpoint (Amazon SQS; the `cloud` extra); or `memory://` (one process, for tests and development). aiormq URL options (`?heartbeat=30`) apply to RabbitMQ. Kept secret. |
+| `PREFIX` | required but for `memory://` | Starts every exchange, stream, subject, topic, and queue name (`[A-Za-z0-9_.-]`, up to 64): `<PREFIX>.<queue>` (`<PREFIX>-<queue>` on SQS). Unique among the services sharing a server. |
+| `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`amqps://`, `rediss://`, `nats+tls://`, `kafka+ssl://` only). |
+| `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (the same schemes only). |
+| `REDELIVER_AFTER` | `300.0` | Seconds a message taken and not answered waits before another consumer may take it (Redis, NATS, SQS); more than 0, at most 43,200. RabbitMQ and Kafka hand it on when its consumer goes away. |
+| `PARTITIONS` | `6` | Partitions of each topic a Kafka broker creates, which bound the workers sharing a queue; 1 to 1,000. |
+| `REPLICAS` | `3` | Copies of each partition a Kafka broker creates (1 for one server); 1 to 10. |
 | `CONNECT_TIMEOUT` | `10.0` | Seconds to connect; also the deadline of opening channels, declaring, binding, setting the prefetch, and starting or stopping consumers. |
 | `PUBLISH_TIMEOUT` | `10.0` | Seconds to wait for the broker to confirm a published message. Relays lock a message for this, `CONNECT_TIMEOUT`, and five seconds while they publish it. |

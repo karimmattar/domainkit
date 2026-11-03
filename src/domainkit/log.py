@@ -41,6 +41,7 @@ from typing import Any, Final
 
 from domainkit import clock
 from domainkit.context import current_request
+from domainkit.ddd.tenancy import current_tenant
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.tracing import current_ids
 
@@ -71,7 +72,7 @@ LOG_LOGGER: Final = "domainkit.log"
 
 TEXT_FORMAT: Final = "%(asctime)s %(levelname)s [%(name)s] [%(request_id)s] %(message)s"
 _STRUCTURED_FIELDS: Final = ("access",)
-_CONTEXT_FIELDS: Final = ("request_id", "client_ip", "trace_id", "span_id")
+_CONTEXT_FIELDS: Final = ("request_id", "client_ip", "tenant", "trace_id", "span_id")
 _KEYS: Final = {
     name: f', "{name}": ' for name in (*_CONTEXT_FIELDS, *_STRUCTURED_FIELDS)
 }
@@ -94,12 +95,13 @@ class ContextFilter(logging.Filter):
     """Attach request and trace correlation fields to every record."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """Add request and trace ids and the client address ("-" if unknown)."""
+        """Add request and trace ids, the client, and the tenant ("-" if unknown)."""
         request = current_request()
         record.__dict__["request_id"] = request.request_id if request else "-"
         record.__dict__["client_ip"] = (
             request.client_ip if request and request.client_ip else "-"
         )
+        record.__dict__["tenant"] = current_tenant() or "-"
         ids = current_ids()
         record.__dict__["trace_id"], record.__dict__["span_id"] = ids or ("-", "-")
         return True

@@ -90,6 +90,8 @@ nav:
       - request-flow.md
       - queries.md
       - databases.md
+      - tenancy.md
+      - search.md
       - money.md
       - Users and permissions:
           - auth.md
@@ -99,6 +101,8 @@ nav:
           - auth/logging-in.md
           - auth/routes.md
           - auth/step-up.md
+          - auth/identity.md
+          - auth/devices.md
           - auth/pci-dss.md
       - Optional apps:
           - contrib.md

@@ -169,9 +169,36 @@ warns and `keys reencrypt` moves what it sealed; then set
   Staging and production refuse `VAULT.URL` over plain `http://`
   (`keys.E002`): the token and every data key would cross in clear.
 
-A project can pass any `domainkit.keys.KeyProvider` to its own
-`Keyring`; `domainkit.keys.aws.AwsKmsKeyProvider` also takes a
-`credentials` callable (an instance profile, say).
+- `gcp-kms`: Cloud KMS makes no data keys: each is 32 random bytes made
+  here, wrapped by `encrypt` on `GCP_KMS.KEY_NAME` (its primary version)
+  and unwrapped by `decrypt`, both with `domainkit.keys` as additional
+  authenticated data; `rewrap` unwraps and wraps under the version now
+  primary. The caller is the service account in `CREDENTIALS_FILE`, or
+  the metadata server's, with `roles/cloudkms.cryptoKeyEncrypterDecrypter`.
+- `azure-key-vault`: `wrapkey` and `unwrapkey` on `AZURE_KEY_VAULT.KEY_NAME`
+  (`RSA-OAEP-256`, or `A256KW` for a Managed HSM's AES key); the key's
+  current version is read every five minutes and named in each wrapped
+  key, which unwraps under its own version after a rotation. The caller
+  is an Entra application (`TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`) or
+  the managed identity (a user-assigned one by `CLIENT_ID`), with the
+  `wrapKey` and `unwrapKey` permissions.
+- `huawei-kms`: `create-datakey`, `decrypt-datakey` (its digest of the
+  key checked), and `encrypt-datakey` on `HUAWEI_KMS.KEY_ID`, signed with
+  the access key (`SDK-HMAC-SHA256`).
+- `pkcs11`: an AES-256 key inside an HSM, found by `PKCS11.KEY_LABEL` on
+  the token `TOKEN_LABEL`, encrypts each data key with AES-GCM (the label
+  as additional data); it never leaves the HSM. To rotate, make a new key
+  in the HSM, name it `KEY_LABEL` and the old one in `RETIRED_LABELS`,
+  then run `keys rewrap`. The library is called on a worker thread, one
+  session at a time (the `pkcs11` extra; tested against SoftHSM).
+- `custom`: a `domainkit.keys.KeyProvider` of the project's,
+  `CUSTOM.CLASS`, made by its `from_options(CUSTOM.OPTIONS, timeout=...)`
+  (by default the class called with the options). Its `name` prefixes the
+  keys it wraps, and `DATA_KEYS` must start with it.
+
+A project can also pass any `KeyProvider` to its own `Keyring`;
+`domainkit.keys.aws.AwsKmsKeyProvider` also takes a `credentials`
+callable (an instance profile, say).
 
 ### Rotating
 
@@ -270,10 +297,15 @@ has been restored and the erasure applied to it again. So:
 
 | `KEYS` key | Default | Meaning |
 | --- | --- | --- |
-| `PROVIDER` | `"local"` | Where the KEK is: `"local"` (derived from `SECRET_KEY`), `"aws-kms"` (`AWS_KMS`), or `"vault"` (`VAULT`). |
+| `PROVIDER` | `"local"` | Where the KEK is: `"local"` (derived from `SECRET_KEY`), `"aws-kms"` (`AWS_KMS`), `"vault"` (`VAULT`), `"gcp-kms"` (`GCP_KMS`), `"azure-key-vault"` (`AZURE_KEY_VAULT`), `"huawei-kms"` (`HUAWEI_KMS`), `"pkcs11"` (`PKCS11`), or `"custom"` (`CUSTOM`). |
 | `ALLOW_LOCAL_KEK` | `False` | Let staging and production use the local KEK, which `keys.E001` refuses otherwise. |
 | `AWS_KMS` | `None` | The KMS key, below; required with `"aws-kms"`. |
 | `VAULT` | `None` | The transit key, below; required with `"vault"`. |
+| `GCP_KMS` | `None` | The Cloud KMS key, below; required with `"gcp-kms"`. |
+| `AZURE_KEY_VAULT` | `None` | The Key Vault key, below; required with `"azure-key-vault"`. |
+| `HUAWEI_KMS` | `None` | The master key, below; required with `"huawei-kms"`. |
+| `PKCS11` | `None` | The HSM and its key, below; required with `"pkcs11"`. |
+| `CUSTOM` | `None` | The project's provider, below; required with `"custom"`. |
 | `DATA_KEYS` | `{}` | Data keys by id (1 to 32 letters, digits, `_`, `-`), each wrapped by `PROVIDER`; at most 16. Required with a key service. |
 | `CURRENT_KEY` | `None` | The data key new values are sealed under; may be left out when `DATA_KEYS` holds one key. |
 | `KEEP_DEVELOPMENT_KEY` | `None` | Keep `dev` beside `DATA_KEYS`, retired, so what it sealed still opens and `keys reencrypt` moves it: `None` keeps it with the local provider only. |
@@ -292,6 +324,40 @@ has been restored and the erasure applied to it again. So:
 | `TOKEN` | required | A token allowed `update` on `datakey`, `decrypt`, and `rewrap` of the key; may not be empty. |
 | `MOUNT` | `"transit"` | Where the transit engine is mounted. |
 | `NAMESPACE` | `None` | Vault Enterprise's namespace, sent as `X-Vault-Namespace`; may not be empty, at most 255 characters. |
+
+| `KEYS["GCP_KMS"]` key | Default | Meaning |
+| --- | --- | --- |
+| `KEY_NAME` | required | `projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>`. |
+| `CREDENTIALS_FILE` | `None` | A service account's key file; `None`: the metadata server's account. |
+
+| `KEYS["AZURE_KEY_VAULT"]` key | Default | Meaning |
+| --- | --- | --- |
+| `VAULT_URL` | required | `https://<vault>.vault.azure.net`, or a Managed HSM's URL. |
+| `KEY_NAME` | required | The key's name: letters, digits, `-`; at most 127 characters. |
+| `ALGORITHM` | `"RSA-OAEP-256"` | `RSA-OAEP-256`, `RSA-OAEP`, or `A256KW`. |
+| `TENANT_ID`, `CLIENT_SECRET` | `None` | Together, with `CLIENT_ID`: an Entra application. |
+| `CLIENT_ID` | `None` | Alone: a user-assigned managed identity; none: the system-assigned one. |
+
+| `KEYS["HUAWEI_KMS"]` key | Default | Meaning |
+| --- | --- | --- |
+| `KEY_ID` | required | The master key's id; at most 64 characters. |
+| `REGION` | required | Such as `ap-southeast-3`. |
+| `PROJECT_ID` | required | The project's id (hex); at most 64 characters. |
+| `ACCESS_KEY`, `SECRET_KEY` | required | The access key that signs the calls. |
+| `ENDPOINT` | `None` | Another HTTPS endpoint; `None`: `https://kms.<REGION>.myhuaweicloud.com`. |
+
+| `KEYS["PKCS11"]` key | Default | Meaning |
+| --- | --- | --- |
+| `LIBRARY` | required | The vendor's PKCS#11 library. |
+| `TOKEN_LABEL` | required | The token's label; at most 32 characters. |
+| `PIN` | required | The user PIN; hidden in reprs. |
+| `KEY_LABEL` | required | The AES-256 key new data keys are wrapped under; at most 64 characters, without `:`. |
+| `RETIRED_LABELS` | `()` | Older keys that still unwrap, until `keys rewrap` moves their data keys. |
+
+| `KEYS["CUSTOM"]` key | Default | Meaning |
+| --- | --- | --- |
+| `CLASS` | required | Dotted path to a `KeyProvider`. |
+| `OPTIONS` | `{}` | What its `from_options` reads. |
 
 ## Checks and commands
 

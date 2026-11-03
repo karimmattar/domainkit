@@ -325,6 +325,23 @@ class PrincipalCacheSettings(BaseModel):
     """
 
 
+class CaptchaSettings(BaseModel):
+    """``AUTH["CAPTCHA"]``: the captcha the routes bots try ask for."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    PROVIDER: Literal["turnstile", "recaptcha", "hcaptcha"]
+    """Cloudflare Turnstile, Google reCAPTCHA, or hCaptcha."""
+    SECRET: SecretStr
+    """The provider's secret key for the site."""
+    ON: frozenset[Literal["login", "signup", "password_reset"]] = frozenset(
+        {"login", "signup", "password_reset"}
+    )
+    """The routes that ask for a token."""
+    MIN_SCORE: float = Field(default=0.5, ge=0, le=1)
+    """reCAPTCHA v3's lowest score let through."""
+
+
 class AuthSettings(BaseModel):
     """Users, hashing, validation, and backends; every key is optional."""
 
@@ -505,6 +522,12 @@ class AuthSettings(BaseModel):
     """Client certificates (mutual TLS)."""
     PRINCIPAL_CACHE: PrincipalCacheSettings = PrincipalCacheSettings()
     """Principals kept between requests, so most cost no query."""
+    CAPTCHA: CaptchaSettings | None = None
+    """A captcha on login, signup, and password reset (``auth.captcha``)."""
+    IMPERSONATION_TTL: timedelta | None = Field(
+        default=None, gt=timedelta(0), le=timedelta(hours=8)
+    )
+    """How long a support login as another user works (up to 8 hours); None: off."""
     CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ()
     """Origins of pages that may send cookie requests besides ``ALLOWED_HOSTS``'."""
 

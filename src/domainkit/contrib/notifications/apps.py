@@ -46,19 +46,22 @@ class NotificationsConfig(DomainConfig):
                 sensitive=True,
             )(function)
         backends = {
-            "SMS_BACKEND": get_sms_backend().deployable,
-            "PUSH_BACKEND": get_push_backend().deployable,
+            "SMS_BACKEND": (config.SMS_BACKEND, get_sms_backend().deployable),
+            "PUSH_BACKEND": (config.PUSH_BACKEND, get_push_backend().deployable),
         }
-        ids = {"SMS_BACKEND": "deploy.E005", "PUSH_BACKEND": "deploy.E006"}
+        for platform, path in config.PUSH_BACKENDS.items():
+            backends[f"PUSH_BACKENDS[{platform!r}]"] = (
+                path,
+                get_push_backend(platform).deployable,
+            )
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS and (
             refused := [
                 CheckMessage(
-                    ids[setting],
-                    f"NOTIFICATIONS.{setting} {getattr(config, setting)!r} is "
-                    "for development and tests",
+                    "deploy.E005" if setting == "SMS_BACKEND" else "deploy.E006",
+                    f"NOTIFICATIONS.{setting} {path!r} is for development and tests",
                     f"Write an adapter for your provider for {settings.ENVIRONMENT}.",
                 )
-                for setting, deployable in backends.items()
+                for setting, (path, deployable) in backends.items()
                 if not deployable
             ]
         ):

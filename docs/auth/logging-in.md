@@ -412,3 +412,24 @@ username was chosen by whoever asked, maybe not the address's owner), and
 these routes mounted without messaging and mail, or with a user model
 without `EMAIL_FIELD` and `email_verified`.
 
+## Captcha
+
+With `AUTH.CAPTCHA`, login, signup, and password reset ask for a solved
+captcha before anything else, so a bot's guesses cost it a captcha each,
+not a check of the password:
+
+```python
+AUTH = {
+    **AUTH,
+    "CAPTCHA": {"PROVIDER": "turnstile", "SECRET": env.str("TURNSTILE_SECRET")},
+}
+```
+
+Your page shows the provider's widget (Cloudflare Turnstile, Google
+reCAPTCHA, or hCaptcha) and sends the token it gives in the
+`X-Captcha-Token` header. The provider checks it, once: a missing or
+refused token is `400 captcha_failed`, and a provider that cannot be
+reached refuses the request with `503 captcha_unavailable`, so bots never
+pass while it is down. reCAPTCHA v3 scores each token: below `MIN_SCORE`
+(0.5) it is refused. `ON` names the routes that ask.
+

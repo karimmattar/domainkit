@@ -83,6 +83,8 @@ __all__ = [
 ]
 
 security_logger = logging.getLogger(SECURITY_LOGGER)
+IMPERSONATION: Final = "impersonation"
+"""The name of an impersonation token, whose ``family`` is the staff member's id."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +115,8 @@ class Credentials:
     in the table of step-ups (``proof``)."""
     amr: frozenset[str] = frozenset()
     """What that step-up proved (its ``amr`` claim): ``otp``, ``pwd``."""
+    impersonator: UUID | None = None
+    """The staff member acting as ``user`` (an impersonation token), if one is."""
 
     def allows(self, *perms: str) -> bool:
         """Whether the credentials' scopes cover every one of ``perms``."""
@@ -292,7 +296,11 @@ class TokenAuthentication(BaseAuthentication):
             entry, config.PRINCIPAL_CACHE, touch=not rechecking(connection), every=every
         )
         return Credentials(
-            user, scheme=TOKEN_SCHEME, token_id=token.id, scopes=token.scopes
+            user,
+            scheme=TOKEN_SCHEME,
+            token_id=token.id,
+            scopes=token.scopes,
+            impersonator=token.family if token.name == IMPERSONATION else None,
         )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:

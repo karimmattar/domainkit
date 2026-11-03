@@ -39,6 +39,8 @@ How each status is reached, and which fields a body holds, is in
 | `authentication_failed` | 401 | `AuthenticationFailed` (contrib.auth.authentication): Credentials were presented and do not hold. |
 | `bad_request` | 400 | Starlette or FastAPI. |
 | `business_rule_violation` | 422 | `BusinessRuleViolation` (ddd.exceptions): The request is well-formed but breaks an invariant of the model. |
+| `captcha_failed` | 400 | contrib.auth.captcha: The captcha was missing or not solved. |
+| `captcha_unavailable` | 503 | `CaptchaUnavailable` (contrib.auth.captcha): The captcha provider could not check the token: 503. |
 | `check_violation` | 422 | http.errors: A value breaks a rule of the data: it is out of the range or set the database accepts. |
 | `concurrent_update` | 409 | `ConcurrentUpdate` (ddd.exceptions): Someone else changed the aggregate first; reload it and try again. |
 | `conflict` | 409 | `Conflict` (ddd.exceptions): The operation clashes with the current state, such as a duplicate. |
@@ -48,12 +50,14 @@ How each status is reached, and which fields a body holds, is in
 | `currency_not_limited` | 422 | `CurrencyNotLimited` (contrib.limits.exceptions): A movement in a currency none of its subject's limits names (FIN-89). |
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
+| `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
+| `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
 | `domain_error` | 400 | `DomainError` (ddd.exceptions): A business rule refused the operation; the message is safe to show. |
-| `invalid_field` | 422 | `InvalidField` (ddd.exceptions): A field was given a value its markers rule out (`MaxLength`, `Range`, ...). |
 | `duplicate_value` | 409 | `DuplicateValue` (ddd.exceptions): A value that must be unique is taken (a unique constraint refused it). |
 | `earlier_period_open` | 422 | `EarlierPeriodOpen` (contrib.accounting.exceptions): Closing a period while one before it is still open. |
 | `empty_file` | 400 | http.uploads: The file is empty. |
 | `entry_not_found` | 404 | `EntryNotFound` (contrib.accounting.exceptions): No journal entry has that id. |
+| `entry_not_reversible` | 422 | `EntryNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
 | `erasure_held` | 422 | `ErasureHeld` (contrib.privacy.operations): A person's data must be kept for now: nothing of it was erased (FIN-94). |
 | `evidence_conflict` | 409 | `EvidenceConflict` (contrib.evidence.models): A different record already uses that evidence id. |
 | `evidence_not_found` | 404 | `EvidenceNotFound` (contrib.evidence.models): No evidence is stored under that key. |
@@ -72,7 +76,13 @@ How each status is reached, and which fields a body holds, is in
 | `idempotency_key_reused` | 422 | contrib.idempotency.middleware: This Idempotency-Key was used for a different request. |
 | `idempotency_key_taken_over` | 409 | `KeyTakenOver` (contrib.idempotency.operations): A retry took the key over after this request's lease ran out. |
 | `idempotency_response_unavailable` | 409 | contrib.idempotency.middleware: The request with this Idempotency-Key already ran, and its response is no longer kept; look up the result instead of retrying. contrib.idempotency.middleware. |
+| `identity_email_taken` | 409 | `EmailTaken` (contrib.identity.exceptions): An account has the identity's email: log in to it, then link the identity. |
+| `identity_last_way_in` | 422 | `LastWayIn` (contrib.identity.exceptions): Unlinking would leave the user no way to log in. |
+| `identity_not_linked` | 422 | `NoAccount` (contrib.identity.exceptions): The identity is linked to no account, and none may be made for it. |
+| `identity_provider_error` | 502 | `ProviderError` (contrib.identity.exceptions): The provider refused, could not be reached, or answered what does not hold. |
+| `identity_taken` | 409 | `IdentityTaken` (contrib.identity.exceptions): The identity is linked to another account already. |
 | `inexact_amount` | 422 | `InexactAmount` (money): An amount with more places than its currency has; nothing is rounded. |
+| `infected_file` | 422 | http.uploads: The virus scan refused the file. |
 | `insufficient_funds` | 422 | `InsufficientFunds` (contrib.accounting.exceptions): A change that would take an account that may not go negative below zero. |
 | `interested_party` | 403 | `InterestedParty` (contrib.approvals.exceptions): Whoever the command is about may not approve or reject it. |
 | `internal_error` | 500 | http.middleware: Internal server error. resources.batches: Internal server error. |
@@ -84,6 +94,7 @@ How each status is reached, and which fields a body holds, is in
 | `invalid_cursor` | 422 | http.pagination: The cursor is invalid; start again without one. |
 | `invalid_email` | 422 | `InvalidEmail` (contrib.auth.exceptions): The email address is not one plain address mail can go to. |
 | `invalid_entry` | 422 | `InvalidEntry` (contrib.accounting.exceptions): An entry that cannot be posted as written: its lines, or its accounts. |
+| `invalid_field` | 422 | `InvalidField` (ddd.exceptions): A field was given a value its markers rule out (`MaxLength`, `Range`, ...). |
 | `invalid_filter` | 422 | http.filters: a filter, lookup, ordering, or search a `FilterSet` does not offer, or over its bounds. |
 | `invalid_flag` | 422 | `InvalidFlag` (contrib.flags.models): A flag's rules are out of range. |
 | `invalid_grant` | 422 | `InvalidGrant` (contrib.objectpermissions.services): A grant names a permission of another model, or no one or two at once. |
@@ -96,6 +107,7 @@ How each status is reached, and which fields a body holds, is in
 | `invalid_password` | 422 | `InvalidPassword` (contrib.auth.exceptions): The password breaks the configured rules (``PASSWORD_VALIDATORS``). |
 | `invalid_setting_value` | 422 | `InvalidSettingValue` (contrib.flags.exceptions): The value does not fit the dynamic setting's type. |
 | `invalid_statement` | 422 | `InvalidStatement` (contrib.accounting.exceptions): A statement that cannot be imported: its format, or one of its lines. |
+| `invalid_tenant` | 400 | domainkit.tenancy: The tenant the request names is not a tenant id. |
 | `invalid_token` | 400 | contrib.auth.mfa: The login has expired; log in again. contrib.auth.recovery: The link is invalid or has expired. |
 | `invalid_transaction` | 422 | `InvalidTransaction` (contrib.auth.sca): The amount, payee, or purpose cannot be authorized as given. |
 | `invalid_user_field` | 422 | `InvalidUserField` (contrib.auth.exceptions): A value does not fit the type of the user field it is for. |
@@ -113,17 +125,21 @@ How each status is reached, and which fields a body holds, is in
 | `metrics_disabled` | 403 | http.metrics: Set METRICS_TOKEN to expose metrics in staging and production. |
 | `mfa_enabled` | 409 | contrib.auth.mfa: A second factor is on; turn it off first. |
 | `missing_value` | 422 | http.errors: A required value is missing. |
+| `multiple_found` | 409 | `MultipleFound` (ddd.exceptions): A lookup that expects one aggregate met several (`get_or_create`). |
 | `no_enrolment` | 400 | contrib.auth.mfa: No enrolment is waiting for a code; start one first. |
 | `no_open_period` | 422 | `NoOpenPeriod` (contrib.accounting.exceptions): No accounting period covers the entry's date (``REQUIRE_PERIOD``). |
 | `no_second_factor` | 409 | contrib.auth.stepup: Turn on a second factor first: confirming it is you needs one. |
 | `no_session` | 400 | contrib.auth.cookies: This request has no browser session. |
+| `not_a_member` | 403 | domainkit.tenancy: `TENANCY.MEMBERSHIP` says the caller does not belong to the tenant. |
 | `not_acceptable` | 406 | resources.renderers: This resource cannot answer in a media type the request accepts. |
 | `not_applied` | 424 | resources.batches: Another item of the batch failed, so nothing was applied. |
 | `not_authenticated` | 401 | http.access: Authentication credentials were not provided. |
-| `multiple_found` | 409 | `MultipleFound` (ddd.exceptions): A lookup that expects one aggregate met several (`get_or_create`). |
 | `not_found` | 404 | `NotFound` (ddd.exceptions): The requested aggregate does not exist. contrib.auth.signup: Not Found. contrib.flags.dependencies: Not found. Starlette or FastAPI. |
 | `not_the_maker` | 403 | `NotTheMaker` (contrib.approvals.exceptions): Only whoever submitted a request may cancel it. |
 | `overloaded` | 503 | http.shedding: The server is busy; try again shortly. |
+| `passkey_not_found` | 404 | `PasskeyNotFound` (contrib.devices.exceptions): The user has no passkey with that id. |
+| `passkey_refused` | 401 | `PasskeyRefused` (contrib.devices.exceptions): A passkey's answer does not hold; the reason is logged, not sent. |
+| `passkeys_off` | 404 | `PasskeysOff` (contrib.devices.exceptions): `DEVICES.RP_ID` is not set: no passkeys here. |
 | `password_change_required` | 403 | contrib.auth.api: This password was set for you: choose a new one to log in. |
 | `password_checks_busy` | 503 | `PasswordChecksBusy` (contrib.auth.hashers): Every hashing thread is busy and the queue is full. |
 | `password_required` | 400 | contrib.auth.stepup: Enter your password as well. |
@@ -136,23 +152,28 @@ How each status is reached, and which fields a body holds, is in
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
 | `rate_limited` | 429 | http.ratelimit: `RATE_LIMIT` or a route's `Throttle`; contrib.auth: login, password, code, link, and signup throttles. |
+| `reauthentication_required` | 401 | `ReauthenticationRequired` (contrib.devices.exceptions): Adding a key needs the password, or a step-up within ten minutes. |
 | `reference_reused` | 409 | `ReferenceReused` (contrib.accounting.exceptions): A source and reference that name an entry or a hold made otherwise. |
 | `referenced` | 409 | http.errors: a foreign key refused the change. |
 | `refresh_not_supported` | 400 | contrib.auth.authentication: Tokens are not refreshed here; log in again. |
 | `request_not_pending` | 409 | `RequestNotPending` (contrib.approvals.exceptions): The request was approved, rejected, cancelled, or has expired. |
 | `request_tampered` | 409 | `RequestTampered` (contrib.approvals.exceptions): The request was changed outside the application: its seal does not hold. |
 | `request_timeout` | 408 | http.middleware: The request body took too long to arrive. |
-| `entry_not_reversible` | 422 | `EntryNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
+| `scanner_unavailable` | 503 | `ScannerUnavailable` (storage.scanning): The virus scanner could not scan the upload: 503, nothing kept. |
 | `scope_not_held` | 403 | contrib.auth.personal_tokens: a token asked for a scope its owner does not hold. |
 | `second_factor_unreadable` | 409 | `SecondFactorUnreadable` (contrib.auth.mfa): No key held opens the user's TOTP secret: `SECRET_KEY` changed without it in `SECRET_KEY_FALLBACKS` (`resealmfa`, `resetmfa`). |
 | `service_busy` | 503 | `ServiceBusy` (exceptions): Something the operation needs is busy now; trying again later may work. |
 | `signup_taken` | 409 | contrib.auth.signup: An account already uses this username or this address; sign up again with another username, or log in. |
 | `step_up_required` | 401 | contrib.auth.access: Confirm it is you: authenticate again to do this. |
 | `step_up_unsupported` | 400 | contrib.auth.stepup: These credentials cannot step up: log in, then step up. |
+| `tenant_mismatch` | 403 | `TenantMismatch` (ddd.tenancy): An aggregate of another tenant was handed to this tenant's repository. |
+| `tenant_not_named` | 400 | domainkit.tenancy: The request names no tenant, where `TENANCY.REQUIRED`. |
+| `tenant_required` | 403 | `TenantRequired` (ddd.tenancy): Tenant data was asked for with no tenant current. |
 | `throttle_unavailable` | 503 | contrib.auth.throttling: Attempts cannot be counted right now; try again later. |
 | `token_lifetime_too_long` | 422 | contrib.auth.personal_tokens: A personal token asked for longer than `AUTH.PERSONAL_TOKEN_MAX_AGE`, or for no end. |
 | `token_not_found` | 404 | contrib.auth.personal_tokens: No such token. |
 | `too_many_connections` | 503 | http.live: `LIVE_MAX_CONNECTIONS` or `LIVE_MAX_CONNECTIONS_PER_CALLER` is reached. |
+| `too_many_keys` | 409 | `TooManyKeys` (contrib.devices.exceptions): The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already. |
 | `too_many_tokens` | 409 | contrib.auth.personal_tokens: the user holds the most personal tokens allowed. |
 | `transaction_confirmed` | 409 | contrib.auth.sca: This transaction was confirmed already. |
 | `transaction_expired` | 409 | contrib.auth.sca: This transaction can no longer be confirmed; start it again. |
@@ -164,11 +185,13 @@ How each status is reached, and which fields a body holds, is in
 | `unknown_action` | 404 | `UnknownAction` (contrib.approvals.exceptions): No guarded command has that name. |
 | `unknown_currency` | 422 | `UnknownCurrency` (money): A code that is neither an ISO 4217 currency nor a registered one. |
 | `unknown_group` | 404 | `UnknownGroup` (contrib.auth.exceptions): No group has that name. |
+| `unknown_identity_provider` | 404 | `UnknownProvider` (contrib.identity.exceptions): No identity provider has that name. |
 | `unknown_permission` | 404 | `UnknownPermission` (contrib.auth.exceptions): No permission has that key (``<domain>.<codename>``). |
 | `unknown_setting` | 404 | `UnknownSetting` (contrib.flags.exceptions): No dynamic setting is declared with that key. |
 | `unknown_user_field` | 422 | `UnknownUserField` (contrib.auth.exceptions): The user model has no such field, or it changes another way. |
 | `unsafe_url` | 422 | `UnsafeURL` (http.guard): A URL that may not be called; the message never quotes it. |
 | `unsafe_webhook_url` | 422 | `UnsafeTarget` (contrib.webhooks.guard): A webhook URL that may not be called; the message never quotes it. |
+| `unsupported_device_key` | 422 | `UnsupportedKey` (contrib.devices.exceptions): Not a P-256 or Ed25519 public key. |
 | `unsupported_file_type` | 415 | http.uploads: This type of file is not accepted. |
 | `upstream_error` | 502 | `UpstreamError` (exceptions): A service this one called failed it: unavailable, too slow, or too large. |
 | `upstream_response_too_large` | 502 | `ResponseTooLarge` (http.client): An answer was longer than ``MAX_RESPONSE_BYTES``, as sent or decompressed. |

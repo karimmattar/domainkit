@@ -867,7 +867,7 @@ def test_renovate_sees_every_image_ci_starts() -> None:
     }
     pinned = re.findall(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", text)
     started = set(pinned) - services
-    assert len(started) == 5, started
+    assert len(started) == 6, started
     config = json.loads((ROOT / "renovate.json").read_text())
     [manager] = [
         each

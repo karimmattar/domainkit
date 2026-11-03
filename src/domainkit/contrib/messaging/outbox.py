@@ -26,6 +26,7 @@ from domainkit.context import current_request
 from domainkit.db import UTCDateTime, connections, dbclock
 from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
 from domainkit.ddd import DeferredTask, DomainEvent, EventBus
+from domainkit.ddd.tenancy import current_tenant
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tracing import trace_headers
@@ -80,7 +81,7 @@ watchers: list[Watcher] = []
 
 
 def context_headers(**extra: object) -> dict[str, Any]:
-    """Carry the request id, actor, and trace context to the worker.
+    """Carry the request id, actor, tenant, and trace context to the worker.
 
     The worker logs and audits under the request id and actor, and continues
     the trace of the span that was active (the commit's, in a unit of work).
@@ -89,6 +90,7 @@ def context_headers(**extra: object) -> dict[str, Any]:
     return {
         "request_id": request.request_id if request else None,
         "actor": request.actor if request else None,
+        **({"tenant": tenant} if (tenant := current_tenant()) else {}),
         **trace_headers(),
         **extra,
     }

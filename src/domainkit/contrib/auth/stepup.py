@@ -164,25 +164,12 @@ async def step_up(
 ) -> StepUpOut:
     """Authenticate again with a second factor, for routes that ask (``StepUp``)."""
     _no_store(response)
-    credentials = _credentials(request)
-    if credentials.scheme != JWT_SCHEME and (
-        credentials.scheme not in STEPPING_SCHEMES or credentials.token_id is None
-    ):
-        raise APIError(
-            status.HTTP_400_BAD_REQUEST,
-            "These credentials cannot step up: log in, then step up.",
-            code="step_up_unsupported",
-        )
+    credentials = stepping_credentials(request)
     methods = tuple(sorted(auth_settings().STEP_UP.METHODS))
     proof = Proof(utc_now(), frozenset(methods))
 
     async def record(uow: AuthUnitOfWork) -> None:
-        if credentials.token_id is not None and credentials.scheme != JWT_SCHEME:
-            await uow.step_ups.record(
-                credentials.token_id, user.id, proof.auth_time, methods
-            )
-        stored = await uow.users.get(UserId(user.id))
-        stored.record(SteppedUp(user_id=user.id, methods=methods))
+        await record_step_up(uow, credentials, user, proof)
 
     await verify_factors(
         request,
@@ -193,7 +180,50 @@ async def step_up(
         action=ACTION,
         then=record,
     )
-    out = StepUpOut(auth_time=proof.auth_time, amr=list(methods))
+    return step_up_answer(credentials, proof)
+
+
+def stepping_credentials(request: Request) -> Credentials:
+    """The request's credentials, if they can keep a step-up.
+
+    Raises:
+        APIError: 400 ``step_up_unsupported``: they cannot.
+    """
+    credentials = _credentials(request)
+    if credentials.scheme != JWT_SCHEME and (
+        credentials.scheme not in STEPPING_SCHEMES or credentials.token_id is None
+    ):
+        raise APIError(
+            status.HTTP_400_BAD_REQUEST,
+            "These credentials cannot step up: log in, then step up.",
+            code="step_up_unsupported",
+        )
+    return credentials
+
+
+async def record_step_up(
+    uow: AuthUnitOfWork,
+    credentials: Credentials,
+    user: AbstractBaseUser,
+    proof: Proof,
+) -> None:
+    """Keep ``proof`` where the credentials keep step-ups, and say so (``SteppedUp``).
+
+    A JSON Web Token keeps it in the new access token ``step_up_answer``
+    issues instead.
+    """
+    methods = tuple(sorted(proof.methods))
+    if credentials.token_id is not None and credentials.scheme != JWT_SCHEME:
+        await uow.step_ups.record(
+            credentials.token_id, user.id, proof.auth_time, methods
+        )
+    stored = await uow.users.get(UserId(user.id))
+    stored.record(SteppedUp(user_id=user.id, methods=methods))
+
+
+def step_up_answer(credentials: Credentials, proof: Proof) -> StepUpOut:
+    """What a step-up answers: when, with what, and a JWT login's new token."""
+    out = StepUpOut(auth_time=proof.auth_time, amr=sorted(proof.methods))
     if credentials.scheme == JWT_SCHEME:
         _issue_jwt(out, credentials, proof)
     return out

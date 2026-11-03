@@ -16,3 +16,9 @@ regexes = [
   '''^sk_live_S3CR3T$''',
   '''^s3cret-0123456789-abcdefghij$''',
 ]
+
+[[allowlists]]
+description = "An elliptic curve's name, read as a key by generic-api-key (key.curve, ec.SECP256R1)"
+condition = "AND"
+paths = ['''^src/domainkit/contrib/devices/binding\.py$''']
+regexes = ['''^ec\.SECP256R1$''']

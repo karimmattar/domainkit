@@ -334,3 +334,128 @@ Files: a storage port, on the file system or in memory.
 - `StorageHandler`: Make each configured storage on first use; one per alias and process.
 - `StoredFile`: A file open for reading; close it, or use it in `async with`.
 - `storages`: The process-wide storages: `storages["default"]`.
+
+## `domainkit.storage.azure`
+
+`AzureBlobStorage`: files in an Azure Blob Storage container.
+
+- `AzureBlobStorage`: Files in one container of an Azure Storage account.
+
+## `domainkit.storage.gcs`
+
+`GCSStorage`: files in a Google Cloud Storage bucket (`domainkit[cloud]`).
+
+- `GCSStorage`: Files in one Google Cloud Storage bucket.
+
+## `domainkit.storage.images`
+
+Thumbnails of stored images (`domainkit[images]`, Pillow).
+
+- `NotAnImage`: The file is not an image Pillow reads, or is larger than `MAX_PIXELS`.
+- `thumbnail`: Store a thumbnail of the image `name` that fits `size`; its name.
+
+## `domainkit.storage.remote`
+
+What object stores share: ranged reads, parts, presigned URLs.
+
+- `ObjectStorage`: A storage in an object store; subclasses speak its protocol.
+- `PresignedUpload`: Where a client sends a new file itself, and what it must send with it.
+
+## `domainkit.storage.s3`
+
+`S3Storage`: files in an S3 bucket, or any store that speaks S3's API.
+
+- `S3Storage`: Files in one bucket of S3, or of a store that speaks its API.
+
+## `domainkit.storage.scanning`
+
+Virus scanning of uploads, as they are stored.
+
+- `ClamAVScanner`: clamd's `INSTREAM`: each chunk sent as it is stored, the verdict at the end.
+- `Infected`: The scanner found something in the upload; nothing was kept.
+- `Scanner`: Checks content as it streams past, and refuses it at the end.
+- `ScannerUnavailable`: The virus scanner could not scan the upload: 503, nothing kept.
+- `configured_scanner`: The `UPLOAD_SCANNER`, made once per configuration; None if unset.
+
+## `domainkit.broker.pull`
+
+What the brokers that are asked for messages share: Redis, NATS, Kafka, SQS.
+
+- `Fetched`: A message a puller took: its queue, body, id, and the broker's handle.
+- `PullBroker`: A broker that is asked for messages (see the module).
+- `Puller`: Asks one broker for the messages of a subscription's queues.
+
+## `domainkit.broker.redis_streams`
+
+Redis Streams (`redis://`, `rediss://`) as a work queue (the `redis` extra).
+
+- `RedisStreamsBroker`: Work queues on Redis Streams (see the module).
+
+## `domainkit.broker.nats_jetstream`
+
+NATS JetStream (`nats://`, `nats+tls://`) as a work queue (the `nats` extra).
+
+- `NatsBroker`: Work queues on NATS JetStream (see the module).
+
+## `domainkit.broker.kafka`
+
+Apache Kafka (`kafka://`, `kafka+ssl://`) as a work queue (the `kafka` extra).
+
+- `KafkaBroker`: Work queues on Kafka topics (see the module).
+
+## `domainkit.broker.sqs`
+
+Amazon SQS (`sqs://<region>`) as a work queue, through its JSON API.
+
+- `SqsBroker`: Work queues on Amazon SQS (see the module).
+
+## `domainkit.ddd.tenancy`
+
+The tenant being served, and the aggregates that belong to one.
+
+- `TenantMismatch`: An aggregate of another tenant was handed to this tenant's repository (403).
+- `TenantOwned`: Mixin for aggregates each of which belongs to one tenant.
+- `TenantRequired`: Tenant data was asked for with no tenant current (403).
+- `all_tenants`: Read and change every tenant's rows inside the block, on purpose.
+- `check_tenant_id`: `value` as a tenant id.
+- `current_tenant`: The tenant being served, if any.
+- `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
+- `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
+- `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).
+
+## `domainkit.ddd.places`
+
+Places on the Earth: a point, and how far two are apart.
+
+- `EARTH_RADIUS`: The Earth's mean radius, in meters (IUGG): what distances are worked out on.
+- `Point`: A place: latitude and longitude in degrees (WGS 84, as GPS gives them).
+
+## `domainkit.db.places`
+
+`Point` columns: PostGIS's `geography` on PostgreSQL, JSON elsewhere.
+
+- `Geography`: PostGIS's `geography(Point, 4326)`.
+- `PointType`: A `Point`: geography on PostgreSQL, `[lon, lat]` JSON text elsewhere.
+- `within`: Whether `column` is within `meters` of `point`, in `dialect`'s SQL.
+
+## `domainkit.search`
+
+Search engines: documents indexed beside the database, found by words.
+
+- `MemorySearchBackend`: Indexes in this process, for tests: every word of the query in a document.
+- `SearchBackend`: An index of documents per name, each with an `id`, found by words.
+- `SearchError`: The search engine refused, or could not be reached; never names a document.
+- `SearchResult`: The documents a search found: their ids, best first, and about how many match.
+- `search_backend`: A new instance of `SEARCH.BACKEND`, with `SEARCH.OPTIONS`.
+
+## `domainkit.search.meilisearch`
+
+Meilisearch as a `SearchBackend`.
+
+- `MeilisearchBackend`: Indexes in a Meilisearch server (see the module).
+
+## `domainkit.search.opensearch`
+
+OpenSearch (or Elasticsearch) as a `SearchBackend`.
+
+- `OpenSearchBackend`: Indexes in an OpenSearch cluster (see the module).

@@ -26,6 +26,7 @@ Hint                           Column
 ``date``, ``time``             ``Date``, ``Time``
 ``UUID``                       ``Uuid``
 ``Currency``                   ``CurrencyCode``: the code
+``Point``                      ``PointType``: PostGIS geography, or JSON
 ``Money``                      ``MoneyColumns``: ``<name>`` and ``<name>_currency``
 an ``Enum``                    ``EnumValue``: its values, as text or integers
 a single-field value object    ``ValueObjectType`` around its field's column
@@ -46,6 +47,7 @@ are added. The result is an ordinary ``Table`` on ``metadata``, so
 """
 
 import hashlib
+import sys
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -549,6 +551,10 @@ def column_type(field: FieldInfo) -> TypeEngine[Any]:
         return ValueObjectType(kind, column_type(nested))
     if kind in _SIMPLE:
         return _SIMPLE[kind]()
+    if _is_point(kind):
+        from domainkit.db.places import PointType
+
+        return PointType()
     raise TypeError(
         f"{_where(field)}: no column type for {kind.__name__}; pass a Column "
         "for it, or call register_column_type."
@@ -563,6 +569,12 @@ _SIMPLE: Final[dict[type, Callable[[], TypeEngine[Any]]]] = {
     UUID: Uuid,
     Currency: CurrencyCode,
 }
+
+
+def _is_point(kind: type) -> bool:
+    """Whether ``kind`` is ``Point``: places load only for projects that use them."""
+    places = sys.modules.get("domainkit.ddd.places")
+    return places is not None and kind is places.Point
 
 
 def _registered(kind: type) -> TypeEngine[Any] | None:

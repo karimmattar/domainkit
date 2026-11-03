@@ -49,6 +49,7 @@ from domainkit.http.errors import APIError
 from domainkit.signing import BadSignature, TimestampSigner
 
 from .api import PASSWORD_MAX_LENGTH, _errors
+from .captcha import captcha
 from .events import UserSignedUp
 from .exceptions import InvalidUserField, UnknownUserField
 from .hashers import amake_password
@@ -120,7 +121,7 @@ class SignupTaken(APIError):
 @router.post(
     "/signup",
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Public],
+    dependencies=[Public, captcha("signup")],
     responses=_errors(
         status.HTTP_404_NOT_FOUND,
         status.HTTP_422_UNPROCESSABLE_CONTENT,

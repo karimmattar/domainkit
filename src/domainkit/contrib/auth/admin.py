@@ -31,7 +31,7 @@ from types import SimpleNamespace
 from typing import Annotated, Any, Final, Self, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -51,6 +51,7 @@ from domainkit.resources.access import ModelLike
 from domainkit.utils.decimals import jsonable
 
 from .access import IsAdminUser, IsSuperuser
+from .authentication import IMPERSONATION
 from .backends import (
     ModelBackend,
     ObjectGrant,
@@ -59,7 +60,7 @@ from .backends import (
     get_backends,
     object_grants,
 )
-from .events import UserLoggedOut
+from .events import UserImpersonated, UserLoggedOut
 from .exceptions import (
     GroupNotFound,
     LastSuperuser,
@@ -68,6 +69,7 @@ from .exceptions import (
 )
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository
+from .settings import auth_settings
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, typed_fields
 from .validators import validate_password
@@ -177,6 +179,22 @@ class AdminUserPatch(BaseModel):
     is_staff: bool | None = None
     is_superuser: bool | None = None
     fields: dict[str, FieldValue] = Field(default_factory=dict)
+
+
+class ImpersonateIn(BaseModel):
+    """Why staff act as the user: recorded in the audit trail."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ImpersonationOut(BaseModel):
+    """A token that acts as the user until it expires; it is never refreshed."""
+
+    access_token: str = Field(repr=False)
+    token_type: str = "Bearer"  # noqa: S105 - a scheme, not a secret.
+    expires_in: int
 
 
 class AdminPasswordIn(BaseModel):
@@ -436,6 +454,52 @@ async def log_out_user(
         await uow.tokens.revoke_user(user.id)
         user.record(UserLoggedOut(user_id=user.id, everywhere=True))
         await uow.commit()
+
+
+@router.post(
+    "/users/{user_id}/impersonate",
+    status_code=status.HTTP_201_CREATED,
+    responses=_errors(*CHANGE),
+)
+async def impersonate(
+    user_id: UUID,
+    body: ImpersonateIn,
+    response: Response,
+    actor: Annotated[AnyUser, _users("change")],
+) -> ImpersonationOut:
+    """Act as an active user for ``AUTH.IMPERSONATION_TTL``, for ``reason``.
+
+    Only staff who may change the user (who hold every permission the user
+    holds; superusers for superusers), never as themselves. The token's
+    requests are recorded as the staff member's, it reaches no step-up,
+    and it is never refreshed; logging out ends it.
+
+    Raises:
+        PermissionDenied: Impersonation is off, the user is the staff
+            member, or holds more than them.
+    """
+    response.headers["Cache-Control"] = "no-store"  # The answer is a token.
+    ttl = auth_settings().IMPERSONATION_TTL
+    if ttl is None:
+        raise PermissionDenied("Impersonation is off (AUTH.IMPERSONATION_TTL).")
+    staff_id = cast("UUID", actor.id)  # Staff: always a user with an id.
+    if user_id == staff_id:
+        raise PermissionDenied("Staff cannot impersonate themselves.")
+    async with AuthUnitOfWork() as uow:
+        user = await _user(uow, user_id)
+        if not user.is_active:
+            raise PermissionDenied("Only active users can be impersonated.")
+        await _may_change(actor, user)
+        raw = await uow.tokens.issue(
+            user.id, ttl=ttl, name=IMPERSONATION, family=staff_id
+        )
+        user.record(
+            UserImpersonated(
+                user_id=user.id, impersonator_id=staff_id, reason=body.reason
+            )
+        )
+        await uow.commit()
+    return ImpersonationOut(access_token=raw, expires_in=int(ttl.total_seconds()))
 
 
 @router.put("/users/{user_id}/groups", responses=_errors(*CHANGE))

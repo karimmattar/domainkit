@@ -1,6 +1,9 @@
 # Public API: users and permissions
 
-`domainkit.contrib.auth` and its modules ([auth.md](../auth.md)). Part of
+`domainkit.contrib.auth`, `domainkit.contrib.identity`, `domainkit.contrib.devices`,
+and their modules
+([auth.md](../auth.md), [identity](../auth/identity.md),
+[devices](../auth/devices.md)). Part of
 the [public API](../api.md), under its compatibility policy.
 
 ## `domainkit.contrib.auth`
@@ -104,6 +107,13 @@ Who a user is, and what they may do (Django's authentication backends).
 - `has_perm`: Whether `user` has `perm` (on `obj`).
 - `has_perms`: Whether `user` has every one of `perms` (on `obj`).
 - `object_grants`: What every backend grants `holder` (a user or a group) on single objects.
+
+## `domainkit.contrib.auth.captcha`
+
+A captcha on the routes bots try: login, signup, password reset.
+
+- `CaptchaUnavailable`: The captcha provider could not check the token: 503.
+- `captcha`: A dependency that checks the captcha of `action`, if it is `ON`.
 
 ## `domainkit.contrib.auth.certificates`
 
@@ -228,3 +238,198 @@ Rules for new passwords (Django's `password_validation`).
 - `MinimumLengthValidator`: At least `min_length` characters (default 8).
 - `NumericPasswordValidator`: Not only digits.
 - `UserAttributeSimilarityValidator`: Not too much like the user's username, names, or email.
+
+## `domainkit.contrib.identity`
+
+Logging in through identity providers: OpenID Connect, OAuth 2, SAML 2.0, LDAP.
+
+- `Claims`: Who the provider says logged in: its subject, and an email if it gave one.
+- `EmailTaken`: An account has the identity's email: log in to it, then link the identity.
+- `IdentityTaken`: The identity is linked to another account already.
+- `IdentityUnitOfWork`: The auth unit of work, with the identity tables (on the same database).
+- `LastWayIn`: Unlinking would leave the user no way to log in.
+- `LinkedIdentity`: A provider's account a user logs in with.
+- `NoAccount`: The identity is linked to no account, and none may be made for it.
+- `ProviderError`: The provider refused, could not be reached, or answered what does not hold (502).
+- `UnknownProvider`: No identity provider has that name (404).
+
+## `domainkit.contrib.identity.api`
+
+The routes of logging in and linking through identity providers.
+
+- `router`: The routes: providers, login, link, callback, ticket, and linked identities.
+
+## `domainkit.contrib.identity.exceptions`
+
+What an identity provider, or a login through one, may refuse.
+
+- `EmailTaken`: An account has the identity's email: log in to it, then link the identity.
+- `IdentityTaken`: The identity is linked to another account already.
+- `LastWayIn`: Unlinking would leave the user no way to log in.
+- `NoAccount`: The identity is linked to no account, and none may be made for it.
+- `ProviderError`: The provider refused, could not be reached, or answered what does not hold (502).
+- `UnknownProvider`: No identity provider has that name (404).
+
+## `domainkit.contrib.identity.ldap`
+
+Logging in with a directory's password: LDAP or Active Directory (`domainkit[ldap]`).
+
+- `LDAPBackend`: Passwords checked by the directory `IDENTITY.LDAP` names.
+
+## `domainkit.contrib.identity.providers`
+
+OpenID Connect and OAuth 2 providers: where to send the browser, and what came back.
+
+- `AppleProvider`: Sign in with Apple: its client secret is a JWT this application signs.
+- `Claims`: Who the provider says logged in: its subject, and an email if it gave one.
+- `GitHubProvider`: GitHub accounts (OAuth 2): the user, and their verified primary email.
+- `OIDCProvider`: An OpenID Connect provider, found by its issuer's discovery document.
+- `Provider`: A provider of identities; subclasses speak its protocol.
+- `make_provider`: The provider `config` describes.
+
+## `domainkit.contrib.identity.saml`
+
+SAML 2.0 single sign-on, as a service provider (`domainkit[saml]`).
+
+- `router`: The routes: login, the assertion consumer service, and metadata.
+
+## `domainkit.contrib.identity.services`
+
+Logging in and linking through identity providers.
+
+- `begin`: Start a login (a link, for `user_id`) at `name`: the browser goes there.
+- `complete`: Finish what `state` started: the flow, and the user to log in (None: a link).
+- `provider`: The provider `name`.
+- `unlink`: Unlink the user's identity at `name`.
+
+## `domainkit.contrib.identity.stores`
+
+The identity tables, read and written in an `IdentityUnitOfWork`.
+
+- `Flow`: A login or link sent to a provider; its `verifier` and `nonce` are secret.
+- `IdentityUnitOfWork`: The auth unit of work, with the identity tables (on the same database).
+- `LinkedIdentity`: A provider's account a user logs in with.
+
+## `domainkit.contrib.identity.tables`
+
+Linked identities, logins on their way back from a provider, and tickets.
+
+- `flows`: Logins and links on their way to a provider and back, by state.
+- `identities`: The provider accounts users are linked to, one per provider and subject.
+- `tickets`: One-use tickets a browser trades for tokens, kept as digests.
+
+## `domainkit.contrib.devices`
+
+Passkeys (WebAuthn) and bound devices: keys a user's devices hold.
+
+- `BoundDevice`: A user's device: a key it holds, which signs requests.
+- `DeviceNotFound`: The user has no device with that id.
+- `DeviceSignatureRefused`: The request is not signed by a device of the user, now, once (401).
+- `DeviceSigned`: Requests a bound device of the user signed, now, once.
+- `DevicesUnitOfWork`: The auth unit of work, with the device tables (on the same database).
+- `Passkey`: A user's passkey: a WebAuthn credential's public key and counter.
+- `PasskeyNotFound`: The user has no passkey with that id.
+- `PasskeyRefused`: A passkey's answer does not hold (401); the reason is logged, not sent.
+- `PasskeysOff`: `DEVICES.RP_ID` is not set: no passkeys here (404).
+- `ReauthenticationRequired`: Adding a key needs the password, or a step-up within ten minutes (401).
+- `TooManyKeys`: The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already: remove one first.
+- `UnsupportedKey`: Not a P-256 or Ed25519 public key (SubjectPublicKeyInfo, base64url).
+
+## `domainkit.contrib.devices.api`
+
+The routes of passkeys and bound devices.
+
+- `router`: The routes: passkeys registered, logging in and stepping up; devices bound, listed, unbound, stepping up.
+
+## `domainkit.contrib.devices.binding`
+
+Requests signed by a bound device's key.
+
+- `DeviceSigned`: Requests a bound device of the user signed, now, once.
+- `device_key`: A device key's algorithm, and the key as SubjectPublicKeyInfo.
+- `signed_message`: What a device signs for a request.
+
+## `domainkit.contrib.devices.events`
+
+What happens to a user's passkeys and devices (audited as `devices.*`).
+
+- `DeviceBound`: A user bound a device's key.
+- `DeviceUnbound`: A user unbound a device.
+- `PasskeyAdded`: A user registered a passkey.
+- `PasskeyRemoved`: A user removed a passkey.
+
+## `domainkit.contrib.devices.exceptions`
+
+What a passkey, or a bound device, may be refused.
+
+- `DeviceNotFound`: The user has no device with that id.
+- `DeviceSignatureRefused`: The request is not signed by a device of the user, now, once (401).
+- `PasskeyNotFound`: The user has no passkey with that id.
+- `PasskeyRefused`: A passkey's answer does not hold (401); the reason is logged, not sent.
+- `PasskeysOff`: `DEVICES.RP_ID` is not set: no passkeys here (404).
+- `ReauthenticationRequired`: Adding a key needs the password, or a step-up within ten minutes (401).
+- `TooManyKeys`: The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already: remove one first.
+- `UnsupportedKey`: Not a P-256 or Ed25519 public key (SubjectPublicKeyInfo, base64url).
+
+## `domainkit.contrib.devices.passkeys`
+
+Passkeys: registering one, and logging in or stepping up with it.
+
+- `Assertion`: A passkey's answer to a challenge, base64url as the browser sends it.
+- `authenticate`: The active user whose passkey answered a challenge of `purpose`.
+- `creation_options`: What `navigator.credentials.create()` needs, as WebAuthn's JSON.
+- `reauthenticate`: The user authenticated again: `password`, or a recent step-up.
+- `register`: Store the passkey a registration's response proves.
+- `request_options`: What `navigator.credentials.get()` needs, as WebAuthn's JSON.
+
+## `domainkit.contrib.devices.settings`
+
+Settings of `domainkit.contrib.devices`: `DEVICES = {...}`.
+
+- `DevicesSettings`: Passkeys and bound devices; every key is optional.
+
+## `domainkit.contrib.devices.stores`
+
+The device tables, read and written in a `DevicesUnitOfWork`.
+
+- `BoundDevice`: A user's device: a key it holds, which signs requests.
+- `Challenge`: A challenge handed to a browser: for what, and for whom.
+- `DevicesUnitOfWork`: The auth unit of work, with the device tables (on the same database).
+- `Passkey`: A user's passkey: a WebAuthn credential's public key and counter.
+- `PushToken`: Where a push service reaches one of the user's apps.
+
+## `domainkit.contrib.devices.tables`
+
+Passkeys, their challenges, and bound devices.
+
+- `challenges`: Challenges handed to a browser, until its passkey answers one.
+- `devices`: Each user's bound devices: a key the device holds, and its last signed time.
+- `passkeys`: Each user's passkeys: a WebAuthn credential's public key and counter.
+- `push_tokens`: The tokens push services gave each user's apps, one row per token.
+
+## `domainkit.contrib.devices.push`
+
+Push notifications to a user: to every app of theirs that gave a token.
+
+- `notify_user`: Queue a notification to each of the user's tokens; how many.
+
+## `domainkit.contrib.auth.integration`
+
+What apps built on auth use: log a user in, step them up, hear of them.
+
+- `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
+- `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
+- `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
+- `SteppedUp`: A user authenticated again, for acts that ask for it (`StepUp`).
+- `TokenOut`: Tokens (OAuth 2's token response): send `Authorization: Bearer ...`.
+- `UserDeleted`: A user was deleted.
+- `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
+- `challenge`: A challenge, if `user` has a second factor; None if not.
+- `check_password_again`: Check the user's password again, counted with their other password checks.
+- `impersonated`: Whether staff act as the user on `connection` (an impersonation).
+- `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `proof_of`: The step-up of the connection's credentials, read once a request.
+- `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).
+- `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
+- `stepping_credentials`: The request's credentials, if they can keep a step-up.
+- `utc_now`: The current time in UTC.

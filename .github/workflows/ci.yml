@@ -146,6 +146,13 @@ jobs:
         run: pipx install "poetry==${POETRY_VERSION}"
       - if: needs.changes.outputs.code != 'false'
         run: poetry sync --all-extras --with dev
+      # SoftHSM: the PKCS#11 key provider is tested against a real token;
+      # Redis and NATS: the Redis Streams and JetStream brokers, against
+      # servers the tests start.
+      - if: needs.changes.outputs.code != 'false'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends softhsm2 redis-server nats-server
       - if: needs.changes.outputs.code != 'false'
         run: >-
           poetry run pytest -n auto --dist worksteal --cov --cov-report=term
@@ -297,6 +304,7 @@ jobs:
       DOMAINKIT_TEST_RABBITMQ_TLS_URL: amqps://domainkit:domainkit@localhost:5671/
       DOMAINKIT_TEST_RABBITMQ_CA: .ci/rabbitmq/server.crt
       DOMAINKIT_TEST_RABBITMQ_MANAGEMENT_URL: http://domainkit:domainkit@localhost:15672
+      DOMAINKIT_TEST_POSTGIS_URL: postgresql+asyncpg://postgres:postgres@localhost:5434/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -383,6 +391,24 @@ jobs:
           done
           docker logs rabbitmq
           exit 1
+      # PostGIS on 5434, beside the plain PostgreSQL service: the places
+      # tests need its geography type.
+      - name: Start PostGIS
+        run: |
+          docker run -d --name postgis -p 5434:5432 -e POSTGRES_PASSWORD=postgres \
+            postgis/postgis:18-3.6-alpine@sha256:c53a483fc274072dfa02cd491efa79f3c8ae0a10774a0ece6c9c53b6a632cdef
+          for _ in $(seq 1 60); do
+            if docker exec postgis pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs postgis
+          exit 1
+      # The servers the broker and key tests start themselves.
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends softhsm2 redis-server nats-server
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
       - shell: bash
@@ -1131,6 +1157,7 @@ jobs:
               domainkit.contrib.auth.authentication.* domainkit.contrib.auth.cookies.*
               domainkit.contrib.auth.metrics.* domainkit.contrib.auth.permissions.*
               domainkit.contrib.auth.signup.* domainkit.contrib.auth.tokens.*
+              domainkit.contrib.auth.captcha.* domainkit.contrib.auth.integration.*
           - name: auth-2
             mutants: >-
               domainkit.contrib.auth.devices.*
@@ -1139,6 +1166,7 @@ jobs:
               domainkit.contrib.auth.stepup.*
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*
               domainkit.contrib.auth.totp.* domainkit.contrib.auth.uow.*
+              domainkit.contrib.identity.* domainkit.contrib.devices.*
           - name: auth-3
             mutants: >-
               domainkit.contrib.auth.api.* domainkit.contrib.auth.backends.*
@@ -1175,13 +1203,14 @@ jobs:
               domainkit.db.fixtures.* domainkit.db.migrations.* domainkit.db.orm.*
               domainkit.db.query.* domainkit.db.repository.* domainkit.db.uow.*
               domainkit.ledger.* domainkit.db.money.*
-              domainkit.db.models.*
+              domainkit.db.models.* domainkit.db.places.*
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*
               domainkit.db.partitioning.* domainkit.db.routing.*
               domainkit.db.snapshots.* domainkit.db.squashing.* domainkit.db.types.*
-              domainkit.storage.* domainkit.money.*
+              domainkit.storage.* domainkit.cloud.* domainkit.money.*
+              domainkit.search.*
           - name: messaging
             mutants: >-
               domainkit.contrib.messaging.* domainkit.broker.*
@@ -1234,6 +1263,7 @@ jobs:
           - name: domain
             mutants: >-
               domainkit.resources.* domainkit.ddd.* domainkit.testing.* domainkit.i18n.*
+              domainkit.tenancy.*
           - name: keys
             mutants: >-
               domainkit.keys.* domainkit.db.encrypted.* domainkit.contrib.keys.*

@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncSessionTransa
 from sqlalchemy.orm.exc import StaleDataError
 
 from domainkit.apps import registry
+from domainkit.conf import settings
 from domainkit.db.connections import INTERNAL, Reads, connections
 from domainkit.db.errors import duplicate_value
 from domainkit.db.hooks import on_committed, on_stage
@@ -64,6 +65,7 @@ from domainkit.ddd import (
 )
 from domainkit.ddd.repository import Mark, Repository
 from domainkit.ddd.stores import implementation, repositories_of
+from domainkit.ddd.tenancy import TenantRequired, current_tenant
 from domainkit.ddd.uow import Savepoint
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
@@ -169,6 +171,8 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     A read-only unit of work's is a replica's, when the database has one.
     """
     session: AsyncSession
+    schema: str | None
+    """The tenant's schema its transactions use (``TENANCY.SCHEMA_DATABASES``)."""
 
     def __init__(
         self,
@@ -218,7 +222,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.database = (
             database or self.database or router.target_for_module(type(self).__module__)
         )
+        if shard_key is None and router.is_shard_group(self.database):
+            shard_key = current_tenant()  # The tenant's database (TENANCY).
         self.alias = router.alias_for(self.database, shard_key)
+        self.schema = tenant_schema_of(self.alias)
         if self.readonly:
             self.alias = router.read_alias(self.alias)
         self.shard_key = shard_key
@@ -233,6 +240,12 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             self.session = AsyncSession(
                 _isolated(connections.engine(self.alias), self.isolation),
                 expire_on_commit=False,
+            )
+        if self.schema is not None:
+            event.listen(
+                self.session.sync_session,
+                "after_begin",
+                partial(_search_path, self.schema),
             )
         self.create_repositories(self.session)
         return await super().__aenter__()
@@ -479,3 +492,26 @@ def _begin_immediate(connection: Connection) -> None:
         connection.exec_driver_sql(
             "BEGIN IMMEDIATE", execution_options={INTERNAL: True}
         )
+
+
+def tenant_schema_of(alias: str) -> str | None:
+    """The current tenant's schema, if ``alias`` keeps one per tenant.
+
+    Raises:
+        TenantRequired: It does, and no tenant is current (``all_tenants``
+            included: a schema holds one tenant's rows).
+    """
+    config = settings.TENANCY
+    if config is None or alias not in config.SCHEMA_DATABASES:
+        return None
+    current = current_tenant()
+    if current is None:
+        raise TenantRequired
+    from domainkit.tenancy import tenant_schema
+
+    return tenant_schema(current)
+
+
+def _search_path(schema: str, session: Any, transaction: Any, connection: Any) -> None:  # noqa: ANN401 - SQLAlchemy's event arguments.
+    """Work in ``schema`` for the transaction just begun (``SET LOCAL``)."""
+    connection.exec_driver_sql(f'SET LOCAL search_path TO "{schema}"')

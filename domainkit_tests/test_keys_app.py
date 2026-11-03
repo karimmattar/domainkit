@@ -292,8 +292,9 @@ def test_a_deployment_on_the_local_kek_must_opt_in(
             "can open every encrypted field."
         )
         assert problems[0].hint == (  # type: ignore[attr-defined]
-            'Set KEYS.PROVIDER to "aws-kms" or "vault", or KEYS.ALLOW_LOCAL_KEK '
-            "= True to accept it."
+            "Set KEYS.PROVIDER to a key service (aws-kms, vault, gcp-kms, "
+            "azure-key-vault, huawei-kms, pkcs11, custom), or "
+            "KEYS.ALLOW_LOCAL_KEK = True to accept it."
         )
 
 

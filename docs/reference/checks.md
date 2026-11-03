@@ -28,6 +28,7 @@ the baseline do not load, so startup and every command fail on:
 | `security.E016`, `security.E017`, `security.E018` | no `SECRET_KEY`; a key (or fallback) with a development prefix (`domainkit-insecure-`, `django-insecure-`); one with fewer than 50 characters, or fewer than 5 different ones |
 | `deploy.E004` | a `MAIL.BACKEND` made for development and tests (console, memory), with `domainkit.contrib.mail` installed |
 | `deploy.E005`, `deploy.E006` | a `NOTIFICATIONS.SMS_BACKEND` or `PUSH_BACKEND` made for development and tests, with `domainkit.contrib.notifications` installed |
+| `deploy.E007` | `SEARCH` with `MemorySearchBackend`: its index lives in one process |
 | `security.E019` | no `EVIDENCE.SUBJECT_KEY` (or `SUBJECT_KEYS`), with `domainkit.contrib.evidence` installed: the development key is public |
 
 Installed contrib apps add their own:

@@ -540,6 +540,7 @@ Ports for text messages and push notifications, with development adapters.
 - `MemorySmsBackend`: Keeps text messages in `sms_outbox`, for tests.
 - `NotificationFailed`: The provider did not take a message; the worker tries again later.
 - `PushBackend`: Sends push notifications through a provider.
+- `PushTokenGone`: The push service no longer knows the token: the app was removed.
 - `SmsBackend`: Sends text messages through a provider.
 - `push_outbox`: Notifications `MemoryPushBackend` sent, oldest first.
 - `sms_outbox`: Text messages `MemorySmsBackend` sent, oldest first.
@@ -619,3 +620,37 @@ Signatures in the Standard Webhooks scheme (https://www.standardwebhooks.com).
 - `InvalidSignature`: A delivery that is not signed with the secret, or is stale.
 - `sign`: Return `v1,<signature>` of `body` sent as `message_id` at `timestamp`.
 - `verify`: Check a delivery as a receiver would; return its id.
+
+## `domainkit.contrib.notifications.events`
+
+What the worker learns of the tokens it sends to.
+
+- `PushTokenExpired`: A push service no longer knows a token: forget it (by its digest).
+- `token_digest`: A push token's SHA-256, in hex: what `PushTokenExpired` names.
+
+## `domainkit.contrib.notifications.sms`
+
+Text message providers: Twilio, Vonage, Amazon SNS, Unifonic, Huawei Cloud.
+
+- `HuaweiSmsBackend`: Huawei Cloud's Message & SMS service (`batchSendSms`), WSSE-signed.
+- `SnsSmsBackend`: Amazon SNS's Publish, to a phone number, signed with SigV4.
+- `TwilioSmsBackend`: Twilio's Messages API.
+- `UnifonicSmsBackend`: Unifonic's SMS API.
+- `VonageSmsBackend`: Vonage's SMS API (formerly Nexmo).
+
+## `domainkit.contrib.notifications.push`
+
+Push providers: Firebase Cloud Messaging, Apple's APNs, Huawei Push Kit.
+
+- `ApnsPushBackend`: Apple's push service (APNs), over HTTP/2, with a provider token.
+- `FcmPushBackend`: Firebase Cloud Messaging's HTTP v1 API (Android, iOS, the web).
+- `HuaweiPushBackend`: Huawei Push Kit's HTTP API, for devices without Google's services.
+
+## `domainkit.contrib.mail.providers`
+
+Mail by API: Amazon SES, SendGrid, Mailgun, Postmark.
+
+- `MailgunBackend`: Mailgun's Messages API.
+- `PostmarkBackend`: Postmark's Email API.
+- `SendGridBackend`: SendGrid's v3 Mail Send API.
+- `SesBackend`: Amazon SES's v2 API: the message as MIME, signed with SigV4.

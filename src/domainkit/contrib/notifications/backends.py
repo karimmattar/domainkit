@@ -22,6 +22,7 @@ __all__ = [
     "MemorySmsBackend",
     "NotificationFailed",
     "PushBackend",
+    "PushTokenGone",
     "SmsBackend",
     "push_outbox",
     "sms_outbox",
@@ -39,6 +40,19 @@ class NotificationFailed(DomainkitError):
     Adapters raise it with the provider's error code, never a number or a
     token.
     """
+
+
+class PushTokenGone(NotificationFailed):
+    """The push service no longer knows the token: the app was removed.
+
+    Not tried again: the worker drops the notification, and says so
+    (``PushTokenExpired``), so the token can be forgotten.
+    """
+
+    def __init__(self, token: str, provider: str) -> None:
+        """Name the provider; keep the token out of the message."""
+        super().__init__(f"{provider} no longer knows the device token.")
+        self.token = token
 
 
 class SmsBackend(DeliveryBackend[SmsMessage]):

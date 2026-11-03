@@ -465,8 +465,25 @@ class CacheConfig(BaseModel):
         return bool(parse_redis_url(self.URL.get_secret_value()).password)
 
 
-BROKER_SCHEMES: Final = frozenset({"amqp", "amqps", "memory"})
+BROKER_SCHEMES: Final = frozenset(
+    {
+        "amqp",
+        "amqps",
+        "memory",
+        "redis",
+        "rediss",
+        "nats",
+        "nats+tls",
+        "kafka",
+        "kafka+ssl",
+        "sqs",
+    }
+)
 """URL schemes of message brokers (``BROKERS``)."""
+BROKER_TLS_SCHEMES: Final = frozenset(
+    {"amqps", "rediss", "nats+tls", "kafka+ssl", "sqs"}
+)
+"""Schemes whose connections are encrypted (SQS's always are: HTTPS)."""
 NAME_PATTERN: Final = r"^[A-Za-z0-9_.-]{1,64}$"
 """Queue names and broker prefixes: safe in AMQP names and routing keys."""
 
@@ -482,9 +499,14 @@ class BrokerConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     URL: SecretStr
-    """``amqps://user:password@host:5671/vhost`` (RabbitMQ), or ``memory://``."""
+    """``amqps://user:password@host:5671/vhost`` (RabbitMQ),
+    ``rediss://:password@host:6379/0`` (Redis Streams),
+    ``nats+tls://user:password@host:4222`` (NATS JetStream),
+    ``kafka+ssl://host1:9093,host2:9093`` (Kafka), ``sqs://<region>``
+    (Amazon SQS), or ``memory://``."""
     PREFIX: str | None = Field(default=None, pattern=NAME_PATTERN)
-    """Starts every exchange and queue name; RabbitMQ brokers must set one."""
+    """Starts every exchange, stream, topic, and queue name; every broker but
+    ``memory://`` must set one."""
     TLS_CA: Path | None = None
     """CA bundle for ``amqps://``; default: the system's."""
     TLS_CERT: Path | None = None
@@ -494,25 +516,49 @@ class BrokerConfig(BaseModel):
     """Seconds to connect before the attempt counts as failed."""
     PUBLISH_TIMEOUT: float = Field(default=10.0, gt=0)
     """Seconds to wait for the broker to confirm a published message."""
+    REDELIVER_AFTER: float = Field(default=300.0, gt=0, le=43200)
+    """Seconds a message taken and not answered waits before another consumer
+    may take it (Redis, NATS, SQS); RabbitMQ and Kafka hand it on when its
+    consumer goes away."""
+    PARTITIONS: int = Field(default=6, ge=1, le=1000)
+    """Partitions of each topic a Kafka broker creates: consumers at most."""
+    REPLICAS: int = Field(default=3, ge=1, le=10)
+    """Copies of each partition a Kafka broker creates (1 for one server)."""
 
     @model_validator(mode="after")
     def check_url(self) -> Self:
-        """Accept AMQP URLs with a host and a prefix, or the in-memory broker."""
-        parts = urlsplit(self.URL.get_secret_value())
+        """Accept a broker URL with a host and a prefix, or the in-memory broker."""
+        url = self.URL.get_secret_value()
+        parts = urlsplit(url)
         if parts.scheme not in BROKER_SCHEMES:
-            raise ValueError("a broker URL starts with amqp://, amqps://, or memory://")
-        _check_port(parts)
+            raise ValueError(
+                "a broker URL starts with amqp(s)://, redis(s)://, nats(+tls)://, "
+                "kafka(+ssl)://, sqs://, or memory://"
+            )
+        if parts.scheme.startswith("kafka"):
+            for server in parts.netloc.rpartition("@")[2].split(","):
+                _check_port(urlsplit(f"kafka://{server}"))
+        else:
+            _check_port(parts)
         if parts.scheme != "memory":
-            if not parts.hostname:
-                raise ValueError("an AMQP URL needs a host: amqps://user:pw@host/vhost")
+            if not parts.netloc.rpartition("@")[2]:
+                raise ValueError(
+                    "a broker URL needs a host (a region for sqs://): "
+                    "amqps://user:pw@host/vhost"
+                )
             if self.PREFIX is None:
                 raise ValueError(
-                    "RabbitMQ brokers need a PREFIX, unique among the services "
-                    "that share the virtual host"
+                    "brokers need a PREFIX, unique among the services that "
+                    "share the server"
                 )
         tls = (self.TLS_CA, self.TLS_CERT, self.TLS_KEY)
-        if parts.scheme != "amqps" and any(tls):
-            raise ValueError("TLS_CA, TLS_CERT and TLS_KEY need an amqps:// URL")
+        if (parts.scheme not in BROKER_TLS_SCHEMES or parts.scheme == "sqs") and any(
+            tls
+        ):
+            raise ValueError(
+                "TLS_CA, TLS_CERT and TLS_KEY need a TLS URL: amqps://, rediss://, "
+                "nats+tls://, or kafka+ssl://"
+            )
         if (self.TLS_CERT is None) != (self.TLS_KEY is None):
             raise ValueError("TLS_CERT and TLS_KEY go together")
         return self
@@ -533,13 +579,24 @@ class BrokerConfig(BaseModel):
         return all(value == "0" for value in options.get("no_verify_ssl", ()))
 
     def has_credentials(self) -> bool:
-        """Report whether the broker logs in as a real user, not RabbitMQ's guest."""
+        """Report whether the broker logs in as a real user, not RabbitMQ's guest.
+
+        A user, a password (Redis's), or a client certificate; SQS signs
+        every call with AWS credentials.
+        """
         parts = urlsplit(self.URL.get_secret_value())
-        user = parts.username or ("" if self.TLS_CERT is None else "certificate")
+        if self.scheme == "sqs":
+            return True
+        user = (
+            parts.username
+            or ("password" if parts.password else "")
+            or ("" if self.TLS_CERT is None else "certificate")
+        )
         return user not in {"", "guest"}
 
 
 MEMORY_STORAGE: Final = "domainkit.storage.MemoryStorage"
+MEMORY_SEARCH: Final = "domainkit.search.MemorySearchBackend"
 
 
 class StorageConfig(BaseModel):
@@ -551,6 +608,65 @@ class StorageConfig(BaseModel):
     """Dotted path to a ``domainkit.storage.Storage`` class."""
     OPTIONS: dict[str, Any] = Field(default_factory=dict)
     """Keyword arguments of the class, such as ``{"location": "/srv/files"}``."""
+
+
+class SearchConfig(BaseModel):
+    """``SEARCH``: the search engine documents are indexed in (``domainkit.search``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    BACKEND: str = MEMORY_SEARCH
+    """Dotted path to a ``SearchBackend``: Meilisearch's, OpenSearch's, or one of
+    the project's."""
+    OPTIONS: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments of the backend: its ``url``, and its key or login."""
+
+
+class TenancyConfig(BaseModel):
+    """``TENANCY``: how a request names its tenant, and where its data lives."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    SUBDOMAIN_OF: str | None = Field(default=None, pattern=r"^[a-z0-9.-]+$")
+    """``example.com``: ``acme.example.com`` is served as the tenant ``acme``."""
+    HEADER: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]+$")
+    """A header that names the tenant (``X-Tenant``), when there is no subdomain;
+    with ``MEMBERSHIP``, as any caller may send any value."""
+    RESOLVER: str | None = None
+    """Dotted path to a function of the request (async or not) that returns
+    its tenant, or None; it replaces ``SUBDOMAIN_OF`` and ``HEADER``."""
+    MEMBERSHIP: str | None = None
+    """Dotted path to a function of the user and a tenant id (async or not):
+    whether the user may act in that tenant (``403 not_a_member`` if not)."""
+    REQUIRED: bool = True
+    """Refuse a request that names no tenant (``400 tenant_not_named``)."""
+    EXEMPT_PATHS: tuple[str, ...] = ("/health",)
+    """Paths that start with one of these may name no tenant."""
+    SCHEMA: str = Field(
+        default="tenant_{tenant}", pattern=r"^[a-z_]*\{tenant\}[a-z_]*$"
+    )
+    """A tenant's PostgreSQL schema, on the ``SCHEMA_DATABASES``."""
+    SCHEMA_DATABASES: tuple[str, ...] = ()
+    """Database aliases (PostgreSQL) whose every table lives in a schema per
+    tenant: their units of work use the current tenant's."""
+
+    @model_validator(mode="after")
+    def _one_way(self) -> Self:
+        """``SUBDOMAIN_OF`` and ``HEADER`` are two ways: one at most."""
+        if self.SUBDOMAIN_OF is not None and self.HEADER is not None:
+            raise ValueError("name the tenant by SUBDOMAIN_OF or by HEADER, not both")
+        return self
+
+
+class ScannerConfig(BaseModel):
+    """``UPLOAD_SCANNER``: the virus scanner every upload streams through."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    BACKEND: str = "domainkit.storage.scanning.ClamAVScanner"
+    """Dotted path to a ``domainkit.storage.scanning.Scanner`` class."""
+    OPTIONS: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments of the class, such as ``{"host": "clamav"}``."""
 
 
 class DebugToolbarConfig(BaseModel):
@@ -770,6 +886,12 @@ class Settings(BaseModel):
     """Message brokers by alias; ``MESSAGING.BROKER`` names the worker's."""
     STORAGES: dict[str, StorageConfig] = Field(default_factory=dict)
     """File storages by alias (``domainkit.storage``); none unless set."""
+    UPLOAD_SCANNER: ScannerConfig | None = None
+    """The virus scanner ``save_upload`` streams uploads through; none unless set."""
+    SEARCH: SearchConfig | None = None
+    """The search engine ``search_backend()`` makes; none unless set."""
+    TENANCY: TenancyConfig | None = None
+    """Multi-tenancy (``domainkit.tenancy``); None: one tenant, no scoping."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
     EVENT_HANDLER_TIMEOUT: float = Field(default=10.0, gt=0, le=3600)
@@ -1335,9 +1457,11 @@ class Settings(BaseModel):
             ),
             _StoreRule(
                 "security.E013",
-                "network brokers need amqps:// (TLS)",
+                "network brokers need TLS (amqps, rediss, nats+tls, kafka+ssl)",
                 "BROKERS",
-                lambda broker: broker.is_network() and broker.scheme != "amqps",
+                lambda broker: (
+                    broker.is_network() and broker.scheme not in BROKER_TLS_SCHEMES
+                ),
             ),
             _StoreRule(
                 "security.E014",
@@ -1377,6 +1501,12 @@ class Settings(BaseModel):
                 f"memory storages keep files in one process, until it ends; use "
                 f"FileSystemStorage or a storage of your own {where} for "
                 f"STORAGES {aliases}",
+            )
+        if self.SEARCH is not None and self.SEARCH.BACKEND == MEMORY_SEARCH:
+            yield CheckMessage(
+                "deploy.E007",
+                f"a memory search index lives in one process; use Meilisearch or "
+                f"OpenSearch {where} for SEARCH",
             )
 
     def _secret_key_errors(self, where: str) -> Iterator[CheckMessage]:

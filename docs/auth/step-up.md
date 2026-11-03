@@ -61,7 +61,11 @@ What a step-up proves is `AUTH.STEP_UP.METHODS`: a code of the
 authenticator app (`["otp"]`, the default), or the password with it
 (`["pwd", "otp"]`, sent as `"password"`). A route may ask for more:
 `StepUp(max_age=..., methods=("pwd", "otp"))`. The names are RFC 8176's,
-as OpenID Connect's `amr` claim has them.
+as OpenID Connect's `amr` claim has them. With
+[`domainkit.contrib.devices`](devices.md), two more step up: a passkey
+(`["hwk", "mfa"]`), two factors on its own, proves whatever `StepUp`
+asks; a bound device's key (`["hwk"]`), a possession factor as the
+authenticator app is, proves the code (`otp`) but not the password.
 
 - **Where it is kept.** A login token or a browser session keeps its last
   step-up in `domainkit_step_ups`, by the token's digest, and `StepUp`

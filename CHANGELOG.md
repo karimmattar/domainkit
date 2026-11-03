@@ -9,6 +9,92 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- Search and places (A8): `F("body").search("late fee")` finds rows
+  holding every word (PostgreSQL full-text search; word pieces on SQLite
+  and in memory). `domainkit.search` keeps documents in a search engine
+  (`SEARCH`: Meilisearch, OpenSearch, or `MemorySearchBackend` for tests).
+  `domainkit.ddd.places.Point` is a value object an aggregate can hold:
+  PostGIS's `geography(Point, 4326)` on PostgreSQL, JSON elsewhere, and
+  `F("location").within(point, meters)` finds those near a place
+  (`ST_DWithin`). A `FilterSet` offers `search`, not `within`.
+- Multi-tenancy (A7): `TENANCY` and `domainkit.tenancy.TenantMiddleware`
+  give each request its tenant (subdomain, header, or a resolver, with a
+  membership check). `TenantOwned` aggregates are scoped by their
+  repositories: reads and bulk changes see the tenant's rows only, adds
+  set it, another's is refused, and no tenant reads nothing unless
+  `all_tenants()`. A shard group takes the tenant's database; a
+  `SCHEMA_DATABASES` alias works in the tenant's PostgreSQL schema
+  (`migrate --tenant`). Cache keys and rate-limit counts are each
+  tenant's own; logs name it; queued tasks run as it.
+- Brokers beside RabbitMQ (A6), chosen by `BROKERS` URL: Redis Streams
+  (`redis(s)://`), NATS JetStream (`nats(+tls)://`, the `nats` extra),
+  Kafka (`kafka(+ssl)://`, the `kafka` extra), and Amazon SQS
+  (`sqs://<region>`, no SDK). They share one pump (`domainkit.broker.pull`)
+  that asks for as many messages as the prefetch has room for and backs
+  off while a broker is down. `REDELIVER_AFTER`, `PARTITIONS`, and
+  `REPLICAS` are new `BROKERS` keys; `security.E013` takes any TLS scheme.
+- Key providers (A5) for `domainkit.contrib.keys`: Google Cloud KMS,
+  Azure Key Vault (or a Managed HSM), Huawei Cloud KMS, and an HSM
+  through PKCS#11 (the `pkcs11` extra, tested against SoftHSM), each a
+  `KEYS.PROVIDER` with its settings; `custom` names a project's own
+  `KeyProvider`, made by its `from_options`. Wrapped keys name their
+  provider and, where the service versions keys, the version.
+- Notification providers (A4), through `domainkit.http.client` with no
+  SDK: text messages by Twilio, Vonage, Amazon SNS, Unifonic, and Huawei
+  Cloud (`notifications.sms`); push by FCM, APNs over HTTP/2, and Huawei
+  Push Kit (`notifications.push`), a backend per platform
+  (`PUSH_BACKENDS`); mail by Amazon SES, SendGrid, Mailgun, and Postmark
+  (`mail.providers`). Providers read `SMS_OPTIONS`, `PUSH_OPTIONS`, and
+  `MAIL.OPTIONS`, checked at startup. A push token its service forgot is
+  not tried again (`PushTokenGone`, `PushTokenExpired`). Users' push
+  tokens live in `domainkit.contrib.devices` (`notify_user`).
+  `HttpClient(http2=True)` speaks HTTP/2; the `push` extra installs `h2`.
+- `domainkit.contrib.devices` (A3): passkeys (WebAuthn), checked with
+  `cryptography` alone: registered once the user authenticated again,
+  logging in with no password and no second factor, and stepping up;
+  challenges used once, counters that go back refused. Devices a mobile
+  application binds sign requests with a key they never let out
+  (`DeviceSigned`): each signature works once, whichever process reads
+  it. A passkey's step-up (`mfa`) satisfies any `StepUp`; a device's
+  (`hwk`) stands for the authenticator's code.
+- `domainkit.contrib.identity` (A2): logging in through OpenID Connect
+  and OAuth 2 providers (Google, Microsoft Entra ID, Apple, GitHub, and
+  any issuer by discovery), with PKCE, a one-time state and nonce, and ID
+  tokens verified against the provider's keys; linking several identities
+  to one user, by subject and never by email; signing up through a
+  provider that verified an email no account has (`IDENTITY.SIGNUP`).
+  SAML 2.0 single sign-on as a service provider (the `saml` extra),
+  believing only what the provider signed, for this request, and handing
+  the browser a one-time ticket instead of tokens. `LDAPBackend` (the
+  `ldap` extra) checks passwords against LDAP or Active Directory and
+  keeps mapped groups in step.
+- `AUTH.CAPTCHA`: Turnstile, reCAPTCHA, or hCaptcha on login, signup, and
+  password reset, checked before anything else and failing closed.
+- Impersonation by support staff: `POST /admin/auth/users/{id}/impersonate`
+  with a reason, off until `AUTH.IMPERSONATION_TTL` is set. Audited as
+  `auth.user_impersonated`; the token's requests are recorded as the staff
+  member's, and it reaches no step-up.
+- Object storage (A1): `domainkit.storage.s3.S3Storage` (AWS S3, and
+  MinIO, Cloudflare R2, Huawei OBS, Alibaba OSS through `endpoint`),
+  `domainkit.storage.gcs.GCSStorage`, and
+  `domainkit.storage.azure.AzureBlobStorage`, through
+  `domainkit.http.client` with no cloud SDK: files of up to 8 MiB in one
+  request, larger ones in parts aborted if the content fails, read 4 MiB
+  at a time. `presigned_url` and `presigned_upload` let clients fetch and
+  send files themselves, an upload's size and type signed on S3 and GCS.
+  `domainkit.cloud` holds the credentials they share: Google service
+  accounts and Entra ID applications or managed identities. The `cloud`
+  extra installs them.
+- `UPLOAD_SCANNER`: `save_upload` streams each upload through a virus
+  scanner (`ClamAVScanner`, clamd's `INSTREAM`) as it is stored; an
+  infected file is never kept (422 `infected_file`), and an unreachable
+  scanner refuses the upload (503 `scanner_unavailable`).
+- `domainkit.storage.images.thumbnail` (the `images` extra, Pillow): a
+  scaled copy of a stored image, decompression bombs refused from the
+  header.
+
 ### Changed
 
 - A resource route reads `If-Match` and `If-None-Match` from the request

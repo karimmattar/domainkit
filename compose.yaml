@@ -56,6 +56,19 @@ services:
       timeout: 5s
       retries: 30
 
+  # PostGIS, for the places tests (geography columns, ST_DWithin).
+  postgis:
+    image: postgis/postgis:18-3.6-alpine@sha256:c53a483fc274072dfa02cd491efa79f3c8ae0a10774a0ece6c9c53b6a632cdef
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 127.0.0.1:5434:5432
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   # The oldest PostgreSQL domainkit supports, as CI's postgresql (16) job
   # runs it: DOMAINKIT_TEST_POSTGRES_URL=postgresql+asyncpg://postgres:postgres@localhost:5433/postgres
   postgres-16:

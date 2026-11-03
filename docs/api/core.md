@@ -76,6 +76,30 @@ The framework's clock: the one place domainkit reads the time.
 - `now`: Return the current time, aware and in UTC (the frozen clock's, if any).
 - `today`: Return today's date in UTC (the frozen clock's, if any).
 
+## `domainkit.cloud`
+
+Credentials for cloud services, shared by the adapters that call them.
+
+- `CloudAuthError`: A cloud service refused the credentials, or could not be asked for a token.
+- `TokenSource`: Access tokens per scope, each kept until five minutes before it expires.
+
+## `domainkit.cloud.azure`
+
+Microsoft Entra ID tokens, and Azure Storage's Shared Key (`domainkit[cloud]`).
+
+- `EntraApplication`: An application registered in Entra ID, with a client secret.
+- `ManagedIdentity`: The identity Azure gives this host, through its instance metadata service.
+- `blob_sas`: A service SAS for one blob: the query string to append to its URL.
+- `shared_key`: The `Authorization` header Azure Storage's Shared Key gives this request.
+
+## `domainkit.cloud.google`
+
+OAuth tokens for a Google service account (`domainkit[cloud]`).
+
+- `GoogleAccount`: Who calls Google's APIs: an email, and access tokens per scope.
+- `MetadataAccount`: The account Google Cloud runs this code as, through the metadata server.
+- `ServiceAccount`: A service account from its key file: it signs its own token requests.
+
 ## `domainkit.conf`
 
 Django-style settings access.
@@ -92,9 +116,11 @@ Django-style settings access.
 - `Env`: Read prefixed variables and convert them, failing with the variable name.
 - `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.http.client` clients do by default.
 - `LedgerConfig`: One `LEDGERS` entry: write once, read many, verified on the client.
+- `SearchConfig`: `SEARCH`: the search engine documents are indexed in (`domainkit.search`).
 - `Settings`: Validated, read-only settings; extra names are checked at `setup()`.
 - `ShardConfig`: One `SHARDS` group: SQL databases that share a schema, split by key.
 - `StorageConfig`: One `STORAGES` entry: a `Storage` class and its arguments (Django's).
+- `TenancyConfig`: `TENANCY`: how a request names its tenant, and where its data lives.
 - `configure`: Load `module_name` now instead of `<PREFIX>SETTINGS_MODULE`.
 - `load_settings`: Validate every public UPPERCASE name of `module_name`.
 - `override_settings`: Temporarily replace settings, re-running schema validation.
@@ -406,3 +432,50 @@ Event loops for the framework's own entry points: uvloop when it is there.
 
 - `PerLoop`: One value per event loop, made on the loop's first use.
 - `loop_factory`: The factory of `kind`'s loops; None stands for asyncio's own.
+
+## `domainkit.cloud.aws`
+
+Calls to AWS's APIs, signed with SigV4 (`domainkit.keys.aws`).
+
+- `credential_source`: The key pair given, or the environment's credentials.
+- `signed_request`: Send `body` to `url`, signed for `service` in `region`.
+
+## `domainkit.keys.gcp`
+
+Google Cloud KMS as a `KeyProvider`.
+
+- `GcpKmsKeyProvider`: Data keys under one Cloud KMS key (see the module).
+
+## `domainkit.keys.azure`
+
+Azure Key Vault (or Managed HSM) as a `KeyProvider`.
+
+- `AzureKeyVaultKeyProvider`: Data keys under one Key Vault key (see the module).
+
+## `domainkit.keys.huawei`
+
+Huawei Cloud KMS (Data Encryption Workshop) as a `KeyProvider`.
+
+- `HuaweiKmsKeyProvider`: Data keys under one Huawei KMS master key (see the module).
+- `sign`: `headers` with `X-Sdk-Date` and an `SDK-HMAC-SHA256` signature.
+
+## `domainkit.keys.pkcs11`
+
+A hardware security module, through PKCS#11, as a `KeyProvider`.
+
+- `Pkcs11KeyProvider`: Data keys under an AES key inside an HSM (see the module).
+
+## `domainkit.tenancy`
+
+Multi-tenancy: a tenant per request; its rows, caches, limits, and database.
+
+- `TenantMiddleware`: Serve each request as its tenant (see the module).
+- `TenantMismatch`: An aggregate of another tenant was handed to this tenant's repository (403).
+- `TenantOwned`: Mixin for aggregates each of which belongs to one tenant.
+- `TenantRequired`: Tenant data was asked for with no tenant current (403).
+- `all_tenants`: Read and change every tenant's rows inside the block, on purpose.
+- `current_tenant`: The tenant being served, if any.
+- `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
+- `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
+- `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).
+- `tenant_schema`: The PostgreSQL schema of `tenant_id` (`TENANCY.SCHEMA`).

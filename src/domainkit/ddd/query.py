@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, ClassVar, Final, NoReturn, Self, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NoReturn, Self, cast
 
 from domainkit.ddd.fields import (
     FieldInfo,
@@ -58,6 +58,9 @@ from domainkit.ddd.fields import (
     primitive,
 )
 from domainkit.money import Money
+
+if TYPE_CHECKING:
+    from domainkit.ddd.places import Point
 
 __all__ = [
     "Arithmetic",
@@ -99,6 +102,8 @@ class Lookup(StrEnum):
     ISNULL = "isnull"
     REGEX = "regex"
     IREGEX = "iregex"
+    SEARCH = "search"
+    WITHIN = "within"
 
 
 TEXT_LOOKUPS: Final = frozenset(
@@ -110,6 +115,7 @@ TEXT_LOOKUPS: Final = frozenset(
         Lookup.ISTARTSWITH,
         Lookup.ENDSWITH,
         Lookup.IENDSWITH,
+        Lookup.SEARCH,
     }
 )
 """Lookups that take a piece of text and need a text field."""
@@ -132,6 +138,9 @@ _TEXT_TESTS: Final[dict[Lookup, Callable[[str, str], bool]]] = {
     Lookup.ISTARTSWITH: str.startswith,
     Lookup.ENDSWITH: str.endswith,
     Lookup.IENDSWITH: str.endswith,
+    Lookup.SEARCH: lambda text, words: all(
+        word in text.lower() for word in words.lower().split()
+    ),
 }
 _COMPARISONS: Final[dict[Lookup, Callable[[Any, Any], bool]]] = {
     Lookup.GT: lambda left, right: left > right,
@@ -537,6 +546,20 @@ class F:
     def iendswith(self, text: str) -> Condition:
         """Ends with ``text``, ignoring case."""
         return Condition(self.name, Lookup.IENDSWITH, text)
+
+    def search(self, words: str) -> Condition:
+        """Holds every word of ``words`` (Django's ``search``).
+
+        On PostgreSQL, full-text search (``websearch_to_tsquery``, the
+        ``simple`` configuration: words as written, no stemming), which an
+        index on ``to_tsvector('simple', field)`` answers; elsewhere and in
+        memory, each word as characters, ignoring case.
+        """
+        return Condition(self.name, Lookup.SEARCH, words)
+
+    def within(self, point: "Point", meters: float) -> Condition:
+        """A ``Point`` field within ``meters`` of ``point`` (``ddd.places``)."""
+        return Condition(self.name, Lookup.WITHIN, (point, meters))
 
     def regex(self, pattern: str) -> Condition:
         """Matches the regular expression ``pattern`` (Django's ``regex``).
@@ -1010,6 +1033,10 @@ def _bound_value(info: FieldInfo, lookup: Lookup, value: object) -> object:
                 f"isnull takes True or False, not {type(value).__name__}."
             )
         return value
+    if lookup is Lookup.WITHIN:
+        return _bound_place(info, value)
+    if lookup is Lookup.SEARCH and (not isinstance(value, str) or not value.split()):
+        raise InvalidQuery("search takes one word or more.")
     if lookup in TEXT_LOOKUPS or lookup in PATTERN_LOOKUPS:
         if not info.text:
             raise InvalidQuery(f"{info.name} is not text; {lookup} does not apply.")
@@ -1034,6 +1061,28 @@ def _bound_value(info: FieldInfo, lookup: Lookup, value: object) -> object:
     if lookup is Lookup.RANGE and len(coerced) != 2:
         raise InvalidQuery("range takes a low and a high value.")
     return coerced if lookup in {Lookup.IN, Lookup.RANGE} else coerced[0]
+
+
+def _bound_place(info: FieldInfo, value: object) -> tuple["Point", float]:
+    """``within``'s point and distance, on a ``Point`` field.
+
+    Raises:
+        InvalidQuery: The field is not a ``Point``, or the value not a
+            point and a distance of more than 0 meters.
+    """
+    from domainkit.ddd.places import Point
+
+    if not (isinstance(info.kind, type) and issubclass(info.kind, Point)):
+        raise InvalidQuery(f"{info.name} is not a Point; within does not apply.")
+    point, meters = value if isinstance(value, tuple) and len(value) == 2 else (None, 0)
+    if (
+        not isinstance(point, Point)
+        or isinstance(meters, bool)
+        or not isinstance(meters, int | float)
+        or not 0 < meters < float("inf")
+    ):
+        raise InvalidQuery("within takes a Point and a distance of more than 0 meters.")
+    return point, float(meters)
 
 
 def _compares(lookup: Lookup, value: object) -> bool:
@@ -1087,6 +1136,9 @@ def _compare(current: object, lookup: Lookup, value: object) -> bool:
         return (current is None) is value
     if current is None or value is None:
         return current is None and value is None and lookup is Lookup.EXACT
+    if lookup is Lookup.WITHIN:
+        point, meters = cast("tuple[Any, float]", value)
+        return bool(current.distance_to(point) <= meters)  # type: ignore[attr-defined]
     left = primitive(current)
     if lookup is Lookup.EXACT:
         return bool(left == primitive(value))

@@ -71,8 +71,8 @@ def load_backend(setting: str, path: str, base: type) -> object:
     (``MAIL.BACKEND``).
 
     Raises:
-        ImproperlyConfigured: ``path`` cannot be imported, or names no
-            subclass of ``base``.
+        ImproperlyConfigured: ``path`` cannot be imported, names no
+            subclass of ``base``, or the class refuses its options.
     """
     try:
         backend = import_string(path)
@@ -80,5 +80,8 @@ def load_backend(setting: str, path: str, base: type) -> object:
         raise ImproperlyConfigured(f"{setting}: {exc}") from exc
     if not (isinstance(backend, type) and issubclass(backend, base)):
         raise ImproperlyConfigured(f"{setting}: {path!r} is not a {base.__name__}.")
-    instance: object = backend()
+    try:
+        instance: object = backend()
+    except ValueError as exc:  # A provider's options, refused (pydantic's).
+        raise ImproperlyConfigured(f"{setting}: {exc}") from exc
     return instance

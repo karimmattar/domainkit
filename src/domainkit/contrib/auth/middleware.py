@@ -152,7 +152,9 @@ class AuthenticationMiddleware:
         if credentials is None or context is None:
             await self.app(scope, receive, send)
             return
-        with bind_request(replace(context, actor=str(credentials.user.id))):
+        # An impersonation acts for its staff member: the trail names them.
+        acting = credentials.impersonator or credentials.user.id
+        with bind_request(replace(context, actor=str(acting))):
             await self.app(scope, receive, send)
 
     async def reauthenticate(self, scope: Scope) -> bool:

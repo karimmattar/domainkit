@@ -43,6 +43,7 @@ from domainkit.http.errors import APIError
 
 from .access import AuthenticatedUser
 from .api import PASSWORD_MAX_LENGTH, _errors
+from .captcha import captcha
 from .events import PasswordReset, PasswordResetRequested
 from .exceptions import InvalidEmail
 from .models import (
@@ -139,7 +140,7 @@ class InvalidLink(APIError):
 @router.post(
     "/password-reset",
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Public],
+    dependencies=[Public, captcha("password_reset")],
     responses=_errors(status.HTTP_429_TOO_MANY_REQUESTS),
 )
 async def request_password_reset(
