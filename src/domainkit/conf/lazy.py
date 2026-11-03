@@ -2,35 +2,83 @@
 
 import importlib
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any, Final
+from types import UnionType
+from typing import Annotated, Any, Final, Union, get_args, get_origin
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from domainkit.conf.env import Env
 from domainkit.conf.global_settings import Settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
+from domainkit.utils.text import did_you_mean
 from domainkit.utils.unset import UNSET
 
 SETTINGS_MODULE_VARIABLE: Final = "SETTINGS_MODULE"
 SETTINGS_CLASS_NAME: Final = "SETTINGS_CLASS"
 
 
-def describe_errors(exc: ValidationError) -> str:
+def describe_errors(exc: ValidationError, schema: type[BaseModel] | None = None) -> str:
     """List failing setting paths and reasons, never the submitted values.
 
     Pydantic's own message embeds the input (a database URL with its password,
-    for example), so it must not reach logs or the console.
+    for example), so it must not reach logs or the console. With the
+    ``schema`` validated, a key it does not know names the one it is near:
+    ``CACHES.default.URl: Extra inputs are not permitted (did you mean URL?)``.
     """
     lines = []
     for error in exc.errors(
         include_url=False, include_input=False, include_context=False
     ):
         location = ".".join(str(part) for part in error["loc"]) or "settings"
-        lines.append(f"  {location}: {error['msg']}")
+        message = error["msg"]
+        if schema is not None and error["type"] == "extra_forbidden":
+            *path, key = error["loc"]
+            message += did_you_mean(str(key), _keys_at(schema, path))
+        lines.append(f"  {location}: {message}")
     return "\n".join(lines)
+
+
+def _keys_at(schema: type[BaseModel], path: Sequence[object]) -> set[str]:
+    """The keys the models at ``path`` of ``schema`` declare."""
+    found: list[object] = [schema]
+    for part in path:
+        found = [inner for annotation in found for inner in _inside(annotation, part)]
+    return {
+        name
+        for annotation in found
+        for kind in _kinds(annotation)
+        if isinstance(kind, type) and issubclass(kind, BaseModel)
+        for name in kind.model_fields
+    }
+
+
+def _inside(annotation: object, part: object) -> Iterator[object]:
+    """What a value of ``annotation`` holds under ``part``: a field, a value."""
+    for kind in _kinds(annotation):
+        if isinstance(kind, type) and issubclass(kind, BaseModel):
+            if (field := kind.model_fields.get(str(part))) is not None:
+                yield field.annotation
+            continue
+        arguments = get_args(kind)
+        if get_origin(kind) in {dict, Mapping} and len(arguments) == 2:
+            yield arguments[1]
+        elif get_origin(kind) in {list, tuple, Sequence} and arguments:
+            yield arguments[0]
+
+
+def _kinds(annotation: object) -> Iterator[object]:
+    """``annotation`` without ``Annotated``, and each member of a union."""
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        yield from _kinds(get_args(annotation)[0])
+    elif origin in {Union, UnionType}:
+        for member in get_args(annotation):
+            yield from _kinds(member)
+    else:
+        yield annotation
 
 
 def load_settings(module_name: str) -> Settings:
@@ -60,7 +108,7 @@ def load_settings(module_name: str) -> Settings:
     except ValidationError as exc:
         # "from None": the chained ValidationError would print the inputs.
         raise ImproperlyConfigured(
-            f"Invalid settings in {module_name!r}:\n{describe_errors(exc)}"
+            f"Invalid settings in {module_name!r}:\n{describe_errors(exc, schema)}"
         ) from None
 
 
@@ -156,7 +204,7 @@ class LazySettings:
             replacement = type(current).model_validate(values)
         except ValidationError as exc:
             raise ImproperlyConfigured(
-                f"Invalid settings override:\n{describe_errors(exc)}"
+                f"Invalid settings override:\n{describe_errors(exc, type(current))}"
             ) from None
         self._wrapped = replacement
         try:

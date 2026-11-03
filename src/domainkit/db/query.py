@@ -154,7 +154,12 @@ def column_of(mapper: Mapper[Any], name: str) -> Column[Any]:
         UnknownField: ``name`` is not a mapped column.
     """
     if name not in mapper.column_attrs:
-        raise UnknownField(f"{mapper.class_.__name__}.{name} is not a mapped column.")
+        from domainkit.utils.text import did_you_mean
+
+        raise UnknownField(
+            f"{mapper.class_.__name__}.{name} is not a mapped column"
+            f"{did_you_mean(name, mapper.column_attrs.keys())}."
+        )
     column = mapper.column_attrs[name].columns[0]
     if not isinstance(column, Column):
         raise InvalidQuery(f"{mapper.class_.__name__}.{name} is not a table column.")
@@ -233,8 +238,11 @@ def _through(
         UnknownField: ``name`` is not a mapped relationship.
     """
     if name not in mapper.relationships:
+        from domainkit.utils.text import did_you_mean
+
         raise UnknownField(
-            f"{mapper.class_.__name__}.{name} is not a mapped relationship."
+            f"{mapper.class_.__name__}.{name} is not a mapped relationship"
+            f"{did_you_mean(name, mapper.relationships.keys())}."
         )
     relationship = mapper.relationships[name]
     condition = inner(relationship.mapper)

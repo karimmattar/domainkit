@@ -11,6 +11,12 @@ and a status.
 
 ### Added
 
+- Mistakes name the fix: a settings key no model declares names the
+  one it is near (`CACHES.default.URl: Extra inputs are not permitted
+  (did you mean URL?)`), in a project's settings, an override, and a
+  domain's settings; so do an unknown filter (`Unknown filter: nmae (did
+  you mean name?).`) and a field or relationship a query names that the
+  table does not map.
 - The feature inventory's last partial rows: `before_save()` on aggregates
   (`pre_save`); `DatabaseDefault` and `Generated` columns (`db_default`,
   `GeneratedField`); `ObjectRef` references to an aggregate of any model

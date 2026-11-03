@@ -131,8 +131,9 @@ class DomainRegistry:
             try:
                 value = settings_class.model_validate({} if raw is None else raw)
             except ValidationError as exc:
+                errors = describe_errors(exc, settings_class)
                 raise ImproperlyConfigured(
-                    f"Invalid {config.settings_name} settings:\n{describe_errors(exc)}"
+                    f"Invalid {config.settings_name} settings:\n{errors}"
                 ) from None
         with self._lock:
             if self.generation == generation:

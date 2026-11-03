@@ -359,6 +359,11 @@ def test_names_resolve_only_to_mapped_columns_and_relationships() -> None:
     with pytest.raises(UnknownField, match=r"Loose\.unmapped is not a mapped column"):
         compile_criteria(F("unmapped") == 1, Loose, dialect)
     with pytest.raises(
+        UnknownField,
+        match=r"Loose\.versoin is not a mapped column \(did you mean version\?\)\.",
+    ):
+        compile_criteria(F("versoin") == 1, Loose, dialect)
+    with pytest.raises(
         UnknownField, match=r"Loose\.child is not a mapped relationship"
     ):
         compile_criteria(F("child.size") == 1, Loose, dialect)

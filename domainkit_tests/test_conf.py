@@ -1,9 +1,11 @@
 """Settings: the environment reader, the schema, and the lazy proxy."""
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Annotated
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -11,6 +13,7 @@ from domainkit.conf import (
     UNSET,
     Settings,
     configure,
+    describe_errors,
     load_settings,
     override_settings,
     reset_settings,
@@ -27,7 +30,7 @@ from domainkit.conf.env import (
     project_root,
 )
 from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE
-from domainkit.conf.lazy import LazySettings
+from domainkit.conf.lazy import LazySettings, _keys_at
 from domainkit.contrib.auth.settings import AuthSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.messaging.settings import MessagingSettings
@@ -294,6 +297,84 @@ def test_load_settings_errors(make_package: MakePackage) -> None:
     assert "MAX_REQUEST_BODY_SIZE" in message
     assert "hunter2" not in message
     assert caught.value.__cause__ is None
+
+
+def test_a_mistyped_key_names_the_one_it_is_near(make_package: MakePackage) -> None:
+    """A key no model of the path declares suggests the closest it does."""
+    make_package(
+        "conf_typo",
+        {
+            "typo.py": """
+                DATABASES = {"default": {"URL": "sqlite+aiosqlite://", "POOL_SIZ": 3}}
+                CACHES = {"default": {"URl": "memory://", "zzz": 1}}
+            """,
+        },
+    )
+    with pytest.raises(ImproperlyConfigured) as caught:
+        load_settings("conf_typo.typo")
+    lines = str(caught.value).splitlines()
+    assert (
+        "  DATABASES.default.POOL_SIZ: Extra inputs are not permitted"
+        " (did you mean POOL_SIZE?)"
+    ) in lines
+    assert (
+        "  CACHES.default.URl: Extra inputs are not permitted (did you mean URL?)"
+    ) in lines
+    assert "  CACHES.default.zzz: Extra inputs are not permitted" in lines
+    with (
+        pytest.raises(ImproperlyConfigured, match=r"\(did you mean URL\?\)"),
+        override_settings(CACHES={"default": {"URl": "memory://"}}),
+    ):
+        pass
+
+
+class Inner(BaseModel):
+    """A model inside containers, for ``_keys_at``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    NAME: str = ""
+
+
+class Outer(BaseModel):
+    """Every container ``_keys_at`` looks inside."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    BY_KEY: Mapping[str, Inner] = {}
+    LISTED: list[Annotated[Inner, "marker"]] = []
+    MAYBE: Inner | None = None
+    PAIR: tuple[Inner, ...] = ()
+    OTHER: int = 0
+
+
+@pytest.mark.parametrize(
+    ("value", "location"),
+    [
+        ({"BY_KEY": {"a": {"NAEM": "x"}}}, "BY_KEY.a.NAEM"),
+        ({"LISTED": [{"NAEM": "x"}]}, "LISTED.0.NAEM"),
+        ({"MAYBE": {"NAEM": "x"}}, "MAYBE.NAEM"),
+        ({"PAIR": [{"NAEM": "x"}]}, "PAIR.0.NAEM"),
+        ({"OTHRE": 1}, "OTHRE"),
+    ],
+)
+def test_suggestions_look_inside_containers(value: object, location: str) -> None:
+    """Mappings, lists, tuples, unions, and Annotated lead to the model."""
+    with pytest.raises(ValidationError) as caught:
+        Outer.model_validate(value)
+    described = describe_errors(caught.value, Outer)
+    near = "OTHER" if location == "OTHRE" else "NAME"
+    assert described == (
+        f"  {location}: Extra inputs are not permitted (did you mean {near}?)"
+    )
+    assert "did you mean" not in describe_errors(caught.value)
+
+
+def test_a_path_no_model_declares_suggests_nothing() -> None:
+    """A field the model lacks, or a value that holds nothing, has no keys."""
+    assert _keys_at(Outer, ["MAYBE", "NOPE"]) == set()
+    assert _keys_at(Outer, ["OTHER", "x"]) == set()
+    assert _keys_at(Outer, ["MAYBE"]) == {"NAME"}
 
 
 def test_settings_class_extends_the_schema(make_package: MakePackage) -> None:
