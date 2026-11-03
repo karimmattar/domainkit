@@ -11,6 +11,10 @@ and ``/v2`` can share route names, and ids stay stable::
     router.include_router(v1)
     router.include_router(v2)
 
+A route reads the version serving it with ``api_version(request)``: the
+version is the URL's, the one way domainkit offers (no header or query
+parameter chooses it), so a client and its logs always agree on it.
+
 A ``Deprecation`` marks the routes it guards, a whole router or one route::
 
     V1_SUNSET = Deprecation(
@@ -46,10 +50,13 @@ from domainkit.exceptions import ImproperlyConfigured
 
 __all__ = [
     "Deprecation",
+    "api_version",
     "versioned_router",
 ]
 
 SCOPE_KEY: Final = "domainkit.deprecation"
+VERSION_KEY: Final = "domainkit.api_version"
+"""Where the version of the router serving a request is kept in its scope."""
 """Where the deprecation of the route serving a request is kept in its scope."""
 _VERSION: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
 _UNSAFE_LINK: Final = re.compile(r"[\x00-\x20<>\"\x7f]")
@@ -179,6 +186,26 @@ class VersionedIds:
         return f"{self.version}_{route.name}"
 
 
+def api_version(connection: HTTPConnection) -> str | None:
+    """The version of the router serving ``connection`` (DRF's ``request.version``).
+
+    None for a route outside every ``versioned_router``.
+    """
+    version: str | None = connection.scope.get(VERSION_KEY)
+    return version
+
+
+@dataclass(frozen=True, slots=True)
+class _Served:
+    """A dependency that notes, on each request, the version serving it."""
+
+    version: str
+
+    async def __call__(self, connection: HTTPConnection) -> None:
+        """Keep the version in the request's scope."""
+        connection.scope[VERSION_KEY] = self.version
+
+
 def versioned_router(
     version: str,
     *,
@@ -197,7 +224,7 @@ def versioned_router(
             f"API version {version!r} must be letters, digits, '.', '_', or '-' "
             "(at most 32), such as 'v1'."
         )
-    guards = [*dependencies]
+    guards = [Depends(_Served(version)), *dependencies]
     if deprecation is not None:
         guards.insert(0, Depends(deprecation))
     return APIRouter(

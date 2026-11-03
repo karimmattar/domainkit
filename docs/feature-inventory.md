@@ -92,7 +92,7 @@ framework, for the reason given.
 | Object permissions (`django-guardian`) | `contrib.objectpermissions` | Yes | |
 | Throttling | `RATE_LIMIT`, per-route throttles | Yes | |
 | Renderers, content negotiation | `FORMATS` | Yes | |
-| API versioning | Prefixes, `Deprecation` headers | Partial | |
+| API versioning | `versioned_router("v1")` per version, `api_version(request)`, and `Deprecation` headers with OpenAPI's ([responses.md](reference/responses.md)); the URL is the one way a version is chosen, not a header or a query parameter | Yes | |
 | OpenAPI, browsable API | OpenAPI and its docs pages | Yes | |
 | `ETag`, `If-Match`, `If-None-Match` | Built in | Yes | |
 | `Last-Modified`, `If-Modified-Since` | `ResourceRouter(..., last_modified="updated_at")` | Yes | C6 |
