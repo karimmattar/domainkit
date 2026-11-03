@@ -131,7 +131,8 @@ async def member(user: Any, tenant_id: str) -> bool:  # noqa: ANN401
 
 def resolve(connection: Any) -> str | None:  # noqa: ANN401
     """The tenant of a ?t= query parameter."""
-    return connection.query_params.get("t")
+    found: str | None = connection.query_params.get("t")
+    return found
 
 
 HERE = "domainkit_tests.test_tenancy"

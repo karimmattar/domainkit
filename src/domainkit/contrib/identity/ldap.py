@@ -147,9 +147,7 @@ def check_password(
     try:
         return _check(config, username, password)
     except LDAPException as exc:
-        logger.warning(
-            "The directory could not check a password: %s.", type(exc).__name__
-        )
+        logger.warning("The directory could not check a login: %s.", type(exc).__name__)
         return None
 
 

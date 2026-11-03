@@ -178,7 +178,7 @@ def test_postgresql_uses_postgis_and_full_text_search() -> None:
 
     from domainkit.db.query import compile_criteria
 
-    dialect = postgresql.dialect()
+    dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
     assert PointType().load_dialect_impl(dialect).get_col_spec() == (  # type: ignore[attr-defined]
         "geography(Point, 4326)"
     )
