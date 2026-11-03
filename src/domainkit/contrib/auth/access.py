@@ -189,8 +189,12 @@ class StepUp(access.BasePermission):
         return self.required() - frozenset(auth_settings().STEP_UP.METHODS)
 
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
-        """The credentials stepped up within ``max_age``, proving ``required()``."""
-        if not user.is_authenticated:
+        """The credentials stepped up within ``max_age``, proving ``required()``.
+
+        Never while staff act as the user (an impersonation): the acts a
+        step-up guards are the user's own.
+        """
+        if not user.is_authenticated or _impersonated(request):
             return False
         proof = await proof_of(request)
         return (
@@ -208,6 +212,12 @@ class StepUp(access.BasePermission):
     async def refusal(self, request: HTTPConnection, user: AnyUser) -> StepUpRequired:
         """``401 step_up_required``, naming the age and the methods."""
         return StepUpRequired(self.max_age, self.required())
+
+
+def _impersonated(connection: HTTPConnection) -> bool:
+    """Whether the connection's credentials are staff's, acting as the user."""
+    credentials = connection.scope.get("auth")
+    return isinstance(credentials, Credentials) and credentials.impersonator is not None
 
 
 async def proof_of(connection: HTTPConnection) -> Proof | None:

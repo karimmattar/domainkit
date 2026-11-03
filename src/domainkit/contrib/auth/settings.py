@@ -524,6 +524,10 @@ class AuthSettings(BaseModel):
     """Principals kept between requests, so most cost no query."""
     CAPTCHA: CaptchaSettings | None = None
     """A captcha on login, signup, and password reset (``auth.captcha``)."""
+    IMPERSONATION_TTL: timedelta | None = Field(
+        default=None, gt=timedelta(0), le=timedelta(hours=8)
+    )
+    """How long a support login as another user works (up to 8 hours); None: off."""
     CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ()
     """Origins of pages that may send cookie requests besides ``ALLOWED_HOSTS``'."""
 

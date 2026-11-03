@@ -36,6 +36,15 @@ class UserLoggedOut(DomainEvent):
     everywhere: bool
 
 
+class UserImpersonated(DomainEvent):
+    """Staff began acting as a user, for a reason, until the token expires."""
+
+    user_id: UUID
+    impersonator_id: UUID
+    reason: Annotated[str, Personal(of="user_id")]
+    """Why: it may name the user's case, so it is kept as personal data."""
+
+
 class RefreshTokenReused(DomainEvent):
     """A used refresh token came back; the login was ended, as it may be stolen."""
 

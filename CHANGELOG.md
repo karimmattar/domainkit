@@ -11,6 +11,12 @@ and a status.
 
 ### Added
 
+- `AUTH.CAPTCHA`: Turnstile, reCAPTCHA, or hCaptcha on login, signup, and
+  password reset, checked before anything else and failing closed.
+- Impersonation by support staff: `POST /admin/auth/users/{id}/impersonate`
+  with a reason, off until `AUTH.IMPERSONATION_TTL` is set. Audited as
+  `auth.user_impersonated`; the token's requests are recorded as the staff
+  member's, and it reaches no step-up.
 - Object storage (A1): `domainkit.storage.s3.S3Storage` (AWS S3, and
   MinIO, Cloudflare R2, Huawei OBS, Alibaba OSS through `endpoint`),
   `domainkit.storage.gcs.GCSStorage`, and

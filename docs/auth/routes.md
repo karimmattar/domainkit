@@ -213,6 +213,7 @@ custom user), `auth.*_group`, or `auth.view_permission`.
 | `DELETE /users/{id}` | | `204`; the user's tokens, second factor (secret and recovery codes), and object permissions go too. |
 | `POST /users/{id}/password` | `{"password"}` | `204`; `null` makes it unusable. Every session of the user ends. |
 | `POST /users/{id}/logout` | | `204`: every session of the user ends. |
+| `POST /users/{id}/impersonate` | `{"reason"}` | `201` and a token that acts as the user for `AUTH.IMPERSONATION_TTL` ([Impersonation](#impersonation)). |
 | `PUT /users/{id}/groups` | `{"groups": [names]}` | The user, in exactly those groups. |
 | `PUT /users/{id}/permissions` | `{"permissions": [keys]}` | The user, granted exactly those permissions directly. |
 | `GET /groups` | `?limit=50&cursor=` | A page of groups by name. |
@@ -273,4 +274,21 @@ Changes are recorded as events (`UserUpdated`, `UserDeleted`,
 `UserStatusChanged`, `UserJoinedGroup`, `GroupDeleted`, and the others),
 so with `domainkit.contrib.audit` installed the audit trail names who
 changed what.
+
+### Impersonation
+
+Support staff sometimes need to see what a user sees. With
+`AUTH.IMPERSONATION_TTL` set (it is off by default, up to 8 hours),
+`POST /admin/auth/users/{id}/impersonate` with a `reason` answers a token
+that acts as the user until it expires:
+
+- Only staff who may change the user can: who hold every permission the
+  user holds, and superusers only for superusers. Never oneself, never an
+  inactive user.
+- It is audited: `auth.user_impersonated` names the staff member, the
+  user, and the reason (kept as the user's personal data, erased with
+  them). Every request the token makes is recorded as the staff member's
+  (the actor), so the trail shows who really acted.
+- It reaches no step-up (`StepUp` refuses it): what a step-up guards is
+  the user's own. It is never refreshed; logging out ends it at once.
 
