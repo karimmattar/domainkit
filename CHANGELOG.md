@@ -11,6 +11,10 @@ and a status.
 
 ### Added
 
+- `CACHES` and `BROKERS` entries take a `BACKEND`: a `Store` or a `Broker`
+  of the project's own, made from the entry, its `URL` of a scheme of its
+  choosing. Three recipes walk the extension points left: an SMS provider,
+  a cache store in a SQLite file, and a `PullBroker` over a SQLite file.
 - Phone verification: `domainkit.contrib.phones` sends a code by text
   message through the outbox, keeps only an HMAC of it keyed from
   `SECRET_KEY`, refuses it after `CODE_TTL` or `MAX_ATTEMPTS` wrong tries,

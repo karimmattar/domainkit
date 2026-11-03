@@ -75,6 +75,8 @@ REFERRER_POLICY: Final = rf"^{_REFERRER}(?:, ?{_REFERRER})*$"
 CORS_NAME: Final = r"^(?:\*|[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64})$"
 """A method or header name a CORS answer lists (RFC 9110 token), or ``*``."""
 ORIGIN: Final = r"^(?:\*|[A-Za-z][A-Za-z0-9+.-]*://[^\s/,]{1,253})$"
+DOTTED_PATH: Final = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){1,15}$"
+"""A class by module and name: ``accounts.infrastructure.cache.FileStore``."""
 """A CORS origin: ``*``, or a scheme and host (and port), without a path."""
 """A header value a setting gives: printable ASCII, no line breaks, bounded."""
 DEFAULT_CONTENT_SECURITY_POLICY: Final = "default-src 'none'; frame-ancestors 'none'"
@@ -403,11 +405,17 @@ class CacheConfig(BaseModel):
     """Fail ``/ready`` while this cache is unreachable (off: the service copes)."""
     SENTINEL_PASSWORD: SecretStr | None = None
     """``redis+sentinel://``: the Sentinels' own password, if they ask for one."""
+    BACKEND: str | None = Field(default=None, pattern=DOTTED_PATH)
+    """Dotted path to a ``domainkit.cache.Store`` of the project's own, made
+    as ``Store(config)`` once per event loop; its ``URL`` is the store's to
+    read, with a scheme of its choosing. None: the store ``URL`` names."""
 
     @model_validator(mode="after")
     def check_url(self) -> Self:
         """Accept cache URLs; Redis needs a host and a key prefix of its own."""
         scheme = self.scheme
+        if self.BACKEND is not None and scheme not in CACHE_SCHEMES:
+            return self
         if scheme not in CACHE_SCHEMES:
             raise ValueError(
                 "a cache URL starts with memory://, redis://, rediss://, "
@@ -524,12 +532,23 @@ class BrokerConfig(BaseModel):
     """Partitions of each topic a Kafka broker creates: consumers at most."""
     REPLICAS: int = Field(default=3, ge=1, le=10)
     """Copies of each partition a Kafka broker creates (1 for one server)."""
+    BACKEND: str | None = Field(default=None, pattern=DOTTED_PATH)
+    """Dotted path to a ``domainkit.broker.Broker`` of the project's own, made
+    as ``Broker(config)`` once per event loop; its ``URL`` is the broker's to
+    read, with a scheme of its choosing. None: the adapter ``URL`` names."""
 
     @model_validator(mode="after")
     def check_url(self) -> Self:
         """Accept a broker URL with a host and a prefix, or the in-memory broker."""
         url = self.URL.get_secret_value()
         parts = urlsplit(url)
+        if self.BACKEND is not None and parts.scheme not in BROKER_SCHEMES:
+            if self.PREFIX is None:
+                raise ValueError(
+                    "brokers need a PREFIX, unique among the services that "
+                    "share the server"
+                )
+            return self
         if parts.scheme not in BROKER_SCHEMES:
             raise ValueError(
                 "a broker URL starts with amqp(s)://, redis(s)://, nats(+tls)://, "

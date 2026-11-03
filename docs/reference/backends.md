@@ -107,6 +107,7 @@ Each `CACHES` entry:
 | `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`rediss://` only). |
 | `READINESS` | `False` | Fail `/ready` while this cache is unreachable. Leave it off for caches the service can run without, or an outage takes every replica out of rotation. |
 | `SENTINEL_PASSWORD` | `None` | `redis+sentinel://` only: the Sentinels' own password, when they ask for one (the URL's is the primary's). Kept secret. |
+| `BACKEND` | `None` | Dotted path to a `domainkit.cache.Store` of the project's own, made as `Store(config)` once per event loop; the `URL`, of a scheme of its choosing, is its to read ([recipe](../recipes/cache-store.md)). |
 
 ## Storages
 
@@ -151,3 +152,4 @@ Each `BROKERS` entry:
 | `REPLICAS` | `3` | Copies of each partition a Kafka broker creates (1 for one server); 1 to 10. |
 | `CONNECT_TIMEOUT` | `10.0` | Seconds to connect; also the deadline of opening channels, declaring, binding, setting the prefetch, and starting or stopping consumers. |
 | `PUBLISH_TIMEOUT` | `10.0` | Seconds to wait for the broker to confirm a published message. Relays lock a message for this, `CONNECT_TIMEOUT`, and five seconds while they publish it. |
+| `BACKEND` | `None` | Dotted path to a `domainkit.broker.Broker` of the project's own (`broker.pull.PullBroker` for one that is asked for messages), made as `Broker(config)` once per event loop; the `URL`, of a scheme of its choosing, is its to read, and `PREFIX` is still required ([recipe](../recipes/broker.md)). |

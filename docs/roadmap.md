@@ -129,12 +129,14 @@ Measured on the guide's shop, one aggregate with four commands:
    model's `REQUIRED_FIELDS` under `fields`, and a field's markers hold
    at signup, in the admin API, and in scripts, so a phone number is one
    line.
-4. **One page per extension point**, each with a working, tested example.
-   Done: an authentication class with the project's own settings
-   ([API keys](recipes/api-keys.md)) and a permission rule
-   ([recipe](recipes/permission-rules.md)), both walked by
-   `test_recipes.py`. Left: a cache backend, a broker, and an SMS or mail
-   backend.
+4. **One page per extension point** (done), each with a working, tested
+   example walked by `test_recipes.py`: an authentication class
+   ([API keys](recipes/api-keys.md)), a permission rule
+   ([recipe](recipes/permission-rules.md)), an SMS provider
+   ([recipe](recipes/sms-backend.md)), a cache store
+   ([recipe](recipes/cache-store.md)), and a broker
+   ([recipe](recipes/broker.md)); `CACHES` and `BROKERS` entries take a
+   `BACKEND` of the project's own.
 5. **Phone verification as an app** (done). `contrib.phones` sends a
    code through the outbox, keeps only its keyed digest, tries it
    `MAX_ATTEMPTS` times, limits sends per number and per user, and keeps
