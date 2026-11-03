@@ -11,6 +11,16 @@ and a status.
 
 ### Added
 
+- Notification providers (A4), through `domainkit.http.client` with no
+  SDK: text messages by Twilio, Vonage, Amazon SNS, Unifonic, and Huawei
+  Cloud (`notifications.sms`); push by FCM, APNs over HTTP/2, and Huawei
+  Push Kit (`notifications.push`), a backend per platform
+  (`PUSH_BACKENDS`); mail by Amazon SES, SendGrid, Mailgun, and Postmark
+  (`mail.providers`). Providers read `SMS_OPTIONS`, `PUSH_OPTIONS`, and
+  `MAIL.OPTIONS`, checked at startup. A push token its service forgot is
+  not tried again (`PushTokenGone`, `PushTokenExpired`). Users' push
+  tokens live in `domainkit.contrib.devices` (`notify_user`).
+  `HttpClient(http2=True)` speaks HTTP/2; the `push` extra installs `h2`.
 - `domainkit.contrib.devices` (A3): passkeys (WebAuthn), checked with
   `cryptography` alone: registered once the user authenticated again,
   logging in with no password and no second factor, and stepping up;

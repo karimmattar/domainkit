@@ -25,10 +25,16 @@ Devices:
 - ``GET /devices``, ``DELETE /devices/{id}`` (a user).
 - ``POST /devices/step-up`` (a user, signed by one of their devices): a
   step-up proving ``hwk``.
+
+Push tokens:
+
+- ``POST /devices/push-tokens`` (a user): the token an app's push service
+  gave it, and the ``platform``.
+- ``GET /devices/push-tokens``, ``DELETE /devices/push-tokens/{id}``.
 """
 
 from datetime import datetime
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -63,7 +69,7 @@ from .passkeys import (
     request_options,
 )
 from .settings import DevicesSettings
-from .stores import DevicesUnitOfWork, Passkey
+from .stores import DevicesUnitOfWork, Passkey, PushToken
 
 __all__ = ["router"]
 
@@ -173,6 +179,26 @@ class DeviceIn(BaseModel):
     password: str | None = Field(
         default=None, min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False
     )
+
+
+class PushTokenIn(BaseModel):
+    """A token a push service gave the app, and which service."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(
+        min_length=1, max_length=4096, pattern=r"^[\x21-\x7e]+$", repr=False
+    )
+    platform: Literal["fcm", "apns", "huawei"]
+
+
+class PushTokenOut(BaseModel):
+    """A push token of the user (never the token)."""
+
+    id: UUID
+    platform: str
+    created_at: datetime
+    last_seen_at: datetime
 
 
 class DeviceOut(BaseModel):
@@ -314,6 +340,41 @@ async def unbind_device(
         await uow.commit()
 
 
+@router.post("/devices/push-tokens", status_code=status.HTTP_201_CREATED)
+async def register_push_token(
+    body: PushTokenIn, user: Annotated[AbstractBaseUser, SIGNED_IN]
+) -> PushTokenOut:
+    """Keep the token the user's app was given: notifications go there."""
+    async with DevicesUnitOfWork() as uow:
+        token = await uow.push_tokens.register(
+            user.id, body.token, body.platform, keep=_settings().MAX_PUSH_TOKENS
+        )
+        await uow.commit()
+    return _push_token_out(token)
+
+
+@router.get("/devices/push-tokens")
+async def list_push_tokens(
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> list[PushTokenOut]:
+    """The user's push tokens."""
+    async with DevicesUnitOfWork() as uow:
+        return [_push_token_out(t) for t in await uow.push_tokens.of_user(user.id)]
+
+
+@router.delete(
+    "/devices/push-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def remove_push_token(
+    token_id: UUID, user: Annotated[AbstractBaseUser, SIGNED_IN]
+) -> None:
+    """Remove one of the user's push tokens (the app logged out)."""
+    async with DevicesUnitOfWork() as uow:
+        if not await uow.push_tokens.remove(user.id, token_id):
+            raise DeviceNotFound("You have no push token with that id.")
+        await uow.commit()
+
+
 @router.post(
     "/devices/step-up", response_model_exclude_none=True, dependencies=[DEVICE_SIGNED]
 )
@@ -347,6 +408,16 @@ def _passkey_out(passkey: Passkey) -> PasskeyOut:
         backed_up=passkey.backed_up,
         created_at=passkey.created_at,
         last_used_at=passkey.last_used_at,
+    )
+
+
+def _push_token_out(token: PushToken) -> PushTokenOut:
+    """A push token as the API shows it."""
+    return PushTokenOut(
+        id=token.id,
+        platform=token.platform,
+        created_at=token.created_at,
+        last_seen_at=token.last_seen_at,
     )
 
 

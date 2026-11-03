@@ -91,6 +91,10 @@ and 20 extra headers. Its `repr` shows only its `Message-ID`.
 | `domainkit.contrib.mail.backends.SmtpBackend` (default) | The SMTP server in `MAIL.SMTP`, with Python's `smtplib` on a worker thread. |
 | `domainkit.contrib.mail.backends.ConsoleBackend` | Standard output, for development. |
 | `domainkit.contrib.mail.backends.MemoryBackend` | `domainkit.contrib.mail.outbox`, a list, for tests. |
+| `domainkit.contrib.mail.providers.SesBackend` | Amazon SES's v2 API: the MIME message, signed with SigV4. |
+| `domainkit.contrib.mail.providers.SendGridBackend` | SendGrid's v3 Mail Send API. |
+| `domainkit.contrib.mail.providers.MailgunBackend` | Mailgun's Messages API. |
+| `domainkit.contrib.mail.providers.PostmarkBackend` | Postmark's Email API. |
 
 The SMTP connection is encrypted, `STARTTLS` on port 587 by default or
 TLS from the first byte on 465, and the server's certificate is checked
@@ -103,8 +107,34 @@ until `MAX_ATTEMPTS`. Recipients the server refuses while it takes the
 message for others are logged as a count.
 
 Staging and production refuse the console and memory backends: the console
-would print reset links into the logs. To send through a provider's API,
-subclass `BaseEmailBackend` and implement `async send_messages(messages)`.
+would print reset links into the logs.
+
+The provider backends call their HTTP API through
+`domainkit.http.client` (the `httpclient` extra), with no SDK, and read
+their settings from `MAIL.OPTIONS`; wrong ones stop the application at
+startup. A refusal raises `MailDeliveryFailed` with the provider's error
+code, never an address.
+
+```python
+MAIL = {
+    "BACKEND": "domainkit.contrib.mail.providers.PostmarkBackend",
+    "OPTIONS": {"SERVER_TOKEN": env.str("POSTMARK_TOKEN")},
+    "DEFAULT_FROM_EMAIL": "Acme <hello@acme.example>",
+}
+```
+
+| Backend | `MAIL.OPTIONS` |
+| --- | --- |
+| `SesBackend` | `REGION`; `ACCESS_KEY_ID` and `SECRET_ACCESS_KEY`, or neither for the environment's credentials (variables, a web identity, a container or instance role); `CONFIGURATION_SET`; `URL`. |
+| `SendGridBackend` | `API_KEY`; `URL` (`https://api.eu.sendgrid.com` for EU residency). |
+| `MailgunBackend` | `API_KEY`, `DOMAIN`; `URL` (`https://api.eu.mailgun.net` for the EU region). |
+| `PostmarkBackend` | `SERVER_TOKEN`; `MESSAGE_STREAM` (`outbound`). |
+
+Every backend also takes `TIMEOUT` (10 seconds, at most 60). SES is sent
+the message as SMTP is (`to_mime`); the others its parts: sender,
+recipients (Bcc never in a header), subject, text, HTML, `Reply-To`,
+headers, and the `Message-ID`. To use another provider, subclass
+`BaseEmailBackend` and implement `async send_messages(messages)`.
 
 In tests:
 
@@ -169,6 +199,7 @@ directory there to replace a template a contrib app ships, such as
 | `BACKEND` | `...SmtpBackend` | Dotted path to a `BaseEmailBackend`. Checked at startup. |
 | `DEFAULT_FROM_EMAIL` | `"webmaster@localhost"` | The sender of messages that name none. |
 | `SMTP` | see below | The server `SmtpBackend` uses. |
+| `OPTIONS` | `{}` | A provider backend's settings, which it reads (above). |
 | `MAX_ATTEMPTS` | `5` | Tries of each message before it is dead-lettered (`messages list dead`). |
 | `QUEUE` | `None` | The worker queue that sends mail (`runworker --queue`); `default` when `None`. |
 | `TEMPLATE_DIRS` | `()` | Directories searched for templates before the domains. |
@@ -209,17 +240,56 @@ await send_push(
 )
 ```
 
-`SmsBackend` and `PushBackend` are ports: no provider ships with domainkit.
-An adapter implements `async send_messages(messages)`, returns how many it
-sent, and raises `NotificationFailed` (with the provider's code, never a
-number or a token) for the worker to try again. Every message carries a
-`message_id`, the same on every try, to pass on to providers that drop
-duplicates.
+`SmsBackend` and `PushBackend` are ports, with adapters for these
+providers, which call their HTTP APIs through `domainkit.http.client`
+with no SDK:
+
+| Backend | Provider | Options (`SMS_OPTIONS`, or `PUSH_OPTIONS[name]`) |
+| --- | --- | --- |
+| `...sms.TwilioSmsBackend` | Twilio | `ACCOUNT_SID`, `AUTH_TOKEN` (or an API key's secret with `API_KEY_SID`), `FROM` or `MESSAGING_SERVICE_SID` |
+| `...sms.VonageSmsBackend` | Vonage | `API_KEY`, `API_SECRET`, `FROM` |
+| `...sms.SnsSmsBackend` | Amazon SNS | `REGION`, keys or the environment's, `SENDER_ID`, `SMS_TYPE` (`Transactional`) |
+| `...sms.UnifonicSmsBackend` | Unifonic | `APP_SID`, `SENDER_ID` |
+| `...sms.HuaweiSmsBackend` | Huawei Cloud's Message & SMS | `URL` (the region's), `APP_KEY`, `APP_SECRET`, `SENDER`, `TEMPLATE_ID` (a template whose one variable is the text), `SIGNATURE` |
+| `...push.FcmPushBackend` (`fcm`) | Firebase Cloud Messaging, HTTP v1 | `PROJECT_ID`, `CREDENTIALS_FILE` (a service account's key; none: the metadata server's account) |
+| `...push.ApnsPushBackend` (`apns`) | Apple's APNs, over HTTP/2 (the `push` extra) | `TEAM_ID`, `KEY_ID`, `PRIVATE_KEY` (the `.p8`), `TOPIC` (the bundle id), `SANDBOX` |
+| `...push.HuaweiPushBackend` (`huawei`) | Huawei Push Kit | `APP_ID`, `APP_SECRET` |
+
+```python
+NOTIFICATIONS = {
+    "SMS_BACKEND": "domainkit.contrib.notifications.sms.UnifonicSmsBackend",
+    "SMS_OPTIONS": {"APP_SID": env.str("UNIFONIC_APP_SID"), "SENDER_ID": "Acme"},
+    "PUSH_BACKEND": "domainkit.contrib.notifications.push.FcmPushBackend",
+    "PUSH_BACKENDS": {
+        "huawei": "domainkit.contrib.notifications.push.HuaweiPushBackend"
+    },
+    "PUSH_OPTIONS": {
+        "fcm": {"PROJECT_ID": "acme-shop"},
+        "huawei": {"APP_ID": "10123456", "APP_SECRET": env.str("HUAWEI_PUSH_SECRET")},
+    },
+}
+```
+
+A notification names its `platform` (`fcm`, `apns`, `huawei`), which
+picks its backend in `PUSH_BACKENDS`; others go to `PUSH_BACKEND`.
+Provider tokens are kept: Google's and Huawei's until five minutes
+before they expire, Apple's provider token 50 minutes. A token the
+service no longer knows (FCM's `UNREGISTERED`, APNs' `410`, Push Kit's
+`80300007`) raises `PushTokenGone`: the worker drops the notification,
+without trying again, and publishes `PushTokenExpired` with the token's
+digest, which `domainkit.contrib.devices` uses to forget it ([push
+tokens](auth/devices.md#push-tokens)).
+
+Another provider's adapter implements `async send_messages(messages)`,
+returns how many it sent, and raises `NotificationFailed` (with the
+provider's code, never a number or a token) for the worker to try again.
+Every message carries a `message_id`, the same on every try, to pass on
+to providers that drop duplicates.
 
 | Message | Fields and limits |
 | --- | --- |
 | `SmsMessage` | `to`: E.164 (`+` and up to 15 digits); `body`: 1 to 1600 characters; `sender`: an alphanumeric id of 11 characters at most, or a number. |
-| `PushMessage` | `token`: one line, up to 4096 characters; `title`: one line, 255; `body`: 4096; `data`: up to 50 string pairs of 1024 characters each. |
+| `PushMessage` | `token`: one line, up to 4096 characters; `title`: one line, 255; `body`: 4096; `data`: up to 50 string pairs of 1024 characters each; `platform`: its push service, or `None`. |
 
 Their reprs show only the `message_id`. Queued messages are kept in the
 outbox as mail is, until they are sent, cancelled, or dead-lettered, then
@@ -232,5 +302,8 @@ what they would send; the memory backends keep it in `sms_outbox` and
 | --- | --- | --- |
 | `SMS_BACKEND` | `...ConsoleSmsBackend` | Dotted path to an `SmsBackend`. |
 | `PUSH_BACKEND` | `...ConsolePushBackend` | Dotted path to a `PushBackend`. |
+| `PUSH_BACKENDS` | `{}` | A backend per platform, for notifications that name theirs. |
+| `SMS_OPTIONS` | `{}` | The SMS provider's settings, which its backend reads. |
+| `PUSH_OPTIONS` | `{}` | Each push provider's settings, by its name (`fcm`, `apns`, `huawei`). |
 | `MAX_ATTEMPTS` | `5` | Tries of each message before it is dead-lettered. |
 | `QUEUE` | `None` | The worker queue that sends them; `default` when `None`. |

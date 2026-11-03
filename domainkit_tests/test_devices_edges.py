@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -18,7 +19,7 @@ from domainkit.contrib.devices.apps import forget_devices
 from domainkit.contrib.devices.binding import SIGNING_DEVICE, DeviceSigned
 from domainkit.contrib.devices.passkeys import reauthenticate
 from domainkit.contrib.devices.settings import DevicesSettings
-from domainkit.contrib.devices.stores import DevicesUnitOfWork, PasskeyStore
+from domainkit.contrib.devices.stores import DevicesUnitOfWork, PasskeyStore, PushToken
 from domainkit.contrib.devices.webauthn import (
     AT,
     ED,
@@ -56,6 +57,8 @@ from domainkit_tests.test_devices import (
     client_json,
     signed_in,
 )
+
+NOW = datetime(2027, 1, 4, tzinfo=UTC)
 
 
 def test_base64url_from_the_browser() -> None:
@@ -435,3 +438,20 @@ def test_devices_must_share_auths_database(
 
     with pytest.raises(ImproperlyConfigured, match="routed with 'auth'"):
         config.ready()
+
+
+def test_without_notifications_no_token_is_listened_for(
+    app: App,  # noqa: F811 - the fixture.
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Notifications not installed: ready() subscribes to deletions only."""
+    from domainkit.apps import registry
+
+    app()
+    config = registry.get_domain_config("devices")
+    monkeypatch.setattr(registry, "is_installed", lambda name: False)
+
+    config.ready()
+
+    token = PushToken(uuid4(), uuid4(), "d", "secret-token", "fcm", NOW, NOW)
+    assert "secret-token" not in repr(token)

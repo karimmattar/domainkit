@@ -396,6 +396,7 @@ The device tables, read and written in a `DevicesUnitOfWork`.
 - `Challenge`: A challenge handed to a browser: for what, and for whom.
 - `DevicesUnitOfWork`: The auth unit of work, with the device tables (on the same database).
 - `Passkey`: A user's passkey: a WebAuthn credential's public key and counter.
+- `PushToken`: Where a push service reaches one of the user's apps.
 
 ## `domainkit.contrib.devices.tables`
 
@@ -404,3 +405,10 @@ Passkeys, their challenges, and bound devices.
 - `challenges`: Challenges handed to a browser, until its passkey answers one.
 - `devices`: Each user's bound devices: a key the device holds, and its last signed time.
 - `passkeys`: Each user's passkeys: a WebAuthn credential's public key and counter.
+- `push_tokens`: The tokens push services gave each user's apps, one row per token.
+
+## `domainkit.contrib.devices.push`
+
+Push notifications to a user: to every app of theirs that gave a token.
+
+- `notify_user`: Queue a notification to each of the user's tokens; how many.

@@ -88,6 +88,9 @@ class PushMessage(_Notification):
     body: str = Field(max_length=MAX_PUSH_BODY_LENGTH)
     data: dict[str, str] = Field(default_factory=dict, max_length=MAX_DATA_ITEMS)
     """Values the app receives with the notification."""
+    platform: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,19}$")
+    """The push service the token is of (``fcm``, ``apns``, ``huawei``), which
+    picks the backend (``PUSH_BACKENDS``); None: ``PUSH_BACKEND``."""
 
     @model_validator(mode="after")
     def check_data(self) -> Self:

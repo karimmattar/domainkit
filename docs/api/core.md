@@ -430,3 +430,10 @@ Event loops for the framework's own entry points: uvloop when it is there.
 
 - `PerLoop`: One value per event loop, made on the loop's first use.
 - `loop_factory`: The factory of `kind`'s loops; None stands for asyncio's own.
+
+## `domainkit.cloud.aws`
+
+Calls to AWS's APIs, signed with SigV4 (`domainkit.keys.aws`).
+
+- `credential_source`: The key pair given, or the environment's credentials.
+- `signed_request`: Send `body` to `url`, signed for `service` in `region`.

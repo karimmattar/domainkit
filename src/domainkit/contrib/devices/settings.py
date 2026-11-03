@@ -26,6 +26,8 @@ class DevicesSettings(BaseModel):
     """How long a challenge works: the browser's timeout too."""
     MAX_PASSKEYS: int = Field(default=10, ge=1, le=100)
     MAX_DEVICES: int = Field(default=10, ge=1, le=100)
+    MAX_PUSH_TOKENS: int = Field(default=20, ge=1, le=100)
+    """Push tokens a user holds; a new one past it ends the oldest."""
     SIGNATURE_WINDOW: timedelta = Field(
         default=timedelta(minutes=2), gt=timedelta(0), le=timedelta(minutes=10)
     )

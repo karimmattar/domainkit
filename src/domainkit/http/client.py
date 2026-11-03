@@ -297,6 +297,7 @@ class HttpClient:
         propagate: bool | None = None,
         breaker: bool = True,
         transport: httpx2.AsyncBaseTransport | None = None,
+        http2: bool = False,
     ) -> None:
         """Make a client; nothing is opened until its first call.
 
@@ -310,7 +311,9 @@ class HttpClient:
         choose, so one caller's failing URLs never refuse another's calls.
         ``transport`` replaces the network, as httpx2's ``MockTransport``;
         a guarded client refuses one, since its checks are made as it
-        connects (tests use ``stub``).
+        connects (tests use ``stub``). ``http2`` speaks HTTP/2 where the
+        server does (needs ``h2``: ``httpx2[http2]``), as Apple's push
+        service requires.
 
         Raises:
             ValueError: An option is out of range, or a guarded client was
@@ -336,6 +339,7 @@ class HttpClient:
         self.allowed_networks = tuple(allowed_networks)
         self.propagate = not guard if propagate is None else propagate
         self.transport = transport
+        self.http2 = http2
         self.breaker = CircuitBreaker() if breaker else None
         """The client's circuits per host; None with ``breaker=False``."""
         self._pools: PerLoop[httpx2.AsyncClient] = PerLoop()
@@ -642,6 +646,7 @@ class HttpClient:
             limits=limits,
             trust_env=not self.guard,
             follow_redirects=False,
+            http2=self.http2,
         )
 
 

@@ -14,7 +14,7 @@ from sqlalchemy import (
 
 from domainkit.db import UTCDateTime, metadata
 
-__all__ = ["challenges", "devices", "passkeys"]
+__all__ = ["challenges", "devices", "passkeys", "push_tokens"]
 
 passkeys = Table(
     "domainkit_passkeys",
@@ -64,3 +64,18 @@ devices = Table(
     info={"domain": "devices"},
 )
 """Each user's bound devices: a key the device holds, which signs requests."""
+
+push_tokens = Table(
+    "domainkit_push_tokens",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("user_id", Uuid, nullable=False, index=True),
+    # The token's SHA-256: one row per token, whoever holds it now.
+    Column("digest", String(64), nullable=False, unique=True),
+    Column("token", String(4096), nullable=False),
+    Column("platform", String(20), nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("last_seen_at", UTCDateTime, nullable=False),
+    info={"domain": "devices"},
+)
+"""The tokens push services gave each user's apps: where notifications go."""

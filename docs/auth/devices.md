@@ -38,6 +38,7 @@ a user (`UserDeleted`) removes their passkeys and devices.
 | `ORIGINS` | `()` | The pages passkeys are used on (`https://app.example.com`), an app's too (`android:apk-key-hash:...`). Needed with `RP_ID`. |
 | `CHALLENGE_TTL` | 5 minutes (at most 10) | How long a challenge works; the browser's timeout too. |
 | `MAX_PASSKEYS`, `MAX_DEVICES` | 10, 10 | Keys a user holds at once (`409 too_many_keys` past them). |
+| `MAX_PUSH_TOKENS` | 20 | Push tokens a user holds; a new one past it ends the oldest. |
 | `SIGNATURE_WINDOW` | 2 minutes (at most 10) | How far a signed request's time may be from the server's. |
 
 ## Adding a key needs the user again
@@ -139,6 +140,30 @@ async def pay(command: PayIn) -> PaymentOut: ...
 A device's step-up proves `hwk`: a key in the device's hardware, a
 possession factor as the authenticator app is, so it stands for the code
 (`otp`) a `StepUp` asks, but not for the password.
+
+## Push tokens
+
+| Endpoint | Who | Answer |
+| --- | --- | --- |
+| `POST /devices/push-tokens` | a user | `{"token", "platform"}` (`fcm`, `apns`, `huawei`): `201`. |
+| `GET /devices/push-tokens` | a user | The user's tokens: platform, registered, last seen (never the token). |
+| `DELETE /devices/push-tokens/{id}` | a user | `204`, when the app logs out. |
+
+An app registers the token its push service gave it; a token moves to
+whoever registers it last (a phone that changed hands), and past
+`MAX_PUSH_TOKENS` (20) a user's oldest tokens end. A use case notifies
+the user on every app of theirs, through
+[`domainkit.contrib.notifications`](../mail.md#text-messages-and-push-notifications):
+
+```python
+from domainkit.contrib.devices.push import notify_user
+
+await notify_user(order.customer_id, "Shipped", "On its way", uow=uow)
+```
+
+One notification is queued per token, for its platform's backend. A
+token its service no longer knows is forgotten when the worker learns so
+(`PushTokenExpired`).
 
 ## What is audited
 

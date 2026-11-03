@@ -1623,7 +1623,37 @@ files = [
     {file = "h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"},
     {file = "h11-0.16.0.tar.gz", hash = "sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1"},
 ]
-markers = {dev = "sys_platform != \"emscripten\" or extra == \"httpclient\" or extra == \"keys\" or extra == \"cloud\" or extra == \"identity\""}
+markers = {dev = "sys_platform != \"emscripten\" or extra == \"httpclient\" or extra == \"keys\" or extra == \"cloud\" or extra == \"identity\" or extra == \"push\""}
+
+[[package]]
+name = "h2"
+version = "4.4.1"
+description = "Pure-Python HTTP/2 protocol implementation"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"push\""
+files = [
+    {file = "h2-4.4.1-py3-none-any.whl", hash = "sha256:0e25f1462b23c9cb82d9eb02e28bc706dac2a68cb457c6a0d74d63c8a2a5d0e6"},
+    {file = "h2-4.4.1.tar.gz", hash = "sha256:4e866ffb1a869ae14dd9b5e6beb5c24a13da0495ad72b65925ded182521c1516"},
+]
+
+[package.dependencies]
+hpack = ">=4.2,<5"
+hyperframe = ">=6.1,<7"
+
+[[package]]
+name = "hpack"
+version = "4.2.0"
+description = "Pure-Python HPACK header encoding"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"push\""
+files = [
+    {file = "hpack-4.2.0-py3-none-any.whl", hash = "sha256:858ac0b02280fa582b5080d68db0899c62a80375e0e5413a74970c5e518b6986"},
+    {file = "hpack-4.2.0.tar.gz", hash = "sha256:0895cfa3b5531fc65fe439c05eb65144f123bf7a394fcaa56aa423548d8e45c0"},
+]
 
 [[package]]
 name = "httpcore2"
@@ -1632,7 +1662,7 @@ description = "A minimal low-level HTTP client."
 optional = false
 python-versions = ">=3.10"
 groups = ["main", "dev"]
-markers = "sys_platform != \"emscripten\" or extra == \"httpclient\" or extra == \"keys\" or extra == \"cloud\" or extra == \"identity\""
+markers = "sys_platform != \"emscripten\" or extra == \"httpclient\" or extra == \"keys\" or extra == \"cloud\" or extra == \"identity\" or extra == \"push\""
 files = [
     {file = "httpcore2-2.13.1-py3-none-any.whl", hash = "sha256:e1e05d4f25f7d7d496bfb96748f6f4b67657b03da069b3a68c36069f3db73d0a"},
     {file = "httpcore2-2.13.1.tar.gz", hash = "sha256:e0aa977abe17e69a3b820a24542a6fa88702676d83880b8d194dcd18408e5103"},
@@ -1806,6 +1836,7 @@ files = [
 
 [package.dependencies]
 anyio = {version = ">=4.10", markers = "sys_platform != \"emscripten\""}
+h2 = {version = ">=3,<5", optional = true, markers = "extra == \"http2\""}
 httpcore2 = {version = "2.13.1", markers = "sys_platform != \"emscripten\""}
 httpx2-jsfetch = {version = "*", markers = "sys_platform == \"emscripten\" and python_version >= \"3.12\""}
 idna = ">=3.18"
@@ -1830,6 +1861,19 @@ markers = "sys_platform == \"emscripten\""
 files = [
     {file = "httpx2_jsfetch-1.0-py3-none-any.whl", hash = "sha256:cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32"},
     {file = "httpx2_jsfetch-1.0.tar.gz", hash = "sha256:70a0e3eabfef7cce5ad9c629f7d01ca05e418f586646f4ddf14782e4c1454c60"},
+]
+
+[[package]]
+name = "hyperframe"
+version = "6.1.0"
+description = "Pure-Python HTTP/2 framing"
+optional = true
+python-versions = ">=3.9"
+groups = ["main"]
+markers = "extra == \"push\""
+files = [
+    {file = "hyperframe-6.1.0-py3-none-any.whl", hash = "sha256:b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5"},
+    {file = "hyperframe-6.1.0.tar.gz", hash = "sha256:f630908a00854a7adeabd6382b43923a4c4cd4b821fcb527e6ab9e15382a3b08"},
 ]
 
 [[package]]
@@ -4176,7 +4220,7 @@ description = "JSON Web Token implementation in Python"
 optional = true
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "extra == \"jwt\" or extra == \"identity\""
+markers = "extra == \"jwt\" or extra == \"identity\" or extra == \"push\""
 files = [
     {file = "pyjwt-2.15.1-py3-none-any.whl", hash = "sha256:42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193"},
     {file = "pyjwt-2.15.1.tar.gz", hash = "sha256:4f259e80cdfb6b3fc18a7de51fd1ef9ec79652f25019bae68975ca2468a34df8"},
@@ -5017,7 +5061,7 @@ description = "Verify certificates using native system trust stores"
 optional = false
 python-versions = ">=3.10"
 groups = ["main", "dev"]
-markers = "sys_platform != \"emscripten\" or extra == \"httpclient\" or extra == \"keys\" or extra == \"cloud\" or extra == \"identity\""
+markers = "sys_platform != \"emscripten\" or extra == \"httpclient\" or extra == \"keys\" or extra == \"cloud\" or extra == \"identity\" or extra == \"push\""
 files = [
     {file = "truststore-0.10.5-py3-none-any.whl", hash = "sha256:9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c"},
     {file = "truststore-0.10.5.tar.gz", hash = "sha256:30d36967ccaded5cbb38d602c433f53600036c79d502f4533a49b60a03bbefcd"},
@@ -5613,6 +5657,7 @@ ldap = ["ldap3"]
 metrics = ["prometheus-client"]
 mfa = ["cryptography"]
 postgres = ["asyncpg"]
+push = ["httpcore2", "httpx2", "pyjwt"]
 rabbitmq = ["aio-pika", "aiormq"]
 redis = ["redis"]
 saml = ["lxml", "signxml"]
@@ -5627,4 +5672,4 @@ webhooks = ["cryptography", "httpx2"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4"
-content-hash = "e7d1df89fb0762fbbe713fb788f6b876c21177191563c21dabed773c76ed7325"
+content-hash = "7073314b6f555982d41c86078d55c83f89c63d53cd3f2233a7848099f313423e"

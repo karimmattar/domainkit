@@ -13,10 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.contrib.auth.tokens import utc_now
 
-from .tables import challenges, devices, passkeys
+from .tables import challenges, devices, passkeys, push_tokens
 from .webauthn import b64encode
 
-__all__ = ["BoundDevice", "Challenge", "DevicesUnitOfWork", "Passkey"]
+__all__ = ["BoundDevice", "Challenge", "DevicesUnitOfWork", "Passkey", "PushToken"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +49,24 @@ class BoundDevice:
     last_time: int
     created_at: datetime
     last_used_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PushToken:
+    """Where a push service reaches one of the user's apps."""
+
+    id: UUID
+    user_id: UUID
+    digest: str
+    token: str
+    platform: str
+    """The push service: ``fcm``, ``apns``, ``huawei``."""
+    created_at: datetime
+    last_seen_at: datetime
+
+    def __repr__(self) -> str:
+        """The id and platform: the token reaches the device."""
+        return f"PushToken(id={self.id!r}, platform={self.platform!r})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,12 +282,76 @@ class DeviceStore:
         await self.session.execute(delete(devices).where(devices.c.user_id == user_id))
 
 
+class PushTokenStore:
+    """Push tokens."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Work in ``session``."""
+        self.session = session
+
+    async def of_user(self, user_id: UUID) -> list[PushToken]:
+        """The user's tokens, newest seen first."""
+        rows = await self.session.execute(
+            select(push_tokens)
+            .where(push_tokens.c.user_id == user_id)
+            .order_by(push_tokens.c.last_seen_at.desc(), push_tokens.c.id)
+        )
+        return [PushToken(**row._mapping) for row in rows]
+
+    async def register(
+        self, user_id: UUID, token: str, platform: str, *, keep: int
+    ) -> PushToken:
+        """The token, now the user's; past ``keep``, their oldest end."""
+        digest = token_digest(token)
+        now = utc_now()
+        await self.session.execute(
+            delete(push_tokens).where(push_tokens.c.digest == digest)
+        )
+        stored = PushToken(uuid.uuid4(), user_id, digest, token, platform, now, now)
+        await self.session.execute(insert(push_tokens).values(**_fields(stored)))
+        held = await self.of_user(user_id)
+        if len(held) > keep:
+            await self.session.execute(
+                delete(push_tokens).where(
+                    push_tokens.c.id.in_([each.id for each in held[keep:]])
+                )
+            )
+        return stored
+
+    async def remove(self, user_id: UUID, token_id: UUID) -> bool:
+        """Remove the user's token; whether there was one."""
+        result = await self.session.execute(
+            delete(push_tokens).where(
+                push_tokens.c.user_id == user_id, push_tokens.c.id == token_id
+            )
+        )
+        return bool(result.rowcount)  # type: ignore[attr-defined]
+
+    async def forget(self, digest: str) -> None:
+        """Remove the token of ``digest``, which its service no longer knows."""
+        await self.session.execute(
+            delete(push_tokens).where(push_tokens.c.digest == digest)
+        )
+
+    async def forget_user(self, user_id: UUID) -> None:
+        """Remove every token of a user who is gone."""
+        await self.session.execute(
+            delete(push_tokens).where(push_tokens.c.user_id == user_id)
+        )
+
+
+def token_digest(token: str) -> str:
+    """A push token's SHA-256, in hex (as ``PushTokenExpired`` names it)."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 class DevicesUnitOfWork(AuthUnitOfWork):
     """The auth unit of work, with the device tables (on the same database)."""
 
     passkeys: PasskeyStore
     challenges: ChallengeStore
     devices: DeviceStore
+    push_tokens: PushTokenStore
 
     def create_repositories(self, session: AsyncSession) -> None:
         """Bind the auth repositories, then the device stores."""
@@ -277,6 +359,7 @@ class DevicesUnitOfWork(AuthUnitOfWork):
         self.passkeys = PasskeyStore(session)
         self.challenges = ChallengeStore(session)
         self.devices = DeviceStore(session)
+        self.push_tokens = PushTokenStore(session)
 
 
 def _fields(item: object) -> dict[str, object]:

@@ -6,16 +6,24 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from typing import Any
+from uuid import UUID
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.contrib.devices.binding import signed_message
+from domainkit.contrib.devices.push import notify_user
 from domainkit.contrib.devices.webauthn import AT, BE, BS, UP, UV, b64encode
+from domainkit.contrib.messaging.tables import messages
+from domainkit.contrib.notifications.delivery import PUSH_TASK
+from domainkit.contrib.notifications.events import PushTokenExpired, token_digest
+from domainkit.db import connections
+from domainkit.ddd import event_bus
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     IDENTITY,
@@ -31,7 +39,11 @@ DEVICES = Shape(
     "devices",
     {
         **IDENTITY.settings,
-        "INSTALLED_DOMAINS": [*IDENTITY_DOMAINS, "domainkit.contrib.devices"],
+        "INSTALLED_DOMAINS": [
+            *IDENTITY_DOMAINS,
+            "domainkit.contrib.notifications",
+            "domainkit.contrib.devices",
+        ],
         "ROOT_ROUTER": "domainkit_tests.sample_devices_routes.router",
     },
 )
@@ -692,3 +704,92 @@ def test_a_recent_step_up_stands_in_for_the_password(app: App) -> None:
     second = bind(client, headers, Device(), password=None)
 
     assert second.status_code == 201, second.json()
+
+
+# Push tokens.
+
+
+def queued_pushes() -> list[dict[str, Any]]:
+    """The push notifications queued in the outbox, as their payloads."""
+
+    async def read() -> list[dict[str, Any]]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(
+                select(messages.c.payload).where(messages.c.target == PUSH_TASK)
+            )
+            return [row.payload for row in rows]
+
+    return run_async(read())
+
+
+def test_a_user_is_notified_on_each_app_that_gave_a_token(app: App) -> None:
+    """Registered per platform; one notification each; listed without the token."""
+    client = app()
+    headers = signed_in(client)
+    for token, platform in (("fcm-token", "fcm"), ("a" * 64, "apns")):
+        answer = client.post(
+            "/auth/devices/push-tokens",
+            json={"token": token, "platform": platform},
+            headers=headers,
+        )
+        assert answer.status_code == 201, answer.json()
+    user_id = UUID(client.get("/auth/me", headers=headers).json()["id"])
+
+    sent = run_async(notify_user(user_id, "Shipped", "On its way", data={"o": "7"}))
+
+    assert sent == 2
+    queued = queued_pushes()
+    platforms = {p["message"]["platform"] for p in queued}
+    assert platforms == {"fcm", "apns"}
+    listed = client.get("/auth/devices/push-tokens", headers=headers).json()
+    assert {each["platform"] for each in listed} == {"fcm", "apns"}
+    assert all("token" not in each for each in listed)
+
+
+def test_a_token_moves_to_whoever_registers_it_and_the_oldest_end(app: App) -> None:
+    """Bob's phone was ann's: the token is his now; past the limit, oldest out."""
+    client = app(MAX_PUSH_TOKENS=2)
+    ann = signed_in(client)
+    bob = signed_in(client, "bob")
+
+    def register(headers: dict[str, str], token: str) -> Any:  # noqa: ANN401
+        return client.post(
+            "/auth/devices/push-tokens",
+            json={"token": token, "platform": "fcm"},
+            headers=headers,
+        )
+
+    register(ann, "shared")
+    register(bob, "shared")
+    for token in ("one", "two", "three"):
+        register(ann, token)
+
+    assert client.get("/auth/devices/push-tokens", headers=bob).json() != []
+    assert len(client.get("/auth/devices/push-tokens", headers=ann).json()) == 2
+    assert register(ann, "has space").status_code == 422
+
+
+def test_tokens_are_removed_by_the_user_or_when_their_service_forgets(
+    app: App,
+) -> None:
+    """DELETE by id (twice: 404); PushTokenExpired removes it by digest."""
+    client = app()
+    headers = signed_in(client)
+    first = client.post(
+        "/auth/devices/push-tokens",
+        json={"token": "first", "platform": "huawei"},
+        headers=headers,
+    ).json()
+    client.post(
+        "/auth/devices/push-tokens",
+        json={"token": "second", "platform": "huawei"},
+        headers=headers,
+    )
+
+    removed = client.delete(f"/auth/devices/push-tokens/{first['id']}", headers=headers)
+    again = client.delete(f"/auth/devices/push-tokens/{first['id']}", headers=headers)
+    run_async(event_bus.publish(PushTokenExpired(token_digest=token_digest("second"))))
+
+    assert removed.status_code == 204
+    assert again.json()["code"] == "device_not_found"
+    assert client.get("/auth/devices/push-tokens", headers=headers).json() == []

@@ -1,7 +1,7 @@
 """Settings of ``domainkit.contrib.mail``: ``MAIL = {...}``."""
 
 from pathlib import Path
-from typing import Final, Literal, Self
+from typing import Any, Final, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -62,6 +62,8 @@ class MailSettings(BaseModel):
     DEFAULT_FROM_EMAIL: str = "webmaster@localhost"
     """The sender of messages that name none."""
     SMTP: SmtpSettings = SmtpSettings()
+    OPTIONS: dict[str, Any] = Field(default_factory=dict)
+    """A provider backend's settings, which it reads (``providers``)."""
     MAX_ATTEMPTS: int = Field(default=5, ge=1)
     """Tries of each message before it is dead-lettered."""
     QUEUE: str | None = Field(default=None, pattern=NAME_PATTERN)
