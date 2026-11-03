@@ -11,6 +11,9 @@ and a status.
 
 ### Added
 
+- OpenSSF Scorecard checks the repository's practices on pushes to `main`
+  and weekly (`.github/workflows/scorecard.yml`); its findings go to code
+  scanning, and its score to the README's badge.
 - The tutorial starts with part 0: a project, one public route, a request,
   and its test, before any word of domain-driven design; part 1 starts
   from it with the bank's accounts.

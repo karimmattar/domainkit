@@ -65,6 +65,7 @@ boundary by boundary, and what is left to a project.
 | Dependency audit (pip-audit) and secret scan (gitleaks) on every push, and weekly; pip-audit also over the floors of the ranges and their newest releases, and at each release over what the published ranges resolve to | `.github/workflows/ci.yml`, `.github/workflows/release.yml` |
 | Static analysis with Semgrep's Python and OWASP Top 10 rules on every push, and weekly | `.github/workflows/ci.yml` |
 | CodeQL's security queries, which follow values across functions and modules, on pushes to `main`, pull requests, and weekly; a required check, and a pull request with a new high or critical alert does not merge | `.github/workflows/codeql.yml`, `.github/rulesets/main.json` |
+| OpenSSF Scorecard's checks of the repository's practices (pinned actions, token permissions, branch protection, signed releases, fuzzing), on pushes to `main` and weekly; its findings in code scanning, its score published for the README's badge | `.github/workflows/scorecard.yml` |
 | The workflows themselves audited by zizmor (injection, persisted credentials, unpinned actions, excessive permissions) on every push, and weekly | `.github/workflows/ci.yml` |
 | A CycloneDX bill of materials for every wheel CI builds: the packages the lock resolves for it | `.github/workflows/ci.yml` |
 | Actions pinned to commit SHAs and CI's images to digests; dependencies updated by Renovate after 14 days, security fixes at once | `.github/workflows/`, `renovate.json` |

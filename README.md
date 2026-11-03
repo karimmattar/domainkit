@@ -4,6 +4,8 @@
 
 # domainkit
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/karimmattar/domainkit/badge)](https://scorecard.dev/viewer/?uri=github.com/karimmattar/domainkit)
+
 A Django-style framework for domain-driven FastAPI services. It provides:
 
 - settings modules and installed domains

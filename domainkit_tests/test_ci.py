@@ -637,7 +637,9 @@ def test_the_rulesets_hold_without_an_everyday_bypass() -> None:
     assert [rule["type"] for rule in creation["rules"]] == ["creation"]
 
 
-@pytest.mark.parametrize("name", ["ci.yml", "release.yml", "codeql.yml"])
+@pytest.mark.parametrize(
+    "name", ["ci.yml", "release.yml", "codeql.yml", "scorecard.yml"]
+)
 def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
     """Every action by a full commit SHA; write access only where it is used."""
     assert workflow(name)["permissions"] == {"contents": "read"}
@@ -667,6 +669,15 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
         }
     if name == "codeql.yml":
         assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
+    if name == "scorecard.yml":
+        assert granted == {
+            "analysis": {
+                "contents": "read",
+                "actions": "read",
+                "security-events": "write",
+                "id-token": "write",
+            }
+        }
 
 
 def test_the_run_that_builds_the_files_attests_them() -> None:
@@ -1097,6 +1108,19 @@ def test_the_workflows_are_audited_and_scanned() -> None:
         "github/codeql-action/init",
         "github/codeql-action/analyze",
     ]
+    # OpenSSF Scorecard publishes only from main, with the steps it allows.
+    scorecard: dict[object, Any] = yaml.safe_load(
+        (WORKFLOWS / "scorecard.yml").read_text()
+    )
+    assert set(scorecard[True]) == {"push", "schedule", "branch_protection_rule"}
+    assert scorecard[True]["push"] == {"branches": ["main"]}
+    [job] = scorecard["jobs"].values()
+    assert [step["uses"].split("@")[0] for step in job["steps"]] == [
+        "actions/checkout",
+        "ossf/scorecard-action",
+        "github/codeql-action/upload-sarif",
+    ]
+    assert job["steps"][1]["with"]["publish_results"] is True
 
 
 def test_the_newest_job_audits_what_pip_resolves() -> None:
