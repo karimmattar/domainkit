@@ -9,6 +9,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 2
+memory = 0.1
 
 [rungs.asgi]
 calls = 5
@@ -17,6 +18,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 166
+memory = 26
 
 [rungs.fastapi]
 calls = 234
@@ -25,6 +27,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 393
+memory = 46
 
 [rungs.bare]
 calls = 303
@@ -33,6 +36,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 789
+memory = 90
 
 [rungs.nested]
 calls = 303
@@ -41,6 +45,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 789
+memory = 90
 
 [rungs.default]
 calls = 414
@@ -49,6 +54,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 790
+memory = 91
 
 [rungs.default-json]
 calls = 551
@@ -57,6 +63,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 790
+memory = 91
 
 [rungs.template]
 calls = 529
@@ -65,6 +72,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 792
+memory = 91
 
 [rungs.template-json]
 calls = 666
@@ -73,6 +81,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 792
+memory = 91
 
 [rungs.me]
 calls = 775
@@ -81,6 +90,7 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 820
+memory = 94
 
 [rungs.read]
 calls = 1812
@@ -89,6 +99,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 820
+memory = 94
 
 [rungs.resource-list]
 calls = 3025
@@ -97,6 +108,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 820
+memory = 94
 
 [rungs.write]
 calls = 2139
@@ -105,6 +117,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 820
+memory = 94
 
 [rungs.resource-read]
 calls = 2359
@@ -113,6 +126,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 820
+memory = 94
 
 [rungs.resource-command]
 calls = 3083
@@ -121,6 +135,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 820
+memory = 94
 
 [rungs.keyed-write]
 calls = 3615
@@ -129,6 +144,7 @@ transactions = 3
 checkouts = 3
 pings = 3
 modules = 821
+memory = 94
 
 [rungs.money-write]
 calls = 2265
@@ -137,6 +153,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 889
+memory = 109
 
 [rungs.posting]
 calls = 11949
@@ -145,6 +162,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 889
+memory = 110
 
 [rungs.encrypted-read]
 calls = 1855
@@ -153,6 +171,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 889
+memory = 109
 
 [rungs.step-up]
 calls = 1673
@@ -161,6 +180,7 @@ transactions = 1
 checkouts = 1
 pings = 1
 modules = 889
+memory = 109
 
 # The 429 is a problem+json body by default since 1.0 (ADR 0125): +20.
 [rungs.throttled]
@@ -170,3 +190,4 @@ transactions = 0
 checkouts = 0
 pings = 0
 modules = 820
+memory = 94

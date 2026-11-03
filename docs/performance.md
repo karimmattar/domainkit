@@ -166,6 +166,8 @@ statements = 0      # per request: exact
 transactions = 0
 checkouts = 0
 pings = 0
+modules = 2         # per process, either way
+memory = 0.1        # a fraction of the budget
 
 [rungs.me]
 calls = 5296
@@ -173,6 +175,8 @@ statements = 5
 transactions = 1
 checkouts = 1
 pings = 1
+modules = 813
+memory = 94         # MiB
 ```
 
 - **Over budget fails**, naming the rung, the measure, the budget and the
@@ -187,9 +191,18 @@ pings = 1
   the job. What is installed changes the count (`prometheus_client`,
   `opentelemetry`), so the budgets are written from a run with every
   extra, as `make install` and CI's `bench` job install them.
+- **Memory is gated per process**: the most memory the rung's process has
+  held (its peak resident set) once it has built the application and
+  served its warm-up, in MiB. It strays by a MiB or two from run to run,
+  so its tolerance is a tenth of the budget: a dependency that brings tens
+  of MiB, or a cache that grows with requests, fails the job. A bare ASGI
+  process holds 26 MiB, plain FastAPI 46, a domainkit application 90 to
+  94, and one with money's ledger, limits, and keys 110.
 - **Time is never gated** (ADR 0064): a shared runner's timings are too
   noisy. CI's job summary shows CPU time per rung, beside the base branch's
-  on pull requests.
+  on pull requests, and the time each rung's process took to start, from
+  its first line to the application's lifespan (about a second for a
+  domainkit application; modules, which are gated, are most of it).
 
 The `bench` job in `.github/workflows/ci.yml` runs the ladder on Python
 3.13.16 against a PostgreSQL service on every push and pull request, with

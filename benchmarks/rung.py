@@ -7,10 +7,13 @@ another's imports, caches, or settings. Run one by hand to look closer::
 
 Requests go straight into the ASGI application, one at a time, with a scope
 built here: no server, no sockets. After a warm-up, the process's modules
-are counted (what starting and serving the rung imported), one pass counts
-calls and round trips (exact), then several time the process's CPU (best of
-N). The counters are imported only then, so their SQLAlchemy is not counted
-in a rung that does not use it.
+are counted (what starting and serving the rung imported), and the most
+memory the process has held (its peak resident set, which costs nothing to
+read); one pass counts calls and round trips (exact), then several
+time the process's CPU (best of N). The counters are imported only then, so
+their SQLAlchemy is not counted in a rung that does not use it. The time to
+start (from the process's first line to the application's lifespan run) is
+reported, not gated.
 """
 
 import argparse
@@ -57,6 +60,8 @@ PACKAGES: Final = (
 )
 """Whose versions each result records."""
 _PLACEHOLDER: Final = re.compile(r"\{\{.*?\}\}")
+STARTED: Final = time.perf_counter()
+"""When this module was imported: the process's start, for the startup time."""
 
 
 def raw_app() -> ASGIApp:
@@ -299,9 +304,10 @@ async def measure(
         else:
             app = domainkit_app(rung, database, keep)
         async with served(app):
+            startup_ms = round((time.perf_counter() - STARTED) * 1000, 1)
             figures = await passes(Driver(app, rung, fixture), options)
             await _close()
-    return {"rung": rung.name, **figures}
+    return {"rung": rung.name, **figures, "startup_ms": startup_ms}
 
 
 async def passes(driver: Driver, options: argparse.Namespace) -> dict[str, Any]:
@@ -311,6 +317,7 @@ async def passes(driver: Driver, options: argparse.Namespace) -> dict[str, Any]:
     driver.unexpected.clear()
     # What building and serving the rung imported, the harness's own included.
     modules = len(sys.modules.keys() - STARTUP_MODULES)
+    memory = peak_memory()
     from benchmarks.counting import CallCounter, SqlCounter
 
     # What the window costs by itself, to take off: whole calls per request.
@@ -341,6 +348,7 @@ async def passes(driver: Driver, options: argparse.Namespace) -> dict[str, Any]:
         "checkouts": round(sql.counts.checkouts / counted, 3),
         "pings": round(sql.counts.pings / counted, 3),
         "modules": modules,
+        "memory": memory,
         "verbs": {
             verb: round(n / counted, 3) for verb, n in sorted(sql.counts.verbs.items())
         },
@@ -355,6 +363,18 @@ async def passes(driver: Driver, options: argparse.Namespace) -> dict[str, Any]:
         "python": platform.python_version(),
         "versions": _versions(),
     }
+
+
+def peak_memory() -> int:
+    """The most memory this process has held so far, in MiB (resident set).
+
+    ``resource`` is imported only now, after the modules are counted.
+    """
+    import resource
+
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # Linux counts KiB, macOS bytes.
+    return round(peak / (1024 * 1024 if sys.platform == "darwin" else 1024))
 
 
 async def _close() -> None:

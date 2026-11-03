@@ -11,6 +11,8 @@ and a status.
 
 ### Added
 
+- The benchmark ladder gates each rung's peak memory (MiB, within a
+  tenth of its budget) and reports the time its process took to start.
 - Fuzz tests of every parser of untrusted input (`test_fuzz.py`): query
   strings through a filter set, entity tags, trace headers, signed values,
   WebAuthn data, `Accept`, and `Accept-Language` answer or refuse anything,
