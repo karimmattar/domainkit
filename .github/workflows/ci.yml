@@ -90,7 +90,8 @@ jobs:
           poetry run pytest -n auto --junitxml=junit.xml
           domainkit_tests/test_api.py domainkit_tests/test_ci.py
           domainkit_tests/test_docs.py domainkit_tests/test_fintech_docs.py
-          domainkit_tests/test_problem_codes.py domainkit_tests/test_recipes.py
+          domainkit_tests/test_problem_codes.py domainkit_tests/test_proof.py
+          domainkit_tests/test_recipes.py
           domainkit_tests/test_sec13c_1_upgrade_guide_skips_removals.py
           domainkit_tests/test_sec14b_5_erase_leaves_documented_code.py
           domainkit_tests/test_walkthroughs.py
@@ -1167,6 +1168,7 @@ jobs:
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*
               domainkit.contrib.auth.totp.* domainkit.contrib.auth.uow.*
               domainkit.contrib.identity.* domainkit.contrib.devices.*
+              domainkit.contrib.phones.*
           - name: auth-3
             mutants: >-
               domainkit.contrib.auth.api.* domainkit.contrib.auth.backends.*
@@ -1203,7 +1205,7 @@ jobs:
               domainkit.db.fixtures.* domainkit.db.migrations.* domainkit.db.orm.*
               domainkit.db.query.* domainkit.db.repository.* domainkit.db.uow.*
               domainkit.ledger.* domainkit.db.money.*
-              domainkit.db.models.* domainkit.db.places.*
+              domainkit.db.models.* domainkit.db.places.* domainkit.db.refs.*
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*

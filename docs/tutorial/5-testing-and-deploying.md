@@ -7,14 +7,21 @@ the way production will start it.
 ## Test the aggregate
 
 The aggregate is plain Python, so its tests need no database and no
-server: they make an account and call it. Add these to
-`tests/domains/accounts/test_model.py`, which already has a `make()`
-helper that returns a new account:
+server: they make an account and call it. Put these in a new file,
+`tests/domains/accounts/test_domain.py`:
 
-```python title="tests/domains/accounts/test_model.py"
+```python title="tests/domains/accounts/test_domain.py (new file)"
+"""The account's rules, in plain Python: no database, no server."""
+
+import pytest
 from domainkit.money import CurrencyMismatch, Money
 
-from domains.accounts.domain.model import InvalidAmount
+from domains.accounts.domain import Account, InvalidAmount
+
+
+def make() -> Account:
+    """A new, open account with nothing in it."""
+    return Account.create("Savings")
 
 
 def test_deposits_add_to_the_balance() -> None:
@@ -54,15 +61,15 @@ def test_a_deposit_in_another_currency_is_refused() -> None:
 The API tests go through the whole stack, routes to database, with the
 test client and the fixtures of domainkit's pytest plugin: `admin_client`
 is logged in as a superuser, and each test gets a fresh database. Add this
-one to `tests/domains/accounts/test_deposit_account.py`:
+one to `tests/domains/accounts/test_api.py`, which `startdomain` wrote:
 
-```python title="tests/domains/accounts/test_deposit_account.py"
+```python title="tests/domains/accounts/test_api.py"
 DOLLAR = {"amount": "1.00", "currency": "USD"}
 
 
 def test_an_archived_account_refuses_deposits(admin_client: TestClient) -> None:
     """``422 account_is_archived``, and the balance stays."""
-    created = admin_client.post(URL, json=new_account_request())
+    created = admin_client.post(URL, json={"name": "Savings"})
     item = created.headers["location"]
     admin_client.post(f"{item}/archive")
 
@@ -83,13 +90,13 @@ stores a user granted permissions, as the application would, and
 test runs the async `create_user` in the client's event loop with
 `client.run`; an async one awaits it:
 
-```python title="tests/domains/accounts/test_deposit_account.py"
+```python title="tests/domains/accounts/test_api.py"
 from domainkit.contrib.auth.testing import create_user
 
 
 def test_a_clerk_reads_but_cannot_deposit(admin_client: TestClient) -> None:
     """``view_account`` alone: the account, but ``403`` for a deposit."""
-    item = admin_client.post(URL, json=new_account_request()).headers["location"]
+    item = admin_client.post(URL, json={"name": "Savings"}).headers["location"]
     clerk = admin_client.run(create_user, "accounts.view_account")
     as_clerk = admin_client.authenticated_as(clerk)
 

@@ -36,7 +36,9 @@
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
 | A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
 | An email backend (a provider's API) | `mail.BaseEmailBackend` | `MAIL.BACKEND` |
-| A text-message or push provider | `notifications.SmsBackend`, `notifications.PushBackend` | `NOTIFICATIONS.SMS_BACKEND`, `NOTIFICATIONS.PUSH_BACKEND` |
+| A text-message or push provider | `notifications.SmsBackend`, `notifications.PushBackend` ([recipe](../recipes/sms-backend.md)) | `NOTIFICATIONS.SMS_BACKEND`, `NOTIFICATIONS.PUSH_BACKEND` |
+| A cache store other than memory or Redis | `domainkit.cache.Store`, made as `Store(config)` ([recipe](../recipes/cache-store.md)) | `CACHES[alias].BACKEND`; its `URL`, of a scheme of its own, is the store's to read |
+| A broker other than the ones domainkit ships | `domainkit.broker.Broker`, or `broker.pull.PullBroker` for one that is asked for messages; made as `Broker(config)` ([recipe](../recipes/broker.md)) | `BROKERS[alias].BACKEND`; its `URL` is the broker's to read |
 | Middleware | an ASGI class taking `app` | `MIDDLEWARE` |
 | An error tracker | `(exc, context) -> None` | `ERROR_REPORTERS` |
 | A rate-limit store other than memory or Redis | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |

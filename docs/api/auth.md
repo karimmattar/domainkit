@@ -433,3 +433,84 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
 - `stepping_credentials`: The request's credentials, if they can keep a step-up.
 - `utc_now`: The current time in UTC.
+
+## `domainkit.contrib.phones`
+
+Phone verification: a code by text message, and the numbers users proved.
+
+- `CodeExpired`: No code works for this number: none sent, too old, or tried too often (422).
+- `CodeTooSoon`: A code went to this number moments ago (429 `rate_limited`).
+- `InvalidPhone`: Not a phone number in international form, such as `+33612345678` (422).
+- `PendingCode`: A code on its way: the number, until when it works, and when to resend.
+- `PhoneAlreadyVerified`: The user verified this number already (409).
+- `PhoneNotFound`: The user has no verified number with that id (404).
+- `PhoneRemoved`: A user removed a verified number.
+- `PhoneVerified`: A user proved they receive messages at a number.
+- `PhonesSettings`: How codes are made, sent, and tried; every key is optional.
+- `PhonesUnitOfWork`: The auth unit of work, with the phone tables (on the same database).
+- `TooManyCodes`: `PHONES.MAX_SENDS` codes went to this number, or for this user (429).
+- `TooManyPhones`: The user holds `PHONES.MAX_PHONES` numbers already (409).
+- `VerifiedPhone`: A number a user proved they receive messages at.
+- `WrongCode`: The code is not the one sent (422); a few more tries are left.
+- `confirm_code`: Check `code` against the last one sent; keep the number if it matches.
+- `normalize_phone`: `text` as `+33612345678`: spaces, dots, dashes, brackets dropped.
+- `remove_phone`: Forget the user's verified number `phone_id`.
+- `send_code`: Make a code for `phone` and queue the text message holding it.
+
+## `domainkit.contrib.phones.api`
+
+The routes that verify a user's phone numbers.
+
+- `router`: The routes: ask for a code, verify a number, list and remove verified numbers.
+
+## `domainkit.contrib.phones.events`
+
+What happens to a user's phone numbers (audited as `phones.*`).
+
+- `PhoneRemoved`: A user removed a verified number.
+- `PhoneVerified`: A user proved they receive messages at a number.
+
+## `domainkit.contrib.phones.exceptions`
+
+What verifying a phone number may be refused.
+
+- `CodeExpired`: No code works for this number: none sent, too old, or tried too often (422).
+- `CodeTooSoon`: A code went to this number moments ago (429 `rate_limited`).
+- `InvalidPhone`: Not a phone number in international form, such as `+33612345678` (422).
+- `PhoneAlreadyVerified`: The user verified this number already (409).
+- `PhoneNotFound`: The user has no verified number with that id (404).
+- `TooManyCodes`: `PHONES.MAX_SENDS` codes went to this number, or for this user (429).
+- `TooManyPhones`: The user holds `PHONES.MAX_PHONES` numbers already (409).
+- `WrongCode`: The code is not the one sent (422); a few more tries are left.
+
+## `domainkit.contrib.phones.services`
+
+Send a code to a number, check it, and keep the number as verified.
+
+- `PendingCode`: A code on its way: the number, until when it works, and when to resend.
+- `confirm_code`: Check `code` against the last one sent; keep the number if it matches.
+- `normalize_phone`: `text` as `+33612345678`: spaces, dots, dashes, brackets dropped.
+- `phones_settings`: `PHONES`, validated (the defaults when it is unset).
+- `remove_phone`: Forget the user's verified number `phone_id`.
+- `send_code`: Make a code for `phone` and queue the text message holding it.
+
+## `domainkit.contrib.phones.settings`
+
+Settings of `domainkit.contrib.phones`: `PHONES = {...}`.
+
+- `PhonesSettings`: How codes are made, sent, and tried; every key is optional.
+
+## `domainkit.contrib.phones.stores`
+
+The phone tables, read and written in a `PhonesUnitOfWork`.
+
+- `PhoneCode`: A code sent to a number: its keyed digest, never the code.
+- `PhonesUnitOfWork`: The auth unit of work, with the phone tables (on the same database).
+- `VerifiedPhone`: A number a user proved they receive messages at.
+
+## `domainkit.contrib.phones.tables`
+
+Codes sent to phone numbers, and the numbers users verified.
+
+- `phone_codes`: Each code sent, as a keyed digest, until it is used, spent, or old: counted to limit sends.
+- `phones`: The numbers each user proved they receive messages at.

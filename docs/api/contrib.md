@@ -654,3 +654,10 @@ Mail by API: Amazon SES, SendGrid, Mailgun, Postmark.
 - `PostmarkBackend`: Postmark's Email API.
 - `SendGridBackend`: SendGrid's v3 Mail Send API.
 - `SesBackend`: Amazon SES's v2 API: the message as MIME, signed with SigV4.
+
+## `domainkit.contrib.mail.admins`
+
+Mail the site's admins (Django's `mail_admins`), and tell them of errors.
+
+- `mail_admins`: Queue a mail to `MAIL["ADMINS"]`, with `uow`'s commit or at once.
+- `report_to_admins`: Mail `exc` to the admins, unless one like it went out lately.

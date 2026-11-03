@@ -177,6 +177,34 @@ class Indexed:
 
 
 @dataclass(frozen=True, slots=True)
+class DatabaseDefault:
+    """``Annotated`` metadata: the database's default for the column (``db_default``).
+
+    ``sql`` is an SQL expression, such as ``"0"`` or ``"CURRENT_TIMESTAMP"``.
+    The aggregate's own default still fills a new aggregate; the database's
+    fills rows written without the column: by another writer, and the rows
+    a migration adds the column to, which ``makemigrations`` then needs no
+    hand to fill.
+    """
+
+    sql: str
+
+
+@dataclass(frozen=True, slots=True)
+class Generated:
+    """``Annotated`` metadata: the database computes the column (``GeneratedField``).
+
+    ``sql`` is an expression of the row's other columns, such as
+    ``"price * quantity"``; ``stored`` keeps it on disk (``False``: worked
+    out on each read, where the database can). Rows are written without
+    it, and it is read with the rest, so an aggregate sees it once loaded.
+    """
+
+    sql: str
+    stored: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class AggregateReference:
     """``Annotated`` metadata: the field holds another aggregate's id."""
 

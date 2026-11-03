@@ -11,6 +11,23 @@ and a status.
 
 ### Added
 
+- The feature inventory's last partial rows: `before_save()` on aggregates
+  (`pre_save`); `DatabaseDefault` and `Generated` columns (`db_default`,
+  `GeneratedField`); `ObjectRef` references to an aggregate of any model
+  (`GenericForeignKey`); `mail_admins` and `report_to_admins` error mails
+  to `MAIL["ADMINS"]`; `api_version(request)`; and data migrations with
+  `makemigrations --empty`, documented.
+- `CACHES` and `BROKERS` entries take a `BACKEND`: a `Store` or a `Broker`
+  of the project's own, made from the entry, its `URL` of a scheme of its
+  choosing. Three recipes walk the extension points left: an SMS provider,
+  a cache store in a SQLite file, and a `PullBroker` over a SQLite file.
+- Phone verification: `domainkit.contrib.phones` sends a code by text
+  message through the outbox, keeps only an HMAC of it keyed from
+  `SECRET_KEY`, refuses it after `CODE_TTL` or `MAX_ATTEMPTS` wrong tries,
+  limits sends per number and per user (`429 rate_limited` with
+  `Retry-After`), and keeps the number as verified (`PhoneVerified`).
+- The tutorial builds a four-file domain; `test_proof.py` measures the
+  guide's shop on both layouts (C8: 371 lines against 131).
 - Search and places (A8): `F("body").search("late fee")` finds rows
   holding every word (PostgreSQL full-text search; word pieces on SQLite
   and in memory). `domainkit.search` keeps documents in a search engine

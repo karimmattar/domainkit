@@ -1,5 +1,6 @@
 """Settings of ``domainkit.contrib.mail``: ``MAIL = {...}``."""
 
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Final, Literal, Self
 
@@ -70,6 +71,19 @@ class MailSettings(BaseModel):
     """The worker queue that sends mail; None: ``default``."""
     TEMPLATE_DIRS: tuple[Path, ...] = ()
     """Directories searched for templates before the installed domains."""
+    ADMINS: tuple[str, ...] = ()
+    """Who hears of unexpected errors (Django's ``ADMINS``): addresses that
+    ``mail_admins`` writes to, and ``report_to_admins`` in ``ERROR_REPORTERS``."""
+    ADMINS_EVERY: timedelta = Field(
+        default=timedelta(minutes=5), ge=timedelta(0), le=timedelta(days=1)
+    )
+    """At most one mail per error and place in this long, from each process."""
+
+    @field_validator("ADMINS")
+    @classmethod
+    def _check_admins(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Refuse what is not an address."""
+        return tuple(check_address(each) for each in value)
 
     @field_validator("DEFAULT_FROM_EMAIL")
     @classmethod

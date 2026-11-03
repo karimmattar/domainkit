@@ -24,7 +24,8 @@ Every command and every code change on these pages is run as written, in
 that order, by the tests (`domainkit_tests/test_walkthroughs.py`). If one
 fails for you, that is a bug: please report it.
 
-After the tutorial:
+After the tutorial, [learning.md](learning.md) gives the order to read the
+guides in, the words they use, and the commands of a working day. Then:
 
 - [deploying.md](deploying.md): from a project whose checks pass to one
   in production, with the image and CI workflow `init` writes.

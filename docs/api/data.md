@@ -151,6 +151,7 @@ Domain-driven design building blocks ("seedwork").
 - `Count`: How many aggregates there are, or how many have the field set.
 - `Counted`: `Annotated` metadata: the audit trail keeps how many items, not which.
 - `Criteria`: A condition on aggregates; combine them with `&`, `|`, and `~`.
+- `DatabaseDefault`: `Annotated` metadata: the database's default for the column (`db_default`).
 - `DeferredTask`: Background work queued by `UnitOfWork.defer`.
 - `Digits`: `Annotated` metadata: `precision` digits, `scale` of them decimal.
 - `DomainError`: A business rule refused the operation; the message is safe to show.
@@ -162,6 +163,7 @@ Domain-driven design building blocks ("seedwork").
 - `EventBus`: Deliver events to handlers subscribed to their class or a base class.
 - `EventHandler`: An event handler: `async def handle(event) -> None`.
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
+- `Generated`: `Annotated` metadata: the database computes the column (`GeneratedField`).
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
 - `IPAddress`: An IPv4 or IPv6 address (Django's `GenericIPAddressField`).
 - `IPAddressFormat`: `Annotated` metadata: an IPv4 or IPv6 address, as `ipaddress` reads it.
@@ -459,3 +461,18 @@ Meilisearch as a `SearchBackend`.
 OpenSearch (or Elasticsearch) as a `SearchBackend`.
 
 - `OpenSearchBackend`: Indexes in an OpenSearch cluster (see the module).
+
+## `domainkit.ddd.refs`
+
+A reference to an aggregate of any kind (Django's `GenericForeignKey`).
+
+- `ObjectRef`: An aggregate of any installed model: its key, and its id as text.
+
+## `domainkit.db.refs`
+
+`ObjectRef` columns, and references to the aggregates they name.
+
+- `ObjectRefType`: An `ObjectRef`, as `domain.model:id` text.
+- `load`: The aggregate `ref` names, read in `uow`'s transaction; None if gone.
+- `model_of`: The class `ref` names.
+- `ref_to`: A reference to `aggregate`, an instance of an installed model.

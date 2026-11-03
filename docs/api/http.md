@@ -216,6 +216,7 @@ Receiving uploaded files, and serving stored ones, safely.
 API versions by URL prefix, and deprecation headers (RFC 9745, RFC 8594).
 
 - `Deprecation`: When routes were deprecated, when they go, and where to read why.
+- `api_version`: The version of the router serving `connection` (DRF's `request.version`).
 - `versioned_router`: A router for one API version, served under `/<version>`.
 
 ## `domainkit.http.websockets`

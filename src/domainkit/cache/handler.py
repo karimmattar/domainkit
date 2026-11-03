@@ -44,6 +44,26 @@ PROCESS_STORES: Final[Mapping[str, StoreFactory]] = {
 """Stores shared by every event loop of the process, by URL scheme."""
 
 
+def custom_store(path: str, config: CacheConfig) -> Store:
+    """A new store of the class ``path`` names, made from ``config``.
+
+    Raises:
+        ImproperlyConfigured: ``path`` names no ``Store`` class.
+    """
+    from domainkit.utils.module_loading import import_string
+
+    try:
+        backend = import_string(path)
+    except ImportError as exc:
+        raise ImproperlyConfigured(f"CACHES BACKEND: {exc}") from exc
+    if not (isinstance(backend, type) and issubclass(backend, Store)):
+        raise ImproperlyConfigured(
+            f"CACHES BACKEND: {path!r} is not a domainkit.cache.Store."
+        )
+    store: Store = backend(config)  # type: ignore[call-arg]
+    return store
+
+
 class CacheHandler:
     """Create each configured cache on first use, per event loop."""
 
@@ -94,6 +114,8 @@ class CacheHandler:
 
         Loops on two threads that ask at once get the same store.
         """
+        if config.BACKEND is not None:
+            return custom_store(config.BACKEND, config)
         if config.scheme in REDIS_SCHEMES:
             return self._connect(config)
         key = (alias, config)

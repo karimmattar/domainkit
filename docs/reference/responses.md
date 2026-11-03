@@ -193,6 +193,12 @@ carry `Deprecation: @<seconds>` (RFC 9745), `Sunset: <HTTP date>`
 (RFC 8594), and `Link: <...>; rel="deprecation"`; the most specific one
 wins. OpenAPI marks the operations `deprecated`, with the headers on each
 response, `x-deprecated-since`, `x-sunset`, and the link as `externalDocs`.
+
+A route serving several versions reads the one serving this request with
+`api_version(request)` (DRF's `request.version`): `"v1"` under `/v1`,
+None outside every versioned router. The version is the URL's alone: no
+header or query parameter chooses it, so a client, a cache, and the logs
+always agree on which version answered.
 Times need a time zone; a date means midnight UTC.
 
 ### Included routers

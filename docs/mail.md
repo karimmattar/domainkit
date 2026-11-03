@@ -203,6 +203,8 @@ directory there to replace a template a contrib app ships, such as
 | `MAX_ATTEMPTS` | `5` | Tries of each message before it is dead-lettered (`messages list dead`). |
 | `QUEUE` | `None` | The worker queue that sends mail (`runworker --queue`); `default` when `None`. |
 | `TEMPLATE_DIRS` | `()` | Directories searched for templates before the domains. |
+| `ADMINS` | `()` | Who hears of unexpected errors (Django's `ADMINS`): addresses `mail_admins` and `report_to_admins` write to. |
+| `ADMINS_EVERY` | 5 minutes | At most one error report per kind and place in this long (at most 1 day), from each process. |
 
 | `MAIL.SMTP` | Default | Meaning |
 | --- | --- | --- |
@@ -212,6 +214,28 @@ directory there to replace a template a contrib app ships, such as
 | `USER`, `PASSWORD` | `None` | Set together; the password is hidden in reprs. |
 | `TIMEOUT` | `10.0` | Seconds to connect, and for each exchange. |
 | `TLS_CA` | `None` | CA bundle that signed the server's certificate. |
+
+### Telling the admins
+
+`MAIL["ADMINS"]` names who hears of trouble (Django's `ADMINS`).
+`await mail_admins(subject, body, uow=uow)` writes to them through the
+outbox, as any mail; with no admin named, it sends nothing.
+
+To mail them each unexpected error (Django's error emails), add the
+reporter to `ERROR_REPORTERS`, beside a tracker or instead of one:
+
+```python
+MAIL = {..., "ADMINS": ("ops@example.com",)}
+ERROR_REPORTERS = ("domainkit.contrib.mail.admins.report_to_admins",)
+```
+
+A report names the error's type, where it was raised, the frames of its
+traceback, and the request's context (its id, path, and method), so the
+logs can be found. It never holds the error's message nor any value of
+the frames, which may hold what a user sent. Each process mails at most
+one report per kind and place in `ADMINS_EVERY`, so a failing dependency
+does not flood the inbox; the report goes straight through the backend,
+from the reporting thread.
 
 ## Text messages and push notifications
 

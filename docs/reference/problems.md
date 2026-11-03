@@ -42,6 +42,7 @@ How each status is reached, and which fields a body holds, is in
 | `captcha_failed` | 400 | contrib.auth.captcha: The captcha was missing or not solved. |
 | `captcha_unavailable` | 503 | `CaptchaUnavailable` (contrib.auth.captcha): The captcha provider could not check the token: 503. |
 | `check_violation` | 422 | http.errors: A value breaks a rule of the data: it is out of the range or set the database accepts. |
+| `code_expired` | 422 | `CodeExpired` (contrib.phones.exceptions): No code works for this number: none sent, too old, or tried too often. |
 | `concurrent_update` | 409 | `ConcurrentUpdate` (ddd.exceptions): Someone else changed the aggregate first; reload it and try again. |
 | `conflict` | 409 | `Conflict` (ddd.exceptions): The operation clashes with the current state, such as a duplicate. |
 | `content_too_large` | 413 | http.middleware: Request body too large. |
@@ -105,6 +106,7 @@ How each status is reached, and which fields a body holds, is in
 | `invalid_limit` | 422 | `InvalidLimit` (contrib.limits.exceptions): A limit, or a movement checked against limits, that cannot be as written. |
 | `invalid_money` | 422 | `MoneyError` (money): An amount or a currency that money cannot hold; the HTTP layer answers 422. |
 | `invalid_password` | 422 | `InvalidPassword` (contrib.auth.exceptions): The password breaks the configured rules (``PASSWORD_VALIDATORS``). |
+| `invalid_phone` | 422 | `InvalidPhone` (contrib.phones.exceptions): Not a phone number in international form, such as `+33612345678`. |
 | `invalid_setting_value` | 422 | `InvalidSettingValue` (contrib.flags.exceptions): The value does not fit the dynamic setting's type. |
 | `invalid_statement` | 422 | `InvalidStatement` (contrib.accounting.exceptions): A statement that cannot be imported: its format, or one of its lines. |
 | `invalid_tenant` | 400 | domainkit.tenancy: The tenant the request names is not a tenant id. |
@@ -148,6 +150,8 @@ How each status is reached, and which fields a body holds, is in
 | `period_not_found` | 404 | `PeriodNotFound` (contrib.accounting.exceptions): No accounting period has that id. |
 | `periods_overlap` | 422 | `PeriodsOverlap` (contrib.accounting.exceptions): A new period whose dates another period covers, or that ends before it starts. |
 | `permission_denied` | 403 | `PermissionDenied` (ddd.exceptions): The actor may not perform the operation. |
+| `phone_already_verified` | 409 | `PhoneAlreadyVerified` (contrib.phones.exceptions): The user verified this number already. |
+| `phone_not_found` | 404 | `PhoneNotFound` (contrib.phones.exceptions): The user has no verified number with that id. |
 | `policy_removed` | 409 | `PolicyRemoved` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
@@ -174,6 +178,7 @@ How each status is reached, and which fields a body holds, is in
 | `token_not_found` | 404 | contrib.auth.personal_tokens: No such token. |
 | `too_many_connections` | 503 | http.live: `LIVE_MAX_CONNECTIONS` or `LIVE_MAX_CONNECTIONS_PER_CALLER` is reached. |
 | `too_many_keys` | 409 | `TooManyKeys` (contrib.devices.exceptions): The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already. |
+| `too_many_phones` | 409 | `TooManyPhones` (contrib.phones.exceptions): The user holds `PHONES.MAX_PHONES` numbers already. |
 | `too_many_tokens` | 409 | contrib.auth.personal_tokens: the user holds the most personal tokens allowed. |
 | `transaction_confirmed` | 409 | contrib.auth.sca: This transaction was confirmed already. |
 | `transaction_expired` | 409 | contrib.auth.sca: This transaction can no longer be confirmed; start it again. |
@@ -203,4 +208,5 @@ How each status is reached, and which fields a body holds, is in
 | `webhook_delivery_not_found` | 404 | `DeliveryNotFound` (contrib.webhooks.admin): No webhook delivery has that id. |
 | `webhook_subscription_limit` | 422 | `SubscriptionLimitReached` (contrib.webhooks.owned): The owner has ``WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER`` subscriptions. |
 | `webhook_subscription_not_found` | 404 | `SubscriptionNotFound` (contrib.webhooks.models): No webhook subscription has that id. |
+| `wrong_code` | 422 | `WrongCode` (contrib.phones.exceptions): The code is not the one sent; a few more tries are left. |
 | `wrong_password` | 400 | contrib.auth.api: Your old password was entered incorrectly. contrib.auth.mfa: Your password was entered incorrectly. contrib.auth.stepup: Your password was entered incorrectly. |

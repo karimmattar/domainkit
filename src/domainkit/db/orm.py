@@ -39,9 +39,9 @@ only, or read-only).
 
 from typing import Any, Final
 
-from sqlalchemy import MetaData, Table
+from sqlalchemy import MetaData, Table, event
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy.orm import RelationshipProperty, registry, relationship
+from sqlalchemy.orm import InstanceState, RelationshipProperty, registry, relationship
 
 from domainkit.db.encrypted import index_properties, watch
 from domainkit.db.money import guard_money, money_properties
@@ -112,10 +112,35 @@ def map_imperatively(
     for prop in dict(options.get("properties") or {}).values():
         if isinstance(prop, RelationshipProperty):
             _raise_on_lazy_loads(prop)
+    computed = [column.key for column in table.c if column.computed is not None]
+    if computed:
+        # Read what the database works out back as it writes (RETURNING),
+        # so an aggregate never lazy-loads it after a commit.
+        options.setdefault("eager_defaults", True)
     mapper_registry.map_imperatively(class_, table, **options)
     if money:
         guard_money(class_, table, money)
+    if computed:
+        _leave_to_the_database(class_, computed)
     watch(class_, table)
+
+
+def _leave_to_the_database(class_: type, names: list[str]) -> None:
+    """Write rows of ``class_`` without ``names``: the database computes them.
+
+    The aggregate holds a value for each (its default, or what was read),
+    which a database refuses to be given for a generated column; it is
+    dropped before each INSERT and UPDATE, and read back after.
+    """
+
+    def drop(mapper: Any, connection: Any, target: object) -> None:  # noqa: ANN401
+        state: InstanceState[Any] = sa_inspect(target, raiseerr=True)
+        for name in names:
+            state.dict.pop(name, None)
+            state.committed_state.pop(name, None)
+
+    event.listen(class_, "before_insert", drop)
+    event.listen(class_, "before_update", drop)
 
 
 def _version_aggregate(class_: type, table: Table, options: dict[str, Any]) -> None:

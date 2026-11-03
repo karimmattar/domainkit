@@ -23,6 +23,12 @@ for you, that is a bug: please report it.
 - [A permission rule of your own](recipes/permission-rules.md): a
   `BasePermission` that asks whether the caller verified their address,
   on a route of the project's own.
+- [An SMS provider of your own](recipes/sms-backend.md): an `SmsBackend`
+  for a provider's JSON API, and a test with its calls stubbed.
+- [A cache store of your own](recipes/cache-store.md): a `Store` in a
+  SQLite file, named by `CACHES[...]["BACKEND"]`.
+- [A broker of your own](recipes/broker.md): a `PullBroker` over a SQLite
+  file, named by `BROKERS[...]["BACKEND"]`.
 
 Each starts from `domainkit init`; [the tutorial](tutorial.md) explains
 what that makes, and [deploying.md](deploying.md) what to do before the

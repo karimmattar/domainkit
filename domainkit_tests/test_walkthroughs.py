@@ -423,11 +423,7 @@ def test_part_4_runs_a_durable_handler_in_the_worker(tutorial: Tutorial) -> None
 
     assert body(deposited)["balance"] == {"amount": "125.00", "currency": "USD"}
     pending = printed["python manage.py messages list pending"].splitlines()
-    assert [line.split()[2].rsplit(".", 1)[1] for line in pending] == [
-        "log_account_created",
-        "log_account_created",
-        "log_deposit",
-    ]
+    assert [line.split()[2].rsplit(".", 1)[1] for line in pending] == ["log_deposit"]
     ran = printed["python manage.py runworker --once"]
     account = tutorial.shell.variables["ID"]
     assert f"Deposited 25.00 USD into account {account}" in ran
@@ -440,7 +436,8 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
     """The project's tests pass with the new ones; production settings check out."""
     assert tutorial.through(PARTS[4]) == []
     tests = tutorial.shell.cwd / "tests" / "domains" / "accounts"
-    assert "def test_deposits_must_be_positive" in (tests / "test_model.py").read_text()
+    domain_tests = (tests / "test_domain.py").read_text()
+    assert "def test_deposits_must_be_positive" in domain_tests
     printed = tutorial.shell.printed["pytest"]
     # Twice: after part 2, and with part 5's five tests (one of them twice).
     first, second = re.findall(r"(\d+) passed", printed)

@@ -49,9 +49,21 @@ def connect_broker(config: BrokerConfig) -> Broker:
     Raises:
         ImproperlyConfigured: Its extra is not installed.
     """
+    from domainkit.utils.module_loading import import_string
+
+    if config.BACKEND is not None:
+        try:
+            custom = import_string(config.BACKEND)
+        except ImportError as exc:
+            raise ImproperlyConfigured(f"BROKERS BACKEND: {exc}") from exc
+        if not (isinstance(custom, type) and issubclass(custom, Broker)):
+            raise ImproperlyConfigured(
+                f"BROKERS BACKEND: {config.BACKEND!r} is not a domainkit.broker.Broker."
+            )
+        made: Broker = custom(config)  # type: ignore[call-arg]
+        return made
     if config.scheme not in ADAPTERS:
         return rabbitmq_broker(config)
-    from domainkit.utils.module_loading import import_string
 
     path, extra = ADAPTERS[config.scheme]
     try:
@@ -108,7 +120,8 @@ class BrokerHandler:
             with self._lock:
                 replaced = self._replaced.setdefault(loop, [])
             replaced.append(current[1])
-        broker = MemoryBroker() if config.scheme == "memory" else self._connect(config)
+        memory = config.scheme == "memory" and config.BACKEND is None
+        broker = MemoryBroker() if memory else self._connect(config)
         brokers[alias] = (config, broker)
         return broker
 

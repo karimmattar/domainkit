@@ -60,6 +60,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Computed,
     Date,
     Double,
     Index,
@@ -76,9 +77,10 @@ from sqlalchemy import (
     literal,
     not_,
     or_,
+    text,
 )
 from sqlalchemy.engine import Dialect
-from sqlalchemy.sql.elements import ColumnClause, ColumnElement, conv
+from sqlalchemy.sql.elements import ColumnClause, ColumnElement, TextClause, conv
 from sqlalchemy.sql.schema import SchemaItem
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
@@ -88,9 +90,11 @@ from domainkit.db.orm import VERSION
 from domainkit.db.orm import metadata as default_metadata
 from domainkit.db.types import CurrencyCode, ExactDecimal, UTCDateTime
 from domainkit.ddd.fields import (
+    DatabaseDefault,
     Digits,
     Encrypted,
     FieldInfo,
+    Generated,
     Indexed,
     MaxLength,
     Unique,
@@ -279,9 +283,11 @@ def table_for(
             Column(
                 field.name,
                 column_type(field),
+                *_generated(field),
                 primary_key=field.name == "id",
                 nullable=field.nullable,
                 index=field.reference,
+                server_default=_database_default(field),
             )
         )
     others = [item for item in extra if not isinstance(item, Column)]
@@ -294,6 +300,22 @@ def table_for(
         *others,
         *declared,
         info={} if domain is None else {"domain": domain},
+    )
+
+
+def _database_default(field: FieldInfo) -> TextClause | None:
+    """The column's ``DatabaseDefault``, as SQL, if the field has one."""
+    default = field.marker(DatabaseDefault)
+    return None if default is None else text(default.sql)
+
+
+def _generated(field: FieldInfo) -> list[Computed]:
+    """The column's ``Computed``, if the database computes the field."""
+    generated = field.marker(Generated)
+    return (
+        []
+        if generated is None
+        else [Computed(generated.sql, persisted=generated.stored)]
     )
 
 
@@ -555,6 +577,10 @@ def column_type(field: FieldInfo) -> TypeEngine[Any]:
         from domainkit.db.places import PointType
 
         return PointType()
+    if _is_ref(kind):
+        from domainkit.db.refs import ObjectRefType
+
+        return ObjectRefType()
     raise TypeError(
         f"{_where(field)}: no column type for {kind.__name__}; pass a Column "
         "for it, or call register_column_type."
@@ -575,6 +601,12 @@ def _is_point(kind: type) -> bool:
     """Whether ``kind`` is ``Point``: places load only for projects that use them."""
     places = sys.modules.get("domainkit.ddd.places")
     return places is not None and kind is places.Point
+
+
+def _is_ref(kind: type) -> bool:
+    """Whether ``kind`` is ``ObjectRef``: refs load only for projects that use them."""
+    refs = sys.modules.get("domainkit.ddd.refs")
+    return refs is not None and kind is refs.ObjectRef
 
 
 def _registered(kind: type) -> TypeEngine[Any] | None:

@@ -80,6 +80,25 @@ pass through a state that breaks the rule; only what is committed must
 keep it. Raise a `DomainError` subclass, as `BusinessRuleViolation`, to
 refuse.
 
+## Fields worked out before a commit: `before_save()`
+
+`before_save()` is Django's `pre_save`: it runs on every aggregate a unit
+of work saw, before each commit, just before `clean()`. Set there what
+follows from the other fields, so no use case has to remember it:
+
+```python
+class Article(AggregateRoot[ArticleId]):
+    title: Annotated[str, MaxLength(200)]
+    slug: Annotated[str, Slug(), MaxLength(200)] = ""
+
+    def before_save(self) -> None:
+        self.slug = "-".join(self.title.lower().split())
+```
+
+What it sets is checked as any field is, and `clean()` sees the result.
+It should not record events: they say what a use case asked for. A
+reaction to the stored change is an event handler, after the commit.
+
 ## What a refusal looks like
 
 `InvalidField` is a `BusinessRuleViolation`: the API answers 422, code

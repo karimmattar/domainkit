@@ -23,6 +23,9 @@ PASSED = {
     "read-replica.md": 9,
     "api-keys.md": 5,
     "permission-rules.md": 4,
+    "sms-backend.md": 5,
+    "cache-store.md": 4,
+    "broker.md": 4,
 }
 """Each recipe's project's tests, the page's own included, after its last step."""
 CHECKED = {

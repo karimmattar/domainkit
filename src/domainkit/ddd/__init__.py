@@ -28,8 +28,10 @@ from domainkit.ddd.exceptions import (
     PreconditionFailed,
 )
 from domainkit.ddd.fields import (
+    DatabaseDefault,
     Digits,
     Encrypted,
+    Generated,
     Indexed,
     InvalidQuery,
     MaxLength,
@@ -84,6 +86,7 @@ __all__ = [
     "Count",
     "Counted",
     "Criteria",
+    "DatabaseDefault",
     "DeferredTask",
     "Digits",
     "DomainError",
@@ -95,6 +98,7 @@ __all__ = [
     "EventBus",
     "EventHandler",
     "F",
+    "Generated",
     "HandlerTimedOut",
     "IPAddress",
     "IPAddressFormat",

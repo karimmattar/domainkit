@@ -224,3 +224,35 @@ async def test_clean_runs_before_every_commit_and_nothing_is_stored() -> None:
 
     assert uow.committed == 2
     assert (await uow.accounts.get(held.id)).code == "MAIN"
+
+
+class Article(AggregateRoot[UUID]):
+    """An article whose slug follows its title (Django's ``pre_save``)."""
+
+    title: Annotated[str, MaxLength(40)]
+    slug: Annotated[str, MaxLength(5)] = ""
+
+    def before_save(self) -> None:
+        """The slug: the title, lower case, dashes for spaces."""
+        self.slug = self.title.lower().replace(" ", "-")
+
+
+class Articles(UnitOfWork):
+    """Articles."""
+
+    articles: Repository[Article, UUID]
+
+
+async def test_before_save_derives_fields_then_clean_and_markers_hold() -> None:
+    """Set before each commit; what it sets is checked as any field is."""
+    uow = in_memory(Articles)
+    article = Article(id=uuid4(), title="Hi Yo")
+    async with uow:
+        await uow.articles.add(article)
+        await uow.commit()
+        article.title = "Too long a title"
+        with pytest.raises(InvalidField, match="slug: Use at most 5"):
+            await uow.commit()
+
+    assert article.slug == "hi-yo"
+    assert uow.committed == 1
