@@ -11,6 +11,14 @@ and a status.
 
 ### Added
 
+- `domainkit.contrib.devices` (A3): passkeys (WebAuthn), checked with
+  `cryptography` alone: registered once the user authenticated again,
+  logging in with no password and no second factor, and stepping up;
+  challenges used once, counters that go back refused. Devices a mobile
+  application binds sign requests with a key they never let out
+  (`DeviceSigned`): each signature works once, whichever process reads
+  it. A passkey's step-up (`mfa`) satisfies any `StepUp`; a device's
+  (`hwk`) stands for the authenticator's code.
 - `domainkit.contrib.identity` (A2): logging in through OpenID Connect
   and OAuth 2 providers (Google, Microsoft Entra ID, Apple, GitHub, and
   any issuer by discovery), with PKCE, a one-time state and nonce, and ID

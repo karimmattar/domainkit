@@ -50,6 +50,8 @@ How each status is reached, and which fields a body holds, is in
 | `currency_not_limited` | 422 | `CurrencyNotLimited` (contrib.limits.exceptions): A movement in a currency none of its subject's limits names (FIN-89). |
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
+| `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
+| `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
 | `domain_error` | 400 | `DomainError` (ddd.exceptions): A business rule refused the operation; the message is safe to show. |
 | `duplicate_value` | 409 | `DuplicateValue` (ddd.exceptions): A value that must be unique is taken (a unique constraint refused it). |
 | `earlier_period_open` | 422 | `EarlierPeriodOpen` (contrib.accounting.exceptions): Closing a period while one before it is still open. |
@@ -133,6 +135,9 @@ How each status is reached, and which fields a body holds, is in
 | `not_found` | 404 | `NotFound` (ddd.exceptions): The requested aggregate does not exist. contrib.auth.signup: Not Found. contrib.flags.dependencies: Not found. Starlette or FastAPI. |
 | `not_the_maker` | 403 | `NotTheMaker` (contrib.approvals.exceptions): Only whoever submitted a request may cancel it. |
 | `overloaded` | 503 | http.shedding: The server is busy; try again shortly. |
+| `passkey_not_found` | 404 | `PasskeyNotFound` (contrib.devices.exceptions): The user has no passkey with that id. |
+| `passkey_refused` | 401 | `PasskeyRefused` (contrib.devices.exceptions): A passkey's answer does not hold; the reason is logged, not sent. |
+| `passkeys_off` | 404 | `PasskeysOff` (contrib.devices.exceptions): `DEVICES.RP_ID` is not set: no passkeys here. |
 | `password_change_required` | 403 | contrib.auth.api: This password was set for you: choose a new one to log in. |
 | `password_checks_busy` | 503 | `PasswordChecksBusy` (contrib.auth.hashers): Every hashing thread is busy and the queue is full. |
 | `password_required` | 400 | contrib.auth.stepup: Enter your password as well. |
@@ -145,6 +150,7 @@ How each status is reached, and which fields a body holds, is in
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
 | `rate_limited` | 429 | http.ratelimit: `RATE_LIMIT` or a route's `Throttle`; contrib.auth: login, password, code, link, and signup throttles. |
+| `reauthentication_required` | 401 | `ReauthenticationRequired` (contrib.devices.exceptions): Adding a key needs the password, or a step-up within ten minutes. |
 | `reference_reused` | 409 | `ReferenceReused` (contrib.accounting.exceptions): A source and reference that name an entry or a hold made otherwise. |
 | `referenced` | 409 | http.errors: a foreign key refused the change. |
 | `refresh_not_supported` | 400 | contrib.auth.authentication: Tokens are not refreshed here; log in again. |
@@ -162,6 +168,7 @@ How each status is reached, and which fields a body holds, is in
 | `token_lifetime_too_long` | 422 | contrib.auth.personal_tokens: A personal token asked for longer than `AUTH.PERSONAL_TOKEN_MAX_AGE`, or for no end. |
 | `token_not_found` | 404 | contrib.auth.personal_tokens: No such token. |
 | `too_many_connections` | 503 | http.live: `LIVE_MAX_CONNECTIONS` or `LIVE_MAX_CONNECTIONS_PER_CALLER` is reached. |
+| `too_many_keys` | 409 | `TooManyKeys` (contrib.devices.exceptions): The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already. |
 | `too_many_tokens` | 409 | contrib.auth.personal_tokens: the user holds the most personal tokens allowed. |
 | `transaction_confirmed` | 409 | contrib.auth.sca: This transaction was confirmed already. |
 | `transaction_expired` | 409 | contrib.auth.sca: This transaction can no longer be confirmed; start it again. |
@@ -179,6 +186,7 @@ How each status is reached, and which fields a body holds, is in
 | `unknown_user_field` | 422 | `UnknownUserField` (contrib.auth.exceptions): The user model has no such field, or it changes another way. |
 | `unsafe_url` | 422 | `UnsafeURL` (http.guard): A URL that may not be called; the message never quotes it. |
 | `unsafe_webhook_url` | 422 | `UnsafeTarget` (contrib.webhooks.guard): A webhook URL that may not be called; the message never quotes it. |
+| `unsupported_device_key` | 422 | `UnsupportedKey` (contrib.devices.exceptions): Not a P-256 or Ed25519 public key. |
 | `unsupported_file_type` | 415 | http.uploads: This type of file is not accepted. |
 | `upstream_error` | 502 | `UpstreamError` (exceptions): A service this one called failed it: unavailable, too slow, or too large. |
 | `upstream_response_too_large` | 502 | `ResponseTooLarge` (http.client): An answer was longer than ``MAX_RESPONSE_BYTES``, as sent or decompressed. |

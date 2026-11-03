@@ -144,9 +144,10 @@ class StepUp(access.BasePermission):
 
     A step-up (``POST /step-up``) proves ``AUTH.STEP_UP.METHODS`` (or
     ``methods``): a code of the authenticator app, and the password too
-    if they say so. A login is not a step-up, with a second factor or
-    without. A refusal answers ``401 step_up_required``
-    (``StepUpRequired``). It is asked about an object too
+    if they say so. With ``domainkit.contrib.devices``, a passkey proves
+    them all and a bound device's key the code (``STANDS_FOR``). A login
+    is not a step-up, with a second factor or without. A refusal answers
+    ``401 step_up_required`` (``StepUpRequired``). It is asked about an object too
     (``check_object_permissions``). An open WebSocket or event stream is
     asked again on each re-check (``LIVE_REAUTH_INTERVAL``), so it closes
     once its step-up is older than ``max_age``.
@@ -199,7 +200,7 @@ class StepUp(access.BasePermission):
         proof = await proof_of(request)
         return (
             proof is not None
-            and self.required() <= proof.methods
+            and self.required() <= proven(proof.methods)
             and utc_now() - proof.auth_time <= self.max_age
         )
 
@@ -212,6 +213,20 @@ class StepUp(access.BasePermission):
     async def refusal(self, request: HTTPConnection, user: AnyUser) -> StepUpRequired:
         """``401 step_up_required``, naming the age and the methods."""
         return StepUpRequired(self.max_age, self.required())
+
+
+STANDS_FOR: Final[dict[str, frozenset[str]]] = {
+    "hwk": frozenset({"otp"}),
+    "mfa": frozenset({"pwd", "otp", "hwk"}),
+}
+"""What a method proves beyond its name: a key a device holds (``hwk``)
+is a possession factor, as an authenticator app is; a passkey verified
+with its user (``mfa``) is two factors on its own (NIST SP 800-63B)."""
+
+
+def proven(methods: frozenset[str]) -> frozenset[str]:
+    """What ``methods`` prove, with what each stands for (``STANDS_FOR``)."""
+    return methods.union(*(STANDS_FOR.get(method, ()) for method in methods))
 
 
 def _impersonated(connection: HTTPConnection) -> bool:

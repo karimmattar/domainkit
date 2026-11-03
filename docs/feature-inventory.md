@@ -138,8 +138,8 @@ framework, for the reason given.
 | Enterprise single sign-on: SAML 2.0, LDAP and Active Directory | SAML 2.0 service provider (signed responses only, one-time tickets); `LDAPBackend` with group mapping | Yes | A2 |
 | Linking several providers to one user, signing up through one | `/identity/{name}/link`, `/identity/linked`; `IDENTITY.SIGNUP` for verified emails no account has | Yes | A2 |
 | Second factors: TOTP, recovery codes, step-up | `contrib.auth` (`mfa`, `stepup`, `sca`) | Yes | |
-| Passkeys (WebAuthn) | None | No | A3 |
-| Device binding: register a device's key, sign requests with it, list and revoke devices, trusted devices for step-up | Device proofs for login throttling only | Partial | A3 |
+| Passkeys (WebAuthn) | `domainkit.contrib.devices`: register, log in with no second factor, step up; counters checked, no new dependency ([devices.md](auth/devices.md)) | Yes | A3 |
+| Device binding: register a device's key, sign requests with it, list and revoke devices, trusted devices for step-up | `POST /devices`, `DeviceSigned` (each signature once, across processes), `/devices/step-up` | Yes | A3 |
 | Push tokens per device | `PushBackend` port, memory adapter | Partial: no provider | A4 |
 | Key management: local keys, AWS KMS, HashiCorp Vault | `contrib.keys`, envelope encryption, rotation, re-encryption | Yes | |
 | Key management: Huawei Cloud KMS, Google Cloud KMS, Azure Key Vault, an HSM through PKCS#11 | None | No: a provider interface first | A5 |

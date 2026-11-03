@@ -1140,7 +1140,7 @@ jobs:
               domainkit.contrib.auth.stepup.*
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*
               domainkit.contrib.auth.totp.* domainkit.contrib.auth.uow.*
-              domainkit.contrib.identity.*
+              domainkit.contrib.identity.* domainkit.contrib.devices.*
           - name: auth-3
             mutants: >-
               domainkit.contrib.auth.api.* domainkit.contrib.auth.backends.*
