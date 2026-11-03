@@ -10,6 +10,10 @@ writes:
   ``apps.py`` as a durable handler: stored with the commit, run by the
   worker, at least once (``--no-handler`` leaves the reaction out);
 - ``test_on_product_restocked.py``.
+
+In a four-file domain, the event goes in ``domain.py``, and the handler in
+``controllers.py``, marked ``@handles(ProductRestocked, durable=True)``:
+the domain subscribes it when it is ready.
 """
 
 from argparse import ArgumentParser
@@ -33,6 +37,7 @@ class Command(AggregateGenerator):
     """Add a domain event, a handler, its subscription, and tests."""
 
     help = "Add a domain event of an aggregate, and a durable handler of it."
+    simple_layout = True
 
     def add_options(self, parser: ArgumentParser) -> None:
         """Accept the event and its fields."""
@@ -58,7 +63,8 @@ class Command(AggregateGenerator):
         **options: object,
     ) -> Planned:
         """Plan the event, and its handler and test unless left out."""
-        add_event(
+        add = add_simple_event if domain.simple else add_event
+        add(
             domain,
             names,
             class_name(event, "event name"),
@@ -183,6 +189,97 @@ async def test_{reaction}(caplog: pytest.LogCaptureFixture) -> None:
 
     with caplog.at_level(logging.INFO, logger=handlers.__name__):
         await handlers.{reaction}(event)
+
+    assert "{event} 00000000-0000-0000-0000-000000000001" in caplog.text
+''',
+    )
+
+
+def add_simple_event(
+    domain: Domain,
+    names: Names,
+    event: str,
+    specs: list[FieldSpec],
+    *,
+    handler: bool = True,
+) -> None:
+    """Plan the event in ``domain.py``, and its ``@handles`` handler and test.
+
+    Raises:
+        CommandError: A name it would define is taken, or a file is not as
+            ``startdomain`` made it.
+    """
+    A, a = names.cls, names.snake
+    reaction = f"on_{snake_case(event)}"
+    model = domain.edit("domain.py")
+    controllers = domain.edit("controllers.py")
+    if not model.defines(A):
+        raise CommandError(f"{domain.package} has no aggregate {A}.")
+    if model.defines(event):
+        raise CommandError(f"{model.path} already defines {event}.")
+    if handler and controllers.defines(reaction):
+        raise CommandError(f"{controllers.path} already defines {reaction}.")
+    if any(spec.name == f"{a}_id" for spec in specs):
+        raise CommandError(f"{a}_id is the event's already; leave it out.")
+    model.import_names("domainkit.ddd", "DomainEvent")
+    for spec in specs:
+        for module, name in spec.plain_imports():
+            model.import_names(module, name)
+    fields = "".join(f"\n    {spec.name}: {spec.plain()}" for spec in specs)
+    model.insert_before_class(
+        A,
+        f'''class {event}(DomainEvent):
+    """{words(event).capitalize()}."""
+
+    {a}_id: {A}Id{fields}
+''',
+    )
+    if not handler:
+        return
+    if not controllers.defines("logging"):
+        controllers.add_imports(["import logging"])
+    if not controllers.defines("logger"):
+        controllers.insert_after_imports(["", "logger = logging.getLogger(__name__)"])
+    controllers.import_names("domainkit.ddd", "handles")
+    controllers.import_names(domain.module("domain"), event)
+    controllers.append(
+        f'''
+
+@handles({event}, durable=True)
+async def {reaction}(event: {event}) -> None:
+    """React to {words(event)}: idempotently, as it may run more than once."""
+    logger.info("{event} %s", event.{a}_id)
+'''
+    )
+    imports = sorted(
+        {
+            f"from {module} import {name}"
+            for spec in specs
+            for module, name in spec.type.example_imports
+        }
+        | {"from uuid import UUID"}
+    )
+    values = "".join(f", {spec.name}={spec.example()}" for spec in specs)
+    domain.create(
+        domain.tests / f"test_{reaction}.py",
+        f'''"""``{reaction}``: the reaction to ``{event}``."""
+
+import logging
+{chr(10).join(imports)}
+
+import pytest
+
+from {domain.package} import controllers
+from {domain.module("domain")} import {A}Id, {event}
+
+
+@pytest.mark.anyio
+async def test_{reaction}(caplog: pytest.LogCaptureFixture) -> None:
+    """The handler reacts to the event."""
+    event = {event}({a}_id={A}Id(UUID(int=1)){values})
+
+    with caplog.at_level(logging.INFO, logger=controllers.__name__):
+        await controllers.{reaction}(event)
 
     assert "{event} 00000000-0000-0000-0000-000000000001" in caplog.text
 ''',

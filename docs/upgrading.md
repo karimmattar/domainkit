@@ -36,6 +36,16 @@ never published), with each section below.
 
 ## 1.5 to the next release
 
+### Signup asks for the user model's other required fields
+
+With `AUTH.SIGNUP_ENABLED` and a user model whose `REQUIRED_FIELDS` name
+fields beyond the username and the email (the guide's `phone`),
+`POST /signup` now takes them under `fields`, every one, and answers
+`422 invalid_user_field` without them: before, it left them at their
+defaults. Send them from the signup form, or take a field out of
+`REQUIRED_FIELDS` that a new account need not give. Pending signups gain
+a nullable `fields` column: `makemigrations`, then `migrate`.
+
 ### The audit commands are one
 
 Cron jobs and runbooks that call the audit commands use their new names:

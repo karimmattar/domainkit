@@ -51,6 +51,16 @@ class ReadRoute:
             aggregate = await reach.load(router, uow, request, context.ids)
         if self.objects:
             await check_object_permissions(request, aggregate, *self.rules)
+        modified = (
+            getattr(aggregate, router.last_modified)
+            if router.last_modified is not None
+            else None
+        )
         return await presenting.respond(
-            router, context, aggregate, if_none_match=context.if_none_match
+            router,
+            context,
+            aggregate,
+            if_none_match=context.if_none_match,
+            modified=modified,
+            if_modified_since=context.if_modified_since,
         )

@@ -1576,10 +1576,11 @@ LOCK_CONSTRAINTS = ROOT / ".github" / "scripts" / "lock_constraints.py"
 
 def push_run(status: str = "completed", **changed: str) -> dict[str, Any]:
     """A run of a push to main where each job ended as it should, but ``changed``."""
+    found = jobs()  # Read once: YAML of the whole workflow, slow under coverage.
     concluded = {
         check: "success"
         for name in running("push")
-        for check in check_names(name, jobs()[name])
+        for check in check_names(name, found[name])
     }
     concluded |= {"changes": "skipped", "docs": "skipped"} | changed
     return {

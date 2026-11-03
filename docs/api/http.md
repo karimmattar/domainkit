@@ -99,6 +99,12 @@ Outgoing HTTP calls, bounded by the request's deadline (`domainkit[httpclient]`)
 - `close_all`: Close every client's connections on the running event loop.
 - `stub`: Send every call made in the block (and tasks it starts) to `handler`.
 
+## `domainkit.http.compression`
+
+Responses compressed for clients that accept gzip (Django's `GZipMiddleware`).
+
+- `GZipMiddleware`: Compress responses at least `GZIP_MINIMUM_SIZE` bytes long.
+
 ## `domainkit.http.deadlines`
 
 Request deadlines over HTTP: `REQUEST_TIMEOUT`, and `RequestTimeout` per route.

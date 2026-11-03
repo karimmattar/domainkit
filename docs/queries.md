@@ -54,6 +54,16 @@ take exponential time, so take a pattern from code only.
 Combine criteria with `&`, `|`, and `~` (never `and`, `or`, `not`: criteria
 refuse to be true or false, so the mistake fails loudly). An ordering is
 `F("x").asc()`, `F("x").desc()`, or Django's `"x"` and `"-x"`.
+A query that names no ordering is in the aggregate's `Meta.ordering`
+(Django's), then by id; without one, by id:
+
+```python
+class Order(AggregateRoot[OrderId]):
+    placed_at: datetime
+
+    class Meta:
+        ordering = ("-placed_at",)
+```
 
 `Selection(criteria, ordering=..., limit=..., offset=..., after=...,
 lock=..., include_deleted=...)` is a frozen value; `where(...)` adds
@@ -245,6 +255,20 @@ async with ShopUnitOfWork(readonly=True) as uow:
 What it yields is tracked as `filter`'s is, so a unit of work that writes
 commits changes made to it; read a large table through a read-only one.
 A query with a `limit` or an `offset` is refused: a page is `paginate`'s.
+
+`values` reads a few fields of many aggregates as dicts, in one statement
+that names only their columns (Django's `values()`), for a listing or an
+export:
+
+```python
+await uow.orders.values(Selection(F("status") == "paid", limit=100), "id", "total")
+# [{"id": ..., "total": Money("42.00", "USD")}, ...]
+```
+
+Nothing is loaded or tracked, so what it reads cannot be changed and
+committed. Fields of the aggregate itself only: not a child entity, a
+dotted name, or an encrypted field (load the aggregate to read that).
+A query without an ordering follows `Meta.ordering`, then the id.
 
 `explain` gives the database's plan for what `filter` would run (SQL
 repositories): `EXPLAIN` on PostgreSQL, where `analyze=True` also runs it

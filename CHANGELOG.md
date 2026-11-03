@@ -33,6 +33,57 @@ and a status.
 
 ### Added
 
+- Recipes, walked end to end like the others: service accounts with API
+  keys (an authentication class, and settings of the project's own
+  through `SETTINGS_CLASS`), and a permission rule of your own.
+- Signup takes the user model's other `REQUIRED_FIELDS` under `fields`
+  (`AbstractBaseUser.signup_fields()`): each converted to its type and
+  checked by its markers at once, kept with the pending signup, and set on
+  the account it makes. Startup refuses `REQUIRED_FIELDS` that name a field
+  the model lacks or one that changes through its own methods. Pending
+  signups gain a nullable `fields` column: run `makemigrations`.
+- `Meta.checks` on an aggregate (Django's `CheckConstraint`): named
+  criteria such as `{"stock_not_negative": F("stock") >= 0}`. A unit of
+  work refuses to commit an aggregate that breaks one with `CheckFailed`
+  (422 `check_violation`), in memory as in SQL; `table_for` writes each
+  as a check constraint `ck_<table>_<name>`, and `makemigrations` adds one
+  declared on a table that exists.
+- `addquery` grows a four-file domain: the query and its handler in
+  `controllers.py`, its `query_route` in `routes.py`, and a test on
+  `in_memory(...)`. With `addcommand` and `addevent`, every generator now
+  grows both layouts.
+- `@handles(Event, durable=..., timeout=...)` (`domainkit.ddd`, Django's
+  `@receiver`): marks a handler; a four-file domain's default
+  `DomainConfig` subscribes the handlers its `controllers.py` defines and
+  marks when it is ready, so it needs no `apps.py`. `addevent` grows a
+  four-file domain with it: the event in `domain.py`, the handler in
+  `controllers.py`, and its test.
+- `addcommand` grows a four-file domain: the aggregate's method and its
+  event in `domain.py`, a `@use_case` in `controllers.py`, its route in
+  `routes.py`, and a test on `in_memory(...)`. The generated code passes
+  its tests, ruff, and mypy `--strict`. `addquery` and `addevent` say a
+  four-file domain is grown by hand or by `addcommand`.
+- `repository.values(query, *fields)` (Django's `values()`): the fields
+  of the aggregates a query selects, as dicts, in one statement that names
+  only their columns; nothing is loaded or tracked. Fields of the
+  aggregate itself, not children or encrypted ones.
+- `domainkit.http.compression.GZipMiddleware` (Django's): compresses
+  responses of `GZIP_MINIMUM_SIZE` bytes or more (500) at `GZIP_LEVEL` (6)
+  for clients that accept gzip. Not listed by default; see BREACH in its
+  docs.
+- `ResourceRouter(..., last_modified="updated_at")`: reading one aggregate
+  sends `Last-Modified`, and `If-Modified-Since` answers `304` while it is
+  current; `If-None-Match` decides when both are sent. Routes without it
+  read no more headers than before.
+- `Meta.ordering` on an aggregate (Django's): `filter`, `first`,
+  `paginate`, `stream`, and resource lists that name no ordering follow
+  it, then the id. It is checked once per class.
+- `Email`, `URL`, `Slug`, and `IPAddress` field types (`domainkit.ddd`),
+  Django's `EmailField`, `URLField`, `SlugField`, and
+  `GenericIPAddressField`: `Annotated[str, ...]` of the markers, so the
+  object, the request, OpenAPI, and the column all hold them. The new
+  `IPAddressFormat(version=...)` marker checks an address with Python's
+  `ipaddress`.
 - `inspectdb`: prints aggregates for an existing database's tables, to
   start from: a field per column with its hint (`MaxLength` for sized
   text, `Digits` for decimals, `| None` when nullable), required fields
@@ -99,6 +150,10 @@ and a status.
 
 ### Changed
 
+- **Breaking:** with signup on and a user model whose `REQUIRED_FIELDS`
+  name more than the username and the email, `POST /signup` requires them
+  under `fields` (422 `invalid_user_field` without them); it used to leave
+  them at their defaults ([upgrading](docs/upgrading.md)).
 - **Breaking:** the five audit commands are one, `audit`: `auditlog` is
   `audit log` (and, with `--target` or `--aggregate`, `audit history`),
   `auditseal` is `audit seal`, `auditverify` is `audit verify` (and, with

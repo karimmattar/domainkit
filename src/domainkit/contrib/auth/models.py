@@ -466,6 +466,17 @@ class AbstractBaseUser(AggregateRoot[UserId]):
         return cls.EDITABLE_FIELDS - protected - {cls.USERNAME_FIELD}
 
     @classmethod
+    def signup_fields(cls) -> tuple[str, ...]:
+        """``REQUIRED_FIELDS`` other than the username and the email.
+
+        ``/signup`` takes them under ``fields``, as ``createsuperuser``
+        asks for them: a phone number declared with its markers is the
+        whole of a field a new account must give.
+        """
+        named = {cls.USERNAME_FIELD, cls.EMAIL_FIELD}
+        return tuple(name for name in cls.REQUIRED_FIELDS if name not in named)
+
+    @classmethod
     def admin_fields(cls) -> frozenset[str]:
         """Fields the admin API shows: the editable and the read-only ones."""
         return cls.editable_fields() | cls.READ_ONLY_FIELDS

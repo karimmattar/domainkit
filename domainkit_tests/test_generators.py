@@ -884,8 +884,28 @@ GENERATE = [
         *("--field", "quantity:int", "--field", "at:datetime"),
     ],
     ["addevent", "catalog", "Category", "CategoryNoted", "--no-handler"],
+    ["startdomain", "billing", "--aggregate", "Invoice"],
+    [
+        "addcommand",
+        "billing",
+        "Invoice",
+        "VoidInvoice",
+        *("--field", "reason:str:100", "--field", "at:datetime?"),
+    ],
+    ["addcommand", "billing", "Invoice", "SendInvoice"],
+    [
+        "addevent",
+        "billing",
+        "Invoice",
+        "InvoicePaid",
+        *("--field", "amount:decimal:10:2", "--field", "at:datetime"),
+    ],
+    ["addevent", "billing", "Invoice", "InvoiceViewed", "--no-handler"],
+    ["addquery", "billing", "Invoice", "InvoicesNamed", "--by", "name"],
+    ["addquery", "billing", "Invoice", "EveryInvoice", "--path", "/every"],
 ]
-"""Every generator, as ``python manage.py`` would get them."""
+"""Every generator, as ``python manage.py`` would get them: a layered domain,
+and a four-file one."""
 MANAGE = [("makemigrations", "-m", "catalog"), ("migrate",), ("check",)]
 """The commands that read the project's settings, run by its ``manage.py``."""
 
@@ -1700,3 +1720,169 @@ def test_startdomain_names_the_aggregates_by_the_plural_it_is_given(
     assert 'table_for(Note, "notes_memos", domain="notes")' in orm.read_text(
         encoding="utf-8"
     )
+
+
+@pytest.fixture
+def desk(
+    make_package: MakePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Shop:
+    """``gen.desk``, a four-file domain with the aggregate ``Ticket``."""
+    make_package("gen", {})
+    monkeypatch.setattr(generators_module, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
+    domain = Shop(tmp_path, "desk")
+    run(
+        "startdomain",
+        "desk",
+        aggregate="Ticket",
+        parent="gen",
+        tests_dir=domain.tests.parent,
+    )
+    return domain
+
+
+def test_addcommand_grows_a_four_file_domain(desk: Shop) -> None:
+    """The method and event in domain.py, a @use_case, a route, and its test."""
+    output = desk("addcommand", "Ticket", "CloseTicket", fields=["reason:str:100"])
+
+    assert output.startswith("Added CloseTicket to gen.desk:\n")
+    model = desk.read("domain.py")
+    assert model.index("class TicketClosed(DomainEvent):") < model.index(
+        "class Ticket(AggregateRoot[TicketId]):"
+    )
+    assert "    def close(self, *, reason: str) -> None:" in model
+    controllers = desk.read("controllers.py")
+    assert "async def close_ticket(" in controllers
+    assert "ticket.close(reason=reason)" in controllers
+    routes = desk.read("routes.py")
+    assert routes.index('path="/close")') < routes.index("router.include_router(")
+    assert "in_memory(DeskUnitOfWork, events=bus)" in desk.test("test_close_ticket.py")
+    assert check_domain("gen.desk") == []
+
+
+@pytest.mark.parametrize(
+    ("args", "fields", "message"),
+    [
+        (("Ticket", "RenameTicket"), [], "already defines Ticket.rename"),
+        (("Ticket", "CloseTicket"), ["ticket_id:uuid"], "comes from the path"),
+        (("Ticket", "CloseTicket"), ["owner:ref:Ticket"], "added to a four-file"),
+        (("Desk", "CloseDesk"), [], "has no aggregate Desk"),
+        (("Ticket", "CloseTicket", "--plural", "cases"), [], "has no resource cases"),
+    ],
+)
+def test_addcommand_refuses_what_a_four_file_domain_cannot_take(
+    desk: Shop, args: tuple[str, ...], fields: list[str], message: str
+) -> None:
+    """Taken names, the path's id, references, and missing pieces."""
+    aggregate, command, *rest = args
+    options: dict[str, Any] = {"fields": fields}
+    if rest:
+        options["plural"] = rest[1]
+    with pytest.raises(CommandError, match=message):
+        desk("addcommand", aggregate, command, **options)
+
+
+def test_a_four_file_domain_needs_its_unit_of_work(desk: Shop) -> None:
+    """A domain.py without the unit of work is not as startdomain made it."""
+    path = desk.package / "domain.py"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("DeskUnitOfWork", "Desks"),
+        encoding="utf-8",
+    )
+    with pytest.raises(CommandError, match="has no unit of work DeskUnitOfWork"):
+        desk("addcommand", "Ticket", "CloseTicket")
+
+
+def test_addevent_grows_a_four_file_domain(desk: Shop) -> None:
+    """The event in domain.py, and a @handles handler the domain subscribes."""
+    output = desk("addevent", "Ticket", "TicketSeen", fields=["count:int"])
+
+    assert output.startswith("Added TicketSeen to gen.desk:\n")
+    model = desk.read("domain.py")
+    assert model.index("class TicketSeen(DomainEvent):") < model.index(
+        "class Ticket(AggregateRoot[TicketId]):"
+    )
+    controllers = desk.read("controllers.py")
+    assert "@handles(TicketSeen, durable=True)\nasync def on_ticket_seen(" in (
+        controllers
+    )
+    assert "logger = logging.getLogger(__name__)" in controllers
+    assert (desk.tests / "test_on_ticket_seen.py").is_file()
+    assert check_domain("gen.desk") == []
+
+    desk("addevent", "Ticket", "TicketShut")  # Its logger is there already.
+    assert desk.read("controllers.py").count("import logging") == 1
+    desk("addevent", "Ticket", "TicketSkipped", handler=False)
+    assert "on_ticket_skipped" not in desk.read("controllers.py")
+    with pytest.raises(CommandError, match="already defines TicketSeen"):
+        desk("addevent", "Ticket", "TicketSeen")
+    with pytest.raises(CommandError, match="ticket_id is the event's"):
+        desk("addevent", "Ticket", "TicketMoved", fields=["ticket_id:uuid"])
+    with pytest.raises(CommandError, match="has no aggregate Desk"):
+        desk("addevent", "Desk", "DeskMoved")
+
+
+def test_addevent_keeps_a_handler_name_once(desk: Shop) -> None:
+    """A handler of the name already in controllers.py is refused."""
+    path = desk.package / "controllers.py"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text + "\n\nasync def on_ticket_gone() -> None:\n    pass\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CommandError, match="already defines on_ticket_gone"):
+        desk("addevent", "Ticket", "TicketGone")
+
+
+def test_addquery_grows_a_four_file_domain(desk: Shop) -> None:
+    """The query and its handler in controllers.py, its route, and its test."""
+    output = desk("addquery", "Ticket", "TicketsNamed", by=["name"])
+
+    assert output.startswith("Added TicketsNamed to gen.desk:\n")
+    controllers = desk.read("controllers.py")
+    assert "class TicketsNamed(Query):\n" in controllers
+    assert "    name: TicketName\n" in controllers
+    assert 'page = await uow.tickets.paginate(F("name") == query.name' in controllers
+    assert "controllers.TicketsNamed, handler=controllers.tickets_named" in (
+        desk.read("routes.py")
+    )
+    assert (desk.tests / "test_tickets_named.py").is_file()
+    assert check_domain("gen.desk") == []
+    for args, message in [
+        (("Ticket", "TicketsNamed"), "already defines TicketsNamed"),
+        (("Desk", "DesksNamed"), "has no aggregate Desk"),
+        (("Ticket", "TicketsDue", "--plural", "cases"), "has no resource cases"),
+    ]:
+        aggregate, query, *rest = args
+        options: dict[str, Any] = {"by": ["name"]}
+        if rest:
+            options["plural"] = rest[1]
+        with pytest.raises(CommandError, match=message):
+            desk("addquery", aggregate, query, **options)
+
+
+def test_addquery_needs_to_know_where_a_field_type_comes_from(desk: Shop) -> None:
+    """A type domain.py uses but neither defines nor imports is refused."""
+    path = desk.package / "domain.py"
+    text = path.read_text(encoding="utf-8").replace(
+        "    name: TicketName", "    name: TicketName\n    code: Mystery = None"
+    )
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(CommandError, match="does not say where Mystery comes from"):
+        desk("addquery", "Ticket", "TicketsCoded", by=["code"])
+
+
+def test_addquery_imports_field_types_as_domain_py_has_them(desk: Shop) -> None:
+    """A builtin needs nothing; an imported type is imported from its origin."""
+    path = desk.package / "domain.py"
+    text = "from datetime import date\n" + path.read_text(encoding="utf-8").replace(
+        "    name: TicketName",
+        "    name: TicketName\n    count: int = 0\n    day: date = date(2026, 1, 1)",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    desk("addquery", "Ticket", "TicketsOnDay", by=["count", "day"])
+
+    controllers = desk.read("controllers.py")
+    assert "from datetime import date" in controllers
+    assert "    count: int\n    day: date\n" in controllers

@@ -4,6 +4,7 @@
 | --- | --- | --- |
 | A bounded context | a package with `apps.py` (`DomainConfig`) | `INSTALLED_DOMAINS` |
 | Domain settings | a Pydantic model | `DomainConfig.settings_class` |
+| Project settings | a `domainkit.conf.Settings` subclass ([recipe: API keys](../recipes/api-keys.md)) | `SETTINGS_CLASS` in the settings module |
 | Domains a domain cannot work without | `DomainConfig.requires`: package names, or `apps.Requirement(name, reason)` | (checked by `setup()` before any `ready()`; a missing one is refused by name) |
 | Startup wiring, and the hooks a domain has | `DomainConfig.ready()` | (called by `setup()`; a hook is registered there, `on_<method>(function)`, and checked against the point: its arguments, and whether it is awaited; a mistake fails `setup()`, naming the domain) |
 | Process resources (clients, pools) | `async def hook()` | `domainkit.apps.hooks.on_startup(hook)` / `on_shutdown(hook)` in `ready()` (called by the app lifespan, a domain's shutdown hooks once all its startup hooks ran; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
@@ -29,8 +30,8 @@
 | Tables a domain stops using | `DomainConfig.holds_table(table)` | (asked by migrations and content types; a swapped user table answers no) |
 | A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |
-| A way requests prove who sent them | `auth.authentication.BaseAuthentication` | `AUTH.AUTHENTICATION_CLASSES` |
-| A rule for who may call a route | `domainkit.http.access.BasePermission` | `Depends(Require(rule))` on the route, or `Public` for anyone |
+| A way requests prove who sent them | `auth.authentication.BaseAuthentication` ([recipe: API keys](../recipes/api-keys.md)) | `AUTH.AUTHENTICATION_CLASSES` |
+| A rule for who may call a route | `domainkit.http.access.BasePermission` ([recipe](../recipes/permission-rules.md)) | `Depends(Require(rule))` on the route, or `Public` for anyone |
 | Another way to authenticate requests (OpenID Connect, a gateway's header) | an ASGI middleware that puts a `domainkit.http.access.Principal` in `scope["user"]` | `MIDDLEWARE` ([Another authentication](../auth/routes.md#another-authentication)) |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
 | A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |

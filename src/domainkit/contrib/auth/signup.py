@@ -8,7 +8,9 @@ and mail, and mount the router::
     router.include_router(signup_router, prefix="/auth")
 
 ``POST /signup`` (anyone) takes a username and an email address, and no
-password. The fields are checked at once: a refusal there says nothing
+password; a user model's other ``REQUIRED_FIELDS`` (``signup_fields()``)
+come under ``fields``, each checked by its type and markers as any
+change to a user is. The fields are checked at once: a refusal there says nothing
 about other accounts. Then the request is kept as a pending signup, and
 it answers 202, doing the same work whatever accounts exist. The worker
 mails the address: a link (``AUTH.SIGNUP_URL``), or, when the username or
@@ -48,6 +50,7 @@ from domainkit.signing import BadSignature, TimestampSigner
 
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import UserSignedUp
+from .exceptions import InvalidUserField, UnknownUserField
 from .hashers import amake_password
 from .models import (
     USERNAME_MAX_LENGTH,
@@ -66,7 +69,7 @@ from .throttling import (
     throttle,
 )
 from .uow import AuthUnitOfWork
-from .users import get_user_model
+from .users import FieldValue, get_user_model, typed_fields
 from .validators import validate_password
 
 __all__ = [
@@ -91,6 +94,8 @@ class SignupIn(BaseModel):
 
     username: str = Field(min_length=1, max_length=USERNAME_MAX_LENGTH)
     email: EmailAddress
+    fields: dict[str, FieldValue] = Field(default_factory=dict)
+    """The user model's other ``REQUIRED_FIELDS`` (``signup_fields()``)."""
 
 
 class SignupConfirmIn(TokenIn):
@@ -134,14 +139,18 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
         detail="Too many requests for mail; try again later.",
     )
     model = get_user_model()
+    given = _given(model, body.fields)
     fields = {model.USERNAME_FIELD: body.username, cast(str, model.EMAIL_FIELD): email}
     # Builds a user the way confirming will, so its fields are checked now.
-    candidate = model.create(password=PasswordHash.unusable(), **fields)
+    candidate = model.create(
+        password=PasswordHash.unusable(), **fields, **typed_fields(model, given)
+    )
     async with AuthUnitOfWork() as uow:
         pending = await uow.signups.add(
             username=candidate.get_username(),
             email=getattr(candidate, cast(str, model.EMAIL_FIELD)),
             ttl=config.EMAIL_VERIFICATION_TIMEOUT,
+            fields=given,
         )
         uow.defer(send_signup_link, signup_id=pending.id)
         await uow.commit()
@@ -283,7 +292,27 @@ def _account(
         model.USERNAME_FIELD: pending.username,
         cast(str, model.EMAIL_FIELD): pending.email,
     }
-    return model.create(password=password, **fields)
+    extra = typed_fields(model, pending.fields or {})
+    return model.create(password=password, **fields, **extra)
+
+
+def _given(
+    model: type[AbstractBaseUser], fields: dict[str, FieldValue]
+) -> dict[str, FieldValue]:
+    """``fields``, if they are the model's ``signup_fields()``, every one.
+
+    Raises:
+        UnknownUserField: A field is not one a signup gives.
+        InvalidUserField: One of them is missing.
+    """
+    wanted = model.signup_fields()
+    if unknown := sorted(set(fields) - set(wanted)):
+        raise UnknownUserField(
+            f"These user fields cannot be given here: {', '.join(unknown)}."
+        )
+    if missing := [name for name in wanted if name not in fields]:
+        raise InvalidUserField(f"These user fields are required: {', '.join(missing)}.")
+    return fields
 
 
 async def _make_account(

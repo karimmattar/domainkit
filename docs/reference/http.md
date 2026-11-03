@@ -17,6 +17,8 @@ What the application accepts and answers, and the middleware that holds it to th
 | `MAX_CONCURRENT_REQUESTS` | `1000` | HTTP requests each event loop works on at once (`ConcurrencyLimitMiddleware`), at most 100,000; a request waiting for its body is not counted meanwhile. `None`: no cap ([runtime.md](../runtime.md#load-shedding)). |
 | `MAX_QUEUED_REQUESTS` | `100` | Requests past the cap that may wait for a slot (at most 100,000); the next are answered 503 `overloaded` at once. |
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds (at most 60) a request past the cap waits for a slot before it is answered 503 `overloaded`. |
+| `GZIP_MINIMUM_SIZE` | `500` | Bytes (at least 0) a response needs before `GZipMiddleware` compresses it. |
+| `GZIP_LEVEL` | `6` | `GZipMiddleware`'s compression level, from 1 (fastest) to 9 (smallest). |
 | `CONCURRENCY_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted against the cap, so probes and scrapes are never refused; compared without the root path the application is mounted at (`--root-path`). |
 | `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | Defaults of outgoing calls through `domainkit.http.client`. |
 | `GUARD_LOOKUP_THREADS` | `16` | Threads (1 to 256) that look host names up for guarded calls and webhooks, in each process. One owner (a request's user or address, or a webhook delivery's subscription) may hold a quarter of them, so hosts one owner chose that never answer leave the rest to others ([runtime.md](../runtime.md#outgoing-http-calls)). |
@@ -108,6 +110,7 @@ idempotency, or debug toolbar middleware), and `DEFAULT_MIDDLEWARE` eight
 | `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`: a trusted proxy's valid one, per `ACCEPT_REQUEST_ID`, else 32 lowercase hex digits), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
 | `domainkit.http.deadlines.DeadlineMiddleware` | Starts the request's deadline (`REQUEST_TIMEOUT`) before any work, and answers 503 `deadline_exceeded` when it passes; lifted once the response starts ([runtime.md](../runtime.md#request-deadlines)). |
 | `domainkit.http.shedding.ConcurrencyLimitMiddleware` | Sheds requests past `MAX_CONCURRENT_REQUESTS` with 503 `overloaded`, before authentication looks anything up; never the probes ([runtime.md](../runtime.md#load-shedding)). |
+| `domainkit.http.compression.GZipMiddleware` | Compresses responses of `GZIP_MINIMUM_SIZE` bytes or more for clients that accept gzip (Django's); not listed by default. Keep it off responses that hold a secret beside text the caller chose (BREACH). |
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
 | `domainkit.contrib.auth.middleware.AuthenticationMiddleware` | Finds the user from the request's token and makes it the actor, so what follows counts users (auth; see [auth.md](../auth.md)). |
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64), worked out once per request and remembered for the latest 4,096 addresses. A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |

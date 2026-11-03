@@ -28,7 +28,7 @@ import dataclasses
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Annotated, Any, Final, Self, cast, get_type_hints
+from typing import Annotated, Any, Final, Self, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
@@ -37,8 +37,6 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    TypeAdapter,
-    ValidationError,
 )
 
 from domainkit.apps import registry
@@ -64,7 +62,6 @@ from .backends import (
 from .events import UserLoggedOut
 from .exceptions import (
     GroupNotFound,
-    InvalidUserField,
     LastSuperuser,
     UnknownUserField,
     UserNotFound,
@@ -72,7 +69,7 @@ from .exceptions import (
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository
 from .uow import AuthUnitOfWork
-from .users import get_user_model
+from .users import FieldValue, get_user_model, typed_fields
 from .validators import validate_password
 
 __all__ = [
@@ -115,10 +112,6 @@ def _users(action: str) -> Any:  # noqa: ANN401 - Depends.
 def _groups(action: str) -> Any:  # noqa: ANN401 - Depends.
     """Staff with ``action`` on groups."""
     return staff(action, lambda: Group)
-
-
-FieldValue = str | bool | int | float | None
-"""A value a client may give a user field."""
 
 
 class AdminUserOut(BaseModel):
@@ -714,15 +707,7 @@ def _checked(
         InvalidUserField: A value does not fit its field.
     """
     model.check_editable(fields)
-    types = get_type_hints(model)
-    checked = {}
-    for name, value in fields.items():
-        try:
-            checked[name] = TypeAdapter(types[name]).validate_python(value)
-        except ValidationError as error:
-            reason = error.errors()[0]["msg"]
-            raise InvalidUserField(f"{name}: {reason}.") from None
-    return checked
+    return typed_fields(model, fields)
 
 
 def _has_field(model: type, name: str) -> bool:

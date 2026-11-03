@@ -21,6 +21,8 @@ PASSED = {
     "jwt-keys.md": 4,
     "behind-a-proxy.md": 7,
     "read-replica.md": 9,
+    "api-keys.md": 5,
+    "permission-rules.md": 4,
 }
 """Each recipe's project's tests, the page's own included, after its last step."""
 CHECKED = {

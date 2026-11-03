@@ -9,9 +9,11 @@ Plain Python, imported by the dataclass machinery, so it imports nothing
 of domainkit's.
 """
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Annotated, Final
 
 
 def _is_number(value: object) -> bool:
@@ -112,5 +114,52 @@ class Range:
         return None
 
 
-MARKERS: tuple[type, ...] = (MaxLength, MinLength, Pattern, Range)
+@dataclass(frozen=True, slots=True)
+class IPAddressFormat:
+    """``Annotated`` metadata: an IPv4 or IPv6 address, as ``ipaddress`` reads it.
+
+    ``version=4`` or ``6`` takes only that one.
+    """
+
+    version: int | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a version other than 4 and 6."""
+        if self.version not in {None, 4, 6}:
+            raise ValueError(
+                f"IPAddressFormat takes version 4 or 6, not {self.version}."
+            )
+
+    def problem(self, value: object) -> str | None:
+        """What is wrong with ``value``: text that is no address of the version."""
+        if not isinstance(value, str):
+            return None
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return "Enter a valid IP address."
+        if self.version is not None and address.version != self.version:
+            return f"Enter a valid IPv{self.version} address."
+        return None
+
+
+MARKERS: tuple[type, ...] = (MaxLength, MinLength, Pattern, Range, IPAddressFormat)
 """The markers an object checks itself."""
+
+EMAIL_PATTERN: Final = r"[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+"
+"""A local part, an ``@``, and a domain of two labels or more: what an address
+needs to be deliverable at all; whether it is, only sending to it shows."""
+URL_PATTERN: Final = r"https?://[^\s/?#@]+(?::[0-9]+)?(?:[/?#][^\s]*)?"
+"""``http`` or ``https``, a host, and an optional port, path, query, and fragment."""
+SLUG_PATTERN: Final = r"[-a-zA-Z0-9_]+"
+"""Letters of the Latin alphabet, digits, hyphens, and underscores."""
+
+Email = Annotated[str, MaxLength(254), Pattern(EMAIL_PATTERN)]
+"""An email address (Django's ``EmailField``): at most 254 characters."""
+URL = Annotated[str, MaxLength(2048), Pattern(URL_PATTERN)]
+"""An ``http`` or ``https`` address (Django's ``URLField``): at most 2,048
+characters."""
+Slug = Annotated[str, MaxLength(50), Pattern(SLUG_PATTERN)]
+"""A slug (Django's ``SlugField``): at most 50 characters."""
+IPAddress = Annotated[str, MaxLength(45), IPAddressFormat()]
+"""An IPv4 or IPv6 address (Django's ``GenericIPAddressField``)."""

@@ -40,7 +40,7 @@ from .access import StepUp
 from .authentication import get_authenticators
 from .backends import backends_without_object_grants, get_backends
 from .hashers import insecure_hashers
-from .models import AbstractBaseUser, AbstractUser, User
+from .models import PROTECTED_FLOOR, AbstractBaseUser, AbstractUser, User
 from .permissions import declared_permissions, sync_permissions
 from .principals import invalidate_all, stamp_committed, stamp_pending, watch
 from .settings import PRINCIPAL_TTL, AuthSettings, auth_settings
@@ -692,6 +692,17 @@ def _user_model(path: str) -> type[AbstractBaseUser]:
                 f"AUTH.USER_MODEL: {listed} names fields {path!r} lacks: "
                 f"{', '.join(unknown)}."
             )
+    if unknown := sorted(set(model.REQUIRED_FIELDS) - fields):
+        raise ImproperlyConfigured(
+            f"AUTH.USER_MODEL: REQUIRED_FIELDS names fields {path!r} lacks: "
+            f"{', '.join(unknown)}."
+        )
+    protected = model.PROTECTED_FIELDS | PROTECTED_FLOOR
+    if fixed := sorted(set(model.signup_fields()) & protected):
+        raise ImproperlyConfigured(
+            f"AUTH.USER_MODEL: REQUIRED_FIELDS of {path!r} names fields that change "
+            f"only through their own methods: {', '.join(fixed)}."
+        )
     if fixed := sorted(model.EDITABLE_FIELDS - model.editable_fields()):
         raise ImproperlyConfigured(
             f"AUTH.USER_MODEL: EDITABLE_FIELDS of {path!r} names fields that change "

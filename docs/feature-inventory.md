@@ -21,14 +21,14 @@ framework, for the reason given.
 | Abstract base models | Dataclass inheritance; `AbstractUser` | Yes | |
 | Multi-table and proxy inheritance | One aggregate, one table; a role is a field | n/a: aggregates are not class hierarchies over tables | |
 | Char, Text, Integer, Decimal, Boolean, Date, DateTime, Duration, UUID, JSON fields | Python types in the field's hint | Yes | |
-| `EmailField`, `URLField`, `SlugField`, `GenericIPAddressField` | Write a value object | No: ready-made types | C3 |
+| `EmailField`, `URLField`, `SlugField`, `GenericIPAddressField` | `Email`, `URL`, `Slug`, `IPAddress` (`domainkit.ddd`), checked by the object, the request, and OpenAPI ([validation.md](validation.md)) | Yes | C3 |
 | `choices` | An `Enum` field | Yes | |
 | `get_FOO_display()`, choice labels | `TextChoices` and `IntegerChoices`: `member.label`, `choices()` | Yes | C7 |
 | `null`, `default` | `X \| None`, dataclass defaults | Yes | |
 | `db_default`, `GeneratedField` | A hand-written column in `table_for(..., *extra)` | Partial | C7 |
 | `unique=True`, `db_index=True` | `Unique()` and `Indexed()` on the field | Yes | C7 |
-| `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | `Meta.unique` and `Meta.indexes` on the aggregate; a check constraint in `extra` | Partial: checks are SQLAlchemy's, in `extra` | C7 |
-| `Meta.ordering` | A `FilterSet`'s `default_ordering`; repositories order by id | Partial | C7 |
+| `Meta.constraints` (`UniqueConstraint`, `CheckConstraint`), `Meta.indexes` | `Meta.unique`, `Meta.indexes`, and `Meta.checks` (criteria, held at commit and by the database) on the aggregate | Yes | C7 |
+| `Meta.ordering` | `Meta.ordering` on the aggregate: queries that name none follow it, then the id | Yes | C7 |
 | Validators (`MaxLengthValidator`, `RegexValidator`, `MinValueValidator`, ...) | `MaxLength`, `MinLength`, `Pattern`, `Range` markers, checked by the object, the request, and OpenAPI ([validation.md](validation.md)) | Yes | |
 | `clean()`, `full_clean()`, `clean_fields()` | `clean()`, run when made and before every commit; fields checked whenever set | Yes | |
 | `ForeignKey` to a child | Child entities, stored with their aggregate | Yes | |
@@ -54,7 +54,7 @@ framework, for the reason given.
 | `in_bulk` | `get_many`, and `get_many_for_update` to lock | Yes | C7 |
 | `update()` and `delete()` on a queryset | `remove_all` of loaded aggregates | Partial: no set-based write, on purpose for aggregates; offered for reference data | C7 |
 | `aggregate()` (`Count`, `Sum`, `Avg`, `Min`, `Max`) | `repository.aggregate(criteria, name=Sum(...))`, one statement | Yes | C7 |
-| `annotate()`, `values()`, `values_list()`, `only()`, `defer()` | None | No: read models (projections) | C4 |
+| `annotate()`, `values()`, `values_list()`, `only()`, `defer()` | `repository.values(query, "id", "name")`: dicts of the fields, one statement, nothing loaded; `aggregate()` for measures | Partial: no `annotate()` per row | C4 |
 | `select_related`, `prefetch_related` | An aggregate loads whole, children included | n/a | |
 | `select_for_update(nowait, skip_locked)` | `get_for_update`, `RowLock` | Yes | |
 | `iterator()`, `aiterator()` | `stream(query, batch=...)`, keyset batches ([queries.md](queries.md)) | Yes | C6 |
@@ -95,9 +95,9 @@ framework, for the reason given.
 | API versioning | Prefixes, `Deprecation` headers | Partial | |
 | OpenAPI, browsable API | OpenAPI and its docs pages | Yes | |
 | `ETag`, `If-Match`, `If-None-Match` | Built in | Yes | |
-| `Last-Modified`, `If-Modified-Since` | None | No | C6 |
+| `Last-Modified`, `If-Modified-Since` | `ResourceRouter(..., last_modified="updated_at")` | Yes | C6 |
 | `cache_page`, low-level cache | `domainkit.cache`, page caching | Yes | |
-| `GZipMiddleware` | None | No | C6 |
+| `GZipMiddleware` | `domainkit.http.compression.GZipMiddleware`, set by `GZIP_MINIMUM_SIZE` and `GZIP_LEVEL` | Yes | C6 |
 | `StreamingHttpResponse`, `FileResponse` | Streaming responses; files through `domainkit.storage` | Yes | |
 | CSRF, `SECURE_*`, HSTS, CSP, clickjacking | Built-in middleware and settings | Yes | |
 | CORS (`django-cors-headers`) | Built-in middleware | Yes | |

@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 
 CONFIG_MODULE = "apps"
 MODELS_MODULE: Final = "models"
+CONTROLLERS_MODULE: Final = "controllers"
+"""Where a four-file domain's use cases and ``@handles`` handlers live."""
 """The simple layout's ORM module, which ``ready()`` maps by default."""
 PACKAGE_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 """A dotted package name, as ``domainkit.contrib.messaging``."""
@@ -190,8 +192,9 @@ class DomainConfig:
 
         By default, a domain in the simple layout (``startdomain``'s) has its
         ``models.py`` imported, so its tables are known, and its
-        ``start_mappers()`` called, if it has one. A ``DomainConfig`` of the
-        domain's own (``apps.py``) replaces this.
+        ``start_mappers()`` called, if it has one; then the handlers its
+        ``controllers.py`` marks with ``@handles`` are subscribed. A
+        ``DomainConfig`` of the domain's own (``apps.py``) replaces this.
         """
         name = f"{self.name}.{MODELS_MODULE}"
         if find_spec(name) is None:
@@ -199,6 +202,13 @@ class DomainConfig:
         start = getattr(import_module(name), "start_mappers", None)
         if callable(start):
             start()
+        controllers = f"{self.name}.{CONTROLLERS_MODULE}"
+        if find_spec(controllers) is not None:
+            from domainkit.ddd.events import (
+                subscribe_marked,
+            )
+
+            subscribe_marked(import_module(controllers))
 
     def holds_table(self, table: "Table") -> bool:
         """Whether ``table``, tagged with this domain, is in use now.

@@ -50,6 +50,7 @@ from sqlalchemy.types import TypeDecorator
 from domainkit import setup
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
 from domainkit.db.connections import connections, create_owner_engine
+from domainkit.db.derive import DECLARED_CHECK
 from domainkit.db.hooks import on_migrated
 from domainkit.db.money import CHECK
 from domainkit.db.orm import metadata
@@ -562,7 +563,7 @@ def _money_checks(
     conn_table: Table | None,
     metadata_table: Table | None,
 ) -> None:
-    """Add the both-or-neither check of a money pair the database table lacks.
+    """Add a money pair's check, or a ``Meta.checks`` entry, the database table lacks.
 
     Alembic compares no check constraints, so a nullable money field added
     later would get its two columns and not the check that keeps them a
@@ -570,7 +571,9 @@ def _money_checks(
     None``) would get nullable columns without it (DATA-20). A pair's check
     names its field (``info``); when the database table has no check of
     that name, the revision adds it, after any columns it adds (in batch
-    mode, which recreates the table on SQLite).
+    mode, which recreates the table on SQLite). A check an aggregate's
+    ``Meta.checks`` declares is added the same way; one it no longer
+    declares is left for a hand-written ``op.drop_constraint``.
     """
     if conn_table is None or metadata_table is None:
         return
@@ -582,7 +585,8 @@ def _money_checks(
     for constraint in metadata_table.constraints:
         if not isinstance(constraint, CheckConstraint):
             continue
-        if constraint.info.get(CHECK) is not None and constraint.name not in present:
+        ours = constraint.info.get(CHECK) or constraint.info.get(DECLARED_CHECK)
+        if ours is not None and constraint.name not in present:
             modify_table_ops.ops.append(
                 CreateCheckConstraintOp.from_constraint(constraint)
             )

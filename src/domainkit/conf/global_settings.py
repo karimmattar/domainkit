@@ -808,6 +808,10 @@ class Settings(BaseModel):
     """Requests past the cap that may wait for a slot; more are refused at once."""
     REQUEST_QUEUE_TIMEOUT: float = Field(default=1.0, ge=0, le=60)
     """Seconds a request past the cap waits for a slot before it is refused."""
+    GZIP_MINIMUM_SIZE: int = Field(default=500, ge=0)
+    """Bytes a response needs before ``GZipMiddleware`` compresses it."""
+    GZIP_LEVEL: int = Field(default=6, ge=1, le=9)
+    """``GZipMiddleware``'s compression level: 1 fastest, 9 smallest."""
     CONCURRENCY_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
     """Exact paths never counted against the cap, so probes are never refused."""
     HTTP_CLIENT: HttpClientConfig = Field(default_factory=HttpClientConfig)

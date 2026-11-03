@@ -7,7 +7,7 @@ caller commits (see ``AuthUnitOfWork``).
 import dataclasses
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cache
@@ -1188,6 +1188,8 @@ class PendingSignup:
     email: str = dataclasses.field(repr=False)
     created_at: datetime = dataclasses.field(repr=False)
     expires_at: datetime = dataclasses.field(repr=False)
+    fields: dict[str, Any] | None = dataclasses.field(default=None, repr=False)
+    """The user model's other ``REQUIRED_FIELDS``, as the client gave them."""
 
     def expired(self, now: datetime | None = None) -> bool:
         """Whether its link no longer works."""
@@ -1207,6 +1209,7 @@ class SignupStore:
         username: str,
         email: str,
         ttl: timedelta,
+        fields: Mapping[str, Any] | None = None,
         now: datetime | None = None,
     ) -> PendingSignup:
         """Store an account to make once ``email`` is confirmed, for ``ttl``."""
@@ -1217,6 +1220,7 @@ class SignupStore:
             email=email,
             created_at=moment,
             expires_at=moment + ttl,
+            fields=dict(fields) if fields else None,
         )
         await self.session.execute(
             insert(pending_signups).values(

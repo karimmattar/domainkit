@@ -12,7 +12,8 @@ from sqlalchemy import select, update
 from domainkit import signing
 from domainkit.conf import override_settings
 from domainkit.contrib import mail
-from domainkit.contrib.auth import AuthUnitOfWork
+from domainkit.contrib.auth import AuthUnitOfWork, User
+from domainkit.contrib.auth.apps import _user_model
 from domainkit.contrib.auth.repositories import PendingSignup, SignupStore
 from domainkit.contrib.auth.signup import (
     send_signup_link,
@@ -25,6 +26,7 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
+from domainkit_tests.sample_domains.accounts.models import Account
 from domainkit_tests.test_auth_http import audited, bearer, create_user, login
 from domainkit_tests.test_auth_recovery import (
     from_address,
@@ -39,7 +41,7 @@ CONFIRM = "Confirm your sign-up"
 EXISTS = "Your sign-up"
 
 
-def signup(client: TestClient, **fields: str) -> Any:  # noqa: ANN401 - a response.
+def signup(client: TestClient, **fields: object) -> Any:  # noqa: ANN401 - a response.
     """Ask for an account; ``fields`` replace alice's."""
     body = {"username": "alice", "email": "alice@example.com"}
     return client.post("/auth/signup", json={**body, **fields})
@@ -107,7 +109,15 @@ def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None
     assert response.status_code == 202
     assert response.json() == {"detail": "Check your email to finish signing up."}
     (stored,) = pending()
-    assert set(stored) == {"id", "username", "email", "created_at", "expires_at"}
+    assert set(stored) == {
+        "id",
+        "username",
+        "email",
+        "fields",
+        "created_at",
+        "expires_at",
+    }
+    assert stored["fields"] is None  # User asks for no field beyond these.
     assert (stored["username"], stored["email"]) == ("Alice", "alice@example.com")
     assert stored["expires_at"] - stored["created_at"] == timedelta(days=3)
     # The outbox holds the pending signup's id alone: no hash, no address.
@@ -228,6 +238,57 @@ def test_fields_are_checked_at_once(identity: Api) -> None:
     assert extra.status_code == 422
     assert with_password.json()["errors"][0]["loc"] == ["body", "password"]
     assert outbox_payloads() == []
+
+
+def test_the_user_models_required_fields_come_with_the_signup(
+    identity: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each of ``signup_fields()``: typed, checked at once, kept, set on the account."""
+    monkeypatch.setattr(User, "REQUIRED_FIELDS", ("email", "first_name"))
+    client = identity(SIGNUP_ENABLED=True)
+
+    missing = signup(client)
+    unknown = signup(client, fields={"first_name": "Alice", "is_staff": True})
+    mistyped = signup(client, fields={"first_name": 5})
+    asked = signup(client, fields={"first_name": "Alice"})
+
+    assert (missing.status_code, missing.json()["code"]) == (422, "invalid_user_field")
+    assert "required: first_name" in missing.json()["detail"]
+    assert (unknown.status_code, unknown.json()["code"]) == (422, "unknown_user_field")
+    assert "is_staff" in unknown.json()["detail"]
+    assert (mistyped.status_code, mistyped.json()["code"]) == (
+        422,
+        "invalid_user_field",
+    )
+    assert asked.status_code == 202
+    (stored,) = pending()
+    assert stored["fields"] == {"first_name": "Alice"}
+    run_worker()
+    (message,) = mail.outbox
+    assert confirm(client, token_in(message)).status_code == 204
+
+    async def made() -> User:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key("alice")
+        assert isinstance(found, User)
+        return found
+
+    assert run_async(made()).first_name == "Alice"
+
+
+def test_required_fields_must_be_fields_a_signup_may_give(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A field the model lacks, or one that changes another way, stops startup."""
+    path = "domainkit_tests.sample_domains.accounts.models.Account"
+    monkeypatch.setattr(Account, "REQUIRED_FIELDS", ("email", "phone", "mobile"))
+    with pytest.raises(ImproperlyConfigured, match="REQUIRED_FIELDS names fields"):
+        _user_model(path)
+    monkeypatch.setattr(Account, "REQUIRED_FIELDS", ("email", "is_superuser"))
+    with pytest.raises(ImproperlyConfigured, match="only through their own methods"):
+        _user_model(path)
+    monkeypatch.setattr(Account, "REQUIRED_FIELDS", ("email", "phone"))
+    assert _user_model(path).signup_fields() == ("phone",)
 
 
 def test_the_password_is_chosen_and_checked_when_confirming(identity: Api) -> None:

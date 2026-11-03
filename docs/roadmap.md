@@ -39,6 +39,11 @@ Steps C1 to C8 are the core's; the [feature inventory](feature-inventory.md)
 names each Django feature and platform need, what exists, and the step
 that closes its gap.
 
+After C7, the core closed the inventory's last open rows of its own: the
+`Email`, `URL`, `Slug`, and `IPAddress` field types; `Meta.ordering` and
+`Meta.checks`; `GZipMiddleware` and `Last-Modified`; and `values()`
+projections.
+
 ## Then: adapters on the core
 
 Each adapter is a port in the core (the shape every provider fills) and
@@ -94,23 +99,23 @@ Measured on the guide's shop, one aggregate with four commands:
 
 ## Then
 
-1. **Generators for the four-file layout.** `addcommand`, `addquery`, and
-   `addevent` grow layered domains only; teach them `controllers.py` and
-   `routes.py`, then make the tutorial use the simple layout.
+1. **The tutorial on the four-file layout.** `addcommand`, `addquery`,
+   and `addevent` grow four-file domains (done); the tutorial still
+   builds a layered one.
 2. **Field rules that hold everywhere.** Today `MinLength`, `Pattern`, and
    `Range` are checked at the API; a value object checks itself everywhere.
    Let an aggregate check its markers when it is made and changed, so a
    script or a task meets the same limits, with the error as a 422.
-3. **Custom user fields end to end.** Auth's signup takes only a username
-   and an email: let it take the user model's `REQUIRED_FIELDS`, and let
-   `clean_field` and `create` checks come from field markers, so a phone
-   number needs one line.
-4. **One page per extension point**, each with a working, tested example:
-   an authentication class (API keys), a permission rule, a cache backend,
-   a broker, an SMS or mail backend, and settings of a domain's own
-   (`settings_class`). The interfaces exist (`BaseAuthentication`,
-   `BasePermission`, `CACHES`, `BROKERS`, `SmsBackend`, `DomainConfig`);
-   what is missing is the short, copyable recipe.
+3. **Custom user fields end to end** (done). Signup takes the user
+   model's `REQUIRED_FIELDS` under `fields`, and a field's markers hold
+   at signup, in the admin API, and in scripts, so a phone number is one
+   line.
+4. **One page per extension point**, each with a working, tested example.
+   Done: an authentication class with the project's own settings
+   ([API keys](recipes/api-keys.md)) and a permission rule
+   ([recipe](recipes/permission-rules.md)), both walked by
+   `test_recipes.py`. Left: a cache backend, a broker, and an SMS or mail
+   backend.
 5. **Phone verification as an app.** A `contrib.phones` with the code, its
    hash, expiry, tries, and the SMS through the outbox, as the guide's
    example builds by hand.

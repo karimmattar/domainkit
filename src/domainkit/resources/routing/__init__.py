@@ -63,6 +63,7 @@ A new kind of route is a module of that shape and a method here (ADR 0025).
 """
 
 from collections.abc import Callable, Collection, Mapping, Sequence
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -72,7 +73,7 @@ from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute
 
-from domainkit.ddd.fields import InvalidQuery, fields_of
+from domainkit.ddd.fields import InvalidQuery, base_type, fields_of
 from domainkit.ddd.messages import Command
 from domainkit.ddd.messages import Query as QueryMessage
 from domainkit.ddd.query import resolve
@@ -141,6 +142,7 @@ class ResourceRouter(APIRouter):
         scope: Scope | None = None,
         policy: FieldPolicy | None = None,
         require_if_match: bool = False,
+        last_modified: str | None = None,
         links: bool = False,
         crud: bool = False,
         create: type[BaseModel] | None = None,
@@ -225,6 +227,11 @@ class ResourceRouter(APIRouter):
         self.scope = scope
         self.policy = policy
         self.require_if_match = require_if_match
+        if last_modified is not None and isinstance(model, type):
+            _check_last_modified(model, last_modified)
+        self.last_modified = last_modified
+        """The datetime field a read's ``Last-Modified`` comes from, if any:
+        ``If-Modified-Since`` then answers ``304`` for an unchanged one."""
         self.links = links
         self.pagination = pagination or Pagination()
         self.filters = filters
@@ -607,4 +614,18 @@ def _check_filters(filters: object, policy: FieldPolicy) -> None:
         raise TypeError(
             f"{_name_of(filters)} filters, orders, or searches fields some callers "
             f"may not see: {', '.join(hidden)}."
+        )
+
+
+def _check_last_modified(model: type, name: str) -> None:
+    """Refuse a ``last_modified`` that names no datetime field of ``model``.
+
+    Raises:
+        TypeError: It does not.
+    """
+    info = fields_of(model).get(name)
+    kind = base_type(info.kind) if info is not None else None
+    if kind is None or not issubclass(kind, datetime):
+        raise TypeError(
+            f"last_modified names a datetime field of {model.__name__}, not {name!r}."
         )

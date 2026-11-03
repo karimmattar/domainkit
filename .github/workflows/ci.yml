@@ -1160,7 +1160,7 @@ jobs:
               domainkit.http.live_events.* domainkit.http.locale.*
               domainkit.http.metrics.* domainkit.http.openapi.*
               domainkit.http.ratelimit.* domainkit.http.routing.*
-              domainkit.http.shedding.* domainkit.http.sse.* domainkit.http.versioning.*
+              domainkit.http.shedding.* domainkit.http.compression.* domainkit.http.sse.* domainkit.http.versioning.*
               domainkit.http.access.*
           - name: http-2
             mutants: >-

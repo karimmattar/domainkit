@@ -22,6 +22,7 @@ from typing import Any
 __all__ = ["abstract_base_user_columns", "abstract_user_columns"]
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     Column,
@@ -295,6 +296,8 @@ pending_signups = Table(
     # Neither unique: a pending signup reserves no name and no address.
     Column("username", String(USERNAME_MAX_LENGTH), nullable=False),
     Column("email", String(EMAIL_MAX_LENGTH), nullable=False),
+    # The user model's other REQUIRED_FIELDS, as the client gave them.
+    Column("fields", JSON, nullable=True),
     # No password: whoever reads the mail chooses it, when confirming.
     Column("created_at", UTCDateTime, nullable=False),
     Column("expires_at", UTCDateTime, nullable=False),

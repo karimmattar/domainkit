@@ -12,9 +12,11 @@ from domainkit.ddd.events import (
     EventHandler,
     HandlerTimedOut,
     event_bus,
+    handles,
 )
 from domainkit.ddd.exceptions import (
     BusinessRuleViolation,
+    CheckFailed,
     ConcurrentUpdate,
     Conflict,
     DomainError,
@@ -39,6 +41,7 @@ from domainkit.ddd.fields import (
     Unique,
     UnknownField,
 )
+from domainkit.ddd.markers import URL, Email, IPAddress, IPAddressFormat, Slug
 from domainkit.ddd.messages import UNSET, Command, Query, Unset
 from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
@@ -70,9 +73,11 @@ from domainkit.ddd.usecases import UseCase, use_case
 
 __all__ = [
     "UNSET",
+    "URL",
     "AggregateRoot",
     "Avg",
     "BusinessRuleViolation",
+    "CheckFailed",
     "Command",
     "ConcurrentUpdate",
     "Conflict",
@@ -84,12 +89,15 @@ __all__ = [
     "DomainError",
     "DomainEvent",
     "DuplicateValue",
+    "Email",
     "Encrypted",
     "Entity",
     "EventBus",
     "EventHandler",
     "F",
     "HandlerTimedOut",
+    "IPAddress",
+    "IPAddressFormat",
     "InMemoryRepository",
     "Indexed",
     "IntegerChoices",
@@ -119,6 +127,7 @@ __all__ = [
     "RowLocks",
     "Selection",
     "Sensitive",
+    "Slug",
     "SoftDeletable",
     "Specification",
     "Sum",
@@ -131,6 +140,7 @@ __all__ = [
     "ValueObject",
     "event_bus",
     "fields_about",
+    "handles",
     "in_memory",
     "use_case",
 ]

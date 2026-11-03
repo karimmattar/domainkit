@@ -69,8 +69,14 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     Uuid,
+    and_,
+    column,
+    literal,
+    not_,
+    or_,
 )
 from sqlalchemy.engine import Dialect
+from sqlalchemy.sql.elements import ColumnClause, ColumnElement, conv
 from sqlalchemy.sql.schema import SchemaItem
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
@@ -87,10 +93,41 @@ from domainkit.ddd.fields import (
     MaxLength,
     Unique,
     fields_of,
+    primitive,
     wrapped_field,
 )
 from domainkit.ddd.personal import Personal
+from domainkit.ddd.query import (
+    And,
+    Condition,
+    Criteria,
+    Lookup,
+    Not,
+    Or,
+    declared_checks,
+)
 from domainkit.money import Currency, Money
+
+DECLARED_CHECK: Final = "declared_check"
+"""The ``info`` key that names the ``Meta.checks`` entry a check constraint keeps."""
+
+_CHECK_VALUES: Final = frozenset({bool, int, float, str})
+"""Values a check constraint writes alike on every database."""
+
+_CHECK_LOOKUPS: Final[
+    dict[Lookup, Callable[[ColumnClause[Any], list[Any]], ColumnElement[bool]]]
+] = {
+    Lookup.EXACT: lambda target, values: target == literal(values[0]),
+    Lookup.IN: lambda target, values: target.in_([literal(v) for v in values]),
+    Lookup.RANGE: lambda target, values: target.between(
+        literal(values[0]), literal(values[1])
+    ),
+    Lookup.GT: lambda target, values: target > literal(values[0]),
+    Lookup.GTE: lambda target, values: target >= literal(values[0]),
+    Lookup.LT: lambda target, values: target < literal(values[0]),
+    Lookup.LTE: lambda target, values: target <= literal(values[0]),
+}
+"""The lookups a check constraint takes, in SQL."""
 
 _column_types: dict[type, TypeEngine[Any] | Callable[[], TypeEngine[Any]]] = {}
 
@@ -246,7 +283,7 @@ def table_for(
             )
         )
     others = [item for item in extra if not isinstance(item, Column)]
-    declared = _declared_keys(cls, name, fields)
+    declared = [*_declared_keys(cls, name, fields), *_declared_checks(cls, name)]
     return Table(
         name,
         metadata,
@@ -288,6 +325,66 @@ def _declared_keys(
         columns = _key_columns(cls, fields, names)
         items.append(Index(_key_name("ix", table, names), *columns))
     return items
+
+
+def _declared_checks(cls: type, table: str) -> list[CheckConstraint]:
+    """``Meta.checks`` as check constraints, ``ck_<table>_<name>``.
+
+    Raises:
+        TypeError: A check cannot be written the same on every database.
+    """
+    return [
+        CheckConstraint(
+            _check_clause(cls, name, rule),
+            name=conv(_key_name("ck", table, (name,))),
+            info={DECLARED_CHECK: name},
+        )
+        for name, rule in declared_checks(cls).items()
+    ]
+
+
+def _check_clause(cls: type, name: str, rule: Criteria) -> ColumnElement[bool]:
+    """``rule`` in SQL, on the columns of the class's own fields.
+
+    A condition holds only on a present value, as in a query: a check on a
+    field that may be missing refuses the missing value unless it says
+    ``isnull()``.
+
+    Raises:
+        TypeError: A field is no column of its own (a child's, a money
+            part), or a lookup or value is not one every database writes
+            the same (text patterns, amounts, dates: check those in
+            ``clean()``).
+    """
+    if isinstance(rule, And):
+        return and_(*(_check_clause(cls, name, part) for part in rule.parts))
+    if isinstance(rule, Or):
+        return or_(*(_check_clause(cls, name, part) for part in rule.parts))
+    if isinstance(rule, Not):
+        return not_(_check_clause(cls, name, rule.part))
+    if not isinstance(rule, Condition) or "." in rule.field or rule.path[-1].encrypted:
+        raise TypeError(
+            f"{cls.__qualname__}.Meta.checks[{name!r}]: a check compares fields "
+            "stored in a column of their own; check anything else in clean()."
+        )
+    field = rule.path[-1]
+    target: ColumnClause[Any] = column(rule.field)
+    if rule.lookup is Lookup.ISNULL:
+        return target.is_(None) if rule.value else target.is_not(None)
+    if rule.lookup is Lookup.EXACT and rule.value is None:
+        return target.is_(None)
+    values = rule.value if rule.lookup in {Lookup.IN, Lookup.RANGE} else (rule.value,)
+    plain = [primitive(each) for each in values]  # type: ignore[attr-defined]
+    if rule.lookup not in _CHECK_LOOKUPS or not all(
+        type(each) in _CHECK_VALUES for each in plain
+    ):
+        raise TypeError(
+            f"{cls.__qualname__}.Meta.checks[{name!r}]: {rule.field} {rule.lookup} "
+            f"{rule.value!r} is not written the same on every database; check "
+            "it in clean()."
+        )
+    expression = _CHECK_LOOKUPS[rule.lookup](target, plain)
+    return and_(target.is_not(None), expression) if field.nullable else expression
 
 
 def _names(cls: type, attribute: str, entries: object) -> list[tuple[str, ...]]:

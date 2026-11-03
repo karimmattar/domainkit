@@ -40,6 +40,9 @@ if TYPE_CHECKING:
     from . import ResourceRouter
 
 IF_NONE_MATCH: Final = "The ETag you hold: 304 if it is current."
+IF_MODIFIED_SINCE: Final = (
+    "The Last-Modified you hold: 304 if it is current, unless If-None-Match is sent."
+)
 ETAG: Final = {
     "description": "The version of the aggregate answered: send it back as "
     "If-Match to change it, or If-None-Match to read it again.",
@@ -127,6 +130,7 @@ def _endpoint(
             provided={field: values[key] for key, field in provided},
             if_match=conditions.get("if_match"),
             if_none_match=conditions.get("if_none_match"),
+            if_modified_since=conditions.get("if_modified_since"),
             **{each: values[each] for each in optional},
         )
         if parent is not None:
@@ -191,6 +195,14 @@ def _headers(
     found: list[tuple[str, str, str]] = []
     if spec.reads:
         found.append(("if_none_match", "If-None-Match", IF_NONE_MATCH))
+    if spec.reads and spec.detail and router.last_modified is not None:
+        found.append(
+            (
+                "if_modified_since",
+                "If-Modified-Since",
+                IF_MODIFIED_SINCE,
+            )
+        )
     if spec.detail and spec.writes:
         found.append(
             (

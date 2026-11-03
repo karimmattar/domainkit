@@ -132,6 +132,21 @@ class InvalidField(BusinessRuleViolation):
         self.field = field
 
 
+class CheckFailed(BusinessRuleViolation):
+    """An aggregate breaks one of its ``Meta.checks`` at commit.
+
+    ``check`` names it; the API answers 422 ``check_violation``, as when
+    the database's own check constraint refuses the row.
+    """
+
+    code = "check_violation"
+
+    def __init__(self, message: str, *, check: str) -> None:
+        """Store the message and the check it is about."""
+        super().__init__(message)
+        self.check = check
+
+
 class PermissionDenied(DomainError):
     """The actor may not perform the operation."""
 

@@ -1202,3 +1202,41 @@ def _past(name: F, value: object, descending: bool) -> Criteria:
     return (code < value.currency) | (
         (code == value.currency) & (amount < value.amount)
     )
+
+
+_CHECKS: Final[dict[type, dict[str, Criteria]]] = {}
+
+
+def declared_checks(model: type) -> dict[str, Criteria]:
+    """The aggregate's ``Meta.checks`` (Django's ``CheckConstraint``), bound.
+
+    ``Meta.checks`` maps a name to criteria on the aggregate's own fields::
+
+        class Meta:
+            checks = {"stock_not_negative": F("stock") >= 0}
+
+    Each holds for every aggregate a unit of work commits, and ``table_for``
+    writes it as a check constraint, so rows written past the domain keep
+    it too. Kept once read.
+
+    Raises:
+        TypeError: It is not a dict of names to criteria, or a name is no
+            identifier.
+        UnknownField: A field is not one of the model's.
+        InvalidQuery: A lookup or value does not fit its field.
+    """
+    found = _CHECKS.get(model)
+    if found is not None:
+        return found
+    declared = getattr(getattr(model, "Meta", None), "checks", {})
+    if not isinstance(declared, dict) or not all(
+        isinstance(name, str) and name.isidentifier() and isinstance(rule, Criteria)
+        for name, rule in declared.items()
+    ):
+        raise TypeError(
+            f"{model.__qualname__}.Meta.checks maps names to criteria, as "
+            f"{{'stock_not_negative': F('stock') >= 0}}, not {declared!r}."
+        )
+    found = {name: rule.bind(model) for name, rule in declared.items()}
+    _CHECKS[model] = found
+    return found

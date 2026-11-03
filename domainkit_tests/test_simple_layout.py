@@ -10,7 +10,6 @@ import pytest
 
 from domainkit.apps import DomainConfig
 from domainkit.ddd import AggregateRoot, Range
-from domainkit.management.base import CommandError
 from domainkit.management.commands import startdomain
 from domainkit.management.generators import (
     EMPTY_AUTH,
@@ -66,14 +65,15 @@ def test_user_steps_explain_what_was_not_done(
     assert '"USER_MODEL": "domains.people.models.User"' in output
 
 
-def test_generators_say_how_to_grow_a_four_file_domain(tmp_path: Path) -> None:
-    """Addcommand and the others grow layered domains, and say so."""
+def test_generators_find_a_four_file_domain(tmp_path: Path) -> None:
+    """A domain with a ``domain.py`` is the four-file layout the generators grow."""
     domain = tmp_path / "src" / "domains" / "shop"
     domain.mkdir(parents=True)
     (domain / "domain.py").write_text("", encoding="utf-8")
 
-    with pytest.raises(CommandError, match="is a four-file domain"):
-        Domain.locate("shop", domain, tmp_path / "tests", tmp_path)
+    found = Domain.locate("shop", domain, tmp_path / "tests", tmp_path)
+
+    assert found.simple
 
 
 def test_an_integer_range_may_have_a_lower_bound_only() -> None:
