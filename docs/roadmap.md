@@ -144,3 +144,42 @@ Measured on the guide's shop, one aggregate with four commands:
 6. **A learning path in plain words** (done): the tutorial on the
    four-file layout, then [learning.md](learning.md): the order to read
    the guides in, a glossary, and the commands a day of work needs.
+
+## Next: the best at what it is for
+
+The aim is not to be the fastest of all Python frameworks (a bare ASGI
+app answers in 5 calls) but the fastest, safest, and easiest framework
+for services built around a domain, with every part replaceable. What
+already holds is not repeated here: the free-threaded job (3.14t), the
+security policy and its response times ([SECURITY.md](../SECURITY.md)),
+the [extension points](reference/extension-points.md), the
+[public API](versioning.md#what-is-public), the SBOM and its
+attestation, and suggestions for a mistyped command or domain. Each step
+below is one pushed commit with tests, as the core's were.
+
+| # | Area | Step | What changes | Status |
+| --- | --- | --- | --- | --- |
+| L1 | Learning | Mistakes that name the fix | A mistyped setting key (`CACHES.default.URl`) is refused with the key it is near (`URL`); a top-level setting close to one domainkit reads (`DEBG`) is a warning of `check`; a check's message links its page. | Planned |
+| L2 | Learning | A first route before the words | A page that serves one route and one test before aggregates, units of work, and use cases appear, played as written by `test_walkthroughs.py`. | Planned |
+| S1 | Security | Fuzzed input parsers | Property-based fuzz tests of what reads untrusted input (query filters and ordering, cursors, signed values, idempotency keys, conditional headers, multipart bodies): any input is answered or refused, never a 500; a scheduled run tries far more examples. | Planned |
+| S2 | Security | OpenSSF Scorecard | The Scorecard workflow on `main` and weekly, its results in code scanning, and its badge. | Planned |
+| E1 | Efficiency | Memory and startup budgets | The benchmark ladder records the memory a worker allocates to start and to answer its first request, and the time to start, with budgets CI holds as it holds calls. | Planned |
+| P1 | Speed | The posting rung | A ledger posting costs about 12,000 calls, four times a command's: profiled, and each cut that keeps its guarantees made, with the budget lowered. | Planned |
+| P2 | Speed | Routes resolved at startup | The largest remaining cost of a resource route is FastAPI resolving its parameters on each request (C4); a resource route's parameters are resolved by a plan made at startup, with the same validation and errors. | Planned |
+| X1 | Customizing | Packages that plug in | An installed package offers backends under the `domainkit.backends` entry point, so `BACKEND = "sqlite-queue"` names one; nothing is loaded that settings do not name. | Planned |
+| F1 | Follow-up | Generated text reads right | "An account", not "a account"; a new event goes with the other events. | Done |
+| F2 | Follow-up | The newest-dependencies job | An unclosed SQLite connection seen once on Python 3.15 with the newest dependencies: reproduced and fixed, or shown to be upstream's. | Planned |
+
+What code alone cannot give, and needs others:
+
+- **An audit from outside**: a firm's review of the threat model, auth,
+  signing, and the money paths ([the last internal audit](audit/0.9.0.md)
+  is the starting scope).
+- **A published comparison**: the same service on domainkit, Django,
+  Litestar, and FastAPI, on the same machine, with the scripts to rerun it.
+- **Newcomers timed**: how long people new to domainkit take to deploy a
+  first route, before and after L1 and L2.
+- **The whole suite on 3.14t**: it waits for the interpreter's fix for a
+  crash in mimalloc ([runtime.md](runtime.md)).
+
+Mutation testing stays off by decision; coverage stays at 98% or more.
