@@ -8,6 +8,7 @@ database's write lock, so changes run one at a time there.
 """
 
 from datetime import date
+from typing import Final
 
 from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +47,13 @@ class AccountRepository(SqlAlchemyRepository[Account, AccountId]):
     def not_found(self, id_: AccountId) -> NotFound:
         """The error for a missing account."""
         return AccountNotFound("No account has that id.")
+
+
+CLOSED_THROUGH: Final = select(func.max(periods.c.ends_on)).where(
+    periods.c.status == PeriodStatus.CLOSED
+)
+"""The last day of the latest closed period, made once: a statement made once
+keeps its cache key, which SQLAlchemy walks a new one for (PERF-33)."""
 
 
 class EntryRepository(SqlAlchemyRepository[Entry, EntryId]):
@@ -118,11 +126,7 @@ class PeriodRepository(SqlAlchemyRepository[Period, PeriodId]):
 
     async def closed_through(self) -> date | None:
         """The last day of the latest closed period: the books are closed up to it."""
-        found: date | None = await self.session.scalar(
-            select(func.max(periods.c.ends_on)).where(
-                periods.c.status == PeriodStatus.CLOSED
-            )
-        )
+        found: date | None = await self.session.scalar(CLOSED_THROUGH)
         return found
 
     async def open_before(self, day: date) -> bool:
