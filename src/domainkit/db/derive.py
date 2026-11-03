@@ -26,6 +26,7 @@ Hint                           Column
 ``date``, ``time``             ``Date``, ``Time``
 ``UUID``                       ``Uuid``
 ``Currency``                   ``CurrencyCode``: the code
+``Point``                      ``PointType``: PostGIS geography, or JSON
 ``Money``                      ``MoneyColumns``: ``<name>`` and ``<name>_currency``
 an ``Enum``                    ``EnumValue``: its values, as text or integers
 a single-field value object    ``ValueObjectType`` around its field's column
@@ -84,6 +85,7 @@ from domainkit.db.encrypted import EncryptedColumns
 from domainkit.db.money import CHECK, PRECISION, SCALE, MoneyColumns, money_check
 from domainkit.db.orm import VERSION
 from domainkit.db.orm import metadata as default_metadata
+from domainkit.db.places import PointType
 from domainkit.db.types import CurrencyCode, ExactDecimal, UTCDateTime
 from domainkit.ddd.fields import (
     Digits,
@@ -97,6 +99,7 @@ from domainkit.ddd.fields import (
     wrapped_field,
 )
 from domainkit.ddd.personal import Personal
+from domainkit.ddd.places import Point
 from domainkit.ddd.query import (
     And,
     Condition,
@@ -562,6 +565,7 @@ _SIMPLE: Final[dict[type, Callable[[], TypeEngine[Any]]]] = {
     time: Time,
     UUID: Uuid,
     Currency: CurrencyCode,
+    Point: PointType,
 }
 
 

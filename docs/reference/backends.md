@@ -126,6 +126,7 @@ Each `STORAGES` entry:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `UPLOAD_SCANNER` | `None` | The virus scanner `save_upload` streams every upload through ([uploads.md](../uploads.md#virus-scanning)): `BACKEND`, a `domainkit.storage.scanning.Scanner` class (`ClamAVScanner` by default), and `OPTIONS`, its keyword arguments (`host`, `port` 3310, `timeout` 30 seconds). None: uploads are not scanned. |
+| `SEARCH` | `None` | The search engine `domainkit.search.search_backend()` returns ([search.md](../search.md#search-engines)): `BACKEND`, a `SearchBackend` class (`MemorySearchBackend` by default; `domainkit.search.meilisearch.MeilisearchBackend`, `domainkit.search.opensearch.OpenSearchBackend`), and `OPTIONS`, its keyword arguments. None: no search engine. |
 | `TENANCY` | `None` | Multi-tenancy ([tenancy.md](../tenancy.md)): how a request names its tenant (`SUBDOMAIN_OF`, `HEADER`, `RESOLVER`), who may act in it (`MEMBERSHIP`), whether one must be named (`REQUIRED`, `EXEMPT_PATHS`), and the databases that keep a schema per tenant (`SCHEMA_DATABASES`, `SCHEMA`). None: one tenant, nothing scoped. |
 
 ## Brokers

@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import Final
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import delete
 
@@ -91,10 +91,22 @@ gadget_values = st.builds(
     st.one_of(st.none(), TEXT),
     st.booleans(),
 )
+ON_POSTGRESQL = False
+"""PostgreSQL's ``search`` matches whole words, not pieces: not compared there."""
+
+
+def comparable(criteria: Criteria | None) -> bool:
+    """Whether both repositories mean the same by ``criteria`` here."""
+    return not (ON_POSTGRESQL and "Lookup.SEARCH" in repr(criteria))
+
+
+# ``search`` takes one word or more; it gets leaves of its own.
+WORDED = sorted(TEXT_LOOKUPS - {"search"})
 leaves = st.one_of(
-    st.builds(F("name").lookup, st.sampled_from(sorted(TEXT_LOOKUPS)), TEXT),
+    st.builds(F("name").lookup, st.sampled_from(WORDED), TEXT),
+    st.builds(F("name").search, TEXT.filter(str.split)),
     st.builds(F("name").__eq__, TEXT),
-    st.builds(F("label").lookup, st.sampled_from(sorted(TEXT_LOOKUPS)), TEXT),
+    st.builds(F("label").lookup, st.sampled_from(WORDED), TEXT),
     st.builds(F("price").lookup, COMPARISONS, QUERY_PRICES),
     st.builds(F("price").range, QUERY_PRICES, QUERY_PRICES),
     st.builds(F("price").in_, st.lists(QUERY_PRICES, max_size=3)),
@@ -133,6 +145,8 @@ def loop(database_url: str) -> Iterator[asyncio.Runner]:
 
     Engines belong to their loop, so every example shares this one's.
     """
+    global ON_POSTGRESQL
+    ON_POSTGRESQL = database_url.startswith("postgresql")
     with (
         override_settings(DATABASES={"default": {"URL": database_url}}),
         asyncio.Runner() as runner,
@@ -180,6 +194,7 @@ def test_queries_select_alike(
     include_deleted: bool,
 ) -> None:
     """Same rows, same order, same count; and each row meets the criteria in Python."""
+    assume(comparable(criteria))
     query = Selection(criteria, ordering=ordering, include_deleted=include_deleted)
     found = loop.run(select_alike(items, query))
     live = [each for each in items if include_deleted or not each.is_deleted]
@@ -217,6 +232,7 @@ def test_pages_follow_alike(
     limit: int,
 ) -> None:
     """Keyset pages from either repository match, and cover everything once."""
+    assume(comparable(criteria))
     loop.run(page_alike(items, Selection(criteria, ordering=ordering), limit))
 
 

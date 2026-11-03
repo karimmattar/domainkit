@@ -91,6 +91,7 @@ nav:
       - queries.md
       - databases.md
       - tenancy.md
+      - search.md
       - money.md
       - Users and permissions:
           - auth.md

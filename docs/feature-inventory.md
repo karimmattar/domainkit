@@ -152,8 +152,8 @@ framework, for the reason given.
 | Health and readiness probes | Built in | Yes | |
 | Outgoing HTTP with retries, timeouts, circuit breaker | `domainkit.http.client`, `contrib.webhooks` | Yes | |
 | Multi-tenancy: a tenant per request, rows scoped to it, a database or schema per tenant | `domainkit.tenancy`: `TenantMiddleware`, `TenantOwned` rows, the tenant's shard or schema, caches, limits, logs, tasks ([tenancy.md](tenancy.md)) | Yes | A7 |
-| Full-text search: PostgreSQL search, OpenSearch, Meilisearch | None | No | A8 |
-| Geospatial (PostGIS) | None | No | A8 |
+| Full-text search: PostgreSQL search, OpenSearch, Meilisearch | `F(...).search(words)` (PostgreSQL full-text search); `domainkit.search`: Meilisearch, OpenSearch ([search.md](search.md)) | Yes | A8 |
+| Geospatial (PostGIS) | `Point` fields: PostGIS `geography` on PostgreSQL; `F(...).within(point, meters)` ([search.md](search.md#places)) | Yes | A8 |
 | Captcha (Turnstile, reCAPTCHA) on sign-up and login | `AUTH.CAPTCHA`: Turnstile, reCAPTCHA, hCaptcha on login, signup, password reset, failing closed | Yes | A2 |
 | Impersonation by support staff, audited | `POST /admin/auth/users/{id}/impersonate` with a reason, `AUTH.IMPERSONATION_TTL`; audited, no step-up | Yes | A2 |
 | Feature flags, webhooks, approvals, audit trail, privacy (erasure, export), limits, idempotency | `contrib.flags`, `webhooks`, `approvals`, `audit`, `privacy`, `limits`, `idempotency` | Yes | |

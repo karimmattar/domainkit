@@ -422,3 +422,40 @@ The tenant being served, and the aggregates that belong to one.
 - `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
 - `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
 - `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).
+
+## `domainkit.ddd.places`
+
+Places on the Earth: a point, and how far two are apart.
+
+- `EARTH_RADIUS`: The Earth's mean radius, in meters (IUGG): what distances are worked out on.
+- `Point`: A place: latitude and longitude in degrees (WGS 84, as GPS gives them).
+
+## `domainkit.db.places`
+
+`Point` columns: PostGIS's `geography` on PostgreSQL, JSON elsewhere.
+
+- `Geography`: PostGIS's `geography(Point, 4326)`.
+- `PointType`: A `Point`: geography on PostgreSQL, `[lon, lat]` JSON text elsewhere.
+- `within`: Whether `column` is within `meters` of `point`, in `dialect`'s SQL.
+
+## `domainkit.search`
+
+Search engines: documents indexed beside the database, found by words.
+
+- `MemorySearchBackend`: Indexes in this process, for tests: every word of the query in a document.
+- `SearchBackend`: An index of documents per name, each with an `id`, found by words.
+- `SearchError`: The search engine refused, or could not be reached; never names a document.
+- `SearchResult`: The documents a search found: their ids, best first, and about how many match.
+- `search_backend`: A new instance of `SEARCH.BACKEND`, with `SEARCH.OPTIONS`.
+
+## `domainkit.search.meilisearch`
+
+Meilisearch as a `SearchBackend`.
+
+- `MeilisearchBackend`: Indexes in a Meilisearch server (see the module).
+
+## `domainkit.search.opensearch`
+
+OpenSearch (or Elasticsearch) as a `SearchBackend`.
+
+- `OpenSearchBackend`: Indexes in an OpenSearch cluster (see the module).

@@ -43,6 +43,8 @@ return is tracked, so the events it records are published on commit.
 | `.startswith(t)`, `.istartswith(t)` | `startswith`, `istartswith` | starts with it |
 | `.endswith(t)`, `.iendswith(t)` | `endswith`, `iendswith` | ends with it |
 | `.regex(p)`, `.iregex(p)` | `regex`, `iregex` | matches the regular expression (in code only) |
+| `.search("late fee")` | `search` | holds every word: full-text search on PostgreSQL ([search.md](search.md)) |
+| `F("location").within(point, 2_000)` | `within` | a `Point` at most that many meters away ([search.md](search.md#places)) |
 | `.year(2026)`, `.month(2026, 3)`, `.on(day)` | `__year`, `__month`, `__date` | in that period, UTC; a range an index answers |
 | `F("x").lookup("gte", v)` | any | by name, as `x__gte` |
 

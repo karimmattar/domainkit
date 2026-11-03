@@ -596,6 +596,7 @@ class BrokerConfig(BaseModel):
 
 
 MEMORY_STORAGE: Final = "domainkit.storage.MemoryStorage"
+MEMORY_SEARCH: Final = "domainkit.search.MemorySearchBackend"
 
 
 class StorageConfig(BaseModel):
@@ -607,6 +608,18 @@ class StorageConfig(BaseModel):
     """Dotted path to a ``domainkit.storage.Storage`` class."""
     OPTIONS: dict[str, Any] = Field(default_factory=dict)
     """Keyword arguments of the class, such as ``{"location": "/srv/files"}``."""
+
+
+class SearchConfig(BaseModel):
+    """``SEARCH``: the search engine documents are indexed in (``domainkit.search``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    BACKEND: str = MEMORY_SEARCH
+    """Dotted path to a ``SearchBackend``: Meilisearch's, OpenSearch's, or one of
+    the project's."""
+    OPTIONS: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments of the backend: its ``url``, and its key or login."""
 
 
 class TenancyConfig(BaseModel):
@@ -875,6 +888,8 @@ class Settings(BaseModel):
     """File storages by alias (``domainkit.storage``); none unless set."""
     UPLOAD_SCANNER: ScannerConfig | None = None
     """The virus scanner ``save_upload`` streams uploads through; none unless set."""
+    SEARCH: SearchConfig | None = None
+    """The search engine ``search_backend()`` makes; none unless set."""
     TENANCY: TenancyConfig | None = None
     """Multi-tenancy (``domainkit.tenancy``); None: one tenant, no scoping."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
@@ -1486,6 +1501,12 @@ class Settings(BaseModel):
                 f"memory storages keep files in one process, until it ends; use "
                 f"FileSystemStorage or a storage of your own {where} for "
                 f"STORAGES {aliases}",
+            )
+        if self.SEARCH is not None and self.SEARCH.BACKEND == MEMORY_SEARCH:
+            yield CheckMessage(
+                "deploy.E007",
+                f"a memory search index lives in one process; use Meilisearch or "
+                f"OpenSearch {where} for SEARCH",
             )
 
     def _secret_key_errors(self, where: str) -> Iterator[CheckMessage]:

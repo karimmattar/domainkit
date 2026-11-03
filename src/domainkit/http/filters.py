@@ -106,6 +106,7 @@ _DESCRIPTIONS: Final = {
     Lookup.LTE: "is at most this",
     Lookup.IN: "is one of these",
     Lookup.ISNULL: "is missing (true) or present (false)",
+    Lookup.SEARCH: "has every one of these words",
 }
 
 
@@ -140,6 +141,10 @@ class Filter:
         )
         if Lookup.RANGE in self.lookups:
             raise ValueError("Offer gte and lte instead of range.")
+        if Lookup.WITHIN in self.lookups:
+            raise ValueError(
+                "within takes a point and a distance: filter by it in the view."
+            )
         if PATTERN_LOOKUPS & set(self.lookups):
             raise ValueError(
                 "regex and iregex are not offered over HTTP: a caller's pattern "

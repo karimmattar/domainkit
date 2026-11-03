@@ -11,6 +11,14 @@ and a status.
 
 ### Added
 
+- Search and places (A8): `F("body").search("late fee")` finds rows
+  holding every word (PostgreSQL full-text search; word pieces on SQLite
+  and in memory). `domainkit.search` keeps documents in a search engine
+  (`SEARCH`: Meilisearch, OpenSearch, or `MemorySearchBackend` for tests).
+  `domainkit.ddd.places.Point` is a value object an aggregate can hold:
+  PostGIS's `geography(Point, 4326)` on PostgreSQL, JSON elsewhere, and
+  `F("location").within(point, meters)` finds those near a place
+  (`ST_DWithin`). A `FilterSet` offers `search`, not `within`.
 - Multi-tenancy (A7): `TENANCY` and `domainkit.tenancy.TenantMiddleware`
   give each request its tenant (subdomain, header, or a resolver, with a
   membership check). `TenantOwned` aggregates are scoped by their

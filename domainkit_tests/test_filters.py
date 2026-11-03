@@ -52,7 +52,7 @@ def gadget_filters() -> type[FilterSet]:
         stock = Filter("exact", "isnull", "gt")
         color = Filter("exact", "in")
         size = Filter("lt")
-        label = Filter()
+        label = Filter("exact", "search")
         made_at = Filter("gt")
         active = Filter()
         sku = Filter("exact", field="parts.sku")
@@ -137,6 +137,7 @@ def refusal(client: TestClient, **params: Any) -> tuple[str, str]:  # noqa: ANN4
         ({"color__in": ["red", "green"]}, ["gamma", "alpha"]),
         ({"size__lt": 10}, ["beta", "alpha"]),
         ({"label": "GAMMA"}, ["gamma"]),
+        ({"label__search": "gam"}, ["gamma"]),
         ({"made_at__gt": MADE.isoformat()}, ["beta", "gamma"]),
         ({"active": "false"}, ["beta"]),
         ({"sku": "S1"}, ["alpha"]),
@@ -381,6 +382,7 @@ def test_filter_sets_are_checked_when_declared() -> None:
     """Lookups must fit their fields; orderings and search fields must exist."""
     declarations: list[tuple[dict[str, Any], str]] = [
         ({"price": Filter("icontains")}, "price: icontains needs a text field"),
+        ({"price": Filter("search")}, "price: search needs a text field"),
         ({"nope": Filter()}, "Gadget has no field 'nope'"),
         ({"ordering_fields": ("parts",)}, "holds child entities"),
         ({"default_ordering": ("-nope",)}, "has no field 'nope'"),
@@ -395,6 +397,8 @@ def test_filter_sets_are_checked_when_declared() -> None:
             type("Broken", (FilterSet,), {"model": Gadget, **body})
     with pytest.raises(ValueError, match=r"^Offer gte and lte instead of range\.$"):
         Filter("range")
+    with pytest.raises(ValueError, match="filter by it in the view"):
+        Filter("within")
     with pytest.raises(ValueError, match="is not a valid Lookup"):
         Filter("soundex")
     with pytest.raises(ValueError, match="not offered over HTTP"):

@@ -1184,13 +1184,14 @@ jobs:
               domainkit.db.fixtures.* domainkit.db.migrations.* domainkit.db.orm.*
               domainkit.db.query.* domainkit.db.repository.* domainkit.db.uow.*
               domainkit.ledger.* domainkit.db.money.*
-              domainkit.db.models.*
+              domainkit.db.models.* domainkit.db.places.*
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*
               domainkit.db.partitioning.* domainkit.db.routing.*
               domainkit.db.snapshots.* domainkit.db.squashing.* domainkit.db.types.*
               domainkit.storage.* domainkit.cloud.* domainkit.money.*
+              domainkit.search.*
           - name: messaging
             mutants: >-
               domainkit.contrib.messaging.* domainkit.broker.*

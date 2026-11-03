@@ -37,7 +37,9 @@ from sqlalchemy.sql.schema import Column
 from domainkit.db.encrypted import EncryptedType
 from domainkit.db.encrypted import lookup as lookup_
 from domainkit.db.money import money_columns
+from domainkit.db.places import within
 from domainkit.ddd.fields import MONEY_PARTS, InvalidQuery, UnknownField
+from domainkit.ddd.places import Point
 from domainkit.ddd.query import (
     CASE_FOLDED,
     ORDERING_LOOKUPS,
@@ -265,6 +267,11 @@ def _compare(
     if lookup in ORDERING_LOOKUPS:
         value = _bound_bools(value, column)
     match lookup:
+        case Lookup.SEARCH:
+            return _search(column, str(value), dialect)
+        case Lookup.WITHIN:
+            point, meters = cast("tuple[Point, float]", value)
+            return within(column, point, meters, dialect)
         case Lookup.EXACT:
             return column.is_(None) if value is None else column == value
         case Lookup.ISNULL:
@@ -324,6 +331,16 @@ def _text(
     )
     pattern: ColumnElement[str] = literal(_PATTERNS[lookup].format(escaped), String())
     return text.like(func.lower(pattern) if folded else pattern, escape=ESCAPE)
+
+
+def _search(column: Column[Any], words: str, dialect: str) -> ColumnElement[bool]:
+    """Every word: PostgreSQL's full-text search, else each word's characters."""
+    if dialect == "postgresql":
+        document = func.to_tsvector("simple", type_coerce(column, String()))
+        query = func.websearch_to_tsquery("simple", literal(words, String()))
+        return cast("ColumnElement[bool]", document.op("@@")(query))
+    parts = [_text(column, Lookup.ICONTAINS, word, dialect) for word in words.split()]
+    return and_(*parts)
 
 
 def contains_text(column: Column[Any], piece: str, dialect: str) -> ColumnElement[bool]:
