@@ -33,11 +33,30 @@ and one pushed commit.
 | C5 | Structure | One shape per kind of thing: every command of several actions is an `ActionCommand` (`manage.py <command> <action>`, `--operator` only on the actions that change data, DSGN-30); one home per name, the 1.0 aliases removed (DSGN-29); every refusal of a deployment has a check id (DSGN-32). | Done |
 | C6 | Speed | Budgets on the benchmark ladder for a read, a write, and a list page; per-request work that does not depend on the request moved to startup. A resource route reads its conditional headers itself, 255 calls fewer a command (3,371 to 3,116) and 235 a read; a list page has its rung and budget (`resource-list`, one statement); `settings` keeps a value once read and a unit of work finds its domain once, about 30 calls fewer a request (a command 3,083, a read 2,359, a list page 3,025); `stream` reads a large query in keyset batches, and `explain` gives the database's plan. | Done |
 | C7 | Django's conveniences | `get_or_create`, `update_or_create`, `get_many`; `aggregate` with `Count`, `Sum`, `Avg`, `Min`, `Max`; `stream` and `explain` (C6); `TextChoices` and `IntegerChoices` with labels; `Unique()`, `Indexed()`, `Meta.unique` and `Meta.indexes`; `regex` and `iregex`; `year`, `month`, and `on` periods; `F()` in `update_rows`; `makemessages` and `inspectdb`; many-to-many as child entities holding references ([feature-inventory.md](feature-inventory.md)). | Done |
-| C8 | Proof | The guide's shop rebuilt on the new core; its lines of code, before and after, recorded here. | |
+| C8 | Proof | The guide's shop rebuilt on the new core; its lines of code, before and after, recorded here ([the proof](#the-proof)). | Done |
 
 Steps C1 to C8 are the core's; the [feature inventory](feature-inventory.md)
 names each Django feature and platform need, what exists, and the step
 that closes its gap.
+
+### The proof
+
+The guide's shop, one `Product` aggregate with four commands (publish,
+reprice, restock, discontinue), made by the generators twice: as 1.0
+laid a domain out (packages for the domain, the application, the
+infrastructure, and the API) and as a four-file domain. Both pass their
+own tests; lines of code count neither blank lines, comments, nor
+docstrings. `domainkit_tests/test_proof.py` makes and measures both, and
+fails if these figures drift:
+
+| Layout | Files | Lines of code | Lines a command adds |
+| --- | --- | --- | --- |
+| layered | 10 | 371 | 25 |
+| four-file | 4 | 131 | 13 |
+
+The four-file shop is about a third the size: a command is one method,
+one `@use_case` function, and one route line, with no command class,
+service, schema, repository port, or mapper to write.
 
 After C7, the core closed the inventory's last open rows of its own: the
 `Email`, `URL`, `Slug`, and `IPAddress` field types; `Meta.ordering` and
@@ -48,7 +67,7 @@ projections.
 
 Each adapter is a port in the core (the shape every provider fills) and
 its providers behind settings, with an in-memory one for tests, built
-after the core steps above:
+after the core steps above. All eight are done (#102):
 
 | # | Adapter | Providers |
 | --- | --- | --- |
@@ -102,10 +121,9 @@ Measured on the guide's shop, one aggregate with four commands:
 1. **The tutorial on the four-file layout.** `addcommand`, `addquery`,
    and `addevent` grow four-file domains (done); the tutorial still
    builds a layered one.
-2. **Field rules that hold everywhere.** Today `MinLength`, `Pattern`, and
-   `Range` are checked at the API; a value object checks itself everywhere.
-   Let an aggregate check its markers when it is made and changed, so a
-   script or a task meets the same limits, with the error as a 422.
+2. **Field rules that hold everywhere** (done, C3). An aggregate checks
+   its markers when it is made and changed, so a script or a task meets
+   the same limits as the API, with the error as a 422.
 3. **Custom user fields end to end** (done). Signup takes the user
    model's `REQUIRED_FIELDS` under `fields`, and a field's markers hold
    at signup, in the admin API, and in scripts, so a phone number is one
