@@ -11,6 +11,9 @@ and a status.
 
 ### Added
 
+- The tutorial starts with part 0: a project, one public route, a request,
+  and its test, before any word of domain-driven design; part 1 starts
+  from it with the bank's accounts.
 - Mistakes name the fix: a settings key no model declares names the
   one it is near (`CACHES.default.URl: Extra inputs are not permitted
   (did you mean URL?)`), in a project's settings, an override, and a

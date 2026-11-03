@@ -70,6 +70,7 @@ nav:
   - Getting started:
       - tutorial.md
       - learning.md
+      - tutorial/0-first-route.md
       - tutorial/1-first-resource.md
       - tutorial/2-rules.md
       - tutorial/3-permissions.md

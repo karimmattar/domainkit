@@ -30,6 +30,7 @@ ROOT = Path(__file__).parents[1]
 DRIVER = Path(__file__).with_name("walkthrough_driver.py")
 TUTORIAL = ROOT / "docs" / "tutorial"
 PARTS = (
+    "0-first-route.md",
     "1-first-resource.md",
     "2-rules.md",
     "3-permissions.md",
@@ -353,7 +354,7 @@ def reader(tmp_path_factory: pytest.TempPathFactory) -> Tutorial:
 @pytest.fixture
 def tutorial(reader: Tutorial, request: pytest.FixtureRequest) -> Tutorial:
     """The reader, walked through the part the test is about (``test_part_N_``)."""
-    reader.through(PARTS[int(request.node.name.split("_")[2]) - 1])
+    reader.through(PARTS[int(request.node.name.split("_")[2])])
     return reader
 
 
@@ -366,9 +367,26 @@ def body(answer: dict[str, Any]) -> Any:  # noqa: ANN401 - JSON.
 
 
 @WALKED
+def test_part_0_serves_a_first_route_and_tests_it(tutorial: Tutorial) -> None:
+    """A project, one public route, a request, and the test that passes."""
+    [rates] = tutorial.through(PARTS[0])
+
+    assert body(rates) == {"savings": "2.5", "checking": "0"}
+    page = (TUTORIAL / PARTS[0]).read_text(encoding="utf-8")
+    assert '`{"savings":"2.5","checking":"0"}`' in page
+    # The page's pytest ran its test with the project's own, and they passed.
+    assert "test_anyone_may_read_the_rates" in (
+        tutorial.shell.cwd / "tests" / "test_rates.py"
+    ).read_text(encoding="utf-8")
+    assert " passed" in tutorial.shell.printed["pytest"]
+    for word in ("aggregate", "unit of work", "use case", "repository"):
+        assert word not in page.lower()
+
+
+@WALKED
 def test_part_1_serves_a_first_resource(tutorial: Tutorial) -> None:
     """Install to a created and listed account, behind a login."""
-    anonymous, login, created, kept, blank = tutorial.through(PARTS[0])
+    anonymous, login, created, kept, blank = tutorial.through(PARTS[1])
 
     assert body(anonymous)["code"] == "not_authenticated"
     assert login["output"].startswith("dkt_")
@@ -382,7 +400,7 @@ def test_part_1_serves_a_first_resource(tutorial: Tutorial) -> None:
 @WALKED
 def test_part_2_holds_the_rules_written_by_hand(tutorial: Tutorial) -> None:
     """A deposit adds to the balance; the aggregate and the API refuse the rest."""
-    answers = tutorial.through(PARTS[1])
+    answers = tutorial.through(PARTS[2])
     deposited, negative, too_precise, euros, closed, archived, late = answers
 
     assert body(deposited)["balance"] == {"amount": "100.00", "currency": "USD"}
@@ -399,7 +417,7 @@ def test_part_2_holds_the_rules_written_by_hand(tutorial: Tutorial) -> None:
 @WALKED
 def test_part_3_grants_a_clerk_only_what_they_need(tutorial: Tutorial) -> None:
     """403 without the permission, reads with it, and still no deposits."""
-    answers = tutorial.through(PARTS[2])
+    answers = tutorial.through(PARTS[3])
     made, login, refused, granted, listed, deposit = answers
 
     assert made["status"] == 201
@@ -418,7 +436,7 @@ def test_part_3_grants_a_clerk_only_what_they_need(tutorial: Tutorial) -> None:
 @WALKED
 def test_part_4_runs_a_durable_handler_in_the_worker(tutorial: Tutorial) -> None:
     """The deposit's reaction waits in the outbox until the worker runs it."""
-    [deposited] = tutorial.through(PARTS[3])
+    [deposited] = tutorial.through(PARTS[4])
     printed = tutorial.shell.printed
 
     assert body(deposited)["balance"] == {"amount": "125.00", "currency": "USD"}
@@ -434,13 +452,14 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
     tutorial: Tutorial,
 ) -> None:
     """The project's tests pass with the new ones; production settings check out."""
-    assert tutorial.through(PARTS[4]) == []
+    assert tutorial.through(PARTS[5]) == []
     tests = tutorial.shell.cwd / "tests" / "domains" / "accounts"
     domain_tests = (tests / "test_domain.py").read_text()
     assert "def test_deposits_must_be_positive" in domain_tests
     printed = tutorial.shell.printed["pytest"]
-    # Twice: after part 2, and with part 5's five tests (one of them twice).
-    first, second = re.findall(r"(\d+) passed", printed)
+    # Three times: in part 0, after part 2, and with part 5's five tests
+    # (one of them twice).
+    _, first, second = re.findall(r"(\d+) passed", printed)
     assert int(second) == int(first) + 6
     [check] = [
         output

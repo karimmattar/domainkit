@@ -160,7 +160,7 @@ below is one pushed commit with tests, as the core's were.
 | # | Area | Step | What changes | Status |
 | --- | --- | --- | --- | --- |
 | L1 | Learning | Mistakes that name the fix | A mistyped settings key (`CACHES.default.URl`), filter (`?nmae=`), or query field is refused with the name it is near (`did you mean URL?`), as an unknown top-level setting, command, or domain already was. | Done |
-| L2 | Learning | A first route before the words | A page that serves one route and one test before aggregates, units of work, and use cases appear, played as written by `test_walkthroughs.py`. | Planned |
+| L2 | Learning | A first route before the words | [Part 0](tutorial/0-first-route.md) of the tutorial serves one public route and its test before aggregates, units of work, and use cases appear; `test_walkthroughs.py` plays it as written, and fails if it uses those words. | Done |
 | S1 | Security | Fuzzed input parsers | Property-based fuzz tests of what reads untrusted input (query filters and ordering, cursors, signed values, idempotency keys, conditional headers, multipart bodies): any input is answered or refused, never a 500; a scheduled run tries far more examples. | Planned |
 | S2 | Security | OpenSSF Scorecard | The Scorecard workflow on `main` and weekly, its results in code scanning, and its badge. | Planned |
 | E1 | Efficiency | Memory and startup budgets | The benchmark ladder records the memory a worker allocates to start and to answer its first request, and the time to start, with budgets CI holds as it holds calls. | Planned |

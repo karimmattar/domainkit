@@ -12,7 +12,7 @@ versions.
 
 ## Where to start
 
-- **New to domainkit?** [Getting started](tutorial.md): five short parts,
+- **New to domainkit?** [Getting started](tutorial.md): six short parts,
   from `pip install` to a tested service with rules, permissions, and a
   worker.
   [Coming from Django](from-django.md) maps what you know to its name

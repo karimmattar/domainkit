@@ -5,8 +5,8 @@ and the commands a day of work needs.
 
 ## The path
 
-1. **[The tutorial](tutorial.md)**, five parts of a quarter of an hour
-   each: a project, a domain in four files, rules, permissions, an event
+1. **[The tutorial](tutorial.md)**, six parts of a quarter of an hour
+   each: a project and one route before any new word, a domain in four files, rules, permissions, an event
    handled by the worker, tests, and the checks production runs.
 2. **[Resources](resources.md)** and **[validation](validation.md)**: more
    aggregates, queries, filters, and the rules a field or an aggregate

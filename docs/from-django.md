@@ -10,7 +10,7 @@ together.
 
 | Django | domainkit |
 | --- | --- |
-| `django-admin startproject` | `domainkit init` ([tutorial](tutorial/1-first-resource.md)) |
+| `django-admin startproject` | `domainkit init` ([tutorial](tutorial/0-first-route.md)) |
 | `manage.py startapp` | `manage.py startdomain`: four files, `domain.py` (business), `controllers.py` (use cases), `models.py` (tables), `routes.py` (API); `--layered` for a package per layer ([generators](resources.md#generators)) |
 | `INSTALLED_APPS`, `AppConfig.ready()` | `INSTALLED_DOMAINS`, `DomainConfig.ready()` ([api/core.md](api/core.md#domainkitapps)) |
 | `settings.py` per environment, `django-environ` | `config/settings/{base,local,test,production}.py`, `domainkit.conf.Env` ([operations.md](operations.md#configuration)) |
