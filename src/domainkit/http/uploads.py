@@ -34,7 +34,6 @@ from starlette.datastructures import UploadFile
 from domainkit.http.errors import APIError
 from domainkit.storage.base import CHUNK_SIZE, FileTooLarge, Storage
 from domainkit.storage.handler import storages
-from domainkit.storage.scanning import Infected, configured_scanner
 
 __all__ = [
     "GIF",
@@ -204,6 +203,9 @@ async def save_upload(
             size += len(chunk)
             yield chunk
             chunk = await upload.read(CHUNK_SIZE)
+
+    # Loaded here: an application that takes no uploads never imports it.
+    from domainkit.storage.scanning import Infected, configured_scanner
 
     scanner = configured_scanner()
     stream = content() if scanner is None else scanner.scan(content())

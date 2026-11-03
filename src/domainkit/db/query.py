@@ -25,7 +25,7 @@ The compiled SQL keeps the semantics the in-memory repository has:
 """
 
 from collections.abc import Callable
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from sqlalchemy import ColumnElement, String, and_, func, literal, not_, or_
 from sqlalchemy import inspect as sa_inspect
@@ -37,9 +37,7 @@ from sqlalchemy.sql.schema import Column
 from domainkit.db.encrypted import EncryptedType
 from domainkit.db.encrypted import lookup as lookup_
 from domainkit.db.money import money_columns
-from domainkit.db.places import within
 from domainkit.ddd.fields import MONEY_PARTS, InvalidQuery, UnknownField
-from domainkit.ddd.places import Point
 from domainkit.ddd.query import (
     CASE_FOLDED,
     ORDERING_LOOKUPS,
@@ -52,6 +50,9 @@ from domainkit.ddd.query import (
     Ordering,
     Within,
 )
+
+if TYPE_CHECKING:
+    from domainkit.ddd.places import Point
 
 __all__ = [
     "register_compiler",
@@ -270,6 +271,8 @@ def _compare(
         case Lookup.SEARCH:
             return _search(column, str(value), dialect)
         case Lookup.WITHIN:
+            from domainkit.db.places import within
+
             point, meters = cast("tuple[Point, float]", value)
             return within(column, point, meters, dialect)
         case Lookup.EXACT:

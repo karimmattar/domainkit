@@ -47,6 +47,7 @@ are added. The result is an ordinary ``Table`` on ``metadata``, so
 """
 
 import hashlib
+import sys
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -85,7 +86,6 @@ from domainkit.db.encrypted import EncryptedColumns
 from domainkit.db.money import CHECK, PRECISION, SCALE, MoneyColumns, money_check
 from domainkit.db.orm import VERSION
 from domainkit.db.orm import metadata as default_metadata
-from domainkit.db.places import PointType
 from domainkit.db.types import CurrencyCode, ExactDecimal, UTCDateTime
 from domainkit.ddd.fields import (
     Digits,
@@ -99,7 +99,6 @@ from domainkit.ddd.fields import (
     wrapped_field,
 )
 from domainkit.ddd.personal import Personal
-from domainkit.ddd.places import Point
 from domainkit.ddd.query import (
     And,
     Condition,
@@ -552,6 +551,10 @@ def column_type(field: FieldInfo) -> TypeEngine[Any]:
         return ValueObjectType(kind, column_type(nested))
     if kind in _SIMPLE:
         return _SIMPLE[kind]()
+    if _is_point(kind):
+        from domainkit.db.places import PointType
+
+        return PointType()
     raise TypeError(
         f"{_where(field)}: no column type for {kind.__name__}; pass a Column "
         "for it, or call register_column_type."
@@ -565,8 +568,13 @@ _SIMPLE: Final[dict[type, Callable[[], TypeEngine[Any]]]] = {
     time: Time,
     UUID: Uuid,
     Currency: CurrencyCode,
-    Point: PointType,
 }
+
+
+def _is_point(kind: type) -> bool:
+    """Whether ``kind`` is ``Point``: places load only for projects that use them."""
+    places = sys.modules.get("domainkit.ddd.places")
+    return places is not None and kind is places.Point
 
 
 def _registered(kind: type) -> TypeEngine[Any] | None:
