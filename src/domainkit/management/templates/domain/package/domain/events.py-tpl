@@ -9,33 +9,33 @@ from domainkit.ddd import DomainEvent
 
 
 class {{ Aggregate }}Created(DomainEvent):
-    """A {{ aggregate }} was created."""
+    """{{ A_aggregate }} was created."""
 
     {{ aggregate }}_id: UUID
     name: str
 
 
 class {{ Aggregate }}Renamed(DomainEvent):
-    """A {{ aggregate }} got a new name."""
+    """{{ A_aggregate }} got a new name."""
 
     {{ aggregate }}_id: UUID
     name: str
 
 
 class {{ Aggregate }}Archived(DomainEvent):
-    """A {{ aggregate }} was archived and became read-only."""
+    """{{ A_aggregate }} was archived and became read-only."""
 
     {{ aggregate }}_id: UUID
 
 
 class {{ Aggregate }}NoteAdded(DomainEvent):
-    """A note was added to a {{ aggregate }}."""
+    """A note was added to {{ a_aggregate }}."""
 
     {{ aggregate }}_id: UUID
     note_id: UUID
 
 
 class {{ Aggregate }}Deleted(DomainEvent):
-    """A {{ aggregate }} was deleted, with its notes."""
+    """{{ A_aggregate }} was deleted, with its notes."""
 
     {{ aggregate }}_id: UUID

@@ -27,9 +27,11 @@ MEASURES: Final = (
     "checkouts",
     "pings",
     "modules",
+    "memory",
 )
-"""What is gated: exact counts per request, and modules per process; never time."""
-RELATIVE: Final = frozenset({"calls"})
+"""What is gated: exact counts per request, and modules and memory (MiB) per
+process; never time."""
+RELATIVE: Final = frozenset({"calls", "memory"})
 """Measures whose tolerance is a fraction of the budget; the others' is absolute."""
 DEFAULT_TOLERANCE: Final = {
     "calls": 0.02,
@@ -38,8 +40,9 @@ DEFAULT_TOLERANCE: Final = {
     "checkouts": 0.0,
     "pings": 0.0,
     "modules": 0.0,
+    "memory": 0.1,
 }
-"""Calls may grow by 2%; round trips and modules are exact."""
+"""Calls may grow by 2%, memory by 10%; round trips and modules are exact."""
 EPSILON: Final = 1e-9
 
 type Kind = Literal["over", "under", "unbudgeted", "unmeasured"]

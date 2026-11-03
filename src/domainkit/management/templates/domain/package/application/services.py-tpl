@@ -18,7 +18,7 @@ from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id, {{ Ag
 
 
 async def create_{{ aggregate }}(command: Create{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
-    """Create and store a {{ aggregate }}."""
+    """Create and store {{ a_aggregate }}."""
     {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name(command.name), OwnerId(command.owner_id))
     async with uow:
         await uow.{{ aggregates }}.add({{ aggregate }})
@@ -37,7 +37,7 @@ async def update_{{ aggregate }}(command: Update{{ Aggregate }}, uow: {{ Domain 
 
 
 async def archive_{{ aggregate }}(command: Archive{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
-    """Archive a {{ aggregate }}."""
+    """Archive {{ a_aggregate }}."""
     async with uow:
         {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id(command.{{ aggregate }}_id))
         {{ aggregate }}.archive()
@@ -46,7 +46,7 @@ async def archive_{{ aggregate }}(command: Archive{{ Aggregate }}, uow: {{ Domai
 
 
 async def add_{{ aggregate }}_note(command: Add{{ Aggregate }}Note, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
-    """Add a note to a {{ aggregate }}."""
+    """Add a note to {{ a_aggregate }}."""
     async with uow:
         {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id(command.{{ aggregate }}_id))
         {{ aggregate }}.add_note(command.text)
@@ -55,7 +55,7 @@ async def add_{{ aggregate }}_note(command: Add{{ Aggregate }}Note, uow: {{ Doma
 
 
 async def delete_{{ aggregate }}(command: Delete{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> None:
-    """Delete a {{ aggregate }}; its notes go with it."""
+    """Delete {{ a_aggregate }}; its notes go with it."""
     async with uow:
         {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id(command.{{ aggregate }}_id))
         {{ aggregate }}.delete()

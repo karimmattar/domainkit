@@ -25,11 +25,22 @@ The compiled SQL keeps the semantics the in-memory repository has:
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from sqlalchemy import ColumnElement, String, and_, func, literal, not_, or_
+from sqlalchemy import (
+    ColumnElement,
+    String,
+    and_,
+    bindparam,
+    func,
+    literal,
+    not_,
+    or_,
+)
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Mapper
+from sqlalchemy.sql import operators
 from sqlalchemy.sql.elements import UnaryExpression
 from sqlalchemy.sql.expression import type_coerce
 from sqlalchemy.sql.schema import Column
@@ -154,7 +165,12 @@ def column_of(mapper: Mapper[Any], name: str) -> Column[Any]:
         UnknownField: ``name`` is not a mapped column.
     """
     if name not in mapper.column_attrs:
-        raise UnknownField(f"{mapper.class_.__name__}.{name} is not a mapped column.")
+        from domainkit.utils.text import did_you_mean
+
+        raise UnknownField(
+            f"{mapper.class_.__name__}.{name} is not a mapped column"
+            f"{did_you_mean(name, mapper.column_attrs.keys())}."
+        )
     column = mapper.column_attrs[name].columns[0]
     if not isinstance(column, Column):
         raise InvalidQuery(f"{mapper.class_.__name__}.{name} is not a table column.")
@@ -233,8 +249,11 @@ def _through(
         UnknownField: ``name`` is not a mapped relationship.
     """
     if name not in mapper.relationships:
+        from domainkit.utils.text import did_you_mean
+
         raise UnknownField(
-            f"{mapper.class_.__name__}.{name} is not a mapped relationship."
+            f"{mapper.class_.__name__}.{name} is not a mapped relationship"
+            f"{did_you_mean(name, mapper.relationships.keys())}."
         )
     relationship = mapper.relationships[name]
     condition = inner(relationship.mapper)
@@ -361,3 +380,120 @@ def _sqlite_text(
         return func.substr(text, 1, func.length(piece)) == piece
     start = func.length(text) - func.length(piece) + 1
     return func.substr(text, start) == piece
+
+
+@dataclass(frozen=True, slots=True)
+class Slot:
+    """Where a value was in criteria made into a shape (``shape_of``).
+
+    ``kind`` is the value's type (an ``in``'s, its values' types): the
+    parameter's type comes from the column and it, as a literal's would.
+    """
+
+    index: int
+    kind: object
+
+
+_BOUND_LOOKUPS: Final = frozenset(
+    {Lookup.EXACT, Lookup.IN, Lookup.GT, Lookup.GTE, Lookup.LT, Lookup.LTE}
+)
+"""Lookups whose value a bound parameter carries just as the value itself."""
+
+
+def shape_of(
+    criteria: Criteria, mapper: Mapper[Any]
+) -> tuple[Criteria, list[object]] | None:
+    """``criteria`` with each value a ``Slot``, and the values in slot order.
+
+    Two queries of one shape compile to one statement: made once, with
+    bound parameters, it keeps its cache key, which SQLAlchemy would walk
+    a new statement for on each execution (PERF-33). Only what a bound
+    parameter means exactly as its value does takes a slot: ``exact``,
+    ``in``, and the comparisons, of a value that is not None nor a bool, on
+    a column of the model's own table that is not money nor encrypted,
+    joined by ``&``, ``|``, and ``~``; ``isnull`` keeps its value in the
+    shape. None for anything else, which compiles as it always did.
+    """
+    values: list[object] = []
+    shaped = _shaped(criteria, mapper, values)
+    return None if shaped is None else (shaped, values)
+
+
+def _shaped(
+    criteria: Criteria, mapper: Mapper[Any], values: list[object]
+) -> Criteria | None:
+    """``shape_of``'s work on one node; None if it takes no slot."""
+    if isinstance(criteria, (And, Or)):
+        parts = [_shaped(part, mapper, values) for part in criteria.parts]
+        if any(part is None for part in parts):
+            return None
+        return type(criteria)(tuple(cast("list[Criteria]", parts)))
+    if isinstance(criteria, Not):
+        part = _shaped(criteria.part, mapper, values)
+        return None if part is None else Not(part)
+    if not isinstance(criteria, Condition) or not _plain(criteria.field, mapper):
+        return None
+    value, lookup = criteria.value, criteria.lookup
+    if lookup is Lookup.ISNULL and isinstance(value, bool):
+        return criteria
+    if lookup not in _BOUND_LOOKUPS or value is None or isinstance(value, bool):
+        return None
+    kind: object = type(value)
+    if lookup is Lookup.IN:
+        if not isinstance(value, tuple) or not value or None in value:
+            return None
+        kind = frozenset(map(type, value))
+        value = list(value)
+    values.append(value)
+    slot = Slot(len(values) - 1, kind)
+    return Condition(criteria.field, lookup, slot, criteria.path)
+
+
+def _plain(field: str, mapper: Mapper[Any]) -> bool:
+    """Whether ``field`` is a column of the table that is not encrypted.
+
+    A money attribute is no mapped column: its parts are its two columns,
+    which bound criteria name with a dot.
+    """
+    if "." in field or field not in mapper.column_attrs:
+        return False
+    column = mapper.column_attrs[field].columns[0]
+    return isinstance(column, Column) and not isinstance(column.type, EncryptedType)
+
+
+_COMPARED: Final = {
+    Lookup.EXACT: operators.eq,
+    Lookup.IN: operators.in_op,
+    Lookup.GT: operators.gt,
+    Lookup.GTE: operators.ge,
+    Lookup.LT: operators.lt,
+    Lookup.LTE: operators.le,
+}
+"""The operator SQLAlchemy types a literal by, for each lookup a slot takes."""
+
+
+def with_parameters(
+    criteria: Criteria, mapper: Mapper[Any], values: list[object]
+) -> Criteria:
+    """A shape's criteria with each ``Slot`` a bound parameter, ``p<index>``.
+
+    Each parameter has the type SQLAlchemy gives the literal it stands for
+    (the column's ``coerce_compared_value`` of the operator and ``values``'
+    value), so it binds as that literal would.
+    """
+    if isinstance(criteria, (And, Or)):
+        parts = (with_parameters(part, mapper, values) for part in criteria.parts)
+        return type(criteria)(tuple(parts))
+    if isinstance(criteria, Not):
+        return Not(with_parameters(criteria.part, mapper, values))
+    assert isinstance(criteria, Condition)  # noqa: S101 - shape_of made only these.
+    slot, lookup = criteria.value, criteria.lookup
+    if not isinstance(slot, Slot):
+        return criteria
+    column = column_of(mapper, criteria.field)
+    value = values[slot.index]
+    type_ = column.type.coerce_compared_value(_COMPARED[lookup], value)
+    parameter: object = bindparam(
+        f"p{slot.index}", type_=type_, expanding=lookup is Lookup.IN
+    )
+    return Condition(criteria.field, lookup, parameter, criteria.path)

@@ -4,6 +4,8 @@
 
 # domainkit
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/karimmattar/domainkit/badge)](https://scorecard.dev/viewer/?uri=github.com/karimmattar/domainkit)
+
 A Django-style framework for domain-driven FastAPI services. It provides:
 
 - settings modules and installed domains
@@ -169,8 +171,8 @@ as child entities, an owner, events and a handler, filters); the tutorial
 starts from that one. A route the caller may not reach answers 404, as an unknown path does,
 so check the path first (`/docs` lists every route). `createsuperuser`
 without options asks for each value instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
-goes on from here, in five parts: rules written by hand, permissions,
-events run by the worker, and tests.
+goes on from here, in six parts from a first route: rules written by
+hand, permissions, events run by the worker, and tests.
 
 `domainkit init` creates a project that passes `check` and its tests as it is.
 Users, groups, and permissions are installed, requests are authenticated,

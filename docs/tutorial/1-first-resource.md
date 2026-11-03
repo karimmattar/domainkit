@@ -1,35 +1,10 @@
-# Part 1: install, and a first resource
+# Part 1: a first resource
 
-This part goes from `pip install` to an endpoint that creates and lists
-bank accounts, behind a login. It is the first of five
-([the path](../tutorial.md)); each part ends with a project that works.
-
-You need Python 3.13 or 3.14, and `curl`.
-
-## Install
-
-```bash
-python3.13 -m venv .venv && . .venv/bin/activate
-pip install "domainkit[postgres,redis,sqlite,testing]"
-```
-
-`sqlite` lets the project run without a database server; `postgres` is for
-production, `redis` counts its rate limits and login attempts there, and
-`testing` brings the pytest plugin.
-
-## Create a project
-
-```bash
-domainkit init bankAPI bank
-cd bank
-python manage.py check
-```
-
-`bankAPI` is the project's name, and `bank` its directory. The name also
-sets the prefix of its environment variables: `BANK_API_*`. On this
-machine the project reads `config.settings.local` (`.env` says so), which
-keeps its data in `db.sqlite3`. Users, groups, and permissions are
-installed already.
+This part adds bank accounts to the project of [part 0](0-first-route.md):
+an endpoint that creates and lists them, behind a login. It is the first
+of five that build the bank ([the path](../tutorial.md)); each part ends
+with a project that works. Work in the `bank` directory, with the same
+environment active.
 
 ## Add a domain
 
@@ -39,8 +14,9 @@ python manage.py makemigrations -m "create accounts"
 python manage.py migrate
 ```
 
-`src/domains/accounts/` is a bounded context in four files, one per
-layer. `check` keeps each file to its own imports:
+`src/domains/accounts/` is a domain (a bounded context): the accounts'
+part of the business, in four files, one per layer; [learning.md](../learning.md#words)
+gives each word these pages use. `check` keeps each file to its own imports:
 
 | File | Holds |
 | --- | --- |
@@ -68,7 +44,8 @@ BANK_API_SUPERUSER_PASSWORD="$PASSWORD" \
 unset PASSWORD    # so that runserver, started next, does not inherit it
 ```
 
-A superuser holds every permission. [Part 3](3-permissions.md) makes a user
+Users, groups, and permissions come installed. A superuser holds every
+permission. [Part 3](3-permissions.md) makes a user
 who holds fewer.
 
 ## Serve it
@@ -77,8 +54,8 @@ who holds fewer.
 python manage.py runserver
 ```
 
-Leave it running. Open a second shell, `cd` to `bank`, and activate the
-same environment. `http://127.0.0.1:8000/docs` lists every route.
+Leave it running, and call it from the second shell.
+`http://127.0.0.1:8000/docs` lists every route.
 
 ## Call it
 

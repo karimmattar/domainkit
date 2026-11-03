@@ -36,12 +36,12 @@ pings; modules are what the rung's process holds once it served.
 | `me` | Template stack, opaque token: `GET /me` | 775 (5,892) | 0/0/0/0 | 813 | 226 |
 | `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,812 (7,359) | 1/1/1/1 | 813 | 1,484 |
 | `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,139 (7,648) | 1/1/1/1 | 813 | 1,725 |
-| `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 3,025 | 1/1/1/1 | 817 | 2,167 |
-| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 2,359 | 1/1/1/1 | 817 | 1,890 |
-| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 3,083 | 1/1/1/1 | 817 | 2,500 |
+| `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 2,865 | 1/1/1/1 | 817 | 2,167 |
+| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 2,088 | 1/1/1/1 | 817 | 1,890 |
+| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 2,829 | 1/1/1/1 | 817 | 2,500 |
 | `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,615 (10,977) | 4/3/3/3 | 814 | 3,548 |
 | `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,265 | 1/1/1/1 | 882 | 1,777 |
-| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 11,949 | 14/1/1/1 | 882 | 10,884 |
+| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 8,148 | 14/1/1/1 | 889 | 7,216 |
 | `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,855 | 1/1/1/1 | 882 | 1,584 |
 | `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,673 | 1/1/1/1 | 882 | 1,348 |
 | `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 498 (4,401) | 0/0/0/0 | 813 | 188 |
@@ -91,12 +91,12 @@ What the rungs show:
   hooks run on every request (ADR 0065). domainkit turns its telemetry off,
   and its own rungs gained far more than that.
 - **A posting is the dearest request**: 14 statements in one
-  transaction, and nearly six times a plain write's calls. The ledger locks its
+  transaction, and about four times a plain write's calls (8,148; 11,973
+  before PERF-33 made the statements it runs on every posting once). The ledger locks its
   accounts and moves their balances (8 statements); `contrib.limits`
   takes its shared lock of the ledger's kinds as the posting commits
   (SEC-16b-2), reads the limits, locks the holder's row, sums its day's
-  usage, and records each subject's movement (6 more), and builds those statements
-  for each request. Without limits installed, a posting was 8 statements
+  usage, and records each subject's movement (6 more). Without limits installed, a posting was 8 statements
   and about 6,000 calls (PERF-26).
 - **An encrypted field costs a few microseconds a value** (5 to 6 µs to
   seal or open one, `timeit`): the `encrypted-read` rung costs 43 calls
@@ -166,6 +166,8 @@ statements = 0      # per request: exact
 transactions = 0
 checkouts = 0
 pings = 0
+modules = 2         # per process, either way
+memory = 0.1        # a fraction of the budget
 
 [rungs.me]
 calls = 5296
@@ -173,6 +175,8 @@ statements = 5
 transactions = 1
 checkouts = 1
 pings = 1
+modules = 813
+memory = 94         # MiB
 ```
 
 - **Over budget fails**, naming the rung, the measure, the budget and the
@@ -187,9 +191,18 @@ pings = 1
   the job. What is installed changes the count (`prometheus_client`,
   `opentelemetry`), so the budgets are written from a run with every
   extra, as `make install` and CI's `bench` job install them.
+- **Memory is gated per process**: the most memory the rung's process has
+  held (its peak resident set) once it has built the application and
+  served its warm-up, in MiB. It strays by a MiB or two from run to run,
+  so its tolerance is a tenth of the budget: a dependency that brings tens
+  of MiB, or a cache that grows with requests, fails the job. A bare ASGI
+  process holds 26 MiB, plain FastAPI 46, a domainkit application 90 to
+  94, and one with money's ledger, limits, and keys 110.
 - **Time is never gated** (ADR 0064): a shared runner's timings are too
   noisy. CI's job summary shows CPU time per rung, beside the base branch's
-  on pull requests.
+  on pull requests, and the time each rung's process took to start, from
+  its first line to the application's lifespan (about a second for a
+  domainkit application; modules, which are gated, are most of it).
 
 The `bench` job in `.github/workflows/ci.yml` runs the ladder on Python
 3.13.16 against a PostgreSQL service on every push and pull request, with

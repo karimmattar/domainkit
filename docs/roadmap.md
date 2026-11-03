@@ -144,3 +144,42 @@ Measured on the guide's shop, one aggregate with four commands:
 6. **A learning path in plain words** (done): the tutorial on the
    four-file layout, then [learning.md](learning.md): the order to read
    the guides in, a glossary, and the commands a day of work needs.
+
+## Next: the best at what it is for
+
+The aim is not to be the fastest of all Python frameworks (a bare ASGI
+app answers in 5 calls) but the fastest, safest, and easiest framework
+for services built around a domain, with every part replaceable. What
+already holds is not repeated here: the free-threaded job (3.14t), the
+security policy and its response times ([SECURITY.md](../SECURITY.md)),
+the [extension points](reference/extension-points.md), the
+[public API](versioning.md#what-is-public), the SBOM and its
+attestation, and suggestions for a mistyped command or domain. Each step
+below is one pushed commit with tests, as the core's were.
+
+| # | Area | Step | What changes | Status |
+| --- | --- | --- | --- | --- |
+| L1 | Learning | Mistakes that name the fix | A mistyped settings key (`CACHES.default.URl`), filter (`?nmae=`), or query field is refused with the name it is near (`did you mean URL?`), as an unknown top-level setting, command, or domain already was. | Done |
+| L2 | Learning | A first route before the words | [Part 0](tutorial/0-first-route.md) of the tutorial serves one public route and its test before aggregates, units of work, and use cases appear; `test_walkthroughs.py` plays it as written, and fails if it uses those words. | Done |
+| S1 | Security | Fuzzed input parsers | `test_fuzz.py` sends anything (any text, any bytes, valid input broken at random) to what reads untrusted input: query strings through a filter set, `If-Match` and `If-None-Match`, `traceparent` and `tracestate`, signed values, WebAuthn authenticator data, CBOR, client data, and base64url, and `Accept` and `Accept-Language`; each answers or raises its one documented error, never a 500. Cursors were fuzzed already (`test_properties.py`); the idempotency key is only hashed. The weekly run tries fifty times the examples (`--hypothesis-profile fuzz`); 5,000 a parser found nothing to fix. | Done |
+| S2 | Security | OpenSSF Scorecard | The Scorecard workflow on `main` and weekly, its results in code scanning, and its badge. | Done |
+| E1 | Efficiency | Memory and startup on the ladder | Each rung records its process's peak memory once it has served (26 MiB for bare ASGI, 46 for FastAPI, 90 to 110 for domainkit), gated with a tolerance of a tenth as modules and calls are, and the time it took to start, reported (time is never gated, ADR 0064; modules, gated, are most of it). | Done |
+| P1 | Speed | The posting rung | A posting cost 11,973 calls; now 8,364 (−30%), with the same 14 statements and guarantees. It books the entry it checked instead of drafting it twice, and the statements limits and the ledger run on every posting (the limits of its subjects, their usage, each subject's lock, the count, the closed books, the entry under its reference, the covering period) are made once, so SQLAlchemy no longer builds them and walks them for a cache key on each request. What is left is the repository's generic locking read and the ORM's flush, which P2's work on the request path reaches. | Done |
+| P2 | Speed | A statement per query shape | Measured again, FastAPI resolving a route's parameters is now about a tenth of a resource route; more goes to SQLAlchemy building, and walking for a cache key, a new statement for every query. A repository's `filter` now keeps the statement of each shape of query (the same fields, lookups, ordering, limit, and lock, with values of the same types) and binds the values as parameters, typed as SQLAlchemy types the literals; exact, `in`, and the comparisons on the table's own columns take part, and money, encrypted, related, and text lookups compile as before. A resource read costs 2,088 calls instead of 2,359, a command 2,829 instead of 3,083, a page 2,865 instead of 3,025, and a posting 8,148. | Done |
+| X1 | Customizing | Packages that plug in | An installed package offers backends under the `domainkit.backends` entry points, so `BACKEND = "sqlite-queue"` names one: caches, brokers, storage, search, upload scanning, mail, text messages, and push ([extension points](reference/extension-points.md#backends-from-an-installed-package)). Nothing is loaded that settings do not name; an unknown name is refused with the nearest one offered, and a name two packages offer differently is refused. | Done |
+| F1 | Follow-up | Generated text reads right | "An account", not "a account"; a new event goes with the other events. | Done |
+| F2 | Follow-up | The newest-dependencies job | An unclosed SQLite connection (aiosqlite) was seen once on Python 3.15 with the newest dependencies. It has not come back in that job's later runs, and it cannot be reproduced locally (the local 3.15 beta cannot import Hypothesis's compiled part). Not reproduced; the job runs on every pull request and weekly, so a return shows there. | Watching |
+
+What code alone cannot give, and needs others:
+
+- **An audit from outside**: a firm's review of the threat model, auth,
+  signing, and the money paths ([the last internal audit](audit/0.9.0.md)
+  is the starting scope).
+- **A published comparison**: the same service on domainkit, Django,
+  Litestar, and FastAPI, on the same machine, with the scripts to rerun it.
+- **Newcomers timed**: how long people new to domainkit take to deploy a
+  first route, before and after L1 and L2.
+- **The whole suite on 3.14t**: it waits for the interpreter's fix for a
+  crash in mimalloc ([runtime.md](runtime.md)).
+
+Mutation testing stays off by decision; coverage stays at 98% or more.

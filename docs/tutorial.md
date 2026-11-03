@@ -1,13 +1,15 @@
 # Getting started
 
-Five short parts take you from `pip install` to a small bank API: accounts
-with a balance and the rules that guard it, users who may do only what
-they were granted, a reaction that runs in a worker, and the tests that
-hold it all. Each part ends with a project that works, and each takes
+Six short parts take you from `pip install` to a small bank API: a first
+route and its test, then accounts with a balance and the rules that guard
+it, users who may do only what they were granted, a reaction that runs in
+a worker, and the tests that hold it all. Each part ends with a project that works, and each takes
 about a quarter of an hour. None of them needs a reference page.
 
-1. [Install, and a first resource](tutorial/1-first-resource.md): a
-   project, a domain, a user, and the first requests with `curl`.
+0. [Install, and a first route](tutorial/0-first-route.md): a project,
+   one route, a request with `curl`, and a test; nothing else to learn.
+1. [A first resource](tutorial/1-first-resource.md): a domain, a user,
+   and the first requests behind a login.
 2. [An aggregate with rules](tutorial/2-rules.md): a balance, a deposit,
    and rules written by hand; a migration for the new column.
 3. [Users and permissions](tutorial/3-permissions.md): a clerk who may read

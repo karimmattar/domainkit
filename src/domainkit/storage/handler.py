@@ -6,7 +6,7 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import StorageConfig
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.storage.base import Storage
-from domainkit.utils.module_loading import import_string
+from domainkit.utils.module_loading import import_backend
 
 
 class StorageHandler:
@@ -42,7 +42,7 @@ class StorageHandler:
 def _make(alias: str, config: StorageConfig) -> Storage:
     """Instantiate ``BACKEND`` with ``OPTIONS``."""
     try:
-        backend = import_string(config.BACKEND)
+        backend = import_backend(config.BACKEND)
     except ImportError as exc:
         raise ImproperlyConfigured(f"STORAGES[{alias!r}].BACKEND: {exc}") from exc
     try:

@@ -49,3 +49,30 @@
 | Something to check or count on every entry as the ledger books it (limits do) | `async def hook(uow, entry, accounts)`, raising a `DomainError` to refuse the entry | `contrib.accounting.hooks.on_stage_entry(hook)` in `ready()` (called in the posting's transaction, after its accounts are locked and their balances moved; [limits.md](../contrib/limits.md#on-the-ledger)) |
 | Subjects of the project's own that limits bound (a merchant, a card) | a kind of subject: `Movement(amount, {"merchant": merchant_id})` | `contrib.limits.consume(uow, ...)` in the use case ([limits.md](../contrib/limits.md#counting-movements)) |
 | A command | `BaseCommand` | `management/commands/<name>.py` |
+
+## Backends from an installed package
+
+A package can offer the backends it brings by name, so a project installs
+it and names the backend without its module path. It declares them in the
+`domainkit.backends` entry points of its `pyproject.toml`:
+
+```toml
+[project.entry-points."domainkit.backends"]
+sqlite-queue = "sqlitequeue.broker:SqliteBroker"
+```
+
+and a project names it where it would name the class:
+
+```python
+BROKERS = {
+    "default": {"URL": "sqlitequeue:///queue.sqlite3", "BACKEND": "sqlite-queue"}
+}
+```
+
+This holds for `CACHES` and `BROKERS` entries' `BACKEND`, `STORAGES`,
+`SEARCH`, and `UPLOAD_SCANNER` `BACKEND`, `MAIL.BACKEND`, and
+`NOTIFICATIONS`' `SMS_BACKEND` and `PUSH_BACKEND`. A name has no dot: a
+dotted path is imported as before. Installing a package loads nothing by
+itself; only the backend a setting names is loaded. A name no installed
+package offers is refused with the nearest one offered, and one two
+packages offer differently is refused: name it by its dotted path.

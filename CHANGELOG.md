@@ -11,6 +11,30 @@ and a status.
 
 ### Added
 
+- Backends from installed packages: a package offers them by name in the
+  `domainkit.backends` entry points, and a setting names one without its
+  module path (`"BACKEND": "sqlite-queue"`), for caches, brokers, storage,
+  search, upload scanning, mail, text messages, and push. Only the named
+  backend is loaded; an unknown name suggests the nearest, and one two
+  packages offer differently is refused.
+- The benchmark ladder gates each rung's peak memory (MiB, within a
+  tenth of its budget) and reports the time its process took to start.
+- Fuzz tests of every parser of untrusted input (`test_fuzz.py`): query
+  strings through a filter set, entity tags, trace headers, signed values,
+  WebAuthn data, `Accept`, and `Accept-Language` answer or refuse anything,
+  never with a 500; the weekly run tries fifty times the examples.
+- OpenSSF Scorecard checks the repository's practices on pushes to `main`
+  and weekly (`.github/workflows/scorecard.yml`); its findings go to code
+  scanning, and its score to the README's badge.
+- The tutorial starts with part 0: a project, one public route, a request,
+  and its test, before any word of domain-driven design; part 1 starts
+  from it with the bank's accounts.
+- Mistakes name the fix: a settings key no model declares names the
+  one it is near (`CACHES.default.URl: Extra inputs are not permitted
+  (did you mean URL?)`), in a project's settings, an override, and a
+  domain's settings; so do an unknown filter (`Unknown filter: nmae (did
+  you mean name?).`) and a field or relationship a query names that the
+  table does not map.
 - The feature inventory's last partial rows: `before_save()` on aggregates
   (`pre_save`); `DatabaseDefault` and `Generated` columns (`db_default`,
   `GeneratedField`); `ObjectRef` references to an aggregate of any model
@@ -113,6 +137,18 @@ and a status.
   header.
 
 ### Changed
+
+- A repository's `filter` keeps one statement per shape of query and binds
+  its values as parameters (PERF-33): a resource read costs 2,088 calls
+  instead of 2,359, a command 2,829 instead of 3,083, and a page 2,865
+  instead of 3,025. Exact, `in`, and comparison lookups on a table's own
+  columns take part; money, encrypted, related, and text lookups compile
+  as before.
+
+- A ledger posting under limits costs 8,148 calls instead of 11,973 (PERF-33):
+  it books the entry it checked, and the statements limits and the ledger
+  run on every posting are made once, so SQLAlchemy neither builds them
+  nor walks them for a cache key per request.
 
 - A resource route reads `If-Match` and `If-None-Match` from the request
   rather than as FastAPI parameters: 255 fewer calls a command and 235 a
@@ -296,6 +332,13 @@ and a status.
 
 ### Fixed
 
+- The cache-store and broker recipes close their SQLite file under the
+  lock their calls hold: a call still running on its thread when the store
+  or the broker closed could crash the process.
+
+- Generated code says "an account", "An order", never "a account"; and a
+  command's new event joins the other events in a four-file `domain.py`,
+  above the aggregate's heading, not under it.
 - A reconciliation cancelled while its matching rule fails no longer has
   that failure reported as unhandled on Python 3.14.6, which logs an
   exception of a shielded task once its waiter was cancelled: the run

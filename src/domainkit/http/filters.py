@@ -245,7 +245,12 @@ class FilterSet:
             raise InvalidFilter("Name each field once in the ordering.")
         unknown = set(given) - set(self.filters)
         if unknown:
-            raise InvalidFilter(f"Unknown filter: {', '.join(sorted(unknown))}.")
+            from domainkit.utils.text import did_you_mean
+
+            names = (
+                name + did_you_mean(name, self.filters) for name in sorted(unknown)
+            )
+            raise InvalidFilter(f"Unknown filter: {', '.join(names)}.")
         self.values = given
         self.search = words
         self.ordering = tuple(

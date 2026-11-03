@@ -196,7 +196,7 @@ directory there to replace a template a contrib app ships, such as
 
 | `MAIL` key | Default | Meaning |
 | --- | --- | --- |
-| `BACKEND` | `...SmtpBackend` | Dotted path to a `BaseEmailBackend`. Checked at startup. |
+| `BACKEND` | `...SmtpBackend` | Dotted path to a `BaseEmailBackend`, or the name an installed package offers it by ([extension points](reference/extension-points.md#backends-from-an-installed-package)). Checked at startup. |
 | `DEFAULT_FROM_EMAIL` | `"webmaster@localhost"` | The sender of messages that name none. |
 | `SMTP` | see below | The server `SmtpBackend` uses. |
 | `OPTIONS` | `{}` | A provider backend's settings, which it reads (above). |

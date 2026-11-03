@@ -23,6 +23,7 @@ from domainkit.conf.env import project_root
 from domainkit.management.base import CommandError
 from domainkit.management.generators import (
     Generator,
+    article,
     install,
     install_user_model,
     package_directory,
@@ -84,6 +85,8 @@ def template_context(
         "package": f"{parent}.{name}",
         "Aggregate": aggregate,
         "aggregate": aggregate_snake,
+        "a_aggregate": f"{article(aggregate_snake)} {aggregate_snake}",
+        "A_aggregate": f"{article(aggregate_snake).title()} {aggregate_snake}",
         "model": aggregate.lower(),
         "aggregates": aggregates,
         "aggregates_title": aggregates.replace("_", " "),

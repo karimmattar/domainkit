@@ -864,6 +864,13 @@ jobs:
             domainkit_tests/test_sec11b_2_cut_off_session_lock.py | tee prove.log
           ! grep -q "SKIPPED" prove.log
       - run: .newest/bin/python -m pytest -n auto --junitxml=junit.xml
+      # Weekly, the parsers of untrusted input, and the other property
+      # tests, with fifty times the examples (test_fuzz.py).
+      - if: github.event_name == 'schedule'
+        run: >-
+          .newest/bin/python -m pytest -n auto -p no:cov --hypothesis-profile fuzz
+          domainkit_tests/test_fuzz.py domainkit_tests/test_properties.py
+          domainkit_tests/test_query_properties.py
       # What "pip install domainkit[...]" resolves today, audited: the lock
       # the audit job reads is older. Like the job, it gates nothing.
       - run: >-

@@ -191,7 +191,9 @@ def table(trees: Sequence[Tree], rungs: Sequence[Rung]) -> list[list[str]]:
             f"calls{suffix}",
             f"SQL{suffix}",
             f"modules{suffix}",
+            f"MiB{suffix}",
             f"CPU µs{suffix}",
+            f"start ms{suffix}",
         ]
     rows = [header]
     for rung in rungs:
@@ -199,14 +201,17 @@ def table(trees: Sequence[Tree], rungs: Sequence[Rung]) -> list[list[str]]:
         for tree in trees:
             found = tree.results.get(rung.name)
             if found is None:
-                row += ["failed" if rung.name in tree.failures else "-", "", "", ""]
+                row += ["failed" if rung.name in tree.failures else "-"]
+                row += [""] * 5
                 continue
             cpu = found["cpu_us"]
             row += [
                 f"{found['calls']:,.1f}",
                 _round_trips(found),
                 f"{found['modules']:,}" if "modules" in found else "-",
+                f"{found['memory']:,}" if "memory" in found else "-",
                 f"{cpu['best']:,.1f} ({_spread(cpu)})",
+                f"{found['startup_ms']:,.0f}" if "startup_ms" in found else "-",
             ]
         rows.append(row)
     return rows
@@ -242,9 +247,10 @@ def markdown(rows: list[list[str]], notes: Sequence[str]) -> str:
         "",
         (
             "Calls and SQL (statements / transactions / checkouts / pings) are per "
-            "request, modules per process once it has served the warm-up, all "
-            "gated against `benchmarks/budgets.toml`. CPU is the best timed run, "
-            "with the worst run's distance from it: reported, not gated."
+            "request, modules and peak memory (MiB) per process once it has served "
+            "the warm-up, all gated against `benchmarks/budgets.toml`. CPU is the "
+            "best timed run, with the worst run's distance from it, and start the "
+            "time from the process's start to the lifespan's: reported, not gated."
         ),
     ]
     if notes:

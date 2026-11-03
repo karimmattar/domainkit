@@ -6,13 +6,13 @@ from domainkit.ddd import Command
 
 
 class Create{{ Aggregate }}(Command):
-    """Create a {{ aggregate }} called ``name``."""
+    """Create {{ a_aggregate }} called ``name``."""
 
     name: str
 
 
 class Rename{{ Aggregate }}(Command):
-    """Give a {{ aggregate }} another name."""
+    """Give {{ a_aggregate }} another name."""
 
     {{ aggregate }}_id: UUID
     name: str

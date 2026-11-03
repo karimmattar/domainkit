@@ -150,9 +150,10 @@ PLANNED = Budgets(
             "checkouts": 1,
             "pings": 1,
             "modules": 800,
+            "memory": 100,
         }
     },
-    {"calls": 0.02},
+    {"calls": 0.02, "memory": 0.1},
 )
 
 
@@ -190,6 +191,15 @@ def test_one_module_more_fails() -> None:
     assert modules.message() == "OVER BUDGET: me modules: budget 800, measured 801."
 
 
+def test_memory_may_grow_by_a_tenth() -> None:
+    """A worker's peak memory strays a little from run to run; a tenth more fails."""
+    assert budgeting.check(PLANNED, {"me": measured(memory=110)}) == []
+    (memory,) = budgeting.check(PLANNED, {"me": measured(memory=111)})
+
+    assert memory.fails
+    assert memory.message() == "OVER BUDGET: me memory: budget 100, measured 111."
+
+
 def test_gains_ask_for_a_lower_budget() -> None:
     """Under budget passes, with a hint to lock the gain in."""
     (calls,) = budgeting.check(PLANNED, {"me": measured(calls=979)})
@@ -223,7 +233,7 @@ def test_budgets_are_written_from_a_run(tmp_path: Path) -> None:
     )
 
     loaded = budgeting.load(path)
-    assert loaded.tolerance == {"calls": 0.02}
+    assert loaded.tolerance == {"calls": 0.02, "memory": 0.1}
     assert loaded.rungs == {"me": measured(calls=1001, checkouts=1)}
     assert "rungs.me" in path.read_text()
 

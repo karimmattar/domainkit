@@ -23,7 +23,7 @@ OWNER = uuid4()
 
 
 async def create(uow: Fake{{ Domain }}UnitOfWork, name: str = "First") -> {{ Aggregate }}:
-    """Create a {{ aggregate }} through its use case."""
+    """Create {{ a_aggregate }} through its use case."""
     command = Create{{ Aggregate }}(name=name, owner_id=OWNER)
     return await services.create_{{ aggregate }}(command, uow)
 

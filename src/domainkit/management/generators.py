@@ -179,12 +179,23 @@ class Source:
     def insert_before_class(self, name: str, block: str) -> None:
         """Insert ``block`` before class ``name``, two blank lines apart.
 
+        A comment heading the class (``# The aggregate.``, blank lines
+        between) stays with it: the block goes above the comment.
+
         Raises:
             CommandError: There is no such class.
         """
         node = self.find(ast.ClassDef, name)
         first = min([node.lineno, *(each.lineno for each in node.decorator_list)])
-        self._insert_lines(first - 1, [*block.strip().splitlines(), "", ""])
+        lines = self.text.splitlines()
+        above = first - 1
+        while above > 0 and not lines[above - 1].strip():
+            above -= 1
+        heading = above
+        while heading > 0 and lines[heading - 1].lstrip().startswith("#"):
+            heading -= 1
+        at = heading if heading < above else first - 1
+        self._insert_lines(at, [*block.strip().splitlines(), "", ""])
 
     def append(self, block: str) -> None:
         """Add ``block`` at the end, two blank lines after what is there."""
@@ -753,6 +764,25 @@ class Names:
     def title(self) -> str:
         """``order line`` for ``OrderLine``."""
         return self.snake.replace("_", " ")
+
+    @property
+    def a_title(self) -> str:
+        """``an order line``, ``a product``: the title with its article."""
+        return f"{article(self.title)} {self.title}"
+
+    @property
+    def A_title(self) -> str:
+        """``An order line``, ``A product``: the title at a sentence's start."""
+        return self.a_title[0].upper() + self.a_title[1:]
+
+
+def article(word: str) -> str:
+    """``an`` before a word starting with a, e, i, or o; else ``a``.
+
+    Words of code start with letters that read as written, but for a ``u``
+    (``a user``, ``a unit``), which keeps ``a``.
+    """
+    return "an" if word[:1].lower() in "aeio" else "a"
 
 
 STARTED: Final = {

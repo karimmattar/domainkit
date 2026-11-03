@@ -8,9 +8,12 @@ database's write lock, so changes run one at a time there.
 """
 
 from datetime import date
+from functools import cache
+from typing import Any, Final
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import Select, bindparam, exists, func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapper
 
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
 from domainkit.db.routing import router
@@ -48,6 +51,37 @@ class AccountRepository(SqlAlchemyRepository[Account, AccountId]):
         return AccountNotFound("No account has that id.")
 
 
+CLOSED_THROUGH: Final = select(func.max(periods.c.ends_on)).where(
+    periods.c.status == PeriodStatus.CLOSED
+)
+"""The last day of the latest closed period, made once: a statement made once
+keeps its cache key, which SQLAlchemy walks a new one for (PERF-33)."""
+
+
+@cache
+def _entry_by_reference(mapper: Mapper[Entry]) -> "Select[Any]":
+    """``by_reference``'s statement, made once per mapping of ``Entry``."""
+    return select(mapper).where(
+        entries.c.source == bindparam("source", type_=entries.c.source.type),
+        entries.c.reference == bindparam("reference", type_=entries.c.reference.type),
+    )
+
+
+@cache
+def _covering(mapper: Mapper[Period], share: bool) -> "Select[Any]":
+    """``covering``'s statement, made once per mapping of ``Period``.
+
+    ``share`` locks the period for share (PostgreSQL; SQLite has no row locks).
+    """
+    day = bindparam("day", type_=periods.c.starts_on.type)
+    statement = (
+        select(mapper)
+        .where(periods.c.starts_on <= day, periods.c.ends_on >= day)
+        .execution_options(populate_existing=True)
+    )
+    return statement.with_for_update(read=True) if share else statement
+
+
 class EntryRepository(SqlAlchemyRepository[Entry, EntryId]):
     """Journal entries, with their postings."""
 
@@ -59,10 +93,9 @@ class EntryRepository(SqlAlchemyRepository[Entry, EntryId]):
 
     async def by_reference(self, source: str, reference: str) -> Entry | None:
         """The entry ``source`` posted as ``reference``, if any."""
-        found = await self.session.scalar(
-            select(Entry).where(
-                entries.c.source == source, entries.c.reference == reference
-            )
+        found: Entry | None = await self.session.scalar(
+            _entry_by_reference(inspect(Entry)),
+            {"source": source, "reference": reference},
         )
         if found is not None:
             self._track(found)
@@ -104,25 +137,16 @@ class PeriodRepository(SqlAlchemyRepository[Period, PeriodId]):
         close (which locks it for update) waits for them, and the postings
         after it see it closed. SQLite has no row locks.
         """
-        statement = (
-            select(Period)
-            .where(periods.c.starts_on <= day, periods.c.ends_on >= day)
-            .execution_options(populate_existing=True)
-        )
-        if self.session.get_bind().dialect.name == "postgresql":
-            statement = statement.with_for_update(read=True)
-        found = await self.session.scalar(statement)
+        dialect = self.session.get_bind().dialect.name
+        statement = _covering(inspect(Period), dialect == "postgresql")
+        found: Period | None = await self.session.scalar(statement, {"day": day})
         if found is not None:
             self._track(found)
         return found
 
     async def closed_through(self) -> date | None:
         """The last day of the latest closed period: the books are closed up to it."""
-        found: date | None = await self.session.scalar(
-            select(func.max(periods.c.ends_on)).where(
-                periods.c.status == PeriodStatus.CLOSED
-            )
-        )
+        found: date | None = await self.session.scalar(CLOSED_THROUGH)
         return found
 
     async def open_before(self, day: date) -> bool:

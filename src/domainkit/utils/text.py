@@ -1,6 +1,7 @@
-"""Name conversions for error codes and generated code."""
+"""Name conversions for error codes and generated code, and suggestions."""
 
 import re
+from collections.abc import Iterable
 from typing import Final
 
 _WORD_BOUNDARY: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -80,3 +81,15 @@ def plural_of(word: str) -> str:
     (``notes``), which is its own.
     """
     return word if singular_of(word) != word else pluralize(word)
+
+
+def did_you_mean(name: str, known: Iterable[str]) -> str:
+    """`` (did you mean URL?)`` for the known name closest to ``name``, else ``""``.
+
+    For a mistake's message only: difflib is imported here, off startup's
+    path (PERF-15).
+    """
+    import difflib
+
+    matches = difflib.get_close_matches(name, list(known), n=1)
+    return f" (did you mean {matches[0]}?)" if matches else ""

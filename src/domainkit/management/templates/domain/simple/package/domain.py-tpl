@@ -1,7 +1,7 @@
 """The business of the {{ domain }} domain: the ``{{ Aggregate }}`` aggregate and its rules.
 
 Plain Python: only ``domainkit.ddd``, ``domainkit.money``, ``domainkit.clock``,
-and the standard library. Change a {{ aggregate }} only through its methods, so
+and the standard library. Change {{ a_aggregate }} only through its methods, so
 every way in (the API, a script, a test) meets the same rules.
 """
 
@@ -42,7 +42,7 @@ class Invalid{{ Aggregate }}Name(BusinessRuleViolation):
 
 
 class {{ Aggregate }}Renamed(DomainEvent):
-    """A {{ aggregate }} got a new name."""
+    """{{ A_aggregate }} got a new name."""
 
     {{ aggregate }}_id: {{ Aggregate }}Id
     name: str

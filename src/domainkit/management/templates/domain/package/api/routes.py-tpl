@@ -34,7 +34,7 @@ async def get_unit_of_work() -> {{ Domain }}UnitOfWork:
 
 
 async def caller(user: AuthenticatedUser) -> UUID:
-    """The caller's id: who creates a {{ aggregate }} owns it."""
+    """The caller's id: who creates {{ a_aggregate }} owns it."""
     return user.id
 
 

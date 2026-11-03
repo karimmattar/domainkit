@@ -50,10 +50,10 @@ def custom_store(path: str, config: CacheConfig) -> Store:
     Raises:
         ImproperlyConfigured: ``path`` names no ``Store`` class.
     """
-    from domainkit.utils.module_loading import import_string
+    from domainkit.utils.module_loading import import_backend
 
     try:
-        backend = import_string(path)
+        backend = import_backend(path)
     except ImportError as exc:
         raise ImproperlyConfigured(f"CACHES BACKEND: {exc}") from exc
     if not (isinstance(backend, type) and issubclass(backend, Store)):

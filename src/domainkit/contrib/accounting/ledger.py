@@ -283,10 +283,14 @@ async def post_entry(command: PostEntry, uow: AccountingUnitOfWork) -> Entry:
             max_lines=max_lines,
         )
 
-    async def draft() -> Entry:
-        return entry()
-
     checked = entry()  # Refuse a malformed entry before taking any lock.
+    unused = [checked]
+
+    async def draft() -> Entry:
+        # The first attempt books the entry checked; a retry, a fresh one,
+        # since the attempt that lost its race changed the one it booked.
+        return unused.pop() if unused else entry()
+
     if checked.source.startswith(RESERVED):
         raise InvalidEntry(
             "The sources that start with 'accounting.' are the ledger's own."

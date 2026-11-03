@@ -713,6 +713,11 @@ def identity(migrated: Migrated) -> Iterator[Api]:
 hypothesis_settings.register_profile("ci", print_blob=True, deadline=None)
 if os.environ.get("CI"):
     hypothesis_settings.load_profile("ci")
+# The weekly fuzz run (pytest --hypothesis-profile fuzz): the property tests,
+# test_fuzz.py's above all, with fifty times the examples.
+hypothesis_settings.register_profile(
+    "fuzz", parent=hypothesis_settings.get_profile("ci"), max_examples=5000
+)
 
 
 AUTH_PROJECT: Final = Shape(

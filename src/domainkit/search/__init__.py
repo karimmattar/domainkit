@@ -174,13 +174,13 @@ def search_backend() -> SearchBackend:
     """
     from domainkit.conf import settings
     from domainkit.exceptions import ImproperlyConfigured
-    from domainkit.utils.module_loading import import_string
+    from domainkit.utils.module_loading import import_backend
 
     config = settings.SEARCH
     if config is None:
         raise ImproperlyConfigured("Set SEARCH to use a search engine.")
     try:
-        backend = import_string(config.BACKEND)
+        backend = import_backend(config.BACKEND)
     except ImportError as exc:
         raise ImproperlyConfigured(f"SEARCH.BACKEND: {exc}") from exc
     if not (isinstance(backend, type) and issubclass(backend, SearchBackend)):

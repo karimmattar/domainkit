@@ -359,6 +359,11 @@ def test_names_resolve_only_to_mapped_columns_and_relationships() -> None:
     with pytest.raises(UnknownField, match=r"Loose\.unmapped is not a mapped column"):
         compile_criteria(F("unmapped") == 1, Loose, dialect)
     with pytest.raises(
+        UnknownField,
+        match=r"Loose\.versoin is not a mapped column \(did you mean version\?\)\.",
+    ):
+        compile_criteria(F("versoin") == 1, Loose, dialect)
+    with pytest.raises(
         UnknownField, match=r"Loose\.child is not a mapped relationship"
     ):
         compile_criteria(F("child.size") == 1, Loose, dialect)
@@ -1290,3 +1295,30 @@ def test_what_values_cannot_read_is_refused() -> None:
             await Vaults([]).values(None, "secret")
 
     asyncio.run(refused())
+
+
+async def test_a_query_shape_is_compiled_once(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Other values reuse the statement; an offset, or a text lookup, do not."""
+    await store(*dataset())
+    shapes = db_repository._SHAPES
+    shapes.clear()
+    async with GadgetsUnitOfWork() as uow:
+        three = await uow.gadgets.filter(F("stock") == 3)
+        none = await uow.gadgets.filter(F("stock") == 0)
+        assert len(shapes) == 1
+        assert sorted(each.name for each in three) == ["A_c", "é中\\"]
+        assert [each.name for each in none] == ["b/c"]
+        skipped = await uow.gadgets.filter(Selection(F("stock") == 3, offset=1))
+        assert len(skipped) == 1
+        await uow.gadgets.filter(F("name").icontains("a"))
+        held = Selection(F("name").icontains("b/"), lock=RowLock())
+        assert [each.name for each in await uow.gadgets.filter(held)] == ["b/c"]
+        assert len(shapes) == 1
+        locked = await uow.gadgets.filter(Selection(F("stock") == 0, lock=RowLock()))
+        assert [each.name for each in locked] == ["b/c"]
+        assert len(shapes) == 2
+        monkeypatch.setattr(db_repository, "MAX_SHAPES", 2)
+        await uow.gadgets.filter(F("stock") > 1)
+        assert len(shapes) == 1

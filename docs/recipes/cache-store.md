@@ -170,8 +170,13 @@ class SqliteStore(Store):
         return await self.run(delete)  # type: ignore[no-any-return]
 
     async def close(self) -> None:
-        """Close the file."""
-        self.db.close()
+        """Close the file, once no call is running on it (under the lock)."""
+
+        def locked() -> None:
+            with self.lock:
+                self.db.close()
+
+        await asyncio.to_thread(locked)
 ```
 
 Name it as the default cache. `BACKEND` makes the store, and the `URL`

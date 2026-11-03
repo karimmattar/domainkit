@@ -63,7 +63,7 @@ class {{ Aggregate }}Name(ValueObject):
 
 
 class {{ Aggregate }}Note(Entity[{{ Aggregate }}NoteId]):
-    """A note on a {{ aggregate }}: a child entity, stored and deleted with it."""
+    """A note on {{ a_aggregate }}: a child entity, stored and deleted with it."""
 
     text: Annotated[str, MaxLength(NOTE_LENGTH)]
     added_at: datetime

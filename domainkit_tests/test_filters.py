@@ -370,6 +370,9 @@ def test_filter_sets_build_queries_in_code(declared: type[FilterSet]) -> None:
     with pytest.raises(InvalidFilter) as caught:
         GadgetFilters(nope=1, other=2)
     assert caught.value.detail == "Unknown filter: nope, other."
+    with pytest.raises(InvalidFilter) as caught:
+        GadgetFilters(nmae="alpha")
+    assert caught.value.detail == "Unknown filter: nmae (did you mean name?)."
     at_most = GadgetFilters(name="alpha", stock=1, price__gte=Decimal(0), search="a")
     assert at_most.values == {
         "name": "alpha",

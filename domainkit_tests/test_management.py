@@ -475,6 +475,8 @@ def test_template_context_validates_names() -> None:
         "package": "domains.order_lines",
         "Aggregate": "OrderLine",
         "aggregate": "order_line",
+        "a_aggregate": "an order_line",
+        "A_aggregate": "An order_line",
         "model": "orderline",
         "aggregates": "order_lines",
         "aggregates_title": "order lines",

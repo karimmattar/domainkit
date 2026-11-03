@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.utils.module_loading import import_string
+from domainkit.utils.module_loading import import_backend
 
 RULE = "-" * 79
 """What the console backends write after each message."""
@@ -75,7 +75,7 @@ def load_backend(setting: str, path: str, base: type) -> object:
             subclass of ``base``, or the class refuses its options.
     """
     try:
-        backend = import_string(path)
+        backend = import_backend(path)
     except ImportError as exc:
         raise ImproperlyConfigured(f"{setting}: {exc}") from exc
     if not (isinstance(backend, type) and issubclass(backend, base)):

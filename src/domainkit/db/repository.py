@@ -20,6 +20,7 @@ from sqlalchemy.engine import Row
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import Mapper
 from sqlalchemy.orm.attributes import instance_state
 from sqlalchemy.sql.compiler import SQLCompiler
 from sqlalchemy.sql.elements import ClauseElement, ColumnElement
@@ -29,7 +30,14 @@ from domainkit.db.encrypted import guarded_attributes
 from domainkit.db.errors import duplicate_value
 from domainkit.db.money import money_columns
 from domainkit.db.orm import metadata
-from domainkit.db.query import column_of, compile_criteria, compile_ordering, mapper_of
+from domainkit.db.query import (
+    column_of,
+    compile_criteria,
+    compile_ordering,
+    mapper_of,
+    shape_of,
+    with_parameters,
+)
 from domainkit.ddd import AggregateRoot, Repository
 from domainkit.ddd.fields import FieldInfo, InvalidQuery, base_type, fields_of
 from domainkit.ddd.query import (
@@ -38,6 +46,7 @@ from domainkit.ddd.query import (
     Criteria,
     CriteriaLike,
     Measure,
+    RowLock,
     Selection,
     as_query,
 )
@@ -166,25 +175,50 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         A locking query reloads rows it had loaded already, so the aggregate
         shows what the lock holder committed.
         """
-        model = self.aggregate_type
-        statement = self._select(query)
+        statement, parameters = self._statement(query)
         lock = query.lock
-        if lock is None:
-            return list(await self.session.scalars(statement))
-        statement = statement.with_for_update(
-            nowait=lock.nowait, skip_locked=lock.skip_locked, of=model
-        ).execution_options(populate_existing=True)
-        if not lock.nowait:
-            return list(await self.session.scalars(statement))
+        if lock is None or not lock.nowait:
+            return list(await self.session.scalars(statement, parameters))
         try:  # A refused NOWAIT aborts the transaction; the savepoint keeps it.
             async with self.session.begin_nested():
-                return list(await self.session.scalars(statement))
+                return list(await self.session.scalars(statement, parameters))
         except DBAPIError as exc:
             if _sqlstate(exc) == LOCK_NOT_AVAILABLE:
                 raise LockNotAvailable(
                     "The data is being changed by another request; try again."
                 ) from exc
             raise
+
+    def _statement(self, query: Selection) -> tuple[Select[Any], dict[str, object]]:
+        """``_filter``'s statement and its parameters.
+
+        A query of a shape ``shape_of`` takes, without an offset, uses the
+        statement made once for its shape (PERF-33); any other is made now.
+        """
+        model = self.aggregate_type
+        dialect = self.session.get_bind().dialect.name
+        mapper = mapper_of(model)
+        shaped = None if query.criteria is None else shape_of(query.criteria, mapper)
+        if (query.criteria is None or shaped is not None) and not query.offset:
+            criteria, values = (None, []) if shaped is None else shaped
+            key: tuple[object, ...] = (dialect, criteria, query.ordering)
+            key += (query.limit, query.lock, model, mapper)
+            statement = _SHAPES.get(key)
+            if statement is None:
+                statement = _shaped_select(model, mapper, dialect, criteria, values)
+                statement = statement.order_by(
+                    *compile_ordering(query.ordering, model)
+                ).limit(query.limit)
+                if query.lock is not None:
+                    statement = _locked(statement, query.lock, model)
+                if len(_SHAPES) >= MAX_SHAPES:
+                    _SHAPES.clear()
+                _SHAPES[key] = statement
+            return statement, {f"p{n}": value for n, value in enumerate(values)}
+        statement = self._select(query)
+        if query.lock is not None:
+            statement = _locked(statement, query.lock, model)
+        return statement, {}
 
     def _select(self, query: Selection) -> Select[Any]:
         """The ``SELECT`` of the bound ``query``: where, order, offset, limit."""
@@ -377,6 +411,36 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
             return statement
         dialect = self.session.get_bind().dialect.name
         return statement.where(compile_criteria(criteria, self.aggregate_type, dialect))
+
+
+MAX_SHAPES: Final = 1024
+"""The most query shapes whose statements are kept; more start the set again."""
+_SHAPES: Final[dict[tuple[object, ...], Select[Any]]] = {}
+"""The statement of each query shape (``shape_of``), by the model, its
+mapping (a mapping made again makes others), the dialect, the shape, the
+ordering, the limit, and the lock (PERF-33)."""
+
+
+def _shaped_select(
+    model: type,
+    mapper: Mapper[Any],
+    dialect: str,
+    criteria: Criteria | None,
+    values: list[object],
+) -> Select[Any]:
+    """``SELECT`` of ``model`` where the shape's ``criteria`` hold, bound later."""
+    statement: Select[Any] = select(model)
+    if criteria is None:
+        return statement
+    condition = with_parameters(criteria, mapper, values)
+    return statement.where(compile_criteria(condition, model, dialect))
+
+
+def _locked(statement: Select[Any], lock: RowLock, model: type) -> Select[Any]:
+    """``statement`` locking its rows; rows loaded already are read again."""
+    return statement.with_for_update(
+        nowait=lock.nowait, skip_locked=lock.skip_locked, of=model
+    ).execution_options(populate_existing=True)
 
 
 async def reload_expired(session: AsyncSession) -> None:

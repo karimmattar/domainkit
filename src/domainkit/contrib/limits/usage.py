@@ -37,20 +37,20 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from functools import cache
 from typing import Any, Final, Self
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     ColumnElement,
     Row,
-    and_,
     bindparam,
     delete,
     exists,
     func,
     insert,
-    or_,
     select,
+    tuple_,
     update,
 )
 from sqlalchemy.dialects import postgresql, sqlite
@@ -236,6 +236,16 @@ def _code(rule: Rule) -> str:
     return rule.code
 
 
+RULES: Final = select(limits).where(
+    tuple_(limits.c.kind, limits.c.direction, limits.c.subject).in_(
+        bindparam("keys", expanding=True)
+    )
+)
+"""The limits of some subjects and the defaults of their kinds, made once: a
+statement made once keeps its cache key, which SQLAlchemy walks a new one
+for on each execution (PERF-33)."""
+
+
 async def _rules(session: AsyncSession, keys: Iterable[SubjectKey]) -> list[Rule]:
     """The stored limits and the defaults of the subjects of ``keys``, any currency.
 
@@ -243,20 +253,12 @@ async def _rules(session: AsyncSession, keys: Iterable[SubjectKey]) -> list[Rule
     (``_unnamed``).
     """
     keys = list(keys)
-    found = await session.execute(
-        select(limits).where(
-            or_(
-                *(
-                    and_(
-                        limits.c.kind == kind,
-                        limits.c.direction == direction,
-                        limits.c.subject.in_(("", subject)),
-                    )
-                    for kind, direction, _, subject in keys
-                )
-            )
-        )
-    )
+    wanted = [
+        (kind, direction, each)
+        for kind, direction, _, subject in keys
+        for each in ("", subject)
+    ]
+    found = await session.execute(RULES, {"keys": wanted})
     stored = [stored_rule(row) for row in found]
     shadowed = {_key_of(rule) for rule in stored}
     defaults = [
@@ -367,21 +369,33 @@ async def _used(
         window.start(now, rule.time_zone)
         for window, rule in zip(windows, rules, strict=True)
     ]
+    parameters: dict[str, object] = {
+        f"start_{n}": start for n, start in enumerate(starts)
+    }
+    statement = _used_statement(tuple(window.rolling for window in windows))
+    parameters |= {"subject_id": subject_id, "since": min(starts)}
+    row = (await session.execute(statement, parameters)).one()
+    return [(Decimal(row[2 * n]), int(row[2 * n + 1])) for n in range(len(rules))]
+
+
+@cache
+def _used_statement(rolling: tuple[bool, ...]) -> Any:  # noqa: ANN401
+    """``_used``'s statement for windows of these kinds, made once (PERF-33).
+
+    A rolling window counts from just after its start, a calendar one from
+    its start; each window's start is the parameter ``start_<n>``.
+    """
     columns: list[ColumnElement[Any]] = []
-    for window, start in zip(windows, starts, strict=True):
-        since = usage.c.at > start if window.rolling else usage.c.at >= start
+    for n, is_rolling in enumerate(rolling):
+        start = bindparam(f"start_{n}", type_=usage.c.at.type)
+        since = usage.c.at > start if is_rolling else usage.c.at >= start
         columns.append(func.coalesce(func.sum(usage.c.amount).filter(since), 0))
         columns.append(func.count().filter(since))
-    row = (
-        await session.execute(
-            select(*columns).where(
-                usage.c.subject_id == subject_id,
-                usage.c.released_at.is_(None),
-                usage.c.at >= min(starts),
-            )
-        )
-    ).one()
-    return [(Decimal(row[2 * n]), int(row[2 * n + 1])) for n in range(len(rules))]
+    return select(*columns).where(
+        usage.c.subject_id == bindparam("subject_id", type_=usage.c.subject_id.type),
+        usage.c.released_at.is_(None),
+        usage.c.at >= bindparam("since", type_=usage.c.at.type),
+    )
 
 
 def _judge(
@@ -414,24 +428,34 @@ def _upsert(dialect: str) -> Any:  # noqa: ANN401 - the dialect's insert.
     return (postgresql if dialect == "postgresql" else sqlite).insert
 
 
-async def _lock(session: AsyncSession, key: SubjectKey) -> tuple[UUID, datetime]:
-    """Lock the subject's row, made if new; its id, and now on the database's clock.
+def _now(dialect: str) -> datetime | None:
+    """Now, for a statement made once: None on the database's clock.
 
-    One statement: an insert that, when the row is there, updates its
-    ``touched_at`` instead, which locks it until the transaction ends.
+    A statement made once reads the database's clock itself, or takes
+    this process's (SQLite, a frozen clock) as a parameter.
     """
-    dialect = session.get_bind().dialect.name
-    kind, direction, currency, subject = key
-    now = dbclock.now(dialect)
+    if dbclock.uses_database(dialect):
+        return None
+    return clock.now()
+
+
+@cache
+def _lock_statement(dialect: str, on_database_clock: bool) -> Any:  # noqa: ANN401
+    """``_lock``'s statement, made once per dialect and clock (PERF-33).
+
+    A statement made once keeps its cache key, which SQLAlchemy would
+    otherwise walk the statement for on each execution.
+    """
+    now = dbclock.now(dialect) if on_database_clock else bindparam("s_now")
     statement = _upsert(dialect)(subjects).values(
-        id=uuid4(),
-        kind=kind,
-        direction=direction,
-        currency=currency,
-        subject=subject,
+        id=bindparam("s_id"),
+        kind=bindparam("s_kind"),
+        direction=bindparam("s_direction"),
+        currency=bindparam("s_currency"),
+        subject=bindparam("s_subject"),
         touched_at=now,
     )
-    statement = statement.on_conflict_do_update(
+    return statement.on_conflict_do_update(
         index_elements=[
             subjects.c.kind,
             subjects.c.direction,
@@ -440,7 +464,28 @@ async def _lock(session: AsyncSession, key: SubjectKey) -> tuple[UUID, datetime]
         ],
         set_={"touched_at": statement.excluded.touched_at},
     ).returning(subjects.c.id, subjects.c.touched_at)
-    row = (await session.execute(statement)).one()
+
+
+async def _lock(session: AsyncSession, key: SubjectKey) -> tuple[UUID, datetime]:
+    """Lock the subject's row, made if new; its id, and now on the database's clock.
+
+    One statement: an insert that, when the row is there, updates its
+    ``touched_at`` instead, which locks it until the transaction ends.
+    """
+    dialect = session.get_bind().dialect.name
+    kind, direction, currency, subject = key
+    now = _now(dialect)
+    parameters: dict[str, object] = {
+        "s_id": uuid4(),
+        "s_kind": kind,
+        "s_direction": direction,
+        "s_currency": currency,
+        "s_subject": subject,
+    }
+    if now is not None:
+        parameters["s_now"] = now
+    statement = _lock_statement(dialect, now is None)
+    row = (await session.execute(statement, parameters)).one()
     return row.id, row.touched_at
 
 
@@ -477,13 +522,9 @@ async def _ensure(session: AsyncSession, keys: list[SubjectKey]) -> None:
     )
 
 
-async def _record(
-    session: AsyncSession, tallies: dict[SubjectKey, list[Decimal]], key: str | None
-) -> None:
-    """Count each movement of each subject, under ``key``, at now: one statement.
-
-    Each row finds its subject's id by the subject's key, in the statement.
-    """
+@cache
+def _record_statement(dialect: str, on_database_clock: bool) -> Any:  # noqa: ANN401
+    """``_record``'s statement, made once per dialect and clock (PERF-33)."""
     owner = (
         select(subjects.c.id)
         .where(
@@ -494,17 +535,31 @@ async def _record(
         )
         .scalar_subquery()
     )
-    statement = insert(usage).values(
+    return insert(usage).values(
         id=bindparam("u_id"),
         subject_id=owner,
         amount=bindparam("u_amount"),
-        at=dbclock.now(session.get_bind().dialect.name),
-        key=key,
+        at=dbclock.now(dialect) if on_database_clock else bindparam("u_at"),
+        key=bindparam("u_key"),
     )
+
+
+async def _record(
+    session: AsyncSession, tallies: dict[SubjectKey, list[Decimal]], key: str | None
+) -> None:
+    """Count each movement of each subject, under ``key``, at now: one statement.
+
+    Each row finds its subject's id by the subject's key, in the statement.
+    """
+    dialect = session.get_bind().dialect.name
+    now = _now(dialect)
+    at = {} if now is None else {"u_at": now}
     await session.execute(
-        statement,
+        _record_statement(dialect, now is None),
         [
             {
+                **at,
+                "u_key": key,
                 "u_id": uuid4(),
                 "s_kind": kind,
                 "s_direction": direction,
