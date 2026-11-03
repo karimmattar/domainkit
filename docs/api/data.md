@@ -334,3 +334,16 @@ Files: a storage port, on the file system or in memory.
 - `StorageHandler`: Make each configured storage on first use; one per alias and process.
 - `StoredFile`: A file open for reading; close it, or use it in `async with`.
 - `storages`: The process-wide storages: `storages["default"]`.
+
+## `domainkit.storage.remote`
+
+What object stores share: ranged reads, parts, presigned URLs.
+
+- `ObjectStorage`: A storage in an object store; subclasses speak its protocol.
+- `PresignedUpload`: Where a client sends a new file itself, and what it must send with it.
+
+## `domainkit.storage.s3`
+
+`S3Storage`: files in an S3 bucket, or any store that speaks S3's API.
+
+- `S3Storage`: Files in one bucket of S3, or of a store that speaks its API.
