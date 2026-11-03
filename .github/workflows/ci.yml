@@ -304,6 +304,7 @@ jobs:
       DOMAINKIT_TEST_RABBITMQ_TLS_URL: amqps://domainkit:domainkit@localhost:5671/
       DOMAINKIT_TEST_RABBITMQ_CA: .ci/rabbitmq/server.crt
       DOMAINKIT_TEST_RABBITMQ_MANAGEMENT_URL: http://domainkit:domainkit@localhost:15672
+      DOMAINKIT_TEST_POSTGIS_URL: postgresql+asyncpg://postgres:postgres@localhost:5434/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -390,6 +391,24 @@ jobs:
           done
           docker logs rabbitmq
           exit 1
+      # PostGIS on 5434, beside the plain PostgreSQL service: the places
+      # tests need its geography type.
+      - name: Start PostGIS
+        run: |
+          docker run -d --name postgis -p 5434:5432 -e POSTGRES_PASSWORD=postgres \
+            postgis/postgis:18-3.6-alpine@sha256:c53a483fc274072dfa02cd491efa79f3c8ae0a10774a0ece6c9c53b6a632cdef
+          for _ in $(seq 1 60); do
+            if docker exec postgis pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs postgis
+          exit 1
+      # The servers the broker and key tests start themselves.
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends softhsm2 redis-server nats-server
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
       - shell: bash

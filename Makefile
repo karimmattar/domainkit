@@ -23,7 +23,8 @@ INTEGRATION_ENV := \
 	DOMAINKIT_TEST_RABBITMQ_URL=amqp://domainkit:domainkit@localhost:5672/ \
 	DOMAINKIT_TEST_RABBITMQ_TLS_URL=amqps://domainkit:domainkit@localhost:5671/ \
 	DOMAINKIT_TEST_RABBITMQ_CA=.ci/rabbitmq/server.crt \
-	DOMAINKIT_TEST_RABBITMQ_MANAGEMENT_URL=http://domainkit:domainkit@localhost:15672
+	DOMAINKIT_TEST_RABBITMQ_MANAGEMENT_URL=http://domainkit:domainkit@localhost:15672 \
+	DOMAINKIT_TEST_POSTGIS_URL=postgresql+asyncpg://postgres:postgres@localhost:5434/postgres
 
 .DEFAULT_GOAL := help
 .PHONY: help install lint fix test integration services services-down cov bench docs docs-serve audit mutants check
