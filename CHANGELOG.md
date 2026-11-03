@@ -9,6 +9,8 @@ and a status.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-03
+
 ### Added
 
 - Backends from installed packages: a package offers them by name in the
@@ -135,43 +137,6 @@ and a status.
 - `domainkit.storage.images.thumbnail` (the `images` extra, Pillow): a
   scaled copy of a stored image, decompression bombs refused from the
   header.
-
-### Changed
-
-- A repository's `filter` keeps one statement per shape of query and binds
-  its values as parameters (PERF-33): a resource read costs 2,088 calls
-  instead of 2,359, a command 2,829 instead of 3,083, and a page 2,865
-  instead of 3,025. Exact, `in`, and comparison lookups on a table's own
-  columns take part; money, encrypted, related, and text lookups compile
-  as before.
-
-- A ledger posting under limits costs 8,148 calls instead of 11,973 (PERF-33):
-  it books the entry it checked, and the statements limits and the ledger
-  run on every posting are made once, so SQLAlchemy neither builds them
-  nor walks them for a cache key per request.
-
-- A resource route reads `If-Match` and `If-None-Match` from the request
-  rather than as FastAPI parameters: 255 fewer calls a command and 235 a
-  read, on the benchmark ladder, whose budgets now hold it. The headers
-  keep their 4,096-character bound (422) and their OpenAPI entries; the
-  422s they can answer are documented with domainkit's error schema.
-- The benchmark ladder has a `resource-list` rung, a `ResourceRouter` page
-  of 20 items, budgeted at 3,025 calls in one statement: a list page now
-  has a budget, as a read and a write have.
-- `settings` keeps a value once read, so later reads are an attribute
-  lookup, not a call; replacing the settings (`override_settings`, a
-  reload) drops what was kept, under a lock, and a value read while they
-  change is never kept: 13 to 17 fewer calls a request.
-- A unit of work finds the domain that owns it, and so its database, once
-  per module while the installed domains stay the same, not by walking
-  every installed domain on each request; `DATABASE_ROUTING` is still read
-  each time. `clock.now()` and `clock.monotonic()` take one lookup when no
-  clock is frozen: about 17 fewer calls a request. The ladder's budgets
-  hold the new counts (a command 3,083 calls, a read 2,359, a list page
-  3,025).
-
-### Added
-
 - Recipes, walked end to end like the others: service accounts with API
   keys (an authentication class, and settings of the project's own
   through `SETTINGS_CLASS`), and a permission rule of your own.
@@ -289,6 +254,35 @@ and a status.
 
 ### Changed
 
+- A repository's `filter` keeps one statement per shape of query and binds
+  its values as parameters (PERF-33): a resource read costs 2,088 calls
+  instead of 2,359, a command 2,829 instead of 3,083, and a page 2,865
+  instead of 3,025. Exact, `in`, and comparison lookups on a table's own
+  columns take part; money, encrypted, related, and text lookups compile
+  as before.
+- A ledger posting under limits costs 8,148 calls instead of 11,973 (PERF-33):
+  it books the entry it checked, and the statements limits and the ledger
+  run on every posting are made once, so SQLAlchemy neither builds them
+  nor walks them for a cache key per request.
+- A resource route reads `If-Match` and `If-None-Match` from the request
+  rather than as FastAPI parameters: 255 fewer calls a command and 235 a
+  read, on the benchmark ladder, whose budgets now hold it. The headers
+  keep their 4,096-character bound (422) and their OpenAPI entries; the
+  422s they can answer are documented with domainkit's error schema.
+- The benchmark ladder has a `resource-list` rung, a `ResourceRouter` page
+  of 20 items, budgeted at 3,025 calls in one statement: a list page now
+  has a budget, as a read and a write have.
+- `settings` keeps a value once read, so later reads are an attribute
+  lookup, not a call; replacing the settings (`override_settings`, a
+  reload) drops what was kept, under a lock, and a value read while they
+  change is never kept: 13 to 17 fewer calls a request.
+- A unit of work finds the domain that owns it, and so its database, once
+  per module while the installed domains stay the same, not by walking
+  every installed domain on each request; `DATABASE_ROUTING` is still read
+  each time. `clock.now()` and `clock.monotonic()` take one lookup when no
+  clock is frozen: about 17 fewer calls a request. The ladder's budgets
+  hold the new counts (a command 3,083 calls, a read 2,359, a list page
+  3,025).
 - **Breaking:** with signup on and a user model whose `REQUIRED_FIELDS`
   name more than the username and the email, `POST /signup` requires them
   under `fields` (422 `invalid_user_field` without them); it used to leave
@@ -313,7 +307,6 @@ and a status.
   (`privacy purge --operator alice`), and only the actions that change data
   take it; their listings and checks (`flags list`, `accounting verify`,
   `approvals list`) no longer do.
-
 - The refusals of a deployment by `contrib.mail`, `contrib.notifications`,
   and `contrib.evidence` carry check ids, as the core's do: `deploy.E004`
   (a development mail backend), `deploy.E005` and `deploy.E006` (a
@@ -335,7 +328,6 @@ and a status.
 - The cache-store and broker recipes close their SQLite file under the
   lock their calls hold: a call still running on its thread when the store
   or the broker closed could crash the process.
-
 - Generated code says "an account", "An order", never "a account"; and a
   command's new event joins the other events in a four-file `domain.py`,
   above the aggregate's heading, not under it.
@@ -5880,7 +5872,9 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/karimmattar/domainkit/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/karimmattar/domainkit/compare/v1.0.0...v1.5.0
 [1.0.0]: https://github.com/karimmattar/domainkit/compare/v0.12.1...v1.0.0
 [0.12.1]: https://github.com/karimmattar/domainkit/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.12.0
