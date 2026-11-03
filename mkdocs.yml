@@ -99,6 +99,7 @@ nav:
           - auth/logging-in.md
           - auth/routes.md
           - auth/step-up.md
+          - auth/identity.md
           - auth/pci-dss.md
       - Optional apps:
           - contrib.md

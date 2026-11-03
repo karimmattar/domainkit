@@ -51,12 +51,11 @@ How each status is reached, and which fields a body holds, is in
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
 | `domain_error` | 400 | `DomainError` (ddd.exceptions): A business rule refused the operation; the message is safe to show. |
-| `infected_file` | 422 | http.uploads: The virus scan refused the file. |
-| `invalid_field` | 422 | `InvalidField` (ddd.exceptions): A field was given a value its markers rule out (`MaxLength`, `Range`, ...). |
 | `duplicate_value` | 409 | `DuplicateValue` (ddd.exceptions): A value that must be unique is taken (a unique constraint refused it). |
 | `earlier_period_open` | 422 | `EarlierPeriodOpen` (contrib.accounting.exceptions): Closing a period while one before it is still open. |
 | `empty_file` | 400 | http.uploads: The file is empty. |
 | `entry_not_found` | 404 | `EntryNotFound` (contrib.accounting.exceptions): No journal entry has that id. |
+| `entry_not_reversible` | 422 | `EntryNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
 | `erasure_held` | 422 | `ErasureHeld` (contrib.privacy.operations): A person's data must be kept for now: nothing of it was erased (FIN-94). |
 | `evidence_conflict` | 409 | `EvidenceConflict` (contrib.evidence.models): A different record already uses that evidence id. |
 | `evidence_not_found` | 404 | `EvidenceNotFound` (contrib.evidence.models): No evidence is stored under that key. |
@@ -75,7 +74,13 @@ How each status is reached, and which fields a body holds, is in
 | `idempotency_key_reused` | 422 | contrib.idempotency.middleware: This Idempotency-Key was used for a different request. |
 | `idempotency_key_taken_over` | 409 | `KeyTakenOver` (contrib.idempotency.operations): A retry took the key over after this request's lease ran out. |
 | `idempotency_response_unavailable` | 409 | contrib.idempotency.middleware: The request with this Idempotency-Key already ran, and its response is no longer kept; look up the result instead of retrying. contrib.idempotency.middleware. |
+| `identity_email_taken` | 409 | `EmailTaken` (contrib.identity.exceptions): An account has the identity's email: log in to it, then link the identity. |
+| `identity_last_way_in` | 422 | `LastWayIn` (contrib.identity.exceptions): Unlinking would leave the user no way to log in. |
+| `identity_not_linked` | 422 | `NoAccount` (contrib.identity.exceptions): The identity is linked to no account, and none may be made for it. |
+| `identity_provider_error` | 502 | `ProviderError` (contrib.identity.exceptions): The provider refused, could not be reached, or answered what does not hold. |
+| `identity_taken` | 409 | `IdentityTaken` (contrib.identity.exceptions): The identity is linked to another account already. |
 | `inexact_amount` | 422 | `InexactAmount` (money): An amount with more places than its currency has; nothing is rounded. |
+| `infected_file` | 422 | http.uploads: The virus scan refused the file. |
 | `insufficient_funds` | 422 | `InsufficientFunds` (contrib.accounting.exceptions): A change that would take an account that may not go negative below zero. |
 | `interested_party` | 403 | `InterestedParty` (contrib.approvals.exceptions): Whoever the command is about may not approve or reject it. |
 | `internal_error` | 500 | http.middleware: Internal server error. resources.batches: Internal server error. |
@@ -87,6 +92,7 @@ How each status is reached, and which fields a body holds, is in
 | `invalid_cursor` | 422 | http.pagination: The cursor is invalid; start again without one. |
 | `invalid_email` | 422 | `InvalidEmail` (contrib.auth.exceptions): The email address is not one plain address mail can go to. |
 | `invalid_entry` | 422 | `InvalidEntry` (contrib.accounting.exceptions): An entry that cannot be posted as written: its lines, or its accounts. |
+| `invalid_field` | 422 | `InvalidField` (ddd.exceptions): A field was given a value its markers rule out (`MaxLength`, `Range`, ...). |
 | `invalid_filter` | 422 | http.filters: a filter, lookup, ordering, or search a `FilterSet` does not offer, or over its bounds. |
 | `invalid_flag` | 422 | `InvalidFlag` (contrib.flags.models): A flag's rules are out of range. |
 | `invalid_grant` | 422 | `InvalidGrant` (contrib.objectpermissions.services): A grant names a permission of another model, or no one or two at once. |
@@ -116,6 +122,7 @@ How each status is reached, and which fields a body holds, is in
 | `metrics_disabled` | 403 | http.metrics: Set METRICS_TOKEN to expose metrics in staging and production. |
 | `mfa_enabled` | 409 | contrib.auth.mfa: A second factor is on; turn it off first. |
 | `missing_value` | 422 | http.errors: A required value is missing. |
+| `multiple_found` | 409 | `MultipleFound` (ddd.exceptions): A lookup that expects one aggregate met several (`get_or_create`). |
 | `no_enrolment` | 400 | contrib.auth.mfa: No enrolment is waiting for a code; start one first. |
 | `no_open_period` | 422 | `NoOpenPeriod` (contrib.accounting.exceptions): No accounting period covers the entry's date (``REQUIRE_PERIOD``). |
 | `no_second_factor` | 409 | contrib.auth.stepup: Turn on a second factor first: confirming it is you needs one. |
@@ -123,7 +130,6 @@ How each status is reached, and which fields a body holds, is in
 | `not_acceptable` | 406 | resources.renderers: This resource cannot answer in a media type the request accepts. |
 | `not_applied` | 424 | resources.batches: Another item of the batch failed, so nothing was applied. |
 | `not_authenticated` | 401 | http.access: Authentication credentials were not provided. |
-| `multiple_found` | 409 | `MultipleFound` (ddd.exceptions): A lookup that expects one aggregate met several (`get_or_create`). |
 | `not_found` | 404 | `NotFound` (ddd.exceptions): The requested aggregate does not exist. contrib.auth.signup: Not Found. contrib.flags.dependencies: Not found. Starlette or FastAPI. |
 | `not_the_maker` | 403 | `NotTheMaker` (contrib.approvals.exceptions): Only whoever submitted a request may cancel it. |
 | `overloaded` | 503 | http.shedding: The server is busy; try again shortly. |
@@ -145,7 +151,6 @@ How each status is reached, and which fields a body holds, is in
 | `request_not_pending` | 409 | `RequestNotPending` (contrib.approvals.exceptions): The request was approved, rejected, cancelled, or has expired. |
 | `request_tampered` | 409 | `RequestTampered` (contrib.approvals.exceptions): The request was changed outside the application: its seal does not hold. |
 | `request_timeout` | 408 | http.middleware: The request body took too long to arrive. |
-| `entry_not_reversible` | 422 | `EntryNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
 | `scanner_unavailable` | 503 | `ScannerUnavailable` (storage.scanning): The virus scanner could not scan the upload: 503, nothing kept. |
 | `scope_not_held` | 403 | contrib.auth.personal_tokens: a token asked for a scope its owner does not hold. |
 | `second_factor_unreadable` | 409 | `SecondFactorUnreadable` (contrib.auth.mfa): No key held opens the user's TOTP secret: `SECRET_KEY` changed without it in `SECRET_KEY_FALLBACKS` (`resealmfa`, `resetmfa`). |
@@ -168,6 +173,7 @@ How each status is reached, and which fields a body holds, is in
 | `unknown_action` | 404 | `UnknownAction` (contrib.approvals.exceptions): No guarded command has that name. |
 | `unknown_currency` | 422 | `UnknownCurrency` (money): A code that is neither an ISO 4217 currency nor a registered one. |
 | `unknown_group` | 404 | `UnknownGroup` (contrib.auth.exceptions): No group has that name. |
+| `unknown_identity_provider` | 404 | `UnknownProvider` (contrib.identity.exceptions): No identity provider has that name. |
 | `unknown_permission` | 404 | `UnknownPermission` (contrib.auth.exceptions): No permission has that key (``<domain>.<codename>``). |
 | `unknown_setting` | 404 | `UnknownSetting` (contrib.flags.exceptions): No dynamic setting is declared with that key. |
 | `unknown_user_field` | 422 | `UnknownUserField` (contrib.auth.exceptions): The user model has no such field, or it changes another way. |

@@ -134,9 +134,9 @@ framework, for the reason given.
 | Object storage: S3 and S3-compatible (AWS S3, Huawei OBS, MinIO, Cloudflare R2, Alibaba OSS), Google Cloud Storage, Azure Blob | `S3Storage`, `GCSStorage`, `AzureBlobStorage`: multipart writes, ranged reads, no SDK ([uploads.md](uploads.md#object-storage)) | Yes | A1 |
 | Presigned upload and download URLs | `presigned_url`, `presigned_upload` (size and type signed on S3 and GCS) | Yes | A1 |
 | Image thumbnails, virus scanning of uploads | `thumbnail` (Pillow, bombs refused); `UPLOAD_SCANNER` with ClamAV, failing closed | Yes | A1 |
-| Login with an identity provider: OpenID Connect and OAuth 2 (Google, Microsoft, Apple, GitHub, Keycloak, Okta, Auth0, AWS Cognito, Huawei IAM) | None: passwords, tokens, JWTs, client certificates only | No | A2 |
-| Enterprise single sign-on: SAML 2.0, LDAP and Active Directory | None | No | A2 |
-| Linking several providers to one user, signing up through one | None | No | A2 |
+| Login with an identity provider: OpenID Connect and OAuth 2 (Google, Microsoft, Apple, GitHub, Keycloak, Okta, Auth0, AWS Cognito, Huawei IAM) | `domainkit.contrib.identity`: PKCE, state, nonce, ID tokens verified against the provider's keys ([identity.md](auth/identity.md)) | Yes | A2 |
+| Enterprise single sign-on: SAML 2.0, LDAP and Active Directory | SAML 2.0 service provider (signed responses only, one-time tickets); `LDAPBackend` with group mapping | Yes | A2 |
+| Linking several providers to one user, signing up through one | `/identity/{name}/link`, `/identity/linked`; `IDENTITY.SIGNUP` for verified emails no account has | Yes | A2 |
 | Second factors: TOTP, recovery codes, step-up | `contrib.auth` (`mfa`, `stepup`, `sca`) | Yes | |
 | Passkeys (WebAuthn) | None | No | A3 |
 | Device binding: register a device's key, sign requests with it, list and revoke devices, trusted devices for step-up | Device proofs for login throttling only | Partial | A3 |
@@ -154,8 +154,8 @@ framework, for the reason given.
 | Multi-tenancy: a tenant per request, rows scoped to it, a database or schema per tenant | Sharding by key; caches and logs tagged | Partial | A7 |
 | Full-text search: PostgreSQL search, OpenSearch, Meilisearch | None | No | A8 |
 | Geospatial (PostGIS) | None | No | A8 |
-| Captcha (Turnstile, reCAPTCHA) on sign-up and login | None | No | A2 |
-| Impersonation by support staff, audited | None | No | A2 |
+| Captcha (Turnstile, reCAPTCHA) on sign-up and login | `AUTH.CAPTCHA`: Turnstile, reCAPTCHA, hCaptcha on login, signup, password reset, failing closed | Yes | A2 |
+| Impersonation by support staff, audited | `POST /admin/auth/users/{id}/impersonate` with a reason, `AUTH.IMPERSONATION_TTL`; audited, no step-up | Yes | A2 |
 | Feature flags, webhooks, approvals, audit trail, privacy (erasure, export), limits, idempotency | `contrib.flags`, `webhooks`, `approvals`, `audit`, `privacy`, `limits`, `idempotency` | Yes | |
 | WebSockets and server-sent events | Built in, with the request's user and limits | Yes | |
 | GraphQL, gRPC | None | n/a for now: REST first | |

@@ -108,6 +108,18 @@ cloud = [
     "httpx2 (>=2.13.0,<3.0.0)",
     "httpcore2 (>=2.13.0,<3.0.0)",
 ]
+# Logging in through identity providers (domainkit.contrib.identity):
+# OpenID Connect ID tokens verified with PyJWT, providers called through
+# domainkit.http.client.
+identity = [
+    "pyjwt[crypto] (>=2.15.0,<3.0.0)",
+    "httpx2 (>=2.13.0,<3.0.0)",
+    "httpcore2 (>=2.13.0,<3.0.0)",
+]
+# SAML 2.0 single sign-on: responses' XML signatures checked by signxml.
+saml = ["signxml (>=5.2.0,<6.0.0)", "lxml (>=6.1.3,<7.0.0)"]
+# LDAP and Active Directory logins (domainkit.contrib.identity.ldap).
+ldap = ["ldap3 (>=2.9.1,<3.0.0)"]
 # Thumbnails of uploaded images (domainkit.storage.images).
 images = ["pillow (>=13.0.0,<14.0.0)"]
 # The IANA time zones for cron schedules where the system has none (Windows).
@@ -209,6 +221,11 @@ exclude = ["/management/templates/", "/mutants/"]
 module = ["immudb", "immudb.*", "grpc", "grpc.*", "ecdsa", "ecdsa.*"]
 ignore_missing_imports = true
 
+# lxml (signxml's parser) and ldap3 ship no types either.
+[[tool.mypy.overrides]]
+module = ["lxml", "lxml.*", "ldap3", "ldap3.*"]
+ignore_missing_imports = true
+
 # Nor does PyYAML, which only the CI tests use.
 [[tool.mypy.overrides]]
 module = ["yaml"]
@@ -249,7 +266,13 @@ testpaths = ["domainkit_tests"]
 pythonpath = ["."]
 # pytester: the testing plugin is checked by running a pytest session in a test.
 addopts = "-ra --strict-markers --strict-config -p pytester"
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # ldap3 2.9.1, the latest, still reads pyasn1's old names (tagMap,
+    # typeMap): warned when it is imported, harmless.
+    "ignore:tagMap is deprecated:DeprecationWarning",
+    "ignore:typeMap is deprecated:DeprecationWarning",
+]
 markers = [
     "reads_own_source: reads domainkit's source text, the frames of its calls, or the modules importing it loads, which mutmut rewrites; mutation runs leave it out",
     "engines_on_threads: makes and closes SQLAlchemy engines on several threads at once, which crashes 3.14t inside SQLAlchemy's compiled extensions now and then; the required test (3.14t) job leaves it to stress (3.14t)",

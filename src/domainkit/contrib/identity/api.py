@@ -182,3 +182,13 @@ async def logged_in(
 def _no_store(response: Response) -> None:
     """Tokens are never cached."""
     response.headers["Cache-Control"] = "no-store"
+
+
+def _include_saml() -> None:
+    """Mount the SAML routes (they import signxml only when a response comes)."""
+    from .saml import router as saml_router
+
+    router.include_router(saml_router)
+
+
+_include_saml()

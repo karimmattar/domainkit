@@ -11,6 +11,17 @@ and a status.
 
 ### Added
 
+- `domainkit.contrib.identity` (A2): logging in through OpenID Connect
+  and OAuth 2 providers (Google, Microsoft Entra ID, Apple, GitHub, and
+  any issuer by discovery), with PKCE, a one-time state and nonce, and ID
+  tokens verified against the provider's keys; linking several identities
+  to one user, by subject and never by email; signing up through a
+  provider that verified an email no account has (`IDENTITY.SIGNUP`).
+  SAML 2.0 single sign-on as a service provider (the `saml` extra),
+  believing only what the provider signed, for this request, and handing
+  the browser a one-time ticket instead of tokens. `LDAPBackend` (the
+  `ldap` extra) checks passwords against LDAP or Active Directory and
+  keeps mapped groups in step.
 - `AUTH.CAPTCHA`: Turnstile, reCAPTCHA, or hCaptcha on login, signup, and
   password reset, checked before anything else and failing closed.
 - Impersonation by support staff: `POST /admin/auth/users/{id}/impersonate`

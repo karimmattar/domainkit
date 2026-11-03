@@ -1,6 +1,7 @@
 # Public API: users and permissions
 
-`domainkit.contrib.auth` and its modules ([auth.md](../auth.md)). Part of
+`domainkit.contrib.auth`, `domainkit.contrib.identity`, and their modules
+([auth.md](../auth.md), [identity](../auth/identity.md)). Part of
 the [public API](../api.md), under its compatibility policy.
 
 ## `domainkit.contrib.auth`
@@ -235,3 +236,82 @@ Rules for new passwords (Django's `password_validation`).
 - `MinimumLengthValidator`: At least `min_length` characters (default 8).
 - `NumericPasswordValidator`: Not only digits.
 - `UserAttributeSimilarityValidator`: Not too much like the user's username, names, or email.
+
+## `domainkit.contrib.identity`
+
+Logging in through identity providers: OpenID Connect, OAuth 2, SAML 2.0, LDAP.
+
+- `Claims`: Who the provider says logged in: its subject, and an email if it gave one.
+- `EmailTaken`: An account has the identity's email: log in to it, then link the identity.
+- `IdentityTaken`: The identity is linked to another account already.
+- `IdentityUnitOfWork`: The auth unit of work, with the identity tables (on the same database).
+- `LastWayIn`: Unlinking would leave the user no way to log in.
+- `LinkedIdentity`: A provider's account a user logs in with.
+- `NoAccount`: The identity is linked to no account, and none may be made for it.
+- `ProviderError`: The provider refused, could not be reached, or answered what does not hold (502).
+- `UnknownProvider`: No identity provider has that name (404).
+
+## `domainkit.contrib.identity.api`
+
+The routes of logging in and linking through identity providers.
+
+- `router`: The routes: providers, login, link, callback, ticket, and linked identities.
+
+## `domainkit.contrib.identity.exceptions`
+
+What an identity provider, or a login through one, may refuse.
+
+- `EmailTaken`: An account has the identity's email: log in to it, then link the identity.
+- `IdentityTaken`: The identity is linked to another account already.
+- `LastWayIn`: Unlinking would leave the user no way to log in.
+- `NoAccount`: The identity is linked to no account, and none may be made for it.
+- `ProviderError`: The provider refused, could not be reached, or answered what does not hold (502).
+- `UnknownProvider`: No identity provider has that name (404).
+
+## `domainkit.contrib.identity.ldap`
+
+Logging in with a directory's password: LDAP or Active Directory (`domainkit[ldap]`).
+
+- `LDAPBackend`: Passwords checked by the directory `IDENTITY.LDAP` names.
+
+## `domainkit.contrib.identity.providers`
+
+OpenID Connect and OAuth 2 providers: where to send the browser, and what came back.
+
+- `AppleProvider`: Sign in with Apple: its client secret is a JWT this application signs.
+- `Claims`: Who the provider says logged in: its subject, and an email if it gave one.
+- `GitHubProvider`: GitHub accounts (OAuth 2): the user, and their verified primary email.
+- `OIDCProvider`: An OpenID Connect provider, found by its issuer's discovery document.
+- `Provider`: A provider of identities; subclasses speak its protocol.
+- `make_provider`: The provider `config` describes.
+
+## `domainkit.contrib.identity.saml`
+
+SAML 2.0 single sign-on, as a service provider (`domainkit[saml]`).
+
+- `router`: The routes: login, the assertion consumer service, and metadata.
+
+## `domainkit.contrib.identity.services`
+
+Logging in and linking through identity providers.
+
+- `begin`: Start a login (a link, for `user_id`) at `name`: the browser goes there.
+- `complete`: Finish what `state` started: the flow, and the user to log in (None: a link).
+- `provider`: The provider `name`.
+- `unlink`: Unlink the user's identity at `name`.
+
+## `domainkit.contrib.identity.stores`
+
+The identity tables, read and written in an `IdentityUnitOfWork`.
+
+- `Flow`: A login or link sent to a provider; its `verifier` and `nonce` are secret.
+- `IdentityUnitOfWork`: The auth unit of work, with the identity tables (on the same database).
+- `LinkedIdentity`: A provider's account a user logs in with.
+
+## `domainkit.contrib.identity.tables`
+
+Linked identities, logins on their way back from a provider, and tickets.
+
+- `flows`: Logins and links on their way to a provider and back, by state.
+- `identities`: The provider accounts users are linked to, one per provider and subject.
+- `tickets`: One-use tickets a browser trades for tokens, kept as digests.
