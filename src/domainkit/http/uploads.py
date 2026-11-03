@@ -18,6 +18,7 @@ call it (``Require(...)``, or ``Public`` on purpose), as every route must
 ``uploads`` extra. See ``docs/uploads.md`` and ADR 0040.
 """
 
+import logging
 import re
 import unicodedata
 from collections.abc import AsyncIterator, Callable, Iterable
@@ -33,6 +34,7 @@ from starlette.datastructures import UploadFile
 from domainkit.http.errors import APIError
 from domainkit.storage.base import CHUNK_SIZE, FileTooLarge, Storage
 from domainkit.storage.handler import storages
+from domainkit.storage.scanning import Infected, configured_scanner
 
 __all__ = [
     "GIF",
@@ -49,6 +51,7 @@ __all__ = [
     "serve",
 ]
 
+logger = logging.getLogger(__name__)
 SNIFF_BYTES: Final = 512
 """How much of a file its type is read from."""
 MAX_FILENAME_BYTES: Final = 255
@@ -164,9 +167,14 @@ async def save_upload(
 ) -> StoredUpload:
     """Store ``upload`` if it is one of ``types`` and at most ``max_size`` bytes.
 
+    With ``UPLOAD_SCANNER`` set, the upload streams through the scanner
+    as it is stored, and a finding fails the write.
+
     Raises:
-        UploadRefused: 400 ``empty_file``, 413 ``file_too_large``, or 415
-            ``unsupported_file_type``; nothing is stored.
+        UploadRefused: 400 ``empty_file``, 413 ``file_too_large``, 415
+            ``unsupported_file_type``, or 422 ``infected_file``; nothing
+            is stored.
+        ScannerUnavailable: The scanner could not scan it (503).
         ValueError: ``types`` is empty, or ``directory`` malformed.
     """
     accepted = tuple(types)
@@ -197,12 +205,21 @@ async def save_upload(
             yield chunk
             chunk = await upload.read(CHUNK_SIZE)
 
+    scanner = configured_scanner()
+    stream = content() if scanner is None else scanner.scan(content())
     try:
         name = await target.save(
-            content(), directory=directory, extension=kind.extension, max_size=max_size
+            stream, directory=directory, extension=kind.extension, max_size=max_size
         )
     except FileTooLarge:
         raise _too_large() from None
+    except Infected as exc:
+        logger.warning("An upload was refused by the virus scan: %s", exc.signature)
+        raise UploadRefused(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "The virus scan refused the file.",
+            code="infected_file",
+        ) from None
     return StoredUpload(
         name, kind.content_type, size, sanitize_filename(upload.filename)
     )

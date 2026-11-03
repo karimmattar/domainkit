@@ -131,9 +131,9 @@ framework, for the reason given.
 | Need | domainkit | Status | Step |
 | --- | --- | --- | --- |
 | File storage on disk, in memory for tests | `FileSystemStorage`, `MemoryStorage` | Yes | |
-| Object storage: S3 and S3-compatible (AWS S3, Huawei OBS, MinIO, Cloudflare R2, Alibaba OSS), Google Cloud Storage, Azure Blob | None | No | A1 |
-| Presigned upload and download URLs | None | No | A1 |
-| Image thumbnails, virus scanning of uploads | None | No | A1 |
+| Object storage: S3 and S3-compatible (AWS S3, Huawei OBS, MinIO, Cloudflare R2, Alibaba OSS), Google Cloud Storage, Azure Blob | `S3Storage`, `GCSStorage`, `AzureBlobStorage`: multipart writes, ranged reads, no SDK ([uploads.md](uploads.md#object-storage)) | Yes | A1 |
+| Presigned upload and download URLs | `presigned_url`, `presigned_upload` (size and type signed on S3 and GCS) | Yes | A1 |
+| Image thumbnails, virus scanning of uploads | `thumbnail` (Pillow, bombs refused); `UPLOAD_SCANNER` with ClamAV, failing closed | Yes | A1 |
 | Login with an identity provider: OpenID Connect and OAuth 2 (Google, Microsoft, Apple, GitHub, Keycloak, Okta, Auth0, AWS Cognito, Huawei IAM) | None: passwords, tokens, JWTs, client certificates only | No | A2 |
 | Enterprise single sign-on: SAML 2.0, LDAP and Active Directory | None | No | A2 |
 | Linking several providers to one user, signing up through one | None | No | A2 |

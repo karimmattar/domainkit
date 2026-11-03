@@ -553,6 +553,17 @@ class StorageConfig(BaseModel):
     """Keyword arguments of the class, such as ``{"location": "/srv/files"}``."""
 
 
+class ScannerConfig(BaseModel):
+    """``UPLOAD_SCANNER``: the virus scanner every upload streams through."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    BACKEND: str = "domainkit.storage.scanning.ClamAVScanner"
+    """Dotted path to a ``domainkit.storage.scanning.Scanner`` class."""
+    OPTIONS: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments of the class, such as ``{"host": "clamav"}``."""
+
+
 class DebugToolbarConfig(BaseModel):
     """``DEBUG_TOOLBAR``: what ``DebugToolbarMiddleware`` adds while ``DEBUG``."""
 
@@ -770,6 +781,8 @@ class Settings(BaseModel):
     """Message brokers by alias; ``MESSAGING.BROKER`` names the worker's."""
     STORAGES: dict[str, StorageConfig] = Field(default_factory=dict)
     """File storages by alias (``domainkit.storage``); none unless set."""
+    UPLOAD_SCANNER: ScannerConfig | None = None
+    """The virus scanner ``save_upload`` streams uploads through; none unless set."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
     EVENT_HANDLER_TIMEOUT: float = Field(default=10.0, gt=0, le=3600)

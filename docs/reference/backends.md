@@ -120,8 +120,12 @@ Each `STORAGES` entry:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `BACKEND` | `domainkit.storage.FileSystemStorage` | Dotted path to a `domainkit.storage.Storage` class: `FileSystemStorage`, `MemoryStorage` (tests; refused in staging and production), or your own. |
+| `BACKEND` | `domainkit.storage.FileSystemStorage` | Dotted path to a `domainkit.storage.Storage` class: `FileSystemStorage`, `MemoryStorage` (tests; refused in staging and production), `domainkit.storage.s3.S3Storage`, `domainkit.storage.gcs.GCSStorage`, `domainkit.storage.azure.AzureBlobStorage` ([uploads.md](../uploads.md#object-storage)), or your own. |
 | `OPTIONS` | `{}` | The class's keyword arguments. `FileSystemStorage` takes `location` (an absolute directory), `base_url` (where a web server serves it, if one does), `file_mode` (`0o600`), and `directory_mode` (`0o700`). |
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `UPLOAD_SCANNER` | `None` | The virus scanner `save_upload` streams every upload through ([uploads.md](../uploads.md#virus-scanning)): `BACKEND`, a `domainkit.storage.scanning.Scanner` class (`ClamAVScanner` by default), and `OPTIONS`, its keyword arguments (`host`, `port` 3310, `timeout` 30 seconds). None: uploads are not scanned. |
 
 ## Brokers
 

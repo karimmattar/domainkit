@@ -62,12 +62,99 @@ await storage.delete(name)  # True if it existed
 - `MemoryStorage` keeps files in the process, for tests. Staging and
   production refuse it. `storages.reset()` forgets the storages made, and
   their files, between tests.
-- Write a storage of your own (S3, a database) by subclassing
+- Write a storage of your own (a database, another service) by subclassing
   `domainkit.storage.Storage` and implementing its `_write`, `_open`,
-  `_delete`, `_exists`, and `_size`; names reach them checked.
+  `_delete`, `_exists`, and `_size`; names reach them checked. For an
+  object store, subclass `domainkit.storage.remote.ObjectStorage` and speak
+  its protocol only.
 
 `FileSystemStorage` needs `O_NOFOLLOW` and `dir_fd`: Linux, macOS, and the
 BSDs. Its blocking calls run in worker threads.
+
+## Object storage
+
+Three storages keep files in an object store, through
+`domainkit.http.client` (pooled, retried, bounded by the request's
+deadline), with no cloud SDK. Install the `cloud` extra.
+
+| Backend | Stores | Credentials |
+| --- | --- | --- |
+| `domainkit.storage.s3.S3Storage` | AWS S3, and with `endpoint` the stores that speak its API: MinIO (`path_style=True`), Cloudflare R2 (`region="auto"`), Huawei OBS, Alibaba OSS | `access_key_id` and `secret_access_key`, else the environment as AWS's tools read it (variables, EKS's web identity, the container's) |
+| `domainkit.storage.gcs.GCSStorage` | Google Cloud Storage | `credentials_file` (a service account's key), else the metadata server (GKE, Compute Engine) |
+| `domainkit.storage.azure.AzureBlobStorage` | Azure Blob storage | `account_key` (Shared Key), or `credential`: an Entra ID application or the host's managed identity (`domainkit.cloud.azure`) |
+
+```python
+STORAGES = {
+    "default": {
+        "BACKEND": "domainkit.storage.s3.S3Storage",
+        "OPTIONS": {"bucket": "acme-files", "region": "eu-west-1", "prefix": "media/"},
+    },
+}
+```
+
+Each takes `prefix` (a folder of the bucket every name goes under) and
+`public_url` (where a CDN serves the files, which `url(name)` then
+returns). A file of up to 8 MiB is one request; a larger one a multipart
+upload (S3), a resumable upload (GCS), or blocks committed by a list
+(Azure), which a failing content aborts: files appear whole or not at
+all, as on the file system. A file is read 4 MiB at a time, one ranged
+request each, so a large one never sits in memory.
+
+### Presigned URLs
+
+A client can fetch or send a file without it passing through the
+application:
+
+```python
+url = await storage.presigned_url(name, expires=timedelta(minutes=5))
+
+upload = await storage.presigned_upload(
+    size=1_048_576, content_type="image/png", directory="avatars", extension=".png"
+)
+# Give the client upload.url, upload.method, and upload.headers; keep upload.name.
+```
+
+A presigned URL works for one second to seven days. An upload's URL signs
+its size and its type on S3 and GCS, so it takes nothing else; Azure's
+SAS cannot bind them, so check `size(name)` once the client says it is
+done. GCS signs with the service account's key (the metadata server cannot
+sign) and Azure with the account key.
+
+## Virus scanning
+
+With `UPLOAD_SCANNER` set, `save_upload` streams every upload through the
+scanner while the storage writes it:
+
+```python
+UPLOAD_SCANNER = {
+    "BACKEND": "domainkit.storage.scanning.ClamAVScanner",
+    "OPTIONS": {"host": "clamav", "port": 3310},
+}
+```
+
+The scanner's verdict comes before the last chunk is handed over, so an
+infected file makes the write fail and no storage keeps it: the client
+gets 422 `infected_file`, and the log names what was found. A scanner that
+cannot be reached, or that refuses the file (over clamd's size limit),
+refuses the upload with 503 `scanner_unavailable`: an upload is never kept
+unscanned. `ClamAVScanner` speaks clamd's `INSTREAM`; another scanner
+subclasses `domainkit.storage.scanning.Scanner`.
+
+## Thumbnails
+
+`domainkit.storage.images.thumbnail` (the `images` extra, Pillow) stores a
+scaled copy of a stored image:
+
+```python
+small = await thumbnail(storage, stored.name, size=(256, 256), format="webp")
+```
+
+It fits the image in `size`, keeping its proportions and never enlarging
+it, as WebP, PNG, or JPEG, under `thumbnails/`. It runs in a thread. An
+image of more than 50 megapixels is refused from its header before it is
+decoded (a decompression bomb costs nothing), and so is a file Pillow
+cannot read: `NotAnImage`. Metadata (EXIF, with its location) is not
+copied.
 
 ## Receiving uploads
 

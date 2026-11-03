@@ -347,6 +347,13 @@ Files: a storage port, on the file system or in memory.
 
 - `GCSStorage`: Files in one Google Cloud Storage bucket.
 
+## `domainkit.storage.images`
+
+Thumbnails of stored images (`domainkit[images]`, Pillow).
+
+- `NotAnImage`: The file is not an image Pillow reads, or is larger than `MAX_PIXELS`.
+- `thumbnail`: Store a thumbnail of the image `name` that fits `size`; its name.
+
 ## `domainkit.storage.remote`
 
 What object stores share: ranged reads, parts, presigned URLs.
@@ -359,3 +366,13 @@ What object stores share: ranged reads, parts, presigned URLs.
 `S3Storage`: files in an S3 bucket, or any store that speaks S3's API.
 
 - `S3Storage`: Files in one bucket of S3, or of a store that speaks its API.
+
+## `domainkit.storage.scanning`
+
+Virus scanning of uploads, as they are stored.
+
+- `ClamAVScanner`: clamd's `INSTREAM`: each chunk sent as it is stored, the verdict at the end.
+- `Infected`: The scanner found something in the upload; nothing was kept.
+- `Scanner`: Checks content as it streams past, and refuses it at the end.
+- `ScannerUnavailable`: The virus scanner could not scan the upload: 503, nothing kept.
+- `configured_scanner`: The `UPLOAD_SCANNER`, made once per configuration; None if unset.

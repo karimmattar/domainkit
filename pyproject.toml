@@ -108,6 +108,8 @@ cloud = [
     "httpx2 (>=2.13.0,<3.0.0)",
     "httpcore2 (>=2.13.0,<3.0.0)",
 ]
+# Thumbnails of uploaded images (domainkit.storage.images).
+images = ["pillow (>=13.0.0,<14.0.0)"]
 # The IANA time zones for cron schedules where the system has none (Windows).
 tzdata = ["tzdata (>=2025.2)"]
 # uvloop's event loop for management commands and runserver (EVENT_LOOP).

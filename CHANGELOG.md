@@ -9,6 +9,27 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- Object storage (A1): `domainkit.storage.s3.S3Storage` (AWS S3, and
+  MinIO, Cloudflare R2, Huawei OBS, Alibaba OSS through `endpoint`),
+  `domainkit.storage.gcs.GCSStorage`, and
+  `domainkit.storage.azure.AzureBlobStorage`, through
+  `domainkit.http.client` with no cloud SDK: files of up to 8 MiB in one
+  request, larger ones in parts aborted if the content fails, read 4 MiB
+  at a time. `presigned_url` and `presigned_upload` let clients fetch and
+  send files themselves, an upload's size and type signed on S3 and GCS.
+  `domainkit.cloud` holds the credentials they share: Google service
+  accounts and Entra ID applications or managed identities. The `cloud`
+  extra installs them.
+- `UPLOAD_SCANNER`: `save_upload` streams each upload through a virus
+  scanner (`ClamAVScanner`, clamd's `INSTREAM`) as it is stored; an
+  infected file is never kept (422 `infected_file`), and an unreachable
+  scanner refuses the upload (503 `scanner_unavailable`).
+- `domainkit.storage.images.thumbnail` (the `images` extra, Pillow): a
+  scaled copy of a stored image, decompression bombs refused from the
+  header.
+
 ### Changed
 
 - A resource route reads `If-Match` and `If-None-Match` from the request
