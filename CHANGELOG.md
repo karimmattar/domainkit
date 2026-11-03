@@ -11,6 +11,13 @@ and a status.
 
 ### Added
 
+- Phone verification: `domainkit.contrib.phones` sends a code by text
+  message through the outbox, keeps only an HMAC of it keyed from
+  `SECRET_KEY`, refuses it after `CODE_TTL` or `MAX_ATTEMPTS` wrong tries,
+  limits sends per number and per user (`429 rate_limited` with
+  `Retry-After`), and keeps the number as verified (`PhoneVerified`).
+- The tutorial builds a four-file domain; `test_proof.py` measures the
+  guide's shop on both layouts (C8: 371 lines against 131).
 - Search and places (A8): `F("body").search("late fee")` finds rows
   holding every word (PostgreSQL full-text search; word pieces on SQLite
   and in memory). `domainkit.search` keeps documents in a search engine

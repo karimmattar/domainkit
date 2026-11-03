@@ -135,8 +135,9 @@ Measured on the guide's shop, one aggregate with four commands:
    ([recipe](recipes/permission-rules.md)), both walked by
    `test_recipes.py`. Left: a cache backend, a broker, and an SMS or mail
    backend.
-5. **Phone verification as an app.** A `contrib.phones` with the code, its
-   hash, expiry, tries, and the SMS through the outbox, as the guide's
-   example builds by hand.
+5. **Phone verification as an app** (done). `contrib.phones` sends a
+   code through the outbox, keeps only its keyed digest, tries it
+   `MAX_ATTEMPTS` times, limits sends per number and per user, and keeps
+   the number verified ([phones.md](auth/phones.md)).
 6. **A learning path in plain words**: the tutorial on the four-file
    layout, a glossary, and the commands a day of work needs.
