@@ -12,7 +12,7 @@ CI runs them with the default example count; the weekly run, with
 """
 
 import contextlib
-from typing import Annotated, Any
+from typing import Annotated, Any, Final, Literal
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -32,10 +32,12 @@ from domainkit.utils.headers import EntityTag, none_match, parse_tags
 from domainkit_tests.gadgets import InMemoryGadgets
 from domainkit_tests.test_filters import ITEMS, gadget_filters
 
+SURROGATES: Final[tuple[Literal["Cs"]]] = ("Cs",)
+"""Lone surrogates: no text a request carries holds one."""
 KEY = "fuzz-key-" + "k" * 50
 """A signing key of its own, so no setting is read."""
 HEADER_TEXT = st.text(
-    alphabet=st.characters(codec="latin-1", exclude_categories=("Cs",)), max_size=200
+    alphabet=st.characters(codec="latin-1", exclude_categories=SURROGATES), max_size=200
 )
 """What an HTTP header can hold: latin-1 text."""
 
@@ -48,7 +50,7 @@ def broken(valid: str) -> st.SearchStrategy[str]:
         for _ in range(draw(st.integers(min_value=1, max_value=4))):
             place = draw(st.integers(min_value=0, max_value=len(text)))
             kind = draw(st.sampled_from(["drop", "change", "add"]))
-            letter = draw(st.characters(codec="utf-8", exclude_categories=("Cs",)))
+            letter = draw(st.characters(codec="utf-8", exclude_categories=SURROGATES))
             if kind == "drop":
                 text = text[:place] + text[place + 1 :]
             elif kind == "change":

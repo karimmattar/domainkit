@@ -102,7 +102,7 @@ modules = 820
 memory = 94
 
 [rungs.resource-list]
-calls = 3025
+calls = 2865
 statements = 1
 transactions = 1
 checkouts = 1
@@ -120,7 +120,7 @@ modules = 820
 memory = 94
 
 [rungs.resource-read]
-calls = 2359
+calls = 2088
 statements = 1
 transactions = 1
 checkouts = 1
@@ -129,7 +129,7 @@ modules = 820
 memory = 94
 
 [rungs.resource-command]
-calls = 3083
+calls = 2829
 statements = 1
 transactions = 1
 checkouts = 1
@@ -156,7 +156,7 @@ modules = 889
 memory = 109
 
 [rungs.posting]
-calls = 8364
+calls = 8149
 statements = 14
 transactions = 1
 checkouts = 1

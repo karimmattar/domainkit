@@ -132,7 +132,14 @@ and a status.
 
 ### Changed
 
-- A ledger posting under limits costs 8,364 calls instead of 11,973 (PERF-33):
+- A repository's `filter` keeps one statement per shape of query and binds
+  its values as parameters (PERF-33): a resource read costs 2,088 calls
+  instead of 2,359, a command 2,829 instead of 3,083, and a page 2,865
+  instead of 3,025. Exact, `in`, and comparison lookups on a table's own
+  columns take part; money, encrypted, related, and text lookups compile
+  as before.
+
+- A ledger posting under limits costs 8,148 calls instead of 11,973 (PERF-33):
   it books the entry it checked, and the statements limits and the ledger
   run on every posting are made once, so SQLAlchemy neither builds them
   nor walks them for a cache key per request.
