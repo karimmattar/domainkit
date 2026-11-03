@@ -64,7 +64,9 @@ sqlite-queue = "sqlitequeue.broker:SqliteBroker"
 and a project names it where it would name the class:
 
 ```python
-BROKERS = {"default": {"URL": "sqlitequeue:///queue.sqlite3", "BACKEND": "sqlite-queue"}}
+BROKERS = {
+    "default": {"URL": "sqlitequeue:///queue.sqlite3", "BACKEND": "sqlite-queue"}
+}
 ```
 
 This holds for `CACHES` and `BROKERS` entries' `BACKEND`, `STORAGES`,
