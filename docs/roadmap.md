@@ -184,6 +184,7 @@ What code alone cannot give, and needs others:
   first route, before and after L1 and L2. [The protocol](newcomer-study.md)
   is ready; it waits for five people.
 - **The whole suite on 3.14t**: it waits for the interpreter's fix for a
-  crash in mimalloc ([runtime.md](runtime.md)).
+  crash in CPython's weak references, seen again in five runs in November
+  2026 ([runtime.md](runtime.md#free-threaded-python)).
 
 Mutation testing stays off by decision; coverage stays at 98% or more.

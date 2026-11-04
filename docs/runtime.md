@@ -518,9 +518,13 @@ compiled extensions while loops on threads make engines at once (seen at
 leaves those three tests (marked `engines_on_threads`) to the stress job,
 and a release does not wait on that job. The whole
 suite does not run there yet: on 3.14.6t it crashes the interpreter now
-and then (a segmentation fault inside the allocator, at a different test
-each time), as it did before any of this was added, so that waits for a
-fix in the interpreter or an extension.
+and then, at a different test each time, as it did before any of this
+was added. Five runs of it in November 2026 (SQLAlchemy 2.1.4), every
+extra but `immudb`, lost nine test processes in three runs to a
+segmentation fault inside CPython, in `PyObject_ClearWeakRefs` as an
+object's last reference went, and one process spun on a test that
+passes alone, with or without the GIL. That waits for a fix in the
+interpreter; 3.14.6 is still the newest 3.14.
 
 Most state lives in one event loop and needs no lock. What event loops on
 several threads can share (a server with a loop per thread, or threads that
