@@ -34,6 +34,12 @@ and a status.
   lock on the address on PostgreSQL.
 - `UserRepository.find_by_identifier`, and `create_user` with no
   username.
+- Email verification by code: with `AUTH.VERIFICATION` set to `"code"`,
+  `POST /auth/email-verification` mails 6 digits, and
+  `POST /auth/email-verification/code` takes them (`400
+  invalid_verification_code` when wrong, spent, or expired). Codes live
+  in the new table `domainkit_auth_codes`, as HMACs only; run
+  `makemigrations` and `migrate`.
 - `normalize_mobile_number`, and the problems `invalid_mobile_number`,
   `mobile_number_taken`, `email_taken`, and `identifier_required`
   (`domainkit.contrib.auth`).

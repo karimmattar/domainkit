@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.ddd import DeferredTask, DomainEvent
 
+from .codes import CodeStore
 from .repositories import (
     GroupRepository,
     MfaStore,
@@ -42,6 +43,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
     step_ups: StepUpStore
     sca: ScaStore
     passwords: PasswordHistoryStore
+    verification_codes: CodeStore
 
     def create_repositories(self, session: AsyncSession) -> None:
         """Bind the repositories to the session."""
@@ -55,6 +57,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
         self.step_ups = StepUpStore(session)
         self.sca = ScaStore(session)
         self.passwords = PasswordHistoryStore(session)
+        self.verification_codes = CodeStore(session)
 
     async def _stage(
         self, events: Sequence[DomainEvent], tasks: Sequence[DeferredTask]

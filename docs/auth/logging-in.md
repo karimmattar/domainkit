@@ -475,6 +475,43 @@ and ends the links sent before. Staff cannot set it in the admin API,
 where it is read-only. `user.verify_email()` sets it in code.
 Verifications are audited as `auth.email_verified`.
 
+#### Verifying by code
+
+With `AUTH.VERIFICATION` set to `"code"`, the worker mails a code of 6
+digits instead of a link. The user types it in the app that asked for it:
+
+```http
+POST /auth/email-verification
+Authorization: Bearer dkt_...
+```
+
+```json
+{"detail": "A code to verify your address is on its way."}
+```
+
+```http
+POST /auth/email-verification/code
+Authorization: Bearer dkt_...
+{"code": "482913"}
+```
+
+The answer is `204`, and `email_verified` is now true. A code:
+
+- works for `AUTH.CODE_TTL` (10 minutes), and only for the address it
+  went to;
+- is spent after `AUTH.CODE_ATTEMPTS` (5) wrong tries;
+- works once, and a new code replaces the one before.
+
+A wrong, spent, or expired code gets `400 invalid_verification_code`,
+the same answer for each. Wrong codes count against `LOGIN_RATE` per
+client address, and are audited as `auth.email_verification`. The table
+`domainkit_auth_codes` keeps only an HMAC of the code and of the address,
+keyed from `SECRET_KEY`. The hourly task and `cleartokens` delete codes
+that no longer work.
+
+`init` writes `"code"` for new projects. Links stay the default in 1.x,
+and go in 2.0.
+
 ### Signing up
 
 `domainkit.contrib.auth.signup.router` has two routes. They answer 404

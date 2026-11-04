@@ -338,6 +338,31 @@ step_ups = Table(
 )
 """When each login last authenticated again, and how (``auth.stepup``)."""
 
+auth_codes = Table(
+    "domainkit_auth_codes",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    # What the code proves: "email_verification", "password_reset", ...
+    Column("purpose", String(32), nullable=False),
+    # An HMAC of the address or the number, keyed from SECRET_KEY: neither
+    # is kept here. One code per purpose and target: a new one replaces it.
+    Column("target", String(64), nullable=False),
+    # No foreign key: the user model may be swapped. None: a signup's code.
+    Column("user_id", Uuid, nullable=True),
+    # An HMAC of the code, keyed from SECRET_KEY: the code is never kept.
+    Column("digest", String(64), nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime, nullable=False),
+    UniqueConstraint(
+        "purpose", "target", name="uq_domainkit_auth_codes_purpose_target"
+    ),
+    Index("ix_domainkit_auth_codes_user_id", "user_id"),
+    Index("ix_domainkit_auth_codes_expires_at", "expires_at"),
+    info={"domain": "auth", "guarded": True, "fixtures": False},
+)
+"""Codes sent to prove someone reads an address or a number (ADR 0126)."""
+
 PAYEE_MAX_LENGTH = 255
 """The longest payee a transaction authorization names (an IBAN, an account id)."""
 PURPOSE_MAX_LENGTH = 100

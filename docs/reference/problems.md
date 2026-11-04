@@ -164,6 +164,7 @@ unique constraint may name its own code
 | `invalid_transaction` | 422 | `InvalidTransaction` (contrib.auth.sca): The amount, payee, or purpose cannot be authorized as given. |
 | `invalid_user_field` | 422 | `InvalidUserField` (contrib.auth.exceptions): A value does not fit the type of the user field it is for. |
 | `invalid_username` | 422 | `InvalidUsername` (contrib.auth.exceptions): The username is empty, too long, or uses characters it may not. |
+| `invalid_verification_code` | 400 | contrib.auth.recovery: The code is wrong or has expired; ask for a new one. |
 | `invalid_value` | 422 | http.errors: A value cannot be stored: it is too long, out of range, or holds a character the database refuses. |
 | `invalid_webhook_event_types` | 422 | `InvalidEventTypes` (contrib.webhooks.models): A subscription's event types are missing or malformed. |
 | `last_superuser` | 409 | `LastSuperuser` (contrib.auth.exceptions): The step would leave no active superuser to run the system. |

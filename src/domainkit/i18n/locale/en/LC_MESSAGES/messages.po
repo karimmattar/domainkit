@@ -168,6 +168,9 @@ msgstr ""
 msgid "The link is invalid or has expired."
 msgstr ""
 
+msgid "The code is wrong or has expired; ask for a new one."
+msgstr ""
+
 msgid "The request names no origin (Origin or Referer)."
 msgstr ""
 

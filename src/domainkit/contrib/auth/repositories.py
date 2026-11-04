@@ -93,6 +93,7 @@ from .principals import (
 )
 from .settings import auth_settings, identifier_fields
 from .tables import (
+    auth_codes,
     group_permissions,
     groups,
     mfa_devices,
@@ -286,13 +287,13 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         Its sessions, personal tokens, refresh tokens, and client
         certificates, its authenticator's secret and recovery codes, its
         step-ups, its transactions' authorizations, and the hashes of its
-        last passwords: secrets of an account nobody may use. Every
+        last passwords, and its codes: secrets of an account nobody may use. Every
         principal of the user
         is read again after the commit. The caller commits.
         """
         await TokenStore(self.session).revoke_user(user_id)
         await MfaStore(self.session).remove(user_id)
-        for table in (step_ups, sca_challenges, password_history):
+        for table in (step_ups, sca_challenges, password_history, auth_codes):
             await self.session.execute(delete(table).where(table.c.user_id == user_id))
 
     async def _add(self, aggregate: AbstractBaseUser) -> None:

@@ -1196,7 +1196,7 @@ jobs:
           - name: auth-4
             mutants: >-
               domainkit.contrib.auth.access.* domainkit.contrib.auth.certificates.*
-              domainkit.contrib.auth.erasure.* domainkit.contrib.auth.exceptions.*
+              domainkit.contrib.auth.codes.* domainkit.contrib.auth.erasure.* domainkit.contrib.auth.exceptions.*
               domainkit.contrib.auth.mfa.* domainkit.contrib.auth.models.*
               domainkit.contrib.auth.recovery.* domainkit.contrib.auth.tables.*
               domainkit.contrib.auth.testing.*

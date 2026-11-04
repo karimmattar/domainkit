@@ -16,6 +16,10 @@ mount the router next to the one that logs in::
 - ``POST /email-verification`` (a user, with credentials not limited to
   scopes) mails a link to the user's address.
 - ``POST /email-verification/confirm`` (anyone) takes the link's token.
+- ``POST /email-verification/code`` (the same user) takes the code that
+  ``POST /email-verification`` mailed, where ``AUTH.VERIFICATION`` is
+  ``"code"`` (ADR 0126): 6 digits, for ``AUTH.CODE_TTL``, spent after
+  ``AUTH.CODE_ATTEMPTS`` wrong tries. Codes are made in the worker too.
 
 Requests that send mail count against ``AUTH.EMAIL_RATE`` per client
 address and per email address (or user); tokens that do not hold count
@@ -44,6 +48,7 @@ from domainkit.http.errors import APIError
 from .access import AuthenticatedUser
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .captcha import captcha
+from .codes import EMAIL_VERIFICATION, target_of
 from .events import PasswordReset, PasswordResetRequested
 from .exceptions import InvalidEmail
 from .models import (
@@ -119,6 +124,14 @@ class TokenIn(BaseModel):
     token: str = Field(min_length=1, max_length=TOKEN_MAX_LENGTH, repr=False)
 
 
+class CodeIn(BaseModel):
+    """A code that was sent: 6 digits."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=32, repr=False)
+
+
 class AcceptedOut(BaseModel):
     """What happens next."""
 
@@ -134,6 +147,18 @@ class InvalidLink(APIError):
             status.HTTP_400_BAD_REQUEST,
             "The link is invalid or has expired.",
             code="invalid_token",
+        )
+
+
+class InvalidCode(APIError):
+    """The code is wrong, used, or expired: which one is not said (400)."""
+
+    def __init__(self) -> None:
+        """Use status 400 and the code ``invalid_verification_code``."""
+        super().__init__(
+            status.HTTP_400_BAD_REQUEST,
+            "The code is wrong or has expired; ask for a new one.",
+            code="invalid_verification_code",
         )
 
 
@@ -197,12 +222,16 @@ async def confirm_password_reset(
 async def request_email_verification(
     request: Request, user: AuthenticatedUser
 ) -> AcceptedOut:
-    """Mail a link that verifies the user's address (none if it is verified)."""
+    """Mail a link, or a code, that verifies the user's address.
+
+    Nothing goes to an address that is verified already.
+    """
     await _limit_mail(
         request, "email-verification", f"email-verification:user:{user.id}"
     )
     await enqueue(send_email_verification, user_id=user.id)
-    return AcceptedOut(detail="A link to verify your address is on its way.")
+    sent = "code" if auth_settings().VERIFICATION == "code" else "link"
+    return AcceptedOut(detail=f"A {sent} to verify your address is on its way.")
 
 
 @router.post(
@@ -224,6 +253,46 @@ async def confirm_email_verification(body: TokenIn, request: Request) -> None:
         await _count_failed_check(request, "email-verification")
         await audit_refusal("auth.email_verification", "invalid_token")
         raise InvalidLink
+
+
+@router.post(
+    "/email-verification/code",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(Require(IsUnscoped()))],
+    responses=_errors(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def confirm_email_verification_code(
+    body: CodeIn, request: Request, user: AuthenticatedUser
+) -> None:
+    """Mark the user's address verified with the code mailed to it.
+
+    The code holds for the address it went to: once the address changes,
+    it no longer works.
+    """
+    async with AuthUnitOfWork() as uow:
+        stored = await uow.users.get(UserId(user.id))
+        address = email_of(stored)
+        proven = None
+        if address is not None:
+            target = target_of(address)
+            proven = await uow.verification_codes.check(
+                EMAIL_VERIFICATION, target, body.code
+            )
+        if proven is not None and proven.user_id == stored.id:
+            # Startup checks that the user model can (AbstractUser can).
+            cast(AbstractUser, stored).verify_email()
+        else:
+            proven = None
+        await uow.commit()  # A wrong try stays counted.
+    if proven is None:
+        await _count_failed_check(request, "email-verification")
+        await audit_refusal("auth.email_verification", "invalid_verification_code")
+        raise InvalidCode
 
 
 async def send_password_reset(email: str) -> None:
@@ -258,9 +327,11 @@ async def send_password_reset(email: str) -> None:
 
 
 async def send_email_verification(user_id: UUID) -> None:
-    """Mail a verification link to the user's address, unless it is verified.
+    """Mail a verification link, or code, to the user's address.
 
-    The ``domainkit.auth.send_email_verification`` task.
+    The ``domainkit.auth.send_email_verification`` task. Nothing goes to an
+    address that is verified already. With ``AUTH.VERIFICATION`` set to
+    ``"code"``, a new code replaces the one before.
     """
     # Imported here: a process that only serves requests never loads mail (PERF-15).
     from domainkit.contrib.mail import deliver, render_mail
@@ -272,6 +343,16 @@ async def send_email_verification(user_id: UUID) -> None:
         return
     address = email_of(user)
     if address is None or not _mailable(user, address):
+        return
+    if config.VERIFICATION == "code":
+        async with AuthUnitOfWork() as uow:
+            code = await uow.verification_codes.issue(
+                EMAIL_VERIFICATION, target_of(address), user_id=user.id
+            )
+            await uow.commit()
+        context = _code_context(user, code)
+        mail = render_mail("auth/email_verification_code", context, to=[address])
+        await deliver([mail])
         return
     token = email_verification_tokens.make_token(user)
     context = _context(
@@ -346,6 +427,16 @@ def _context(
         "username": user.get_username(),
         "link": link,
         "valid_for": describe(valid_for),
+    }
+
+
+def _code_context(user: AbstractBaseUser, code: str) -> dict[str, object]:
+    """What the code templates are given."""
+    return {
+        "user": user,
+        "username": user.get_username(),
+        "code": code,
+        "valid_for": describe(auth_settings().CODE_TTL),
     }
 
 
