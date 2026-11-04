@@ -41,6 +41,7 @@ PARTS = (
 ENVIRONMENT_LINES = (
     "python3.13 -m venv .venv && . .venv/bin/activate",
     'pip install "domainkit[postgres,redis,sqlite,testing]"',
+    "pip install --group dev",
 )
 """Lines that build the environment this interpreter already is."""
 TYPED = {"PASSWORD": "correct-horse-battery", "CLERK_PASSWORD": "staple-lantern-oak"}

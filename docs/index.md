@@ -15,7 +15,8 @@ versions.
 - **New to domainkit?** [Getting started](tutorial.md): six short parts,
   from `pip install` to a tested service with rules, permissions, and a
   worker.
-  [Coming from Django](from-django.md) maps what you know to its name
+  [Coming from Django](from-django.md) and
+  [coming from FastAPI](from-fastapi.md) map what you know to its name
   here.
 - **Doing one thing?** The [how-to recipes](recipes.md): a payment that
   runs again, work that commits once per message, replacing a JWT key,

@@ -23,10 +23,15 @@ production, `redis` counts its rate limits and login attempts there, and
 ```bash
 domainkit init bankAPI bank
 cd bank
+pip install --group dev
 python manage.py check
 ```
 
-`bankAPI` is the project's name, and `bank` its directory. The name also
+`bankAPI` is the project's name, and `bank` its directory. `--group dev`
+installs the project's tools, among them ruff, which formats the code the
+generators of the next parts write. `init` ends with a list of next steps:
+this tutorial takes them in its own order, the database and the first
+user in [part 1](1-first-resource.md). The name also
 sets the prefix of its environment variables: `BANK_API_*`. On this
 machine the project reads `config.settings.local` (`.env` says so), which
 keeps its data in `db.sqlite3`. `check` reads the settings and the routes,
@@ -34,7 +39,8 @@ and says what is wrong before anything runs.
 
 ## A first route
 
-A route is a function, as in FastAPI, which domainkit is built on. This one
+A route is a function that answers a URL: a view in Flask or Django, a
+path operation in FastAPI, which domainkit is built on. This one
 answers the bank's interest rates. Make the file:
 
 ```python title="src/config/rates.py (new file)"
@@ -71,14 +77,15 @@ python manage.py runserver
 ```
 
 Leave it running. Open a second shell, `cd` to `bank`, activate the same
-environment, and call it:
+environment (`. ../.venv/bin/activate` from there), and call it:
 
 ```bash
 curl http://127.0.0.1:8000/rates
 ```
 
 The answer is `{"savings":"2.5","checking":"0"}`. Stop the server with
-Ctrl-C.
+Ctrl-C. If port 8000 is taken, `python manage.py runserver 8001` serves on
+another; call that port instead, here and in the next parts.
 
 ## A test
 

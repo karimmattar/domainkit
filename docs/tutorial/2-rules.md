@@ -24,7 +24,8 @@ write.
 
 ## Write the rules
 
-Open `src/domains/accounts/domain.py`. Add the `Digits` import, two
+Open `src/domains/accounts/domain.py`. Add `Digits` to the names imported
+from `domainkit.ddd` (in the list at the top, or on a line of its own), two
 refusals beside `InvalidAccountName`, the `balance` and `archived` fields
 after `name`, and replace the `deposit` and `archive` methods with these:
 
@@ -93,7 +94,8 @@ The accounts table has a row already, the one part 1 opened, and a column
 that may not be empty needs a value for it: the balance is two columns,
 the amount and its currency, and `archived` a third. In the migration
 `makemigrations` just wrote (`migrations/0002_..._account_balance.py`),
-give the columns defaults for the rows that exist, then apply it:
+give the columns defaults for the rows that exist: replace its `upgrade()`
+with this one, keep its `downgrade()`, then apply it:
 
 ```python title="migrations/0002_*_account_balance.py"
 def upgrade() -> None:
@@ -138,7 +140,8 @@ python manage.py runserver
 ```
 
 From the second shell, where `$TOKEN` and `$ID` are still set, deposit
-100 dollars. The answer is the account, with its new balance:
+100 dollars (in a new shell, set them again with part 1's
+[login and `ID=` lines](1-first-resource.md#call-it)). The answer is the account, with its new balance:
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorization: Bearer $TOKEN" \
@@ -157,6 +160,9 @@ curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorizatio
 curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{"amount": {"amount": "5.00", "currency": "EUR"}}'   # 422
 ```
+
+Each answer names its cause: `invalid_amount`; `validation_error`, with
+`inexact_amount` in its `errors`; and `currency_mismatch`.
 
 Archive a second account, and see `_ensure_open()` refuse a deposit to it:
 

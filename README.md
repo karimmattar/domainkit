@@ -134,6 +134,7 @@ python3.13 -m venv .venv && . .venv/bin/activate
 pip install "domainkit[postgres,redis,sqlite,testing]"
 domainkit init billingAPI billing     # the name sets the variable prefix: BILLING_API_*
 cd billing
+pip install --group dev
 python manage.py check
 python manage.py startdomain invoices --aggregate Invoice --minimal   # installs and mounts it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate

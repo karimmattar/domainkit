@@ -32,8 +32,9 @@ A domain that grows large can keep a package per layer instead
 `startdomain` added the domain to `INSTALLED_DOMAINS` and mounted its
 router at `/api/v1/accounts` in `src/config/urls.py`. The resource is
 `/accounts` within it, so its URL is `/api/v1/accounts/accounts`.
-`makemigrations` wrote a migration for the table the aggregate maps to, and
-`migrate` applied it.
+`makemigrations` wrote the project's first migration: the table the
+aggregate maps to, and the tables of the domains every project has
+(users, groups, tokens, the messages of the outbox). `migrate` applied it.
 
 ## Create a user
 

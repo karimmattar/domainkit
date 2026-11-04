@@ -20,7 +20,10 @@ about a quarter of an hour. None of them needs a reference page.
    tests of the rules, and the checks production runs at startup.
 
 You need Python 3.13 or 3.14, and `curl`. Work through the parts in order,
-in one directory: each starts where the one before ended.
+in one directory: each starts where the one before ended. The words the
+parts use are in [learning.md](learning.md#words); coming from Django or
+FastAPI, [from-django.md](from-django.md) and
+[from-fastapi.md](from-fastapi.md) map what you know onto them.
 
 Every command and every code change on these pages is run as written, in
 that order, by the tests (`domainkit_tests/test_walkthroughs.py`). If one
