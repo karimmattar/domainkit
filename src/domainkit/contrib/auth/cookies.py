@@ -76,6 +76,7 @@ from .authentication import (
     stored_credential,
     unless_idle,
 )
+from .captcha import captcha
 from .devices import hand_out
 from .events import UserLoggedOut
 from .mfa import MfaLoginIn, challenge, first_use_after_code, verify_challenge
@@ -260,8 +261,9 @@ class CsrfOut(BaseModel):
 
 @router.post(
     "/session",
-    dependencies=[Public],
+    dependencies=[Public, captcha("login")],  # The same captcha as /login.
     responses=_errors(
+        status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
         status.HTTP_429_TOO_MANY_REQUESTS,

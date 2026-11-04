@@ -152,6 +152,10 @@ and a status.
   now protects it (the `on_migrated` hooks run in the tenant's schema), and
   `audit seal`, `audit verify`, and `audit forget` cover each tenant's
   trail, under the ledger key `<alias>/<schema>` (A6-4).
+- `AUTH.CAPTCHA` with `login` in `ON` covered `POST /auth/login` only: a
+  browser login, `POST /auth/session`, checked the same password with no
+  captcha, so a bot could guess passwords there. It asks for the same
+  captcha now.
 
 ### Fixed
 

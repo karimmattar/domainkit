@@ -549,12 +549,11 @@ Only the token and the secret are sent, never the client's address.
 | --- | --- | --- |
 | `PROVIDER` | required | `"turnstile"`, `"recaptcha"`, or `"hcaptcha"`. |
 | `SECRET` | required | The provider's secret key for the site. |
-| `ON` | `{"login", "signup", "password_reset"}` | The routes that ask: `POST /auth/login`, `POST /auth/signup`, and `POST /auth/password-reset`. |
+| `ON` | `{"login", "signup", "password_reset"}` | The routes that ask. `login` covers both ways to log in with a password: `POST /auth/login` and `POST /auth/session` (browser sessions). `signup` covers `POST /auth/signup`, and `password_reset` covers `POST /auth/password-reset`. |
 | `MIN_SCORE` | `0.5` | reCAPTCHA v3's lowest score let through (0 to 1). |
 
-`ON` covers those three routes only. `POST /session` (browser sessions)
-does not ask for a captcha. To ask for one on a route of your own, use
-the dependency `captcha(action)` with one of the three names:
+To ask for a captcha on a route of your own, use the dependency
+`captcha(action)` with one of the three names:
 
 ```python
 from domainkit.contrib.auth.captcha import captcha
@@ -610,8 +609,8 @@ every key with its bounds.
 - **Dropping a `SECRET_KEY` fallback before `resealmfa`.** Users whose
   secret is still under it can no longer use their app.
 - **A reset URL without `{token}`.** The settings refuse it.
-- **Expecting `/session` to ask for a captcha.** Only the three routes of
-  `ON` do.
+- **Forgetting the captcha token on a browser login.** With `login` in
+  `ON`, `POST /auth/session` needs `X-Captcha-Token` too.
 - **Taking a password at `/signup`.** It is taken at `/signup/confirm`,
   from whoever reads the mail.
 

@@ -113,3 +113,24 @@ def test_tokens_too_short_or_too_long_are_not_sent(identity: Api, token: str) ->
 
     assert answer.status_code == 400
     assert seen == []
+
+
+def test_a_browser_login_asks_for_the_same_captcha(identity: Api) -> None:
+    """``POST /auth/session`` checks a password too: it was left out of ``login``."""
+    client = identity(CAPTCHA={**TURNSTILE, "ON": ["login"]})
+    create_user("ann")
+    credentials = {"username": "ann", "password": PASSWORD}
+    origin = {"Origin": "http://testserver"}
+    seen: list[dict[str, str]] = []
+
+    missing = client.post("/auth/session", json=credentials, headers=origin)
+    with stub(verifier({"success": True}, seen)):
+        solved = client.post(
+            "/auth/session",
+            json=credentials,
+            headers={**origin, "X-Captcha-Token": "good"},
+        )
+
+    assert (missing.status_code, missing.json()["code"]) == (400, "captcha_failed")
+    assert solved.status_code == 200, solved.json()
+    assert seen == [{"secret": "site-secret", "response": "good"}]
