@@ -122,6 +122,12 @@ and a status.
   staging and production `shell` and `dbshell` are recorded as they open.
   An operator command stopped part way (Ctrl-C) is recorded as a failure,
   not left out: what it did may have been committed (A6-5).
+- A ledger read on immudb took the server's answer as it came. The SDK
+  proves the value of a key in its transaction, but not an answer
+  through a reference, nor the revision's number. A read now refuses a
+  reference, another key, and another revision than the one asked for
+  (`LedgerTampered`); the latest revision's number stays the server's word
+  (A6-6).
 
 ### Fixed
 

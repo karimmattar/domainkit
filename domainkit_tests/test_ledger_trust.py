@@ -171,7 +171,9 @@ class FakeClient:
             raise RpcError("key not found")
         number = atRevision or len(revisions)
         tx, value = revisions[number - 1]
-        return SimpleNamespace(id=tx, value=value, revision=number)
+        return SimpleNamespace(
+            id=tx, key=key, value=value, revision=number, refkey=None
+        )
 
     def scan(
         self, key: bytes, prefix: bytes, desc: bool, limit: int
