@@ -143,6 +143,8 @@ def app(migrated: Migrated) -> Iterator[App]:
             clients.enter(override_settings(IDENTITY=identity))
             client = clients.client(("testclient", 50000))
             client.follow_redirects = False
+            # Over HTTPS: the flow's cookie is Secure, as on any real site.
+            client.base_url = client.base_url.copy_with(scheme="https")
             return client
 
         yield make
@@ -278,3 +280,29 @@ def test_without_a_frontend_url_the_acs_refuses(app: App) -> None:
     )
 
     assert answer.status_code == 422
+
+
+def test_a_saml_login_is_finished_only_in_the_browser_that_started_it(
+    app: App,
+) -> None:
+    """The ACS and the ticket read the cookie the start set; another browser lacks it.
+
+    The audit found an attacker's RelayState, or ticket, finished in the
+    victim's browser, logging the victim into the attacker's account (A2-2).
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    request_id, relay = start(client)
+    client.cookies.clear()  # Another browser: it never started this flow.
+    elsewhere = acs(client, response(request_id), relay)
+
+    request_id, relay = start(client)
+    sent = acs(client, response(request_id), relay)
+    kept = dict(client.cookies)
+    client.cookies.clear()
+    stolen = client.post("/auth/identity/ticket", json={"ticket": sent["ticket"]})
+    client.cookies.update(kept)
+    redeemed = client.post("/auth/identity/ticket", json={"ticket": sent["ticket"]})
+
+    assert elsewhere == {"error": "saml_refused"}
+    assert stolen.json()["code"] == "identity_not_linked"
+    assert redeemed.status_code == 200, redeemed.json()

@@ -37,6 +37,13 @@ and a status.
   and its refusal was not audited: ldap3 cannot pack a fractional
   `TIMEOUT`. It is rounded up to whole seconds, and any failure of the
   directory now refuses the password (A2-4).
+- A provider's answer (OAuth 2's `state`, SAML's `RelayState` and its
+  ticket) was finished in whichever browser sent it, so an attacker's own
+  flow, finished in a victim's browser, logged the victim into the
+  attacker's account or linked the victim's identity to it. A flow is
+  finished only in the browser that started it: the OAuth 2 start answers
+  a `binding` the callback must send back, and SAML's start sets a cookie
+  that the ACS and the ticket's redemption read (A2-2).
 - Linking an identity at a provider needed only an access token, worked
   while staff acted as the user, and was not audited: whoever held a
   stolen token could link their own identity and keep the account. A link

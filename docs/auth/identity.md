@@ -79,16 +79,20 @@ IDENTITY = {
 | Endpoint | Who | Answer |
 | --- | --- | --- |
 | `GET /identity/providers` | anyone | `{"providers": [...], "saml": [...]}`: the names. |
-| `POST /identity/{name}/login` | anyone | `{"authorization_url"}`: send the browser there. |
+| `POST /identity/{name}/login` | anyone | `{"authorization_url", "binding"}`: send the browser there, and keep the binding (in `sessionStorage`, say) for the callback. |
 | `POST /identity/{name}/link` | a user | The same, to link an identity to the user: `{"password"}`, or a step-up in the last ten minutes; never as an impersonation (`reauthentication_required`, 401). |
-| `POST /identity/{name}/callback` | anyone | `{"code", "state"}` the provider sent your page: `200` with tokens, `202` with the second factor's challenge, or `{"linked": "<name>"}` for a link. |
-| `POST /identity/ticket` | anyone | `{"ticket"}` a SAML response gave: tokens or a challenge, once. |
+| `POST /identity/{name}/callback` | anyone | `{"code", "state"}` the provider sent your page, and the `binding` its start answered: `200` with tokens, `202` with the second factor's challenge, or `{"linked": "<name>"}` for a link. |
+| `POST /identity/ticket` | anyone | `{"ticket"}` a SAML response gave, from the browser that started the login (its cookie): tokens or a challenge, once. |
 | `GET /identity/linked` | a user | The user's identities: provider, email, when linked. |
 | `DELETE /identity/linked/{name}` | a user | `204`: unlinked, unless it is the last way in. |
 
 Every authorization URL carries PKCE (S256), a state, and (OpenID
 Connect) a nonce, kept server-side and used once: a state works only at
-its provider and only within `FLOW_TTL`. An ID token is believed only
+its provider and only within `FLOW_TTL`. A flow is finished only in the
+browser that started it: the callback must send the start's `binding`
+(a signature of its state, which a page that did not start the flow
+never holds), so a link or login of the attacker's own, finished in the
+victim's browser, is refused. An ID token is believed only
 when signed by a key of the provider's JWKS with an asymmetric
 algorithm, issued by the provider, for this client, unexpired, and with
 the flow's nonce. GitHub, which speaks OAuth 2 alone, is asked for the
@@ -148,9 +152,13 @@ answer this request (`InResponseTo`), and be within its times. The email
 is `EMAIL_ATTRIBUTE`'s value, or the NameID when its format is an email
 address. Encrypted assertions are not read.
 
-The browser is then sent (303) to `FRONTEND_URL` with a one-time
+`/identity/saml/{name}/login` sets a cookie (`__Host-dk_identity`,
+`HttpOnly`, `SameSite=None`) binding the login to the browser; the ACS and
+the ticket's redemption refuse a login another browser started, so the
+page and the API must share a site for it to be sent. The browser is
+then sent (303) to `FRONTEND_URL` with a one-time
 `?ticket=`, which the page trades for tokens at `/identity/ticket`
-within `TICKET_TTL`, or with `?error=`: `saml_refused` for a response
+within `TICKET_TTL`, with credentials (cookies), or with `?error=`: `saml_refused` for a response
 that does not hold, or a problem code above. Tokens never travel in a
 URL. `/identity/saml/{name}/metadata` describes this service provider
 for the identity provider. SAML logs in; it does not link.

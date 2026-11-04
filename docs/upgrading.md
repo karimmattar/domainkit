@@ -53,6 +53,15 @@ deferred again by the change that made it.
 a step-up in the last ten minutes, as adding a passkey does; without
 either it answers `401 reauthentication_required`.
 
+### A login at a provider is finished where it started
+
+`POST /auth/identity/{name}/login` and `/link` answer a `binding` with
+the authorization URL. Keep it in the page (`sessionStorage`) and send it
+with the callback, `{"code", "state", "binding"}`: a callback without it
+answers 422, with another `identity_not_linked`. SAML's login sets a
+cookie the ACS and `POST /auth/identity/ticket` read: redeem the ticket
+with credentials, from the page's site.
+
 ### LDAP checks the directory's certificate
 
 `ldaps://` and `START_TLS` check the directory's certificate and name

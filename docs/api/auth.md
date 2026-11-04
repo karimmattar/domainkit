@@ -259,6 +259,15 @@ The routes of logging in and linking through identity providers.
 
 - `router`: The routes: providers, login, link, callback, ticket, and linked identities.
 
+## `domainkit.contrib.identity.binding`
+
+A login or link started in one browser is finished in that browser only.
+
+- `COOKIE`: The cookie SAML's start sets: the binding of the browser's flow.
+- `TICKET_SEPARATOR`: Between a SAML ticket and the flow it ends, in what the page redeems.
+- `binding`: The binding of the flow `flow`: what its browser holds.
+- `bound`: Whether `given` is the binding of `flow`, compared in constant time.
+
 ## `domainkit.contrib.identity.events`
 
 What happens to a user's identities at providers (audited as `identity.*`).

@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from domainkit.conf import override_settings
 from domainkit.contrib.identity import providers as providers_module
+from domainkit.contrib.identity.binding import binding
 from domainkit.http.client import stub
 from domainkit_tests.conftest import (
     IDENTITY,
@@ -143,13 +144,20 @@ def app(migrated: Migrated) -> Iterator[App]:
         yield make
 
 
+def back(code: str, state: str) -> dict[str, str]:
+    """A callback's body, from the browser that started the flow."""
+    return {"code": code, "state": state, "binding": binding(state)}
+
+
 def log_in_at(client: TestClient, idp: FakeIdP, name: str = "idp") -> Any:  # noqa: ANN401
     """Start a login, log in at the provider, and come back: the answer."""
     started = client.post(f"/auth/identity/{name}/login")
     assert started.status_code == 200, started.json()
     code, state = idp.authorize(started.json()["authorization_url"])
+    kept = started.json()["binding"]
     return client.post(
-        f"/auth/identity/{name}/callback", json={"code": code, "state": state}
+        f"/auth/identity/{name}/callback",
+        json={"code": code, "state": state, "binding": kept},
     )
 
 
@@ -219,7 +227,8 @@ def test_a_user_links_an_identity_then_logs_in_with_it(app: App, idp: FakeIdP) -
     )
     code, state = idp.authorize(started.json()["authorization_url"])
     linked = client.post(
-        "/auth/identity/idp/callback", json={"code": code, "state": state}
+        "/auth/identity/idp/callback",
+        json=back(code, state),
     )
     logged_in = log_in_at(client, idp)
     me = client.get("/auth/me", headers=bearer(logged_in.json()["access_token"]))
@@ -252,7 +261,8 @@ def test_an_identity_linked_elsewhere_and_the_last_way_in(
     )
     code, state = idp.authorize(started.json()["authorization_url"])
     taken = client.post(
-        "/auth/identity/idp/callback", json={"code": code, "state": state}
+        "/auth/identity/idp/callback",
+        json=back(code, state),
     )
     last = client.delete("/auth/identity/linked/idp", headers=bearer(made))
 
@@ -267,10 +277,12 @@ def test_a_state_works_once_and_only_at_its_provider(app: App, idp: FakeIdP) -> 
     code, state = idp.authorize(started.json()["authorization_url"])
 
     elsewhere = client.post(
-        "/auth/identity/other/callback", json={"code": code, "state": state}
+        "/auth/identity/other/callback",
+        json=back(code, state),
     )
     replayed = client.post(
-        "/auth/identity/idp/callback", json={"code": code, "state": state}
+        "/auth/identity/idp/callback",
+        json=back(code, state),
     )
     unknown = client.post("/auth/identity/nope/login")
 
@@ -374,7 +386,8 @@ def test_github_speaks_oauth_2(app: App) -> None:
         started = client.post("/auth/identity/github/login").json()["authorization_url"]
         state = dict(parse_qsl(urlsplit(started).query))["state"]
         answer = client.post(
-            "/auth/identity/github/callback", json={"code": "c", "state": state}
+            "/auth/identity/github/callback",
+            json=back("c", state),
         )
 
     assert started.startswith("https://github.com/login/oauth/authorize?")
@@ -431,3 +444,34 @@ def test_presets_name_their_issuers_and_apple_signs_its_secret() -> None:
     with pytest.raises(ImproperlyConfigured, match="ISSUER"):
         make_provider("o", ProviderSettings(**base)).issuer()  # type: ignore[attr-defined]
     assert PASSWORD
+
+
+def test_a_flow_is_finished_only_in_the_browser_that_started_it(
+    app: App, idp: FakeIdP
+) -> None:
+    """A callback without the start's binding is refused, before any exchange.
+
+    The audit found an attacker's own flow finished in the victim's browser:
+    the victim logged into the attacker's account, or their identity linked
+    to it (A2-2). The victim's page holds no binding of that flow.
+    """
+    client = app(PROVIDERS={"idp": OIDC}, SIGNUP=True)
+    started = client.post("/auth/identity/idp/login").json()
+    code, state = idp.authorize(started["authorization_url"])
+
+    forged = client.post(
+        "/auth/identity/idp/callback",
+        json={"code": code, "state": state, "binding": "not-this-flows"},
+    )
+    unbound = client.post(
+        "/auth/identity/idp/callback", json={"code": code, "state": state}
+    )
+    kept = client.post(
+        "/auth/identity/idp/callback",
+        json={"code": code, "state": state, "binding": started["binding"]},
+    )
+
+    assert forged.json()["code"] == "identity_not_linked"
+    assert unbound.status_code == 422
+    assert idp.forms[1:] == []  # Only the bound callback exchanged its code.
+    assert kept.status_code == 200, kept.json()
