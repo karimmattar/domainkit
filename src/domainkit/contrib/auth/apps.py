@@ -471,6 +471,24 @@ class AuthConfig(DomainConfig):
     def _deployment_errors(self, config: AuthSettings) -> list[CheckMessage]:
         """What ``_check_deployment`` refuses, in the order it is checked."""
         errors = []
+        names = {field.name for field in dataclasses.fields(self.user_model)}
+        identifiers = config.IDENTIFIERS or ()
+        if unknown := [name for name in identifiers if name not in names]:
+            errors.append(
+                CheckMessage(
+                    "auth.E011",
+                    f"AUTH.IDENTIFIERS names {', '.join(map(repr, unknown))}, which "
+                    f"{self.user_model.__name__} has no field for; name its fields, "
+                    "such as 'email' or 'mobile_number'.",
+                )
+            )
+        if len(set(identifiers)) != len(identifiers):
+            errors.append(
+                CheckMessage(
+                    "auth.E011",
+                    "AUTH.IDENTIFIERS names a field twice: name each once.",
+                )
+            )
         if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
             errors.append(
                 CheckMessage(

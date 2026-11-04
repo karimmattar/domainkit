@@ -15,6 +15,7 @@ from domainkit.contrib.auth import (
     AbstractBaseUser,
     AnonymousUser,
     Group,
+    IdentifierRequired,
     InvalidEmail,
     InvalidGroupName,
     InvalidUsername,
@@ -121,14 +122,18 @@ def test_creating_users_checks_and_tidies_names() -> None:
     assert facts(user.pull_events()) == [
         ("UserCreated", {"user_id": user.id, "username": "alice"})
     ]
-    for bad in ("", "has space", "x" * 151, "semi;colon"):
+    for bad in ("has space", "x" * 151, "semi;colon"):
         with pytest.raises(InvalidUsername) as refused:
             User.create(password=HASH, username=bad)
         assert refused.value.message == (
             "A username has 1 to 150 letters, digits, and @ . + - _ characters."
         )
-    with pytest.raises(InvalidUsername):
-        User.create(password=HASH)
+    for nothing in ({}, {"username": ""}, {"username": None, "email": " "}):
+        with pytest.raises(IdentifierRequired) as missing:
+            User.create(password=HASH, **nothing)
+        assert missing.value.message == (
+            "Give a username, an email address, or a mobile number."
+        )
     assert User.create(password=HASH, username="x" * 150).email == ""
     assert normalize_email("not-an-email ") == "not-an-email"
     assert normalize_email("Q@Q@EXAMPLE.COM") == "Q@Q@example.com"
@@ -498,10 +503,17 @@ def test_tokens_codes_and_passwords_stay_out_of_reprs() -> None:
 
 def test_staff_see_and_change_only_the_fields_a_model_names() -> None:
     """Allowlists, never the username or protected fields; nothing by default."""
-    assert User.editable_fields() == {"email", "first_name", "last_name"}
+    assert User.editable_fields() == {
+        "email",
+        "mobile_number",
+        "first_name",
+        "last_name",
+    }
     assert User.admin_fields() == {
         "email",
         "email_verified",
+        "mobile_number",
+        "mobile_number_verified",
         "first_name",
         "last_name",
         "date_joined",

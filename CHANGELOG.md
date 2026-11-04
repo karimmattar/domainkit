@@ -9,6 +9,31 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- The built-in `User` has a `mobile_number` (E.164, unique when set) and
+  a `mobile_number_verified` flag, and its `username` is optional (unique
+  when set). A user needs at least one of a username, an email address,
+  or a mobile number (`422 identifier_required`). `get_username()`
+  returns the first one that is set. Run `makemigrations` and `migrate`
+  once (ADR 0126).
+- `AUTH.IDENTIFIERS` names the user fields that identify a user, in the
+  order a login tries them, such as `("email", "mobile_number")`. Its
+  default is the user model's `USERNAME_FIELD` alone, as before. A field
+  the user model does not have, or one named twice, stops startup
+  (`auth.E011`).
+- `AUTH.VERIFICATION` (`"link"` or `"code"`), `AUTH.CODE_TTL`, and
+  `AUTH.CODE_ATTEMPTS`, for verification by code (ADR 0126).
+- `normalize_mobile_number`, and the problems `invalid_mobile_number`,
+  `mobile_number_taken`, `email_taken`, and `identifier_required`
+  (`domainkit.contrib.auth`).
+
+### Fixed
+
+- `contrib.phones` took digits of any script (`\d`) in a phone number,
+  such as Arabic-Indic digits. It now takes ASCII digits only, as E.164
+  says.
+
 ## [1.7.1] - 2026-11-04
 
 ### Fixed

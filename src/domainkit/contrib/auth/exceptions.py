@@ -23,6 +23,30 @@ class UsernameTaken(DuplicateValue):
     code = "username_taken"
 
 
+class InvalidMobileNumber(BusinessRuleViolation):
+    """The mobile number is not one in international form (E.164)."""
+
+    code = "invalid_mobile_number"
+
+
+class MobileNumberTaken(DuplicateValue):
+    """Another user has that mobile number."""
+
+    code = "mobile_number_taken"
+
+
+class EmailTaken(DuplicateValue):
+    """Another user has that email address, and it identifies users."""
+
+    code = "email_taken"
+
+
+class IdentifierRequired(BusinessRuleViolation):
+    """A user needs at least one identifier: a username, an email, or a number."""
+
+    code = "identifier_required"
+
+
 class InvalidGroupName(BusinessRuleViolation):
     """The group name is empty or too long."""
 

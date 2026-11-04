@@ -202,7 +202,7 @@ def test_users_are_people_to_privacy(private: Api) -> None:
     (user,) = [model for model in personal_models() if model.key == "auth.user"]
 
     assert dict(user.subjects) == {
-        "id": ("username", "email", "first_name", "last_name")
+        "id": ("username", "email", "mobile_number", "first_name", "last_name")
     }
     assert user.erases_itself()
     assert problems() == []
@@ -223,6 +223,7 @@ def test_exports_hold_the_users_personal_fields(private: Api) -> None:
             "fields": {
                 "username": "alice",
                 "email": "alice@example.com",
+                "mobile_number": None,
                 "first_name": "Alice",
                 "last_name": "Smith",
             },
@@ -262,6 +263,7 @@ def test_erasure_ends_the_account_and_its_credentials(
     assert erased["details"]["fields"] == [
         "username",
         "email",
+        "mobile_number",
         "first_name",
         "last_name",
     ]

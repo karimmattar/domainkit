@@ -133,6 +133,10 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where, and must be there. Staging and production refuse `http://`, here and in the other link URLs (`auth.E006`). |
 | `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link, or a signup link, works. |
 | `EMAIL_VERIFICATION_URL` | `None` | Your page that takes a verification token: `{token}` marks where. |
+| `IDENTIFIERS` | `None` | The user fields that identify a user (`None`: the user model's `USERNAME_FIELD` alone), in the order a login tries them, such as `("email", "mobile_number")`; at least one. Each must be a field of the user model, and named once (`auth.E011`) (ADR 0126). |
+| `VERIFICATION` | `"link"` | How signup, email verification, and password resets prove that someone reads an address or a number: a signed `"link"`, or a `"code"` of 6 digits. `init` writes `"code"`; links are deprecated, and go in 2.0. |
+| `CODE_TTL` | 10 minutes | How long a code works, from 1 minute to 1 hour. |
+| `CODE_ATTEMPTS` | `5` | Wrong tries that spend a code, from 1 to 10. |
 | `SIGNUP_ENABLED` | `False` | Let anyone ask for an account at `/signup`. |
 | `SIGNUP_URL` | `None` | Your page that takes a signup link's token: `{token}` marks where. |
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |

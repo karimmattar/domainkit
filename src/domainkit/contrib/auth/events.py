@@ -111,6 +111,12 @@ class EmailVerified(DomainEvent):
     user_id: UUID
 
 
+class MobileNumberVerified(DomainEvent):
+    """The user proved they receive texts at their mobile number."""
+
+    user_id: UUID
+
+
 class UserSignedUp(DomainEvent):
     """Someone created their own account (``AUTH.SIGNUP_ENABLED``)."""
 

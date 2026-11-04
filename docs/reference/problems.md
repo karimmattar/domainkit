@@ -103,6 +103,7 @@ unique constraint may name its own code
 | `domain_error` | 400 | `DomainError` (ddd.exceptions): A business rule refused the operation; the message is safe to show. |
 | `duplicate_value` | 409 | `DuplicateValue` (ddd.exceptions): A value that must be unique is taken (a unique constraint refused it). |
 | `earlier_period_open` | 422 | `EarlierPeriodOpen` (contrib.accounting.exceptions): Closing a period while one before it is still open. |
+| `email_taken` | 409 | `EmailTaken` (contrib.auth.exceptions): Another user has that email address, and it identifies users. |
 | `empty_file` | 400 | http.uploads: The file is empty. |
 | `entry_not_found` | 404 | `EntryNotFound` (contrib.accounting.exceptions): No journal entry has that id. |
 | `entry_not_reversible` | 422 | `EntryNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
@@ -124,6 +125,7 @@ unique constraint may name its own code
 | `idempotency_key_reused` | 422 | contrib.idempotency.middleware: This Idempotency-Key was used for a different request. |
 | `idempotency_key_taken_over` | 409 | `KeyTakenOver` (contrib.idempotency.operations): A retry took the key over after this request's lease ran out. |
 | `idempotency_response_unavailable` | 409 | contrib.idempotency.middleware: The request with this Idempotency-Key already ran, and its response is no longer kept; look up the result instead of retrying. contrib.idempotency.middleware. |
+| `identifier_required` | 422 | `IdentifierRequired` (contrib.auth.exceptions): A user needs at least one identifier: a username, an email, or a number. |
 | `identity_email_taken` | 409 | `EmailTaken` (contrib.identity.exceptions): An account has the identity's email: log in to it, then link the identity. |
 | `identity_last_way_in` | 422 | `LastWayIn` (contrib.identity.exceptions): Unlinking would leave the user no way to log in. |
 | `identity_not_linked` | 422 | `NoAccount` (contrib.identity.exceptions): The identity is linked to no account, and none may be made for it. |
@@ -151,6 +153,7 @@ unique constraint may name its own code
 | `invalid_host` | 400 | http.middleware: Invalid host header. |
 | `invalid_idempotency_key` | 400 | contrib.idempotency.middleware: Idempotency-Key must be 1 to 255 printable ASCII characters. |
 | `invalid_limit` | 422 | `InvalidLimit` (contrib.limits.exceptions): A limit, or a movement checked against limits, that cannot be as written. |
+| `invalid_mobile_number` | 422 | `InvalidMobileNumber` (contrib.auth.exceptions): The mobile number is not one in international form (E.164). |
 | `invalid_money` | 422 | `MoneyError` (money): An amount or a currency that money cannot hold; the HTTP layer answers 422. |
 | `invalid_password` | 422 | `InvalidPassword` (contrib.auth.exceptions): The password breaks the configured rules (``PASSWORD_VALIDATORS``). |
 | `invalid_phone` | 422 | `InvalidPhone` (contrib.phones.exceptions): Not a phone number in international form, such as `+33612345678`. |
@@ -174,6 +177,7 @@ unique constraint may name its own code
 | `metrics_disabled` | 403 | http.metrics: Set METRICS_TOKEN to expose metrics in staging and production. |
 | `mfa_enabled` | 409 | contrib.auth.mfa: A second factor is on; turn it off first. |
 | `missing_value` | 422 | http.errors: A required value is missing. |
+| `mobile_number_taken` | 409 | `MobileNumberTaken` (contrib.auth.exceptions): Another user has that mobile number. |
 | `multiple_found` | 409 | `MultipleFound` (ddd.exceptions): A lookup that expects one aggregate met several (`get_or_create`). |
 | `no_enrolment` | 400 | contrib.auth.mfa: No enrolment is waiting for a code; start one first. |
 | `no_open_period` | 422 | `NoOpenPeriod` (contrib.accounting.exceptions): No accounting period covers the entry's date (``REQUIRE_PERIOD``). |

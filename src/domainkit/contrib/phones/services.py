@@ -24,6 +24,7 @@ from typing import Final
 from uuid import UUID, uuid4
 
 from domainkit import signing
+from domainkit.contrib.auth import InvalidMobileNumber, normalize_mobile_number
 from domainkit.contrib.auth.integration import utc_now
 from domainkit.contrib.auth.models import UserId
 
@@ -49,9 +50,8 @@ __all__ = [
     "send_code",
 ]
 
-E164: Final = re.compile(r"\+[1-9]\d{6,14}")
+E164: Final = re.compile(r"\+[1-9][0-9]{6,14}")
 """A number in international form: ``+``, a country code, at most 15 digits."""
-_SEPARATORS: Final = re.compile(r"[\s().-]")
 PURPOSE: Final = "contrib.phones.code"
 """What the key that digests codes is derived for."""
 
@@ -78,12 +78,10 @@ def normalize_phone(text: str) -> str:
     Raises:
         InvalidPhone: It is not a number in international form.
     """
-    phone = _SEPARATORS.sub("", text)
-    if not E164.fullmatch(phone):
-        raise InvalidPhone(
-            "Give the number in international form, such as +33612345678."
-        )
-    return phone
+    try:
+        return normalize_mobile_number(text)
+    except InvalidMobileNumber as exc:  # One rule for both: ASCII digits only.
+        raise InvalidPhone(str(exc)) from None
 
 
 def code_digest(code_id: UUID, code: str, key: bytes) -> str:

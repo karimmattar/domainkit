@@ -53,10 +53,11 @@ from domainkit.db import (
     register_column_type,
 )
 
-from .exceptions import GroupNameTaken, UsernameTaken
+from .exceptions import GroupNameTaken, MobileNumberTaken, UsernameTaken
 from .models import (
     EMAIL_MAX_LENGTH,
     GROUP_NAME_MAX_LENGTH,
+    MOBILE_NUMBER_MAX_LENGTH,
     USERNAME_MAX_LENGTH,
     AbstractBaseUser,
     Group,
@@ -163,13 +164,26 @@ def abstract_user_columns() -> list[Column[Any]]:
         Column(
             "username",
             String(USERNAME_MAX_LENGTH),
-            nullable=False,
+            nullable=True,  # Optional since 1.8 (ADR 0126); unique when set.
             unique=True,
             info={"duplicate": UsernameTaken},
         ),
         Column("email", String(254), nullable=False),
         # Existing rows start unverified when the column is added.
         Column("email_verified", Boolean, nullable=False, server_default=text("false")),
+        Column(
+            "mobile_number",
+            String(MOBILE_NUMBER_MAX_LENGTH),
+            nullable=True,
+            unique=True,
+            info={"duplicate": MobileNumberTaken},
+        ),
+        Column(
+            "mobile_number_verified",
+            Boolean,
+            nullable=False,
+            server_default=text("false"),
+        ),
         Column("first_name", String(150), nullable=False),
         Column("last_name", String(150), nullable=False),
         Column("is_staff", Boolean, nullable=False),

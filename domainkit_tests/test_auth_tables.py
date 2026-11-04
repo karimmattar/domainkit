@@ -47,9 +47,11 @@ def test_user_columns_keep_djangos_lengths() -> None:
     """Usernames of 150 characters (unique) and emails of 254, as in Django."""
     assert describe(abstract_user_columns()) == [
         *BASE_USER,
-        ("username", "String(length=150)", False, False, True),
+        ("username", "String(length=150)", True, False, True),  # Optional since 1.8.
         ("email", "String(length=254)", False, False, False),
         ("email_verified", "Boolean()", False, False, False),
+        ("mobile_number", "String(length=16)", True, False, True),
+        ("mobile_number_verified", "Boolean()", False, False, False),
         ("first_name", "String(length=150)", False, False, False),
         ("last_name", "String(length=150)", False, False, False),
         ("is_staff", "Boolean()", False, False, False),
