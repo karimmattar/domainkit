@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -37,7 +38,8 @@ APPS: dict[str, list[str]] = {
 ENVIRONMENT: dict[str, dict[str, str]] = {
     "ours": {"DOMAINKIT_SETTINGS_MODULE": "benchmarks.compare.apps.ours.settings"},
 }
-KEY = "compare-key-0123456789"
+KEY = secrets.token_urlsafe(24)
+"""The API key every app is served with, made afresh for each run."""
 NEW_ITEM = {"name": "a lamp", "price": "19.99"}
 
 
