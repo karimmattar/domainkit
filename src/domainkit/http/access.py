@@ -550,7 +550,7 @@ class Require:
     async def __call__(
         self,
         request: HTTPConnection,
-        _: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+        _: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
     ) -> Principal:
         """The principal, if every rule allows the request.
 

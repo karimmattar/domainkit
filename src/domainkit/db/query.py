@@ -407,7 +407,7 @@ def shape_of(
 
     Two queries of one shape compile to one statement: made once, with
     bound parameters, it keeps its cache key, which SQLAlchemy would walk
-    a new statement for on each execution (PERF-33). Only what a bound
+    a new statement for on each execution. Only what a bound
     parameter means exactly as its value does takes a slot: ``exact``,
     ``in``, and the comparisons, of a value that is not None nor a bool, on
     a column of the model's own table that is not money nor encrypted,

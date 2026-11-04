@@ -22,3 +22,9 @@ description = "An elliptic curve's name, read as a key by generic-api-key (key.c
 condition = "AND"
 paths = ['''^src/domainkit/contrib/devices/binding\.py$''']
 regexes = ['''^ec\.SECP256R1$''']
+
+[[allowlists]]
+description = "The made-up API key the framework comparison was first committed with (it is now made for each run)"
+condition = "AND"
+paths = ['''^benchmarks/compare/run\.py$''']
+regexes = ['''^compare-key-0123456789$''']
