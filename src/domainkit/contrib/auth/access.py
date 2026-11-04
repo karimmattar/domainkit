@@ -93,7 +93,7 @@ class IsSuperuser(access.BasePermission):
 @access.reads_principal
 async def authenticated_user(
     request: HTTPConnection,
-    _: Annotated[HTTPAuthorizationCredentials | None, Depends(access.bearer)],
+    _: Annotated[HTTPAuthorizationCredentials | None, Depends(access.bearer)] = None,
 ) -> AbstractBaseUser:
     """The user who logged in.
 

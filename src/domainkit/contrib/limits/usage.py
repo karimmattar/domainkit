@@ -243,7 +243,7 @@ RULES: Final = select(limits).where(
 )
 """The limits of some subjects and the defaults of their kinds, made once: a
 statement made once keeps its cache key, which SQLAlchemy walks a new one
-for on each execution (PERF-33)."""
+for on each execution."""
 
 
 async def _rules(session: AsyncSession, keys: Iterable[SubjectKey]) -> list[Rule]:
@@ -380,7 +380,7 @@ async def _used(
 
 @cache
 def _used_statement(rolling: tuple[bool, ...]) -> Any:  # noqa: ANN401
-    """``_used``'s statement for windows of these kinds, made once (PERF-33).
+    """``_used``'s statement for windows of these kinds, made once.
 
     A rolling window counts from just after its start, a calendar one from
     its start; each window's start is the parameter ``start_<n>``.
@@ -441,7 +441,7 @@ def _now(dialect: str) -> datetime | None:
 
 @cache
 def _lock_statement(dialect: str, on_database_clock: bool) -> Any:  # noqa: ANN401
-    """``_lock``'s statement, made once per dialect and clock (PERF-33).
+    """``_lock``'s statement, made once per dialect and clock.
 
     A statement made once keeps its cache key, which SQLAlchemy would
     otherwise walk the statement for on each execution.
@@ -524,7 +524,7 @@ async def _ensure(session: AsyncSession, keys: list[SubjectKey]) -> None:
 
 @cache
 def _record_statement(dialect: str, on_database_clock: bool) -> Any:  # noqa: ANN401
-    """``_record``'s statement, made once per dialect and clock (PERF-33)."""
+    """``_record``'s statement, made once per dialect and clock."""
     owner = (
         select(subjects.c.id)
         .where(

@@ -55,7 +55,7 @@ CLOSED_THROUGH: Final = select(func.max(periods.c.ends_on)).where(
     periods.c.status == PeriodStatus.CLOSED
 )
 """The last day of the latest closed period, made once: a statement made once
-keeps its cache key, which SQLAlchemy walks a new one for (PERF-33)."""
+keeps its cache key, which SQLAlchemy walks a new one for."""
 
 
 @cache
