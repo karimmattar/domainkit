@@ -9,6 +9,8 @@ and a status.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-04
+
 ### Changed
 
 - Guarded routes serve requests without resolving `access.bearer`, the
@@ -26,35 +28,36 @@ and a status.
 
 ### Security
 
-- `LDAPBackend` took any certificate over `ldaps://` and `START_TLS` (ldap3
-  checks none by default), so anyone on the path to the directory could
-  read the reader's password and every password a login sent, or answer
-  "bound" for any password with any groups. The certificate and its name
-  are checked now, against the system's certificates or
-  `IDENTITY.LDAP.CA_CERTIFICATES`; staging and production refuse
-  `ldap://` without `START_TLS` (`security.E020`) (audit A2-3).
+- **Breaking:** `LDAPBackend` took any certificate over `ldaps://` and
+  `START_TLS` (ldap3 checks none by default), so anyone on the path to the
+  directory could read the reader's password and every password a login
+  sent, or answer "bound" for any password with any groups. The
+  certificate and its name are checked now, against the system's
+  certificates or `IDENTITY.LDAP.CA_CERTIFICATES`; staging and production
+  refuse `ldap://` without `START_TLS` (`security.E020`) (audit A2-3).
 - On Linux and macOS every login that reached `LDAPBackend` answered 500,
   and its refusal was not audited: ldap3 cannot pack a fractional
   `TIMEOUT`. It is rounded up to whole seconds, and any failure of the
   directory now refuses the password (A2-4).
-- A provider's answer (OAuth 2's `state`, SAML's `RelayState` and its
-  ticket) was finished in whichever browser sent it, so an attacker's own
-  flow, finished in a victim's browser, logged the victim into the
-  attacker's account or linked the victim's identity to it. A flow is
-  finished only in the browser that started it: the OAuth 2 start answers
-  a `binding` the callback must send back, and SAML's start sets a cookie
-  that the ACS and the ticket's redemption read (A2-2).
-- Linking an identity at a provider needed only an access token, worked
-  while staff acted as the user, and was not audited: whoever held a
-  stolen token could link their own identity and keep the account. A link
-  now asks for the password or a step-up in the last ten minutes, as
-  adding a passkey does, never as an impersonation; linking and unlinking
-  are audited (`identity.identity_linked`, `identity.identity_unlinked`)
-  (A2-1). `POST /auth/identity/{name}/link` takes `{"password"}`.
-- One staff member could make an approval request and approve it twice,
-  by impersonating the maker and then another approver. Approval requests
-  are submitted, approved, rejected, and cancelled in one's own name only
-  (A3-1).
+- **Breaking:** a provider's answer (OAuth 2's `state`, SAML's
+  `RelayState` and its ticket) was finished in whichever browser sent it,
+  so an attacker's own flow, finished in a victim's browser, logged the
+  victim into the attacker's account or linked the victim's identity to
+  it. A flow is finished only in the browser that started it: the OAuth 2
+  start answers a `binding` the callback must send back, and SAML's start
+  sets a cookie that the ACS and the ticket's redemption read (A2-2).
+- **Breaking:** linking an identity at a provider needed only an access
+  token, worked while staff acted as the user, and was not audited:
+  whoever held a stolen token could link their own identity and keep the
+  account. A link now asks for the password or a step-up in the last ten
+  minutes, as adding a passkey does, never as an impersonation; linking
+  and unlinking are audited (`identity.identity_linked`,
+  `identity.identity_unlinked`) (A2-1). `POST /auth/identity/{name}/link`
+  takes `{"password"}`.
+- **Breaking:** one staff member could make an approval request and
+  approve it twice, by impersonating the maker and then another approver.
+  Approval requests are submitted, approved, rejected, and cancelled in
+  one's own name only (A3-1).
 - Under multi-tenancy, login and password throttles were counted apart per
   tenant, so naming another tenant (a header, a subdomain) started an
   account's daily count afresh; principals' stamps written while a tenant
@@ -95,12 +98,12 @@ and a status.
   schema holding no keys table). `keys status` and `keys reencrypt`
   missed the tenants' schemas the same way. All three visit each tenant's
   schema now (A4-1).
-- Deferred evidence (`defer_evidence`) waited in the outbox in the clear,
-  where the application's database role could rewrite its facts before
-  the worker wrote them, and the ledger then held them as intact. The
-  record is signed now, and the worker refuses one whose signature does
-  not hold, unsigned ones included: let the queue drain before upgrading
-  (A6-2).
+- **Breaking:** deferred evidence (`defer_evidence`) waited in the outbox
+  in the clear, where the application's database role could rewrite its
+  facts before the worker wrote them, and the ledger then held them as
+  intact. The record is signed now, and the worker refuses one whose
+  signature does not hold, unsigned ones included: let the queue drain
+  before upgrading (A6-2).
 - `privacy erase` and `privacy export` never reached the numbers
   `contrib.phones` keeps, the provider accounts of `contrib.identity`
   (with their email), or the passkeys, devices, and push tokens of
@@ -111,11 +114,12 @@ and a status.
   could delete a signed checkpoint, or roll a ledger's saved state back
   and so reset the rollback detection it exists for. Checkpoints are
   append-only now, and a ledger's state may only move forward (A6-7).
-- `migrate --tenant NAME --downgrade` dropped a tenant's tables in
-  staging and production without `--allow-data-loss`, and no downgrade
-  was recorded anywhere. Both need the consent now, and each downgrade is
-  recorded in the audit trail before it runs (`operator.migrate.downgrade`,
-  with `--operator`): a record that cannot be written stops it (A6-3).
+- **Breaking:** `migrate --tenant NAME --downgrade` dropped a tenant's
+  tables in staging and production without `--allow-data-loss`, and no
+  downgrade was recorded anywhere. Both need the consent now, and each
+  downgrade is recorded in the audit trail before it runs
+  (`operator.migrate.downgrade`, with `--operator`): a record that cannot
+  be written stops it (A6-3).
 - `shell` and `seed` wrote as `system`, so what an operator changed there
   named nobody, and `dbshell` left no trace. All three take `--operator`
   and run as that operator; `seed` is recorded (`operator.seed`), and in
@@ -152,10 +156,10 @@ and a status.
   now protects it (the `on_migrated` hooks run in the tenant's schema), and
   `audit seal`, `audit verify`, and `audit forget` cover each tenant's
   trail, under the ledger key `<alias>/<schema>` (A6-4).
-- `AUTH.CAPTCHA` with `login` in `ON` covered `POST /auth/login` only: a
-  browser login, `POST /auth/session`, checked the same password with no
-  captcha, so a bot could guess passwords there. It asks for the same
-  captcha now.
+- **Breaking:** `AUTH.CAPTCHA` with `login` in `ON` covered `POST
+  /auth/login` only: a browser login, `POST /auth/session`, checked the
+  same password with no captcha, so a bot could guess passwords there. It
+  asks for the same captcha now.
 - `create_user` (used by the admin API and `createsuperuser`) compared
   usernames exactly, so `Alice` could be created next to `alice`, while
   signup, the identity providers, and the login throttle took them as one
@@ -6050,7 +6054,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/karimmattar/domainkit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/karimmattar/domainkit/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/karimmattar/domainkit/compare/v1.0.0...v1.5.0
 [1.0.0]: https://github.com/karimmattar/domainkit/compare/v0.12.1...v1.0.0
