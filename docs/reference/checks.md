@@ -30,6 +30,7 @@ the baseline do not load, so startup and every command fail on:
 | `deploy.E005`, `deploy.E006` | a `NOTIFICATIONS.SMS_BACKEND` or `PUSH_BACKEND` made for development and tests, with `domainkit.contrib.notifications` installed |
 | `deploy.E007` | `SEARCH` with `MemorySearchBackend`: its index lives in one process |
 | `security.E019` | no `EVIDENCE.SUBJECT_KEY` (or `SUBJECT_KEYS`), with `domainkit.contrib.evidence` installed: the development key is public |
+| `security.E020` | an `IDENTITY.LDAP` directory reached by `ldap://` without `START_TLS`, with `domainkit.contrib.identity` installed |
 
 Installed contrib apps add their own:
 

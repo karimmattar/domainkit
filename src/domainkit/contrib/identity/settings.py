@@ -59,6 +59,11 @@ class LdapSettings(BaseModel):
     URL: str = Field(min_length=1)
     """``ldaps://dc.example.com`` (or ``ldap://`` with ``START_TLS``)."""
     START_TLS: bool = False
+    CA_CERTIFICATES: str | None = None
+    """A file of the certificates that sign the directory's; None: the system's.
+
+    The directory's certificate is always checked, and its name too.
+    """
     BIND_DN: str | None = None
     """The account that looks users up; None: an anonymous search."""
     BIND_PASSWORD: SecretStr | None = None

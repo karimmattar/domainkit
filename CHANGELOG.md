@@ -26,6 +26,17 @@ and a status.
 
 ### Security
 
+- `LDAPBackend` took any certificate over `ldaps://` and `START_TLS` (ldap3
+  checks none by default), so anyone on the path to the directory could
+  read the reader's password and every password a login sent, or answer
+  "bound" for any password with any groups. The certificate and its name
+  are checked now, against the system's certificates or
+  `IDENTITY.LDAP.CA_CERTIFICATES`; staging and production refuse
+  `ldap://` without `START_TLS` (`security.E020`) (audit A2-3).
+- On Linux and macOS every login that reached `LDAPBackend` answered 500,
+  and its refusal was not audited: ldap3 cannot pack a fractional
+  `TIMEOUT`. It is rounded up to whole seconds, and any failure of the
+  directory now refuses the password (A2-4).
 - An impersonation token kept acting as its user for the rest of
   `AUTH.IMPERSONATION_TTL` after its staff member was deactivated,
   deleted, or lost the right to change users. Each request of such a

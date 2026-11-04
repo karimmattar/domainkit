@@ -182,8 +182,12 @@ unusable local password, and linked by the entry's DN; each login keeps
 the email (`EMAIL_ATTRIBUTE`, `mail`) and the groups `GROUPS` maps in
 step, leaving other groups alone. An account with the same username that
 the directory did not make is never taken over. `START_TLS` upgrades an
-`ldap://` connection; `TIMEOUT` (10 seconds) bounds each step, and a
-directory that cannot be reached refuses the password and is logged.
+`ldap://` connection; staging and production refuse `ldap://` without it
+(`security.E020`). Over TLS the directory's certificate is checked, and
+its name: against the system's certificates, or the file
+`CA_CERTIFICATES` names. `TIMEOUT` (10 seconds) bounds each step, and a
+directory that cannot be reached, or proves no certificate, refuses the
+password and is logged.
 
 ## Captcha and impersonation
 

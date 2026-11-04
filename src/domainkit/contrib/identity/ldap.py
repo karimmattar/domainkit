@@ -30,6 +30,8 @@ The directory is called in a thread; ``TIMEOUT`` bounds each step.
 
 import asyncio
 import logging
+import math
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -140,13 +142,13 @@ def check_password(
     """The entry ``username`` names, if ``password`` binds as it (blocking).
 
     None for no entry, several, or a password the directory refuses; a
-    directory that cannot be reached is logged and refuses too.
+    directory that cannot be reached, or proves no certificate, is logged
+    and refuses too: whatever goes wrong, the login is refused, not
+    answered with an error.
     """
-    from ldap3.core.exceptions import LDAPException
-
     try:
         return _check(config, username, password)
-    except LDAPException as exc:
+    except Exception as exc:  # noqa: BLE001 - every failure refuses the login.
         logger.warning("The directory could not check a login: %s.", type(exc).__name__)
         return None
 
@@ -184,16 +186,23 @@ def _check(config: LdapSettings, username: str, password: str) -> DirectoryEntry
 
 
 def connect(config: LdapSettings, user: str | None, password: str | None) -> Any:  # noqa: ANN401 - ldap3's Connection, untyped.
-    """A connection as ``user``: bound for the reader, not yet for a user."""
-    from ldap3 import NONE, Connection, Server
+    """A connection as ``user``: bound for the reader, not yet for a user.
 
-    server = Server(config.URL, get_info=NONE, connect_timeout=config.TIMEOUT)
+    TLS (``ldaps://``, or ``START_TLS``) checks the directory's certificate
+    against ``CA_CERTIFICATES`` (or the system's) and its name: ldap3 checks
+    neither by default, which let anyone on the path read every password.
+    """
+    from ldap3 import NONE, Connection, Server, Tls
+
+    tls = Tls(validate=ssl.CERT_REQUIRED, ca_certs_file=config.CA_CERTIFICATES)
+    server = Server(config.URL, get_info=NONE, connect_timeout=config.TIMEOUT, tls=tls)
     connection = Connection(
         server,
         user=user,
         password=password,
         read_only=True,
-        receive_timeout=config.TIMEOUT,
+        # Whole seconds: ldap3 packs it as an integer on POSIX.
+        receive_timeout=math.ceil(config.TIMEOUT),
         raise_exceptions=False,
     )
     if config.START_TLS:
