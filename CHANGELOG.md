@@ -77,6 +77,12 @@ and a status.
 
 ### Fixed
 
+- Deferred evidence (`defer_evidence`) waited in the outbox in the clear,
+  where the application's database role could rewrite its facts before
+  the worker wrote them, and the ledger then held them as intact. The
+  record is signed now, and the worker refuses one whose signature does
+  not hold, unsigned ones included: let the queue drain before upgrading
+  (A6-2).
 - `privacy erase` and `privacy export` never reached the numbers
   `contrib.phones` keeps, the provider accounts of `contrib.identity`
   (with their email), or the passkeys, devices, and push tokens of

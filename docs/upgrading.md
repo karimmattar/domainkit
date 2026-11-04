@@ -34,7 +34,39 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
-## 1.5 to the next release
+## 1.6 to the next release
+
+The security fixes of the outside review's first run (audit A1 to A7)
+change four things a project may see.
+
+### Let the evidence queue drain first
+
+Deferred evidence is signed now (`SECRET_KEY`), and the worker refuses an
+unsigned record: one inserted in the outbox would look the same. Before
+deploying, let the worker run until no `domainkit.evidence.record`
+message is pending; one left is refused and dies, and its evidence is
+deferred again by the change that made it.
+
+### Linking an identity asks for the password
+
+`POST /auth/identity/{name}/link` takes `{"password": "..."}`, or follows
+a step-up in the last ten minutes, as adding a passkey does; without
+either it answers `401 reauthentication_required`.
+
+### LDAP checks the directory's certificate
+
+`ldaps://` and `START_TLS` check the directory's certificate and name
+against the system's certificates. A directory whose certificate a
+private authority signs needs `IDENTITY.LDAP.CA_CERTIFICATES`, the file
+of that authority's. Staging and production refuse `ldap://` without
+`START_TLS` (`security.E020`).
+
+### Staff acting as a user neither make nor decide approval requests
+
+Submitting, approving, rejecting, and cancelling an approval request
+under impersonation answer 403.
+
+## 1.5 to 1.6
 
 ### Signup asks for the user model's other required fields
 

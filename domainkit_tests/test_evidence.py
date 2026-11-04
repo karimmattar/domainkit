@@ -791,8 +791,17 @@ async def test_deferred_keys_use_the_configured_subject_key(installed: None) -> 
 
 
 async def test_queued_records_with_floats_are_still_recorded(installed: None) -> None:
-    """A record deferred before the upgrade is written as its receipt says."""
-    await record_evidence(FLOAT_RECORD.decode())
+    """A signed record with floats is written as its receipt says; unsigned, none.
+
+    A record queued unsigned (deferred by a release before 1.7) is refused:
+    one inserted in the outbox would be indistinguishable from it.
+    """
+    from domainkit.contrib.evidence.tasks import SALT
+    from domainkit.signing import Signer
+
+    with pytest.raises(EvidenceTampered):
+        await record_evidence(FLOAT_RECORD.decode())
+    await record_evidence(Signer(salt=SALT).sign(FLOAT_RECORD.decode()))
 
     (recorded,) = await evidence_store().for_subject("customer:42")
 
@@ -846,3 +855,43 @@ async def _run_command(*args: str) -> str:
     assert result is not None
     await result
     return output.getvalue()
+
+
+async def test_a_record_changed_in_the_outbox_never_reaches_the_ledger(
+    installed: None,
+) -> None:
+    """Deferred records are signed; the worker refuses one changed meanwhile.
+
+    The audit found the facts rewritable in the outbox, whose table the
+    application's role writes, and the ledger then holding them as intact
+    (A6-2).
+    """
+    import json
+
+    from sqlalchemy import select, update
+
+    from domainkit.contrib.messaging import Worker
+    from domainkit.contrib.messaging.tables import messages
+    from domainkit.db import connections
+
+    evidence = Evidence(
+        kind="kyc.document_verified",
+        subject="customer:42",
+        facts={"result": "mismatch"},
+    )
+    async with NotesUnitOfWork() as uow:
+        key = defer_evidence(uow, evidence)
+        await uow.commit()
+    async with connections.engine().begin() as connection:
+        row = (
+            await connection.execute(select(messages.c.id, messages.c.payload))
+        ).one()
+        payload = json.loads(json.dumps(row.payload).replace("mismatch", "match"))
+        await connection.execute(
+            update(messages).where(messages.c.id == row.id).values(payload=payload)
+        )
+
+    await Worker().run_once()
+
+    with pytest.raises(EvidenceNotFound):
+        await evidence_store().get(key)

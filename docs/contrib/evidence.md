@@ -60,7 +60,10 @@ recorded = await evidence_store().verify(receipt)  # raises EvidenceTampered
   convenience listing.
 - Inside a use case, `key = defer_evidence(uow, evidence)` records it
   through the outbox once the change commits (messaging must be
-  installed). Store the key with the change.
+  installed). Store the key with the change. The record waits in the
+  outbox signed with `SECRET_KEY`, and the worker refuses one whose
+  signature does not hold: whoever can write the outbox table cannot
+  change the facts before they reach the ledger.
 
 **Never put personal data in the subject or facts**: a ledger cannot
 forget, so an erasure request could not be met. Store references or
