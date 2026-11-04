@@ -11,7 +11,7 @@ proof: an HttpOnly cookie (``__Host-dk_device`` where the prefix holds,
 for that account. The device is stored as one of the user's tokens (kind
 ``device``), for ``AUTH.DEVICE_TTL``: whatever ends every token of the user
 (a password change or reset, logging out everywhere, an admin's change,
-deletion) ends its devices too, and ``GET /auth/tokens`` lists them. A
+deletion) ends its devices too; ``GET /auth/tokens`` leaves them out. A
 user keeps at most ``MAX_DEVICES``; a new one past it ends the oldest.
 
 A later login to the same account that sends a live proof is counted

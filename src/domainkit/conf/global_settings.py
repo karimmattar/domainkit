@@ -399,8 +399,7 @@ class CacheConfig(BaseModel):
 
     It goes on after its callers stop waiting, so a slow factory still fills
     the cache; this bounds it. None (the default, as in 0.9.0) leaves it
-    unbounded; set it, to ``REQUEST_TIMEOUT``'s value for example. 0.10
-    plans a bounded default.
+    unbounded; set it, to ``REQUEST_TIMEOUT``'s value for example.
     """
     TLS_CA: Path | None = None
     """CA bundle for ``rediss://``; default: the system's."""
@@ -522,9 +521,10 @@ class BrokerConfig(BaseModel):
     """Starts every exchange, stream, topic, and queue name; every broker but
     ``memory://`` must set one."""
     TLS_CA: Path | None = None
-    """CA bundle for ``amqps://``; default: the system's."""
+    """CA bundle for a broker over TLS (``amqps://``, ``kafka+ssl://``, ...);
+    default: the system's."""
     TLS_CERT: Path | None = None
-    """Client certificate for ``amqps://`` (with ``TLS_KEY``)."""
+    """Client certificate for a broker over TLS (with ``TLS_KEY``)."""
     TLS_KEY: Path | None = None
     CONNECT_TIMEOUT: float = Field(default=10.0, gt=0)
     """Seconds to connect before the attempt counts as failed."""

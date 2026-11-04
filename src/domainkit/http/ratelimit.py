@@ -590,7 +590,7 @@ class Throttled(APIError):
     """A caller went over a route's ``Throttle`` (429, with ``Retry-After``)."""
 
     def __init__(self, limit: int, decision: Decision) -> None:
-        """Answer 429 ``throttled`` with the quota headers of ``decision``."""
+        """Answer 429 ``rate_limited`` with the quota headers of ``decision``."""
         super().__init__(
             status.HTTP_429_TOO_MANY_REQUESTS,
             TOO_MANY_REQUESTS,
@@ -620,7 +620,7 @@ class Throttle:
     returning a key (hashed before it is stored) or None for the address.
     ``scope`` names the count: routes with the same scope share it. By
     default each route counts on its own. A refused request gets 429
-    ``throttled`` with ``Retry-After``; a refused WebSocket handshake is
+    ``rate_limited`` with ``Retry-After``; a refused WebSocket handshake is
     closed with 1013 (try again later).
 
     A throttle is not an access rule: the route still needs ``Require(...)``
