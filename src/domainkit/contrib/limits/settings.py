@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 LONGEST_WINDOW: Final = timedelta(days=31)
 """The longest any window reaches back: a calendar month."""
-AmountText = Annotated[str, Field(pattern=r"^\d{1,14}(\.\d{1,4})?$")]
+AmountText = Annotated[str, Field(pattern=r"^[0-9]{1,14}(\.[0-9]{1,4})?$")]
 """An amount as fixed-point text (``"5000.00"``): never a float."""
 
 

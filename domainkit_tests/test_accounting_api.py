@@ -497,3 +497,21 @@ def test_what_the_security_review_found_is_refused_not_crashed(
         "invalid_statement",
     )
     assert unreadable.json()["detail"] == "A statement cannot be read as CSV."
+
+
+def test_amounts_are_written_in_ascii_digits(
+    client: TestClient, clerk: Headers
+) -> None:
+    """Other scripts' digits are a 422, not a 500.
+
+    The audit found Arabic-Indic digits passing the schema (a regex's digit
+    class takes any script's) and failing in ``Money``, unhandled (A3-3).
+    """
+    books = open_books(client, clerk)
+    arabic = "\u0661\u0660\u0660.00"  # 100.00 in Arabic-Indic digits.
+
+    refused = client.post(
+        f"{API}/entries", json=sale(books, "arabic", arabic), headers=clerk
+    )
+
+    assert (refused.status_code, refused.json()["code"]) == (422, "validation_error")

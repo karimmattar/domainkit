@@ -77,6 +77,10 @@ and a status.
 
 ### Fixed
 
+- An amount written in another script's digits (Arabic-Indic, say) passed
+  the ledger's and the limits' schemas, whose `\d` takes any digit, and
+  then failed in `Money`: a 500, not a 422. Amounts are ASCII digits
+  (audit A3-3).
 - A new project's CI built its image under the project's name as typed,
   and Docker refuses capitals (`bankAPI`): the image is now named in lower
   case, in CI and in the Dockerfile's examples.
