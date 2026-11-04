@@ -74,11 +74,25 @@ from domainkit.ddd.fields import (
 from domainkit.ddd.messages import UNSET, Unset
 from domainkit.ddd.model import ValueObject
 from domainkit.ddd.repository import DELETED_AT
+from domainkit.ddd.tenancy import TENANT_ID_FIELD, TenantOwned
 from domainkit.money import Money
 from domainkit.utils.decimals import decimal_text
 
 GENERATED: Final = frozenset({"id", "version", DELETED_AT})
 """Fields a write schema leaves out: the domain and the database set them."""
+
+
+def generated_fields(model: type) -> frozenset[str]:
+    """``GENERATED``, and a tenant's aggregate's tenant: repositories set it.
+
+    A caller never moves a row to another tenant by writing its
+    ``tenant_id``.
+    """
+    if isinstance(model, type) and issubclass(model, TenantOwned):
+        return GENERATED | {TENANT_ID_FIELD}
+    return GENERATED
+
+
 INT64: Final = 2**63
 REFERENCE_DESCRIPTION: Final = "The id of another aggregate."
 FIXED_POINT: Final = PlainSerializer(
@@ -191,7 +205,7 @@ def schema_for(
     chosen = [
         each
         for each in names
-        if each not in exclude and not (writing and each in GENERATED)
+        if each not in exclude and not (writing and each in generated_fields(model))
     ]
     if secret := sorted(
         each

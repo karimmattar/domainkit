@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from domainkit.conf import TenancyConfig, override_settings
-from domainkit.ddd import AggregateRoot, InMemoryRepository
+from domainkit.ddd import AggregateRoot, EventBus, InMemoryRepository, UnitOfWork
 from domainkit.ddd.query import F
 from domainkit.ddd.tenancy import (
     TenantMismatch,
@@ -24,7 +24,12 @@ from domainkit.ddd.tenancy import (
     tenant,
 )
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.access import AllowAny
+from domainkit.http.errors import install_exception_handlers
+from domainkit.resources import ALL_FIELDS, ResourceRouter
+from domainkit.resources.schemas import schema_for
 from domainkit.tenancy import TenantMiddleware, tenant_schema
+from domainkit_tests.test_auth_access import user
 
 pytestmark = pytest.mark.anyio
 
@@ -398,3 +403,81 @@ async def test_a_schema_databases_transactions_work_in_the_tenants_schema(
 
     assert inside == "tenant_acme"
     assert after != "tenant_acme"
+
+
+class NotesWork(UnitOfWork):
+    """A unit of work over ``Notes``, committing nothing anywhere."""
+
+    def __init__(self, notes: Notes) -> None:
+        """Hold ``notes``."""
+        super().__init__(events=EventBus())
+        self.notes = notes
+
+    async def _commit(self) -> None:
+        """Nothing to commit."""
+
+    async def _rollback(self) -> None:
+        """Nothing to roll back."""
+
+
+def test_a_write_never_names_the_tenant() -> None:
+    """Repositories set a row's tenant; no schema takes it, no router lets it.
+
+    The audit found a generic PATCH moving a row into another tenant
+    (A5-3).
+    """
+    notes = Notes()
+
+    assert "tenant_id" not in schema_for(Note, write=True).model_fields
+    assert "tenant_id" not in schema_for(Note, partial=True).model_fields
+    assert "tenant_id" in schema_for(Note).model_fields
+    with pytest.raises(TypeError, match="tenant_id"):
+        ResourceRouter(
+            "/notes",
+            model=Note,
+            unit_of_work=lambda: NotesWork(notes),
+            repository=lambda uow: uow.notes,
+            crud=True,
+            writable=["text", "tenant_id"],
+            rule=AllowAny(),
+        )
+
+
+def test_a_patch_cannot_move_a_row_to_another_tenant() -> None:
+    """Asked over HTTP, the change is refused and the row stays where it was."""
+    notes = Notes()
+    mine = note("mine", "acme")
+    with all_tenants():
+        asyncio.run(notes.add(mine))
+    router = ResourceRouter(
+        "/notes",
+        model=Note,
+        unit_of_work=lambda: NotesWork(notes),
+        repository=lambda uow: uow.notes,
+        crud=True,
+        writable=ALL_FIELDS,
+        rule=AllowAny(),
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(router)
+
+    @app.middleware("http")
+    async def anyone(request: Any, call_next: Any) -> Any:  # noqa: ANN401
+        request.scope["user"] = user(is_superuser=True)
+        return await call_next(request)
+
+    with override_settings(TENANCY={"HEADER": "X-Tenant"}):
+        app.add_middleware(TenantMiddleware)
+        client = TestClient(app)
+        moved = client.patch(
+            f"/notes/{mine.id}",
+            json={"tenant_id": "globex", "text": "planted"},
+            headers={"X-Tenant": "acme"},
+        )
+        theirs = client.get(f"/notes/{mine.id}", headers={"X-Tenant": "globex"})
+        still = client.get(f"/notes/{mine.id}", headers={"X-Tenant": "acme"})
+
+    assert moved.status_code == 422
+    assert theirs.status_code == 404
+    assert still.json()["text"] == "mine"

@@ -48,6 +48,11 @@ and a status.
   by impersonating the maker and then another approver. Approval requests
   are submitted, approved, rejected, and cancelled in one's own name only
   (A3-1).
+- A generic `PATCH` (`crud=True` with `writable=ALL_FIELDS`) could set a
+  tenant's row's `tenant_id`, moving it into another tenant. A tenant's
+  aggregate's `tenant_id` is now generated, as its id and version are: no
+  write schema takes it, `writable` refuses it, and `update_rows` cannot
+  set it (A5-3).
 - An impersonation token kept acting as its user for the rest of
   `AUTH.IMPERSONATION_TTL` after its staff member was deactivated,
   deleted, or lost the right to change users. Each request of such a
