@@ -111,6 +111,11 @@ and a status.
   could delete a signed checkpoint, or roll a ledger's saved state back
   and so reset the rollback detection it exists for. Checkpoints are
   append-only now, and a ledger's state may only move forward (A6-7).
+- `migrate --tenant NAME --downgrade` dropped a tenant's tables in
+  staging and production without `--allow-data-loss`, and no downgrade
+  was recorded anywhere. Both need the consent now, and each downgrade is
+  recorded in the audit trail before it runs (`operator.migrate.downgrade`,
+  with `--operator`): a record that cannot be written stops it (A6-3).
 
 ### Fixed
 

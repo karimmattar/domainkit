@@ -15,7 +15,7 @@ from typing import Annotated, Any, Optional
 
 import pytest
 from sqlalchemy import insert, select, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from domainkit import setup
@@ -38,6 +38,7 @@ from domainkit.contrib.audit.recorder import event_rows
 from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.audit.tables import audit_keys, audit_log
 from domainkit.db import connections
+from domainkit.db import migrations as migrations_module
 from domainkit.ddd import Counted, DomainEvent, Personal, ValueObject
 from domainkit.ddd.personal import counted_fields, personal_fields
 from domainkit.management import CommandError, call_command
@@ -742,6 +743,53 @@ def test_pruning_partitions_is_audited(
             "operator.partitions.prune",
             "operator:ops",
             {"database": "default", "changes": 1, "operator_source": "option"},
+        )
+    ]
+
+
+def test_downgrades_are_audited_before_they_run(
+    audited: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``migrate --downgrade`` records who ran it first: it may drop the trail (A6-3).
+
+    A record that cannot be written stops the downgrade.
+    """
+
+    async def prepare() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(audit_log.create)
+            await connection.run_sync(audit_keys.create)
+        await connections.close_all()
+
+    async def recorded() -> list[tuple[str, str, dict[str, Any]]]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(
+                select(audit_log.c.action, audit_log.c.actor, audit_log.c.details)
+            )
+            found = [tuple(row) for row in rows]
+        await connections.close_all()
+        return found
+
+    seen: list[int] = []
+
+    def downgrade(target: str, alias: str, *, tenant: str | None = None) -> None:
+        seen.append(len(asyncio.run(recorded())))
+
+    monkeypatch.setattr(migrations_module, "downgrade", downgrade)
+    monkeypatch.setattr(migrations_module, "migration_targets", lambda: ("default",))
+    with pytest.raises(DBAPIError):  # No trail yet: nothing runs.
+        call_command("migrate", "base", "--downgrade", stdout=io.StringIO())
+    asyncio.run(prepare())
+    call_command(
+        "migrate", "base", "--downgrade", "--operator", "ops", stdout=io.StringIO()
+    )
+
+    assert seen == [1]  # Recorded before the downgrade ran.
+    assert asyncio.run(recorded()) == [
+        (
+            "operator.migrate.downgrade",
+            "operator:ops",
+            {"database": "default", "revision": "base", "operator_source": "option"},
         )
     ]
 
