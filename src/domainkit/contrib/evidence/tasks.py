@@ -18,6 +18,8 @@ from domainkit.ddd import UnitOfWork
 from domainkit.log import SECURITY_LOGGER
 from domainkit.signing import BadSignature, Signer
 
+__all__ = ["defer_evidence"]
+
 RECORD_TASK = "domainkit.evidence.record"
 SALT: Final = "domainkit.evidence.deferred"
 """What deferred records are signed for: no other signed value verifies."""

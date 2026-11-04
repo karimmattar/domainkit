@@ -682,18 +682,18 @@ Your password can't be entirely numeric.
 
 `PASSWORD_VALIDATORS = []` checks nothing. A validator of your own is a
 class with `validate(password, user)`, which raises
-`PasswordValidationError` of the module `domainkit.contrib.auth.validators`,
+`PasswordValidationError` (from `domainkit.contrib.auth`),
 and `help_text()`. `validate_password` collects only that error; any
 other exception goes up to the caller.
 
 ```python
-from domainkit.contrib.auth import validators
+from domainkit.contrib.auth import PasswordValidationError
 
 
 class NoShopNameValidator:
     def validate(self, password: str, user: object | None = None) -> None:
         if "shop" in password.lower():
-            raise validators.PasswordValidationError(
+            raise PasswordValidationError(
                 "This password contains the shop's name."
             )
 

@@ -39,6 +39,7 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `JWTSettings`: `AUTH["JWT"]`: signed access tokens (`JWTAuthentication`).
 - `ModelBackend`: Passwords from the user table; permissions of users and their groups.
 - `PasswordHash`: A stored password: a hasher's `<algorithm>$...`, or unusable (`!...`).
+- `PasswordValidationError`: A password breaks one rule; the message says which.
 - `Permission`: Permission to do something to one content type: `<domain>.<codename>`.
 - `Proof`: A step-up: when the user authenticated again, and with what.
 - `StepUp`: Users who authenticated again, with a second factor, within `max_age`.

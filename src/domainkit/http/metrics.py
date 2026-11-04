@@ -36,6 +36,7 @@ from domainkit.http.middleware import route_template
 __all__ = [
     "MetricsMiddleware",
     "refreshers_kept",
+    "router",
 ]
 
 METHODS: Final = frozenset(
@@ -189,6 +190,7 @@ class MetricsMiddleware:
 
 
 router = APIRouter()
+"""The ``/metrics`` route: include it in the project's routes."""
 
 
 @router.get("/metrics", include_in_schema=False)

@@ -144,6 +144,7 @@ Prometheus metrics (`domainkit[metrics]`).
 
 - `MetricsMiddleware`: Count requests and time them, by method, route template, and status.
 - `refreshers_kept`: Put the scrape's refreshers back as they were when the block ends.
+- `router`: The `/metrics` route: include it in the project's routes.
 
 ## `domainkit.http.middleware`
 
