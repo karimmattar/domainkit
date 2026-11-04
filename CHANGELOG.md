@@ -9,6 +9,8 @@ and a status.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-11-04
+
 ### Fixed
 
 - `domainkit init NAME .` refused any directory that was not empty, so
@@ -6063,7 +6065,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/karimmattar/domainkit/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/karimmattar/domainkit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/karimmattar/domainkit/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/karimmattar/domainkit/compare/v1.0.0...v1.5.0
