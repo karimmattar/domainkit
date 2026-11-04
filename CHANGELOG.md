@@ -168,6 +168,10 @@ and a status.
 
 ### Fixed
 
+- `diffsettings` failed in every project `init` makes (`Unable to serialize
+  unknown type`): `LOGGING` holds classes. It shows them by their dotted
+  path now.
+
 - A transaction's keys of subjects and its keys by id were kept under one
   name space, so a subject written as `#` and another key's id would have
   been sealed under that key (audit A4-3).

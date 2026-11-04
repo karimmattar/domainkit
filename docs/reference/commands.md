@@ -298,7 +298,24 @@ python manage.py diffsettings --all
 
 Secrets stay hidden, as in `repr(settings)`. So do the entries of
 free-form settings named like secrets (`password`, `token`, `key`, ...),
-and passwords in URLs.
+and passwords in URLs. A class or function inside a setting, as in
+`LOGGING`, is shown by its dotted path.
+
+In a new project, `python manage.py diffsettings` prints (long lines cut):
+
+```text
+# config.settings.local: settings that differ from defaults
+ASGI_APPLICATION = 'config.asgi:application'
+AUTH = '**********'
+DATABASES = {'default': {'URL': '**********', 'MIGRATION_URL': None, ...
+DEBUG = True
+INSTALLED_DOMAINS = ['domainkit.contrib.messaging', 'domainkit.contrib.contenttypes', 'domainkit.contrib.auth']
+LOGGING = {'version': 1, 'disable_existing_loggers': False, 'filters': {'context': {'()': 'domainkit.log.ContextFilter'}}, ...
+MIDDLEWARE = ['domainkit.http.middleware.ProxyHeadersMiddleware', 'domainkit.http.locale.LocaleMiddleware', ...
+PROJECT_NAME = 'shop'
+ROOT_ROUTER = 'config.urls.router'
+SECRET_KEY = '**********'
+```
 
 ### `openapi`: print the API's schema
 
