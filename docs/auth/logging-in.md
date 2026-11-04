@@ -416,10 +416,14 @@ router.include_router(recovery_router, prefix="/auth")
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /password-reset` | anyone | `{"email"}` | Always `202`; `422` for a value that is not one plain address; `429 rate_limited`. |
+| `POST /password-reset` | anyone | `{"email"}`, or `{"identifier"}` with codes | Always `202`; `422` for a value that is not one plain address (links); `429 rate_limited`. |
 | `POST /password-reset/confirm` | anyone | `{"token", "new_password"}` | `204`; `400 invalid_token`; `422` if a validator refuses the password. |
+| `POST /password-reset/code` | anyone | `{"identifier", "code", "new_password"}` | `204`; `400 invalid_verification_code`; `422` if a validator refuses the password. |
 | `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 rate_limited`. |
 | `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
+| `POST /email-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
+| `POST /mobile-verification` | a user, unscoped | | `202`; `429 rate_limited`. |
+| `POST /mobile-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
 
 How a reset works:
 
@@ -457,6 +461,46 @@ The audit trail records `auth.password_reset_requested` for each link
 mailed, `auth.password_reset` for a reset (and `denied`, with the reason
 `invalid_token` or `throttled`, for refusals), and
 `auth.password_changed`.
+
+#### Resetting by code
+
+With `AUTH.VERIFICATION` set to `"code"`, a reset sends a code of 6
+digits, not a link. The person gives any identifier: an email address, a
+mobile number, or a username, by the fields of `AUTH.IDENTIFIERS`:
+
+```http
+POST /auth/password-reset
+{"identifier": "+33 6 12 34 56 78"}
+```
+
+```json
+{"detail": "If an account uses it, a code is on its way."}
+```
+
+The worker finds the one account the identifier names, active and with
+a usable password. A mobile number gets a text message through
+`domainkit.contrib.notifications`; any other identifier gets a mail to
+the account's address. An email address names the one account that has
+it, even where addresses do not log in. Then your app posts the same
+identifier, the code, and the new password:
+
+```http
+POST /auth/password-reset/code
+{"identifier": "+33612345678", "code": "482913", "new_password": "an0ther-Strong-pass!"}
+```
+
+The answer is `204`, and every session of the user ends. A wrong code,
+and a code for an identifier that no account uses, get the same
+`400 invalid_verification_code`. A password that a validator refuses
+gets `422`, and the code still works. The text message reads:
+
+```text
+482913 is your code to reset your password. It works for 10 minutes. Never give it to anyone.
+```
+
+Where `mobile_number` is in `AUTH.IDENTIFIERS` and codes are on, startup
+refuses a project without `domainkit.contrib.notifications`
+(`auth.E012`).
 
 ### Email verification
 
@@ -511,6 +555,17 @@ that no longer work.
 
 `init` writes `"code"` for new projects. Links stay the default in 1.x,
 and go in 2.0.
+
+### Mobile number verification
+
+`AbstractUser` has `mobile_number` and `mobile_number_verified`. A user
+asks for a code at `/mobile-verification`. The worker texts it to their
+number through `domainkit.contrib.notifications`, unless the number is
+verified already. `/mobile-verification/code` with the code sets
+`mobile_number_verified`. The code follows the same rules as an email
+code, in either `AUTH.VERIFICATION`. Changing the number clears the mark.
+Verifications are audited as `auth.mobile_number_verified`; refusals as
+`auth.mobile_verification`.
 
 ### Signing up
 

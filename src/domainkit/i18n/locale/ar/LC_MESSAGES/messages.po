@@ -173,6 +173,9 @@ msgstr "الرابط غير صالح أو انتهت صلاحيته."
 msgid "The code is wrong or has expired; ask for a new one."
 msgstr "الرمز خاطئ أو انتهت صلاحيته؛ اطلب رمزًا جديدًا."
 
+msgid "Give an email address, or an identifier."
+msgstr "أدخل عنوان بريد إلكتروني، أو معرّفًا."
+
 msgid "The request names no origin (Origin or Referer)."
 msgstr "لا يذكر الطلب مصدره (Origin أو Referer)."
 

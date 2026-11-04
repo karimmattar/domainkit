@@ -48,6 +48,7 @@ from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
 from .validators import get_password_validators, preset_contradictions
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
+NOTIFICATIONS = "domainkit.contrib.notifications"
 MESSAGING = "domainkit.contrib.messaging"
 MAIL = "domainkit.contrib.mail"
 PRIVACY = "domainkit.contrib.privacy"
@@ -487,6 +488,19 @@ class AuthConfig(DomainConfig):
                 CheckMessage(
                     "auth.E011",
                     "AUTH.IDENTIFIERS names a field twice: name each once.",
+                )
+            )
+        if (
+            config.VERIFICATION == "code"
+            and "mobile_number" in identifiers
+            and not registry.is_installed(NOTIFICATIONS)
+        ):
+            errors.append(
+                CheckMessage(
+                    "auth.E012",
+                    "AUTH.IDENTIFIERS names 'mobile_number' and AUTH.VERIFICATION "
+                    "is 'code', so codes go by text message: add "
+                    f"{NOTIFICATIONS!r} to INSTALLED_DOMAINS.",
                 )
             )
         if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:

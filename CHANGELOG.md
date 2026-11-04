@@ -40,6 +40,13 @@ and a status.
   invalid_verification_code` when wrong, spent, or expired). Codes live
   in the new table `domainkit_auth_codes`, as HMACs only; run
   `makemigrations` and `migrate`.
+- Password reset by code: `POST /auth/password-reset` takes an
+  `identifier` and sends a code by mail, or by text message for a mobile
+  number; `POST /auth/password-reset/code` takes the identifier, the
+  code, and the new password.
+- Mobile number verification: `POST /auth/mobile-verification` texts a
+  code, and `POST /auth/mobile-verification/code` takes it.
+- `auth.E012` refuses texted codes without `domainkit.contrib.notifications`.
 - `normalize_mobile_number`, and the problems `invalid_mobile_number`,
   `mobile_number_taken`, `email_taken`, and `identifier_required`
   (`domainkit.contrib.auth`).

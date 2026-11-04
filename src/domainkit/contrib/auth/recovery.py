@@ -16,6 +16,14 @@ mount the router next to the one that logs in::
 - ``POST /email-verification`` (a user, with credentials not limited to
   scopes) mails a link to the user's address.
 - ``POST /email-verification/confirm`` (anyone) takes the link's token.
+- With ``AUTH.VERIFICATION`` set to ``"code"``, ``POST /password-reset``
+  takes an ``identifier`` (an email address, a mobile number, or a
+  username) and sends a code to the user's address, or by text message
+  to their number; ``POST /password-reset/code`` takes the identifier, the
+  code, and a new password.
+- ``POST /mobile-verification`` (a user) texts a code to the user's
+  ``mobile_number``; ``POST /mobile-verification/code`` takes it. Texts
+  need ``domainkit.contrib.notifications``.
 - ``POST /email-verification/code`` (the same user) takes the code that
   ``POST /email-verification`` mailed, where ``AUTH.VERIFICATION`` is
   ``"code"`` (ADR 0126): 6 digits, for ``AUTH.CODE_TTL``, spent after
@@ -48,7 +56,7 @@ from domainkit.http.errors import APIError
 from .access import AuthenticatedUser
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .captcha import captcha
-from .codes import EMAIL_VERIFICATION, target_of
+from .codes import EMAIL_VERIFICATION, MOBILE_VERIFICATION, PASSWORD_RESET, target_of
 from .events import PasswordReset, PasswordResetRequested
 from .exceptions import InvalidEmail
 from .models import (
@@ -56,6 +64,7 @@ from .models import (
     AbstractBaseUser,
     AbstractUser,
     UserId,
+    as_mobile_number,
     validate_email,
 )
 from .onetime import (
@@ -77,6 +86,10 @@ __all__ = [
 EMAIL_PATTERN: Final = r"^[^@\s\x00-\x1f\x7f]{1,64}@[^@\s\x00-\x1f\x7f]{1,253}$"
 """The shape of an address, checked first; ``EmailAddress`` checks the rest."""
 RESET_TASK: Final = "domainkit.auth.send_password_reset"
+RESET_CODE_TASK: Final = "domainkit.auth.send_password_reset_code"
+MOBILE_VERIFICATION_TASK: Final = "domainkit.auth.send_mobile_verification"
+NOTIFICATIONS: Final = "domainkit.contrib.notifications"
+IDENTIFIER_MAX_LENGTH: Final = 255
 VERIFICATION_TASK: Final = "domainkit.auth.send_email_verification"
 
 logger = logging.getLogger(__name__)
@@ -100,11 +113,25 @@ EmailAddress = Annotated[
 
 
 class PasswordResetIn(BaseModel):
-    """The email address of the account."""
+    """The email address of the account, or, for codes, any identifier."""
 
     model_config = ConfigDict(extra="forbid")
 
-    email: EmailAddress
+    email: EmailAddress | None = None
+    identifier: str | None = Field(
+        default=None, min_length=1, max_length=IDENTIFIER_MAX_LENGTH
+    )
+    """An email address, a mobile number, or a username (codes only)."""
+
+
+class PasswordResetCodeIn(BaseModel):
+    """The identifier the code was sent for, the code, and the new password."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    identifier: str = Field(min_length=1, max_length=IDENTIFIER_MAX_LENGTH)
+    code: str = Field(min_length=1, max_length=32, repr=False)
+    new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
 
 
 class PasswordResetConfirmIn(BaseModel):
@@ -171,13 +198,130 @@ class InvalidCode(APIError):
 async def request_password_reset(
     body: PasswordResetIn, request: Request
 ) -> AcceptedOut:
-    """Mail a reset link to the accounts that use the address, if any."""
-    email = body.email
+    """Send a reset link, or a code, to the account the value names, if any.
+
+    Links go to every account of an email address. Codes (``AUTH.VERIFICATION``
+    set to ``"code"``) go to the one account an identifier names: by mail,
+    or by text message for a mobile number.
+
+    Raises:
+        InvalidEmail: For links, a value that is not an email address.
+        APIError: 422 ``missing_value`` without ``email`` or ``identifier``.
+    """
+    value = body.identifier or body.email
+    if value is None:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Give an email address, or an identifier.",
+            code="missing_value",
+        )
+    if auth_settings().VERIFICATION == "code":
+        value = value.strip()
+        recipient = as_mobile_number(value) or value
+        await _limit_mail(
+            request, "password-reset", email_key("password-reset", recipient)
+        )
+        await enqueue(send_password_reset_code, identifier=value)
+        return AcceptedOut(detail="If an account uses it, a code is on its way.")
+    email = validate_email(value)
     await _limit_mail(request, "password-reset", email_key("password-reset", email))
     await enqueue(send_password_reset, email=email)
     return AcceptedOut(
         detail="If an account uses this address, a reset link is on its way."
     )
+
+
+@router.post(
+    "/password-reset/code",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Public],
+    responses=_errors(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def confirm_password_reset_code(
+    body: PasswordResetCodeIn, request: Request
+) -> None:
+    """Set a new password with the code sent for ``identifier``; sessions end.
+
+    A wrong code, and one for an identifier no account uses, get the same
+    answer. A password the validators refuse leaves the code working.
+    """
+    user = None
+    async with AuthUnitOfWork() as uow:
+        target = target_of(body.identifier)
+        proven = await uow.verification_codes.check(PASSWORD_RESET, target, body.code)
+        if proven is not None and proven.user_id is not None:
+            user = await uow.users.find(UserId(proven.user_id))
+        if user is not None and user.is_active:
+            validate_password(body.new_password, user)  # Raises: nothing is spent.
+            await uow.users.set_password(user, body.new_password)
+            await uow.tokens.revoke_user(user.id)
+            user.record(PasswordReset(user_id=user.id))
+        else:
+            user = None
+        await uow.commit()  # A wrong try stays counted.
+    if user is None:
+        await _count_failed_check(request, "password-reset")
+        await audit_refusal("auth.password_reset", "invalid_verification_code")
+        raise InvalidCode
+
+
+@router.post(
+    "/mobile-verification",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(Require(IsUnscoped()))],
+    responses=_errors(
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def request_mobile_verification(
+    request: Request, user: AuthenticatedUser
+) -> AcceptedOut:
+    """Text a code that verifies the user's mobile number (none if verified)."""
+    await _limit_mail(
+        request, "mobile-verification", f"mobile-verification:user:{user.id}"
+    )
+    await enqueue(send_mobile_verification, user_id=user.id)
+    return AcceptedOut(detail="A code to verify your number is on its way.")
+
+
+@router.post(
+    "/mobile-verification/code",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(Require(IsUnscoped()))],
+    responses=_errors(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def confirm_mobile_verification_code(
+    body: CodeIn, request: Request, user: AuthenticatedUser
+) -> None:
+    """Mark the user's mobile number verified with the code texted to it."""
+    verified = False
+    async with AuthUnitOfWork() as uow:
+        stored = await uow.users.get(UserId(user.id))
+        number = getattr(stored, "mobile_number", None)
+        if number:
+            target = target_of(number)
+            proven = await uow.verification_codes.check(
+                MOBILE_VERIFICATION, target, body.code
+            )
+            if proven is not None and proven.user_id == stored.id:
+                cast(AbstractUser, stored).verify_mobile_number()
+                verified = True
+        await uow.commit()  # A wrong try stays counted.
+    if not verified:
+        await _count_failed_check(request, "mobile-verification")
+        await audit_refusal("auth.mobile_verification", "invalid_verification_code")
+        raise InvalidCode
 
 
 @router.post(
@@ -326,6 +470,94 @@ async def send_password_reset(email: str) -> None:
         await deliver(messages)
 
 
+async def send_password_reset_code(identifier: str) -> None:
+    """Send a reset code to the account ``identifier`` names, if any.
+
+    The ``domainkit.auth.send_password_reset_code`` task. The account must
+    be active, with a usable password. An email address names the one
+    account that has it, even where addresses do not log in. A mobile number gets a text
+    message; an email address, or any other identifier, a mail to the
+    account's address. Nothing goes where nothing can be sent.
+    """
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.find_by_identifier(identifier)
+        if user is None and "@" in identifier:  # As links do, by any address.
+            found = await uow.users.find_by_email(identifier)
+            user = found[0] if len(found) == 1 else None
+        if user is None or not (user.is_active and user.has_usable_password()):
+            return
+        number = as_mobile_number(identifier)
+        address = email_of(user)
+        texted = number is not None and getattr(user, "mobile_number", None) == number
+        if not texted and (address is None or not _mailable(user, address)):
+            return  # Texts can go: auth.E012 needs notifications for numbers.
+        target = target_of(identifier)
+        code = await uow.verification_codes.issue(
+            PASSWORD_RESET, target, user_id=user.id
+        )
+        user.record(PasswordResetRequested(user_id=user.id))
+        if texted:
+            await _text(cast(str, number), code, "reset your password", uow)
+        await uow.commit()
+    if not texted:
+        await _mail_code(user, cast(str, address), code, "auth/password_reset_code")
+
+
+async def send_mobile_verification(user_id: UUID) -> None:
+    """Text a verification code to the user's mobile number, unless verified.
+
+    The ``domainkit.auth.send_mobile_verification`` task.
+    """
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.find(UserId(user_id))
+        if user is None or not user.is_active:
+            return
+        number = getattr(user, "mobile_number", None)
+        if not number or getattr(user, "mobile_number_verified", True):
+            return
+        if not _can_text(user):
+            return
+        code = await uow.verification_codes.issue(
+            MOBILE_VERIFICATION, target_of(number), user_id=user.id
+        )
+        await _text(number, code, "verify your number", uow)
+        await uow.commit()
+
+
+def _can_text(user: AbstractBaseUser) -> bool:
+    """Whether text messages can go out; a warning names the user if not."""
+    from domainkit.apps import registry
+
+    if registry.is_installed(NOTIFICATIONS):
+        return True
+    logger.warning(
+        "User %s has a code to text, and %s is not installed.", user.id, NOTIFICATIONS
+    )
+    return False
+
+
+async def _text(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -> None:
+    """Queue a text message with ``code``; it leaves with ``uow``'s commit."""
+    from domainkit.contrib.notifications import send_sms
+
+    valid_for = describe(auth_settings().CODE_TTL)
+    body = (
+        f"{code} is your code to {purpose}. It works for {valid_for}. "
+        "Never give it to anyone."
+    )
+    await send_sms(number, body, uow=uow)
+
+
+async def _mail_code(
+    user: AbstractBaseUser, address: str, code: str, template: str
+) -> None:
+    """Mail ``code`` to ``address`` with ``template``."""
+    from domainkit.contrib.mail import deliver, render_mail
+
+    context = _code_context(user, code)
+    await deliver([render_mail(template, context, to=[address])])
+
+
 async def send_email_verification(user_id: UUID) -> None:
     """Mail a verification link, or code, to the user's address.
 
@@ -350,9 +582,7 @@ async def send_email_verification(user_id: UUID) -> None:
                 EMAIL_VERIFICATION, target_of(address), user_id=user.id
             )
             await uow.commit()
-        context = _code_context(user, code)
-        mail = render_mail("auth/email_verification_code", context, to=[address])
-        await deliver([mail])
+        await _mail_code(user, address, code, "auth/email_verification_code")
         return
     token = email_verification_tokens.make_token(user)
     context = _context(
@@ -379,6 +609,8 @@ def register_tasks() -> None:
     """Register the tasks that send the links (with messaging installed)."""
     task(name=RESET_TASK)(send_password_reset)
     task(name=VERIFICATION_TASK)(send_email_verification)
+    task(name=RESET_CODE_TASK)(send_password_reset_code)
+    task(name=MOBILE_VERIFICATION_TASK)(send_mobile_verification)
 
 
 async def _limit_mail(request: Request, scope: str, recipient: str) -> None:

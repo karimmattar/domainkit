@@ -171,6 +171,9 @@ msgstr ""
 msgid "The code is wrong or has expired; ask for a new one."
 msgstr ""
 
+msgid "Give an email address, or an identifier."
+msgstr ""
+
 msgid "The request names no origin (Origin or Referer)."
 msgstr ""
 

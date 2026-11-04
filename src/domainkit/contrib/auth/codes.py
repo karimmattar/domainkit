@@ -38,6 +38,10 @@ from .tokens import utc_now
 
 EMAIL_VERIFICATION: Final = "email_verification"
 """A code that proves a user reads mail at their address."""
+MOBILE_VERIFICATION: Final = "mobile_verification"
+"""A code that proves a user receives texts at their mobile number."""
+PASSWORD_RESET: Final = "password_reset"  # noqa: S105 - a purpose, not a secret.
+"""A code that lets whoever reads it choose a new password."""
 CODE_LENGTH: Final = 6
 CODE_PURPOSE: Final = "contrib.auth.code"
 """What the key that digests codes is derived for."""
@@ -139,12 +143,6 @@ class CodeStore:
             return None
         await self.session.execute(delete(auth_codes).where(auth_codes.c.id == row.id))
         return Proven(user_id=row.user_id)
-
-    async def forget_user(self, user_id: UUID) -> None:
-        """Delete every code sent for ``user_id``."""
-        await self.session.execute(
-            delete(auth_codes).where(auth_codes.c.user_id == user_id)
-        )
 
     async def clear_expired(self, now: datetime | None = None) -> int:
         """Delete the codes that no longer work; return how many."""
