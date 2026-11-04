@@ -24,6 +24,18 @@ and a status.
   the new project failed its own lint step. The warning a generator gives
   without ruff names that command, and says the code runs as it is.
 
+### Security
+
+- An impersonation token kept acting as its user for the rest of
+  `AUTH.IMPERSONATION_TTL` after its staff member was deactivated,
+  deleted, or lost the right to change users. Each request of such a
+  token now checks its staff member again, as the admin API did when it
+  was issued (audit A1-1).
+- An impersonation token could impersonate in turn: the new token named
+  the impersonated staff member, so the trail credited the wrong person,
+  each hop began a new TTL, and two superusers could loop back to
+  themselves. Impersonating is refused to an impersonation (A1-2).
+
 ### Fixed
 
 - A new project's CI built its image under the project's name as typed,

@@ -95,3 +95,51 @@ async def test_impersonated_credentials_never_step_up() -> None:
     assert not await StepUp(max_age=timedelta(minutes=5)).has_permission(
         impersonated, who
     )
+
+
+@pytest.mark.parametrize("change", ["deactivated", "deleted", "unpermitted"])
+def test_an_impersonation_ends_with_its_staff_members_right(
+    api: Api, change: str
+) -> None:
+    """Staff deactivated, deleted, or no longer allowed: their tokens stop at once.
+
+    The audit found a token working as the user for the rest of
+    ``IMPERSONATION_TTL`` after its staff member was deactivated or deleted
+    (A1-1).
+    """
+    client = api(**ON)
+    root = staff("root", is_superuser=True)
+    clerk = staff("clerk", "auth.change_user")
+    ann = create_user("ann")
+    clerk_id = client.get("/auth/me", headers=clerk).json()["id"]
+    as_ann = bearer(impersonate(client, ann, clerk).json()["access_token"])
+    assert client.get("/auth/me", headers=as_ann).json()["username"] == "ann"
+
+    path = f"/admin/auth/users/{clerk_id}"
+    if change == "deactivated":
+        done = client.patch(path, json={"is_active": False}, headers=root)
+    elif change == "deleted":
+        done = client.delete(path, headers=root)
+    else:
+        done = client.put(f"{path}/permissions", json={"permissions": []}, headers=root)
+    assert done.status_code < 300
+
+    assert client.get("/auth/me", headers=as_ann).status_code == 401
+
+
+def test_an_impersonation_cannot_impersonate(api: Api) -> None:
+    """Its token would name the impersonated staff member, and start a new TTL.
+
+    The audit found staff impersonating staff, then a user, so the trail
+    named the wrong staff member; and a loop back to themselves (A1-2).
+    """
+    client = api(**ON)
+    boss = staff("boss", is_superuser=True)
+    clerk = staff("clerk", "auth.change_user")
+    ann = create_user("ann")
+    boss_id = client.get("/auth/me", headers=boss).json()["id"]
+    clerk_id = client.get("/auth/me", headers=clerk).json()["id"]
+    as_clerk = bearer(impersonate(client, clerk_id, boss).json()["access_token"])
+
+    assert impersonate(client, ann, as_clerk).status_code == 403
+    assert impersonate(client, boss_id, as_clerk).status_code == 403

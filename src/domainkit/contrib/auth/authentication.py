@@ -292,6 +292,9 @@ class TokenAuthentication(BaseAuthentication):
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
+        impersonator = token.family if token.name == IMPERSONATION else None
+        if impersonator is not None and not await may_impersonate(impersonator):
+            raise AuthenticationFailed("Invalid token.")
         await accept(
             entry, config.PRINCIPAL_CACHE, touch=not rechecking(connection), every=every
         )
@@ -300,7 +303,7 @@ class TokenAuthentication(BaseAuthentication):
             scheme=TOKEN_SCHEME,
             token_id=token.id,
             scopes=token.scopes,
-            impersonator=token.family if token.name == IMPERSONATION else None,
+            impersonator=impersonator,
         )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
@@ -586,6 +589,32 @@ def bearer_token(connection: HTTPConnection) -> str | None:
     if scheme.lower() != "bearer":
         return None
     return token.strip() or None
+
+
+async def may_impersonate(staff_id: UUID) -> bool:
+    """Whether ``staff_id`` may still act as the users they impersonate.
+
+    Read on every request of an impersonation token, so its staff member's
+    deactivation, deletion, or lost right to change users ends it at once,
+    not when ``AUTH.IMPERSONATION_TTL`` runs out: what the admin API asked
+    of them when it was issued (``staff_rules``), asked again.
+    """
+    # Here, not at the top: resources and users import this module.
+    from domainkit.resources.access import content_type_of
+
+    from .users import get_user_model
+
+    async with AuthUnitOfWork() as uow:
+        snapshot = await uow.principals.principal(staff_id)
+    staff = snapshot.loaded
+    if staff is None and snapshot.principal is not None:
+        staff = snapshot.principal.user()
+    if staff is None or not staff.is_active:
+        return False
+    if not (staff.is_superuser or getattr(staff, "is_staff", False)):
+        return False
+    domain, model = content_type_of(get_user_model())
+    return await staff.ahas_perms([f"{domain}.change_{model}"])
 
 
 async def stored_credential(

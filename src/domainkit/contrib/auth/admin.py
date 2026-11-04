@@ -31,7 +31,7 @@ from types import SimpleNamespace
 from typing import Annotated, Any, Final, Self, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -50,7 +50,7 @@ from domainkit.resources import ModelActions, ResourceRouter
 from domainkit.resources.access import ModelLike
 from domainkit.utils.decimals import jsonable
 
-from .access import IsAdminUser, IsSuperuser
+from .access import IsAdminUser, IsSuperuser, _impersonated
 from .authentication import IMPERSONATION
 from .backends import (
     ModelBackend,
@@ -464,6 +464,7 @@ async def log_out_user(
 async def impersonate(
     user_id: UUID,
     body: ImpersonateIn,
+    request: Request,
     response: Response,
     actor: Annotated[AnyUser, _users("change")],
 ) -> ImpersonationOut:
@@ -475,13 +476,16 @@ async def impersonate(
     and it is never refreshed; logging out ends it.
 
     Raises:
-        PermissionDenied: Impersonation is off, the user is the staff
-            member, or holds more than them.
+        PermissionDenied: Impersonation is off, the request is itself an
+            impersonation, the user is the staff member, or holds more
+            than them.
     """
     response.headers["Cache-Control"] = "no-store"  # The answer is a token.
     ttl = auth_settings().IMPERSONATION_TTL
     if ttl is None:
         raise PermissionDenied("Impersonation is off (AUTH.IMPERSONATION_TTL).")
+    if _impersonated(request):  # Its token would name the impersonated staff.
+        raise PermissionDenied("An impersonation cannot impersonate.")
     staff_id = cast("UUID", actor.id)  # Staff: always a user with an id.
     if user_id == staff_id:
         raise PermissionDenied("Staff cannot impersonate themselves.")
