@@ -168,6 +168,10 @@ and a status.
 
 ### Fixed
 
+- A body refused by its length before routing was logged with the global
+  limit (`MAX_REQUEST_BODY_SIZE`), though a route's larger limit was the
+  one it broke. The log names that limit now.
+
 - `diffsettings` failed in every project `init` makes (`Unable to serialize
   unknown type`): `LOGGING` holds classes. It shows them by their dotted
   path now.

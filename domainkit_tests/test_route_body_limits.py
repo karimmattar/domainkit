@@ -218,6 +218,24 @@ def test_a_route_takes_more_than_the_global_limit(
     assert caplog.messages[0] == "Rejected request body of 50000 bytes (limit 1000)"
 
 
+def test_a_body_over_every_limit_is_logged_with_the_largest(
+    make_client: MakeClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Refused by its length before routing: the limit it broke is the largest.
+
+    The log named the global limit, which a route's larger one had raised.
+    """
+    client = make_client(MAX_REQUEST_BODY_SIZE=1_000)
+
+    with caplog.at_level(logging.WARNING, logger=SECURITY_LOGGER):
+        beyond = client.post("/ignore", content=b"x" * (UPLOAD_LIMIT + 1))
+
+    assert beyond.status_code == 413
+    assert caplog.messages == [
+        f"Rejected request body of {UPLOAD_LIMIT + 1} bytes (limit {UPLOAD_LIMIT})"
+    ]
+
+
 def test_a_route_takes_less_than_the_global_limit(
     make_client: MakeClient, caplog: pytest.LogCaptureFixture
 ) -> None:
