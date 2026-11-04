@@ -5,9 +5,11 @@ offline by Alembic), and ``--fake`` records a revision as applied without
 running it. None of them changes the schema.
 
 A downgrade can drop data: staging and production refuse one without
-``--allow-data-loss``, a tenant's schema included, and each one that runs
-is recorded in the audit trail (``operator.migrate.downgrade``) before it
-runs, so a downgrade that drops the trail's own tables is still on record.
+``--allow-data-loss``, a tenant's schema included. There, each one that
+runs is recorded in the audit trail (``operator.migrate.downgrade``)
+before it runs, so a downgrade that drops the trail's own tables is still
+on record. Elsewhere nothing is recorded: the test plugin moves a test
+database down and up before the application's role may write to it.
 """
 
 from argparse import ArgumentParser
@@ -218,9 +220,11 @@ class Command(BaseCommand):
     ) -> None:
         """Record that the operator downgrades ``alias``, before it happens.
 
-        After, the trail's own tables may be gone; a record that cannot be
-        written stops the downgrade.
+        In staging and production only. After, the trail's own tables may
+        be gone; a record that cannot be written stops the downgrade.
         """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return
         details: dict[str, object] = {"database": alias, "revision": target}
         if tenant is not None:
             details["tenant"] = tenant

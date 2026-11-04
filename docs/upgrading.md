@@ -80,8 +80,8 @@ request under impersonation answer 403.
 
 (A6-3) In staging and production, `migrate --tenant NAME --downgrade`
 needs `--allow-data-loss`, as a downgrade of the database's own schema
-always did. Each downgrade that runs is first recorded in the audit
-trail (`operator.migrate.downgrade`): name who runs it with `--operator`
+always did. There, each downgrade that runs is first recorded in the
+audit trail (`operator.migrate.downgrade`): name who runs it with `--operator`
 or `DOMAINKIT_OPERATOR`. If the record cannot be written, the downgrade
 does not run.
 

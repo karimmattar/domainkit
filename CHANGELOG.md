@@ -116,8 +116,8 @@ and a status.
   append-only now, and a ledger's state may only move forward (A6-7).
 - **Breaking:** `migrate --tenant NAME --downgrade` dropped a tenant's
   tables in staging and production without `--allow-data-loss`, and no
-  downgrade was recorded anywhere. Both need the consent now, and each
-  downgrade is recorded in the audit trail before it runs
+  downgrade was recorded anywhere. Both need the consent now, and there
+  each downgrade is recorded in the audit trail before it runs
   (`operator.migrate.downgrade`, with `--operator`): a record that cannot
   be written stops it (A6-3).
 - `shell` and `seed` wrote as `system`, so what an operator changed there

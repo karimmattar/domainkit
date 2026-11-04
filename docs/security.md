@@ -219,7 +219,7 @@ domainkit names them and records what they do in the audit trail (with
   run is recorded (`operator.seed`).
 - [ ] Downgrades guarded. In staging and production,
   `migrate --downgrade` needs `--allow-data-loss`, a tenant's schema
-  included. Each downgrade is recorded (`operator.migrate.downgrade`)
+  included. There, each downgrade is recorded (`operator.migrate.downgrade`)
   before it runs, so a downgrade that drops the trail's own tables is
   still on record ([operations.md](operations.md#rolling-back-a-migration)).
 - [ ] Who may run `manage.py` against production kept as narrow as who

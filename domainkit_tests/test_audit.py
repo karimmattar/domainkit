@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings, settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.contrib.audit import (
     Outcome,
@@ -42,6 +43,7 @@ from domainkit.db import migrations as migrations_module
 from domainkit.ddd import Counted, DomainEvent, Personal, ValueObject
 from domainkit.ddd.personal import counted_fields, personal_fields
 from domainkit.management import CommandError, call_command, operators
+from domainkit.management.commands import migrate as migrate_command
 from domainkit.management.commands import partitions as partitions_command
 from domainkit.management.commands import shell as shell_command
 from domainkit.testing import assert_num_queries
@@ -753,7 +755,9 @@ def test_downgrades_are_audited_before_they_run(
 ) -> None:
     """``migrate --downgrade`` records who ran it first: it may drop the trail (A6-3).
 
-    A record that cannot be written stops the downgrade.
+    In staging and production; a record that cannot be written stops the
+    downgrade. Elsewhere nothing is recorded: the test plugin moves a test
+    database down and up before the application's role may write to it.
     """
 
     async def prepare() -> None:
@@ -778,14 +782,19 @@ def test_downgrades_are_audited_before_they_run(
 
     monkeypatch.setattr(migrations_module, "downgrade", downgrade)
     monkeypatch.setattr(migrations_module, "migration_targets", lambda: ("default",))
+    in_tests = DEPLOYED_ENVIRONMENTS
+    deployed = frozenset({"test"})  # Staging would also want TLS from PostgreSQL.
+    downgrading = ("migrate", "base", "--downgrade", "--allow-data-loss")
+    monkeypatch.setattr(migrate_command, "DEPLOYED_ENVIRONMENTS", deployed)
     with pytest.raises(DBAPIError):  # No trail yet: nothing runs.
-        call_command("migrate", "base", "--downgrade", stdout=io.StringIO())
+        call_command(*downgrading, stdout=io.StringIO())
     asyncio.run(prepare())
-    call_command(
-        "migrate", "base", "--downgrade", "--operator", "ops", stdout=io.StringIO()
-    )
+    monkeypatch.setattr(migrate_command, "DEPLOYED_ENVIRONMENTS", in_tests)
+    call_command(*downgrading, stdout=io.StringIO())
+    monkeypatch.setattr(migrate_command, "DEPLOYED_ENVIRONMENTS", deployed)
+    call_command(*downgrading, "--operator", "ops", stdout=io.StringIO())
 
-    assert seen == [1]  # Recorded before the downgrade ran.
+    assert seen == [0, 1]  # Unrecorded in tests; recorded before it ran.
     assert asyncio.run(recorded()) == [
         (
             "operator.migrate.downgrade",

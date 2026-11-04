@@ -308,7 +308,8 @@ downgrade can drop data, so domainkit guards it:
   `Downgrading in production can drop data; repeat with
   --allow-data-loss after taking a backup.` `--plan` and `--sql` need no
   flag, because they change nothing.
-- **Each downgrade is recorded in the audit trail before it runs**, as
+- **In staging and production, each downgrade is recorded in the audit
+  trail before it runs**, as
   `operator.migrate.downgrade`, with the database, the revision, and the
   tenant. The record is written first, so a downgrade that drops the
   trail's own tables is still on record. A record that cannot be written

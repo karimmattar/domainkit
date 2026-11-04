@@ -534,8 +534,9 @@ python manage.py migrate --tenant acme --tenant globex
 ```
 
 !!! warning
-    A downgrade can drop data. Each downgrade that runs, a tenant's and a
-    `--fake` one included, is recorded in the audit trail
+    A downgrade can drop data. In staging and production, each downgrade
+    that runs, a tenant's and a `--fake` one included, is recorded in the
+    audit trail
     (`operator.migrate.downgrade`, with the database, the revision, and
     the tenant) **before** it runs. So a downgrade that drops the trail's
     own tables is still on record. If the record cannot be written, the
@@ -1199,9 +1200,9 @@ and `operator_source`: `option`, `environment`, or `system`.
 - Both say whether `--replace` and `--include-guarded` were given.
 
 Three actions are recorded **before** they run, because after them there
-may be nothing left to record in: `operator.migrate.downgrade` (a
-`--fake` downgrade included), and `operator.shell` and `operator.dbshell`
-(in staging and production).
+may be nothing left to record in, all three in staging and production
+only: `operator.migrate.downgrade` (a `--fake` downgrade included),
+`operator.shell`, and `operator.dbshell`.
 
 Dry runs, listings, and refusals before the action (no `--force`) are
 not recorded. A successful action whose row cannot be written fails the
