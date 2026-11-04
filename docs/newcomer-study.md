@@ -76,3 +76,54 @@ Then three questions to each person, answers kept as written:
 - Each finding becomes a roadmap row or an issue, with the CSV rows that
   show it. Run the study again once they are fixed, with five other
   people.
+
+## The first run: five agents, November 2026
+
+Before any person took part, five AI agents worked through parts 0 to 2
+as the protocol says, each in the role of a background (two Django, two
+FastAPI, one neither), from the published 1.6.0 package and these pages
+only. An agent is not a newcomer: it reads fast and is never tired, so
+its minutes say nothing about a person's, and the rule against an AI
+assistant above stands for the study with people. What a run of agents
+can show is where the pages are wrong or unclear, and each stop it made
+is a finding all the same.
+
+```text
+person,background,part,seconds,commands,finished,hints
+P1,django,0,54,11,yes,0
+P1,django,1,28,15,yes,0
+P1,django,2,46,13,yes,0
+P2,django,0,57,13,yes,0
+P2,django,1,35,17,yes,0
+P2,django,2,45,18,yes,0
+P3,fastapi,0,59,14,yes,0
+P3,fastapi,1,30,16,yes,0
+P3,fastapi,2,42,18,yes,0
+P4,fastapi,0,50,12,yes,0
+P4,fastapi,1,28,15,yes,0
+P4,fastapi,2,42,18,yes,0
+P5,neither,0,51,13,yes,0
+P5,neither,1,30,16,yes,0
+P5,neither,2,39,19,yes,0
+```
+
+Every command on the pages ran as written. What made them stop, with how
+many of the five, and what changed:
+
+| Finding | Of five | Fixed by |
+| --- | --- | --- |
+| Every generator warned that ruff is not installed; the warning did not say how, and the new project then failed its own lint | 5 | `pip install --group dev` in part 0, the README, and `init`'s next steps; the warning names the command |
+| `init`'s next steps (an `auth` migration, a user) differ from part 0's | 5 | Part 0 says the tutorial takes them in its own order |
+| "Add the `Digits` import" when the file already imports from `domainkit.ddd` | 5 | Part 2 says where it goes |
+| The first migration, "create accounts", also makes the users', tokens', and messages' tables | 5 | Part 1 says so |
+| "Port" and "bounded context" not in the glossary; its comparisons all Django | 4 | Both words added, with Flask, FastAPI, and SQLAlchemy beside Django |
+| No page says how to serve on another port | 3 | Part 0 does |
+| No way back to `$TOKEN` and `$ID` in a new shell | 3 | Part 2 links to part 1's lines |
+| No page for someone who knows FastAPI | 2 | [from-fastapi.md](from-fastapi.md) |
+| [from-django.md](from-django.md) not linked from the tutorial | 2 | Linked from the path |
+| Whether to replace the migration's `upgrade()` | 2 | Part 2 says so |
+| The code of the `1.005` refusal not shown | 2 | Part 2 shows it |
+| `. .venv/bin/activate` fails from `bank/` | 1 | Part 0 gives the path |
+| CI's image is named `bankAPI`, which Docker refuses | 1 | The image is named in lower case |
+
+The study with five people is still to run, on these pages.
