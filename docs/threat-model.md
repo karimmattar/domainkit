@@ -140,7 +140,7 @@ project" is the team that builds and runs the service.
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
-| **Tampering** with the package | Releases built in CI from `main`, approved, and published with trusted publishing and attestations; actions pinned to commit SHAs ([SECURITY.md](../SECURITY.md)). | Verifying attestations when installing. |
+| **Tampering** with the package | Releases built in CI from `main`, approved, and published with trusted publishing and attestations; actions pinned to commit SHAs ([SECURITY.md](../SECURITY.md)); the build's tools installed pinned with their hashes, and the files uploaded as built, before anything else is installed or run in that job. | Verifying attestations when installing. |
 | Vulnerable dependencies | pip-audit and a secret scan on every push; updates through Renovate. | The project's own lock file and its updates. |
 
 ### 10. The key service

@@ -84,6 +84,12 @@ and a status.
 
 ### Fixed
 
+- CI's build job installed poetry's dependencies at their newest releases,
+  without hashes, and ran the built wheel's smoke tests (third-party code)
+  before uploading `dist/`: a compromised upstream release could have
+  changed the files the attest job signed. The build's tools are installed
+  from `.github/requirements/build-tools.txt`, pinned with hashes, and
+  `dist/` is uploaded as soon as it is built (A7-1).
 - On `TENANCY.SCHEMA_DATABASES`, erasing a person (`shred_subject`, which
   `privacy erase` calls) destroyed their keys in the default schema only:
   their keys in each tenant's schema survived and their values still
