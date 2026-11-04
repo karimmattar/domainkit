@@ -15,7 +15,10 @@ and a status.
   dependency that only puts the bearer token in OpenAPI: about
   98 calls less on every authenticated route (a write 2,054, a resource
   command 2,726, a posting 8,049). OpenAPI still documents the token, and
-  the authentication middleware checks it as before.
+  the authentication middleware checks it as before. Only the dependency
+  `Require` and `authenticated_user` name for OpenAPI
+  (`access.documenting_bearer`) is left out: a project's own
+  `Depends(access.bearer)` still reads the header.
 - `init`'s next steps install the project's dev group (`pip install
   --group dev`), whose ruff formats what the generators write; without it
   the new project failed its own lint step. The warning a generator gives

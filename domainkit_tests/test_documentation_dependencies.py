@@ -1,8 +1,10 @@
 """Routes serve requests without the dependencies that only document them (PERF-34).
 
-``access.bearer`` puts the bearer token in OpenAPI; the authentication
-middleware checks the token. A route keeps it in its ``dependant``, so
-OpenAPI shows it, and serves requests through a copy without it.
+``access.documenting_bearer`` puts the bearer token in OpenAPI; the
+authentication middleware checks the token. A route keeps it in its
+``dependant``, so OpenAPI shows it, and serves requests through a copy
+without it. ``access.bearer``, which a project's dependencies may read, is
+served as FastAPI serves it.
 """
 
 from typing import Annotated
@@ -19,7 +21,9 @@ from domainkit.http.routing import serve_without_documentation
 
 
 async def guarded(
-    _: Annotated[HTTPAuthorizationCredentials | None, Depends(access.bearer)] = None,
+    _: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(access.documenting_bearer)
+    ] = None,
 ) -> str:
     """A dependency that, as ``Require`` does, names the token to document it."""
     return "allowed"
@@ -68,7 +72,7 @@ def test_a_route_serves_without_the_token_and_documents_it(
     assert (response.status_code, response.json()) == (200, "allowed")
     guarded_route = routes["/guarded"]
     assert isinstance(guarded_route, APIRoute)
-    assert access.bearer in calls(guarded_route.dependant)
+    assert access.documenting_bearer in calls(guarded_route.dependant)
     assert routes["/open"].app is open_handler
     operation = app.openapi()["paths"]["/guarded"]["get"]
     assert operation["security"] == [{"Token": []}]
@@ -84,5 +88,37 @@ def test_a_dependency_on_the_token_is_kept_where_nothing_documents_it() -> None:
 
     [route] = router.routes
     assert isinstance(route, APIRoute)
-    assert access.bearer in calls(route.dependant)
+    assert access.documenting_bearer in calls(route.dependant)
     assert serve_without_documentation(APIRouter()) == 0
+
+
+def test_a_projects_own_dependency_on_the_token_still_reads_it() -> None:
+    """Only what ``Require`` names to document is left out, not ``bearer``.
+
+    The audit found the pass leaving out every ``Depends(access.bearer)``, so
+    a project's dependency that reads the token got its default instead.
+    """
+    app = FastAPI()
+
+    async def token(
+        credentials: Annotated[
+            HTTPAuthorizationCredentials | None, Depends(access.bearer)
+        ] = None,
+    ) -> str | None:
+        return None if credentials is None else credentials.credentials
+
+    @app.get("/both")
+    async def both(
+        rule: Annotated[str, Depends(guarded)],
+        seen: Annotated[str | None, Depends(token)],
+    ) -> list[str | None]:
+        return [rule, seen]
+
+    assert serve_without_documentation(app.router) == 1
+    client = TestClient(app)
+
+    response = client.get("/both", headers={"Authorization": "Bearer abc"})
+    assert response.json() == ["allowed", "abc"]
+    assert client.get("/both").json() == ["allowed", None]
+    schemes = app.openapi()["components"]["securitySchemes"]
+    assert list(schemes) == ["Token"]
