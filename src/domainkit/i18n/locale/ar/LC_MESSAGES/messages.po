@@ -1067,3 +1067,9 @@ msgstr "اختبار التحقق مفقود أو لم يُحَل."
 
 msgid "The virus scan refused the file."
 msgstr "رفض فحص الفيروسات الملف."
+
+msgid "An impersonation cannot impersonate."
+msgstr "لا يمكن لمنتحل الهوية أن ينتحل هوية أخرى."
+
+msgid "Confirm it is you: send your password, or step up first."
+msgstr "أكّد أنك أنت: أرسل كلمة المرور، أو عزّز التحقق أولًا."

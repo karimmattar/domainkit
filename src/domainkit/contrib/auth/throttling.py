@@ -144,10 +144,10 @@ async def attempt(
             failing closed (``fails_closed``).
     """
     counted = [(key, rate) for key, rate in limits if rate is not None]
-    taken = Attempt(limiter(request) if counted else None)
+    taken = Attempt(counter(request) if counted else None)
     for name, rate in counted:
         key, limit, period, audited = _bucket(name, rate)
-        decision = await limiter(request).hit(key, limit, period)
+        decision = await counter(request).hit(key, limit, period)
         if decision.allowed and decision.counted:
             taken.counted.append((key, limit, period))
             continue
@@ -205,7 +205,7 @@ async def count_failure(
     if rate is None:
         return
     limit, period = parse_rate(rate)
-    decision = await limiter(request).hit(key, limit, period)
+    decision = await counter(request).hit(key, limit, period)
     if not decision.allowed:
         if first_refusal(request, key, period):
             await audit_refusal(action, "throttled")
@@ -319,8 +319,8 @@ def limiter(request: Request) -> Backend:
     """The application's attempt counter (``RATE_LIMIT_BACKEND``), made once.
 
     Loops on two threads that ask at once get the same counter, so a memory
-    counter sees every attempt. Its keys are every tenant's
-    (``_SharedCounter``).
+    counter sees every attempt. Count with ``counter``: its keys are every
+    tenant's.
     """
     state = request.app.state
     counter: Backend | None = getattr(state, "login_limiter", None)
@@ -330,7 +330,12 @@ def limiter(request: Request) -> Backend:
             if counter is None:
                 counter = import_string(settings.RATE_LIMIT_BACKEND)()
                 state.login_limiter = counter
-    return _SharedCounter(counter)
+    return counter
+
+
+def counter(request: Request) -> Backend:
+    """``limiter``, counting each key for every tenant at once (``_SharedCounter``)."""
+    return _SharedCounter(limiter(request))
 
 
 async def audit_refusal(action: str, reason: str) -> None:

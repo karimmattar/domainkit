@@ -1057,3 +1057,9 @@ msgstr ""
 
 msgid "The virus scan refused the file."
 msgstr ""
+
+msgid "An impersonation cannot impersonate."
+msgstr ""
+
+msgid "Confirm it is you: send your password, or step up first."
+msgstr ""
