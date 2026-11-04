@@ -84,6 +84,13 @@ and a status.
 
 ### Fixed
 
+- On `TENANCY.SCHEMA_DATABASES`, erasing a person (`shred_subject`, which
+  `privacy erase` calls) destroyed their keys in the default schema only:
+  their keys in each tenant's schema survived and their values still
+  opened, while the erasure reported success (or failed, the default
+  schema holding no keys table). `keys status` and `keys reencrypt`
+  missed the tenants' schemas the same way. All three visit each tenant's
+  schema now (A4-1).
 - Deferred evidence (`defer_evidence`) waited in the outbox in the clear,
   where the application's database role could rewrite its facts before
   the worker wrote them, and the ledger then held them as intact. The

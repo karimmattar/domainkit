@@ -12,7 +12,8 @@ import hashlib
 import json
 import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
@@ -31,13 +32,15 @@ from sqlalchemy import (
     not_,
     or_,
     select,
+    text,
     tuple_,
     type_coerce,
     update,
 )
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import registry
-from domainkit.conf import unwrap_settings
+from domainkit.conf import settings, unwrap_settings
 from domainkit.db import connections
 from domainkit.db.encrypted import (
     Ciphertext,
@@ -295,6 +298,52 @@ def encrypted_tables(alias: str) -> list[tuple[Table, list[Column[Any]]]]:
     ]
 
 
+async def schemas_of(alias: str) -> list[str | None]:
+    """Where ``alias`` keeps keys and sealed values: its schema, and each tenant's.
+
+    None stands for the connection's own schema. On a database of
+    ``TENANCY.SCHEMA_DATABASES``, every table (keys and sealed values
+    included) also lives in each tenant's schema, so erasing, counting,
+    and moving keys visit each of them: the default schema alone missed
+    every tenant's.
+    """
+    config = settings.TENANCY
+    if config is None or alias not in config.SCHEMA_DATABASES:
+        return [None]
+    prefix, _, suffix = config.SCHEMA.partition("{tenant}")
+    async with connections.engine(alias).connect() as connection:
+        names = (
+            await connection.execute(text("SELECT nspname FROM pg_namespace"))
+        ).scalars()
+        tenants = sorted(
+            name
+            for name in names
+            if name.startswith(prefix)
+            and name.endswith(suffix)
+            and len(name) > len(prefix) + len(suffix)
+        )
+    return [None, *tenants]
+
+
+@asynccontextmanager
+async def in_schema(alias: str, schema: str | None) -> AsyncIterator[AsyncConnection]:
+    """A transaction on ``alias`` that works in ``schema`` (``SET LOCAL``)."""
+    async with connections.engine(alias).begin() as connection:
+        if schema is not None:
+            await connection.exec_driver_sql(f'SET LOCAL search_path TO "{schema}"')
+        yield connection
+
+
+async def holds_keys(connection: AsyncConnection) -> bool:
+    """Whether the connection's schema has the keys tables (a tenant's may not yet)."""
+    if connection.dialect.name != "postgresql":
+        return True
+    found = await connection.scalar(
+        text("SELECT to_regclass(:name)"), {"name": subject_keys.name}
+    )
+    return found is not None
+
+
 async def shred_subject(subject: str) -> int:
     """Destroy ``subject``'s keys everywhere; return how many there were.
 
@@ -310,9 +359,12 @@ async def shred_subject(subject: str) -> int:
     try:
         for alias in hosting_aliases():
             tables = [table for table, _ in encrypted_tables(alias)]
-            async with connections.engine(alias).begin() as connection:
-                destroyed += await connection.run_sync(erase, subject)
-                await connection.run_sync(clear_indexes, tables, subject)
+            for schema in await schemas_of(alias):
+                async with in_schema(alias, schema) as connection:
+                    if not await holds_keys(connection):
+                        continue
+                    destroyed += await connection.run_sync(erase, subject)
+                    await connection.run_sync(clear_indexes, tables, subject)
     finally:
         forget_held({subject})  # Also what a transaction read meanwhile.
     return destroyed
@@ -392,18 +444,24 @@ async def key_status(ring: Keyring) -> KeyStatus:
         ring.current, tuple(key for key in ring.ids if key != ring.current)
     )
     for alias in hosting_aliases():
-        async with connections.engine(alias).connect() as connection:
-            for table, columns in encrypted_tables(alias):
-                for column in columns:
-                    status.columns.append(
-                        await _column_status(connection, alias, table, column, ring)
+        wrapped: dict[str, int] = {}
+        for schema in await schemas_of(alias):
+            async with in_schema(alias, schema) as connection:
+                if not await holds_keys(connection):
+                    continue
+                for table, columns in encrypted_tables(alias):
+                    for column in columns:
+                        status.columns.append(
+                            await _column_status(connection, alias, table, column, ring)
+                        )
+                found = await connection.execute(
+                    select(subject_keys.c.wrapping_key, func.count()).group_by(
+                        subject_keys.c.wrapping_key
                     )
-            found = await connection.execute(
-                select(subject_keys.c.wrapping_key, func.count()).group_by(
-                    subject_keys.c.wrapping_key
                 )
-            )
-            status.subject_keys[alias] = {row[0]: row[1] for row in found}
+                for key, count in found:
+                    wrapped[key] = wrapped.get(key, 0) + count
+        status.subject_keys[alias] = wrapped
     return status
 
 
@@ -474,20 +532,26 @@ async def reencrypt(ring: Keyring, *, batch_size: int = BATCH_SIZE) -> Reencrypt
     """
     done = Reencrypted()
     for alias in hosting_aliases():
-        await _rewrap_subject_keys(alias, ring, batch_size, done)
-        for table, columns in encrypted_tables(alias):
-            for column in columns:
-                await _reencrypt_column(alias, table, column, ring, batch_size, done)
+        for schema in await schemas_of(alias):
+            async with in_schema(alias, schema) as connection:
+                if not await holds_keys(connection):
+                    continue
+            await _rewrap_subject_keys(alias, schema, ring, batch_size, done)
+            for table, columns in encrypted_tables(alias):
+                for column in columns:
+                    await _reencrypt_column(
+                        alias, schema, table, column, ring, batch_size, done
+                    )
     return done
 
 
 async def _rewrap_subject_keys(
-    alias: str, ring: Keyring, batch_size: int, done: Reencrypted
+    alias: str, schema: str | None, ring: Keyring, batch_size: int, done: Reencrypted
 ) -> None:
-    """Wrap every subject's key of ``alias`` under the current data key."""
+    """Wrap every subject's key of ``alias`` (in ``schema``) under the current key."""
     after = ""
     while True:
-        async with connections.engine(alias).begin() as connection:
+        async with in_schema(alias, schema) as connection:
             rows = (
                 await connection.execute(
                     select(subject_keys)
@@ -534,6 +598,7 @@ def _rewrap_rows(
 
 async def _reencrypt_column(
     alias: str,
+    schema: str | None,
     table: Table,
     column: Column[Any],
     ring: Keyring,
@@ -555,7 +620,7 @@ async def _reencrypt_column(
         query = select(*keys, column).where(stale).order_by(*keys).limit(batch_size)
         if last is not None:
             query = query.where(tuple_(*keys) > tuple_(*last))
-        async with connections.engine(alias).begin() as connection:
+        async with in_schema(alias, schema) as connection:
             # The batch's rows stay as read until it commits: locked on
             # PostgreSQL, behind the write lock on SQLite.
             if connection.dialect.name == "postgresql":
