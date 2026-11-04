@@ -1,6 +1,9 @@
 """Install ``domainkit.contrib.identity`` to log in through identity providers."""
 
+from collections.abc import Mapping
+
 from domainkit.apps import DomainConfig, registry
+from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
@@ -58,6 +61,20 @@ class IdentityConfig(DomainConfig):
         from domainkit.contrib.auth.integration import UserDeleted
 
         event_bus.subscribe(UserDeleted, forget_identities)
+        on_erase_subject(self.erase_person, domain=self.label)
+        on_export_subject(self.export_person, domain=self.label)
+
+    async def erase_person(self, subject: str, reason: str) -> Mapping[str, int]:
+        """Remove what this app keeps of ``subject`` (``privacy erase``)."""
+        from .personal import erase_subject
+
+        return await erase_subject(subject)
+
+    async def export_person(self, subject: str) -> Mapping[str, object]:
+        """What this app keeps of ``subject`` (``privacy export``)."""
+        from .personal import export_subject
+
+        return await export_subject(subject)
 
 
 async def forget_identities(event: object) -> None:

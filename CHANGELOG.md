@@ -77,6 +77,11 @@ and a status.
 
 ### Fixed
 
+- `privacy erase` and `privacy export` never reached the numbers
+  `contrib.phones` keeps, the provider accounts of `contrib.identity`
+  (with their email), or the passkeys, devices, and push tokens of
+  `contrib.devices`: only deleting the user removed them. Each app now
+  answers for its own (A6-1).
 - An amount written in another script's digits (Arabic-Indic, say) passed
   the ledger's and the limits' schemas, whose `\d` takes any digit, and
   then failed in `Money`: a 500, not a 422. Amounts are ASCII digits

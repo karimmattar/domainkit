@@ -1,6 +1,9 @@
 """Install ``domainkit.contrib.phones`` to verify users' phone numbers."""
 
+from collections.abc import Mapping
+
 from domainkit.apps import DomainConfig
+from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.db.routing import router
 from domainkit.ddd import event_bus
 from domainkit.exceptions import ImproperlyConfigured
@@ -34,6 +37,20 @@ class PhonesConfig(DomainConfig):
         from domainkit.contrib.auth.integration import UserDeleted
 
         event_bus.subscribe(UserDeleted, forget_phones)
+        on_erase_subject(self.erase_person, domain=self.label)
+        on_export_subject(self.export_person, domain=self.label)
+
+    async def erase_person(self, subject: str, reason: str) -> Mapping[str, int]:
+        """Remove what this app keeps of ``subject`` (``privacy erase``)."""
+        from .personal import erase_subject
+
+        return await erase_subject(subject)
+
+    async def export_person(self, subject: str) -> Mapping[str, object]:
+        """What this app keeps of ``subject`` (``privacy export``)."""
+        from .personal import export_subject
+
+        return await export_subject(subject)
 
 
 async def forget_phones(event: object) -> None:
