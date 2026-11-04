@@ -1,14 +1,23 @@
 # Fintech: a bank's first review, answered
 
 A bank, a payment institution, or their auditors read a new service's
-stack against a short list before anything else: its threat model, where
-its releases come from, where its keys live, who checks whom, whether its
-audit trail can be trusted and names the people behind it, what a retried
-request does, and whether a dump of the database shows a card number.
-This page answers each item with the page that explains it, the setting
-or command that turns it on, and the test that proves it, named as
+stack against a short list before anything else. They ask about its
+threat model, where its releases come from, and where its keys live.
+They ask who checks whom, whether the audit trail can be trusted and
+names the people behind each act, what a retried request does, and
+whether a dump of the database shows a card number. This page answers
+each item with three things: the page that explains it, the setting or
+command that turns it on, and the test that proves it, named as
 `file::test`. `domainkit_tests/test_fintech_docs.py` checks that every
 test named here exists.
+
+On this page you learn how to:
+
+- start a project with every control on: `init --profile fintech`;
+- find, for each item of a bank's first review, the page, the setting,
+  and the test;
+- find the answer to each item of domainkit's fintech audit;
+- tell what stays the bank's own work.
 
 ## A project with the controls on
 
@@ -20,9 +29,11 @@ python manage.py migrate
 pytest
 ```
 
-`--profile fintech` writes the project `init` always writes, with every
-control below installed, configured, and wired
-([ADR 0124](adr/0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md)):
+`--profile fintech` writes the project that `init` always writes, with
+every control below installed, configured, and wired
+([ADR 0124](adr/0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md)).
+The commands above make the first migration, apply it, and run the
+project's own tests of its controls:
 
 | What | Where in the project |
 | --- | --- |
@@ -39,16 +50,30 @@ control below installed, configured, and wired
 | Deny by default | every route names its rule; `check` lists any that does not, and staging and production refuse to start |
 | A sample transfer through the customer's controls | `domains/payments`: a card registered after a step-up, its number sealed with a blind index; a transfer in `Money`, in USD or EUR only, confirmed by the maker for its amount and card, sent with an `Idempotency-Key`, counted against the maker's limit in its own transaction, and over 1,000.00 submitted for another person's approval (`202`); with its tests in `tests/`. It books nothing in the double-entry books and records no evidence: the books and evidence are installed for the project's own use cases |
 
-The production settings read their secrets from the environment, and the
-docstring of `config/settings/production.py` lists each: the database,
-Redis, `SECRET_KEY`, `EVIDENCE_SUBJECT_KEY`, the key service and the data
-key it wrapped (`manage.py keys generate` prints it), and the ledger's URL,
-CA, and signing key. Once they are set, `manage.py check --deploy` passes
-with no error and no warning; without one, the project does not start and
-names the variable. The project's CI runs ruff, `mypy --strict`, `check`,
-its migrations, and its tests.
+The production settings read their secrets from the environment. The
+docstring of `config/settings/production.py` lists each one:
+
+- the database and Redis;
+- `SECRET_KEY` and `EVIDENCE_SUBJECT_KEY`;
+- the key service, and the data key it wrapped (`manage.py keys
+  generate` prints it);
+- the ledger's URL, CA, and signing key.
+
+Once they are set, `manage.py check --deploy` passes with no error and
+no warning. Without one, the project does not start, and names the
+variable ([operations.md](operations.md#configuration)).
+
+The project's CI ([deploying.md](deploying.md#the-ci-workflow))
+installs `requirements.lock` by its hashes when the project keeps one,
+audits the dependencies with `pip-audit`, and runs ruff,
+`mypy --strict`, `check`, the migrations, and the tests. It then builds
+the image. Its `pip-audit` ignores one advisory, PYSEC-2026-1325, a
+timing attack on `ecdsa`'s signing that does not apply: the immudb
+extra's SDK only verifies with `ecdsa` ([SECURITY.md](../SECURITY.md)).
 
 ## The first-review list
+
+Each row is one item of the list, in the order a bank reads it.
 
 | Item | The page | The setting or command | The test |
 | --- | --- | --- | --- |
@@ -56,14 +81,15 @@ its migrations, and its tests.
 | Provenance | [security.md](security.md#verifying-a-release); [SECURITY.md](../SECURITY.md) | `gh attestation verify domainkit-<version>-py3-none-any.whl --repo karimmattar/domainkit`: SLSA build provenance for the wheel and the sdist, and a CycloneDX bill of materials | `domainkit_tests/test_ci.py::test_the_run_that_builds_the_files_attests_them`, `domainkit_tests/test_ci.py::test_releases_publish_only_attested_files`, `domainkit_tests/test_ci.py::test_the_bill_of_materials_is_one_attest_takes` |
 | KMS | [contrib/keys.md](contrib/keys.md#data-keys-and-the-kek) | `KEYS.PROVIDER = "aws-kms"` or `"vault"`, `DATA_KEYS`; `manage.py keys generate`, `rewrap`, `reencrypt`; `keys.E001` refuses the development key where deployed | `domainkit_tests/test_keys_providers.py::test_kms_makes_unwraps_and_rewraps_data_keys`, `domainkit_tests/test_keys_providers.py::test_vault_makes_unwraps_and_rewraps_data_keys`, `domainkit_tests/test_keys_app.py::test_a_deployment_on_the_local_kek_must_opt_in`, `domainkit_tests/test_init_fintech.py::test_production_refuses_the_development_key_service` |
 | Maker-checker with step-up | [contrib/approvals.md](contrib/approvals.md#who-may-approve-step-up); [auth/step-up.md](auth/step-up.md) | `@requires_approval(...)` and `guard(...)`; `APPROVALS.APPROVE_RULE` naming a `StepUp` | `domainkit_tests/test_approvals.py::test_the_maker_never_decides_and_no_one_decides_twice`, `domainkit_tests/test_approvals.py::test_twenty_approvals_at_once_count_to_ten_and_run_once`, `domainkit_tests/test_approvals.py::test_what_runs_is_what_was_approved`, `domainkit_tests/test_approvals_api.py::test_a_policy_asks_its_approvers_to_step_up`, `src/domainkit/management/templates/profiles/fintech/tests/payments/test_transfers.py-tpl::test_a_large_transfer_runs_once_another_person_approves_it` |
-| Verifiable audit with operator identity | [contrib/audit.md](contrib/audit.md#tamper-evidence), [In staging and production](contrib/audit.md#in-staging-and-production); [operators](reference/commands.md#operators) | `AUDIT.LEDGER`, `AUDIT.NAMESPACE`, sealing by the worker, the `protect()` triggers; `manage.py audit seal`, `audit verify`. A request's actor is its authenticated principal; a command's operator is the name it is given (`--operator`, `DOMAINKIT_OPERATOR`, or the login name), which nothing verifies: who may run commands where deployed is the bank's | `domainkit_tests/test_audit_seals.py::test_auditverify_names_each_problem`, `domainkit_tests/test_audit_baseline.py::test_startup_refuses_with_require_baseline`, `domainkit_tests/test_operators.py::test_commands_that_change_data_or_credentials_name_their_operator`, `domainkit_tests/test_audit15_fin_90_statements_unaudited.py::test_importing_and_reconciling_over_http_are_in_the_trail`, `domainkit_tests/test_audit_retention.py::test_the_pci_preset_keeps_the_trail_a_year_at_least`, `domainkit_tests/test_init_fintech.py::test_migrate_makes_the_trail_append_only_on_postgresql`, `src/domainkit/management/templates/profiles/fintech/tests/test_controls.py-tpl::test_the_trail_names_who_moved_money_and_verifies`, `src/domainkit/management/templates/profiles/fintech/tests/test_controls.py-tpl::test_operators_changes_name_the_operator` |
+| Verifiable audit with operator identity | [contrib/audit.md](contrib/audit.md#tamper-evidence), [In staging and production](contrib/audit.md#in-staging-and-production); [operators](reference/commands.md#operators) | `AUDIT.LEDGER`, `AUDIT.NAMESPACE`, sealing by the worker, the `protect()` triggers; `manage.py audit seal`, `audit verify`. A request's actor is its authenticated principal; a command's operator is the name it is given (`--operator`, `DOMAINKIT_OPERATOR`, or the login name), which nothing verifies: who may run commands where deployed is the bank's. Where deployed, `shell` and `dbshell` are recorded as they open, and each `migrate --downgrade` before it runs | `domainkit_tests/test_audit_seals.py::test_auditverify_names_each_problem`, `domainkit_tests/test_audit_baseline.py::test_startup_refuses_with_require_baseline`, `domainkit_tests/test_operators.py::test_commands_that_change_data_or_credentials_name_their_operator`, `domainkit_tests/test_audit15_fin_90_statements_unaudited.py::test_importing_and_reconciling_over_http_are_in_the_trail`, `domainkit_tests/test_audit_retention.py::test_the_pci_preset_keeps_the_trail_a_year_at_least`, `domainkit_tests/test_init_fintech.py::test_migrate_makes_the_trail_append_only_on_postgresql`, `src/domainkit/management/templates/profiles/fintech/tests/test_controls.py-tpl::test_the_trail_names_who_moved_money_and_verifies`, `src/domainkit/management/templates/profiles/fintech/tests/test_controls.py-tpl::test_operators_changes_name_the_operator` |
 | Written idempotency semantics | [contrib/idempotency.md](contrib/idempotency.md): what each retry gets, situation by situation | `IdempotencyMiddleware`; `IDEMPOTENCY.TTL_SECONDS`, `TOMBSTONE_SECONDS`, `LEASE_SECONDS` | `domainkit_tests/test_ratelimit_and_idempotency.py::test_retries_replay_the_first_response`, `domainkit_tests/test_ratelimit_and_idempotency.py::test_key_misuse_is_refused`, `domainkit_tests/test_ratelimit_and_idempotency.py::test_committed_requests_never_run_twice`, `domainkit_tests/test_idempotency_tombstones.py::test_a_committed_key_is_not_run_again_once_its_ttl_passes`, `src/domainkit/management/templates/profiles/fintech/tests/payments/test_transfers.py-tpl::test_a_small_transfer_is_made_once_however_often_it_is_sent`, `src/domainkit/management/templates/profiles/fintech/tests/payments/test_transfers.py-tpl::test_a_transfer_needs_an_idempotency_key` |
 | A card-number column unreadable in a dump | [contrib/keys.md](contrib/keys.md#what-the-database-a-dump-and-a-backup-hold) | `Annotated[str \| None, Encrypted(subject=..., blind_index=True)]`; `dumpdata` writes ciphertext, and `--decrypt` is audited | `domainkit_tests/test_encrypted_fields.py::test_a_card_number_is_unreadable_in_the_database`, `domainkit_tests/test_encrypted_fields.py::test_dumpdata_writes_ciphertext_unless_asked_to_decrypt`, `domainkit_tests/test_keys_app.py::test_a_decrypted_dump_is_recorded_with_its_tables`, `src/domainkit/management/templates/profiles/fintech/tests/payments/test_cards.py-tpl::test_the_card_number_is_unreadable_in_the_database_and_a_dump` |
 
 ## The fintech audit's other items
 
-The audit read domainkit against what a payments or ledger product needs
-([audit/0.9.0.md](audit/0.9.0.md#the-fintech-audit)). These are answered:
+The fintech audit read domainkit against what a payments or ledger
+product needs ([audit/0.9.0.md](audit/0.9.0.md#the-fintech-audit)). Each
+row below is an item that is answered, with its id from the audit:
 
 | Id | Item | The page | The setting or command | The test |
 | --- | --- | --- | --- | --- |
@@ -114,5 +140,15 @@ The audit read domainkit against what a payments or ledger product needs
   their evidence: the sample transfer does neither. A use case that
   posts its entry under its own guard passes the ledger's thresholds
   when its policy asks at least `ENTRY_APPROVALS` approvals.
-- Who may run `manage.py` commands where deployed: an operator names
-  themselves, and nothing verifies the name.
+- Who may run `manage.py` commands where deployed. An operator names
+  themselves, and nothing verifies the name. domainkit records what they
+  do (their consoles as they open, each downgrade before it runs), not
+  who they are ([operations.md](operations.md#commands-in-production)).
+
+## See also
+
+- [Threat model](threat-model.md#moving-money): a transfer's flow through
+  the controls.
+- [Security](security.md): the hardening checklist.
+- [Money](money.md): exact amounts in their currency.
+- [Deploying](deploying.md): from a passing project to production.

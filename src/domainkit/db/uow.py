@@ -42,7 +42,7 @@ from types import TracebackType
 from typing import Any, Final, Self
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import BigInteger, Connection, bindparam, event, func, select
+from sqlalchemy import BigInteger, Connection, bindparam, event, func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncSessionTransaction
 from sqlalchemy.orm.exc import StaleDataError
@@ -510,6 +510,32 @@ def tenant_schema_of(alias: str) -> str | None:
     from domainkit.tenancy import tenant_schema
 
     return tenant_schema(current)
+
+
+async def tenant_schemas(alias: str) -> list[str | None]:
+    """The schemas of ``alias`` that hold its tables: its own, and each tenant's.
+
+    None stands for the connection's own schema. On a database of
+    ``TENANCY.SCHEMA_DATABASES``, every table also lives in each tenant's
+    schema (``TENANCY.SCHEMA``), so work on all of a database's rows, such
+    as erasing a person or sealing the audit trail, visits each of them.
+    """
+    config = settings.TENANCY
+    if config is None or alias not in config.SCHEMA_DATABASES:
+        return [None]
+    prefix, _, suffix = config.SCHEMA.partition("{tenant}")
+    async with connections.engine(alias).connect() as connection:
+        names = (
+            await connection.execute(text("SELECT nspname FROM pg_namespace"))
+        ).scalars()
+        tenants = sorted(
+            name
+            for name in names
+            if name.startswith(prefix)
+            and name.endswith(suffix)
+            and len(name) > len(prefix) + len(suffix)
+        )
+    return [None, *tenants]
 
 
 def _search_path(schema: str, session: Any, transaction: Any, connection: Any) -> None:  # noqa: ANN401 - SQLAlchemy's event arguments.

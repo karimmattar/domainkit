@@ -51,6 +51,7 @@ from domainkit.ddd.query import (
     as_query,
 )
 from domainkit.ddd.repository import LockNotAvailable
+from domainkit.ddd.tenancy import TENANT_ID_FIELD, TenantOwned
 from domainkit.money import Money
 
 
@@ -345,7 +346,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         changes: dict[str, Any] = {}
         given: dict[str, Any] = {}
         for name, value in values.items():
-            if name in {ID, "version"} or name not in fields:
+            if name in {ID, "version"} or name not in fields or _tenant_of(model, name):
                 raise InvalidQuery(f"update_rows cannot set {name!r}.")
             if isinstance(value, Arithmetic):
                 changes[name] = _computed(mapper, fields, name, value)
@@ -458,3 +459,12 @@ def _sqlstate(exc: DBAPIError) -> str | None:
     """The SQLSTATE of a driver's error, from asyncpg or psycopg."""
     state = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
     return state if isinstance(state, str) else None
+
+
+def _tenant_of(model: type, name: str) -> bool:
+    """Whether ``name`` is the tenant of a tenant's aggregate: never moved.
+
+    Rows stay with the tenant that made them; ``update_rows`` setting it
+    would move them to another.
+    """
+    return name == TENANT_ID_FIELD and issubclass(model, TenantOwned)

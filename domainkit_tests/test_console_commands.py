@@ -420,3 +420,19 @@ def test_dbshell_passes_every_host(client: Client) -> None:
     (_, several), (_, none) = client.calls
     assert several["PGHOST"] == "/run/a,/run/b"
     assert "PGHOST" not in none
+
+
+def test_diffsettings_names_the_classes_logging_holds(restore_logging: None) -> None:
+    """``build_logging_config`` puts classes in ``LOGGING``: shown by their path.
+
+    Every project ``init`` makes has them, and ``diffsettings`` failed on
+    them (``Unable to serialize unknown type``).
+    """
+    from domainkit.log import ContextFilter, build_logging_config
+
+    logging = build_logging_config(log_format="text", level="INFO")
+    with override_settings(LOGGING=logging):
+        output = run("diffsettings")
+
+    (line,) = [line for line in output.splitlines() if line.startswith("LOGGING")]
+    assert f"'{ContextFilter.__module__}.ContextFilter'" in line

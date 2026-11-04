@@ -34,7 +34,65 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
-## 1.5 to the next release
+## 1.6 to 1.7
+
+The security fixes of the outside review's first run (audit A1 to A7)
+change what a project, or its clients, must do in seven places. The
+changelog marks each one **Breaking:**.
+
+### Let the evidence queue drain first
+
+(A6-2) Deferred evidence is signed now (`SECRET_KEY`), and the worker refuses an
+unsigned record: one inserted in the outbox would look the same. Before
+deploying, let the worker run until no `domainkit.evidence.record`
+message is pending; one left is refused and dies, and its evidence is
+deferred again by the change that made it.
+
+### Linking an identity asks for the password
+
+(A2-1) `POST /auth/identity/{name}/link` takes `{"password": "..."}`, or follows
+a step-up in the last ten minutes, as adding a passkey does; without
+either it answers `401 reauthentication_required`.
+
+### A login at a provider is finished where it started
+
+(A2-2) `POST /auth/identity/{name}/login` and `/link` answer a `binding` with
+the authorization URL. Keep it in the page (`sessionStorage`) and send it
+with the callback, `{"code", "state", "binding"}`: a callback without it
+answers 422, with another `identity_not_linked`. SAML's login sets a
+cookie the ACS and `POST /auth/identity/ticket` read: redeem the ticket
+with credentials, from the page's site.
+
+### LDAP checks the directory's certificate
+
+(A2-3) `ldaps://` and `START_TLS` check the directory's certificate and name
+against the system's certificates. A directory whose certificate a
+private authority signs needs `IDENTITY.LDAP.CA_CERTIFICATES`, the file
+of that authority's. Staging and production refuse `ldap://` without
+`START_TLS` (`security.E020`).
+
+### Staff acting as a user neither make nor decide approval requests
+
+(A3-1) Submitting, approving, rejecting, and cancelling an approval
+request under impersonation answer 403.
+
+### Downgrading a tenant's schema needs consent, and is recorded
+
+(A6-3) In staging and production, `migrate --tenant NAME --downgrade`
+needs `--allow-data-loss`, as a downgrade of the database's own schema
+always did. There, each downgrade that runs is first recorded in the
+audit trail (`operator.migrate.downgrade`): name who runs it with `--operator`
+or `DOMAINKIT_OPERATOR`. If the record cannot be written, the downgrade
+does not run.
+
+### A browser login asks for the captcha too
+
+With `AUTH.CAPTCHA` and `login` in its `ON`, `POST /auth/session` now
+asks for the captcha, as `POST /auth/login` does. Browser clients send
+the widget's token in `X-Captcha-Token`; without it the answer is
+`400 captcha_failed`.
+
+## 1.5 to 1.6
 
 ### Signup asks for the user model's other required fields
 

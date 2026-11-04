@@ -52,13 +52,14 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit import clock
 from domainkit.apps import registry
-from domainkit.db import UTCDateTime, connections
+from domainkit.db import UTCDateTime
 from domainkit.ledger import Ledger, LedgerChanged, LedgerKeyNotFound, ledgers
 
 from .checkpoints import Checkpoint, Stored, configured_public_key, stored
 from .personal import audited_databases, prepare_anonymous_keys
 from .settings import AuditSettings, min_retention
 from .tables import audit_log, audit_seals
+from .trails import connect, in_trail, label, trails
 
 try:
     from prometheus_client import Gauge
@@ -248,10 +249,10 @@ def anchor_keys(database: str) -> tuple[bytes, ...]:
     namespace was set.
     """
     config = registry.settings(AuditSettings)
-    current = anchor_key(database, config.NAMESPACE)
+    current = anchor_key(label(database), config.NAMESPACE)
     if config.NAMESPACE is None or not config.PREVIOUS_ANCHORS:
         return (current,)
-    return (anchor_key(database), current)
+    return (anchor_key(label(database)), current)
 
 
 async def seal(
@@ -302,7 +303,7 @@ async def unsealed_backlog(database: str, late_window: timedelta) -> int:
 
     Counted up to ``BACKLOG_COUNT_LIMIT``.
     """
-    async with connections.engine(database).connect() as connection:
+    async with connect(database) as connection:
         waiting = _unsealed_rows().with_only_columns(audit_log.c.id)
         now = await _database_now(connection)
         horizon = await _horizon(connection, now, late_window)
@@ -332,11 +333,11 @@ async def anchor(
     anchored in between, and then there is nothing new.
     """
     now = now or clock.now()
-    async with connections.engine(database).connect() as connection:
+    async with connect(database) as connection:
         head = await _head(connection)
     if head is None:
         return None
-    key = anchor_key(database, registry.settings(AuditSettings).NAMESPACE)
+    key = anchor_key(label(database), registry.settings(AuditSettings).NAMESPACE)
     try:
         entry = await ledger.read(key)
     except LedgerKeyNotFound:
@@ -356,8 +357,10 @@ async def anchor(
 
 
 async def seal_all(*, late: bool = False) -> dict[str, tuple[int, Anchor | None]]:
-    """Seal, then anchor, every audited database; what each one got.
+    """Seal, then anchor, every audited trail; what each one got, by ``label``.
 
+    Every trail: each audited database's, and on a database of
+    ``TENANCY.SCHEMA_DATABASES`` each tenant schema's too (``trails``).
     First it makes the keys of today's and tomorrow's anonymous callers, so
     at midnight no audited request waits for another's insert of the day's
     key (see ``prepare_anonymous_keys``). ``late`` also seals the rows out
@@ -365,15 +368,16 @@ async def seal_all(*, late: bool = False) -> dict[str, tuple[int, Anchor | None]
     """
     config = registry.settings(AuditSettings)
     done: dict[str, tuple[int, Anchor | None]] = {}
-    for database in audited_databases():
-        await prepare_anonymous_keys(database)
-        sealed = await seal(database, late=late)
-        anchored = None
-        if config.LEDGER is not None:
-            anchored = await anchor(
-                database, ledgers[config.LEDGER], every=config.ANCHOR_EVERY
-            )
-        done[database] = (sealed, anchored)
+    for database, schema in await trails(audited_databases()):
+        with in_trail(schema):
+            await prepare_anonymous_keys(database)
+            sealed = await seal(database, late=late)
+            anchored = None
+            if config.LEDGER is not None:
+                anchored = await anchor(
+                    database, ledgers[config.LEDGER], every=config.ANCHOR_EVERY
+                )
+            done[label(database)] = (sealed, anchored)
     return done
 
 
@@ -398,7 +402,7 @@ async def verify(
     nothing after it is read, nor counted unsealed or unanchored).
     """
     now = now or clock.now()
-    report = Report(database)
+    report = Report(label(database))
     history = await _history(database, ledger) if ledger is not None else []
     anchored = _by_seq(history)
     report.anchors = len(anchored)
@@ -417,8 +421,8 @@ async def verify(
     )
     if upto is not None:
         query = query.where(audit_seals.c.seq <= upto)
-    async with connections.engine(database).connect() as connection:
-        points = await stored(connection, database, public_key)
+    async with connect(database) as connection:
+        points = await stored(connection, label(database), public_key)
         checkpoints, report.forged = await starting_points(
             database, points, ledger, history, now=now
         )
@@ -488,7 +492,7 @@ async def _seal_pass(
     after: _Mark | None = None
     horizon: datetime | None = None
     for number in range(batches):
-        async with connections.engine(database).begin() as connection:
+        async with connect(database, begin=True) as connection:
             if connection.dialect.name == "postgresql" and not await connection.scalar(
                 _LOCK
             ):
@@ -609,7 +613,7 @@ async def _report_stalled(
     left longer than that plus ``late_window`` means the lock has been
     held across runs, by something that does not seal.
     """
-    async with connections.engine(database).connect() as connection:
+    async with connect(database) as connection:
         now = await _database_now(connection)
         horizon = await _horizon(connection, now, late_window)
         oldest = _unsealed_rows().with_only_columns(audit_log.c.occurred_at).limit(1)
@@ -776,7 +780,7 @@ def first_anchored(history: list[Anchor], seq: int) -> datetime | None:
 
 async def _recorded(database: str, ledger: Ledger) -> set[bytes]:
     """Every prune the ledger records for ``database`` (``pruned_record`` values)."""
-    key = pruned_key(database, registry.settings(AuditSettings).NAMESPACE)
+    key = pruned_key(label(database), registry.settings(AuditSettings).NAMESPACE)
     try:
         latest = await ledger.read(key)
     except LedgerKeyNotFound:

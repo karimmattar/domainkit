@@ -1,30 +1,77 @@
 # domainkit reference
 
-Settings, checks, middleware, and commands, a page for each area. For the
-optional apps (messaging and its broker, audit, idempotency) see
-[contrib.md](contrib.md); for databases, shards, and ledgers see
-[databases.md](databases.md); for caches see [cache.md](cache.md); for
-the public names see [api.md](api.md); for releases and deprecations see
-[versioning.md](versioning.md).
+The reference pages list facts to find quickly: every setting, check,
+command, middleware, header, and error code. They do not teach; the
+guides do. Use this page to find the reference page you need.
 
-| Page | What to look up there |
-| --- | --- |
-| [Settings](reference/settings.md) | How settings load; the core settings, [layer rules](reference/settings.md#layer-rules), [languages and time zones](reference/settings.md#languages-and-time-zones), and the [debug toolbar](reference/settings.md#debug-toolbar) |
-| [Databases, caches, storages, and brokers](reference/backends.md) | [`DATABASES`, `LEDGERS`, `SHARDS`](reference/backends.md#databases-and-migrations) and [sizing pools](reference/backends.md#sizing-pools); [`CACHES`](reference/backends.md#caches), [`STORAGES`](reference/backends.md#storages), [`BROKERS`](reference/backends.md#brokers) |
-| [HTTP](reference/http.md) | The [HTTP settings](reference/http.md#http), [outgoing calls](reference/http.md#outgoing-http-calls) (`HTTP_CLIENT`), [live connections](reference/http.md#live-connections), the [middleware](reference/http.md#middleware) and its order, and the [security headers](reference/http.md#security-headers) |
-| [Server limits](reference/servers.md) | uvicorn's and Granian's options, and what to set in front of them |
-| [Deployment checks](reference/checks.md) | Every check id: what staging and production refuse, and what `check --deploy` warns about |
-| [Errors, JSON responses, and the API surface](reference/responses.md) | [Error bodies and codes](reference/responses.md#errors), [JSON responses](reference/responses.md#json-responses), [operation ids](reference/responses.md#operation-ids), [versions and deprecations](reference/responses.md#versions-and-deprecations), and [included routers](reference/responses.md#included-routers) |
-| [Problem codes](reference/problems.md) | Every `code` an error answers with, its status, and what answers it |
-| [Signing](reference/signing.md) | `domainkit.signing`, and [encryption](reference/signing.md#encryption) |
-| [Observability](reference/observability.md) | Logs, metrics and their labels, and traces |
-| [The test plugin](reference/test-plugin.md) | Enabling `domainkit.testing`; [testing.md](testing.md) covers what it brings |
-| [Commands](reference/commands.md) | Every command and its options, [operators](reference/commands.md#operators), [fixtures, flush, and seeds](reference/commands.md#data-fixtures-flush-and-seeds), and [squashing migrations](reference/commands.md#squashing-migrations) |
-| [Extension points](reference/extension-points.md) | What a project implements, and where it registers it |
+## Settings and configuration
 
-In 0.12 these were the sections of this one page; a link to one of
-them (`reference.md#server-limits`) now opens this list, and each keeps
-its name and its anchor on its new page.
+- [Settings](reference/settings.md): how a settings module loads, and
+  every core setting with its default and limits, including the
+  [layer rules](reference/settings.md#layer-rules),
+  [languages and time zones](reference/settings.md#languages-and-time-zones),
+  and the [debug toolbar](reference/settings.md#debug-toolbar).
+- [Databases, caches, storages, and brokers](reference/backends.md):
+  the settings of the services that keep your data and your work:
+  `DATABASES`, `LEDGERS`, `SHARDS`, `CACHES`, `STORAGES`, and `BROKERS`,
+  and how to [size the pools](reference/backends.md#sizing-pools).
+- [HTTP](reference/http.md): the
+  [HTTP settings](reference/http.md#http),
+  [outgoing calls](reference/http.md#outgoing-http-calls)
+  (`HTTP_CLIENT`), [live connections](reference/http.md#live-connections),
+  the [middleware](reference/http.md#middleware) and its order, and the
+  [security headers](reference/http.md#security-headers).
+- [Server limits](reference/servers.md): the options of uvicorn and
+  Granian, and what to set in the proxy in front of them.
 
-`domainkit_tests/test_docs.py` fails when a setting or a command is missing
-from these pages, or when a table's default or limits differ from the code's.
+## Checks and errors
+
+- [Deployment checks](reference/checks.md): every check id, what staging
+  and production refuse, and what `check --deploy` warns about.
+- [Errors, JSON responses, and the API surface](reference/responses.md):
+  the [error body](reference/responses.md#errors), how
+  [JSON is written](reference/responses.md#json-responses),
+  [operation ids](reference/responses.md#operation-ids),
+  [versions and deprecations](reference/responses.md#versions-and-deprecations),
+  and [included routers](reference/responses.md#included-routers).
+- [Problem codes](reference/problems.md): every `code` an error answer
+  can carry, its HTTP status, and what raises it.
+
+## Tools
+
+- [Commands](reference/commands.md): every `manage.py` command and its
+  options, the [operator](reference/commands.md#operators) recorded in
+  the audit trail, [fixtures, flush, and seeds](reference/commands.md#data-fixtures-flush-and-seeds),
+  and [squashing migrations](reference/commands.md#squashing-migrations).
+- [The test plugin](reference/test-plugin.md): how to turn on
+  `domainkit.testing` in a project. [Testing](testing.md) explains what
+  it brings.
+- [Signing](reference/signing.md): `domainkit.signing` for values you
+  hand out and take back unchanged, and
+  [encryption](reference/signing.md#encryption).
+- [Observability](reference/observability.md): the log lines, the
+  metrics and their labels, and the traces.
+- [Extension points](reference/extension-points.md): what a project can
+  implement (a backend, a store, a rule), and where it registers it.
+
+## Elsewhere
+
+Some facts live with the feature they belong to:
+
+- the settings of each optional app (`MESSAGING`, `AUDIT`, `AUTH`, and
+  the others) are on the app's guide, listed in
+  [optional apps](contrib.md);
+- databases, shards, and ledgers are explained in
+  [databases](databases.md), and caches in [caches](cache.md);
+- every public name is in [the public API](api.md);
+- releases and deprecations are in
+  [versions and compatibility](versioning.md).
+
+!!! note
+    Until 0.12, these were sections of this one page. A link to one of
+    them, such as `reference.md#server-limits`, now opens this page. Each
+    section kept its name and its anchor on its new page.
+
+`domainkit_tests/test_docs.py` fails when a setting or a command is
+missing from these pages, or when a table's default or limits differ
+from the code's.

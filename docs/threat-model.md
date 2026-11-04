@@ -1,12 +1,30 @@
 # Threat model
 
-**As of 1.0.0.** First written for 0.9.2; 1.0 adds moving money and the
-key service. It is written for the teams that build services on domainkit
-and for their security reviewers. It says what a domainkit service has to protect,
-where its trust boundaries are, what can go wrong at each (by STRIDE),
-what domainkit does about it, and what is left to the project. It
-describes the framework as released; it does not replace a project's own
-threat model, which knows its data, its users, and its deployment.
+This page is for the teams that build services on domainkit, and for
+their security reviewers. It says what a domainkit service has to
+protect, where its trust boundaries are, what can go wrong at each
+boundary, what domainkit does about it, and what is left to the project.
+It describes the framework as released. It does not replace a project's
+own threat model, which knows the project's data, users, and deployment.
+
+**As of 1.0.0.** The model was first written for 0.9.2. 1.0 added moving
+money and the key service. Later releases add their controls to the
+tables where they belong.
+
+On this page you learn:
+
+- which assets a service protects, and where domainkit holds each one;
+- the ten trust boundaries of a service;
+- what can go wrong at each boundary, by STRIDE, and what remains;
+- how a transfer of money crosses every boundary;
+- the residual risks, and what a project must do itself.
+
+**STRIDE** names six kinds of threat: **S**poofing (pretending to be
+someone), **T**ampering (changing data), **R**epudiation (denying an
+act), **I**nformation disclosure (reading what you may not),
+**D**enial of service (stopping the service), and **E**levation of
+privilege (doing more than you may). [security.md](security.md) turns
+the model into a checklist.
 
 To report a vulnerability, follow [SECURITY.md](../SECURITY.md).
 
@@ -14,14 +32,14 @@ To report a vulnerability, follow [SECURITY.md](../SECURITY.md).
 
 | Asset | What can go wrong | Where domainkit holds it |
 | --- | --- | --- |
-| Money | An amount changes in transit or rounding; two concurrent changes overwrite each other; a retried request pays twice; a payment's follow-up work is lost or done twice; an amount is mixed with another currency, or booked on one side only; a large or repeated movement goes through on one person's say. | Exact decimals end to end, written as fixed-point text ([databases.md](databases.md#exact-amounts)); optimistic versions on every aggregate ([databases.md](databases.md#versions)); row locks ([queries.md](queries.md)); idempotency keys ([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)); the outbox, committed with the change ([contrib.md](contrib/messaging.md#messaging-outbox-durable-handlers-background-tasks)).; `Money`, an exact amount in its currency ([money.md](money.md)); double-entry books, append-only ([contrib/accounting.md](contrib/accounting.md)); maker-checker and limits ([contrib/approvals.md](contrib/approvals.md), [contrib/limits.md](contrib/limits.md)). |
+| Money | An amount changes in transit or rounding; two concurrent changes overwrite each other; a retried request pays twice; a payment's follow-up work is lost or done twice; an amount is mixed with another currency, or booked on one side only; a large or repeated movement goes through on one person's say. | Exact decimals end to end, written as fixed-point text ([databases.md](databases.md#exact-amounts)); optimistic versions on every aggregate ([databases.md](databases.md#versions)); row locks ([queries.md](queries.md)); idempotency keys ([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)); the outbox, committed with the change ([contrib.md](contrib/messaging.md#messaging-outbox-durable-handlers-background-tasks)); `Money`, an exact amount in its currency ([money.md](money.md)); double-entry books, append-only ([contrib/accounting.md](contrib/accounting.md)); maker-checker and limits ([contrib/approvals.md](contrib/approvals.md), [contrib/limits.md](contrib/limits.md)). |
 | Keys | The KEK, the data keys, or a person's key is read, used by someone else, or lost; an erased person's key survives somewhere. | The KEK in AWS KMS or Vault; data keys wrapped by it and held in memory; subjects' keys wrapped by a data key, destroyed by erasure ([contrib/keys.md](contrib/keys.md)). |
 | Credentials | Passwords, tokens, second factors, signing keys, and database and broker passwords are guessed, stolen, or logged. | Password hashing and throttles, opaque tokens kept as digests, second factors encrypted at rest ([auth.md](auth.md)); one `SECRET_KEY`, with fallbacks for rotation, from which each purpose's key is derived ([reference/signing.md](reference/signing.md)); secrets left out of reprs and logs. |
 | The audit trail | Who did what is changed, deleted, or never written; an operator acts anonymously. | An append-only trail with a hash chain, sealed and anchored in a ledger ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); operators named and audited ([reference/commands.md](reference/commands.md#operators)); evidence in an immudb ledger, verified by the client ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change)). |
 | Personal data | A person's data is shown to someone else, kept longer than allowed, or cannot be exported or erased. | Deny-by-default route rules and object permissions ([auth.md](auth/routes.md#protecting-routes)); personal markers, pseudonyms in the trail, export, erasure, and retention ([privacy.md](privacy.md)); outbox messages blanked once sent ([mail.md](mail.md)). |
 
-The service's availability matters to all of them: a service that is down
-cannot pay, and one that is overloaded may fail half-way.
+The service's availability matters to all of them. A service that is
+down cannot pay, and one that is overloaded may fail half-way.
 
 ## Trust boundaries
 
@@ -68,8 +86,8 @@ cannot pay, and one that is overloaded may fail half-way.
 
 ## STRIDE per boundary
 
-Each table lists, per threat, what domainkit does and what remains. "The
-project" is the team that builds and runs the service.
+Each table lists, for each threat, what domainkit does and what
+remains. "The project" is the team that builds and runs the service.
 
 ### 1-2. Clients and the edge
 
@@ -132,16 +150,16 @@ project" is the team that builds and runs the service.
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
-| **Repudiation** | Data-changing commands run as `operator:<name>` and are audited ([ADR 0070](adr/0070-name-the-operator-of-data-changing-commands.md)); `loaddata` and `flush` record the tables they touched and the fixture's SHA-256, and need a name given on purpose where deployed; staff changes through the admin API are audited. | Other commands take the login name when none is given. Direct database access is not audited by domainkit. |
-| **Tampering** | `migrate --downgrade` needs `--allow-data-loss` where deployed; `loaddata` only adds rows unless `--replace`, and neither it nor `flush` touches users, grants, tokens, or second factors without `--include-guarded` ([ADR 0100](adr/0100-guard-credentials-and-grants-from-loaddata-and-flush.md)); the trail's seals show rewritten rows (`audit verify`). | Who holds production access. |
+| **Repudiation** | Data-changing commands run as `operator:<name>` and are audited ([ADR 0070](adr/0070-name-the-operator-of-data-changing-commands.md)); `loaddata` and `flush` record the tables they touched and the fixture's SHA-256, and need a name given on purpose where deployed; `shell`, `dbshell`, and `seed` run as their operator, and where deployed `shell` and `dbshell` are recorded as they open (`operator.shell`, `operator.dbshell`), before anything is typed; each `migrate --downgrade` is recorded (`operator.migrate.downgrade`) before it runs, so a downgrade that drops the trail's own tables is still on record; staff changes through the admin API are audited. | Other commands take the login name when none is given. What a `dbshell` client does, and direct database access, are not audited by domainkit. |
+| **Tampering** | `migrate --downgrade` needs `--allow-data-loss` where deployed, a tenant's schema included; `dbshell` needs `--allow-production` in production; `loaddata` only adds rows unless `--replace`, and neither it nor `flush` touches users, grants, tokens, or second factors without `--include-guarded` ([ADR 0100](adr/0100-guard-credentials-and-grants-from-loaddata-and-flush.md)); the trail's seals show rewritten rows (`audit verify`). | Who holds production access. |
 | **Information disclosure** | Secrets hidden in `diffsettings`, reprs, and dumps. | Shell access sees the environment. |
 
 ### 9. The supply chain
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
-| **Tampering** with the package | Releases built in CI from `main`, approved, and published with trusted publishing and attestations; actions pinned to commit SHAs ([SECURITY.md](../SECURITY.md)). | Verifying attestations when installing. |
-| Vulnerable dependencies | pip-audit and a secret scan on every push; updates through Renovate. | The project's own lock file and its updates. |
+| **Tampering** with the package | Releases built in CI from `main`, approved, and published with trusted publishing and attestations; actions pinned to commit SHAs ([SECURITY.md](../SECURITY.md)); the build's tools installed from a lock, each file by its hash (`.github/requirements/build-tools.txt`), and the files uploaded as built, before anything else is installed or run in that job ([security.md](security.md#verifying-a-release)). | Verifying attestations when installing. |
+| Vulnerable dependencies | pip-audit and a secret scan on every push; updates through Renovate. A new project's image and CI install `requirements.lock` by its hashes when the project keeps one, and its CI runs pip-audit ([deploying.md](deploying.md)). | The project's own lock file, its base image's digest, and their updates. |
 
 ### 10. The key service
 
@@ -156,14 +174,15 @@ project" is the team that builds and runs the service.
 
 ## Moving money
 
-A transfer crosses every boundary above, so a bank reads it as one flow:
-a customer asks for it, confirms it, is counted against their limits,
-and, past a threshold, waits for someone else. Each control is a page of
-its own; `domainkit init --profile fintech` turns them all on, with a
-sample transfer that goes through the customer's: step-up, dynamic
-linking, idempotency, limits, and maker-checker. It books nothing in the
-double-entry books, nor records evidence: wiring both in is the
-project's ([fintech.md](fintech.md)).
+A transfer crosses every boundary above, so a bank reads it as one
+flow. A customer asks for the transfer and confirms it. The transfer is
+counted against the customer's limits. Past a threshold, it waits for
+someone else to approve it. Each control is a page of its own.
+`domainkit init --profile fintech` turns them all on, with a sample
+transfer that goes through the customer's controls: step-up, dynamic
+linking, idempotency, limits, and maker-checker. The sample books nothing
+in the double-entry books, and records no evidence: wiring both in is
+the project's work ([fintech.md](fintech.md)).
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
@@ -177,15 +196,16 @@ project's ([fintech.md](fintech.md)).
 
 ## Mitigations at a glance
 
-Everything startup refuses where deployed is listed in
-[reference/checks.md](reference/checks.md), with the weaker choices
-`check` warns about. The production settings `init` writes start from the
-safe side: docs off, HSTS on, a rate limit, and the deployment checks.
+Everything startup refuses where deployed is listed on
+[reference/checks.md](reference/checks.md), with the weaker choices that
+`check` warns about. [security.md](security.md) puts them in a checklist.
+The production settings `init` writes start from the safe side: the API
+documentation off, HSTS on, a rate limit, and the deployment checks.
 
 ## Residual risks
 
-What domainkit does not do, as of 1.0. Each is either planned or left
-to the project on purpose.
+These are what domainkit does not do, as of 1.0. Each one is either
+planned, or left to the project on purpose.
 
 - **Login throttles hold a known username back on a new device.**
   `LOGIN_RATE` wrong passwords a minute for a username hold its user back
@@ -259,8 +279,20 @@ to the project on purpose.
   asks, encrypted, with access controlled and itself audited.
 - Watch the metrics: the outbox's backlog, refused requests, shed load,
   and deadlines.
+- Name the operators who run commands in production, and keep that
+  access narrow: an operator's name attributes an act, it does not
+  authenticate anyone.
+- Lock its dependencies by hash, and pin its base image by digest.
 - Protect the edge from volumetric attacks, and test the service itself:
   this model covers the framework, not the project's code.
 - Follow [docs/versioning.md](versioning.md#security-fixes-and-support):
   take patch releases as they come, and each 1.x minor while it is the
   latest.
+
+## See also
+
+- [Security](security.md): the hardening checklist.
+- [Deployment checks](reference/checks.md): what startup refuses and
+  `check` warns about.
+- [Fintech](fintech.md): a bank's first review, answered.
+- [Operations](operations.md): operators, backups, and observability.

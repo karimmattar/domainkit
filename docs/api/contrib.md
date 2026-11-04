@@ -322,6 +322,12 @@ Evidence: facts kept on a ledger, provably unchanged (see ADR 0011).
 - `sha256`: `sha256:<hex>` of `data`: how evidence refers to artifacts and records.
 - `subject_digest`: The key part for `subject`, so keys never show it.
 
+## `domainkit.contrib.evidence.tasks`
+
+Durable evidence: recorded by the messaging worker once the change commits.
+
+- `defer_evidence`: Record `evidence` after `uow` commits, at least once; return its key.
+
 ## `domainkit.contrib.flags`
 
 Feature flags and dynamic settings, stored in the database and cached.

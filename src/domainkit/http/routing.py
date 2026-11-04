@@ -446,21 +446,24 @@ async def _serve(
 def serve_without_documentation(router: APIRouter) -> int:
     """Serve ``router``'s routes without the dependencies that only document them.
 
-    ``access.bearer`` puts the bearer token in OpenAPI; the authentication
-    middleware checks the token, and the dependency only reads the header
-    again. Each route keeps it in its ``dependant``, so OpenAPI still shows
-    it, and serves requests through a copy without it: FastAPI resolves a
+    ``access.documenting_bearer``, which ``Require`` and
+    ``authenticated_user`` name, puts the bearer token in OpenAPI; the
+    authentication middleware checks the token, and the dependency only
+    reads the header again. ``access.bearer``, which a project's own
+    dependencies may read, is not left out. Each route keeps it in its
+    ``dependant``, so OpenAPI still shows it, and serves requests through
+    a copy without it: FastAPI resolves a
     dependency on every request, about a hundred calls even for one that
     does nothing. The routes are ``router``'s own, as
     ``flatten_routes`` leaves them; how many changed.
     """
-    from domainkit.http.access import bearer  # access imports from http.
+    from domainkit.http.access import documenting_bearer  # access imports http.
 
     served = 0
     for route in router.routes:
         if not isinstance(route, APIRoute):
             continue
-        pruned = _without(route.dependant, bearer)
+        pruned = _without(route.dependant, documenting_bearer)
         if pruned is route.dependant:
             continue
         documented = route.dependant

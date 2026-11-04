@@ -39,6 +39,7 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `JWTSettings`: `AUTH["JWT"]`: signed access tokens (`JWTAuthentication`).
 - `ModelBackend`: Passwords from the user table; permissions of users and their groups.
 - `PasswordHash`: A stored password: a hasher's `<algorithm>$...`, or unusable (`!...`).
+- `PasswordValidationError`: A password breaks one rule; the message says which.
 - `Permission`: Permission to do something to one content type: `<domain>.<codename>`.
 - `Proof`: A step-up: when the user authenticated again, and with what.
 - `StepUp`: Users who authenticated again, with a second factor, within `max_age`.
@@ -259,6 +260,22 @@ The routes of logging in and linking through identity providers.
 
 - `router`: The routes: providers, login, link, callback, ticket, and linked identities.
 
+## `domainkit.contrib.identity.binding`
+
+A login or link started in one browser is finished in that browser only.
+
+- `COOKIE`: The cookie SAML's start sets: the binding of the browser's flow.
+- `TICKET_SEPARATOR`: Between a SAML ticket and the flow it ends, in what the page redeems.
+- `binding`: The binding of the flow `flow`: what its browser holds.
+- `bound`: Whether `given` is the binding of `flow`, compared in constant time.
+
+## `domainkit.contrib.identity.events`
+
+What happens to a user's identities at providers (audited as `identity.*`).
+
+- `IdentityLinked`: A user linked their identity at a provider: a new way into the account.
+- `IdentityUnlinked`: A user unlinked their identity at a provider.
+
 ## `domainkit.contrib.identity.exceptions`
 
 What an identity provider, or a login through one, may refuse.
@@ -331,7 +348,7 @@ Passkeys (WebAuthn) and bound devices: keys a user's devices hold.
 - `PasskeyNotFound`: The user has no passkey with that id.
 - `PasskeyRefused`: A passkey's answer does not hold (401); the reason is logged, not sent.
 - `PasskeysOff`: `DEVICES.RP_ID` is not set: no passkeys here (404).
-- `ReauthenticationRequired`: Adding a key needs the password, or a step-up within ten minutes (401).
+- `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `TooManyKeys`: The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already: remove one first.
 - `UnsupportedKey`: Not a P-256 or Ed25519 public key (SubjectPublicKeyInfo, base64url).
 
@@ -367,7 +384,7 @@ What a passkey, or a bound device, may be refused.
 - `PasskeyNotFound`: The user has no passkey with that id.
 - `PasskeyRefused`: A passkey's answer does not hold (401); the reason is logged, not sent.
 - `PasskeysOff`: `DEVICES.RP_ID` is not set: no passkeys here (404).
-- `ReauthenticationRequired`: Adding a key needs the password, or a step-up within ten minutes (401).
+- `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `TooManyKeys`: The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already: remove one first.
 - `UnsupportedKey`: Not a P-256 or Ed25519 public key (SubjectPublicKeyInfo, base64url).
 
@@ -418,7 +435,9 @@ Push notifications to a user: to every app of theirs that gave a token.
 What apps built on auth use: log a user in, step them up, hear of them.
 
 - `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
+- `REAUTH_AGE`: How recent a step-up must be to stand for the password (`reauthenticate`).
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
+- `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
 - `SteppedUp`: A user authenticated again, for acts that ask for it (`StepUp`).
 - `TokenOut`: Tokens (OAuth 2's token response): send `Authorization: Bearer ...`.
@@ -429,6 +448,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
 - `proof_of`: The step-up of the connection's credentials, read once a request.
+- `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
 - `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).
 - `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
 - `stepping_credentials`: The request's credentials, if they can keep a step-up.

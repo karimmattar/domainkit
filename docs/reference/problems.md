@@ -1,20 +1,31 @@
 # Problem codes
 
-Every error body carries a `code` (and, with
-`ERROR_FORMAT = "problem+json"`, a `type` that ends in it): clients switch
-on it, so it is public. A code listed here keeps its meaning and its status
-across releases, as a public name does ([versioning.md](../versioning.md#what-is-public));
-`detail` is for people, in the request's language, and may change.
-`domainkit_tests/test_problem_codes.py` fails when the framework can answer
-a code this page does not list, or this page lists one it no longer
-answers (DSGN-20).
+Every error body carries a `code`: a short, machine-readable name of the
+error, such as `not_found` or `insufficient_funds`. Clients switch on it,
+so it is public. This page lists every code that domainkit answers with,
+its HTTP status, and the class or module that answers it.
 
-Every class domainkit defines sets its code itself, so renaming a class
-never changes it; `DomainError` refuses one of domainkit's own that sets
-none. A project's `DomainError` without a `code` still gets one from its
-name (`ProductNotFound` is `product_not_found`): set `code` on the class to
-keep it whatever the class is renamed to. A unique constraint may name its
-own code ([databases.md](../databases.md#unique-values)).
+On this page you find:
+
+- what a code promises, and what may change;
+- how your own errors get their codes;
+- every code of the framework and its apps, from A to Z.
+
+## What a code promises
+
+A code listed here keeps its meaning and its status across releases, as
+a public name does ([versioning.md](../versioning.md#what-is-public)).
+With `ERROR_FORMAT = "problem+json"`, the `type` of the error ends in the
+code too. The `detail` is for people: it is in the request's language,
+and it may change.
+
+```json
+{"type": "about:blank", "title": "Not Found", "status": 404, "detail": "Not Found", "instance": "/nowhere", "code": "not_found", "request_id": "9d319f0bc63345f5fdcf152e7013bd03"}
+```
+
+`domainkit_tests/test_problem_codes.py` fails when the framework can
+answer a code that this page does not list, or when this page lists a
+code that the framework no longer answers (DSGN-20).
 
 Every 429 is `rate_limited`, whichever limit refused: `RATE_LIMIT`, a
 route's `Throttle`, or a login, code, or link throttle of
@@ -23,6 +34,42 @@ too). `Retry-After` says when to try again.
 
 How each status is reached, and which fields a body holds, is in
 [responses.md](responses.md#errors).
+
+## Codes of your own
+
+Every class that domainkit defines sets its code itself, so renaming a
+class never changes it; `DomainError` refuses a class of domainkit's own
+that sets none. A project's `DomainError` without a `code` still gets one
+from its name: `ProductNotFound` is `product_not_found`. Set `code` on the
+class to keep it whatever the class is renamed to:
+
+```python
+from domainkit.ddd import BusinessRuleViolation, NotFound
+
+
+class ProductNotFound(NotFound):
+    """No product has that id."""
+
+
+class OutOfStock(BusinessRuleViolation):
+    code = "out_of_stock"
+
+
+print(ProductNotFound.code)
+print(OutOfStock.code)
+```
+
+```text
+product_not_found
+out_of_stock
+```
+
+`ProductNotFound` answers 404, and `OutOfStock` 422, as their base
+classes do ([Statuses and codes](responses.md#statuses-and-codes)). A
+unique constraint may name its own code
+([databases.md](../databases.md#unique-values)).
+
+## Every code
 
 | Code | Status | Answered by |
 | --- | --- | --- |
@@ -156,7 +203,7 @@ How each status is reached, and which fields a body holds, is in
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
 | `rate_limited` | 429 | http.ratelimit: `RATE_LIMIT` or a route's `Throttle`; contrib.auth: login, password, code, link, and signup throttles. |
-| `reauthentication_required` | 401 | `ReauthenticationRequired` (contrib.devices.exceptions): Adding a key needs the password, or a step-up within ten minutes. |
+| `reauthentication_required` | 401 | `ReauthenticationRequired` (contrib.auth.stepup): A change to how one logs in needs the password, or a recent step-up. |
 | `reference_reused` | 409 | `ReferenceReused` (contrib.accounting.exceptions): A source and reference that name an entry or a hold made otherwise. |
 | `referenced` | 409 | http.errors: a foreign key refused the change. |
 | `refresh_not_supported` | 400 | contrib.auth.authentication: Tokens are not refreshed here; log in again. |
@@ -210,3 +257,10 @@ How each status is reached, and which fields a body holds, is in
 | `webhook_subscription_not_found` | 404 | `SubscriptionNotFound` (contrib.webhooks.models): No webhook subscription has that id. |
 | `wrong_code` | 422 | `WrongCode` (contrib.phones.exceptions): The code is not the one sent; a few more tries are left. |
 | `wrong_password` | 400 | contrib.auth.api: Your old password was entered incorrectly. contrib.auth.mfa: Your password was entered incorrectly. contrib.auth.stepup: Your password was entered incorrectly. |
+
+## See also
+
+- [Errors and responses](responses.md#errors): the error body, and which
+  exception gives which status.
+- [Validation](../validation.md): the errors of refused values.
+- [Versioning](../versioning.md#what-is-public): why codes never change.

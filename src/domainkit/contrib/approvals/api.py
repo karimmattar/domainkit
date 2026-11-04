@@ -35,7 +35,7 @@ from domainkit.resources import HasModelPermission, ResourceRouter
 
 from .guards import guard_for
 from .models import MAX_REASON, ApprovalRequest, RequestStatus, Verdict
-from .rules import RequestActions, _instance
+from .rules import ActsForThemselves, RequestActions, _instance
 from .services import (
     ApproveRequest,
     CancelRequest,
@@ -230,6 +230,7 @@ async def submit(
     """
     guard = guard_for(body.action)
     rules = [
+        ActsForThemselves(),
         HasPermissions(guard.permission) if guard.permission else None,
         _instance(guard.maker_rule),
     ]

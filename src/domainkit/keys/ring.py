@@ -358,7 +358,7 @@ class Keyring:
             ImproperlyConfigured: The ring has no subject key store.
         """
         held = _kept(connection)
-        if (kept := held.get(subject)) is not None:
+        if (kept := held.get(f"s:{subject}")) is not None:
             return kept[1], kept[2]
         store = self._store()
         stored = store.of_subject(connection, subject)
@@ -513,9 +513,14 @@ def _kept(connection: Connection) -> dict[str, tuple[str, str, bytes]]:
 def _hold(
     held: dict[str, tuple[str, str, bytes]], stored: StoredSubjectKey, key: bytes
 ) -> None:
-    """Keep ``key`` in ``held``, by its subject and by its id."""
+    """Keep ``key`` in ``held``, by its subject and by its id.
+
+    Apart (``s:`` and ``#``): a subject whose text is ``#`` and another
+    key's id never names that key.
+    """
     with _held_lock:
-        held[stored.subject] = held[f"#{stored.id}"] = (stored.subject, stored.id, key)
+        entry = (stored.subject, stored.id, key)
+        held[f"s:{stored.subject}"] = held[f"#{stored.id}"] = entry
 
 
 def _checked(key_id: str, key: bytes) -> bytes:

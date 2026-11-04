@@ -23,6 +23,7 @@ __all__ = [
     "current_tenant",
     "row_tenant",
     "scoped_key",
+    "shared_keys",
     "tenant",
 ]
 
@@ -32,6 +33,7 @@ TENANT_ID_FIELD: Final = "tenant_id"
 
 _current: ContextVar[str | None] = ContextVar("tenant", default=None)
 _everyone: ContextVar[bool] = ContextVar("all_tenants", default=False)
+_shared: ContextVar[bool] = ContextVar("shared_keys", default=False)
 
 
 class TenantRequired(PermissionDenied):
@@ -117,6 +119,21 @@ def all_tenants() -> Iterator[None]:
         _everyone.reset(token)
 
 
+@contextmanager
+def shared_keys() -> Iterator[None]:
+    """Cache and rate-limit keys inside the block are every tenant's.
+
+    For what belongs to no tenant though counted inside one: a user's or an
+    address's login attempts, what principals rest on. Unlike
+    ``all_tenants``, rows stay scoped to the current tenant.
+    """
+    token = _shared.set(True)
+    try:
+        yield
+    finally:
+        _shared.reset(token)
+
+
 def row_tenant() -> str | None:
     """The tenant ``TenantOwned`` rows are scoped to; None inside ``all_tenants``.
 
@@ -164,6 +181,11 @@ def visible(aggregate: object) -> bool:
 
 
 def scoped_key(key: str) -> str:
-    """``key``, the current tenant's own: caches and rate limits use it."""
+    """``key``, the current tenant's own: caches and rate limits use it.
+
+    As it is inside ``all_tenants`` and ``shared_keys``.
+    """
     current = _current.get()
-    return key if current is None or _everyone.get() else f"t:{current}:{key}"
+    if current is None or _everyone.get() or _shared.get():
+        return key
+    return f"t:{current}:{key}"

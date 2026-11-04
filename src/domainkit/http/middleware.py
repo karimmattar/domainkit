@@ -996,7 +996,7 @@ class RequestBodyLimitMiddleware:
                 return
             size = int(declared)
             if size > self.max_body_size and size > largest:
-                self._reject(scope, size, self.max_body_size)
+                self._reject(scope, size, max(self.max_body_size, largest))
                 await error_response(
                     413, "Request body too large.", code="content_too_large"
                 )(scope, receive, send)

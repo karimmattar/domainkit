@@ -21,6 +21,10 @@
       "/^src/domainkit/management/templates/(project|profiles/[^/]+)/dot-github/workflows/[^/]+\\.yml-tpl$/"
     ]
   },
+  "pip-compile": {
+    "description": "The build job's tools, pinned with hashes (.github/requirements/build-tools.txt, from build-tools.in): kept at the POETRY_VERSION CI pins (test_ci.py checks).",
+    "managerFilePatterns": ["/^\\.github/requirements/build-tools\\.txt$/"]
+  },
   "customManagers": [
     {
       "customType": "regex",

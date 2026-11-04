@@ -292,6 +292,11 @@ class TokenAuthentication(BaseAuthentication):
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
+        impersonator = token.family if token.name == IMPERSONATION else None
+        if impersonator is not None and not await may_impersonate(
+            impersonator, cast("UUID", user.id)
+        ):
+            raise AuthenticationFailed("Invalid token.")
         await accept(
             entry, config.PRINCIPAL_CACHE, touch=not rechecking(connection), every=every
         )
@@ -300,7 +305,7 @@ class TokenAuthentication(BaseAuthentication):
             scheme=TOKEN_SCHEME,
             token_id=token.id,
             scopes=token.scopes,
-            impersonator=token.family if token.name == IMPERSONATION else None,
+            impersonator=impersonator,
         )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
@@ -586,6 +591,46 @@ def bearer_token(connection: HTTPConnection) -> str | None:
     if scheme.lower() != "bearer":
         return None
     return token.strip() or None
+
+
+async def may_impersonate(staff_id: UUID, user_id: UUID) -> bool:
+    """Whether ``staff_id`` may still act as ``user_id``.
+
+    Read on every request of an impersonation token, so its staff member's
+    deactivation, deletion, or lost right to change users ends it at once,
+    not when ``AUTH.IMPERSONATION_TTL`` runs out: what the admin API asked
+    of them when it was issued (``staff_rules``), asked again. So does a
+    grant to the user that the staff member lacks: staff only act as users
+    whose every permission they hold (the admin API's ``_may_change``).
+    """
+    # Here, not at the top: resources, users, and admin import this module.
+    from domainkit.ddd import DomainError
+    from domainkit.resources.access import content_type_of
+
+    from .admin import _may_change
+    from .models import UserId
+    from .users import get_user_model
+
+    async with AuthUnitOfWork() as uow:
+        snapshot = await uow.principals.principal(staff_id)
+        staff = snapshot.loaded
+        if staff is None and snapshot.principal is not None:
+            staff = snapshot.principal.user()
+        if staff is None or not staff.is_active:
+            return False
+        if not (staff.is_superuser or getattr(staff, "is_staff", False)):
+            return False
+        domain, model = content_type_of(get_user_model())
+        if not await staff.ahas_perms([f"{domain}.change_{model}"]):
+            return False
+        user = await uow.users.find(UserId(user_id))
+        if user is None:
+            return False
+        try:
+            await _may_change(staff, user)
+        except DomainError:  # It holds more than the staff member now.
+            return False
+    return True
 
 
 async def stored_credential(

@@ -79,6 +79,7 @@ nav:
   - How-to:
       - recipes.md
       - from-django.md
+      - from-fastapi.md
       - recipes/payments.md
       - recipes/exactly-once.md
       - recipes/jwt-keys.md
@@ -163,6 +164,7 @@ nav:
           - api/contrib.md
       - API reference: reference/api/index.md
       - versioning.md
+      - style-guide.md
       - roadmap.md
       - newcomer-study.md
       - feature-inventory.md

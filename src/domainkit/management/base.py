@@ -122,6 +122,20 @@ class BaseCommand:
             raise RuntimeError(f"{type(self).__name__} has no operator_actions.")
         return recorded(self.operator, action, **details)
 
+    def record(self, action: str, **details: object) -> None:
+        """Record the operator's ``action`` now, before it is taken.
+
+        For what may leave nothing to record in after: a downgrade that
+        drops the trail, a console the operator closes with the terminal. A
+        record that cannot be written stops the command.
+        """
+
+        async def now() -> None:
+            async with self.recorded(action, **details):
+                pass
+
+        run_async(now())
+
     def handle(
         self,
         *args: Any,  # noqa: ANN401 - subclasses declare their own arguments.

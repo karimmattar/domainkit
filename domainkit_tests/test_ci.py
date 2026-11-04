@@ -1919,3 +1919,32 @@ def test_the_published_links_name_the_release_tag(tmp_path: Path) -> None:
 
 
 REPOSITORY_URL = "https://github.com/karimmattar/domainkit/"
+
+
+def test_the_build_runs_reviewed_tools_and_uploads_what_it_built() -> None:
+    """dist/ is built by hash-pinned tools, and uploaded before anything else runs.
+
+    The audit found poetry's dependencies resolved afresh in the job that
+    builds the release, and the wheel's smoke tests (third-party code)
+    running while dist/ was still writable, before its upload (A7-1).
+    """
+    steps = jobs()["build"]["steps"]
+    runs = [step.get("run", "") for step in steps]
+    tools = next(i for i, run in enumerate(runs) if "build-tools.txt" in run)
+    assert "--require-hashes" in runs[tools]
+    assert not any("pipx install" in run for run in runs)
+    built = next(i for i, run in enumerate(runs) if run.strip() == "poetry build")
+    upload = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
+    installs = [i for i, run in enumerate(runs) if "pip install" in run]
+    assert tools < built < upload < min(i for i in installs if i > tools)
+    pinned = (ROOT / ".github" / "requirements" / "build-tools.txt").read_text()
+    version = workflow()["env"]["POETRY_VERSION"]
+    assert f"\npoetry=={version} \\" in f"\n{pinned}"
+    pins = re.findall(
+        r"^[a-z0-9._-]+==\S+ \\\n((?:\s+--hash=sha256:[0-9a-f]{64}.*\n)+)", pinned, re.M
+    )
+    assert len(pins) == len(re.findall(r"^[a-z0-9._-]+==", pinned, re.M)) > 1

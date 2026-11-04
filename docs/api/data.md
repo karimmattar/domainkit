@@ -423,6 +423,7 @@ The tenant being served, and the aggregates that belong to one.
 - `current_tenant`: The tenant being served, if any.
 - `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
 - `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
+- `shared_keys`: Cache and rate-limit keys inside the block are every tenant's.
 - `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).
 
 ## `domainkit.ddd.places`

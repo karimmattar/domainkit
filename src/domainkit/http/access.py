@@ -215,6 +215,19 @@ bearer = _Bearer(
 )
 """Documents the token in OpenAPI; the authentication middleware checks it."""
 
+documenting_bearer = _Bearer(
+    auto_error=False,
+    scheme_name="Token",
+    description="A token from logging in: `Authorization: Bearer <token>`.",
+)
+"""``bearer`` as ``Require`` and ``authenticated_user`` name it: only for OpenAPI.
+
+The routes they guard serve requests without it
+(``routing.serve_without_documentation``). It is a separate object so that
+only those are left out: a project's own ``Depends(bearer)`` still reads
+the header.
+"""
+
 
 class NotAuthenticated(APIError):
     """The route needs a principal who proved who they are, and none did (401)."""
@@ -550,7 +563,9 @@ class Require:
     async def __call__(
         self,
         request: HTTPConnection,
-        _: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
+        _: Annotated[
+            HTTPAuthorizationCredentials | None, Depends(documenting_bearer)
+        ] = None,
     ) -> Principal:
         """The principal, if every rule allows the request.
 

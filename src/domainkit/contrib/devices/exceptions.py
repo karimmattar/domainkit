@@ -2,6 +2,7 @@
 
 from fastapi import status
 
+from domainkit.contrib.auth.integration import ReauthenticationRequired
 from domainkit.ddd import BusinessRuleViolation, Conflict, NotFound
 from domainkit.http.errors import APIError
 
@@ -38,18 +39,6 @@ class DeviceSignatureRefused(APIError):
             status.HTTP_401_UNAUTHORIZED,
             "Sign this request with this device's key.",
             code="device_signature_refused",
-        )
-
-
-class ReauthenticationRequired(APIError):
-    """Adding a key needs the password, or a step-up within ten minutes (401)."""
-
-    def __init__(self) -> None:
-        """Use status 401 and the code ``reauthentication_required``."""
-        super().__init__(
-            status.HTTP_401_UNAUTHORIZED,
-            "Confirm it is you: send your password, or step up first.",
-            code="reauthentication_required",
         )
 
 

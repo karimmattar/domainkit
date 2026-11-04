@@ -34,6 +34,7 @@ from domainkit.contrib.flags.events import FlagChanged
 from domainkit.contrib.flags.models import DynamicSetting, bucket
 from domainkit.contrib.flags.tables import dynamic_settings, flags
 from domainkit.db import connections
+from domainkit.ddd.tenancy import tenant
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.management import CommandError, call_command
@@ -845,3 +846,18 @@ def test_flags_changed_after_listing_are_recorded(project: None) -> None:
         False,
         True,
     ]
+
+
+def test_a_change_made_in_a_tenant_is_every_tenants(project: None) -> None:
+    """Flags belong to no tenant: one count of changes, whoever made one.
+
+    The audit found the count kept per tenant, so a change reached the
+    others only once their entries expired (A5-2).
+    """
+
+    async def counted() -> object:
+        with tenant("acme"):
+            await store_module.invalidate()
+        return await caches["default"].get(store_module.VERSION_KEY)
+
+    assert run_async(counted()) == 1

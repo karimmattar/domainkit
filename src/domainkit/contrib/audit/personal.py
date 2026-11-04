@@ -52,6 +52,7 @@ from domainkit.utils.decimals import jsonable
 
 from .settings import AuditSettings
 from .tables import audit_keys
+from .trails import connect, in_trail, trails
 
 PREFIX: Final = "pseudonym:"
 ANONYMOUS: Final = "anonymous:"
@@ -192,7 +193,7 @@ async def prepare_anonymous_keys(database: str) -> None:
     """
     today = clock.today()
     days = (today, today + timedelta(days=1))
-    async with connections.engine(database).begin() as connection:
+    async with connect(database, begin=True) as connection:  # The current trail's.
         await subject_keys(connection, [anonymous_subject(day) for day in days])
 
 
@@ -290,16 +291,19 @@ def _drop(forgotten: Callable[[str], bool]) -> None:
 async def _delete(condition: ColumnElement[bool], *subjects: str) -> int:
     """Delete the keys matching ``condition`` everywhere; count them.
 
-    On PostgreSQL the locks of ``subjects`` are taken first, in each
-    database's transaction, so a writer making one of their keys commits
-    before the delete, which then sees it.
+    Everywhere: in each audited database, and in each tenant's schema of
+    one that keeps a schema per tenant (``trails``, A6-4). On PostgreSQL
+    the locks of ``subjects`` are taken first, in each trail's transaction,
+    so a writer making one of their keys commits before the delete, which
+    then sees it.
     """
     deleted = 0
-    for alias in audited_databases():
-        async with connections.engine(alias).begin() as connection:
-            await _lock(connection, subjects)
-            result = await connection.execute(delete(audit_keys).where(condition))
-            deleted += result.rowcount
+    for alias, schema in await trails(audited_databases()):
+        with in_trail(schema):
+            async with connect(alias, begin=True) as connection:
+                await _lock(connection, subjects)
+                found = await connection.execute(delete(audit_keys).where(condition))
+                deleted += found.rowcount
     return deleted
 
 

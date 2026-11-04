@@ -27,7 +27,7 @@ step-ups, and refusals, go to the audit trail.
 """
 
 from collections.abc import Awaitable, Callable, Collection
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final, Literal
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from domainkit.http.access import IsUnscoped, Require
 from domainkit.http.errors import APIError
 
-from .access import AuthenticatedUser
+from .access import AuthenticatedUser, _impersonated, proof_of
 from .api import PASSWORD_MAX_LENGTH, _credentials, _errors, _no_store, _throttle
 from .api import password_holds as _password_holds
 from .authentication import (
@@ -264,3 +264,42 @@ async def check_password_again(
             code="wrong_password",
         )
     await counted.succeeded()
+
+
+REAUTH_AGE: Final = timedelta(minutes=10)
+"""How recent a step-up must be to stand for the password (``reauthenticate``)."""
+
+
+class ReauthenticationRequired(APIError):
+    """A change to how one logs in needs the password, or a recent step-up (401)."""
+
+    def __init__(self) -> None:
+        """Use status 401 and the code ``reauthentication_required``."""
+        super().__init__(
+            status.HTTP_401_UNAUTHORIZED,
+            "Confirm it is you: send your password, or step up first.",
+            code="reauthentication_required",
+        )
+
+
+async def reauthenticate(
+    request: Request, user: AbstractBaseUser, password: str | None, action: str
+) -> None:
+    """The user authenticated again: ``password``, or a step-up within ``REAUTH_AGE``.
+
+    For a new way into the account (a passkey, a device, an identity
+    provider): whoever held a stolen access token could otherwise add one
+    of their own and keep the account. Never while staff act as the user.
+
+    Raises:
+        ReauthenticationRequired: Neither, or an impersonation.
+        APIError: The password is wrong, or its checks are throttled.
+    """
+    if _impersonated(request):
+        raise ReauthenticationRequired
+    if password is not None:
+        await check_password_again(request, user, password, action)
+        return
+    proof = await proof_of(request)
+    if proof is None or utc_now() - proof.auth_time > REAUTH_AGE:
+        raise ReauthenticationRequired

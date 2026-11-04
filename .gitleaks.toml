@@ -28,3 +28,17 @@ description = "The made-up API key the framework comparison was first committed 
 condition = "AND"
 paths = ['''^benchmarks/compare/run\.py$''']
 regexes = ['''^compare-key-0123456789$''']
+
+[[allowlists]]
+description = "Example output in the documentation: tokens from a throwaway test database, a TOTP secret from a probe run, a sample UUID, and the Standard Webhooks test vector"
+condition = "AND"
+paths = ['''^docs/''']
+regexes = [
+  '''^dkt_snZPF_UTvBVauITuAhrPF8logExpedTsqM8cVan9Ifs$''',
+  '''^dkt_XrIMcWKZG0EA6qCRF4M-IOiGenpcDIj9_-qaWJ9Hx1E$''',
+  '''^dkt_PaXVehuN8IEOBwoxLoAX4lTHrXIOLzoiVHA4mw5OHGg$''',
+  '''^eyJhbGciOiJIUzI1NiIsImtpZCI6IjJaRWVIcmVZNWxTUzA4NUR2OThVa3ciLCJ0eXAiOiJKV1QifQ''',
+  '''^HH3QQ2LGSPSCO3SIFRBV5QWWQPSHEZAE$''',
+  '''^4f0c3c6e-0d55-4a6e-9a3f-1b2c3d4e5f60$''',
+  '''^whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw$''',
+]

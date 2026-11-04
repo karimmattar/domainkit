@@ -503,13 +503,14 @@ def test_the_routes_rules_by_action() -> None:
             for rule in RequestActions().rules_for(action)
         ]
 
-    assert described("approve") == [("IsApprover", None), ("MayApprove", None)]
-    assert described("reject") == [("IsApprover", None)]
-    assert described("cancel") == [("HasModelPermission", "add")]
+    own = ("ActsForThemselves", None)
+    assert described("approve") == [own, ("IsApprover", None), ("MayApprove", None)]
+    assert described("reject") == [own, ("IsApprover", None)]
+    assert described("cancel") == [own, ("HasModelPermission", "add")]
     assert described("view") == [("HasModelPermission", "view")]
     assert described("add") == [("HasModelPermission", "add")]
     for action in ("cancel", "view"):
-        (rule,) = RequestActions().rules_for(action)
+        rule = RequestActions().rules_for(action)[-1]
         assert getattr(rule, "model", None) is ApprovalRequest
     assert IsApprover.bounds_scopes
     assert not MayApprove.bounds_scopes

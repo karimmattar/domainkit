@@ -9,13 +9,187 @@ and a status.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-04
+
 ### Changed
 
 - Guarded routes serve requests without resolving `access.bearer`, the
   dependency that only puts the bearer token in OpenAPI: about
   98 calls less on every authenticated route (a write 2,054, a resource
   command 2,726, a posting 8,049). OpenAPI still documents the token, and
-  the authentication middleware checks it as before.
+  the authentication middleware checks it as before. Only the dependency
+  `Require` and `authenticated_user` name for OpenAPI
+  (`access.documenting_bearer`) is left out: a project's own
+  `Depends(access.bearer)` still reads the header.
+- `init`'s next steps install the project's dev group (`pip install
+  --group dev`), whose ruff formats what the generators write; without it
+  the new project failed its own lint step. The warning a generator gives
+  without ruff names that command, and says the code runs as it is.
+
+### Security
+
+- **Breaking:** `LDAPBackend` took any certificate over `ldaps://` and
+  `START_TLS` (ldap3 checks none by default), so anyone on the path to the
+  directory could read the reader's password and every password a login
+  sent, or answer "bound" for any password with any groups. The
+  certificate and its name are checked now, against the system's
+  certificates or `IDENTITY.LDAP.CA_CERTIFICATES`; staging and production
+  refuse `ldap://` without `START_TLS` (`security.E020`) (audit A2-3).
+- On Linux and macOS every login that reached `LDAPBackend` answered 500,
+  and its refusal was not audited: ldap3 cannot pack a fractional
+  `TIMEOUT`. It is rounded up to whole seconds, and any failure of the
+  directory now refuses the password (A2-4).
+- **Breaking:** a provider's answer (OAuth 2's `state`, SAML's
+  `RelayState` and its ticket) was finished in whichever browser sent it,
+  so an attacker's own flow, finished in a victim's browser, logged the
+  victim into the attacker's account or linked the victim's identity to
+  it. A flow is finished only in the browser that started it: the OAuth 2
+  start answers a `binding` the callback must send back, and SAML's start
+  sets a cookie that the ACS and the ticket's redemption read (A2-2).
+- **Breaking:** linking an identity at a provider needed only an access
+  token, worked while staff acted as the user, and was not audited:
+  whoever held a stolen token could link their own identity and keep the
+  account. A link now asks for the password or a step-up in the last ten
+  minutes, as adding a passkey does, never as an impersonation; linking
+  and unlinking are audited (`identity.identity_linked`,
+  `identity.identity_unlinked`) (A2-1). `POST /auth/identity/{name}/link`
+  takes `{"password"}`.
+- **Breaking:** one staff member could make an approval request and
+  approve it twice, by impersonating the maker and then another approver.
+  Approval requests are submitted, approved, rejected, and cancelled in
+  one's own name only (A3-1).
+- Under multi-tenancy, login and password throttles were counted apart per
+  tenant, so naming another tenant (a header, a subdomain) started an
+  account's daily count afresh; principals' stamps written while a tenant
+  was served were never read by authentication, which runs before the
+  tenant is known, so a revoked token or a deactivated user was served in
+  other processes until the principal cache's `TTL`; and a flag changed in
+  one tenant reached the others only once their entries expired. These are
+  every tenant's now (`shared_keys()`, new in `domainkit.ddd.tenancy`)
+  (A5-1, A5-2).
+- An `Idempotency-Key` sent to two tenants replayed the first tenant's
+  answer in the second, whose request never ran. A key is the tenant's own
+  now (A3-2).
+- A generic `PATCH` (`crud=True` with `writable=ALL_FIELDS`) could set a
+  tenant's row's `tenant_id`, moving it into another tenant. A tenant's
+  aggregate's `tenant_id` is now generated, as its id and version are: no
+  write schema takes it, `writable` refuses it, and `update_rows` cannot
+  set it (A5-3).
+- An impersonation token kept acting as its user for the rest of
+  `AUTH.IMPERSONATION_TTL` after its staff member was deactivated,
+  deleted, or lost the right to change users. Each request of such a
+  token now checks its staff member again, as the admin API did when it
+  was issued (audit A1-1).
+- An impersonation token could impersonate in turn: the new token named
+  the impersonated staff member, so the trail credited the wrong person,
+  each hop began a new TTL, and two superusers could loop back to
+  themselves. Impersonating is refused to an impersonation (A1-2).
+
+- CI's build job installed poetry's dependencies at their newest releases,
+  without hashes, and ran the built wheel's smoke tests (third-party code)
+  before uploading `dist/`: a compromised upstream release could have
+  changed the files the attest job signed. The build's tools are installed
+  from `.github/requirements/build-tools.txt`, pinned with hashes, and
+  `dist/` is uploaded as soon as it is built (A7-1).
+- On `TENANCY.SCHEMA_DATABASES`, erasing a person (`shred_subject`, which
+  `privacy erase` calls) destroyed their keys in the default schema only:
+  their keys in each tenant's schema survived and their values still
+  opened, while the erasure reported success (or failed, the default
+  schema holding no keys table). `keys status` and `keys reencrypt`
+  missed the tenants' schemas the same way. All three visit each tenant's
+  schema now (A4-1).
+- **Breaking:** deferred evidence (`defer_evidence`) waited in the outbox
+  in the clear, where the application's database role could rewrite its
+  facts before the worker wrote them, and the ledger then held them as
+  intact. The record is signed now, and the worker refuses one whose
+  signature does not hold, unsigned ones included: let the queue drain
+  before upgrading (A6-2).
+- `privacy erase` and `privacy export` never reached the numbers
+  `contrib.phones` keeps, the provider accounts of `contrib.identity`
+  (with their email), or the passkeys, devices, and push tokens of
+  `contrib.devices`: only deleting the user removed them. Each app now
+  answers for its own (A6-1).
+- `migrate` left `domainkit_audit_checkpoints` and
+  `domainkit_ledger_states` without triggers, so the application's role
+  could delete a signed checkpoint, or roll a ledger's saved state back
+  and so reset the rollback detection it exists for. Checkpoints are
+  append-only now, and a ledger's state may only move forward (A6-7).
+- **Breaking:** `migrate --tenant NAME --downgrade` dropped a tenant's
+  tables in staging and production without `--allow-data-loss`, and no
+  downgrade was recorded anywhere. Both need the consent now, and there
+  each downgrade is recorded in the audit trail before it runs
+  (`operator.migrate.downgrade`, with `--operator`): a record that cannot
+  be written stops it (A6-3).
+- `shell` and `seed` wrote as `system`, so what an operator changed there
+  named nobody, and `dbshell` left no trace. All three take `--operator`
+  and run as that operator; `seed` is recorded (`operator.seed`), and in
+  staging and production `shell` and `dbshell` are recorded as they open.
+  An operator command stopped part way (Ctrl-C) is recorded as a failure,
+  not left out: what it did may have been committed (A6-5).
+- A ledger read on immudb took the server's answer as it came. The SDK
+  proves the value of a key in its transaction, but not an answer
+  through a reference, nor the revision's number. A read now refuses a
+  reference, another key, and another revision than the one asked for
+  (`LedgerTampered`); the latest revision's number stays the server's word
+  (A6-6).
+- A new project's image and CI installed the newest releases its
+  `pyproject.toml` allowed, without hashes, and `.dockerignore` kept any
+  lock out. Both now install `requirements.lock` by its hashes when the
+  project keeps one, and say how to write it; [deploying.md](docs/deploying.md)
+  asks for it, and for the base image by digest, before the first
+  deployment (A7-2).
+- A presigned upload's URL could replace its file until it expired, after
+  the application had checked it. It now only creates the name: S3's
+  `If-None-Match: *` and GCS's `x-goog-if-generation-match: 0` are signed,
+  and Azure's SAS grants create only. [uploads.md](docs/uploads.md) says
+  that such files are neither sniffed nor scanned (A5-4).
+- A row sealed for a person with a key they already had, written while
+  `shred_subject` erased them, kept its blind index: the erasure's
+  clearing could not see the row before it was committed, so a guess of
+  the erased value still matched it. The writer now checks, as it
+  commits and under the person's lock, that each key it sealed with is
+  still there, and clears that person's indexes if not (A4-2).
+- On a database that keeps a schema per tenant, each tenant's audit trail
+  was left without triggers, and `audit seal`, `audit verify`, and
+  `audit forget` never saw it: its rows could be changed unnoticed, and
+  `privacy erase` left a person's pseudonym keys there. `migrate --tenant`
+  now protects it (the `on_migrated` hooks run in the tenant's schema), and
+  `audit seal`, `audit verify`, and `audit forget` cover each tenant's
+  trail, under the ledger key `<alias>/<schema>` (A6-4).
+- **Breaking:** `AUTH.CAPTCHA` with `login` in `ON` covered `POST
+  /auth/login` only: a browser login, `POST /auth/session`, checked the
+  same password with no captcha, so a bot could guess passwords there. It
+  asks for the same captcha now.
+- `create_user` (used by the admin API and `createsuperuser`) compared
+  usernames exactly, so `Alice` could be created next to `alice`, while
+  signup, the identity providers, and the login throttle took them as one
+  name. It refuses a name another user has in any case now.
+- An impersonation token, checked again on each request since A1-1, was
+  checked for the staff member's right to change users only, not for the
+  rule it was issued under: the staff member holds every permission the
+  user holds. A user granted more afterwards stayed in reach until the
+  token expired. Each request checks that rule too now.
+
+### Fixed
+
+- A body refused by its length before routing was logged with the global
+  limit (`MAX_REQUEST_BODY_SIZE`), though a route's larger limit was the
+  one it broke. The log names that limit now.
+
+- `diffsettings` failed in every project `init` makes (`Unable to serialize
+  unknown type`): `LOGGING` holds classes. It shows them by their dotted
+  path now.
+
+- A transaction's keys of subjects and its keys by id were kept under one
+  name space, so a subject written as `#` and another key's id would have
+  been sealed under that key (audit A4-3).
+- An amount written in another script's digits (Arabic-Indic, say) passed
+  the ledger's and the limits' schemas, whose `\d` takes any digit, and
+  then failed in `Money`: a 500, not a 422. Amounts are ASCII digits
+  (audit A3-3).
+- A new project's CI built its image under the project's name as typed,
+  and Docker refuses capitals (`bankAPI`): the image is now named in lower
+  case, in CI and in the Dockerfile's examples.
 
 ## [1.6.0] - 2026-11-03
 
@@ -5880,7 +6054,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/karimmattar/domainkit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/karimmattar/domainkit/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/karimmattar/domainkit/compare/v1.0.0...v1.5.0
 [1.0.0]: https://github.com/karimmattar/domainkit/compare/v0.12.1...v1.0.0

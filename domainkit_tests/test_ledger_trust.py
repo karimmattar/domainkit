@@ -171,7 +171,9 @@ class FakeClient:
             raise RpcError("key not found")
         number = atRevision or len(revisions)
         tx, value = revisions[number - 1]
-        return SimpleNamespace(id=tx, value=value, revision=number)
+        return SimpleNamespace(
+            id=tx, key=key, value=value, revision=number, refkey=None
+        )
 
     def scan(
         self, key: bytes, prefix: bytes, desc: bool, limit: int
@@ -477,14 +479,15 @@ async def test_the_audit_database_keeps_states_for_every_process() -> None:
     assert not await registered.save("signed", forked, expected=forked)
     assert await registered.load("signed") == signed
     later = TrustedState("evidence", 12, b"c" * 32)
+    latest = TrustedState("evidence", 15, b"d" * 32, b"signature", b"public key")
     assert await registered.save("later", later, expected=None)
-    assert await registered.save("later", signed, expected=later)
+    assert await registered.save("later", latest, expected=later)
 
     assert kept is not None
     assert (kept.database, kept.transaction, len(kept.digest)) == ("evidence", 2, 32)
     assert await registered.load("another") is None
     assert await registered.load("signed") == signed
-    assert await registered.load("later") == signed
+    assert await registered.load("later") == latest
 
 
 async def test_a_rollback_of_another_replicas_writes_is_refused() -> None:

@@ -482,3 +482,15 @@ async def test_the_ring_says_why_it_refuses(no_ring: None, vault: FakeVault) -> 
     ):
         keys.seal(b"x", CONTEXT)
     gc.collect()
+
+
+def test_a_subject_and_a_key_id_never_share_a_held_entry() -> None:
+    """A subject written as ``#<id>`` is not another key's id (audit A4-3)."""
+    from domainkit.keys import ring as ring_module
+
+    held: dict[str, tuple[str, str, bytes]] = {}
+    ann = ring_module.StoredSubjectKey("a" * 32, "ann", "dev", b"wrapped")
+    ring_module._hold(held, ann, b"k" * 32)
+
+    assert set(held) == {"s:ann", f"#{'a' * 32}"}
+    assert f"#{'a' * 32}" not in {key for key in held if key.startswith("s:")}

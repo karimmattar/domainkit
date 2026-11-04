@@ -22,20 +22,24 @@
 
 from datetime import datetime
 from typing import Annotated
+from urllib.parse import parse_qs, urlsplit
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.integration import (
+    PASSWORD_MAX_LENGTH,
     MfaChallengeOut,
     TokenOut,
     challenge,
     issue_login,
+    reauthenticate,
 )
 from domainkit.contrib.auth.models import UserId
 from domainkit.http.access import IsUnscoped, Public, Require
 
+from .binding import COOKIE, TICKET_SEPARATOR, binding, bound
 from .exceptions import NoAccount
 from .services import LINK, LOGIN, begin, complete, identity_settings, unlink
 from .stores import IdentityUnitOfWork
@@ -54,9 +58,11 @@ class ProvidersOut(BaseModel):
 
 
 class AuthorizationOut(BaseModel):
-    """Where to send the browser."""
+    """Where to send the browser, and what the page keeps for the callback."""
 
     authorization_url: str
+    binding: str
+    """Send it back with the callback: the flow is this browser's only."""
 
 
 class CallbackIn(BaseModel):
@@ -66,6 +72,8 @@ class CallbackIn(BaseModel):
 
     code: str = Field(min_length=1, max_length=4096, repr=False)
     state: str = Field(min_length=1, max_length=64)
+    binding: str = Field(min_length=1, max_length=128, repr=False)
+    """What the start answered, which only the browser that started it holds."""
 
 
 class TicketIn(BaseModel):
@@ -73,7 +81,7 @@ class TicketIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ticket: str = Field(min_length=1, max_length=64, repr=False)
+    ticket: str = Field(min_length=1, max_length=160, repr=False)
 
 
 class LinkedOut(BaseModel):
@@ -100,15 +108,35 @@ async def providers() -> ProvidersOut:
 @router.post("/identity/{name}/login", dependencies=[Public])
 async def start_login(name: str) -> AuthorizationOut:
     """Start a login at ``name``."""
-    return AuthorizationOut(authorization_url=await begin(name, LOGIN))
+    return _started(await begin(name, LOGIN))
+
+
+class LinkIn(BaseModel):
+    """The password, unless the user stepped up in the last ten minutes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: str | None = Field(
+        default=None, min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False
+    )
 
 
 @router.post("/identity/{name}/link")
 async def start_link(
-    name: str, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    name: str,
+    request: Request,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+    body: LinkIn | None = None,
 ) -> AuthorizationOut:
-    """Start linking an identity at ``name`` to the user."""
-    return AuthorizationOut(authorization_url=await begin(name, LINK, user.id))
+    """Start linking an identity at ``name`` to the user, who authenticates again.
+
+    A linked identity is a way into the account: the password, or a step-up
+    in the last ten minutes, as for a passkey; never while staff act as the
+    user.
+    """
+    password = None if body is None else body.password
+    await reauthenticate(request, user, password, "link_identity")
+    return _started(await begin(name, LINK, user.id))
 
 
 @router.post(
@@ -120,8 +148,15 @@ async def start_link(
 async def callback(
     name: str, body: CallbackIn, response: Response
 ) -> TokenOut | MfaChallengeOut | LinkedOut:
-    """Finish a login (tokens, or a challenge) or a link."""
+    """Finish a login (tokens, or a challenge) or a link, in the browser that began it.
+
+    Raises:
+        NoAccount: The binding is not the one the start answered: the flow
+            was started elsewhere (a forged callback), or has no binding.
+    """
     _no_store(response)
+    if not bound(body.state, body.binding):
+        raise NoAccount("That login was started elsewhere; start it again here.")
     flow, user = await complete(name, body.code, body.state)
     if user is None:
         return LinkedOut(linked=flow.provider)
@@ -134,15 +169,22 @@ async def callback(
     response_model_exclude_none=True,
     responses={status.HTTP_202_ACCEPTED: {"model": MfaChallengeOut}},
 )
-async def redeem(body: TicketIn, response: Response) -> TokenOut | MfaChallengeOut:
-    """Trade a ticket for tokens, once.
+async def redeem(
+    body: TicketIn, request: Request, response: Response
+) -> TokenOut | MfaChallengeOut:
+    """Trade a ticket for tokens, once, in the browser whose login it ends.
 
     Raises:
-        NoAccount: The ticket is unknown, used, or expired.
+        NoAccount: The ticket is unknown, used, or expired, or this browser
+            did not start its login (no cookie of its flow).
     """
     _no_store(response)
+    raw, _, flow = body.ticket.partition(TICKET_SEPARATOR)
+    if not bound(flow, request.cookies.get(COOKIE)):
+        raise NoAccount("That ticket expired or was used; log in again.")
+    response.delete_cookie(COOKIE, path="/", secure=True, httponly=True)
     async with IdentityUnitOfWork() as uow:
-        user_id = await uow.tickets.redeem(body.ticket)
+        user_id = await uow.tickets.redeem(raw)
         user = None if user_id is None else await uow.users.find(UserId(user_id))
         await uow.commit()
     if user is None or not user.is_active:
@@ -165,6 +207,12 @@ async def linked(user: Annotated[AbstractBaseUser, SIGNED_IN]) -> list[IdentityO
 async def remove(name: str, user: Annotated[AbstractBaseUser, SIGNED_IN]) -> None:
     """Unlink the user's identity at ``name``."""
     await unlink(user, name)
+
+
+def _started(authorization_url: str) -> AuthorizationOut:
+    """The answer of a start: the provider's URL, and its flow's binding."""
+    state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+    return AuthorizationOut(authorization_url=authorization_url, binding=binding(state))
 
 
 async def logged_in(

@@ -6,6 +6,7 @@
 *
 !manage.py
 !pyproject.toml
+!requirements.lock
 !src/
 !migrations/
 

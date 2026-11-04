@@ -164,12 +164,14 @@ async def recorded(
 
     The block may add details (counts) to the mapping it is given. A block
     that raises is recorded as a failure, with the error's class only, and
-    the error goes on. Nothing is recorded without the audit app.
+    the error goes on: an interrupted one too (``KeyboardInterrupt``), as
+    what it did may have been committed. Nothing is recorded without the
+    audit app.
     """
     found: dict[str, object] = dict(details)
     try:
         yield found
-    except Exception as exc:
+    except BaseException as exc:
         await _record(who, action, "failure", {**found, "error": type(exc).__name__})
         raise
     await _record(who, action, "success", found)

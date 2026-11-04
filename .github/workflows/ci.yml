@@ -568,7 +568,15 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - run: pipx install "poetry==${POETRY_VERSION}"
+      # The tools that run while dist/ is written are the ones reviewed:
+      # pinned with their hashes (build-tools.txt), not resolved afresh, so
+      # a release of one of poetry's dependencies cannot change what this
+      # job builds (audit A7-1).
+      - name: Install the build tools, pinned with hashes
+        run: |
+          python -m venv /tmp/build-tools
+          /tmp/build-tools/bin/pip install --require-hashes --no-deps -r .github/requirements/build-tools.txt
+          echo /tmp/build-tools/bin >> "$GITHUB_PATH"
       # The PyPI page is the README, and the project's URLs: their links to
       # this repository's files name the release's tag, not main, whose
       # documents move on with the next release (INFRA-22). A build of
@@ -585,6 +593,15 @@ jobs:
           python -m zipfile -l dist/*.whl | grep -q "management/templates/project/dot-env-tpl"
           python -m zipfile -l dist/*.whl | grep -q "management/templates/profiles/fintech/dot-github/workflows/ci.yml-tpl"
           python -m zipfile -l dist/*.whl | grep -q "contrib/auth/common-passwords.txt.gz"
+      # Uploaded as built, before anything else is installed or run here: what
+      # the smoke tests below install could otherwise change the files the
+      # attest job signs (audit A7-1).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          # A release of this commit downloads it from this run.
+          retention-days: 90
       - run: |
           python .github/scripts/lock_constraints.py > /tmp/constraints.txt
           python -m venv /tmp/clean
@@ -620,12 +637,6 @@ jobs:
           done
           curl -sf -H "Host: api.example.com" http://127.0.0.1:8000/health
           docker stop smoke
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dist
-          path: dist/
-          # A release of this commit downloads it from this run.
-          retention-days: 90
 
   # Also in the weekly run: an advisory can appear with no change here.
   audit:
@@ -1290,6 +1301,7 @@ jobs:
               domainkit.contrib.audit.settings.* domainkit.contrib.audit.tasks.*
               domainkit.contrib.audit.checkpoints.* domainkit.contrib.audit.pruning.*
               domainkit.contrib.audit.ledgerstates.* domainkit.contrib.audit.testing.*
+              domainkit.contrib.audit.trails.*
               domainkit.contrib.contenttypes.* domainkit.contrib.evidence.*
               domainkit.contrib.flags.* domainkit.contrib.idempotency.operations.*
               domainkit.contrib.idempotency.settings.*

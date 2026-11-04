@@ -39,8 +39,10 @@ class Command(BaseCommand):
     def handle(self, *, every: bool, **options: object) -> None:
         """Print one line per setting, sorted by name."""
         current = unwrap_settings()
-        values = current.model_dump(mode="json")
-        defaults = type(current).model_construct().model_dump(mode="json")
+        values = current.model_dump(mode="json", fallback=_named)
+        defaults = (
+            type(current).model_construct().model_dump(mode="json", fallback=_named)
+        )
         self.write(f"# {current.SETTINGS_MODULE}: settings that differ from defaults")
         for name in sorted(set(values) - UNSHOWN):
             value = _scrub(values[name])
@@ -51,6 +53,19 @@ class Command(BaseCommand):
                 continue
             mark = "### " if unchanged else ""
             self.write(f"{mark}{name} = {value!r}")
+
+
+def _named(value: object) -> str:
+    """A value JSON cannot hold, as text: a class or function by its dotted path.
+
+    ``LOGGING`` holds classes (``"()": ContextFilter``), as
+    ``build_logging_config`` and ``logging.config`` write them.
+    """
+    module = getattr(value, "__module__", None)
+    name = getattr(value, "__qualname__", None)
+    if module is not None and name is not None:
+        return f"{module}.{name}"
+    return repr(value)
 
 
 def _scrub(value: object) -> object:

@@ -1,16 +1,25 @@
 # Service accounts with API keys
 
-Another service calls the API with a key in a header of its own, as
-`X-API-Key: <key>`, and acts as a user made for it. An authentication
-class of your own reads the header, and a setting of the project's own
-holds the keys; everything after it (permissions,
-rate limits, the audit trail) sees an ordinary user
-([authentication](../auth/authentication.md#other-credentials)).
+This recipe lets another service call your API with a key of its own,
+sent in a header, and act as a user made for it.
+
+## The problem
+
+Another service (a billing system, a nightly job) calls your API. It
+cannot log in with a password and a second factor as a person does. You
+want it to send a key, as `X-API-Key: <key>`, and to act as a user made
+for it, so that permissions, rate limits, and the audit trail treat it
+like any other user. You also want the keys to stay out of the settings
+and the database, so a leak of either names no key.
 
 You need a project with `domainkit[sqlite,testing]` installed. Every step
 here is run as written by `domainkit_tests/test_recipes.py`.
 
-## The class
+## The solution
+
+### Step 1: make a project
+
+Make a project, and the tables of its users:
 
 ```bash
 domainkit init serviceAPI service
@@ -19,12 +28,13 @@ python manage.py makemigrations -m "auth"
 python manage.py migrate
 ```
 
-The keys are never stored: a setting of the project's own holds each
-key's SHA-256 digest and the user it logs in as. A leaked environment
-then names no key, and replacing a key is a redeployment with a new
-digest. A name the framework does not declare belongs to the project's
-settings schema, which startup validates with the rest
-([settings](../reference/settings.md)):
+### Step 2: declare the setting that holds the keys
+
+The keys are never stored. A setting of the project's own, `API_KEYS`,
+holds each key's SHA-256 digest and the username it logs in as. A name
+that the framework does not declare belongs to the project's settings
+schema, which startup validates with the rest
+([settings](../reference/settings.md#how-the-settings-are-validated)):
 
 ```python title="src/config/schema.py (new file)"
 """The project's own settings, validated with the framework's."""
@@ -39,12 +49,19 @@ class ProjectSettings(Settings):
     """Each API key's SHA-256 digest, and the username it logs in as."""
 ```
 
-The environment lists the pairs, `SERVICE_API_API_KEYS=<digest>=billing,...`:
+Name the schema in the base settings, and read the pairs from the
+environment, as `SERVICE_API_API_KEYS=<digest>=billing,...`:
 
 ```python title="src/config/settings/base.py"
 SETTINGS_CLASS = "config.schema.ProjectSettings"
 API_KEYS = dict(pair.split("=", 1) for pair in env.list("API_KEYS", []))
 ```
+
+### Step 3: write the authentication class
+
+An authentication class reads the header, finds the key's user, and
+returns its credentials. It returns `None` when the header is missing, so
+the other classes try:
 
 ```python title="src/config/api_keys.py (new file)"
 """Service accounts: ``X-API-Key: <key>`` logs in as the key's user."""
@@ -86,7 +103,9 @@ class ApiKeyAuthentication(BaseAuthentication):
         return Credentials(user, scheme="api_key")
 ```
 
-Name it after the class that issues logins' tokens, which stays first:
+### Step 4: list the class after the token class
+
+The class that checks logins' tokens stays first:
 
 ```python title="src/config/settings/base.py"
 AUTH: dict[str, object] = {
@@ -97,14 +116,14 @@ AUTH: dict[str, object] = {
 }
 ```
 
-A key that does not hold answers 401, is logged as refused credentials,
-and counts against the address's `RATE_LIMIT`, past which the address's
-keys are refused unread for a while; a request without the header goes
-on to the other classes. Make the service's user without a
-password (`createsuperuser` is for people): it logs in with its key only,
-and holds the permissions you grant it.
+Make the service's user without a password (`createsuperuser` is for
+people). It logs in with its key only, and holds the permissions you
+grant it.
 
-## A test of the key
+### Step 5: test the key
+
+The test makes the user, sets `API_KEYS` to the key's digest, and calls
+`GET /auth/me` with the key, then with a key that nobody was given:
 
 ```python title="tests/test_api_keys.py (new file)"
 """A service calls with its key; a key nobody was given is refused."""
@@ -149,14 +168,47 @@ async def test_a_key_nobody_was_given_is_refused(db: None) -> None:
     assert (status, body["code"]) == (401, "authentication_failed")
 ```
 
+Run the checks and the tests:
+
 ```bash
 ruff check --fix .
 ruff format --check .
 pytest
 ```
 
-To give a service a key, make one
-(`python -c "import secrets; print(secrets.token_urlsafe(32))"`), hand
-it to the service, and deploy its digest
-(`python -c "from config.api_keys import digest; print(digest('<key>'))"`)
-in `API_KEYS`.
+### Step 6: give a service its key
+
+1. Make a key: `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+2. Hand the key to the service, by a channel that keeps it secret.
+3. Deploy its digest in `API_KEYS`:
+   `python -c "from config.api_keys import digest; print(digest('<key>'))"`.
+
+To replace a key, deploy the new digest and remove the old one. A leaked
+environment names no key, because it holds digests only.
+
+## How it works
+
+Every request goes through the classes of
+`AUTH["AUTHENTICATION_CLASSES"]`, in order. Each class answers one of
+three ways ([authentication](../auth/authentication.md#other-credentials)):
+
+| The class | Means |
+| --- | --- |
+| returns `None` | "Not mine": the next class tries. A request without `X-API-Key` goes on to the token class. |
+| returns `Credentials(user, scheme=...)` | The request is that user's. |
+| raises `AuthenticationFailed` | The credentials were presented and do not hold: 401 `authentication_failed`. |
+
+A key that does not hold answers 401, is logged as refused credentials,
+and counts against the address's `RATE_LIMIT`. Past that limit, the
+address's keys are refused unread for a while. Everything after
+authentication (permissions, rate limits, the audit trail) sees an
+ordinary user.
+
+## See also
+
+- [Authentication](../auth/authentication.md): every way requests prove
+  who sent them.
+- [Extension points](../reference/extension-points.md#users-logins-and-rules):
+  `BaseAuthentication` and `SETTINGS_CLASS`.
+- [A permission rule of your own](permission-rules.md): decide what the
+  service may call.

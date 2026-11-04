@@ -97,7 +97,11 @@ from .settings import AuthSettings, JWTSettings
 from .tokens import AuthToken, TokenKind
 from .uow import AuthUnitOfWork
 from .users import get_user_model
-from .validators import password_help_texts, validate_password
+from .validators import (
+    PasswordValidationError,
+    password_help_texts,
+    validate_password,
+)
 
 __all__ = [
     "AbstractBaseUser",
@@ -129,6 +133,7 @@ __all__ = [
     "JWTSettings",
     "ModelBackend",
     "PasswordHash",
+    "PasswordValidationError",
     "Permission",
     "Proof",
     "StepUp",

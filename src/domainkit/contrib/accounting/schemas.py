@@ -34,7 +34,7 @@ from .models import (
 AmountText = Annotated[
     str,
     Field(
-        pattern=r"^-?\d{1,14}(\.\d{1,4})?$",
+        pattern=r"^-?[0-9]{1,14}(\.[0-9]{1,4})?$",  # Not \d: any script's digits.
         description="Fixed-point text, such as 10.50; never a JSON number.",
         examples=["10.50"],
     ),

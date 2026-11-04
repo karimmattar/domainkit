@@ -72,6 +72,7 @@ from domainkit import clock
 from domainkit.cache import CacheError, caches
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
+from domainkit.ddd.tenancy import shared_keys
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.log import SECURITY_LOGGER
 from domainkit.tasks import spawn
@@ -963,7 +964,8 @@ async def read_stamps(alias: str, targets: Sequence[str]) -> tuple[str | None, .
         CacheError: The cache failed; nothing it says can be trusted.
     """
     keys = [stamp_key(ALL), *map(stamp_key, targets)]
-    found = await caches[alias].get_many(keys, str)
+    with shared_keys():  # Principals are every tenant's.
+        found = await caches[alias].get_many(keys, str)
     return tuple(found.get(key) for key in keys)
 
 
@@ -976,10 +978,11 @@ async def write_stamps(alias: str, targets: Collection[str]) -> None:
     Raises:
         CacheError: The cache failed.
     """
-    await caches[alias].set_many(
-        {stamp_key(target): secrets.token_hex(8) for target in targets},
-        ttl=STAMP_TTL,
-    )
+    with shared_keys():  # Principals are every tenant's.
+        await caches[alias].set_many(
+            {stamp_key(target): secrets.token_hex(8) for target in targets},
+            ttl=STAMP_TTL,
+        )
 
 
 async def recall(
@@ -1027,12 +1030,13 @@ async def settle_stamps(
     values = dict(known or {})
     wanted = [key for key in keys if key not in values]
     if wanted:
-        values.update(await cache.get_many(wanted, str))
-        missing = [key for key in wanted if key not in values]
-        for key in missing:
-            await cache.add(key, secrets.token_hex(8), ttl=STAMP_TTL)
-        if missing:
-            values.update(await cache.get_many(missing, str))
+        with shared_keys():  # Principals are every tenant's.
+            values.update(await cache.get_many(wanted, str))
+            missing = [key for key in wanted if key not in values]
+            for key in missing:
+                await cache.add(key, secrets.token_hex(8), ttl=STAMP_TTL)
+            if missing:
+                values.update(await cache.get_many(missing, str))
     if any(key not in values for key in keys):
         raise CacheError(f"Cache {alias!r} kept no stamp.")
     return tuple(values[key] for key in keys)

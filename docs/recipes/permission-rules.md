@@ -1,14 +1,24 @@
 # A permission rule of your own
 
-A rule decides who may call a route. The built-in ones ask whether the
-caller logged in, holds a permission, or owns the object; a rule of your
-own asks anything else about the caller, here whether they proved their
-email address ([routes](../auth/routes.md#protecting-routes)).
+This recipe writes a rule of your own that decides who may call a route:
+here, only users who proved their email address.
+
+## The problem
+
+A [rule](../learning.md#words) decides who may call a route. The built-in
+rules ask whether the caller logged in, holds a permission, or owns the
+object ([routes](../auth/routes.md#protecting-routes)). You need to ask
+something else about the caller: here, whether they proved that they
+read mail at their address. A caller who did not log in must still get
+401, and a logged-in caller who is refused must get 403 with a message
+that says why.
 
 You need a project with `domainkit[sqlite,testing]` installed. Every step
 here is run as written by `domainkit_tests/test_recipes.py`.
 
-## The rule and its route
+## The solution
+
+### Step 1: make a project
 
 ```bash
 domainkit init reportsAPI reports
@@ -17,10 +27,12 @@ python manage.py makemigrations -m "auth"
 python manage.py migrate
 ```
 
-A rule subclasses `BasePermission` and answers `has_permission`; a
-refusal is a 403 with its `message`. `Require` runs the rules in order,
-and `IsAuthenticated` first makes a caller who did not log in a 401, not
-a 403:
+### Step 2: write the rule and its route
+
+A rule subclasses `BasePermission`, and answers `has_permission`. A
+refusal is a 403 with the rule's `message`. `Require` runs the rules in
+order, and `IsAuthenticated` first makes a caller who did not log in a
+401, not a 403:
 
 ```python title="src/config/reports.py (new file)"
 """Reports: for users who proved their email address."""
@@ -51,6 +63,8 @@ async def reports() -> dict[str, list[str]]:
     return {"reports": ["monthly"]}
 ```
 
+### Step 3: mount the route
+
 Mount it with the others:
 
 ```python title="src/config/urls.py"
@@ -59,11 +73,10 @@ from config.reports import router as reports_router
 router.include_router(reports_router, prefix="/reports")
 ```
 
-`has_object_permission` is the hook for a rule about one object (the
-caller's own order, say); `ResourceRouter` asks it of the object a route
-reads or changes. Rules combine: `AnyOf(A, B)`, `AllOf(A, B)`, `Not(A)`.
+### Step 4: test the rule
 
-## A test of the rule
+The test makes two users, one verified and one not, and calls the route
+as each of them, and as nobody:
 
 ```python title="tests/test_reports.py (new file)"
 """Verified users read reports; others are refused, and say why."""
@@ -113,13 +126,43 @@ async def test_only_verified_users_read_reports(db: None) -> None:
     assert nobody.status_code == 401
 ```
 
+Run the checks and the tests:
+
 ```bash
 ruff check --fix .
 ruff format --check .
 pytest
 ```
 
-A refusal by a rule of your own is recorded as any other denial is:
-with `contrib.audit` installed, as `auth.access` with the outcome
-`denied`, the route, and the rule's class, never the request's values. A
-rule that refuses more than it should then shows in the audit trail.
+## How it works
+
+`Depends(Require(IsAuthenticated, EmailVerified))` runs the rules in
+order, and stops at the first refusal:
+
+| Caller | `IsAuthenticated` | `EmailVerified` | Answer |
+| --- | --- | --- | --- |
+| nobody | refuses | not asked | 401 |
+| `bob`, not verified | passes | refuses | 403, `"Verify your email address first."` |
+| `ann`, verified | passes | passes | 200 |
+
+More you can do with rules:
+
+- **Rules about one object.** `has_object_permission` is the hook for a
+  rule about one object (the caller's own order, say). `ResourceRouter`
+  asks it of the object a route reads or changes.
+- **Rules combine.** `AnyOf(A, B)`, `AllOf(A, B)`, and `Not(A)` make one
+  rule of several.
+- **Refusals are recorded.** With `contrib.audit` installed, a refusal by
+  a rule of your own is recorded as any other denial is: as
+  `auth.access`, with the outcome `denied`, the route, and the rule's
+  class, never the request's values. A rule that refuses more than it
+  should then shows in the audit trail.
+
+## See also
+
+- [Protecting routes](../auth/routes.md#protecting-routes): the built-in
+  rules.
+- [Extension points](../reference/extension-points.md#users-logins-and-rules):
+  `BasePermission`.
+- [Service accounts with API keys](api-keys.md): callers that are
+  services.

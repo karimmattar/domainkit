@@ -132,7 +132,7 @@ framework, for the reason given.
 | --- | --- | --- | --- |
 | File storage on disk, in memory for tests | `FileSystemStorage`, `MemoryStorage` | Yes | |
 | Object storage: S3 and S3-compatible (AWS S3, Huawei OBS, MinIO, Cloudflare R2, Alibaba OSS), Google Cloud Storage, Azure Blob | `S3Storage`, `GCSStorage`, `AzureBlobStorage`: multipart writes, ranged reads, no SDK ([uploads.md](uploads.md#object-storage)) | Yes | A1 |
-| Presigned upload and download URLs | `presigned_url`, `presigned_upload` (size and type signed on S3 and GCS) | Yes | A1 |
+| Presigned upload and download URLs | `presigned_url`, `presigned_upload` (size and type signed on S3 and GCS; uploads create, never replace) | Yes | A1 |
 | Image thumbnails, virus scanning of uploads | `thumbnail` (Pillow, bombs refused); `UPLOAD_SCANNER` with ClamAV, failing closed | Yes | A1 |
 | Login with an identity provider: OpenID Connect and OAuth 2 (Google, Microsoft, Apple, GitHub, Keycloak, Okta, Auth0, AWS Cognito, Huawei IAM) | `domainkit.contrib.identity`: PKCE, state, nonce, ID tokens verified against the provider's keys ([identity.md](auth/identity.md)) | Yes | A2 |
 | Enterprise single sign-on: SAML 2.0, LDAP and Active Directory | SAML 2.0 service provider (signed responses only, one-time tickets); `LDAPBackend` with group mapping | Yes | A2 |

@@ -3,6 +3,13 @@
 ``--plan`` lists what would run, ``--sql`` prints it as SQL (rendered
 offline by Alembic), and ``--fake`` records a revision as applied without
 running it. None of them changes the schema.
+
+A downgrade can drop data: staging and production refuse one without
+``--allow-data-loss``, a tenant's schema included. There, each one that
+runs is recorded in the audit trail (``operator.migrate.downgrade``)
+before it runs, so a downgrade that drops the trail's own tables is still
+on record. Elsewhere nothing is recorded: the test plugin moves a test
+database down and up before the application's role may write to it.
 """
 
 from argparse import ArgumentParser
@@ -33,6 +40,7 @@ class Command(BaseCommand):
     """Upgrade to ``head`` (or a revision); ``--downgrade`` moves down instead."""
 
     help = "Apply migrations to every target's databases (uses MIGRATION_URL when set)."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept a revision, a target, a direction, and a dry mode."""
@@ -103,15 +111,8 @@ class Command(BaseCommand):
         if start is not None and not sql:
             raise CommandError("--from goes with --sql.")
         tenanted = () if settings.TENANCY is None else settings.TENANCY.SCHEMA_DATABASES
-        if tenant:
-            if plan or sql or fake:
-                raise CommandError(
-                    "--tenant migrates; it takes no --plan, --sql, --fake."
-                )
-            for alias in tenanted if database is None else (database,):
-                for name in tenant:
-                    self._migrate_tenant(alias, target, name, downgrade=downgrade)
-            return
+        if tenant and (plan or sql or fake):
+            raise CommandError("--tenant migrates; it takes no --plan, --sql, --fake.")
         if (
             downgrade
             and not (plan or sql)
@@ -122,6 +123,11 @@ class Command(BaseCommand):
                 f"Downgrading in {settings.ENVIRONMENT} can drop data; repeat with "
                 "--allow-data-loss after taking a backup."
             )
+        if tenant:
+            for alias in tenanted if database is None else (database,):
+                for name in tenant:
+                    self._migrate_tenant(alias, target, name, downgrade=downgrade)
+            return
         targets = (database,) if database else migrations.migration_targets()
         if len(targets) > 1 and target not in SYMBOLIC:
             raise CommandError(
@@ -146,6 +152,8 @@ class Command(BaseCommand):
                         output=self.stdout,
                     )
                 elif fake:
+                    if downgrade:
+                        self._record_downgrade(alias, target, fake=True)
                     migrations.fake(target, alias, downgrade=downgrade)
                     self.write(
                         f"Database {alias!r} is recorded at {target}; nothing ran."
@@ -166,9 +174,11 @@ class Command(BaseCommand):
         """Move one tenant's schema of one database."""
         try:
             if downgrade:
+                self._record_downgrade(alias, target, tenant=tenant)
                 migrations.downgrade(target, alias, tenant=tenant)
             else:
                 migrations.upgrade(target, alias, tenant=tenant)
+                migrations.run_migrated_hooks(alias, tenant=tenant)
         except migrations.DatabaseUnreachable as exc:
             raise unreachable(alias, exc) from None
         except (AlembicError, ImproperlyConfigured, ValueError) as exc:
@@ -189,6 +199,7 @@ class Command(BaseCommand):
     def _migrate(self, alias: str, target: str, *, downgrade: bool) -> None:
         """Move one database, then create its partitions when upgrading."""
         if downgrade:
+            self._record_downgrade(alias, target)
             migrations.downgrade(target, alias)
         else:
             migrations.upgrade(target, alias)
@@ -198,3 +209,25 @@ class Command(BaseCommand):
         if created := migrations.create_partitions(alias):
             self.write(f"Created {len(created)} partition(s) in {alias!r}.")
         migrations.run_migrated_hooks(alias)
+
+    def _record_downgrade(
+        self,
+        alias: str,
+        target: str,
+        *,
+        tenant: str | None = None,
+        fake: bool = False,
+    ) -> None:
+        """Record that the operator downgrades ``alias``, before it happens.
+
+        In staging and production only. After, the trail's own tables may
+        be gone; a record that cannot be written stops the downgrade.
+        """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return
+        details: dict[str, object] = {"database": alias, "revision": target}
+        if tenant is not None:
+            details["tenant"] = tenant
+        if fake:
+            details["fake"] = True
+        self.record("migrate.downgrade", **details)

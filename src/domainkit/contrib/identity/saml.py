@@ -36,13 +36,14 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Response, status
+from fastapi import APIRouter, Form, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from domainkit.contrib.auth.integration import utc_now
 from domainkit.exceptions import DomainkitError
 from domainkit.http.access import Public
 
+from .binding import COOKIE, TICKET_SEPARATOR, binding, bound
 from .exceptions import EmailTaken, NoAccount, UnknownProvider
 from .providers import Claims
 from .services import LOGIN, account_for, identity_settings
@@ -104,14 +105,27 @@ async def saml_login(name: str) -> RedirectResponse:
     encoded = base64.b64encode(_deflate(request.encode())).decode()
     query = urlencode({"SAMLRequest": encoded, "RelayState": flow.id})
     separator = "&" if "?" in config.IDP_SSO_URL else "?"
-    return RedirectResponse(
+    sent = RedirectResponse(
         f"{config.IDP_SSO_URL}{separator}{query}", status_code=status.HTTP_302_FOUND
     )
+    # The flow is this browser's: the ACS, posted from the provider's page
+    # (another site, hence SameSite=None), and the ticket read it back.
+    sent.set_cookie(
+        COOKIE,
+        binding(flow.id),
+        max_age=int(identity_settings().FLOW_TTL.total_seconds()),
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="none",
+    )
+    return sent
 
 
 @router.post("/identity/saml/{name}/acs", dependencies=[Public])
 async def saml_acs(
     name: str,
+    request: Request,
     saml_response: str = Form(alias="SAMLResponse", max_length=MAX_RESPONSE),
     relay_state: str = Form(alias="RelayState", max_length=64),
 ) -> RedirectResponse:
@@ -126,6 +140,8 @@ async def saml_acs(
     try:
         if flow is None or flow.provider != provider_key(name):
             raise AssertionRefused("an unknown, used, or expired RelayState")
+        if not bound(flow.id, request.cookies.get(COOKIE)):
+            raise AssertionRefused("a RelayState another browser started")
         claims = verified_claims(config, saml_response, f"_{flow.nonce}", utc_now())
         user = await account_for(provider_key(name), claims)
     except AssertionRefused as exc:
@@ -138,7 +154,8 @@ async def saml_acs(
     async with IdentityUnitOfWork() as uow:
         ticket = await uow.tickets.issue(user.id, identity_settings().TICKET_TTL)
         await uow.commit()
-    return _onward(frontend, ticket=ticket)
+    # The flow rides along, so the redemption checks this browser's cookie.
+    return _onward(frontend, ticket=f"{ticket}{TICKET_SEPARATOR}{flow.id}")
 
 
 @router.get("/identity/saml/{name}/metadata", dependencies=[Public])

@@ -1,0 +1,3 @@
+# The tools the build job runs while dist/ is written: pinned with hashes,
+# so nothing but what was reviewed builds a release (audit A7-1).
+poetry==2.2.1

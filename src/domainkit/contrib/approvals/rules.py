@@ -18,6 +18,7 @@ from typing import ClassVar, Final
 from starlette.requests import HTTPConnection
 
 from domainkit.apps import registry
+from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import (
     BasePermission,
@@ -61,6 +62,23 @@ def configured_rule() -> BasePermission | None:
     raise ImproperlyConfigured(
         f"APPROVALS.APPROVE_RULE {path!r} is not an access rule (BasePermission)."
     )
+
+
+class ActsForThemselves(BasePermission):
+    """No one acts for the principal: staff acting as a user are refused.
+
+    Makers and approvers are counted as people. Staff acting as a user (an
+    impersonation, whose actor is the staff member) would count as that
+    user, so one person could make a request and decide it twice.
+    """
+
+    message: ClassVar[str] = "Requests are made and decided in one's own name only."
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """The request's actor, if one is bound, is the principal."""
+        context = current_request()
+        actor = None if context is None else context.actor
+        return actor is None or actor == str(user.id)
 
 
 class IsApprover(BasePermission):
@@ -164,11 +182,15 @@ class RequestActions:
     """The rules of each route of the requests (``ModelActions``' protocol)."""
 
     def rules_for(self, action: str) -> tuple[Rule, ...]:
-        """View to read, add to submit and cancel, approver to decide."""
+        """View to read, add to submit and cancel, approver to decide.
+
+        Submitting, deciding, and cancelling are in one's own name only
+        (``ActsForThemselves``).
+        """
         if action == "approve":
-            return (IsApprover(), MayApprove())
+            return (ActsForThemselves(), IsApprover(), MayApprove())
         if action == "reject":
-            return (IsApprover(),)
+            return (ActsForThemselves(), IsApprover())
         if action == "cancel":
-            return (HasModelPermission("add", ApprovalRequest),)
+            return (ActsForThemselves(), HasModelPermission("add", ApprovalRequest))
         return (HasModelPermission(action, ApprovalRequest),)

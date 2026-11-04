@@ -76,6 +76,7 @@ from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections
 from domainkit.ddd.personal import SEPARATOR, subject_tag
+from domainkit.ddd.tenancy import current_tenant
 from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
@@ -323,7 +324,9 @@ class IdempotencyMiddleware:
                 return  # The client left before sending its whole body: run nothing.
             request = current_request()
             actor = request.actor if request is not None else None
-            key_hash = _hash(_caller_of(actor, scope, config.CREDENTIAL_HEADERS), key)
+            key_hash = _key_hash(
+                _caller_of(actor, scope, config.CREDENTIAL_HEADERS), key
+            )
             operation = Operation(key_hash, secrets.token_hex(16), actor=actor or None)
             existing = await self._claim(config, operation, fingerprint)
             if existing is not None and not (
@@ -699,6 +702,18 @@ def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
     request = current_request()
     actor = request.actor if request is not None else None
     return _caller_of(actor, scope, credential_headers)
+
+
+def _key_hash(caller: str, key: str) -> str:
+    """What a key is stored under: the caller's, and the tenant's when there is one.
+
+    The same key sent to two tenants is two requests: one tenant's answer is
+    never replayed to another (``TenantMiddleware`` runs before this one).
+    """
+    tenant = current_tenant()
+    return (
+        _hash(caller, key) if tenant is None else _hash(caller, key, f"tenant:{tenant}")
+    )
 
 
 def _caller_of(

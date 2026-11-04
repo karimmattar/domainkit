@@ -27,7 +27,7 @@ from domainkit.http.access import Rule
 
 from ..access import ADD, CHANGE, DELETE
 from ..events import RecordChanged, RecordCreated, RecordDeleted
-from ..schemas import GENERATED, PatchModel, schema_for
+from ..schemas import PatchModel, generated_fields, schema_for
 from . import presenting, reach
 from .context import (
     ALL_FIELDS,
@@ -300,7 +300,7 @@ def _check_plain(
         name
         for name in schema.model_fields
         if name not in fields
-        or name in GENERATED
+        or name in generated_fields(model)
         or name in pinned
         or fields[name].entity is not None
     ):
@@ -341,7 +341,7 @@ def _writable(
                 f"writable= is a list of field names, or ALL_FIELDS, not {writable!r}."
             )
         return None
-    if refused := sorted(set(writable) & {*fixed, *GENERATED}):
+    if refused := sorted(set(writable) & {*fixed, *generated_fields(model)}):
         raise TypeError(
             f"crud=True never writes {model.__name__}'s {', '.join(refused)}; "
             "leave them out of writable=."

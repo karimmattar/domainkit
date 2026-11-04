@@ -647,19 +647,42 @@ class ImmudbLedger(Ledger):
             raise
 
     async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
-        """Read and verify the latest, or the given, revision."""
+        """Read and verify the latest, or the given, revision.
+
+        The SDK proves the value of ``key`` in its transaction, but not an
+        answer through a reference (``refkey``), which proves another key,
+        nor the revision's number. Nothing here writes references, so one
+        is refused, as is an answer for another key or another revision
+        than the one asked for. The latest revision's number stays the
+        server's word (``revision_count``).
+
+        Raises:
+            LedgerTampered: The answer is not the one asked for.
+        """
         response = await self._call(
             self._work, lambda client: client.verifiedGet(key, atRevision=revision)
         )
-        return LedgerEntry(
-            key, bytes(response.value), int(response.id), int(response.revision)
-        )
+        number = int(response.revision)
+        if (
+            response.refkey is not None
+            or bytes(response.key) != key
+            or number < 1
+            or (revision is not None and number != revision)
+        ):
+            raise LedgerTampered(
+                "The ledger answered a read with another key or revision than "
+                "the one asked for."
+            )
+        return LedgerEntry(key, bytes(response.value), int(response.id), number)
 
     async def revision_count(self, key: bytes, *, limit: int) -> int:
-        """The latest revision's number, read verified, up to ``limit``.
+        """The latest revision's number, up to ``limit``.
 
         Not the SDK's ``history``, which nothing verifies: a server could
-        answer one revision for a key written twice.
+        answer one revision for a key written twice. The latest revision's
+        value is proven, but immudb proves no revision's number: a server
+        that lies about it is caught only where a revision read back
+        (``read``) differs from the one the caller wrote.
         """
         try:
             latest = await self.read(key)

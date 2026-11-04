@@ -39,6 +39,7 @@ from domainkit.contrib.audit.pruning import ExportRefused, PruneRefused, export,
 from domainkit.contrib.audit.seals import Report, seal_all, verify
 from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.audit.tables import audit_log
+from domainkit.contrib.audit.trails import in_trail, trails
 from domainkit.db import connections
 from domainkit.ledger import Ledger, ledgers
 from domainkit.management import ActionCommand, CommandError, action, option
@@ -175,7 +176,10 @@ class Command(ActionCommand):
         ],
     )
     async def verify(self, *, database: str | None, export_to: Path | None) -> None:
-        """Print a line per database, and the problems found.
+        """Print a line per trail, and the problems found.
+
+        A trail per database, and per tenant schema of a database that
+        keeps one per tenant (``trails``).
 
         Raises:
             CommandError: A trail failed verification, or ``--export`` was
@@ -185,11 +189,13 @@ class Command(ActionCommand):
             raise CommandError("--export covers every audited database.")
         ledger = _ledger()
         failed = []
-        for alias in (database,) if database else audited_databases():
-            report = await verify(alias, ledger)
+        aliases = (database,) if database else audited_databases()
+        for alias, schema in await trails(aliases):
+            with in_trail(schema):
+                report = await verify(alias, ledger)
             self.write(_summary(report))
             if not report.intact:
-                failed.append(alias)
+                failed.append(report.database)
         if failed:
             raise CommandError(f"The audit trail failed verification: {failed}.")
         if export_to is not None:

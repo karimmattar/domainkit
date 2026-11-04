@@ -136,7 +136,11 @@ class FakeClient:
             raise RpcError("tbtree: key not found")
         number = atRevision or len(revisions)
         return SimpleNamespace(
-            id=10 + number, value=revisions[number - 1], revision=number
+            id=10 + number,
+            key=key,
+            value=revisions[number - 1],
+            revision=number,
+            refkey=None,
         )
 
     def scan(
@@ -288,6 +292,42 @@ async def test_immudb_creates_are_conditional_sets() -> None:
     assert created == LedgerWrite(b"k", 1)
     assert client.calls == ["state", "create", "create"]
     assert client.values == {b"k": [b"one"]}
+
+
+class AnsweringClient(FakeClient):
+    """A client whose reads come back changed, as a misbehaving server's could."""
+
+    def __init__(self, **changes: Any) -> None:  # noqa: ANN401 - answer fields.
+        """Change each read's answer by ``changes``."""
+        super().__init__()
+        self.changes = changes
+
+    def verifiedGet(self, key: bytes, atRevision: int | None = None) -> Any:  # noqa: ANN401 - SDK API.
+        """The proven answer, changed."""
+        answer = super().verifiedGet(key, atRevision)
+        return SimpleNamespace(**{**vars(answer), **self.changes})
+
+
+@pytest.mark.parametrize(
+    ("changes", "revision"),
+    [
+        ({"refkey": b"other"}, None),  # Proven for the reference's key.
+        ({"key": b"other"}, None),
+        ({"revision": 0}, None),
+        ({"revision": 1}, 2),  # Another revision than the one asked for.
+    ],
+)
+async def test_immudb_reads_refuse_another_answer_than_asked(
+    changes: dict[str, Any], revision: int | None
+) -> None:
+    """A reference, another key or another revision: none is proven (A6-6)."""
+    client = AnsweringClient(**changes)
+    client.values[b"k"] = [b"one", b"two"]
+    ledger, _ = ledger_on(client)
+
+    with pytest.raises(LedgerTampered, match="another key or revision"):
+        await ledger.read(b"k", revision)
+    await ledger.close()
 
 
 async def test_immudb_appends_after_a_revision_are_conditional() -> None:

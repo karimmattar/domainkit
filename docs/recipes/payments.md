@@ -1,17 +1,33 @@
 # A payment that runs again when it loses a race
 
-A payment moves money between two wallets: it reads both balances,
-checks one, and changes both. Two payments from the same wallet at once
-must not both pass the check. This recipe makes the payment one
-`SERIALIZABLE` transaction that locks both rows in id order, and runs
-again, whole, when the database says it lost a race
+This recipe writes a payment between two wallets that stays correct when
+two payments run at the same time.
+
+## The problem
+
+A payment moves money between two wallets. It reads both balances,
+checks that the payer has enough, and changes both. Now two payments
+from the same wallet run at the same time. Each one reads the old
+balance, each one passes the check, and the wallet pays more than it
+holds.
+
+The solution has three parts
 ([ADR 0092](../adr/0092-retry-units-of-work-choose-isolation-and-lock-in-order.md),
-[databases.md](../databases.md#running-work-again)).
+[databases.md](../databases.md#running-work-again)):
+
+- the payment is one `SERIALIZABLE` transaction;
+- it locks both rows in id order, so two payments never deadlock;
+- it runs again, whole, when the database says it lost a race.
 
 You need a project with `domainkit[sqlite,testing]` installed. Every step
 here is run as written by `domainkit_tests/test_recipes.py`.
 
-## A wallet with a balance
+## The solution
+
+### Step 1: make a wallet with two commands
+
+Make a project, a `wallets` domain, and two commands: a deposit, and a
+payment to another wallet:
 
 ```bash
 domainkit init payAPI pay
@@ -23,10 +39,14 @@ python manage.py addcommand wallets Wallet PayWallet --field to:ref:Wallet --fie
 
 `addcommand` wrote each command, its use case, its route
 (`POST /wallets/{wallet_id}/deposit` and `.../pay`), and a method on the
-aggregate that records the event; the rule and the change are yours. An
-amount is `Money` ([money.md](../money.md)): an exact amount and its
-currency, `{"amount": "5.00", "currency": "USD"}` in JSON. Give the wallet
-a balance, and write them:
+aggregate that records the event. The rule and the change are yours to
+write.
+
+### Step 2: give the wallet a balance and its rules
+
+An amount is `Money` ([money.md](../money.md)): an exact amount and its
+currency, `{"amount": "5.00", "currency": "USD"}` in JSON. Give the
+wallet a balance, and write the methods:
 
 ```python title="src/domains/wallets/domain/model.py"
 from domainkit.ddd import Digits
@@ -69,21 +89,19 @@ def _positive(amount: Money) -> Money:
     return amount
 ```
 
-The balance is two columns: `balance`, an exact decimal of `Digits(12, 2)`
-(in cents on SQLite), and `balance_currency`. Amounts of another currency
-cannot be added, subtracted, or compared: `pay` with euros from a wallet of
-dollars raises `CurrencyMismatch`, which answers 422 `currency_mismatch`.
-An amount with more places than its currency (`"1.005"` dollars) is
-refused, never rounded.
+The balance is two columns: `balance`, an exact decimal of
+`Digits(12, 2)` (in cents on SQLite), and `balance_currency`. Amounts of
+two currencies cannot be added, subtracted, or compared: `pay` with euros
+from a wallet of dollars raises `CurrencyMismatch`, which answers 422
+`currency_mismatch`. An amount with more places than its currency
+(`"1.005"` dollars) is refused, never rounded.
 
-## The payment, in one transaction that may run again
+### Step 3: write the payment as work that may run again
 
-The use case changes two aggregates: it locks both rows in one statement,
-by ascending id (`get_many_for_update`), so two payments between the same
-wallets take the locks in the same order and cannot deadlock. `uow.run`
-runs the whole function again when its transaction loses a race: on
-PostgreSQL a serialization failure or a deadlock, and the errors
-`retry_on` names. Only a run that commits publishes its events.
+The use case changes two aggregates. It locks both rows in one statement,
+by ascending id (`get_many_for_update`). So two payments between the same
+wallets take the locks in the same order, and cannot deadlock. `uow.run`
+runs the whole function again when its transaction loses a race:
 
 ```python title="src/domains/wallets/application/services.py"
 from domainkit.ddd import ConcurrentUpdate, Retry
@@ -108,15 +126,14 @@ async def pay_wallet(command: PayWallet, uow: WalletsUnitOfWork) -> Wallet:
 ```
 
 The work enters the unit of work itself: `run` never runs part of an
-`async with` block again. What a failed run wrote went with its
-transaction. Work that calls outside its database, such as a card
-processor, must not be run again: queue it as a task instead
-([messaging](../contrib/messaging.md)).
+`async with` block again.
 
-On PostgreSQL, make the transaction `SERIALIZABLE`, so a payment that
-could not have run one after the other fails and runs again, instead of
-breaking a rule across rows. On SQLite such units of work begin with
-`BEGIN IMMEDIATE` and run one at a time:
+### Step 4: make the transaction `SERIALIZABLE`
+
+On PostgreSQL, a `SERIALIZABLE` transaction fails when it could not have
+run one after the other with the payments around it; the payment then
+runs again, instead of breaking a rule across rows. On SQLite, such units
+of work begin with `BEGIN IMMEDIATE`, and run one at a time:
 
 ```python title="src/domains/wallets/infrastructure/unit_of_work.py"
 from domainkit.db import Isolation
@@ -127,18 +144,16 @@ class SqlAlchemyWalletsUnitOfWork:
     isolation = Isolation.SERIALIZABLE
 ```
 
-A command route can run its service again the same way, with the reach
-check and `If-Match` made again in each run:
-`command_route(..., retry=Retry())` ([resources.md](../resources.md#commands)).
-
-## The table, and the tests
+### Step 5: make the table
 
 ```bash
 python manage.py makemigrations -m "create wallets"
 python manage.py migrate
 ```
 
-Replace the tests `addcommand` wrote for the payment, and add one in
+### Step 6: test the payment, and a lost race
+
+Replace the tests that `addcommand` wrote for the payment, and add one in
 which the first commit loses a race:
 
 ```python title="tests/domains/wallets/test_pay_wallet.py"
@@ -222,18 +237,51 @@ def test_pay_wallet_route(admin_client: TestClient) -> None:
     assert admin_client.get(f"{URL}/{ids[1]}").json()["balance"]["amount"] == "3.00"
 ```
 
+Run the checks and the tests:
+
 ```bash
 ruff check --fix .
 ruff format .
 pytest
 ```
 
-`ruff --fix` sorts the imports the edits added, and drops the one the old
-tests needed; `ruff format` closes the gap it leaves.
+`ruff --fix` sorts the imports the edits added, and drops the one the
+old tests needed; `ruff format` closes the gap it leaves.
 
-A new aggregate can start with all of this written: `startaggregate
+## How it works
+
+1. `uow.run(work, retry=RACES)` calls `work`.
+2. `work` opens the unit of work, locks both wallets, moves the money,
+   and commits.
+3. If the commit loses a race (on PostgreSQL, a serialization failure or
+   a deadlock), or raises an error that `retry_on` names, `run` waits a
+   short random time and calls `work` again, up to `attempts` times.
+4. What a failed run wrote went with its transaction. Only a run that
+   commits publishes its events.
+
+Keep these rules in mind:
+
+- **Never run outside work again.** Work that calls outside its
+  database, such as a card processor, must not run twice. Queue it as a
+  task instead ([messaging](../contrib/messaging.md)), or see
+  [Work that commits once per message](exactly-once.md).
+- **A route can do the same.** A command route runs its service again
+  the same way, with the reach check and `If-Match` made again in each
+  run: `command_route(..., retry=Retry())`
+  ([resources.md](../resources.md#commands)).
+- **Test on PostgreSQL too,** where races are real: point the test
+  settings' `DATABASES` at a server ([testing.md](../testing.md)).
+
+A new aggregate can start with all of this written. `startaggregate
 wallets Purse --field balance:money` makes the balance, a transfer that
 locks both rows in id order and runs again when it loses a race
 (`TransferPurseBalance`, `POST /purses/{purse_id}/transfer-balance`), and
-its tests ([resources.md](../resources.md#generators)). Run the tests on PostgreSQL too, where races are real: point the test
-settings' `DATABASES` at a server ([testing.md](../testing.md)).
+its tests ([resources.md](../resources.md#generators)).
+
+## See also
+
+- [Databases](../databases.md#running-work-again): `Retry`, isolation,
+  and row locks.
+- [Money](../money.md): amounts and currencies.
+- [Problem codes](../reference/problems.md#codes-of-your-own): how
+  `InsufficientFunds` answers with the code `insufficient_funds`.

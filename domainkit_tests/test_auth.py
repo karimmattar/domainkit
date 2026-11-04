@@ -423,6 +423,9 @@ def test_repositories(auth_project: str) -> None:
             with pytest.raises(UsernameTaken) as taken:
                 await uow.users.create_user("ROOT".lower(), PASSWORD)
             assert taken.value.message == "The username 'root' is taken."
+            with pytest.raises(UsernameTaken) as other_case:  # In any case.
+                await uow.users.create_user("Root", PASSWORD)
+            assert other_case.value.message == "The username 'Root' is taken."
             with pytest.raises(GroupNameTaken) as exists:
                 await uow.groups.create(" editors ")
             assert exists.value.message == "A group called 'editors' exists."

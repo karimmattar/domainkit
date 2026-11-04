@@ -169,7 +169,7 @@ below is one pushed commit with tests, as the core's were.
 | X1 | Customizing | Packages that plug in | An installed package offers backends under the `domainkit.backends` entry points, so `BACKEND = "sqlite-queue"` names one: caches, brokers, storage, search, upload scanning, mail, text messages, and push ([extension points](reference/extension-points.md#backends-from-an-installed-package)). Nothing is loaded that settings do not name; an unknown name is refused with the nearest one offered, and a name two packages offer differently is refused. | Done |
 | W1 | Speed | Writes | Measured again: FastAPI resolving a route's dependencies is the largest block of a write (about 600 calls of a posting, 560 of a resource command), and each dependency costs about a hundred calls even when it does nothing. A guarded route no longer resolves `bearer`, which only puts the token in OpenAPI: every authenticated route costs about 98 calls less (a write 2,054, a resource command 2,726, a posting 8,049). What is left on a write is spread thin: FastAPI's own work for each remaining dependency (the access rule, the unit of work), SQLAlchemy's execution of each statement, and building `Money` from stored amounts (about 300 calls of a posting). Each further cut is a few percent, and the last touches money's checks; none is taken without a measured need. | Done |
 | F1 | Follow-up | Generated text reads right | "An account", not "a account"; a new event goes with the other events. | Done |
-| F2 | Follow-up | The newest-dependencies job | An unclosed SQLite connection (aiosqlite) was seen once on Python 3.15 with the newest dependencies. It has not come back in that job's later runs, and it cannot be reproduced locally (the local 3.15 beta cannot import Hypothesis's compiled part). Not reproduced; the job runs on every pull request and weekly, so a return shows there. | Watching |
+| F2 | Follow-up | The newest-dependencies job | An unclosed SQLite connection (aiosqlite) was seen once on Python 3.15 with the newest dependencies. It has not come back in that job's later runs, and it cannot be reproduced locally (the local 3.15 beta cannot import Hypothesis's compiled part). Not seen again: the job passed in every run since, the weekly runs of 26 October and 2 November among them, and on the last pull requests before this one (#106, #107). It keeps running on every pull request and weekly, so a return shows there. | Closed |
 
 What code alone cannot give, and needs others:
 
@@ -184,6 +184,7 @@ What code alone cannot give, and needs others:
   first route, before and after L1 and L2. [The protocol](newcomer-study.md)
   is ready; it waits for five people.
 - **The whole suite on 3.14t**: it waits for the interpreter's fix for a
-  crash in mimalloc ([runtime.md](runtime.md)).
+  crash in CPython's weak references, seen again in five runs in November
+  2026 ([runtime.md](runtime.md#free-threaded-python)).
 
 Mutation testing stays off by decision; coverage stays at 98% or more.

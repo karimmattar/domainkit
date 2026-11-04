@@ -1,6 +1,8 @@
 """Logging in with a directory's password (``LDAPBackend``), on ldap3's mock."""
 
+import ssl
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -8,10 +10,13 @@ from fastapi.testclient import TestClient
 from ldap3 import MOCK_SYNC, OFFLINE_SLAPD_2_4, Connection, Server
 from ldap3.core.exceptions import LDAPSocketOpenError
 
-from domainkit.conf import override_settings
+from domainkit import setup
+from domainkit.apps import registry
+from domainkit.conf import UNSET, override_settings
 from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.contrib.identity import ldap as ldap_module
 from domainkit.contrib.identity.settings import LdapSettings
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import IDENTITY, ExitStackClients, Migrated
 from domainkit_tests.test_auth_http import bearer, create_user
@@ -220,3 +225,73 @@ def test_an_inactive_user_is_refused_and_no_groups_are_synced(
         ).status_code
         == 401
     )
+
+
+def test_tls_checks_the_directorys_certificate_and_name(tmp_path: Path) -> None:
+    """ldap3 checks neither by default: anyone on the path read every password.
+
+    The audit found ``ldaps://`` and ``START_TLS`` taking any certificate
+    (A2-3), and a float timeout that ldap3 cannot pack on POSIX (A2-4).
+    """
+    authorities = tmp_path / "ca.pem"
+    authorities.write_text("", encoding="utf-8")
+    config = LdapSettings(**{**LDAP, "CA_CERTIFICATES": str(authorities)})
+
+    connection = ldap_module.connect(config, ANN, "pw")  # Not bound yet: no network.
+
+    assert connection.server.tls.validate == ssl.CERT_REQUIRED
+    assert connection.server.tls.ca_certs_file == str(authorities)
+    assert connection.receive_timeout == 10
+    assert isinstance(connection.receive_timeout, int)
+
+
+def test_any_failure_refuses_the_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Not only ldap3's errors: a login is refused, never answered with a 500."""
+
+    def broken(config: LdapSettings, user: str | None, password: str | None) -> Any:  # noqa: ANN401
+        raise TypeError("required argument is not an integer")
+
+    monkeypatch.setattr(ldap_module, "connect", broken)
+
+    assert ldap_module.check_password(LdapSettings(**LDAP), "ann", "pw") is None
+
+
+DEPLOYED = {
+    "ENVIRONMENT": "production",
+    "ALLOWED_HOSTS": ["api.example.com"],
+    "DATABASES": {
+        "default": {"URL": "postgresql+asyncpg://db/app", "SSLMODE": "verify-full"}
+    },
+}
+DOMAINS = [
+    "domainkit.contrib.contenttypes",
+    "domainkit.contrib.auth",
+    "domainkit.contrib.identity",
+]
+
+
+@pytest.mark.parametrize(
+    ("url", "start_tls", "refused"),
+    [
+        ("ldap://dc.example.com", False, True),
+        ("ldap://dc.example.com", True, False),
+        ("ldaps://dc.example.com", False, False),
+    ],
+)
+def test_a_deployment_reaches_the_directory_over_tls(
+    url: str, start_tls: bool, refused: bool
+) -> None:
+    """``ldap://`` without ``START_TLS`` sends every password in the clear."""
+    registry.clear()
+    ldap = {**LDAP, "URL": url, "START_TLS": start_tls}
+    try:
+        with override_settings(
+            INSTALLED_DOMAINS=DOMAINS, ALPHA=UNSET, IDENTITY={"LDAP": ldap}, **DEPLOYED
+        ):
+            if refused:
+                with pytest.raises(ImproperlyConfigured, match=r"security\.E020"):
+                    setup()
+            else:
+                setup()
+    finally:
+        registry.clear()

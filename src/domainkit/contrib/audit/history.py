@@ -203,13 +203,18 @@ def aggregate_value(field: str, dialect: str) -> ColumnElement[str]:
 
 
 def _indexes(connection: Connection) -> set[str] | None:
-    """The names of the trail's indexes; None where it has no table yet."""
+    """The names of the trail's indexes; None where it has no table yet.
+
+    In the schema the connection works in (a tenant's, after ``migrate
+    --tenant``).
+    """
     inspector = inspect(connection)
-    if not inspector.has_table(audit_log.name):
+    schema = connection.exec_driver_sql("SELECT current_schema()").scalar()
+    if not inspector.has_table(audit_log.name, schema=schema):
         return None
     return {
         index["name"]
-        for index in inspector.get_indexes(audit_log.name)
+        for index in inspector.get_indexes(audit_log.name, schema=schema)
         if index["name"] is not None
     }
 

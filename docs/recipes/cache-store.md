@@ -1,15 +1,26 @@
 # A cache store of your own
 
+This recipe writes a cache store of your own, and makes the default
+cache use it. The example keeps its entries in a SQLite file, so a
+service on one machine keeps its cache across restarts.
+
+## The problem
+
 A cache keeps its entries in a store: this process's memory, or Redis
-([cache.md](../cache.md)). A store of your own keeps them anywhere else;
-here, a SQLite file, so a service on one machine keeps its cache across
-restarts. `Cache` builds the keys, encodes the values, and copes with an
-outage on top of it; the store only keeps bytes under keys.
+([cache.md](../cache.md)). Memory is lost when the process restarts, and
+Redis is one more server to run. You want to keep the entries somewhere
+else: here, a SQLite file next to the service.
+
+You do not have to write a whole cache. `Cache` builds the keys, encodes
+the values, and copes with an outage. The store only keeps bytes under
+keys.
 
 You need a project with `domainkit[sqlite,testing]` installed. Every step
 here is run as written by `domainkit_tests/test_recipes.py`.
 
-## The store
+## The solution
+
+### Step 1: make a project
 
 ```bash
 domainkit init pricesAPI prices
@@ -18,11 +29,16 @@ python manage.py makemigrations -m "auth"
 python manage.py migrate
 ```
 
-A store subclasses `domainkit.cache.Store` and answers seven calls; `ttl`
-is in milliseconds, and None keeps the entry. It is made as
-`Store(config)`, once per event loop, from its `CACHES` entry, whose
-`URL` is the store's to read. SQLite calls block, so they run in a thread; times are the framework's
-clock, wall time (the file outlives the process), which tests can freeze:
+### Step 2: write the store
+
+A store subclasses `domainkit.cache.Store`, and answers seven calls:
+`get_many`, `set_many`, `add`, `delete_many`, `incr`, `touch`, and
+`clear`. A `ttl` is in milliseconds; `None` keeps the entry. The store is made as `Store(config)`, once per event loop,
+from its `CACHES` entry, whose `URL` is the store's to read.
+
+SQLite calls block, so they run in a thread. Times come from the
+framework's clock, in wall time (the file outlives the process), which
+tests can freeze:
 
 ```python title="src/config/cache.py (new file)"
 """A cache in a SQLite file: entries outlive the process."""
@@ -179,8 +195,10 @@ class SqliteStore(Store):
         await asyncio.to_thread(locked)
 ```
 
-Name it as the default cache. `BACKEND` makes the store, and the `URL`
-says where its file is, with a scheme of its own:
+### Step 3: name it as the default cache
+
+`BACKEND` makes the store, and the `URL` says where its file is, with a
+scheme of its own:
 
 ```python title="src/config/settings/base.py"
 CACHES = {
@@ -194,9 +212,9 @@ CACHES = {
 Everything that caches (`caches["default"]`, `@cached`, `get_or_set`)
 now keeps its entries in `cache.sqlite3`.
 
-## A test of the store
+### Step 4: test the store
 
-The test points the cache at a file of its own, and checks what `Cache`
+The test points the cache at a file of its own. It checks what `Cache`
 asks of a store: values, expiry, counters, and keys added only once:
 
 ```python title="tests/test_cache_store.py (new file)"
@@ -241,12 +259,39 @@ async def test_values_live_in_the_file_until_they_expire(
         assert (tmp_path / "cache.sqlite3").exists()
 ```
 
+Run the checks and the tests:
+
 ```bash
 ruff check --fix .
 ruff format --check .
 pytest
 ```
 
-A store that cannot be reached raises `domainkit.cache.CacheUnavailable`:
-`get_or_set` and `@cached` then compute the value instead of failing, and
-the cache is skipped for `FAILURE_COOLDOWN` seconds.
+## How it works
+
+| Call | `Cache` uses it for | The store must |
+| --- | --- | --- |
+| `get_many(keys)` | `get`, `get_many`, `get_or_set` | Return each key's value, or `None` when it is missing or expired. |
+| `set_many(items, ttl)` | `set`, `set_many` | Keep every item until `ttl` milliseconds pass. |
+| `add(key, value, ttl)` | `add` | Keep the value only if the key holds no live one; say whether it did. |
+| `delete_many(keys)` | `delete`, `delete_many` | Forget the keys; count the live ones. |
+| `incr(key, delta, ttl)` | `incr` | Add to an integer; a missing key starts at 0 and gets `ttl`. Raise `CacheError` for a value that is not an integer. |
+| `touch(key, ttl)` | `touch` | Give a live key a new expiry; say whether it was live. |
+| `clear(prefix)` | `clear`, and `manage.py cache clear` | Forget the keys that start with `prefix`; count them. |
+
+Two calls are optional: `check()`, which raises when the store cannot be
+reached (`/ready` and `manage.py cache check` call it), and `close()`,
+which releases connections.
+
+A store that cannot be reached raises `domainkit.cache.CacheUnavailable`,
+and one that refuses an operation raises `CacheError`. When the store
+cannot be reached, `get_or_set` and `@cached` compute the value instead
+of failing, and the cache is skipped for `FAILURE_COOLDOWN` seconds. A cache is an
+optimisation: an outage slows the service, and never stops it.
+
+## See also
+
+- [Backends](../reference/backends.md#caches): every `CACHES` key.
+- [Caches](../cache.md): `get_or_set`, `@cached`, and versions.
+- [Extension points](../reference/extension-points.md#backends-from-an-installed-package):
+  offer the store by name from a package.

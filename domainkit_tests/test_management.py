@@ -810,6 +810,17 @@ def test_downgrades_need_consent_in_deployments(
             )
 
 
+def test_tenant_downgrades_need_consent_in_deployments() -> None:
+    """A tenant's schema is no exception: --allow-data-loss there too (A6-3)."""
+    with (
+        override_settings(
+            ENVIRONMENT="staging", TENANCY={"SCHEMA_DATABASES": ["default"]}
+        ),
+        pytest.raises(CommandError, match=r"^Downgrading in staging can drop data"),
+    ):
+        run("migrate", "base", "--downgrade", "--tenant", "acme")
+
+
 @pytest.mark.anyio
 async def test_migrations_run_from_async_code(migration_project: Path) -> None:
     """Called inside an event loop, migrations run on a separate thread."""
