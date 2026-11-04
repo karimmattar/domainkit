@@ -494,7 +494,8 @@ def test_init_says_what_each_argument_is() -> None:
     assert usage.endswith(
         " positional arguments: name project name, as in [project].name; it sets "
         "the environment variable prefix (billingAPI: BILLING_API_) directory where "
-        "to create it (default: ./<name>); empty or missing options: -h, --help show "
+        "to create it (default: ./<name>; '.' for the current one); it may hold "
+        "other files, but none init writes options: -h, --help show "
         "this help message and exit --profile {fintech} a project with a sector's "
         "controls on and wired: fintech, a bank's first-review list "
         "(docs/fintech.md)"

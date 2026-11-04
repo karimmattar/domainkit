@@ -9,6 +9,17 @@ and a status.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-11-04
+
+### Fixed
+
+- `domainkit init NAME .` refused any directory that was not empty, so
+  it failed in a fresh clone of the repository the project was meant for
+  (its `.git`, `README.md`, or `.github`). `init` now writes into an
+  existing directory, next to the files there, and refuses only when a
+  file it would write is already there, naming those files. Its next
+  steps leave out `cd` when the project is in the current directory.
+
 ## [1.7.0] - 2026-11-04
 
 ### Changed
@@ -6054,7 +6065,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/karimmattar/domainkit/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/karimmattar/domainkit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/karimmattar/domainkit/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/karimmattar/domainkit/compare/v1.0.0...v1.5.0
