@@ -293,7 +293,11 @@ toolbar, then keep them in check with `assert_max_queries` in a test.
 | `PROFILE_DIR` | `None` | A directory. A request sent with `X-Debug-Profile: 1` leaves a cProfile file there, named in the response's `X-Debug-Profile` (one request at a time; read it with `python -m pstats`). |
 
 ```python
-DEBUG_TOOLBAR = {"REPEATED_QUERIES": 3, "HEADERS": True, "PROFILE_DIR": BASE_DIR / "profiles"}
+DEBUG_TOOLBAR = {
+    "REPEATED_QUERIES": 3,
+    "HEADERS": True,
+    "PROFILE_DIR": BASE_DIR / "profiles",
+}
 ```
 
 ## Common mistakes

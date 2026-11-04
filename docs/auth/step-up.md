@@ -43,7 +43,11 @@ router.include_router(step_up_router, prefix="/auth")
 @router.post(
     "/payees",
     dependencies=[
-        Depends(Require(HasPermissions("bank.add_payee") & StepUp(max_age=timedelta(minutes=5))))
+        Depends(
+            Require(
+                HasPermissions("bank.add_payee") & StepUp(max_age=timedelta(minutes=5))
+            )
+        )
     ],
 )
 async def add_payee() -> dict[str, str]:
@@ -210,7 +214,9 @@ class TransferIn(BaseModel):
 
 
 @router.post("/transfers/authorize")
-async def authorize_transfer(body: TransferIn, user: AuthenticatedUser) -> dict[str, str]:
+async def authorize_transfer(
+    body: TransferIn, user: AuthenticatedUser
+) -> dict[str, str]:
     challenge = await request_authorization(
         user.id, body.amount, body.payee, purpose="transfer"
     )
@@ -313,7 +319,9 @@ from domainkit.contrib.auth.integration import (
 )
 
 
-async def add_hardware_key(request: Request, user: AbstractBaseUser, password: str | None) -> None:
+async def add_hardware_key(
+    request: Request, user: AbstractBaseUser, password: str | None
+) -> None:
     # The password, or a step-up within REAUTH_AGE; never under impersonation.
     await reauthenticate(request, user, password, "add_hardware_key")
     ...

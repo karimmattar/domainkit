@@ -221,18 +221,18 @@ run on a memory cache:
 ```python
 cache = caches["default"]
 await cache.set("visits", 0)
-await cache.incr("visits")                     # 1
-await cache.incr("visits", delta=5)            # 6
-await cache.add("visits", 100)                 # False: the key exists
-await cache.add("new", 1)                      # True
+await cache.incr("visits")  # 1
+await cache.incr("visits", delta=5)  # 6
+await cache.add("visits", 100)  # False: the key exists
+await cache.add("new", 1)  # True
 await cache.set_many({"a": 1, "b": [1, 2]}, ttl=30)
-await cache.get_many(["a", "b", "c"])          # {'a': 1, 'b': [1, 2]}
-await cache.delete("a")                        # True
-await cache.delete("a")                        # False: it is gone
-await cache.delete_many(["b", "c"])            # 1
-await cache.touch("visits", None)              # True: it never expires now
-await cache.get("missing")                     # None
-await cache.clear()                            # 3: the keys it deleted
+await cache.get_many(["a", "b", "c"])  # {'a': 1, 'b': [1, 2]}
+await cache.delete("a")  # True
+await cache.delete("a")  # False: it is gone
+await cache.delete_many(["b", "c"])  # 1
+await cache.touch("visits", None)  # True: it never expires now
+await cache.get("missing")  # None
+await cache.clear()  # 3: the keys it deleted
 ```
 
 | Call | What it does |
@@ -274,8 +274,8 @@ async def product_summary(product_id: UUID) -> ProductSummary:
     return await load_summary(product_id)
 
 
-await product_summary(product_id)             # computed, then cached
-product_summary.key(product_id)               # the key, to delete it elsewhere
+await product_summary(product_id)  # computed, then cached
+product_summary.key(product_id)  # the key, to delete it elsewhere
 await product_summary.invalidate(product_id)  # True: the entry is gone
 await product_summary.invalidate(product_id)  # False: it was gone already
 ```

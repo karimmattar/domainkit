@@ -189,7 +189,8 @@ Without `--output`, the export goes to standard output. In code,
 from domainkit.contrib.privacy import export_subject
 
 data = await export_subject("3f2a9c1e-0d2b-4c55-9f0e-1f2a3b4c5d6e")
-data["copies"]["phones"]  # {'phones': [{'phone': '+33612345678', 'verified_at': '...'}]}
+# {'phones': [{'phone': '+33612345678', 'verified_at': '...'}]}
+data["copies"]["phones"]
 ```
 
 Each export is recorded in the audit trail (`privacy.export`).

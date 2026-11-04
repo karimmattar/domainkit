@@ -263,8 +263,7 @@ from domainkit.ddd import handles
 
 
 @handles(ProductRestocked, durable=True)
-async def tell_the_warehouse(event: ProductRestocked) -> None:
-    ...
+async def tell_the_warehouse(event: ProductRestocked) -> None: ...
 ```
 
 **Errors.** A business rule refuses with a subclass of a `DomainError`.
@@ -1131,13 +1130,20 @@ admin.register(
     search=["name"],
     ordering=["name"],
     commands=[
-        admin.command(ArchiveProduct, service=services.archive_product, path="/archive"),
         admin.command(
-            RenameProduct, service=services.rename_product, body=RenameIn, path="/rename"
+            ArchiveProduct, service=services.archive_product, path="/archive"
+        ),
+        admin.command(
+            RenameProduct,
+            service=services.rename_product,
+            body=RenameIn,
+            path="/rename",
         ),
     ],
     queries=[
-        admin.query(ProductsByOwner, handler=queries.products_by_owner, path="/by-owner")
+        admin.query(
+            ProductsByOwner, handler=queries.products_by_owner, path="/by-owner"
+        )
     ],
 )
 

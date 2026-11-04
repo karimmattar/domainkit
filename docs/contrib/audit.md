@@ -182,7 +182,9 @@ person is forgotten:
 ```python
 from domainkit.contrib.audit import pseudonym_of
 
-await record("auth.login", Outcome.DENIED, personal={"username": "alice"}, subject="user-7")
+await record(
+    "auth.login", Outcome.DENIED, personal={"username": "alice"}, subject="user-7"
+)
 print(await pseudonym_of("user-7", "username", "alice"))
 ```
 
@@ -409,7 +411,10 @@ openssl pkey -in audit-checkpoint.pem -pubout -out audit-checkpoint.pub
 
 ```python
 # Every process: the public key, to verify.
-AUDIT = {"CHECKPOINT_PUBLIC_KEY": env.str("AUDIT_CHECKPOINT_PUBLIC_KEY")}  # and the other keys
+AUDIT = {
+    "CHECKPOINT_PUBLIC_KEY": env.str("AUDIT_CHECKPOINT_PUBLIC_KEY"),
+    # ... and the other keys
+}
 ```
 
 ```bash
@@ -567,7 +572,9 @@ Each entry lists its `changes`, where the details allow. An explicit
 record can say what changed, with `before` and `after` mappings:
 
 ```python
-await record("report.renamed", target="r-1", before={"name": "Q1"}, after={"name": "Q2"})
+await record(
+    "report.renamed", target="r-1", before={"name": "Q1"}, after={"name": "Q2"}
+)
 print((await history(target="r-1"))[0].changes)
 ```
 

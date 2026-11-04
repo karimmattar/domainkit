@@ -86,20 +86,26 @@ def order(customer: str, status: str, total: str, day: int, *skus: str) -> Order
 async def main() -> None:
     uow = in_memory(ShopUnitOfWork)
     async with uow:
-        await uow.orders.add_all([
-            order("Acme", "open", "1200.00", 1, "A-1"),
-            order("Globex", "open", "80.00", 2, "B-2"),
-            order("Initech", "paid", "2500.00", 3, "A-1", "C-3"),
-        ])
+        await uow.orders.add_all(
+            [
+                order("Acme", "open", "1200.00", 1, "A-1"),
+                order("Globex", "open", "80.00", 2, "B-2"),
+                order("Initech", "paid", "2500.00", 3, "A-1", "C-3"),
+            ]
+        )
         await uow.commit()
 
     open_ = F("status") == Status.OPEN
     large = F("total") >= Decimal("1000")
     async with uow:
-        found = await uow.orders.filter(Selection(open_ | large, ordering=["placed_at"]))
+        found = await uow.orders.filter(
+            Selection(open_ | large, ordering=["placed_at"])
+        )
         print([each.customer for each in found])
         print(await uow.orders.count(open_), await uow.orders.exists(~open_))
-        print([each.customer for each in await uow.orders.filter(F("lines.sku") == "A-1")])
+        print(
+            [each.customer for each in await uow.orders.filter(F("lines.sku") == "A-1")]
+        )
 
 
 asyncio.run(main())

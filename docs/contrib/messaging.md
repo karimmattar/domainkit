@@ -49,8 +49,7 @@ from domainkit.contrib.messaging import task
 
 
 @task(name="shop.send_welcome")
-async def send_welcome(user_id: UUID) -> None:
-    ...  # send the mail
+async def send_welcome(user_id: UUID) -> None: ...  # send the mail
 
 
 async with uow:

@@ -581,7 +581,9 @@ def cookies(settings) -> None:
 def test_a_page_creates(cookies: None, client: TestClient) -> None:
     owner = client.run(create_user, "catalog.add_product")
     page = client.browser_session_as(owner)
-    assert page.post("/api/v1/catalog/products", json={"name": "Chair"}).status_code == 201
+    assert (
+        page.post("/api/v1/catalog/products", json={"name": "Chair"}).status_code == 201
+    )
 ```
 
 It needs `CookieAuthentication` in `AUTH.AUTHENTICATION_CLASSES`.
@@ -963,7 +965,9 @@ from domainkit.testing import TestClient, assert_max_queries
 URL = "/api/v1/catalog/products"
 
 
-def test_a_second_listing_costs_one_query(admin_client: TestClient, assert_num_queries) -> None:
+def test_a_second_listing_costs_one_query(
+    admin_client: TestClient, assert_num_queries
+) -> None:
     admin_client.get(URL)  # reads the token and the user, once
     with assert_num_queries(1) as queries:
         admin_client.get(URL)
@@ -1054,7 +1058,13 @@ routes are where `domainkit init --profile fintech` mounts them
 
 ```python
 from domainkit.contrib.auth.testing import create_user
-from domainkit.testing import TestClient, approve_request, confirm_sca, enrol_totp, step_up
+from domainkit.testing import (
+    TestClient,
+    approve_request,
+    confirm_sca,
+    enrol_totp,
+    step_up,
+)
 
 URL = "/api/v1/payments"
 PASSWORD = "correct-horse-battery-42"
@@ -1074,7 +1084,9 @@ def test_a_large_transfer_needs_an_approver(client: TestClient, freeze_time) -> 
     )
     assert pending.status_code == 202
     # An approver, with an app of their own, steps up and approves it:
-    approve_request(as_approver, f"/api/approvals/requests/{pending.json()['approval_request']}")
+    approve_request(
+        as_approver, f"/api/approvals/requests/{pending.json()['approval_request']}"
+    )
 ```
 
 The fintech profile's `tests/people.py` wraps these steps in a `Person`

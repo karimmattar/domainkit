@@ -27,7 +27,10 @@ INSTALLED_DOMAINS = [
     "domainkit.contrib.notifications",
     "domainkit.contrib.phones",
 ]
-NOTIFICATIONS = {"SMS_BACKEND": "domainkit.contrib.notifications.sms.TwilioSmsBackend"}  # and its options
+NOTIFICATIONS = {
+    "SMS_BACKEND": "domainkit.contrib.notifications.sms.TwilioSmsBackend",
+    # ... and its options
+}
 PHONES = {"CODE_TTL": timedelta(minutes=10)}  # every key is optional
 ```
 

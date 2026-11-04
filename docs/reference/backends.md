@@ -48,9 +48,7 @@ STORAGES = {
         "OPTIONS": {"location": "/srv/shop/files"},
     }
 }
-BROKERS = {
-    "default": {"URL": env.str("BROKER_URL"), "PREFIX": "shop"}
-}
+BROKERS = {"default": {"URL": env.str("BROKER_URL"), "PREFIX": "shop"}}
 ```
 
 Every URL is kept secret: logs, errors, and `repr` hide it.
@@ -194,7 +192,10 @@ Each `CACHES` entry:
 ```python
 CACHES = {
     "default": {"URL": "rediss://:secret@cache:6380/0", "KEY_PREFIX": "shop"},
-    "sessions": {"URL": "redis+sentinel://sentinel-1:26379,sentinel-2:26379/mymaster", "KEY_PREFIX": "shop-sessions"},
+    "sessions": {
+        "URL": "redis+sentinel://sentinel-1:26379,sentinel-2:26379/mymaster",
+        "KEY_PREFIX": "shop-sessions",
+    },
 }
 ```
 

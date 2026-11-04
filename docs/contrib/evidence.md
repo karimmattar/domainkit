@@ -271,8 +271,9 @@ installed:
 from domainkit.contrib.evidence import Evidence
 
 async with uow:
-    consent = Evidence(kind="consent.given", subject="customer:42",
-                       facts={"version": "2026-10"})
+    consent = Evidence(
+        kind="consent.given", subject="customer:42", facts={"version": "2026-10"}
+    )
     key = defer_evidence(uow, consent)
     await uow.commit()
 ```

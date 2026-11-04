@@ -33,8 +33,22 @@ from decimal import Decimal
 from typing import Annotated, NewType
 from uuid import UUID, uuid4
 
-from domainkit.db import SqlAlchemyUnitOfWork, connections, map_imperatively, metadata, table_for
-from domainkit.ddd import AggregateRoot, Digits, F, MaxLength, Repository, Unique, UnitOfWork
+from domainkit.db import (
+    SqlAlchemyUnitOfWork,
+    connections,
+    map_imperatively,
+    metadata,
+    table_for,
+)
+from domainkit.ddd import (
+    AggregateRoot,
+    Digits,
+    F,
+    MaxLength,
+    Repository,
+    Unique,
+    UnitOfWork,
+)
 
 ProductId = NewType("ProductId", UUID)
 
@@ -64,13 +78,19 @@ async def main() -> None:
     async with connections.engine().begin() as connection:
         await connection.run_sync(metadata.create_all)  # migrate does this for you
     async with SqlAlchemyCatalogUnitOfWork() as uow:
-        await uow.products.add(Product(id=ProductId(uuid4()), name="Lamp", sku="L-1", price=Decimal("25")))
+        await uow.products.add(
+            Product(id=ProductId(uuid4()), name="Lamp", sku="L-1", price=Decimal("25"))
+        )
         await uow.commit()
     async with SqlAlchemyCatalogUnitOfWork() as uow:
         print(await uow.products.first(F("sku") == "L-1"))
     try:
         async with SqlAlchemyCatalogUnitOfWork() as uow:
-            await uow.products.add(Product(id=ProductId(uuid4()), name="Lamp", sku="L-1", price=Decimal("25")))
+            await uow.products.add(
+                Product(
+                    id=ProductId(uuid4()), name="Lamp", sku="L-1", price=Decimal("25")
+                )
+            )
             await uow.commit()
     except Exception as error:
         print(f"{type(error).__name__}: {error} ({error.code})")
@@ -459,7 +479,9 @@ class Article(AggregateRoot[ArticleId]):
 
     def tag(self, tag_id: TagId) -> None:
         if all(each.tag_id != tag_id for each in self.taggings):
-            self.taggings.append(Tagging(id=TaggingId(uuid4()), tag_id=tag_id, added_at=clock.now()))
+            self.taggings.append(
+                Tagging(id=TaggingId(uuid4()), tag_id=tag_id, added_at=clock.now())
+            )
 
 
 await uow.articles.filter(F("taggings.tag_id") == tag_id)  # articles with a tag
@@ -656,7 +678,9 @@ from pydantic import PlainSerializer
 
 from domainkit.utils.decimals import decimal_text
 
-Amount = Annotated[Decimal, PlainSerializer(decimal_text, return_type=str, when_used="json")]
+Amount = Annotated[
+    Decimal, PlainSerializer(decimal_text, return_type=str, when_used="json")
+]
 ```
 
 ## Unique values
@@ -853,7 +877,9 @@ from domainkit.ddd import Encrypted
 
 class Card(AggregateRoot[CardId]):
     holder_id: UUID
-    number: Annotated[str | None, Encrypted(subject="holder_id", blind_index=True)] = None
+    number: Annotated[str | None, Encrypted(subject="holder_id", blind_index=True)] = (
+        None
+    )
 ```
 
 `domainkit.db.encrypted` holds the pieces:

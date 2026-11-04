@@ -289,7 +289,10 @@ arguments)` computes it:
 ```python
 from domainkit.contrib.approvals import fingerprint
 
-fingerprint("payments.refund", {"amount": {"amount": "1500.00", "currency": "USD"}, "payment_id": "7f0c"})
+fingerprint(
+    "payments.refund",
+    {"amount": {"amount": "1500.00", "currency": "USD"}, "payment_id": "7f0c"},
+)
 ```
 
 ```text

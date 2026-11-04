@@ -150,17 +150,28 @@ Four functions change limits. Each takes a command and a
 | `remove_limit` | `RemoveLimit(limit_id=...)` | Removes it; a default of the settings with its key applies again. |
 
 ```python
-from domainkit.contrib.limits import ChangeLimit, RemoveLimit, change_limit, remove_limit
+from domainkit.contrib.limits import (
+    ChangeLimit,
+    RemoveLimit,
+    change_limit,
+    remove_limit,
+)
 
 limit = await set_limit(
-    SetLimit(code="wallet.daily", kind="holder", currency="EGP",
-             subject="customer-42", window=Window.DAY,
-             max_amount=Money.of("100000", "EGP")),
+    SetLimit(
+        code="wallet.daily",
+        kind="holder",
+        currency="EGP",
+        subject="customer-42",
+        window=Window.DAY,
+        max_amount=Money.of("100000", "EGP"),
+    ),
     LimitsUnitOfWork(),
 )
 await change_limit(
-    ChangeLimit(limit_id=limit.id, window=Window.DAY,
-                max_amount=Money.of("80000", "EGP")),
+    ChangeLimit(
+        limit_id=limit.id, window=Window.DAY, max_amount=Money.of("80000", "EGP")
+    ),
     LimitsUnitOfWork(),
 )
 await remove_limit(RemoveLimit(limit_id=limit.id), LimitsUnitOfWork())
@@ -333,7 +344,9 @@ placing a hold:
 from domainkit.contrib.limits import check_movements
 
 async with LimitsUnitOfWork() as uow:
-    await check_movements(uow, Movement(Money.of("9000", "EGP"), {HOLDER: "customer-42"}))
+    await check_movements(
+        uow, Movement(Money.of("9000", "EGP"), {HOLDER: "customer-42"})
+    )
 ```
 
 A movement that it lets through may still be refused by `consume`, if
@@ -348,7 +361,9 @@ another movement was counted in the meantime.
 from domainkit.contrib.limits import usage_of
 
 for usage in await usage_of("holder", "customer-42"):
-    print(usage.code, usage.window, usage.since, usage.used, usage.count, usage.remaining)
+    print(
+        usage.code, usage.window, usage.since, usage.used, usage.count, usage.remaining
+    )
 ```
 
 ```text

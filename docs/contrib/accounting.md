@@ -77,8 +77,13 @@ cash = await open_account(
     AccountingUnitOfWork(),
 )
 wallet = await open_account(
-    OpenAccount(code="2100-000042", name="Wallet", type=AccountType.LIABILITY,
-                currency="EGP", holder="user-7"),
+    OpenAccount(
+        code="2100-000042",
+        name="Wallet",
+        type=AccountType.LIABILITY,
+        currency="EGP",
+        holder="user-7",
+    ),
     AccountingUnitOfWork(),
 )
 amount = Money.of("150.00", "EGP")
@@ -303,8 +308,9 @@ class RiskConfig(DomainConfig):
         on_stage_entry(check_entry)
 
 
-async def check_entry(uow, entry, accounts) -> None:
-    ...  # raise a DomainError to refuse the entry
+async def check_entry(
+    uow, entry, accounts
+) -> None: ...  # raise a DomainError to refuse the entry
 ```
 
 Every event of the app (`AccountOpened`, `AccountClosed`, `EntryPosted`,
@@ -322,7 +328,12 @@ from domainkit.contrib.accounting import PostEntry, defer_entry
 
 async with orders_uow as uow:
     order.mark_paid()
-    defer_entry(uow, PostEntry(source="orders", reference=str(order.id), booked_on=today, lines=lines))
+    defer_entry(
+        uow,
+        PostEntry(
+            source="orders", reference=str(order.id), booked_on=today, lines=lines
+        ),
+    )
     await uow.commit()
 ```
 
@@ -349,14 +360,19 @@ from domainkit.contrib.accounting import (
 )
 
 hold = await place_hold(
-    PlaceHold(account_id=wallet.id, amount=Money.of("100", "EGP"),
-              source="cards", reference="auth-9"),
+    PlaceHold(
+        account_id=wallet.id,
+        amount=Money.of("100", "EGP"),
+        source="cards",
+        reference="auth-9",
+    ),
     AccountingUnitOfWork(),
 )
 # wallet: balance 150.00, held 100.00, available 50.00
 hold = await capture_hold(
-    CaptureHold(hold_id=hold.id, counter_account_id=merchants.id,
-                amount=Money.of("80", "EGP")),
+    CaptureHold(
+        hold_id=hold.id, counter_account_id=merchants.id, amount=Money.of("80", "EGP")
+    ),
     AccountingUnitOfWork(),
 )
 print(hold.status)

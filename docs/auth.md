@@ -47,7 +47,9 @@ async def my_orders(user: AuthenticatedUser) -> dict[str, str]:
     return {"customer": user.get_username()}
 
 
-@router.post("/products", dependencies=[Depends(Require(HasPermissions("shop.add_product")))])
+@router.post(
+    "/products", dependencies=[Depends(Require(HasPermissions("shop.add_product")))]
+)
 async def add_product() -> dict[str, str]:
     return {"added": "lamp"}
 ```

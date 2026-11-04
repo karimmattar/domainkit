@@ -366,9 +366,9 @@ These are the refusals, as the client sees them:
   from domainkit.http.uploads import sanitize_filename
 
   sanitize_filename("../../photo‮gnp.exe")  # 'photognp.exe'
-  sanitize_filename("CON.txt")                   # '_CON.txt'
-  sanitize_filename("a:b?.pdf")                  # 'ab.pdf'
-  sanitize_filename(None)                        # 'file'
+  sanitize_filename("CON.txt")  # '_CON.txt'
+  sanitize_filename("a:b?.pdf")  # 'ab.pdf'
+  sanitize_filename(None)  # 'file'
   ```
 
 - The messages of these refusals are translated, as every error is

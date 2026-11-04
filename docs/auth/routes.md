@@ -37,12 +37,16 @@ from shop.domain import Product
 router = APIRouter()
 
 
-@router.post("/invoices", dependencies=[Depends(Require(HasPermissions("billing.add_invoice")))])
+@router.post(
+    "/invoices", dependencies=[Depends(Require(HasPermissions("billing.add_invoice")))]
+)
 async def create_invoice() -> None: ...
 
 
 @router.api_route("/products", methods=["GET", "POST"])
-async def products(user: Annotated[AnyUser, Depends(Require(ModelPermissions(Product)))]) -> None: ...
+async def products(
+    user: Annotated[AnyUser, Depends(Require(ModelPermissions(Product)))],
+) -> None: ...
 
 
 @router.get("/me/invoices")
@@ -100,7 +104,14 @@ Combine rule instances with `&`, `|`, and `~`, or with the classes
 
 ```python
 from domainkit.contrib.auth import IsAdminUser
-from domainkit.http.access import AllOf, AnyOf, HasPermissions, IsAuthenticated, Not, Require
+from domainkit.http.access import (
+    AllOf,
+    AnyOf,
+    HasPermissions,
+    IsAuthenticated,
+    Not,
+    Require,
+)
 
 Require(IsAdminUser() | HasPermissions("billing.view_invoice"))
 Require(AnyOf(IsAdminUser(), HasPermissions("billing.view_invoice")))  # the same

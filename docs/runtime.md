@@ -1173,7 +1173,8 @@ router = APIRouter()
 
 
 @router.post(
-    "/exports", dependencies=[Depends(Require(IsAdminUser())), Depends(RequestTimeout(300))]
+    "/exports",
+    dependencies=[Depends(Require(IsAdminUser())), Depends(RequestTimeout(300))],
 )
 async def export() -> None: ...
 ```

@@ -116,7 +116,10 @@ from domainkit.contrib.auth import AuthUnitOfWork
 
 async with AuthUnitOfWork() as uow:
     raw = await uow.tokens.issue(
-        user.id, ttl=timedelta(days=30), name="nightly export", scopes=frozenset({"shop.view_product"})
+        user.id,
+        ttl=timedelta(days=30),
+        name="nightly export",
+        scopes=frozenset({"shop.view_product"}),
     )
     await uow.commit()
 ```
@@ -693,10 +696,10 @@ how principals are read.
   from domainkit.contrib.auth import AuthSettings, principals
 
   principals.invalidate([principals.user_target(user_id)])  # this process
-  principals.invalidate_all()                               # this process, everything
+  principals.invalidate_all()  # this process, everything
   await principals.invalidate_everywhere(
       [principals.user_target(user_id)], registry.settings(AuthSettings).PRINCIPAL_CACHE
-  )                                                         # every process, with STAMPS
+  )  # every process, with STAMPS
   ```
 
   Each returns how many principals it dropped here.

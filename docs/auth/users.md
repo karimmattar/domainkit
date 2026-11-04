@@ -127,11 +127,11 @@ You check a permission in two ways:
 ```python
 from domainkit.contrib.auth import get_all_permissions, has_perm, has_perms
 
-user.has_perm("shop.publish_product")          # from the loaded user, no query
-await has_perm(user, "shop.publish_product")   # asks every backend
+user.has_perm("shop.publish_product")  # from the loaded user, no query
+await has_perm(user, "shop.publish_product")  # asks every backend
 await has_perm(user, "shop.change_product", product)  # on one object
 await has_perms(user, ["shop.view_product", "shop.change_product"])
-await get_all_permissions(user)                # frozenset of keys
+await get_all_permissions(user)  # frozenset of keys
 ```
 
 `user.has_perm(key)` answers from the user as it was loaded, without a
@@ -549,7 +549,9 @@ from domainkit.contrib.auth import check_password, make_password
 
 encoded = make_password("correct horse battery")
 print(encoded[:30] + "...")
-print(check_password("correct horse battery", encoded), check_password("wrong", encoded))
+print(
+    check_password("correct horse battery", encoded), check_password("wrong", encoded)
+)
 ```
 
 ```text
@@ -654,7 +656,11 @@ AUTH = {
 choose a password:
 
 ```python
-from domainkit.contrib.auth import InvalidPassword, password_help_texts, validate_password
+from domainkit.contrib.auth import (
+    InvalidPassword,
+    password_help_texts,
+    validate_password,
+)
 
 for line in password_help_texts():
     print(line)
@@ -693,9 +699,7 @@ from domainkit.contrib.auth import PasswordValidationError
 class NoShopNameValidator:
     def validate(self, password: str, user: object | None = None) -> None:
         if "shop" in password.lower():
-            raise PasswordValidationError(
-                "This password contains the shop's name."
-            )
+            raise PasswordValidationError("This password contains the shop's name.")
 
     def help_text(self) -> str:
         return "Your password can't contain the shop's name."
