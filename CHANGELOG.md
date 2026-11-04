@@ -9,6 +9,15 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- `domainkit init NAME .` refused any directory that was not empty, so
+  it failed in a fresh clone of the repository the project was meant for
+  (its `.git`, `README.md`, or `.github`). `init` now writes into an
+  existing directory, next to the files there, and refuses only when a
+  file it would write is already there, naming those files. Its next
+  steps leave out `cd` when the project is in the current directory.
+
 ## [1.7.0] - 2026-11-04
 
 ### Changed

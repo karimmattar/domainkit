@@ -373,27 +373,58 @@ def test_init_refuses_bad_names(name: str, message: str, tmp_path: Path) -> None
     assert not (tmp_path / "project").exists()
 
 
-def test_init_needs_an_empty_or_missing_directory(
+def test_init_writes_into_a_directory_with_other_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Nothing is overwritten; an empty directory, or none, is fine."""
+    """A fresh clone (``.git``, a README, ``.github``) takes a project; nothing is lost.
+
+    ``init`` refused any directory that was not empty, so ``init name .``
+    failed in the repository the project was meant for.
+    """
+    clone = tmp_path / "billing"
+    (clone / ".git").mkdir(parents=True)
+    (clone / "README.md").write_text("# Billing\n", encoding="utf-8")
+    (clone / ".github" / "ISSUE_TEMPLATE").mkdir(parents=True)
+    (clone / ".github" / "ISSUE_TEMPLATE" / "bug.md").write_text("x", encoding="utf-8")
+    (clone / "dot-notes").mkdir()  # The user's own, named like a template's.
+    monkeypatch.chdir(clone)
+
+    output = init("billingAPI", ".")
+
+    assert (clone / "README.md").read_text(encoding="utf-8") == "# Billing\n"
+    assert (clone / ".github" / "ISSUE_TEMPLATE" / "bug.md").is_file()
+    assert (clone / ".github" / "workflows" / "ci.yml").is_file()
+    assert (clone / ".gitignore").is_file()
+    assert (clone / "manage.py").is_file()
+    assert [path.name for path in clone.glob("dot-*")] == ["dot-notes"]
+    assert output.splitlines()[:2] == [f"Created billingAPI in {clone}.", "Next steps:"]
+    assert "  cd " not in output  # Already there.
+
+
+def test_init_never_overwrites_a_file_it_would_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It names the files in the way, writes nothing, and a file is no directory."""
     busy = tmp_path / "busy"
     busy.mkdir()
-    (busy / "notes.txt").write_text("keep me", encoding="utf-8")
+    (busy / "manage.py").write_text("keep me", encoding="utf-8")
+    (busy / ".gitignore").write_text("mine", encoding="utf-8")
     a_file = tmp_path / "file"
     a_file.write_text("", encoding="utf-8")
-    empty = tmp_path / "empty"
-    empty.mkdir()
 
-    for occupied in (busy, a_file):
-        with pytest.raises(CommandError, match="already exists and is not empty"):
-            init("billingAPI", str(occupied))
-    init("billingAPI", str(empty))
+    with pytest.raises(CommandError) as taken:
+        init("billingAPI", str(busy))
+    with pytest.raises(CommandError, match=r"is a file, not a directory\.$"):
+        init("billingAPI", str(a_file))
     monkeypatch.chdir(tmp_path)
     output = init("ledgerAPI")
 
-    assert (busy / "notes.txt").read_text(encoding="utf-8") == "keep me"
-    assert (empty / "manage.py").is_file()
+    assert str(taken.value) == (
+        f"{busy} already has files init would write: .gitignore, manage.py. "
+        "Move them, or choose another directory."
+    )
+    assert sorted(path.name for path in busy.iterdir()) == [".gitignore", "manage.py"]
+    assert (busy / "manage.py").read_text(encoding="utf-8") == "keep me"
     assert (tmp_path / "ledgerAPI" / "manage.py").is_file()
     assert "  cd ledgerAPI\n" in output
 

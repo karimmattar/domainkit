@@ -115,7 +115,8 @@ A command with `operator_actions` takes `--operator` after any action:
 ### `init`: create a project
 
 ```bash
-domainkit init billingAPI billing
+domainkit init billingAPI billing   # into ./billing
+domainkit init billingAPI .         # into the current directory
 ```
 
 `init` writes a new project: settings for local work, tests, and
@@ -125,7 +126,7 @@ test, a `Dockerfile`, and a CI workflow (`.github/workflows/ci.yml`).
 | Option | What it does |
 | --- | --- |
 | `name` | The project's name, as in `[project].name`. It sets the prefix of environment variables: `billingAPI` gives `BILLING_API_`. |
-| `[directory]` | Where to write the project (default: `./<name>`). The directory must be empty or missing. |
+| `[directory]` | Where to write the project (default: `./<name>`); `.` is the current directory. The directory may already exist and hold other files, such as a fresh clone's `.git`, `README.md`, or `.github`: `init` adds its files next to them. It refuses, and writes nothing, when a file it would write is already there, and names those files. |
 | `--profile fintech` | Writes a bank's controls on and wired: a guarded sample transfer and its tests, which also pass `mypy --strict`, and production settings that pass `check --deploy` once their secrets are set ([fintech.md](../fintech.md), ADR 0124). |
 
 What `init` writes passes the project's own `ruff check` and
