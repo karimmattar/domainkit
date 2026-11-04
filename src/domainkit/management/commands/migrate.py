@@ -176,6 +176,7 @@ class Command(BaseCommand):
                 migrations.downgrade(target, alias, tenant=tenant)
             else:
                 migrations.upgrade(target, alias, tenant=tenant)
+                migrations.run_migrated_hooks(alias, tenant=tenant)
         except migrations.DatabaseUnreachable as exc:
             raise unreachable(alias, exc) from None
         except (AlembicError, ImproperlyConfigured, ValueError) as exc:

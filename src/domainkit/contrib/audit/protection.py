@@ -29,7 +29,7 @@ it replaces what is there.
 
 from typing import Final, Protocol
 
-from sqlalchemy import Connection, Table, inspect
+from sqlalchemy import Connection, Table, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .tables import audit_checkpoints, audit_log, audit_seals, ledger_states
@@ -176,14 +176,21 @@ async def protect_migrated(connection: AsyncConnection, database: str) -> None:
     """After ``migrate``: protect the trail, its seals, and its checkpoints afresh.
 
     Each ledger's saved state may only move forward (``advance_only``).
-    Only on PostgreSQL, and only the tables ``database`` holds:
-    ``makemigrations`` may not have written them yet (``on_migrated``).
+    Only on PostgreSQL, and only the tables ``database`` holds where the
+    connection works (its ``search_path``: a tenant's schema, after
+    ``migrate --tenant``): ``makemigrations`` may not have written them yet
+    (``on_migrated``).
     """
     if connection.dialect.name != "postgresql":
         return
-    present = set(
-        await connection.run_sync(lambda sync: inspect(sync).get_table_names())
-    )
+    present = {
+        table.name
+        for table in (audit_log, audit_seals, audit_checkpoints, ledger_states)
+        if await connection.scalar(
+            text("SELECT to_regclass(:name)"), {"name": table.name}
+        )
+        is not None
+    }
     for table in (audit_log, audit_seals, audit_checkpoints):
         if table.name in present:
             for statement in statements(table)[0]:

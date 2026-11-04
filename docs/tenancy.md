@@ -136,6 +136,15 @@ python manage.py migrate --tenant acme --tenant globex
 Plain `migrate` leaves these databases out. Run it for a new tenant
 before its first request.
 
+With `domainkit.contrib.audit` installed, each tenant's schema holds an
+audit trail of its own: a unit of work run as the tenant writes its rows
+there. `migrate --tenant` protects it with the same triggers as the
+database's own trail. `audit seal` and `audit verify` cover each tenant's
+trail, under its own ledger key (`<alias>/<schema>`). `audit forget` and
+`privacy erase` delete a person's pseudonym keys in each tenant's schema.
+`audit prune` and the startup check of the triggers cover only the
+database's own schema.
+
 ## Caches, limits, and logs
 
 While a tenant is served, `make_key` puts it in every cache key

@@ -145,6 +145,13 @@ and a status.
   the erased value still matched it. The writer now checks, as it
   commits and under the person's lock, that each key it sealed with is
   still there, and clears that person's indexes if not (A4-2).
+- On a database that keeps a schema per tenant, each tenant's audit trail
+  was left without triggers, and `audit seal`, `audit verify`, and
+  `audit forget` never saw it: its rows could be changed unnoticed, and
+  `privacy erase` left a person's pseudonym keys there. `migrate --tenant`
+  now protects it (the `on_migrated` hooks run in the tenant's schema), and
+  `audit seal`, `audit verify`, and `audit forget` cover each tenant's
+  trail, under the ledger key `<alias>/<schema>` (A6-4).
 
 ### Fixed
 

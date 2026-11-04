@@ -1301,6 +1301,7 @@ jobs:
               domainkit.contrib.audit.settings.* domainkit.contrib.audit.tasks.*
               domainkit.contrib.audit.checkpoints.* domainkit.contrib.audit.pruning.*
               domainkit.contrib.audit.ledgerstates.* domainkit.contrib.audit.testing.*
+              domainkit.contrib.audit.trails.*
               domainkit.contrib.contenttypes.* domainkit.contrib.evidence.*
               domainkit.contrib.flags.* domainkit.contrib.idempotency.operations.*
               domainkit.contrib.idempotency.settings.*

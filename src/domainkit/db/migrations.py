@@ -362,17 +362,26 @@ def create_partitions(database: str = DEFAULT_DB_ALIAS) -> list[str]:
     return _run(maintain(_single_alias(database)))
 
 
-def run_migrated_hooks(database: str = DEFAULT_DB_ALIAS) -> None:
-    """Run the ``on_migrated`` hooks (``domainkit.db.hooks``) for alias ``database``."""
+def run_migrated_hooks(
+    database: str = DEFAULT_DB_ALIAS, *, tenant: str | None = None
+) -> None:
+    """Run the ``on_migrated`` hooks (``domainkit.db.hooks``) for alias ``database``.
+
+    With ``tenant``, in that tenant's schema (``search_path``), so what they
+    make (the audit trail's triggers, its indexes) is the schema's own.
+    """
     alias = _single_alias(database)
-    _run(_migrated(connections.config(alias), alias))
+    schema = None if tenant is None else _tenant_schema(alias, tenant)
+    _run(_migrated(connections.config(alias), alias, schema))
 
 
-async def _migrated(database: DatabaseConfig, alias: str) -> None:
-    """Run the hooks in one transaction, as the schema owner."""
+async def _migrated(database: DatabaseConfig, alias: str, schema: str | None) -> None:
+    """Run the hooks in one transaction, as the schema owner, in ``schema``."""
     engine = create_owner_engine(database)
     try:
         async with _connected(engine, begin=True) as connection:
+            if schema is not None:
+                await connection.exec_driver_sql(f'SET LOCAL search_path TO "{schema}"')
             for hook in on_migrated:
                 await hook.call(connection, alias)
     finally:

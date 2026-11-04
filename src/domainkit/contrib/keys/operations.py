@@ -40,7 +40,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import registry
-from domainkit.conf import settings, unwrap_settings
+from domainkit.conf import unwrap_settings
 from domainkit.db import connections
 from domainkit.db.encrypted import (
     Ciphertext,
@@ -51,6 +51,7 @@ from domainkit.db.encrypted import (
 )
 from domainkit.db.fixtures import tables_of
 from domainkit.db.routing import router
+from domainkit.db.uow import tenant_schemas
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.keys import KeyProvider, LocalKeyProvider
@@ -301,28 +302,10 @@ def encrypted_tables(alias: str) -> list[tuple[Table, list[Column[Any]]]]:
 async def schemas_of(alias: str) -> list[str | None]:
     """Where ``alias`` keeps keys and sealed values: its schema, and each tenant's.
 
-    None stands for the connection's own schema. On a database of
-    ``TENANCY.SCHEMA_DATABASES``, every table (keys and sealed values
-    included) also lives in each tenant's schema, so erasing, counting,
-    and moving keys visit each of them: the default schema alone missed
-    every tenant's.
+    Erasing, counting, and moving keys visit each of them: the default
+    schema alone missed every tenant's (``tenant_schemas``).
     """
-    config = settings.TENANCY
-    if config is None or alias not in config.SCHEMA_DATABASES:
-        return [None]
-    prefix, _, suffix = config.SCHEMA.partition("{tenant}")
-    async with connections.engine(alias).connect() as connection:
-        names = (
-            await connection.execute(text("SELECT nspname FROM pg_namespace"))
-        ).scalars()
-        tenants = sorted(
-            name
-            for name in names
-            if name.startswith(prefix)
-            and name.endswith(suffix)
-            and len(name) > len(prefix) + len(suffix)
-        )
-    return [None, *tenants]
+    return await tenant_schemas(alias)
 
 
 @asynccontextmanager

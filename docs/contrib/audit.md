@@ -186,6 +186,11 @@ sealing or anchoring: a row or an anchor dated in the future counts as
 dated now, and on PostgreSQL "now" is the database's, so a sealer whose
 own clock runs ahead cannot leave other hosts' rows behind.
 
+On a database that keeps a schema per tenant (`TENANCY.SCHEMA_DATABASES`),
+each tenant's schema has its own trail, sealed, anchored, and verified
+apart: `audit seal` and `audit verify` print one line per trail, such as
+`default/tenant_acme` ([tenancy.md](../tenancy.md)).
+
 A row can be changed unnoticed only until it is sealed and its head
 anchored, so anchor as often as you need: the default is hourly. Erasing a
 person (`audit forget`) deletes a key, not a row, so the chain stays intact.
