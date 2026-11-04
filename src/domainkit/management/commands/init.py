@@ -130,6 +130,8 @@ class Command(BaseCommand):
             raise CommandError(f"{target} already exists and is not empty.")
         context = {
             "project": name,
+            # Docker refuses capitals in an image's name.
+            "image": name.lower(),
             "prefix": prefix,
             "namespace": namespace_for(name),
             "dependency": requirement(__version__, EXTRAS[profile]),
@@ -155,7 +157,8 @@ def _next_steps(name: str, target: Path, profile: str | None) -> str:
         f"Created {name} in {target}.",
         "Next steps:",
         f"  cd {target.relative_to(Path.cwd(), walk_up=True)}",
-        f'  pip install "domainkit[{extras}]"   # or: uv sync',
+        f'  pip install "domainkit[{extras}]"   # or: uv sync, for both',
+        "  pip install --group dev   # ruff formats what the generators write",
         "  python manage.py check",
         f'  python manage.py makemigrations -m "{first}"',
         "  python manage.py migrate",

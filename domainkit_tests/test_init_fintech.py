@@ -179,8 +179,9 @@ def test_fintech_writes_the_controls_over_the_project(tmp_path: Path) -> None:
     assert output.splitlines()[3:] == [
         (
             '  pip install "domainkit[audit,immudb,keys,mfa,postgres,redis,'
-            'sqlite,testing]"   # or: uv sync'
+            'sqlite,testing]"   # or: uv sync, for both'
         ),
+        "  pip install --group dev   # ruff formats what the generators write",
         "  python manage.py check",
         '  python manage.py makemigrations -m "fintech"',
         "  python manage.py migrate",

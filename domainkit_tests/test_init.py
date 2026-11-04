@@ -97,7 +97,9 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
         f"Created billingAPI in {project}.\n"
         "Next steps:\n"
         f"  cd {project.relative_to(Path.cwd(), walk_up=True)}\n"
-        '  pip install "domainkit[postgres,redis,sqlite,testing]"   # or: uv sync\n'
+        '  pip install "domainkit[postgres,redis,sqlite,testing]"'
+        "   # or: uv sync, for both\n"
+        "  pip install --group dev   # ruff formats what the generators write\n"
         "  python manage.py check\n"
         '  python manage.py makemigrations -m "auth"\n'
         "  python manage.py migrate\n"
@@ -558,6 +560,7 @@ def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> 
     final = lines[max(i for i, line in enumerate(lines) if line.startswith("FROM "))]
 
     assert "{{" not in dockerfile
+    assert "docker build -t billingapi ." in dockerfile
     assert final == "FROM python:3.13-slim"
     stage = lines[lines.index(final) :]
     user = stage.index("USER 10001")
@@ -663,3 +666,19 @@ def test_the_projects_workflow_pins_the_actions_domainkits_ci_does(
     assert all(re.fullmatch(r"[\w/-]+@[0-9a-f]{40} # v[\d.]+", use) for use in uses)
     assert all(f"uses: {use}" in ours for use in uses)
     assert theirs.count("persist-credentials: false") == 2
+
+
+def test_ci_builds_the_image_under_a_name_docker_accepts(tmp_path: Path) -> None:
+    """Docker refuses capitals in an image's name, which a project's may have.
+
+    The newcomer study found CI's build step tagging ``bankAPI``, which
+    ``docker build`` refuses.
+    """
+    project = tmp_path / "bank"
+    init("bankAPI", str(project))
+    workflow = (project / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "docker build -t bankapi ." in workflow
+    assert "bankAPI ." not in workflow

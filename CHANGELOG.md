@@ -16,6 +16,16 @@ and a status.
   98 calls less on every authenticated route (a write 2,054, a resource
   command 2,726, a posting 8,049). OpenAPI still documents the token, and
   the authentication middleware checks it as before.
+- `init`'s next steps install the project's dev group (`pip install
+  --group dev`), whose ruff formats what the generators write; without it
+  the new project failed its own lint step. The warning a generator gives
+  without ruff names that command, and says the code runs as it is.
+
+### Fixed
+
+- A new project's CI built its image under the project's name as typed,
+  and Docker refuses capitals (`bankAPI`): the image is now named in lower
+  case, in CI and in the Dockerfile's examples.
 
 ## [1.6.0] - 2026-11-03
 

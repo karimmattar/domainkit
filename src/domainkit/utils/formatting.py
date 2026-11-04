@@ -11,8 +11,9 @@ from typing import Final
 logger = logging.getLogger(__name__)
 
 UNFORMATTED: Final = (
-    "ruff is not installed, so the generated code is not formatted: install "
-    "the project's dev dependencies, or run 'ruff check --fix . && ruff format .'."
+    "ruff is not installed, so the generated code is not formatted (it runs "
+    "as it is): install the project's dev group ('pip install --group dev', "
+    "or 'uv sync'), then run 'ruff check --fix . && ruff format .'."
 )
 
 

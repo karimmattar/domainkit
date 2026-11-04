@@ -62,4 +62,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Build
-        run: docker build -t {{ project }} .
+        run: docker build -t {{ image }} .
