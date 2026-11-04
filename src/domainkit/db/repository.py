@@ -193,7 +193,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         """``_filter``'s statement and its parameters.
 
         A query of a shape ``shape_of`` takes, without an offset, uses the
-        statement made once for its shape (PERF-33); any other is made now.
+        statement made once for its shape; any other is made now.
         """
         model = self.aggregate_type
         dialect = self.session.get_bind().dialect.name
@@ -418,7 +418,7 @@ MAX_SHAPES: Final = 1024
 _SHAPES: Final[dict[tuple[object, ...], Select[Any]]] = {}
 """The statement of each query shape (``shape_of``), by the model, its
 mapping (a mapping made again makes others), the dialect, the shape, the
-ordering, the limit, and the lock (PERF-33)."""
+ordering, the limit, and the lock."""
 
 
 def _shaped_select(
