@@ -418,9 +418,12 @@ Who may impersonate whom:
   lifetime.
 - **Checked again on every request.** Each request with the token checks
   that its staff member is still active, still staff or a superuser, and
-  still holds the `change` permission on the user model. Deactivating or
-  deleting the staff member, or taking that permission away, ends the
-  token at once with `401`, not when `IMPERSONATION_TTL` runs out.
+  still holds the `change` permission on the user model. It also checks
+  again that the staff member holds every permission the user holds, as
+  when the token was issued. Deactivating or deleting the staff member,
+  taking that permission away, or granting the user a permission the
+  staff member does not have, ends the token at once with `401`, not when
+  `IMPERSONATION_TTL` runs out.
 
 What the token may do:
 

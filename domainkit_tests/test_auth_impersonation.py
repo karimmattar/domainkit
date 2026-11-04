@@ -97,7 +97,9 @@ async def test_impersonated_credentials_never_step_up() -> None:
     )
 
 
-@pytest.mark.parametrize("change", ["deactivated", "deleted", "unpermitted"])
+@pytest.mark.parametrize(
+    "change", ["deactivated", "deleted", "unpermitted", "outranked"]
+)
 def test_an_impersonation_ends_with_its_staff_members_right(
     api: Api, change: str
 ) -> None:
@@ -105,7 +107,8 @@ def test_an_impersonation_ends_with_its_staff_members_right(
 
     The audit found a token working as the user for the rest of
     ``IMPERSONATION_TTL`` after its staff member was deactivated or deleted
-    (A1-1).
+    (A1-1). A user granted more than the staff member hold is out of their
+    reach too, as when the token was issued.
     """
     client = api(**ON)
     root = staff("root", is_superuser=True)
@@ -120,8 +123,14 @@ def test_an_impersonation_ends_with_its_staff_members_right(
         done = client.patch(path, json={"is_active": False}, headers=root)
     elif change == "deleted":
         done = client.delete(path, headers=root)
-    else:
+    elif change == "unpermitted":
         done = client.put(f"{path}/permissions", json={"permissions": []}, headers=root)
+    else:
+        done = client.put(
+            f"/admin/auth/users/{ann}/permissions",
+            json={"permissions": ["auth.delete_user"]},
+            headers=root,
+        )
     assert done.status_code < 300
 
     assert client.get("/auth/me", headers=as_ann).status_code == 401

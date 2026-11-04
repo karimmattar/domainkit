@@ -160,6 +160,11 @@ and a status.
   usernames exactly, so `Alice` could be created next to `alice`, while
   signup, the identity providers, and the login throttle took them as one
   name. It refuses a name another user has in any case now.
+- An impersonation token, checked again on each request since A1-1, was
+  checked for the staff member's right to change users only, not for the
+  rule it was issued under: the staff member holds every permission the
+  user holds. A user granted more afterwards stayed in reach until the
+  token expired. Each request checks that rule too now.
 
 ### Fixed
 
