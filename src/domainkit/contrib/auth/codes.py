@@ -40,6 +40,8 @@ EMAIL_VERIFICATION: Final = "email_verification"
 """A code that proves a user reads mail at their address."""
 MOBILE_VERIFICATION: Final = "mobile_verification"
 """A code that proves a user receives texts at their mobile number."""
+SIGNUP: Final = "signup"
+"""A code that finishes a signup: the address or number is the person's."""
 PASSWORD_RESET: Final = "password_reset"  # noqa: S105 - a purpose, not a secret.
 """A code that lets whoever reads it choose a new password."""
 CODE_LENGTH: Final = 6
@@ -51,9 +53,10 @@ TARGET_PURPOSE: Final = "contrib.auth.code-target"
 
 @dataclass(frozen=True, slots=True)
 class Proven:
-    """A code that matched: the user it was sent for (None for a signup)."""
+    """A code that matched: the user, or the pending signup, it was sent for."""
 
     user_id: UUID | None
+    signup_id: UUID | None = None
 
 
 def target_of(identifier: str) -> str:
@@ -90,6 +93,7 @@ class CodeStore:
         target: str,
         *,
         user_id: UUID | None = None,
+        signup_id: UUID | None = None,
         now: datetime | None = None,
     ) -> str:
         """Make a code for ``purpose`` and ``target``; return it, to send.
@@ -109,6 +113,7 @@ class CodeStore:
                 purpose=purpose,
                 target=target,
                 user_id=user_id,
+                signup_id=signup_id,
                 digest=code_digest(code_id, code, signing.derive_key(CODE_PURPOSE)),
                 attempts=0,
                 created_at=moment,
@@ -136,13 +141,18 @@ class CodeStore:
                 auth_codes.c.attempts < auth_settings().CODE_ATTEMPTS,
             )
             .values(attempts=auth_codes.c.attempts + 1)
-            .returning(auth_codes.c.id, auth_codes.c.digest, auth_codes.c.user_id)
+            .returning(
+                auth_codes.c.id,
+                auth_codes.c.digest,
+                auth_codes.c.user_id,
+                auth_codes.c.signup_id,
+            )
         )
         row = (await self.session.execute(counted)).first()
         if row is None or not _matches(row.id, row.digest, code.strip()):
             return None
         await self.session.execute(delete(auth_codes).where(auth_codes.c.id == row.id))
-        return Proven(user_id=row.user_id)
+        return Proven(user_id=row.user_id, signup_id=row.signup_id)
 
     async def clear_expired(self, now: datetime | None = None) -> int:
         """Delete the codes that no longer work; return how many."""

@@ -584,7 +584,8 @@ AUTH = {
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"username", "email", "fields"}` | `202`; `422` for fields that do not fit; `429 rate_limited`. |
+| `POST /signup` | anyone | `{"email", "fields"}`, an optional `"username"`, and with codes `"mobile_number"` | `202`; `422` for fields that do not fit, or `missing_value` without an address (or number); `429 rate_limited`. |
+| `POST /signup/code` | anyone | `{"identifier", "code", "password"}` | `204`: the account is made; `400 invalid_verification_code`; `409 signup_taken`; `422` for a password the validators refuse. |
 | `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
 
 How signing up works:
@@ -638,9 +639,51 @@ name or the address is taken, or, past `EMAIL_VERIFICATION_TIMEOUT`,
 with the hourly purge of expired tokens. Signups count against
 `EMAIL_RATE` per client address and per email address, and links that do
 not hold against `LOGIN_RATE` per client address. New accounts are
-audited as `auth.user_signed_up`. Two links for one new address used at
-the same moment can both make an account: email addresses are not unique
-in the user table.
+audited as `auth.user_signed_up`. Where `email` is in `AUTH.IDENTIFIERS`,
+two links for one new address used at the same moment make one account:
+the second gets `409 email_taken`. Elsewhere, both can make one, because
+email addresses are not unique in the user table.
+
+#### Signing up by code
+
+With `AUTH.VERIFICATION` set to `"code"`, the worker sends a code of 6
+digits instead of a link. The username is optional: the address, or the
+number, names the account.
+
+```http
+POST /auth/signup
+{"email": "nina@example.com"}
+```
+
+```json
+{"detail": "Check your email to finish signing up."}
+```
+
+Where `mobile_number` is in `AUTH.IDENTIFIERS`, a person may sign up
+with a number alone, and the code goes by text message:
+
+```http
+POST /auth/signup
+{"mobile_number": "+33 6 12 34 56 78"}
+```
+
+```json
+{"detail": "Check your text messages to finish signing up."}
+```
+
+Then your app posts the address or number, the code, and the password:
+
+```http
+POST /auth/signup/code
+{"identifier": "+33612345678", "code": "482913", "password": "correct horse battery"}
+```
+
+The answer is `204`. The account is made with the address verified, or,
+for a signup by number alone, the number verified. A pending signup by
+code lasts `AUTH.CODE_TTL`. The other rules stay: whoever reads the code
+chooses the password, a taken address or number is told so instead, and
+a password the validators refuse leaves the code working. A number given
+where numbers do not identify users gets `422 unknown_user_field`.
 
 ### The mail templates
 

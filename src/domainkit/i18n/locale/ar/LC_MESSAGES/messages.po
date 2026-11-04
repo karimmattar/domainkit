@@ -176,6 +176,9 @@ msgstr "الرمز خاطئ أو انتهت صلاحيته؛ اطلب رمزًا
 msgid "Give an email address, or an identifier."
 msgstr "أدخل عنوان بريد إلكتروني، أو معرّفًا."
 
+msgid "Give an email address."
+msgstr "أدخل عنوان بريد إلكتروني."
+
 msgid "The request names no origin (Origin or Referer)."
 msgstr "لا يذكر الطلب مصدره (Origin أو Referer)."
 

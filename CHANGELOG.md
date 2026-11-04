@@ -47,6 +47,11 @@ and a status.
 - Mobile number verification: `POST /auth/mobile-verification` texts a
   code, and `POST /auth/mobile-verification/code` takes it.
 - `auth.E012` refuses texted codes without `domainkit.contrib.notifications`.
+- Signup by code: `POST /auth/signup` takes an optional `username`, and,
+  where numbers identify users, a `mobile_number` alone; the code goes by
+  mail or text message, and `POST /auth/signup/code` makes the account.
+  `domainkit_pending_signups` gets a `mobile_number`, and its `username`
+  and `email` may be empty; `domainkit_auth_codes` keeps the `signup_id`.
 - `normalize_mobile_number`, and the problems `invalid_mobile_number`,
   `mobile_number_taken`, `email_taken`, and `identifier_required`
   (`domainkit.contrib.auth`).

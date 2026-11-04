@@ -307,9 +307,11 @@ pending_signups = Table(
     metadata,
     # Random: the signup link carries it signed, so the id alone opens nothing.
     Column("id", Uuid, primary_key=True),
-    # Neither unique: a pending signup reserves no name and no address.
-    Column("username", String(USERNAME_MAX_LENGTH), nullable=False),
-    Column("email", String(EMAIL_MAX_LENGTH), nullable=False),
+    # None unique: a pending signup reserves no name, address, or number.
+    # Each may be missing, but not all: a code goes to the address or number.
+    Column("username", String(USERNAME_MAX_LENGTH), nullable=True),
+    Column("email", String(EMAIL_MAX_LENGTH), nullable=True),
+    Column("mobile_number", String(MOBILE_NUMBER_MAX_LENGTH), nullable=True),
     # The user model's other REQUIRED_FIELDS, as the client gave them.
     Column("fields", JSON, nullable=True),
     # No password: whoever reads the mail chooses it, when confirming.
@@ -349,6 +351,8 @@ auth_codes = Table(
     Column("target", String(64), nullable=False),
     # No foreign key: the user model may be swapped. None: a signup's code.
     Column("user_id", Uuid, nullable=True),
+    # The pending signup a signup's code finishes; None for other codes.
+    Column("signup_id", Uuid, nullable=True),
     # An HMAC of the code, keyed from SECRET_KEY: the code is never kept.
     Column("digest", String(64), nullable=False),
     Column("attempts", Integer, nullable=False),

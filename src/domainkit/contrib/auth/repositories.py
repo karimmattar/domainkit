@@ -223,6 +223,11 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             self._track(user)
         return user
 
+    async def mobile_number_taken(self, number: str) -> bool:
+        """Whether a user has ``number`` (a model with a ``mobile_number``)."""
+        column = get_user_table().c[MOBILE_NUMBER]
+        return bool(await self.session.scalar(select(exists().where(column == number))))
+
     async def username_taken(self, username: str) -> bool:
         """Whether a user has ``username`` (normalized), in any case, or had it.
 
@@ -1291,10 +1296,12 @@ class PendingSignup:
     """
 
     id: UUID
-    username: str = dataclasses.field(repr=False)
-    email: str = dataclasses.field(repr=False)
+    username: str | None = dataclasses.field(repr=False)
+    email: str | None = dataclasses.field(repr=False)
     created_at: datetime = dataclasses.field(repr=False)
     expires_at: datetime = dataclasses.field(repr=False)
+    mobile_number: str | None = dataclasses.field(default=None, repr=False)
+    """The number a signup by code verifies (ADR 0126); None for others."""
     fields: dict[str, Any] | None = dataclasses.field(default=None, repr=False)
     """The user model's other ``REQUIRED_FIELDS``, as the client gave them."""
 
@@ -1313,13 +1320,14 @@ class SignupStore:
     async def add(
         self,
         *,
-        username: str,
-        email: str,
+        username: str | None,
+        email: str | None,
         ttl: timedelta,
         fields: Mapping[str, Any] | None = None,
         now: datetime | None = None,
+        mobile_number: str | None = None,
     ) -> PendingSignup:
-        """Store an account to make once ``email`` is confirmed, for ``ttl``."""
+        """Store an account to make once its address or number is confirmed."""
         moment = now or utc_now()
         pending = PendingSignup(
             id=uuid.uuid4(),
@@ -1327,6 +1335,7 @@ class SignupStore:
             email=email,
             created_at=moment,
             expires_at=moment + ttl,
+            mobile_number=mobile_number,
             fields=dict(fields) if fields else None,
         )
         await self.session.execute(

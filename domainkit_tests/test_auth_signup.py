@@ -113,6 +113,7 @@ def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None
         "id",
         "username",
         "email",
+        "mobile_number",
         "fields",
         "created_at",
         "expires_at",

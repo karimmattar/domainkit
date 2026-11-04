@@ -497,7 +497,7 @@ async def send_password_reset_code(identifier: str) -> None:
         )
         user.record(PasswordResetRequested(user_id=user.id))
         if texted:
-            await _text(cast(str, number), code, "reset your password", uow)
+            await text_code(cast(str, number), code, "reset your password", uow)
         await uow.commit()
     if not texted:
         await _mail_code(user, cast(str, address), code, "auth/password_reset_code")
@@ -515,28 +515,31 @@ async def send_mobile_verification(user_id: UUID) -> None:
         number = getattr(user, "mobile_number", None)
         if not number or getattr(user, "mobile_number_verified", True):
             return
-        if not _can_text(user):
+        if not can_text(f"User {user.id}"):
             return
         code = await uow.verification_codes.issue(
             MOBILE_VERIFICATION, target_of(number), user_id=user.id
         )
-        await _text(number, code, "verify your number", uow)
+        await text_code(number, code, "verify your number", uow)
         await uow.commit()
 
 
-def _can_text(user: AbstractBaseUser) -> bool:
-    """Whether text messages can go out; a warning names the user if not."""
+def can_text(label: str) -> bool:
+    """Whether text messages can go out; a warning names ``label`` if not.
+
+    ``label`` names who waits for the code, by id: never the number.
+    """
     from domainkit.apps import registry
 
     if registry.is_installed(NOTIFICATIONS):
         return True
     logger.warning(
-        "User %s has a code to text, and %s is not installed.", user.id, NOTIFICATIONS
+        "%s has a code to text, and %s is not installed.", label, NOTIFICATIONS
     )
     return False
 
 
-async def _text(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -> None:
+async def text_code(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -> None:
     """Queue a text message with ``code``; it leaves with ``uow``'s commit."""
     from domainkit.contrib.notifications import send_sms
 
@@ -554,7 +557,7 @@ async def _mail_code(
     """Mail ``code`` to ``address`` with ``template``."""
     from domainkit.contrib.mail import deliver, render_mail
 
-    context = _code_context(user, code)
+    context = code_context(code, user)
     await deliver([render_mail(template, context, to=[address])])
 
 
@@ -662,11 +665,11 @@ def _context(
     }
 
 
-def _code_context(user: AbstractBaseUser, code: str) -> dict[str, object]:
-    """What the code templates are given."""
+def code_context(code: str, user: AbstractBaseUser | None = None) -> dict[str, object]:
+    """What the code templates are given (no user yet for a signup)."""
     return {
         "user": user,
-        "username": user.get_username(),
+        "username": "" if user is None else user.get_username(),
         "code": code,
         "valid_for": describe(auth_settings().CODE_TTL),
     }
