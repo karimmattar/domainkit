@@ -54,7 +54,7 @@ def test_a_route_serves_without_the_token_and_documents_it(
 ) -> None:
     """The token is read by no request, and OpenAPI still shows it."""
     app = app_with_routes()
-    routes = {route.path: route for route in app.router.routes}
+    routes = {r.path: r for r in app.router.routes if isinstance(r, Route)}
     open_handler = routes["/open"].app
 
     assert serve_without_documentation(app.router) == 1
