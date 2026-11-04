@@ -1,27 +1,86 @@
-# Performance: what a request costs, how to measure it, how to cut it
+# Performance
 
-A domainkit request does three kinds of work: Python (routing, middleware,
-validation, the framework's own checks), round trips to the database, and
-the server's work around them. This page gives what each costs on the paths
-a service serves most, how to measure them with the benchmark ladder, how
-CI holds the costs down, and what makes a request cheaper. Server settings
-and limits are in [reference/servers.md](reference/servers.md); event loops,
-logging and servers in [runtime.md](runtime.md).
+A domainkit request does three kinds of work: Python (routing,
+middleware, validation, the framework's own checks), round trips to the
+database, and the server's work around them. This page gives what each
+kind costs on the paths a service serves most. It shows how to measure
+the costs with the benchmark ladder, how CI keeps them from growing, and
+what makes a request cheaper. Every number on this page is a
+measurement: the page says how, where, and on which versions it was
+taken.
+
+On this page you learn how to:
+
+- read what a request costs on each rung of the benchmark ladder;
+- run the ladder, compare two commits, and profile one rung;
+- read and update the budgets that CI gates on;
+- work out how many cores a load needs;
+- make your own requests cheaper.
+
+Server settings and limits are on [reference/servers.md](reference/servers.md).
+Event loops, logging, and servers are on [runtime.md](runtime.md).
+
+## A first example
+
+The benchmark ladder lives in the `benchmarks` package of a domainkit
+checkout. From the checkout, with the development dependencies
+installed, run three rungs that need no database:
+
+```bash
+python -m benchmarks asgi fastapi bare
+```
+
+It prints a line as each rung's process ends, then a table, then the
+budget checks:
+
+```text
+  current  asgi          done
+  current  fastapi       done
+  current  bare          done
+rung     what                      calls  SQL            modules  MiB  CPU µs       start ms
+asgi     Bare ASGI app             5.0    0 / 0 / 0 / 0  169      27   1.3 (+5%)    5
+fastapi  Plain FastAPI             234.0  0 / 0 / 0 / 0  398      50   51.4 (+17%)  307
+bare     domainkit, no middleware  303.0  0 / 0 / 0 / 0  798      102  58.1 (+6%)   1,043
+me: skipped, no PostgreSQL (--postgres)
+...
+OVER BUDGET: asgi modules: budget 166, measured 169.
+OVER BUDGET: fastapi modules: budget 393, measured 398.
+OVER BUDGET: bare modules: budget 789, measured 798.
+OVER BUDGET: bare memory: budget 90, measured 102.
+```
+
+- **calls** are the Python function calls per request: the same as the
+  budgets, because calls are exact.
+- **SQL** is statements, transactions, pool checkouts, and pings per
+  request.
+- **CPU µs** is the best timed run. The percentage after it is how far
+  the worst run was from the best.
+- **start ms** is the time from the process's first line to the
+  application's lifespan.
+
+This run was on Python 3.14, not on CI's Python 3.13.16. The modules and
+memory a process holds depend on the Python version and on what is
+installed, so they went over their budgets here. The calls did not move.
+That is why CI runs the gate on one pinned Python
+([Budgets and the CI gate](#budgets-and-the-ci-gate)).
 
 ## What a request costs
 
-The ladder measures nineteen rungs, from a bare ASGI application to a
+The ladder measures twenty rungs, from a bare ASGI application to a
 ledger posting counted against a limit. Requests go straight into the
-application, one at a time, with no server or socket; the database rungs
+application, one at a time, with no server or socket. The database rungs
 run against PostgreSQL. Each rung runs in a process of its own.
 
-Measured on this release (FastAPI 0.143.1, Starlette 1.8.0, SQLAlchemy
-2.1.4, asyncpg 0.32.0, Pydantic 2.14.1; Python 3.13.16 on uvloop, the
-version CI's `bench` job is pinned to; PostgreSQL 16), the highest calls
-and the best CPU of three ladder runs on a shared 4-vCPU machine. Per
-request; the round trips are statements, transactions, checkouts and
-pings; modules are what the rung's process holds once it served.
-"0.8.0" is that release's calls on its own pins, where a rung existed.
+The table below was measured on this release: FastAPI 0.143.1, Starlette
+1.8.0, SQLAlchemy 2.1.4, asyncpg 0.32.0, Pydantic 2.14.1; Python 3.13.16
+on uvloop, the version CI's `bench` job is pinned to; PostgreSQL 16. It
+shows the highest calls and the best CPU of three ladder runs on a
+shared 4-vCPU machine. All figures are per request:
+
+- the round trips are statements, transactions, checkouts, and pings;
+- the modules are what the rung's process holds once it has served;
+- "0.8.0" is that release's calls on its own pins, where the rung
+  existed then.
 
 | Rung | Stack and request | Calls (0.8.0) | Round trips | Modules | CPU µs |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -48,68 +107,78 @@ pings; modules are what the rung's process holds once it served.
 
 The four money rungs came with the 0.15 audit (PERF-32). They install
 money's ledger, limits, keys, and a small domain of their own beside the
-catalog's (`benchmarks/project/money_routes.py`), so they hold 69 modules
-more than the other database rungs; those rungs install none of it.
+catalog's (`benchmarks/project/money_routes.py`). So they hold 69 modules
+more than the other database rungs, which install none of it.
 
-- **Calls** are the Python function calls cProfile counts per request,
-  built-in ones included, in every thread: the JSON access log is
-  formatted on the logging thread, and counts. A coroutine resumed after a
-  wait counts again, so each layer of `await` adds a call per wait for the
-  database. Every rung counts the same calls in every run, but for the two
-  with a JSON access log, which can vary by up to 2.5% (the logging thread
-  waits on its queue more or less often); their budgets are the highest
-  of three runs.
+`benchmarks/budgets.toml` holds the gate for each rung
+([below](#budgets-and-the-ci-gate)). Its calls and round trips are the
+ones in this table. Its module budgets were written later, and are a few
+modules higher (7 on most rungs).
+
+### What each measure means
+
+- **Calls** are the Python function calls that cProfile counts per
+  request, built-in ones included, in every thread. The JSON access log
+  is formatted on the logging thread, and counts. A coroutine resumed
+  after a wait counts again, so each layer of `await` adds a call per
+  wait for the database. Every rung counts the same calls in every run,
+  except the two with a JSON access log. They can vary by up to 2.5%,
+  because the logging thread waits on its queue more or less often.
+  Their budgets are the highest of three runs.
 - **Round trips** are what reaches the database, per request: statements
-  sent to the driver, transactions begun, connections taken from the pool,
-  and the check that a pooled connection still answers (`POOL_PRE_PING`).
-- **CPU** is the process's CPU time per request (all threads), the best of
-  the timed runs. It moves by 15% or more from run to run on a shared
-  machine; never read a smaller difference into it. The calls and round
+  sent to the driver, transactions begun, connections taken from the
+  pool, and the check that a pooled connection still answers
+  (`POOL_PRE_PING`).
+- **CPU** is the process's CPU time per request (all threads), the best
+  of the timed runs. It moves by 15% or more from run to run on a shared
+  machine: never read a smaller difference into it. The calls and round
   trips are exact.
 
-What the rungs show:
+### What the rungs show
 
-- **A guarded route resolves no dependency that only documents it**:
-  `Require` names the bearer token so OpenAPI shows it, and
-  FastAPI resolved that dependency on every request, about a hundred calls
-  that read the `Authorization` header the authentication middleware had
-  read already. Routes keep it for the documentation and serve requests
-  without it: every authenticated rung costs about 98 calls less.
+- **A guarded route resolves no dependency that only documents it.**
+  `Require` names the bearer token so that OpenAPI shows it. FastAPI
+  resolved that dependency on every request: about a hundred calls that
+  read the `Authorization` header the authentication middleware had read
+  already. Routes keep it for the documentation, and serve requests
+  without it. Every authenticated rung costs about 98 calls less.
 - **Authentication costs nothing once its principal is kept.** `GET /me`
-  with an opaque token made five SELECTs in their own transaction; a kept
-  principal makes none, and a 429 for a valid token none either (the
-  [principal cache](#authentication-the-principal-cache)). A principal not
-  kept is read in two queries.
+  with an opaque token made five SELECTs in their own transaction. A
+  kept principal makes none, and a 429 for a valid token makes none
+  either (the [principal cache](#authentication-the-principal-cache)). A
+  principal that is not kept is read in two queries.
 - **Routing no longer walks nested routers.** Behind the template's 23
-  routes, `/hello` took 1,180 of the `bare` rung's 1,653 calls; flattened,
-  a route two routers deep costs what one at the top does
+  routes, `/hello` took 1,180 of the `bare` rung's 1,653 calls.
+  Flattened, a route two routers deep costs what one at the top does
   ([the HTTP stack](#the-http-stack-does-each-piece-of-work-once)).
-- **A keyed write takes three transactions instead of five**: the claim is
-  one statement outside a transaction, and so is storing the response
+- **A keyed write takes three transactions instead of five.** The claim
+  is one statement outside a transaction, and so is storing the response
   ([database round trips](#database-round-trips-reads-keyed-writes-and-audit-keys)).
 - **A scoped command on one aggregate takes one transaction instead of
-  two** (0.10): the scope is checked, and the service runs, in one unit of
-  work, and the service finds the aggregate the check read
+  two** (0.10). The scope is checked, and the service runs, in one unit
+  of work, and the service finds the aggregate the check read
   ([ADR 0025](adr/0025-resources-commands-and-expected-versions.md)). A
-  rule that looks at the aggregate still checks it in a transaction of its
-  own, closed before the rule runs.
+  rule that looks at the aggregate still checks it in a transaction of
+  its own, closed before the rule runs.
 - **Plain FastAPI is slower on 0.143** than on 0.141: its own telemetry
-  hooks run on every request (ADR 0065). domainkit turns its telemetry off,
-  and its own rungs gained far more than that.
-- **A posting is the dearest request**: 14 statements in one
+  hooks run on every request (ADR 0065). domainkit turns its telemetry
+  off, and its own rungs gained far more than that.
+- **A posting is the most expensive request**: 14 statements in one
   transaction, and about four times a plain write's calls (8,049; 11,973
-  before 1.6 made the statements it runs on every posting once). The ledger locks its
-  accounts and moves their balances (8 statements); `contrib.limits`
-  takes its shared lock of the ledger's kinds as the posting commits
-  (SEC-16b-2), reads the limits, locks the holder's row, sums its day's
-  usage, and records each subject's movement (6 more). Without limits installed, a posting was 8 statements
-  and about 6,000 calls (PERF-26).
+  before 1.6 made the statements it runs on every posting once). The
+  ledger locks its accounts and moves their balances (8 statements).
+  `contrib.limits` takes its shared lock of the ledger's kinds as the
+  posting commits (SEC-16b-2), reads the limits, locks the holder's row,
+  sums its day's usage, and records each subject's movement (6 more).
+  Without limits installed, a posting was 8 statements and about 6,000
+  calls (PERF-26).
 - **An encrypted field costs a few microseconds a value** (5 to 6 µs to
-  seal or open one, `timeit`): the `encrypted-read` rung costs 43 calls
-  more than `read`. A value sealed for a person (`Encrypted(subject=...)`)
-  also reads that person's key, a statement more per person.
+  seal or open one, `timeit`). The `encrypted-read` rung costs 43 calls
+  more than `read`. A value sealed for a person
+  (`Encrypted(subject=...)`) also reads that person's key: a statement
+  more per person.
 - **A step-up route reads the token's last step-up**: one statement, a
-  transaction and a checkout per request, where `me` makes none.
+  transaction, and a checkout per request, where `me` makes none.
 
 ## Running the ladder
 
@@ -122,26 +191,31 @@ python -m benchmarks                    # all of them
 python -m benchmarks me read throttled  # some
 ```
 
-`DOMAINKIT_BENCH_POSTGRES_URL` (or `--postgres`, which other users of the
-machine can read in its process list) names a database the ladder may make
-schemas in. The ladder passes it on to the processes it starts in their
-environment, never on their command line, and masks its password in
-what it prints of them. Each run creates `domainkit_bench_<tree>_<random>`,
-a schema no other run has (it refuses one that exists rather than replace
-it), migrates it with the code measured, adds a user without a usable
-password in a group that may view and add items, a token that expires
-within the hour, and an item, and drops that schema, and only that one, at
-the end. It touches nothing else, and only ever creates or drops schemas
+`make bench` runs the ladder against its budgets too.
+
+**The database.** `DOMAINKIT_BENCH_POSTGRES_URL` names a database in
+which the ladder may make schemas. `--postgres URL` does the same, but
+other users of the machine can read it in the process list. The ladder
+passes the URL to the processes it starts in their environment, never on
+their command line, and masks its password in what it prints. Each run:
+
+1. creates `domainkit_bench_<tree>_<random>`, a schema no other run has.
+   It refuses a schema that exists, rather than replace it;
+2. migrates the schema with the code measured;
+3. adds a user without a usable password, in a group that may view and
+   add items, a token that expires within the hour, and an item;
+4. drops that schema, and only that one, at the end.
+
+The ladder touches nothing else, and only ever creates or drops schemas
 named `domainkit_bench_...`.
 
-It prints a table, checks the counts against the budgets (below), and
-exits 1 when a rung fails or goes over budget. `--json PATH` keeps every
-figure, `--summary PATH` writes the Markdown table CI shows, and
-`--no-gate` only reports.
+**The result.** The ladder prints a table, checks the counts against the
+budgets (below), and exits with status 1 when a rung fails or goes over
+budget.
 
-**Another commit, side by side.** The harness measures any source tree,
-so it compares two commits with the same code, the rungs of each
-interleaved so drift on the machine hits both:
+**Another commit, side by side.** The harness measures any source tree.
+It compares two commits with the same code, the rungs of each
+interleaved, so drift on the machine hits both:
 
 ```bash
 git worktree add ../base a686177
@@ -151,93 +225,130 @@ python -m benchmarks --baseline ../base/src --baseline-python ../base/.venv/bin/
 ```
 
 **One rung, closer.** `python -m benchmarks.rung template --profile-out
-template.pstats` measures one rung and keeps cProfile's statistics of the
-counted requests; `--profile-dir DIR` keeps them for every rung of a run.
-Two of them, from two trees, show which functions gained or lost calls.
+template.pstats` measures one rung, and keeps cProfile's statistics of
+the counted requests. `--profile-dir DIR` keeps them for every rung of a
+run. Two of them, from two trees, show which functions gained or lost
+calls.
 
-**Sizes.** Each rung warms up, counts one pass of requests (200 in
-process, 100 with the database), then times several (5 × 2,000 in
-process, 3 × 300 with the database). `--warmup`, `--count`, `--requests`
-and `--repeats` change them for every rung.
+**Sizes.** Each rung warms up, counts one pass of requests, then times
+several:
+
+| | Warm-up | Counted | Timed |
+| --- | ---: | ---: | --- |
+| In process | 300 | 200 | 5 runs of 2,000 |
+| With the database | 100 | 100 | 3 runs of 300 |
+
+`--warmup`, `--count`, `--requests`, and `--repeats` change them for
+every rung.
+
+The options of `python -m benchmarks`:
+
+| Option | What it does |
+| --- | --- |
+| `RUNG ...` | The rungs to run (default: all). |
+| `--postgres URL` | A database to make schemas in (default: `$DOMAINKIT_BENCH_POSTGRES_URL`). |
+| `--src SRC`, `--python PYTHON` | The source tree and the interpreter to measure. |
+| `--baseline SRC`, `--baseline-python PYTHON` | Another tree, and its interpreter, to compare side by side. |
+| `--budgets PATH` | Another budgets file. |
+| `--no-gate` | Report only; never fail. |
+| `--strict` | Fail on a rung that did not run, or a measure without a budget. |
+| `--write-budgets` | Rewrite the budgets from this run. |
+| `--json PATH` | Keep every figure. |
+| `--summary PATH` | Write the Markdown table CI shows. |
+| `--profile-dir DIR` | Keep each rung's cProfile statistics. |
+| `--warmup`, `--count`, `--requests`, `--repeats` | Change the sizes for every rung. |
 
 ## Budgets and the CI gate
 
-`benchmarks/budgets.toml` holds, for each rung, how many calls and round
-trips a request may cost:
+`benchmarks/budgets.toml` holds, for each rung, how much a request may
+cost. This is the tolerance, and the `me` rung's budget, as the file
+holds them now:
 
 ```toml
 [tolerance]
-calls = 0.02        # a fraction of the budget
-statements = 0      # per request: exact
+calls = 0.02
+statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 2         # per process, either way
-memory = 0.1        # a fraction of the budget
+modules = 2
+memory = 0.1
 
 [rungs.me]
-calls = 5296
-statements = 5
-transactions = 1
-checkouts = 1
-pings = 1
-modules = 813
-memory = 94         # MiB
+calls = 673
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+modules = 820
+memory = 94
 ```
 
-- **Over budget fails**, naming the rung, the measure, the budget and the
-  value: `OVER BUDGET: me statements: budget 5, measured 6.`
-- **Under budget by more than the tolerance passes with a hint**:
-  `Under budget: me statements: budget 5, measured 1; lower the budget to
-  lock it in.` Lower it in the same pull request, so the gain stays won.
-- **Modules are gated per process** (ADR 0104): each rung counts the
+`calls` and `memory` tolerances are fractions of the budget. The round
+trips are exact. `modules` is a count, either way. `memory` is in MiB.
+
+- **Over budget fails**, and names the rung, the measure, the budget, and
+  the value, as in the first example: `OVER BUDGET: bare modules: budget
+  789, measured 798.`
+- **Under budget by more than the tolerance passes, with a hint**:
+  `Under budget: <rung> <measure>: budget <budget>, measured <value>;
+  lower the budget to lock it in.` Lower it in the same pull request, so
+  the gain stays won.
+- **Modules are gated per process** (ADR 0104). Each rung counts the
   modules its process holds once it has built the application and served
   its warm-up, past those the interpreter started with. Their tolerance
   is 2 modules either way, so a new eager import of anything heavy fails
   the job. What is installed changes the count (`prometheus_client`,
-  `opentelemetry`), so the budgets are written from a run with every
+  `opentelemetry`). So the budgets are written from a run with every
   extra, as `make install` and CI's `bench` job install them.
-- **Memory is gated per process**: the most memory the rung's process has
-  held (its peak resident set) once it has built the application and
+- **Memory is gated per process**: the most memory the rung's process
+  has held (its peak resident set) once it has built the application and
   served its warm-up, in MiB. It strays by a MiB or two from run to run,
-  so its tolerance is a tenth of the budget: a dependency that brings tens
-  of MiB, or a cache that grows with requests, fails the job. A bare ASGI
-  process holds 26 MiB, plain FastAPI 46, a domainkit application 90 to
-  94, and one with money's ledger, limits, and keys 110.
+  so its tolerance is a tenth of the budget. A dependency that brings
+  tens of MiB, or a cache that grows with requests, fails the job. A bare
+  ASGI process holds 26 MiB, plain FastAPI 46, a domainkit application
+  90 to 94, and one with money's ledger, limits, and keys 110.
 - **Time is never gated** (ADR 0064): a shared runner's timings are too
-  noisy. CI's job summary shows CPU time per rung, beside the base branch's
-  on pull requests, and the time each rung's process took to start, from
-  its first line to the application's lifespan (about a second for a
-  domainkit application; modules, which are gated, are most of it).
+  noisy. CI's job summary shows the CPU time per rung, beside the base
+  branch's on pull requests. It also shows the time each rung's process
+  took to start, from its first line to the application's lifespan:
+  about a second for a domainkit application. Modules, which are gated,
+  are most of that time.
 
 The `bench` job in `.github/workflows/ci.yml` runs the ladder on Python
-3.13.16 against a PostgreSQL service on every push and pull request, with
-`--strict`: a rung that did not run, or a measure without a budget, fails
-too. The job's Python is pinned to the patch release the budgets were
-written on: at the 0.15 milestone, budgets written on another 3.13 counted
-`throttled` 21 calls under what 3.13.16 counts, on 0.15 and on 0.12.1
-alike, so the gate failed on code that had not changed (PERF-32). Moving
+3.13.16 against a PostgreSQL service, on every push and pull request,
+with `--strict`. A rung that did not run, or a measure without a budget,
+fails too.
+
+The job's Python is pinned to the patch release the budgets were written
+on. At the 0.15 milestone, budgets written on another 3.13 counted
+`throttled` 21 calls below what 3.13.16 counts, on 0.15 and on 0.12.1
+alike. So the gate failed on code that had not changed (PERF-32). Moving
 the pin is a change of its own, with `--write-budgets` run on the new
 release.
 
-**Updating the budgets.** Budgets hold for CI's Python (3.13.16) and the lock
-file: an upgrade that changes FastAPI's or SQLAlchemy's calls moves them.
-After a change that should move them, run on Python 3.13.16 with the locked
+### Updating the budgets
+
+Budgets hold for CI's Python (3.13.16) and the lock file. An upgrade
+that changes FastAPI's or SQLAlchemy's calls moves them. After a change
+that should move them, run this on Python 3.13.16 with the locked
 dependencies:
 
 ```bash
 python -m benchmarks --write-budgets
 ```
 
-and review the diff of `budgets.toml`: every raised number is a cost the
-change adds. For the two JSON-log rungs keep the highest of a few runs.
+Then review the diff of `budgets.toml`: every raised number is a cost
+the change adds. For the two JSON-log rungs, keep the highest of a few
+runs.
 
 ## Cores for 500 million requests a day
 
-One process per core (each on its own event loop), from the CPU per request
-above. These are lower bounds: the HTTP server's own work comes on top
-(about 34 µs a request for uvicorn on uvloop with httptools, as the
-re-audit measured it on this machine class), and so does the database's.
+One process per core, each on its own event loop, from the CPU per
+request above. These are lower bounds. The HTTP server's own work comes
+on top (about 34 µs a request for uvicorn on uvloop with httptools, as
+the re-audit measured it on this machine class), and so does the
+database's.
 
 | 500 million requests per… | Requests/s | Light: `default-json`, 171 µs | Authenticated read: `read`, 1,484 µs | 0.8.0, 304 µs / 6,481 µs: light / read |
 | --- | ---: | ---: | ---: | ---: |
@@ -249,39 +360,78 @@ re-audit measured it on this machine class), and so does the database's.
 
 A core now serves about 5,800 light requests a second, or 670
 authenticated reads whose principal is kept: more than four times the
-reads of 0.8.0. A posting counted against a limit takes about 11 ms: 90 a
-second per core.
+reads of 0.8.0. A posting counted against a limit takes about 11 ms: 90
+a second per core.
+
+To size your own service, measure the CPU per request of your own routes
+(profile a rung like them, or time them under a server), divide a second
+by it, and leave room for the server, the database, and peaks.
 
 ## Making requests cheaper
 
 - **Serve one worker per core**, on uvloop: `uvicorn config.asgi:application
-  --workers N --loop uvloop`, or Granian ([reference/servers.md](reference/servers.md)
-  has the whole command and its limits).
+  --workers N --loop uvloop`, or Granian
+  ([reference/servers.md](reference/servers.md) has the whole command and
+  its limits).
 - **Keep a route's first path segment literal** where you can
-  (`/invoices/{id}`, not `/{tenant}/invoices/{id}`): the application tries
-  only the routes of a request's first segment, and those that may match
-  any path, so a route behind 1,000 others costs what the first does
-  ([0.10](#010-foundations)). Routes whose first segment is a parameter are
-  tried for every request, in order.
-- **Keep handlers and dependencies `async def`.** A plain `def` goes to the
-  thread pool; `manage.py check` lists them (runtime.md).
+  (`/invoices/{id}`, not `/{tenant}/invoices/{id}`). The application
+  tries only the routes of a request's first segment, and those that may
+  match any path. So a route behind 1,000 others costs what the first
+  does ([0.10](#010-foundations)). Routes whose first segment is a
+  parameter are tried for every request, in order.
+- **Keep `FLATTEN_ROUTERS` on** (the default). Give a router with its own
+  `matches` or `handle` (an IP gate, a host rule) only the routes it
+  guards: it stays nested
+  ([The HTTP stack](#the-http-stack-does-each-piece-of-work-once)).
+- **Keep handlers and dependencies `async def`.** A plain `def` goes to
+  the thread pool. `manage.py check` lists them
+  ([runtime.md](runtime.md#finding-blocking-code)).
+- **Keep principals.** `AUTH.PRINCIPAL_CACHE.TTL` keeps who a token
+  names. With `STAMPS` on a shared Redis cache, raise it up to 5 minutes
+  ([the principal cache](#authentication-the-principal-cache)).
+- **Read without a transaction** where a read needs no snapshot:
+  `reads=Reads.STATEMENTS`
+  ([database round trips](#database-round-trips-reads-keyed-writes-and-audit-keys)).
+- **Sample the access log** on a busy service:
+  `ACCESS_LOG_SAMPLE_RATE = 0.1`
+  ([JSON responses and logs](#json-responses-and-logs)).
+- **Declare response models** on routes that return large bodies:
+  FastAPI then encodes them with pydantic directly.
 - **Count round trips in tests**: `assert_num_queries` and
-  `assert_max_queries` (testing.md) keep a path's statements from growing.
-- **Profile before changing**: `python -m benchmarks.rung NAME
+  `assert_max_queries` ([testing.md](testing.md#counting-queries)) keep a
+  path's statements from growing.
+- **Profile before you change anything**: `python -m benchmarks.rung NAME
   --profile-out` on the path, and on a project's own routes the debug
   toolbar's SQL and N+1 report.
 
+## Common mistakes
+
+- **Reading a small CPU difference as a change.** On a shared machine,
+  runs of one version spread by 15% or more. Compare calls and round
+  trips first; they are exact.
+- **Comparing two versions in one process, or one after the other.** Run
+  each in fresh processes, and alternate which goes first
+  (`--baseline`), so drift on the machine hits both.
+- **Writing budgets on another Python.** Modules, memory, and some calls
+  change with the patch release. Write them on CI's Python 3.13.16, with
+  the locked dependencies.
+- **Raising a budget without a reason.** Every raised number is a cost
+  the change adds. Say why in the pull request.
+
 ## What the performance branch changed
 
-Each change to a request's cost has a section below with what it saves,
-measured with the ladder.
+This part is the record of each change that moved a request's cost: what
+it saved, and how it was measured. The numbers are the measurements of
+their time, on the versions each section names. They are kept as they
+were taken, so you can compare your own runs with them.
 
 ### The ladder, and the upgrade to FastAPI 0.143, SQLAlchemy 2.1 and asyncpg 0.32
 
-0.8.0 on its own pins (FastAPI 0.141.1, Starlette 1.8.0, SQLAlchemy
-2.0.54, asyncpg 0.31.0) against the same code on this release's (0.143.1,
-1.8.0, 2.1.4, 0.32.0), in three ladder runs with each rung's two sides
-interleaved (`--baseline ../base/src --baseline-python ...`):
+This table compares 0.8.0 on its own pins (FastAPI 0.141.1, Starlette
+1.8.0, SQLAlchemy 2.0.54, asyncpg 0.31.0) with the same code on this
+release's pins (0.143.1, 1.8.0, 2.1.4, 0.32.0). It comes from three
+ladder runs, with each rung's two sides interleaved
+(`--baseline ../base/src --baseline-python ...`):
 
 | Rung | Calls, before | Calls, after | CPU µs, before | CPU µs, after | CPU in 3 interleaved runs |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -309,9 +459,9 @@ interleaved (`--baseline ../base/src --baseline-python ...`):
   0.147.
 - **SQLAlchemy 2.1 takes 543 to 692 calls off every database request**:
   fewer for statement cache keys and annotations, and its results are
-  compiled code now. The authenticated reads
-  and the 429 took 12–21% less CPU in every run; the writes' difference is
-  within this machine's noise.
+  compiled code now. The authenticated reads and the 429 took 12–21% less
+  CPU in every run. The writes' difference is within this machine's
+  noise.
 - **FastAPI still nests included routers** (`_IncludedRouter`), and walks
   the routes of each one a request passes: `/hello` behind the template's
   routers costs 1,668 calls (`bare`), and 488 when mounted before them.
@@ -319,8 +469,8 @@ interleaved (`--baseline ../base/src --baseline-python ...`):
   routers (PERF-04 of the [performance re-audit](audit/0.9.0.md#the-performance-re-audit))
   saves.
 
-The ladder's budgets were first set from these figures, 0.8.0 on this
-release's dependencies; they now hold this release's own counts, the
+The ladder's budgets were first set from these figures: 0.8.0 on this
+release's dependencies. They now hold this release's own counts, the
 highest of three ladder runs (the table at the top of the page).
 
 ### Authentication: the principal cache
@@ -1003,3 +1153,12 @@ milestone).
   of three. CI's `bench` job is pinned to Python 3.13.16, which the
   budgets were written on; the JSON-log rungs' budgets are the highest of
   three runs (560 and 675: they vary by up to 2.5%, not 1%).
+
+
+## See also
+
+- [Runtime](runtime.md): event loops, logging, deadlines, and shedding.
+- [Server limits](reference/servers.md): production commands.
+- [Sizing pools](reference/backends.md#sizing-pools).
+- [Testing](testing.md#counting-queries): counting queries in tests.
+- [The performance re-audit](audit/0.9.0.md#the-performance-re-audit).
