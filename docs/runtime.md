@@ -745,7 +745,7 @@ from domainkit.http.deadlines import RequestTimeout
 @router.post(
     "/exports", dependencies=[Depends(Require(IsAdminUser)), Depends(RequestTimeout(300))]
 )
-async def export(...): ...
+async def export() -> None: ...
 ```
 
 The body is read before route dependencies run, so it is read under

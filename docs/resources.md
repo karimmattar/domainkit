@@ -513,7 +513,7 @@ it by id:
 
 ```python
 reviews = ResourceRouter(
-    "/reviews", model=Review, ..., parent=products, parent_field="product_id"
+    "/reviews", model=Review, parent=products, parent_field="product_id"
 )
 router.include_router(products)
 router.include_router(reviews)

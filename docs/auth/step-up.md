@@ -31,7 +31,7 @@ router.include_router(step_up_router, prefix="/auth")
     "/payees",
     dependencies=[Depends(Require(HasPermissions("bank.add_payee") & StepUp(max_age=timedelta(minutes=5))))],
 )
-async def add_payee(...): ...
+async def add_payee() -> None: ...
 ```
 
 `StepUp` is a rule like any other (`domainkit.http.access`): combine it

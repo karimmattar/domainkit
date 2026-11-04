@@ -748,3 +748,82 @@ def test_the_projects_image_runs_uvicorn_with_the_limits_the_reference_gives() -
     ]
     assert command[8:] == given[2:workers] + given[workers + 2 :]
     assert "WEB_CONCURRENCY" in dockerfile.split("FROM", 1)[0]  # Said up top.
+
+
+_PYTHON = re.compile(r"^```python\n(.*?)^```$", re.DOTALL | re.MULTILINE)
+
+
+def snippets(page: Path) -> list[tuple[int, str]]:
+    """Each Python snippet of ``page``, with the line its code starts on."""
+    text = page.read_text(encoding="utf-8")
+    return [
+        (text[: found.start()].count("\n") + 2, found[1])
+        for found in _PYTHON.finditer(text)
+    ]
+
+
+def snippet_problems(page: Path) -> list[str]:
+    """What is wrong with ``page``'s snippets.
+
+    A snippet that does not parse, and a name imported from domainkit that
+    is not there.
+
+    Top-level ``await`` is allowed, as in ``manage.py shell``.
+    """
+    problems = []
+    for line, code in snippets(page):
+        where = f"{page.relative_to(ROOT)}:{line}"
+        try:
+            tree = compile(
+                code,
+                where,
+                "exec",
+                flags=ast.PyCF_ONLY_AST | ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
+            )
+        except SyntaxError as exc:
+            problems.append(f"{where}: {exc.msg} (line {exc.lineno} of the snippet)")
+            continue
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and (node.module or "").split(".")[0] == "domainkit"
+            ):
+                continue
+            module = import_module(str(node.module))
+            for alias in node.names:
+                if not hasattr(module, alias.name):
+                    try:
+                        import_module(f"{node.module}.{alias.name}")
+                    except ImportError:
+                        problems.append(f"{where}: {node.module} has no {alias.name}")
+    return problems
+
+
+def test_every_python_snippet_parses_and_imports_what_is_there() -> None:
+    """A reader can paste a snippet: it is Python, and its imports exist."""
+    assert [
+        problem
+        for page in pages()
+        if "adr" not in page.parts
+        for problem in snippet_problems(page)
+    ] == []
+
+
+def test_a_snippet_that_does_not_parse_or_import_is_named(tmp_path: Path) -> None:
+    """The line, and what is wrong."""
+    page = ROOT / "docs" / "_snippet_probe.md"
+    page.write_text(
+        "# Probe\n\n```python\nf(...,)\nx = {..., 1: 2}\n```\n\n"
+        "```python\nfrom domainkit.tenancy import nothing_here\n```\n",
+        encoding="utf-8",
+    )
+    try:
+        found = snippet_problems(page)
+    finally:
+        page.unlink()
+
+    assert found == [
+        "docs/_snippet_probe.md:4: invalid syntax (line 2 of the snippet)",
+        "docs/_snippet_probe.md:9: domainkit.tenancy has no nothing_here",
+    ]

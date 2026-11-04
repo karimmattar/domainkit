@@ -460,7 +460,7 @@ export_limit = Throttle("5/hour")  # per user, or per address when anonymous
 
 
 @router.post("/exports", dependencies=[Depends(Require()), Depends(export_limit)])
-async def create_export(...): ...
+async def create_export() -> None: ...
 
 
 def api_key(request: Request) -> str | None:
@@ -471,7 +471,7 @@ def api_key(request: Request) -> str | None:
     "/search",
     dependencies=[Public, Depends(Throttle("30/minute", key=api_key))],
 )
-async def search(...): ...
+async def search() -> None: ...
 
 
 # Routes with one scope share one count.

@@ -189,7 +189,7 @@ from domainkit.contrib.accounting import defer_entry
 
 async with orders_uow as uow:
     order.mark_paid()
-    defer_entry(uow, PostEntry(source="orders", reference=str(order.id), ...))
+    defer_entry(uow, PostEntry(source="orders", reference=str(order.id), booked_on=today, lines=lines))
     await uow.commit()
 ```
 

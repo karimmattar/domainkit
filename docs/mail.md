@@ -225,7 +225,7 @@ To mail them each unexpected error (Django's error emails), add the
 reporter to `ERROR_REPORTERS`, beside a tracker or instead of one:
 
 ```python
-MAIL = {..., "ADMINS": ("ops@example.com",)}
+MAIL = {"ADMINS": ("ops@example.com",)}  # and the other keys
 ERROR_REPORTERS = ("domainkit.contrib.mail.admins.report_to_admins",)
 ```
 

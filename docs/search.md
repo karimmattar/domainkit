@@ -66,7 +66,7 @@ from domainkit.search import search_backend
 search = search_backend()
 await search.ensure("products", searchable=["name", "description"],
                     filterable=["shop_id"])
-await search.index("products", [{"id": str(p.id), "name": p.name, ...}])
+await search.index("products", [{"id": str(p.id), "name": p.name}])
 await search.delete("products", [str(p.id)])
 found = await search.search("products", "red shoes",
                             filters={"shop_id": str(shop)}, limit=20)

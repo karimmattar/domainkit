@@ -211,7 +211,7 @@ openssl pkey -in audit-checkpoint.pem -pubout -out audit-checkpoint.pub
 
 ```python
 # Every process: the public key, to verify.
-AUDIT = {..., "CHECKPOINT_PUBLIC_KEY": env.str("AUDIT_CHECKPOINT_PUBLIC_KEY")}
+AUDIT = {"CHECKPOINT_PUBLIC_KEY": env.str("AUDIT_CHECKPOINT_PUBLIC_KEY")}  # and the other keys
 ```
 
 ```bash
