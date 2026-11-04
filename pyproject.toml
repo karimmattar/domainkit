@@ -227,7 +227,8 @@ strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "src:."
 files = ["src", "domainkit_tests", "benchmarks", ".github/scripts"]
-exclude = ["/management/templates/", "/mutants/"]
+# benchmarks/compare: apps on other frameworks, with their own requirements.
+exclude = ["/management/templates/", "/mutants/", "^benchmarks/compare/"]
 
 # immudb-py and grpcio ship no type information.
 [[tool.mypy.overrides]]
