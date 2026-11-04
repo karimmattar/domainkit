@@ -48,6 +48,18 @@ and a status.
   by impersonating the maker and then another approver. Approval requests
   are submitted, approved, rejected, and cancelled in one's own name only
   (A3-1).
+- Under multi-tenancy, login and password throttles were counted apart per
+  tenant, so naming another tenant (a header, a subdomain) started an
+  account's daily count afresh; principals' stamps written while a tenant
+  was served were never read by authentication, which runs before the
+  tenant is known, so a revoked token or a deactivated user was served in
+  other processes until the principal cache's `TTL`; and a flag changed in
+  one tenant reached the others only once their entries expired. These are
+  every tenant's now (`shared_keys()`, new in `domainkit.ddd.tenancy`)
+  (A5-1, A5-2).
+- An `Idempotency-Key` sent to two tenants replayed the first tenant's
+  answer in the second, whose request never ran. A key is the tenant's own
+  now (A3-2).
 - A generic `PATCH` (`crud=True` with `writable=ALL_FIELDS`) could set a
   tenant's row's `tenant_id`, moving it into another tenant. A tenant's
   aggregate's `tenant_id` is now generated, as its id and version are: no

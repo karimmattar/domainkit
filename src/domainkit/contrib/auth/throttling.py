@@ -35,7 +35,7 @@ import unicodedata
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 from fastapi import Request, status
 
@@ -43,6 +43,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.ddd.tenancy import shared_keys
 from domainkit.http.errors import APIError
 from domainkit.http.ratelimit import RATE_LIMITED, Backend, Decision, client_group
 from domainkit.utils.module_loading import import_string
@@ -284,11 +285,42 @@ _making_limiter: Final = threading.Lock()
 """Held to make an application's attempt counter: loops on threads ask at once."""
 
 
+class _SharedCounter:
+    """A counter whose keys are every tenant's: users and addresses are.
+
+    Attempts are counted inside a tenant's request, but an account, a
+    device, and an address belong to no tenant: per tenant, naming another
+    one would start their counts afresh.
+    """
+
+    def __init__(self, counter: Backend) -> None:
+        """Count in ``counter``."""
+        self.counter = counter
+
+    async def hit(self, key: str, limit: int, period: float) -> Decision:
+        """Count one attempt for ``key``, whatever the tenant."""
+        with shared_keys():
+            return await self.counter.hit(key, limit, period)
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - refund, if any.
+        """``refund``, if the counter can give attempts back."""
+        if name != "refund":
+            raise AttributeError(name)
+        refund = self.counter.refund  # type: ignore[attr-defined]
+
+        async def shared(key: str, limit: int, period: float) -> None:
+            with shared_keys():
+                await refund(key, limit, period)
+
+        return shared
+
+
 def limiter(request: Request) -> Backend:
     """The application's attempt counter (``RATE_LIMIT_BACKEND``), made once.
 
     Loops on two threads that ask at once get the same counter, so a memory
-    counter sees every attempt.
+    counter sees every attempt. Its keys are every tenant's
+    (``_SharedCounter``).
     """
     state = request.app.state
     counter: Backend | None = getattr(state, "login_limiter", None)
@@ -298,7 +330,7 @@ def limiter(request: Request) -> Backend:
             if counter is None:
                 counter = import_string(settings.RATE_LIMIT_BACKEND)()
                 state.login_limiter = counter
-    return counter
+    return _SharedCounter(counter)
 
 
 async def audit_refusal(action: str, reason: str) -> None:

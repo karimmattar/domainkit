@@ -140,6 +140,12 @@ before its first request.
 
 While a tenant is served, `make_key` puts it in every cache key
 (`t:acme:...`), and rate limits count each tenant apart, so one tenant
-never reads another's cached answers or uses up its quota. Log records
+never reads another's cached answers or uses up its quota. What belongs
+to no tenant is kept once, inside `shared_keys()`: an account's and an
+address's login attempts, what principals rest on, and the flags; so
+naming another tenant never starts a login count afresh, and a change
+made while one is served reaches every other. An `Idempotency-Key` is the
+tenant's own: the same key sent to two tenants is two requests
+(`IdempotencyMiddleware` comes after `TenantMiddleware`). Log records
 get a `tenant` field (`-` outside one), in JSON logs and for formats
 that name it (`%(tenant)s`).

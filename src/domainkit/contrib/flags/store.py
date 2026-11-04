@@ -25,6 +25,7 @@ from domainkit.apps import registry
 from domainkit.cache import Cache, CacheError, caches
 from domainkit.db import connections
 from domainkit.db.routing import router
+from domainkit.ddd.tenancy import shared_keys
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.decimals import with_decimal_text
 
@@ -60,8 +61,9 @@ async def current() -> Snapshot:
     """
     config = registry.settings(FlagsSettings)
     cache = caches[config.CACHE]
-    key = entry_key(await _count(cache))
-    data = await cache.get_or_set(key, _load, ttl=config.CACHE_TTL)
+    with shared_keys():  # Flags are every tenant's.
+        key = entry_key(await _count(cache))
+        data = await cache.get_or_set(key, _load, ttl=config.CACHE_TTL)
     return Snapshot(flags=data["flags"], settings=data["settings"])
 
 
@@ -95,13 +97,14 @@ async def invalidate(*_: object) -> None:
     """
     config = registry.settings(FlagsSettings)
     cache = caches[config.CACHE]
-    expected = await _count(cache) + 1
-    try:
-        await cache.refresh(entry_key(expected), _load, ttl=config.CACHE_TTL)
-    finally:
-        count = await cache.incr(VERSION_KEY, ttl=None)
-    if count != expected:
-        await cache.refresh(entry_key(count), _load, ttl=config.CACHE_TTL)
+    with shared_keys():  # Flags are every tenant's: one count for all.
+        expected = await _count(cache) + 1
+        try:
+            await cache.refresh(entry_key(expected), _load, ttl=config.CACHE_TTL)
+        finally:
+            count = await cache.incr(VERSION_KEY, ttl=None)
+        if count != expected:
+            await cache.refresh(entry_key(count), _load, ttl=config.CACHE_TTL)
 
 
 async def _load() -> dict[str, Any]:
