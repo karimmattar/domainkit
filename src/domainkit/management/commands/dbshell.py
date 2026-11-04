@@ -10,6 +10,7 @@ from typing import Final
 from sqlalchemy import URL, make_url
 
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.connections import connections
 from domainkit.management.base import BaseCommand, CommandError
 
@@ -39,10 +40,13 @@ class Command(BaseCommand):
     The connection goes to ``psql`` in libpq's environment variables, the
     password in ``PGPASSWORD``: never on the command line, where other
     users of the host can read it. Production refuses without
-    ``--allow-production``.
+    ``--allow-production``. What the client does is beyond the audit trail,
+    so in staging and production its opening is recorded
+    (``operator.dbshell``), with who opened it (``--operator``).
     """
 
     help = "Open psql or sqlite3 on a database; arguments after -- go to the client."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept an alias, the owner switch, and the client's arguments."""
@@ -94,6 +98,8 @@ class Command(BaseCommand):
         if client is None:
             raise CommandError(f"{program} is not installed, or not on PATH.")
         extra = parameters[1:] if parameters[:1] == ["--"] else parameters
+        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+            self.record("dbshell", database=database, owner=owner)
         result = subprocess.run(  # noqa: S603 - the client's path and the operator's arguments.
             [client, *arguments, *extra],
             env={**_without_pg(os.environ), **environment},

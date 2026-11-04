@@ -41,8 +41,9 @@ from domainkit.db import connections
 from domainkit.db import migrations as migrations_module
 from domainkit.ddd import Counted, DomainEvent, Personal, ValueObject
 from domainkit.ddd.personal import counted_fields, personal_fields
-from domainkit.management import CommandError, call_command
+from domainkit.management import CommandError, call_command, operators
 from domainkit.management.commands import partitions as partitions_command
+from domainkit.management.commands import shell as shell_command
 from domainkit.testing import assert_num_queries
 from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
@@ -792,6 +793,75 @@ def test_downgrades_are_audited_before_they_run(
             {"database": "default", "revision": "base", "operator_source": "option"},
         )
     ]
+
+
+def test_the_console_runs_as_its_operator(
+    audited: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``shell`` writes as its operator, and opens on the record where deployed.
+
+    An interrupted operator action is recorded as a failure: what it did
+    may have been committed (A6-5).
+    """
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "alice")
+
+    async def prepare() -> None:
+        async with connections.engine().begin() as connection:
+            for table in (audit_log, audit_keys, notes):
+                await connection.run_sync(table.create)
+        await connections.close_all()
+
+    async def recorded() -> list[tuple[str, str, str, dict[str, Any]]]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(
+                select(
+                    audit_log.c.action,
+                    audit_log.c.actor,
+                    audit_log.c.outcome,
+                    audit_log.c.details,
+                )
+            )
+            found = [tuple(row) for row in rows]
+        await connections.close_all()
+        return found
+
+    async def interrupted() -> None:
+        async with operators.recorded(operators.operator(), "audit.forget"):
+            raise KeyboardInterrupt
+
+    asyncio.run(prepare())
+    written = (
+        "import uuid\n"
+        "note = Note(id=NoteId(uuid.uuid4()), text='changed in the shell')\n"
+        "note.record(NoteWritten(note_id=note.id))\n"
+        "async with NotesUnitOfWork() as uow:\n"
+        "    await uow.notes.add(note)\n"
+        "    await uow.commit()\n"
+    )
+    imports = "from domainkit_tests.test_db import Note, NoteId, NoteWritten, "
+    call_command(
+        "shell", "-c", imports + "NotesUnitOfWork\n" + written, stdout=io.StringIO()
+    )
+    # As if deployed: staging would also want TLS from a PostgreSQL server.
+    monkeypatch.setattr(shell_command, "DEPLOYED_ENVIRONMENTS", frozenset({"test"}))
+    call_command("shell", "-c", "1", stdout=io.StringIO())
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(interrupted())
+
+    wrote, forgot, opened = sorted(asyncio.run(recorded()))  # By action.
+    assert wrote[1:3] == ("operator:alice", "success")
+    assert opened == (
+        "operator.shell",
+        "operator:alice",
+        "success",
+        {"code": True, "operator_source": "environment"},
+    )
+    assert forgot == (
+        "operator.audit.forget",
+        "system",
+        "failure",
+        {"error": "KeyboardInterrupt", "operator_source": "environment"},
+    )
 
 
 def test_pseudonyms_are_a_keyed_hash_of_the_field_and_its_canonical_json() -> None:

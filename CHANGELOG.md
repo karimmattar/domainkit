@@ -116,6 +116,12 @@ and a status.
   was recorded anywhere. Both need the consent now, and each downgrade is
   recorded in the audit trail before it runs (`operator.migrate.downgrade`,
   with `--operator`): a record that cannot be written stops it (A6-3).
+- `shell` and `seed` wrote as `system`, so what an operator changed there
+  named nobody, and `dbshell` left no trace. All three take `--operator`
+  and run as that operator; `seed` is recorded (`operator.seed`), and in
+  staging and production `shell` and `dbshell` are recorded as they open.
+  An operator command stopped part way (Ctrl-C) is recorded as a failure,
+  not left out: what it did may have been committed (A6-5).
 
 ### Fixed
 

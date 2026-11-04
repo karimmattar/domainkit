@@ -20,7 +20,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.management.base import BaseCommand, CommandError, run_async
+from domainkit.management.base import BaseCommand, CommandError
 
 SYMBOLIC: Final = frozenset({"head", "heads", "base"})
 """Revisions that mean the same thing in every target's history."""
@@ -225,9 +225,4 @@ class Command(BaseCommand):
             details["tenant"] = tenant
         if fake:
             details["fake"] = True
-
-        async def record() -> None:
-            async with self.recorded("migrate.downgrade", **details):
-                pass
-
-        run_async(record())
+        self.record("migrate.downgrade", **details)

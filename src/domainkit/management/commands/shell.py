@@ -13,6 +13,7 @@ from typing import Final
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.connections import connections
 from domainkit.ddd import Entity, Repository, UnitOfWork, ValueObject
 from domainkit.lifecycle import close_resources
@@ -61,9 +62,14 @@ class Command(BaseCommand):
     Each installed domain's models, repositories, and units of work are
     imported by name; ``--no-imports`` leaves them out. ``-c`` runs code
     and exits. Top-level ``await`` works in both.
+
+    What it changes is audited as its operator (``--operator``), and in
+    staging and production the console is recorded as it opens
+    (``operator.shell``).
     """
 
     help = "Open an asyncio Python console with the project loaded; await works."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept a command to run and the import switch."""
@@ -77,6 +83,8 @@ class Command(BaseCommand):
 
     def handle(self, *, command: str | None, imports: bool, **options: object) -> None:
         """Run the code or the console, then close what it opened."""
+        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+            self.record("shell", code=command is not None)
         namespace: dict[str, object] = {
             "asyncio": asyncio,
             "settings": settings,
