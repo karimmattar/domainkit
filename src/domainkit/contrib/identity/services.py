@@ -23,6 +23,7 @@ from domainkit.contrib.auth import AbstractBaseUser, AbstractUser
 from domainkit.contrib.auth.integration import UserSignedUp
 from domainkit.contrib.auth.models import UserId
 
+from .events import IdentityLinked, IdentityUnlinked
 from .exceptions import EmailTaken, IdentityTaken, LastWayIn, NoAccount, UnknownProvider
 from .providers import Claims, Provider, make_provider
 from .settings import IdentitySettings
@@ -142,6 +143,9 @@ async def link(user_id: UUID, name: str, claims: Claims) -> None:
             raise IdentityTaken("Another account is linked to that identity.")
         if found is None:
             await uow.identities.link(user_id, name, claims.subject, claims.email)
+            user = await uow.users.find(UserId(user_id))
+            if user is not None:  # Audited: a new way into the account.
+                user.record(IdentityLinked(user_id=user_id, provider=name))
             await uow.commit()
 
 
@@ -157,7 +161,10 @@ async def unlink(user: AbstractBaseUser, name: str) -> None:
         others = [each for each in linked if each.provider != name]
         if not others and not user.has_usable_password():
             raise LastWayIn("Set a password or link another identity first.")
-        await uow.identities.unlink(user.id, name)
+        if await uow.identities.unlink(user.id, name):
+            stored = await uow.users.find(UserId(user.id))
+            if stored is not None:
+                stored.record(IdentityUnlinked(user_id=user.id, provider=name))
         await uow.commit()
 
 

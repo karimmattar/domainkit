@@ -156,7 +156,7 @@ How each status is reached, and which fields a body holds, is in
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
 | `rate_limited` | 429 | http.ratelimit: `RATE_LIMIT` or a route's `Throttle`; contrib.auth: login, password, code, link, and signup throttles. |
-| `reauthentication_required` | 401 | `ReauthenticationRequired` (contrib.devices.exceptions): Adding a key needs the password, or a step-up within ten minutes. |
+| `reauthentication_required` | 401 | `ReauthenticationRequired` (contrib.auth.stepup): A change to how one logs in needs the password, or a recent step-up. |
 | `reference_reused` | 409 | `ReferenceReused` (contrib.accounting.exceptions): A source and reference that name an entry or a hold made otherwise. |
 | `referenced` | 409 | http.errors: a foreign key refused the change. |
 | `refresh_not_supported` | 400 | contrib.auth.authentication: Tokens are not refreshed here; log in again. |

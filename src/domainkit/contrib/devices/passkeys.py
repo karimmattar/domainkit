@@ -22,15 +22,10 @@ from datetime import timedelta
 from typing import Any, Final
 from uuid import UUID
 
-from starlette.requests import Request
-
 from domainkit.apps import registry
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.integration import (
-    check_password_again,
-    impersonated,
-    proof_of,
-    utc_now,
+    reauthenticate,
 )
 from domainkit.contrib.auth.models import UserId
 
@@ -38,7 +33,6 @@ from .events import PasskeyAdded
 from .exceptions import (
     PasskeyRefused,
     PasskeysOff,
-    ReauthenticationRequired,
     TooManyKeys,
 )
 from .settings import DevicesSettings
@@ -66,8 +60,6 @@ logger = logging.getLogger(__name__)
 REGISTER: Final = "register"
 LOGIN: Final = "login"
 STEP_UP: Final = "step_up"
-REAUTH_AGE: Final = timedelta(minutes=10)
-"""How recent a step-up must be to add a key without the password."""
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -91,27 +83,6 @@ def passkey_settings() -> DevicesSettings:
     if config.RP_ID is None:
         raise PasskeysOff("Passkeys are not set up here.")
     return config
-
-
-async def reauthenticate(
-    request: Request, user: AbstractBaseUser, password: str | None, action: str
-) -> None:
-    """The user authenticated again: ``password``, or a recent step-up.
-
-    Never while staff act as the user.
-
-    Raises:
-        ReauthenticationRequired: Neither, or an impersonation.
-        APIError: The password is wrong, or its checks are throttled.
-    """
-    if impersonated(request):
-        raise ReauthenticationRequired
-    if password is not None:
-        await check_password_again(request, user, password, action)
-        return
-    proof = await proof_of(request)
-    if proof is None or utc_now() - proof.auth_time > REAUTH_AGE:
-        raise ReauthenticationRequired
 
 
 async def creation_options(user: AbstractBaseUser) -> dict[str, Any]:

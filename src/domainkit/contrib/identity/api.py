@@ -23,15 +23,17 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.integration import (
+    PASSWORD_MAX_LENGTH,
     MfaChallengeOut,
     TokenOut,
     challenge,
     issue_login,
+    reauthenticate,
 )
 from domainkit.contrib.auth.models import UserId
 from domainkit.http.access import IsUnscoped, Public, Require
@@ -103,11 +105,31 @@ async def start_login(name: str) -> AuthorizationOut:
     return AuthorizationOut(authorization_url=await begin(name, LOGIN))
 
 
+class LinkIn(BaseModel):
+    """The password, unless the user stepped up in the last ten minutes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: str | None = Field(
+        default=None, min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False
+    )
+
+
 @router.post("/identity/{name}/link")
 async def start_link(
-    name: str, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    name: str,
+    request: Request,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+    body: LinkIn | None = None,
 ) -> AuthorizationOut:
-    """Start linking an identity at ``name`` to the user."""
+    """Start linking an identity at ``name`` to the user, who authenticates again.
+
+    A linked identity is a way into the account: the password, or a step-up
+    in the last ten minutes, as for a passkey; never while staff act as the
+    user.
+    """
+    password = None if body is None else body.password
+    await reauthenticate(request, user, password, "link_identity")
     return AuthorizationOut(authorization_url=await begin(name, LINK, user.id))
 
 

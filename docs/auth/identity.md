@@ -80,7 +80,7 @@ IDENTITY = {
 | --- | --- | --- |
 | `GET /identity/providers` | anyone | `{"providers": [...], "saml": [...]}`: the names. |
 | `POST /identity/{name}/login` | anyone | `{"authorization_url"}`: send the browser there. |
-| `POST /identity/{name}/link` | a user | The same, to link an identity to the user. |
+| `POST /identity/{name}/link` | a user | The same, to link an identity to the user: `{"password"}`, or a step-up in the last ten minutes; never as an impersonation (`reauthentication_required`, 401). |
 | `POST /identity/{name}/callback` | anyone | `{"code", "state"}` the provider sent your page: `200` with tokens, `202` with the second factor's challenge, or `{"linked": "<name>"}` for a link. |
 | `POST /identity/ticket` | anyone | `{"ticket"}` a SAML response gave: tokens or a challenge, once. |
 | `GET /identity/linked` | a user | The user's identities: provider, email, when linked. |
@@ -108,8 +108,12 @@ A login comes back to one of three ends:
   instead); `identity_not_linked` (422) else, and when the user model
   has signup fields a provider does not give.
 
-A link refuses an identity linked to another account
-(`identity_taken`, 409); unlinking refuses to leave a user without a
+A linked identity is a way into the account, so starting a link asks the
+user to authenticate again, as adding a passkey does: whoever held a
+stolen access token could otherwise link their own identity and keep the
+account. Linking and unlinking are audited (`identity.identity_linked`,
+`identity.identity_unlinked`). A link refuses an identity linked to
+another account (`identity_taken`, 409); unlinking refuses to leave a user without a
 usable password and without another identity (`identity_last_way_in`,
 422). A provider that refuses, cannot be reached, or answers what does
 not hold is `identity_provider_error` (502); its reason is logged, never

@@ -176,7 +176,9 @@ await approve_request(
   can make a second account and approve their own requests with it. Give
   approver rights only to people who cannot create users or change
   grants, and watch the audit trail for both (`auth.user_created`,
-  `auth.user_permission_granted`, `auth.user_joined_group`).
+  `auth.user_permission_granted`, `auth.user_joined_group`). Staff acting
+  as a user (impersonation) can neither submit, approve, reject, nor
+  cancel: requests are made and decided in one's own name only.
 - **Splitting.** A threshold judges one command. Ten postings of 999
   dollars under a 1,000-dollar threshold need no approval. Bound what an
   actor may move in a window with `domainkit.contrib.limits`, which

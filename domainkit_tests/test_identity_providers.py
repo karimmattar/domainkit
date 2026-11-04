@@ -24,7 +24,13 @@ from domainkit_tests.conftest import (
     Migrated,
     Shape,
 )
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
+from domainkit_tests.test_auth_http import (
+    PASSWORD,
+    audited,
+    bearer,
+    create_user,
+    login,
+)
 
 PROVIDERS = Shape(
     "providers",
@@ -197,12 +203,20 @@ def test_without_signup_or_a_verified_email_nothing_is_made(
 
 
 def test_a_user_links_an_identity_then_logs_in_with_it(app: App, idp: FakeIdP) -> None:
-    """Linking needs a login; the identity then logs the user in, and unlinks."""
+    """Linking needs a login and the password; the identity logs in, and unlinks.
+
+    The audit found a link started with an access token alone, so whoever
+    held a stolen one (or staff acting as the user) could link their own
+    identity and keep the account, unaudited (A2-1).
+    """
     client = app(PROVIDERS={"idp": OIDC})
     create_user("bob")
     headers = bearer(login(client, "bob")["access_token"])
 
-    started = client.post("/auth/identity/idp/link", headers=headers)
+    unconfirmed = client.post("/auth/identity/idp/link", headers=headers)
+    started = client.post(
+        "/auth/identity/idp/link", json={"password": PASSWORD}, headers=headers
+    )
     code, state = idp.authorize(started.json()["authorization_url"])
     linked = client.post(
         "/auth/identity/idp/callback", json={"code": code, "state": state}
@@ -217,6 +231,11 @@ def test_a_user_links_an_identity_then_logs_in_with_it(app: App, idp: FakeIdP) -
     assert removed.status_code == 204
     assert after.json()["code"] == "identity_not_linked"
     assert client.post("/auth/identity/idp/link").status_code == 401
+    assert unconfirmed.json()["code"] == "reauthentication_required"
+    assert [row["action"] for row in audited("identity.identity_linked")] == [
+        "identity.identity_linked"
+    ]
+    assert len(audited("identity.identity_unlinked")) == 1
 
 
 def test_an_identity_linked_elsewhere_and_the_last_way_in(
@@ -228,7 +247,9 @@ def test_an_identity_linked_elsewhere_and_the_last_way_in(
     create_user("bob")
     bob = bearer(login(client, "bob")["access_token"])
 
-    started = client.post("/auth/identity/idp/link", headers=bob)
+    started = client.post(
+        "/auth/identity/idp/link", json={"password": PASSWORD}, headers=bob
+    )
     code, state = idp.authorize(started.json()["authorization_url"])
     taken = client.post(
         "/auth/identity/idp/callback", json={"code": code, "state": state}

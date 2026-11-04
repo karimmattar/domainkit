@@ -13,8 +13,11 @@ from .api import PASSWORD_MAX_LENGTH, MfaChallengeOut, TokenOut, issue_login
 from .events import SteppedUp, UserDeleted, UserSignedUp
 from .mfa import challenge
 from .stepup import (
+    REAUTH_AGE,
+    ReauthenticationRequired,
     StepUpOut,
     check_password_again,
+    reauthenticate,
     record_step_up,
     step_up_answer,
     stepping_credentials,
@@ -23,7 +26,9 @@ from .tokens import utc_now
 
 __all__ = [
     "PASSWORD_MAX_LENGTH",
+    "REAUTH_AGE",
     "MfaChallengeOut",
+    "ReauthenticationRequired",
     "StepUpOut",
     "SteppedUp",
     "TokenOut",
@@ -34,6 +39,7 @@ __all__ = [
     "impersonated",
     "issue_login",
     "proof_of",
+    "reauthenticate",
     "record_step_up",
     "step_up_answer",
     "stepping_credentials",

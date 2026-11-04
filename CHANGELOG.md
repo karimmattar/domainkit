@@ -37,6 +37,17 @@ and a status.
   and its refusal was not audited: ldap3 cannot pack a fractional
   `TIMEOUT`. It is rounded up to whole seconds, and any failure of the
   directory now refuses the password (A2-4).
+- Linking an identity at a provider needed only an access token, worked
+  while staff acted as the user, and was not audited: whoever held a
+  stolen token could link their own identity and keep the account. A link
+  now asks for the password or a step-up in the last ten minutes, as
+  adding a passkey does, never as an impersonation; linking and unlinking
+  are audited (`identity.identity_linked`, `identity.identity_unlinked`)
+  (A2-1). `POST /auth/identity/{name}/link` takes `{"password"}`.
+- One staff member could make an approval request and approve it twice,
+  by impersonating the maker and then another approver. Approval requests
+  are submitted, approved, rejected, and cancelled in one's own name only
+  (A3-1).
 - An impersonation token kept acting as its user for the rest of
   `AUTH.IMPERSONATION_TTL` after its staff member was deactivated,
   deleted, or lost the right to change users. Each request of such a
