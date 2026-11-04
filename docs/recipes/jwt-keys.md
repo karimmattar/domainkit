@@ -1,15 +1,27 @@
 # Replacing the key that signs JSON Web Tokens
 
-Every JSON Web Token names the key that signed it (`kid`). A new key can
-then sign while the old one still verifies what it signed, for one token
-lifetime after the rollout ends, and no client is logged out
+This recipe replaces the key that signs your JSON Web Tokens, without
+logging out any client.
+
+## The problem
+
+A signing key should not live for ever. You replace it on a schedule, or
+when a person who knew it leaves. But every client holds a token that the
+old key signed. If the service stopped trusting the old key at once,
+every client would be refused at once.
+
+domainkit avoids that. Every JSON Web Token names the key that signed it
+(`kid`). So a new key can sign, while the old key still verifies what it
+signed, for one token lifetime after the rollout ends
 ([ADR 0097](../adr/0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md),
 [authentication](../auth/authentication.md#replacing-a-key)).
 
 You need a project with `domainkit[jwt,sqlite,testing]` installed. Every
 step here is run as written by `domainkit_tests/test_recipes.py`.
 
-## Tokens signed with a key from the environment
+## The solution
+
+### Step 1: make a project
 
 ```bash
 domainkit init keysAPI keys
@@ -18,8 +30,10 @@ python manage.py makemigrations -m "auth"
 python manage.py migrate
 ```
 
-In production the signing key comes from the environment, and so do the
-keys it replaced, with the time the rollout of the new one ended:
+### Step 2: read the keys from the environment
+
+In production, the signing key comes from the environment. So do the
+keys it replaced, with the time the rollout of the new key ended:
 
 ```python title="src/config/settings/production.py"
 AUTH = {
@@ -50,23 +64,10 @@ AUTH = {
 }
 ```
 
-An HMAC key (`HS256`, the default) has at least 32 bytes:
+An HMAC key (`HS256`, the default) has at least 32 bytes. Make one with
 `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
-## The rollout
-
-1. Make a new key. Deploy it as `JWT_SIGNING_KEY`, with the old one in
-   `JWT_PREVIOUS_KEYS`, and `JWT_KEY_RETIRED_AT` set to when the rollout
-   ends: when the last process stops signing with the old key. That is at
-   most a day ahead (`auth.E009` refuses later).
-2. Tokens the old key signed keep working until `JWT_KEY_RETIRED_AT` plus
-   `ACCESS_TOKEN_TTL` (5 minutes) and `LEEWAY`; then they are refused.
-   Refresh tokens are not signed: a client that is refused refreshes, and
-   gets a token of the new key.
-3. After that time, remove `JWT_PREVIOUS_KEYS` and destroy the old key.
-
-A key that leaked is not listed: replace it alone, and every client
-refreshes once.
+### Step 3: check the production settings
 
 `check` reads the production settings as a deployment would set them:
 
@@ -74,7 +75,13 @@ refreshes once.
 KEYS_API_SETTINGS_MODULE=config.settings.production KEYS_API_ALLOWED_HOSTS=api.example.com KEYS_API_DATABASE_URL=postgresql+asyncpg://app@db/keys KEYS_API_REDIS_URL=rediss://:s3cret@cache:6380/0 KEYS_API_SECRET_KEY=a-production-secret-of-fifty-random-characters-or-more KEYS_API_TRUSTED_PROXIES=10.0.0.0/8 KEYS_API_JWT_SIGNING_KEY=the-new-key-of-thirty-two-bytes-or-more KEYS_API_JWT_PREVIOUS_KEYS=the-old-key-of-thirty-two-bytes-or-more KEYS_API_JWT_KEY_RETIRED_AT=2026-10-01T09:30:00Z python manage.py check
 ```
 
-## A test of the rollout
+It prints `System check identified no issues`.
+
+### Step 4: test the rollout
+
+The test logs in while the old key signs, then serves the application
+with the new key and the old one retired. It checks that the old token
+works through the rollout, and is refused after it:
 
 ```python title="tests/test_jwt_keys.py (new file)"
 """A token of the old key works through the rollout, then is refused."""
@@ -150,8 +157,49 @@ async def test_the_old_keys_tokens_work_through_the_rollout(
         assert await me(after, fresh) == 200
 ```
 
+Run the checks and the tests:
+
 ```bash
 ruff check --fix .
 ruff format --check .
 pytest
 ```
+
+## The rollout
+
+When you replace the key in production, follow these steps:
+
+1. Make a new key. Deploy it as `JWT_SIGNING_KEY`, with the old one in
+   `JWT_PREVIOUS_KEYS`, and `JWT_KEY_RETIRED_AT` set to when the rollout
+   ends: when the last process stops signing with the old key. That time
+   is at most a day ahead (`auth.E009` refuses a later one).
+2. Tokens that the old key signed keep working until `JWT_KEY_RETIRED_AT`
+   plus `ACCESS_TOKEN_TTL` (5 minutes) and `LEEWAY`. Then they are
+   refused. Refresh tokens are not signed: a client that is refused
+   refreshes, and gets a token of the new key.
+3. After that time, remove `JWT_PREVIOUS_KEYS`, and destroy the old key.
+
+!!! warning
+    A key that leaked is never listed in `JWT_PREVIOUS_KEYS`. Replace it
+    alone: every client then refreshes once.
+
+## How it works
+
+- Each token's header names its key (`kid`), so the service knows which
+  key to verify it with.
+- `AUTH.JWT.SIGNING_KEY` signs every new token. `PREVIOUS_KEYS` only
+  verify, and each one stops at its `RETIRED_AT` plus the token lifetime.
+  So a token signed with an old key cannot outlive the rollout by more
+  than one lifetime, even when the token asked for longer.
+- `check` refuses a previous key that is the signing key, or that is
+  listed twice (`auth.E008`), and one that retires more than a day ahead
+  (`auth.E009`).
+
+## See also
+
+- [Authentication](../auth/authentication.md#replacing-a-key): JSON Web
+  Tokens and their settings.
+- [Checks](../reference/checks.md#errors-of-domainkitcontribauth):
+  `auth.E008` and `auth.E009`.
+- [Signing](../reference/signing.md#replacing-secret_key): replacing
+  `SECRET_KEY`, which signs other values.

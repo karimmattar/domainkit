@@ -1,9 +1,20 @@
 # Running behind a proxy
 
-Behind a load balancer every connection comes from the proxy. The
-application then takes each caller's address, scheme, and request id from
-the headers the proxy sets, and only from the proxies `TRUSTED_PROXIES`
-lists, so a caller cannot claim another's address or request id
+This recipe sets up a service behind a load balancer or a reverse proxy,
+so that it records each caller's real address and the proxy's request
+id, and believes nobody else.
+
+## The problem
+
+Behind a load balancer, every connection comes from the proxy. The
+service must take each caller's address, scheme, and request id from the
+headers the proxy sets. But a caller can send the same headers. If the
+service believed them from anyone, a caller could claim another's
+address, and with it another's rate limit, login throttle, and place in
+the audit trail; or name its requests with a request id of its choice.
+
+The service must believe these headers only from the proxies that
+`TRUSTED_PROXIES` lists
 ([ADR 0072](../adr/0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md),
 [ADR 0099](../adr/0099-take-request-ids-from-trusted-proxies-only.md),
 [operations.md](../operations.md#request-ids)).
@@ -11,10 +22,12 @@ lists, so a caller cannot claim another's address or request id
 You need a project with `domainkit[sqlite,testing]` installed. Every step
 here is run as written by `domainkit_tests/test_recipes.py`.
 
-## The proxy
+## The solution
 
-TLS ends at the proxy, which sets the caller's address, the scheme, and a
-request id of its own, over whatever the caller sent. With nginx:
+### Step 1: let the proxy set the headers
+
+TLS ends at the proxy. The proxy sets the caller's address, the scheme,
+and a request id of its own, over whatever the caller sent. With nginx:
 
 ```nginx
 location / {
@@ -26,22 +39,26 @@ location / {
 }
 ```
 
-Run uvicorn with `--no-proxy-headers` (the image `init` writes does), so
-the application alone decides whom to believe.
+Run uvicorn with `--no-proxy-headers` (the image that `init` writes
+does), so the application alone decides whom to believe
+([Server limits](../reference/servers.md#proxy-headers)).
 
-## The application
+### Step 2: make a project
 
 ```bash
 domainkit init edgeAPI edge
 cd edge
 ```
 
-The production settings `init` writes read `TRUSTED_PROXIES` from the
-environment: the networks the proxies connect from, comma-separated
+### Step 3: name the proxies' networks
+
+The production settings that `init` writes read `TRUSTED_PROXIES` from
+the environment: the networks the proxies connect from, comma-separated
 (`EDGE_API_TRUSTED_PROXIES=10.0.0.0/8`), or empty when callers connect
 directly. `PROXY_SCHEME_HEADER` (`X-Forwarded-Proto`) and
-`ACCEPT_REQUEST_ID` (`"proxies"`) keep their defaults. `check` says where
-the scheme comes from:
+`ACCEPT_REQUEST_ID` (`"proxies"`) keep their defaults.
+
+`check` says where the scheme comes from:
 
 ```bash
 EDGE_API_SETTINGS_MODULE=config.settings.production EDGE_API_ALLOWED_HOSTS=api.example.com EDGE_API_DATABASE_URL=postgresql+asyncpg://app@db/edge EDGE_API_REDIS_URL=rediss://:s3cret@cache:6380/0 EDGE_API_SECRET_KEY=a-production-secret-of-fifty-random-characters-or-more EDGE_API_TRUSTED_PROXIES=10.0.0.0/8 python manage.py check
@@ -49,13 +66,18 @@ EDGE_API_SETTINGS_MODULE=config.settings.production EDGE_API_ALLOWED_HOSTS=api.e
 
 It prints `Info: security.I001: HTTPS is not checked: ...`: the request's
 scheme is taken from the `X-Forwarded-Proto` header of `TRUSTED_PROXIES`
-only. The tests trust a proxy network too:
+only.
+
+### Step 4: trust a proxy network in the tests
 
 ```python title="src/config/settings/test.py"
 TRUSTED_PROXIES = ["10.0.0.0/8"]
 ```
 
-## A test of whom the application believes
+### Step 5: test whom the application believes
+
+The test sends the same headers from a proxy's address, then from a
+caller's, and checks what the application records:
 
 ```python title="tests/test_proxies.py (new file)"
 """Request ids and addresses come from trusted proxies only."""
@@ -111,15 +133,38 @@ async def test_the_caller_is_whom_a_trusted_proxy_names(
     assert line.client_ip == recorded
 ```
 
+Run the checks and the tests:
+
 ```bash
 ruff check --fix .
 ruff format --check .
 pytest
 ```
 
-Of several `X-Forwarded-For` addresses, the application walks from the
-right and takes the first that is not a trusted proxy's: the nearest
-caller the proxies saw. That address is what rate limits, login throttles,
-the audit trail, and the logs record. A proxy that cannot set
-`X-Request-ID` would pass a caller's on: set `ACCEPT_REQUEST_ID = "never"`
-then, and every request gets an id of its own.
+## How it works
+
+`ProxyHeadersMiddleware` runs first, before any other middleware. It
+looks at the address the connection comes from:
+
+- **From a trusted proxy.** It walks `X-Forwarded-For` from the right,
+  and takes the first address that is not a trusted proxy's: the nearest
+  caller that the proxies saw. It reads the scheme from
+  `PROXY_SCHEME_HEADER`, and the request id from `X-Request-ID`.
+- **From anyone else.** The connection's own address is the caller, and
+  the headers are ignored. A caller's own request id is replaced by a new
+  one (32 hex digits).
+
+The address it finds is what rate limits, login throttles, the audit
+trail, and the logs record.
+
+If your proxy cannot set `X-Request-ID`, it would pass a caller's on.
+Set `ACCEPT_REQUEST_ID = "never"` then, and every request gets an id of
+its own. If the proxy talks to the server over a unix socket, add
+`"unix"` to `TRUSTED_PROXIES` ([Server limits](../reference/servers.md#unix-sockets)).
+
+## See also
+
+- [HTTP settings](../reference/http.md#proxies-and-request-ids):
+  `TRUSTED_PROXIES`, `PROXY_SCHEME_HEADER`, and `ACCEPT_REQUEST_ID`.
+- [Checks](../reference/checks.md#information-https): `security.I001`.
+- [Security](../security.md): what ends at the edge.

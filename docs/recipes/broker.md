@@ -1,16 +1,27 @@
 # A broker of your own
 
-The outbox hands messages to workers through a broker: RabbitMQ, Redis
-Streams, NATS JetStream, Kafka, or Amazon SQS
-([messaging](../contrib/messaging.md)). A broker of your own carries them
-any other way; here, a SQLite file, for a service and its worker on one
-machine. The outbox stays the record of every message: a broker that
-loses one delays it, never drops it.
+This recipe writes a message broker of your own, and makes the worker
+use it. The example keeps its queues in a SQLite file, for a service and
+its worker on one machine.
+
+## The problem
+
+The [outbox](../learning.md#words) hands messages to workers through a
+broker. domainkit ships brokers for RabbitMQ, Redis Streams, NATS
+JetStream, Kafka, and Amazon SQS ([messaging](../contrib/messaging.md)).
+You want to carry the messages another way: through a queue service
+domainkit does not know, or, as here, a SQLite file on one machine.
+
+You can do this without risk to your data. The outbox stays the record
+of every message: a broker that loses a message delays it, and never
+drops it.
 
 You need a project with `domainkit[sqlite,testing]` installed. Every step
 here is run as written by `domainkit_tests/test_recipes.py`.
 
-## The broker
+## The solution
+
+### Step 1: make a project
 
 ```bash
 domainkit init jobsAPI jobs
@@ -19,14 +30,21 @@ python manage.py makemigrations -m "auth"
 python manage.py migrate
 ```
 
+### Step 2: write the broker
+
 A broker that is asked for messages subclasses
-`domainkit.broker.pull.PullBroker`: it declares queues, publishes, and
-makes a `Puller`, which fetches messages and answers each (`ack`, or
-`requeue`); the base class runs the pump that hands them to handlers, at
-most `prefetch` at once. A message taken and never answered (its worker
-died) comes back after `REDELIVER_AFTER` seconds. It is made as
-`Broker(config)` from its `BROKERS` entry, whose `URL` is the broker's to
-read:
+`domainkit.broker.pull.PullBroker`. It does three things:
+
+- `declare(queues)` makes the queues, if the service needs that;
+- `publish(queue, body, message_id=...)` keeps a message;
+- `puller(queues)` makes a `Puller`, which fetches messages (`fetch`) and
+  answers each one: `ack` forgets it, `requeue` hands it out again.
+
+The base class runs the pump that hands the fetched messages to
+handlers, at most `prefetch` at once. A message taken and never answered
+(its worker died) comes back after `REDELIVER_AFTER` seconds. The broker
+is made as `Broker(config)` from its `BROKERS` entry, whose `URL` is the
+broker's to read:
 
 ```python title="src/config/broker.py (new file)"
 """Work queues in a SQLite file, for one machine."""
@@ -144,9 +162,10 @@ class SqlitePuller(Puller):
         )
 ```
 
-Name it as the default broker. `BACKEND` makes it; the `URL` says where
-its file is, and `PREFIX`, as for every broker, keeps this service's
-queues apart from another's:
+### Step 3: name it as the default broker
+
+`BACKEND` makes the broker. The `URL` says where its file is. `PREFIX`,
+as for every broker, keeps this service's queues apart from another's:
 
 ```python title="src/config/settings/base.py"
 BROKERS = {
@@ -161,10 +180,11 @@ BROKERS = {
 The outbox's relay now publishes to the file, and `runworker` consumes
 from it.
 
-## A test of the broker
+### Step 4: test the broker
 
-The test publishes, consumes, requeues a message once, and checks each
-message reaches the handler and is gone once acknowledged:
+The test publishes two messages, consumes them, requeues the first one
+once, and checks that each message reaches the handler and is gone once
+acknowledged:
 
 ```python title="tests/test_broker.py (new file)"
 """Messages go in the file, out to one handler, and are forgotten once done."""
@@ -220,13 +240,37 @@ async def test_each_message_reaches_one_handler_and_is_forgotten(
     await broker.close()
 ```
 
+Run the checks and the tests:
+
 ```bash
 ruff check --fix .
 ruff format --check .
 pytest
 ```
 
-A broker pushed to by its server (as RabbitMQ is) subclasses
-`domainkit.broker.Broker` instead, and answers `consume` itself; the
-port's contract (one consumer per message, each answered once, the rest
-redelivered) is in [messaging](../contrib/messaging.md).
+## How it works
+
+| Part | Who calls it | What it must do |
+| --- | --- | --- |
+| `publish` | the relay, after a commit | Keep the message before it returns. |
+| `puller(queues)` | the worker, once | Return a `Puller` of those queues. |
+| `Puller.fetch(limit)` | the pump, again and again | Return up to `limit` messages, and hide them from other pullers. Wait a little when there are none. |
+| `Puller.ack(message)` | the handler, through `delivery.ack()`, when the message is done | Forget the message. |
+| `Puller.requeue(message)` | the handler, through `delivery.requeue()`, to run it again | Hand the message out again. |
+| `close()` | the worker, when it stops | Let deliveries finish (`super().close()`), then close what the broker opened. |
+
+Each message reaches one consumer, and is answered once; a message that
+nobody answers is delivered again. That is the port's contract, and the
+outbox keeps every message until a worker records it as done.
+
+A broker that its server pushes messages to (as RabbitMQ does)
+subclasses `domainkit.broker.Broker` instead, and answers `consume`
+itself. The port's contract is in [messaging](../contrib/messaging.md).
+
+## See also
+
+- [Backends](../reference/backends.md#brokers): every `BROKERS` key.
+- [Extension points](../reference/extension-points.md#backends-from-an-installed-package):
+  offer the broker by name from a package.
+- [Messaging](../contrib/messaging.md): the outbox, tasks, and the
+  worker.

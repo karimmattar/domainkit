@@ -1,15 +1,26 @@
 # An SMS provider of your own
 
-`domainkit.contrib.notifications` sends text messages through the outbox,
-by an `SmsBackend`. Twilio, Vonage, SNS, Unifonic, and Huawei's SMN come
-with it ([mail.md](../mail.md#text-messages-and-push-notifications)); a provider of
-your own is a class with one method, here one with a JSON API and a
-bearer token.
+This recipe connects `domainkit.contrib.notifications` to a text-message
+provider that domainkit does not ship: one with a JSON API and a bearer
+token.
+
+## The problem
+
+`domainkit.contrib.notifications` sends text messages through the
+outbox, by an `SmsBackend`. Twilio, Vonage, SNS, Unifonic, and Huawei's
+SMN come with it ([mail.md](../mail.md#text-messages-and-push-notifications)).
+Your provider is another one. You want its messages to leave with the
+commit, to be retried when the provider fails, and to keep secret the
+text they carry.
+
+A backend of your own is a class with one method.
 
 You need a project with `domainkit[sqlite,testing,httpclient]` installed.
 Every step here is run as written by `domainkit_tests/test_recipes.py`.
 
-## The backend
+## The solution
+
+### Step 1: make a project
 
 ```bash
 domainkit init alertsAPI alerts
@@ -18,12 +29,15 @@ python manage.py makemigrations -m "auth"
 python manage.py migrate
 ```
 
-A backend subclasses `SmsBackend` and answers `send_messages`: send each,
-return how many went, and raise `NotificationFailed` when the provider
-refuses one or cannot be reached. The worker then retries the message,
-and keeps it as a dead letter after `MAX_ATTEMPTS`. Its settings come
-from `NOTIFICATIONS["SMS_OPTIONS"]`, and its calls go through
-`domainkit.http.client`, with its timeouts, retries, and circuit breaker:
+### Step 2: write the backend
+
+A backend subclasses `SmsBackend`, and answers `send_messages`: it sends
+each message, and returns how many went. It raises `NotificationFailed`
+when the provider refuses a message, or cannot be reached.
+
+The backend reads its settings from `NOTIFICATIONS["SMS_OPTIONS"]`. Its
+calls go through `domainkit.http.client`, with its timeouts, retries, and
+circuit breaker:
 
 ```python title="src/config/sms.py (new file)"
 """Text messages through Example SMS's JSON API."""
@@ -80,7 +94,9 @@ class ExampleSmsBackend(SmsBackend):
         return len(messages)
 ```
 
-Install the notifications app, and name the backend and its options; the
+### Step 3: install the app and name the backend
+
+Install the notifications app, and name the backend and its options. The
 token comes from the environment:
 
 ```python title="src/config/settings/base.py"
@@ -94,13 +110,13 @@ NOTIFICATIONS = {
 }
 ```
 
-A use case queues a message with `send_sms(to, body, uow=uow)`: it leaves
-with the commit, and the worker hands it to the backend.
+A use case now queues a message with `send_sms(to, body, uow=uow)`. The
+message leaves with the commit, and the worker hands it to the backend.
 
-## A test of the backend
+### Step 4: test the backend
 
 `stub` sends the calls made in its block to a function instead of the
-network, so the test sees each request and chooses the answer; `db`
+network. So the test sees each request, and chooses the answer. `db`
 starts the project's domains (and an empty database) for the test:
 
 ```python title="tests/test_sms.py (new file)"
@@ -150,13 +166,37 @@ async def test_a_refusal_is_a_failure_the_worker_retries(db: None) -> None:
         await ExampleSmsBackend().send_messages([MESSAGE])
 ```
 
+Run the checks and the tests:
+
 ```bash
 ruff check --fix .
 ruff format --check .
 pytest
 ```
 
-A mail service is the same shape: subclass
+## How it works
+
+1. A use case calls `send_sms(to, body, uow=uow)`. The message is stored
+   in the outbox, in the same transaction as the use case's changes.
+2. After the commit, the worker takes the message, and calls
+   `send_messages` of the backend that `NOTIFICATIONS["SMS_BACKEND"]`
+   names.
+3. If the backend raises `NotificationFailed`, the worker retries the
+   message later. After `MAX_ATTEMPTS`, it keeps the message as a dead
+   letter (`manage.py messages list dead`).
+
+Keep the text out of errors: a message holds codes and personal data. The
+backend's error above names the provider's status, never the text.
+
+A mail service has the same shape: subclass
 `domainkit.contrib.mail.backends.BaseEmailBackend`, answer
-`send_messages`, and name it in `MAIL["BACKEND"]`
-([mail.md](../mail.md)).
+`send_messages`, and name it in `MAIL["BACKEND"]` ([mail.md](../mail.md)).
+
+## See also
+
+- [Mail and notifications](../mail.md): every setting of `MAIL` and
+  `NOTIFICATIONS`.
+- [Extension points](../reference/extension-points.md#backends): every
+  backend you can write.
+- [Runtime](../runtime.md#outgoing-http-calls): `HttpClient`, its
+  timeouts, and its circuit breaker.
