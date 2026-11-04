@@ -173,12 +173,15 @@ below is one pushed commit with tests, as the core's were.
 What code alone cannot give, and needs others:
 
 - **An audit from outside**: a firm's review of the threat model, auth,
-  signing, and the money paths ([the last internal audit](audit/0.9.0.md)
-  is the starting scope).
+  signing, and the money paths. [The scope to give them](audit/scope.md)
+  is ready, with the areas in order and their size.
 - **A published comparison**: the same service on domainkit, Django,
-  Litestar, and FastAPI, on the same machine, with the scripts to rerun it.
+  Litestar, and FastAPI, on the same machine. The scripts are ready
+  (`benchmarks/compare`, with its README); each app answers right, and
+  the numbers wait for a quiet machine.
 - **Newcomers timed**: how long people new to domainkit take to deploy a
-  first route, before and after L1 and L2.
+  first route, before and after L1 and L2. [The protocol](newcomer-study.md)
+  is ready; it waits for five people.
 - **The whole suite on 3.14t**: it waits for the interpreter's fix for a
   crash in mimalloc ([runtime.md](runtime.md)).
 

@@ -1,0 +1,7 @@
+# The other frameworks, and the runner's own needs; this framework is
+# installed from the checkout ("pip install -e .[postgres]").
+django==5.2.19
+litestar==2.25.0
+psycopg[binary,pool]==3.3.8
+httpx==0.28.1
+uvicorn[standard]==0.54.0
