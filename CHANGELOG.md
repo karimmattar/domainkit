@@ -82,8 +82,6 @@ and a status.
   each hop began a new TTL, and two superusers could loop back to
   themselves. Impersonating is refused to an impersonation (A1-2).
 
-### Fixed
-
 - CI's build job installed poetry's dependencies at their newest releases,
   without hashes, and ran the built wheel's smoke tests (third-party code)
   before uploading `dist/`: a compromised upstream release could have
@@ -108,6 +106,12 @@ and a status.
   (with their email), or the passkeys, devices, and push tokens of
   `contrib.devices`: only deleting the user removed them. Each app now
   answers for its own (A6-1).
+
+### Fixed
+
+- A transaction's keys of subjects and its keys by id were kept under one
+  name space, so a subject written as `#` and another key's id would have
+  been sealed under that key (audit A4-3).
 - An amount written in another script's digits (Arabic-Indic, say) passed
   the ledger's and the limits' schemas, whose `\d` takes any digit, and
   then failed in `Money`: a 500, not a 422. Amounts are ASCII digits
