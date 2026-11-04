@@ -1236,3 +1236,42 @@ async def test_a_key_made_during_an_erasure_with_no_index_is_destroyed(
             await shred_subject(str(ANN))
             await uow.commit()
         assert await rows("SELECT subject FROM domainkit_keys_subject_keys") == []
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    not os.environ.get("DOMAINKIT_TEST_POSTGRES_URL"),
+    reason="SQLite serializes the two writers; the race needs PostgreSQL",
+)
+async def test_an_index_sealed_with_a_key_erased_meanwhile_is_cleared(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Sealed with Ann's existing key while she is erased: no index is left.
+
+    The erasure's clearing cannot see a row not yet committed, so the
+    writer clears it as it commits (A4-2).
+    """
+    with project(database_url, tmp_path):
+        async with CardsUnitOfWork() as uow:  # Ann already has a key.
+            await uow.payments.add(
+                Payment(
+                    id=uuid.UUID(int=1),
+                    holder_id=ANN,
+                    pan=CardNumber("5500000000000004"),
+                    note="n",
+                )
+            )
+            await uow.commit()
+        async with CardsUnitOfWork() as uow:
+            await uow.cardholders.add(Cardholder(id=ANN, name="Ann", card_number=PAN))
+            await uow.session.flush()  # Sealed, and indexed, under her key.
+            await shred_subject(str(ANN))
+            await uow.commit()
+        indexes = await rows("SELECT card_number_index FROM cards_cardholders")
+        from domainkit.ddd import F
+
+        async with CardsUnitOfWork() as uow:
+            found = await uow.cardholders.filter(F("card_number") == PAN)
+
+    assert indexes == [{"card_number_index": None}]
+    assert found == []

@@ -139,6 +139,12 @@ and a status.
   `If-None-Match: *` and GCS's `x-goog-if-generation-match: 0` are signed,
   and Azure's SAS grants create only. [uploads.md](docs/uploads.md) says
   that such files are neither sniffed nor scanned (A5-4).
+- A row sealed for a person with a key they already had, written while
+  `shred_subject` erased them, kept its blind index: the erasure's
+  clearing could not see the row before it was committed, so a guess of
+  the erased value still matched it. The writer now checks, as it
+  commits and under the person's lock, that each key it sealed with is
+  still there, and clears that person's indexes if not (A4-2).
 
 ### Fixed
 

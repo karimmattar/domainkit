@@ -7,9 +7,12 @@ for it, on PostgreSQL), so it leaves a tombstone instead
 that made keys checks, as it commits and under the same locks, whether a
 subject it made a key for was erased after the key was made; if so it
 destroys the key, and the blind indexes it wrote for that subject, before
-committing (SEC-15a-2). A lock held from the key's making to the commit
-would make an erasure wait for every writer, and deadlock a request that
-erases a person it is writing for.
+committing (SEC-15a-2). A transaction that sealed with a key the subject
+already had checks the same way whether the key is still there; if an
+erasure destroyed it meanwhile, it clears the blind indexes it wrote
+(A4-2): the erasure's own clearing could not see them. A lock held from
+the key's making to the commit would make an erasure wait for every
+writer, and deadlock a request that erases a person it is writing for.
 """
 
 import hashlib
@@ -54,6 +57,8 @@ _LOCKS: Final = text(
 """Take each subject's lock, in the order given, until the transaction ends."""
 _made: WeakKeyDictionary[Transaction, dict[str, str]] = WeakKeyDictionary()
 """The subjects' keys each open transaction made, by subject: their ids."""
+_used: WeakKeyDictionary[Transaction, dict[str, str]] = WeakKeyDictionary()
+"""The subjects' existing keys each open transaction sealed with: their ids."""
 _made_lock: Final = threading.Lock()
 
 
@@ -88,8 +93,16 @@ class TableSubjectKeyStore:
     def of_subject(
         self, connection: Connection, subject: str
     ) -> StoredSubjectKey | None:
-        """The key of ``subject``, if it has one."""
-        return _stored(connection, subject_keys.c.subject == subject)
+        """The key of ``subject``, if it has one, to seal with.
+
+        The transaction remembers it, to check as it commits that no
+        erasure destroyed it meanwhile (``_committing``).
+        """
+        stored = _stored(connection, subject_keys.c.subject == subject)
+        if stored is not None and (writing := connection.get_transaction()):
+            with _made_lock:
+                _used.setdefault(writing, {})[subject] = stored.id
+        return stored
 
     def add(self, connection: Connection, key: StoredSubjectKey) -> StoredSubjectKey:
         """Store ``key``, unless ``key.subject`` has one; the one stored.
@@ -197,15 +210,26 @@ def erase(connection: Connection, subject: str) -> int:
 def _committing(connection: Connection) -> None:
     """Destroy the keys this transaction made for subjects erased since.
 
-    Under their locks, so an erasure either finished before (and left its
-    tombstone) or starts after this commit (and sees the keys).
+    Clear the blind indexes it wrote with keys erased since it read them,
+    too. Under their locks, so an erasure either finished before (and left
+    its tombstone, or took the key) or starts after this commit (and sees
+    the keys and the indexes).
     """
     transaction = cast("Transaction", connection.get_transaction())  # Committing.
     with _made_lock:
         made = _made.pop(transaction, {})
-    if not made:
+        used = _used.pop(transaction, {})
+    used = {subject: key for subject, key in used.items() if subject not in made}
+    if not made and not used:
         return
-    subject_lock(connection, made)
+    subject_lock(connection, made.keys() | used.keys())
+    if used:
+        kept = connection.scalars(
+            select(subject_keys.c.id).where(subject_keys.c.id.in_(used.values()))
+        ).all()
+        for subject, key_id in used.items():
+            if key_id not in kept:
+                clear_indexes(connection, indexed_tables(connection), subject)
     for subject, key_id in made.items():
         erased = exists().where(
             erasures.c.subject == subject,
