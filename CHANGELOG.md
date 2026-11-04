@@ -106,6 +106,11 @@ and a status.
   (with their email), or the passkeys, devices, and push tokens of
   `contrib.devices`: only deleting the user removed them. Each app now
   answers for its own (A6-1).
+- `migrate` left `domainkit_audit_checkpoints` and
+  `domainkit_ledger_states` without triggers, so the application's role
+  could delete a signed checkpoint, or roll a ledger's saved state back
+  and so reset the rollback detection it exists for. Checkpoints are
+  append-only now, and a ledger's state may only move forward (A6-7).
 
 ### Fixed
 

@@ -32,7 +32,7 @@ from typing import Final, Protocol
 from sqlalchemy import Connection, Table, inspect
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .tables import audit_log, audit_seals
+from .tables import audit_checkpoints, audit_log, audit_seals, ledger_states
 
 __all__ = [
     "protect",
@@ -102,6 +102,45 @@ def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
 PROTECT, UNPROTECT = statements(audit_log)
 """The audit trail's protection, and its removal."""
 
+ADVANCE_ONLY: Final = "domainkit_ledger_states_advance_only"
+"""The function of the triggers that keep each ledger's saved state moving forward."""
+
+
+def advance_only() -> tuple[str, ...]:
+    """The statements that keep ``ledger_states`` moving forward only.
+
+    A state is saved again as its ledger moves on, so updates are allowed,
+    but only to the same ledger at the same or a later transaction: a
+    deleted or rolled-back state would reset the rollback detection it
+    exists for.
+    """
+    table = ledger_states.name
+    return (
+        f"""
+    CREATE OR REPLACE FUNCTION {ADVANCE_ONLY}() RETURNS trigger LANGUAGE plpgsql
+    AS $$
+    BEGIN
+        IF TG_OP = 'UPDATE' AND NEW.ledger = OLD.ledger
+                AND NEW.transaction_id >= OLD.transaction_id THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION '{table} only moves forward'
+            USING ERRCODE = 'insufficient_privilege';
+    END
+    $$
+    """,
+        f"DROP TRIGGER IF EXISTS {ADVANCE_ONLY} ON {table}",
+        (
+            f"CREATE TRIGGER {ADVANCE_ONLY} BEFORE UPDATE OR DELETE ON {table} "
+            f"FOR EACH ROW EXECUTE FUNCTION {ADVANCE_ONLY}()"
+        ),
+        f"DROP TRIGGER IF EXISTS {ADVANCE_ONLY}_truncate ON {table}",
+        (
+            f"CREATE TRIGGER {ADVANCE_ONLY}_truncate BEFORE TRUNCATE ON {table} "
+            f"FOR EACH STATEMENT EXECUTE FUNCTION {ADVANCE_ONLY}()"
+        ),
+    )
+
 
 class Operations(Protocol):
     """The part of ``alembic.op`` used here."""
@@ -134,17 +173,21 @@ def _run(op: Operations, statements: tuple[str, ...]) -> None:
 
 
 async def protect_migrated(connection: AsyncConnection, database: str) -> None:
-    """After ``migrate``: protect the trail and its seals afresh (``on_migrated``).
+    """After ``migrate``: protect the trail, its seals, and its checkpoints afresh.
 
+    Each ledger's saved state may only move forward (``advance_only``).
     Only on PostgreSQL, and only the tables ``database`` holds:
-    ``makemigrations`` may not have written them yet.
+    ``makemigrations`` may not have written them yet (``on_migrated``).
     """
     if connection.dialect.name != "postgresql":
         return
     present = set(
         await connection.run_sync(lambda sync: inspect(sync).get_table_names())
     )
-    for table in (audit_log, audit_seals):
+    for table in (audit_log, audit_seals, audit_checkpoints):
         if table.name in present:
             for statement in statements(table)[0]:
                 await connection.exec_driver_sql(statement)
+    if ledger_states.name in present:
+        for statement in advance_only():
+            await connection.exec_driver_sql(statement)

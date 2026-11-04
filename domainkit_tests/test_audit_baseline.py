@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -36,6 +36,7 @@ from domainkit.contrib.audit.tables import (
     audit_keys,
     audit_log,
     audit_seals,
+    ledger_states,
 )
 from domainkit.db import connections
 from domainkit.db.hooks import on_migrated
@@ -422,6 +423,62 @@ async def test_migrate_protects_the_trail_afresh_each_time(tables: None) -> None
         "domainkit_audit_seals_append_only_truncate",
     ]
     assert remade == []
+
+
+@on_postgres
+async def test_checkpoints_stay_and_ledger_states_only_move_forward(
+    tables: None,
+) -> None:
+    """Checkpoints are append-only; a saved state is only replaced by a later one.
+
+    A deleted or rolled-back state would reset rollback detection (A6-7).
+    """
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(ledger_states.create)
+        await protect_migrated(connection, "default")
+        await connection.execute(
+            text(
+                "INSERT INTO domainkit_audit_checkpoints "
+                "VALUES (1, 'document', 'signature', now())"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO domainkit_ledger_states VALUES "
+                "('audit', 'defaultdb', 12, 'd', 's', 'k', now())"
+            )
+        )
+        await connection.execute(
+            text(
+                "UPDATE domainkit_ledger_states SET transaction_id = 15 "
+                "WHERE ledger = 'audit'"
+            )
+        )
+    refused = []
+    for statement in (
+        "UPDATE domainkit_audit_checkpoints SET document = 'forged'",
+        "DELETE FROM domainkit_audit_checkpoints",
+        "UPDATE domainkit_ledger_states SET transaction_id = 9",
+        "UPDATE domainkit_ledger_states SET ledger = 'other'",
+        "DELETE FROM domainkit_ledger_states",
+        "TRUNCATE domainkit_ledger_states",
+    ):
+        with pytest.raises(DBAPIError) as raised:
+            async with connections.engine().begin() as connection:
+                await connection.execute(text(statement))
+        refused.append(str(raised.value.orig).splitlines()[0].rsplit(": ", 1)[-1])
+    async with connections.engine().connect() as connection:
+        saved = await connection.scalar(
+            text("SELECT transaction_id FROM domainkit_ledger_states")
+        )
+    await connections.close_all()
+
+    assert saved == 15
+    assert refused == [
+        "domainkit_audit_checkpoints is append-only",
+        "domainkit_audit_checkpoints is append-only",
+        *["domainkit_ledger_states only moves forward"] * 4,
+    ]
 
 
 async def test_migrate_protects_only_the_tables_there_are(installed: str) -> None:
