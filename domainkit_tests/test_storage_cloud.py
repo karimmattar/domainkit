@@ -201,7 +201,8 @@ async def test_gcs_signs_v4_urls_with_the_account_key(
     assert query["X-Goog-Credential"] == (
         f"{INFO['client_email']}/20260304/auto/storage/goog4_request"
     )
-    assert query["X-Goog-SignedHeaders"] == "content-length;content-type;host"
+    names = "content-length;content-type;host;x-goog-if-generation-match"
+    assert query["X-Goog-SignedHeaders"] == names  # Created, never replaced.
     canonical = "\n".join(
         [
             "PUT",
@@ -211,8 +212,11 @@ async def test_gcs_signs_v4_urls_with_the_account_key(
                 for name, value in sorted(parse_qsl(parts.query))
                 if name != "X-Goog-Signature"
             ),
-            "content-length:3\ncontent-type:text/plain\nhost:gcs.example\n",
-            "content-length;content-type;host",
+            (
+                "content-length:3\ncontent-type:text/plain\nhost:gcs.example\n"
+                "x-goog-if-generation-match:0\n"
+            ),
+            names,
             "UNSIGNED-PAYLOAD",
         ]
     )
@@ -425,7 +429,7 @@ async def test_azure_refusals_name_the_error_code(
 async def test_azure_presigns_a_service_sas(
     blob: tuple[AzureBlobStorage, FakeBlob],
 ) -> None:
-    """Read for GET, create and write for PUT, https only, expiring, key-signed."""
+    """Read for GET, create only for PUT, https only, expiring, key-signed."""
     storage, _ = blob
     with freeze_time(MOMENT):
         url = await storage.presigned_url("a.txt", expires=timedelta(hours=1))
@@ -450,7 +454,7 @@ async def test_azure_presigns_a_service_sas(
     )
     digest = hmac.new(base64.b64decode(ACCOUNT_KEY), to_sign.encode(), hashlib.sha256)
     assert query["sig"] == base64.b64encode(digest.digest()).decode()
-    assert dict(parse_qsl(urlsplit(upload.url).query))["sp"] == "cw"
+    assert dict(parse_qsl(urlsplit(upload.url).query))["sp"] == "c"  # Never replace.
     assert upload.headers["x-ms-blob-type"] == "BlockBlob"
 
 

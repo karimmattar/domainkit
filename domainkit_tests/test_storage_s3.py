@@ -229,7 +229,10 @@ async def test_missing_files_and_refusals(bucket: tuple[S3Storage, FakeS3]) -> N
 async def test_presigned_uploads_sign_their_size_and_type(
     bucket: tuple[S3Storage, FakeS3],
 ) -> None:
-    """A new name; the URL signs Content-Length and Content-Type, and expires."""
+    """A new name; the URL signs Content-Length and Content-Type, and expires.
+
+    It signs If-None-Match too: it creates the name, never replaces it (A5-4).
+    """
     storage, _ = bucket
 
     upload = await storage.presigned_upload(
@@ -240,9 +243,15 @@ async def test_presigned_uploads_sign_their_size_and_type(
     assert upload.name.startswith("avatars/")
     assert upload.name.endswith(".png")
     assert upload.method == "PUT"
-    assert upload.headers == {"Content-Length": "1024", "Content-Type": "image/png"}
+    assert upload.headers == {
+        "Content-Length": "1024",
+        "Content-Type": "image/png",
+        "If-None-Match": "*",
+    }
     query = dict(parse_qsl(urlsplit(upload.url).query))
-    assert query["X-Amz-SignedHeaders"] == "content-length;content-type;host"
+    assert query["X-Amz-SignedHeaders"] == (
+        "content-length;content-type;host;if-none-match"
+    )
     assert urlsplit(upload.url).path == f"/files/media/{upload.name}"
     with pytest.raises(ValueError, match="positive size"):
         await storage.presigned_upload(size=0, content_type="image/png")

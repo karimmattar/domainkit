@@ -27,7 +27,7 @@ import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, ClassVar, Final
 from urllib.parse import quote, urlsplit
 
 from domainkit import clock
@@ -48,6 +48,8 @@ _BUCKET: Final = re.compile(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]")
 
 class GCSStorage(ObjectStorage):
     """Files in one Google Cloud Storage bucket."""
+
+    write_once: ClassVar[Mapping[str, str]] = {"x-goog-if-generation-match": "0"}
 
     def __init__(
         self,

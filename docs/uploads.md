@@ -117,8 +117,16 @@ upload = await storage.presigned_upload(
 A presigned URL works for one second to seven days. An upload's URL signs
 its size and its type on S3 and GCS, so it takes nothing else; Azure's
 SAS cannot bind them, so check `size(name)` once the client says it is
-done. GCS signs with the service account's key (the metadata server cannot
-sign) and Azure with the account key.
+done. An upload's URL only creates its name: S3 is sent `If-None-Match: *`
+and GCS `x-goog-if-generation-match: 0`, both signed, and Azure's SAS
+grants create only. So once the file is there and checked, the same URL
+cannot replace it. GCS signs with the service account's key (the metadata
+server cannot sign) and Azure with the account key.
+
+A presigned upload never passes through the application, so nothing sniffs
+its type or scans it, as `save_upload` does. Before the application trusts
+the file, read it back and check it, or upload through the application
+instead.
 
 ## Virus scanning
 

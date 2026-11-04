@@ -171,7 +171,7 @@ class AzureBlobStorage(ObjectStorage):
     async def _presign(
         self, name: str, method: str, expires: timedelta, headers: dict[str, str]
     ) -> str:
-        """A service SAS: read for GET, create and write for PUT.
+        """A service SAS: read for GET, create (never replace) for PUT.
 
         Raises:
             CloudAuthError: The storage has no account key to sign with.
@@ -183,7 +183,7 @@ class AzureBlobStorage(ObjectStorage):
             container=self.container,
             blob=self.key(name),
             key=self._key,
-            permissions="r" if method == "GET" else "cw",
+            permissions="r" if method == "GET" else "c",
             expiry=clock.now().astimezone(UTC) + expires,
         )
         return f"{self._blob(name)}?{query}"

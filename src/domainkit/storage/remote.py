@@ -12,10 +12,10 @@ or not at all, as every storage's files do.
 """
 
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Final
+from typing import ClassVar, Final
 
 from domainkit.storage.base import FileMissing, Storage, StoredFile
 
@@ -86,6 +86,8 @@ class ObjectStorage(Storage):
     """
 
     part_size: int = PART_SIZE
+    write_once: ClassVar[Mapping[str, str]] = {}
+    """Headers that make a presigned upload create its name, never replace it."""
 
     def __init__(self, *, prefix: str = "", public_url: str | None = None) -> None:
         """Keep files under ``prefix`` (``"media/"``); serve them from ``public_url``.
@@ -135,7 +137,10 @@ class ObjectStorage(Storage):
 
         The size and type are signed (Azure's SAS cannot bind them: check
         the file with ``size()`` once the client says it is done), so the
-        URL stores nothing else.
+        URL stores nothing else. It only creates the name (``write_once``):
+        once the file is there and checked, the URL cannot replace it.
+        Nothing the client sends is sniffed or scanned, as ``save_upload``
+        would: check the file before the application trusts it.
 
         Raises:
             ValueError: ``size`` is not positive, ``expires`` is out of
@@ -146,7 +151,11 @@ class ObjectStorage(Storage):
         if size <= 0:
             raise ValueError("A presigned upload takes a positive size.")
         name = new_name(directory, extension)
-        headers = {"Content-Length": str(size), "Content-Type": content_type}
+        headers = {
+            "Content-Length": str(size),
+            "Content-Type": content_type,
+            **self.write_once,
+        }
         url = await self._presign(name, "PUT", _bounded(expires), headers)
         return PresignedUpload(name, url, "PUT", self._upload_headers(headers))
 

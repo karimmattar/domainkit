@@ -134,6 +134,11 @@ and a status.
   project keeps one, and say how to write it; [deploying.md](docs/deploying.md)
   asks for it, and for the base image by digest, before the first
   deployment (A7-2).
+- A presigned upload's URL could replace its file until it expired, after
+  the application had checked it. It now only creates the name: S3's
+  `If-None-Match: *` and GCS's `x-goog-if-generation-match: 0` are signed,
+  and Azure's SAS grants create only. [uploads.md](docs/uploads.md) says
+  that such files are neither sniffed nor scanned (A5-4).
 
 ### Fixed
 

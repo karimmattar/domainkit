@@ -31,7 +31,7 @@ import hmac
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, ClassVar, Final
 from urllib.parse import quote, urlsplit
 
 from domainkit import clock
@@ -58,6 +58,8 @@ _BUCKET: Final = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 
 class S3Storage(ObjectStorage):
     """Files in one bucket of S3, or of a store that speaks its API."""
+
+    write_once: ClassVar[Mapping[str, str]] = {"If-None-Match": "*"}  # Signed.
 
     def __init__(
         self,
