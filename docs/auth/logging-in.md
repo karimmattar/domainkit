@@ -31,7 +31,7 @@ router.include_router(auth_router, prefix="/auth")
 
 ```http
 POST /auth/login
-{"username": "alice", "password": "correct horse battery"}
+{"identifier": "alice", "password": "correct horse battery"}
 ```
 
 ```json
@@ -50,15 +50,18 @@ in the same time:
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `POST /login` | `{"username", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `202` with a challenge for a user with a second factor; `401 invalid_credentials`; `429 rate_limited`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
+| `POST /login` | `{"identifier", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `202` with a challenge for a user with a second factor; `401 invalid_credentials`; `429 rate_limited`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` | `204`: this login's tokens end, or every token of the user. Scoped credentials end only themselves (`403` with `everywhere`). |
 | `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions` (with a scoped token, those its scopes allow). |
 | `POST /password` | `{"old_password", "new_password"}` | `204`: every other login of the user ends; `400 wrong_password`; `422 invalid_password` if a validator refuses the new password; `429`. |
 | `POST /step-up` (`auth.stepup.router`) | `{"code"}`, and `"password"` where asked | `200` with when and how the credentials stepped up ([Stepping up](step-up.md)). |
 
-`username` is the user model's `USERNAME_FIELD` (the email, for a model
-that logs in with its email). Tokens come as OAuth 2's token response.
+`identifier` is a value of one of the fields that `AUTH.IDENTIFIERS`
+names: an email address, a mobile number, or a username. By default it
+is the user model's `USERNAME_FIELD` alone (the email, for a model that
+logs in with its email). The old name, `username`, still works. Tokens
+come as OAuth 2's token response.
 With [JSON Web Tokens](authentication.md#json-web-tokens), the answer
 also has a `refresh_token`:
 
@@ -72,6 +75,50 @@ refused login is audited as `auth.login` with the outcome `denied`,
 without the username, which may be a password typed in the wrong field.
 Throttled logins are audited once per count and period, so a flood adds
 no rows.
+
+### Logging in with an email address or a mobile number
+
+`AUTH.IDENTIFIERS` names the user fields that identify a user, in the
+order a login tries them:
+
+```python
+AUTH = {
+    "IDENTIFIERS": ("email", "mobile_number"),
+}
+```
+
+Then each of these logs in the same user:
+
+```http
+POST /auth/login
+{"identifier": "Ann@Example.com", "password": "correct horse battery"}
+```
+
+```http
+POST /auth/login
+{"identifier": "+33 6 12 34 56 78", "password": "correct horse battery"}
+```
+
+domainkit reads the form of the value:
+
+- A value with `@` is an email address. It matches in any case of its
+  ASCII letters.
+- A value that is a number in international form (`+`, a country code,
+  and up to 15 digits) is a mobile number. Spaces, dots, dashes, and
+  brackets do not count.
+- Any other value is tried against the other fields you named, in order.
+- The `USERNAME_FIELD` always matches exactly, as before 1.8.
+
+Where `email` is in `AUTH.IDENTIFIERS`, two users cannot have one
+address: a second one gets `409 email_taken`. An address that two users
+already shared before (rows written before 1.8) logs in neither of them,
+until you change one. Wrong passwords count against one account however
+its number or address is written. Startup refuses a field the user model
+does not have (`auth.E011`).
+
+Without `AUTH.IDENTIFIERS`, only the `USERNAME_FIELD` logs in, as in
+1.7. [Users](users.md) shows the `mobile_number` field and the optional
+`username`.
 
 ### Wrong passwords
 

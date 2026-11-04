@@ -6,12 +6,13 @@ Mount the router where the API keeps them, ``/auth`` for example::
 
     router.include_router(auth_router, prefix="/auth")
 
-``POST /login`` checks a username and password with ``AUTH.BACKENDS`` and
+``POST /login`` checks an identifier (an email address, a mobile number,
+or a username: ``AUTH.IDENTIFIERS``) and password with ``AUTH.BACKENDS`` and
 returns tokens from the first ``AUTH.AUTHENTICATION_CLASSES`` class, in
 OAuth 2's token response format; a user with a second factor gets 202 and
 a challenge for ``/mfa/login`` instead (``auth.mfa``). Wrong passwords are
-limited to ``AUTH.LOGIN_RATE`` per client address and per username, and to
-``AUTH.ACCOUNT_LOGIN_RATE`` (100 a day) per username (logins that succeed
+limited to ``AUTH.LOGIN_RATE`` per client address and per identifier, and to
+``AUTH.ACCOUNT_LOGIN_RATE`` (100 a day) per identifier (logins that succeed
 are not counted), and refusals go to the audit trail when
 ``domainkit.contrib.audit`` is installed.
 """
@@ -24,7 +25,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from domainkit.context import bind_request, current_request
 from domainkit.ddd import PermissionDenied
@@ -89,11 +90,18 @@ router = APIRouter(tags=["auth"])
 
 
 class LoginIn(BaseModel):
-    """A username (the user model's ``USERNAME_FIELD``) and its password."""
+    """An identifier, such as an email address or a username, and its password."""
 
     model_config = ConfigDict(extra="forbid")
 
-    username: str = Field(min_length=1, max_length=255)
+    identifier: str = Field(
+        min_length=1,
+        max_length=255,
+        validation_alias=AliasChoices("identifier", "username"),
+    )
+    """A value of a field of ``AUTH.IDENTIFIERS``: an email address, a
+    mobile number, or a username. ``username``, its name before 1.8, is
+    read too."""
     password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
     new_password: str | None = Field(
         default=None, min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False
@@ -179,7 +187,7 @@ class MfaChallengeOut(BaseModel):
 async def login(
     body: LoginIn, request: Request, response: Response
 ) -> TokenOut | MfaChallengeOut:
-    """Check a username and password; return tokens, or a second-factor challenge."""
+    """Check an identifier and password; return tokens, or a second-factor challenge."""
     _no_store(response)
     user = await check_password(request, body)
     from .mfa import challenge  # Imports this module.
@@ -193,7 +201,7 @@ async def login(
 
 
 async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
-    """The user a login's username and password prove, counted and audited.
+    """The user a login's identifier and password prove, counted and audited.
 
     Only wrong credentials count against ``AUTH.LOGIN_RATE``: per address
     and per account, or, for a client with a device proof for the account,
@@ -203,14 +211,16 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
     Raises:
         APIError: 401 for wrong credentials; 429 past ``AUTH.LOGIN_RATE``.
     """
-    device = await proven_device(request, body.username)
+    device = await proven_device(request, body.identifier)
     counted = await attempt(
         request,
-        _login_limits(request, body.username, device),
+        _login_limits(request, body.identifier, device),
         action="auth.login",
         detail=LOGIN_THROTTLED,
     )
-    user = await authenticate(username=body.username, password=body.password)
+    user = await authenticate(  # ``username`` too, for backends before 1.8.
+        identifier=body.identifier, username=body.identifier, password=body.password
+    )
     if user is None:
         await _audit_refusal("invalid_credentials")
         raise APIError(

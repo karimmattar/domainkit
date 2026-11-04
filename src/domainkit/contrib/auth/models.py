@@ -781,6 +781,14 @@ def normalize_mobile_number(text: str) -> str:
     return number
 
 
+def as_mobile_number(text: str) -> str | None:
+    """``text`` in international form, if it is a mobile number; else None."""
+    try:
+        return normalize_mobile_number(text)
+    except InvalidMobileNumber:
+        return None
+
+
 def validate_username(username: str) -> str:
     """Return ``username`` if it is 1 to 150 of letters, digits, and ``@.+-_``.
 
@@ -865,7 +873,12 @@ def same_email(first: str, second: str) -> bool:
     differently (``\u212a``, the KELVIN SIGN, becomes ``k``), which would
     let a look-alike address claim another's mail.
     """
-    return _ascii_lower(first.strip()) == _ascii_lower(second.strip())
+    return email_key(first) == email_key(second)
+
+
+def email_key(email: str) -> str:
+    """The form that addresses ``same_email`` treats as one share."""
+    return _ascii_lower(email.strip())
 
 
 def _ascii_lower(text: str) -> str:

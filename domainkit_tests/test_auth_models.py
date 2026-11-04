@@ -496,7 +496,7 @@ def test_tokens_codes_and_passwords_stay_out_of_reprs() -> None:
     for value in (*shown, made):
         assert SECRET not in repr(value), type(value).__name__
     assert "expires_in=300" in repr(shown[0])
-    assert "username='alice'" in repr(shown[3])
+    assert "identifier='alice'" in repr(shown[3])
     assert "correct=True" in repr(shown[-3])
     assert "expires_in=300" in repr(shown[2])
 

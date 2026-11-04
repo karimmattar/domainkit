@@ -1,8 +1,11 @@
 """The unit of work over users, groups, and permissions."""
 
+from collections.abc import Sequence
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.db import SqlAlchemyUnitOfWork
+from domainkit.ddd import DeferredTask, DomainEvent
 
 from .repositories import (
     GroupRepository,
@@ -52,3 +55,10 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
         self.step_ups = StepUpStore(session)
         self.sca = ScaStore(session)
         self.passwords = PasswordHistoryStore(session)
+
+    async def _stage(
+        self, events: Sequence[DomainEvent], tasks: Sequence[DeferredTask]
+    ) -> None:
+        """Refuse an email address another user has, then stage as usual."""
+        await self.users.refuse_taken_emails(self.lock)
+        await super()._stage(events, tasks)

@@ -24,6 +24,16 @@ and a status.
   (`auth.E011`).
 - `AUTH.VERIFICATION` (`"link"` or `"code"`), `AUTH.CODE_TTL`, and
   `AUTH.CODE_ATTEMPTS`, for verification by code (ADR 0126).
+- `POST /auth/login` and `POST /auth/session` take an `identifier`: an
+  email address, a mobile number, or a username, by the fields of
+  `AUTH.IDENTIFIERS`. `username`, its old name, still works, and
+  backends get the value under both names. Wrong logins count against
+  one account however its number is written.
+- Where `email` is in `AUTH.IDENTIFIERS`, a second user with an address
+  that another has, in any case, is refused (`409 email_taken`), under a
+  lock on the address on PostgreSQL.
+- `UserRepository.find_by_identifier`, and `create_user` with no
+  username.
 - `normalize_mobile_number`, and the problems `invalid_mobile_number`,
   `mobile_number_taken`, `email_taken`, and `identifier_required`
   (`domainkit.contrib.auth`).

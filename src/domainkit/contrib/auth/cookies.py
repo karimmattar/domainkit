@@ -272,7 +272,7 @@ class CsrfOut(BaseModel):
 async def log_in(
     body: LoginIn, request: Request, response: Response
 ) -> CsrfOut | MfaChallengeOut:
-    """Check a username and password; start a browser session in cookies.
+    """Check an identifier and password; start a browser session in cookies.
 
     A user with a second factor gets 202 and a challenge for
     ``/session/mfa`` instead.

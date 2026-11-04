@@ -116,18 +116,25 @@ class ModelBackend(BaseBackend):
     async def authenticate(
         self, credentials: Mapping[str, object]
     ) -> AbstractBaseUser | None:
-        """Check ``username`` (or the ``USERNAME_FIELD``) and ``password``.
+        """Check an ``identifier`` (or ``username``) and ``password``.
 
-        An unknown username costs the same time as a wrong password, so
-        response times do not reveal which usernames exist.
+        The identifier is any field of ``AUTH.IDENTIFIERS``, such as an
+        email address or a mobile number (``find_by_identifier``); the
+        ``USERNAME_FIELD`` and ``username`` are read too, as before 1.8.
+        An unknown identifier costs the same time as a wrong password, so
+        response times do not reveal which accounts exist.
         """
         model = get_user_model()
-        username = credentials.get(model.USERNAME_FIELD, credentials.get("username"))
+        identifier = credentials.get("identifier")
+        if identifier is None:
+            identifier = credentials.get(
+                model.USERNAME_FIELD, credentials.get("username")
+            )
         password = credentials.get("password")
-        if not isinstance(username, str) or not isinstance(password, str):
+        if not isinstance(identifier, str) or not isinstance(password, str):
             return None
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key(username)
+            user = await uow.users.find_by_identifier(identifier)
         if user is None:
             await amake_password(password)
             return None
