@@ -8,13 +8,15 @@ how. [operations.md](operations.md) explains what runs and why;
 
 ## What `init` gives you
 
-- **`Dockerfile`**: the image. Dependencies from `pyproject.toml` in a
-  build stage; the code copied as root and run as uid 10001, who can
+- **`Dockerfile`**: the image. Dependencies in a build stage, from
+  `requirements.lock` by their hashes when the project keeps one, else
+  the newest releases `pyproject.toml` allows; the code copied as root and run as uid 10001, who can
   write nothing in `/app`; `<PREFIX>SETTINGS_MODULE` set to
   `config.settings.production`; uvicorn with the limits of
   [Server limits](reference/servers.md). `WEB_CONCURRENCY` sets
   its worker processes, one per core. `.dockerignore` lets in only
-  `manage.py`, `pyproject.toml`, `src/`, and `migrations/`, and keeps env
+  `manage.py`, `pyproject.toml`, `requirements.lock`, `src/`, and
+  `migrations/`, and keeps env
   files, `secrets/`, and SQLite files out even there: add a `!` line for
   any other directory the application reads. `.gitignore` keeps env files
   and `secrets/` out of the repository.
@@ -26,6 +28,16 @@ how. [operations.md](operations.md) explains what runs and why;
   environment ([Configuration](operations.md#configuration)).
 
 ## Before the first deployment
+
+- [ ] **Dependencies locked.** Write the lock, with a hash for each file,
+  and commit it; the image and CI install from it:
+
+  ```bash
+  uv pip compile pyproject.toml --generate-hashes -o requirements.lock
+  ```
+
+  Pin the base image by digest too (`python:3.13-slim@sha256:...`), and
+  let Renovate or Dependabot keep both new.
 
 - [ ] **Migrations committed.** `makemigrations` wrote one per model
       change; CI's `makemigrations --check` fails when one is missing.

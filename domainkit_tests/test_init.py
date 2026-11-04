@@ -575,10 +575,17 @@ def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> 
     )
     assert cmd[:4] == ["uvicorn", "config.asgi:application", "--app-dir", "src"]
     assert cmd[4:8] == ["--host", "0.0.0.0", "--port", "8000"]  # noqa: S104
+    # A lock, when the project keeps one, is installed by its hashes (A7-2).
+    assert "COPY pyproject.toml requirements.loc[k] ./" in lines
+    assert (
+        "        /opt/venv/bin/pip install --require-hashes --no-deps -r "
+        "requirements.lock; \\" in lines
+    )
     patterns = (project / ".dockerignore").read_text(encoding="utf-8").splitlines()
     copied = [
         "manage.py",
         "pyproject.toml",
+        "requirements.lock",
         "src/config/settings/production.py",
         "migrations/0001_ab12_create.py",
     ]

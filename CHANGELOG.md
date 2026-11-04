@@ -128,6 +128,12 @@ and a status.
   reference, another key, and another revision than the one asked for
   (`LedgerTampered`); the latest revision's number stays the server's word
   (A6-6).
+- A new project's image and CI installed the newest releases its
+  `pyproject.toml` allowed, without hashes, and `.dockerignore` kept any
+  lock out. Both now install `requirements.lock` by its hashes when the
+  project keeps one, and say how to write it; [deploying.md](docs/deploying.md)
+  asks for it, and for the base image by digest, before the first
+  deployment (A7-2).
 
 ### Fixed
 

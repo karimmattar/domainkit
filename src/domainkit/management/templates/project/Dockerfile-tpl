@@ -8,10 +8,18 @@
 # Every setting comes from the environment ({{ prefix }}*), as
 # src/config/settings/production.py lists them. Keep the env file out of the
 # project, as above, or better in a secret store: nothing secret is built
-# in. .dockerignore lets in only manage.py, pyproject.toml, src/, and
-# migrations/, and keeps env files, keys, and databases out even there.
-# WEB_CONCURRENCY sets uvicorn's worker processes (one per core; one unless
-# set).
+# in. .dockerignore lets in only manage.py, pyproject.toml,
+# requirements.lock, src/, and migrations/, and keeps env files, keys, and
+# databases out even there. WEB_CONCURRENCY sets uvicorn's worker processes
+# (one per core; one unless set).
+#
+# Lock what the image installs, each file by its hash, and commit the lock:
+#
+#   uv pip compile pyproject.toml --generate-hashes -o requirements.lock
+#
+# Without requirements.lock, each build installs the newest releases
+# pyproject.toml allows. Pin python:3.13-slim by digest too
+# (python:3.13-slim@sha256:...), and let Renovate or Dependabot keep it new.
 
 FROM scratch AS wheels
 # Empty. `docker build --build-context wheels=<directory> .` offers the wheels
@@ -20,12 +28,19 @@ FROM scratch AS wheels
 FROM python:3.13-slim AS build
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
-COPY pyproject.toml ./
-# The project's dependencies, from pyproject.toml, in a virtual environment.
+# requirements.loc[k] copies the lock if there is one, and nothing if not.
+COPY pyproject.toml requirements.loc[k] ./
+# The project's dependencies in a virtual environment: those the lock names,
+# each checked against its hash, or else those pyproject.toml names.
 RUN --mount=type=bind,from=wheels,target=/wheels \
     python -m venv /opt/venv \
-    && python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt \
-    && /opt/venv/bin/pip install --find-links /wheels -r requirements.txt
+    && if [ -f requirements.lock ]; then \
+        /opt/venv/bin/pip install --require-hashes --no-deps -r requirements.lock; \
+    else \
+        echo "No requirements.lock: installing the newest releases pyproject.toml allows." >&2 \
+        && python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt \
+        && /opt/venv/bin/pip install --find-links /wheels -r requirements.txt; \
+    fi
 
 FROM python:3.13-slim
 ENV PATH=/opt/venv/bin:$PATH \
