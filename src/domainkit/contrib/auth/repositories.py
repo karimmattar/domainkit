@@ -138,11 +138,17 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
 
         A username privacy erased stays taken (``username_erased``).
         """
+        name = self.model.normalize_username(username).lower()
+        return await self._username_used(name) or await self.username_erased(name)
+
+    async def _username_used(self, username: str) -> bool:
+        """Whether a user has ``username`` (normalized), in any case."""
         column = get_user_table().c[self.model.USERNAME_FIELD]
         name = self.model.normalize_username(username).lower()
-        statement = select(exists().where(func.lower(column) == name))
-        return bool(await self.session.scalar(statement)) or (
-            await self.username_erased(name)
+        return bool(
+            await self.session.scalar(
+                select(exists().where(func.lower(column) == name))
+            )
         )
 
     async def username_erased(self, username: str) -> bool:
@@ -252,10 +258,14 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         first where people choose them.
 
         Raises:
-            UsernameTaken: Another user has ``username``.
+            UsernameTaken: Another user has ``username``, in any case, as
+                signup and the identity providers refuse it: ``Alice`` and
+                ``alice`` would be two accounts that one login throttle
+                counts as one. A name privacy erased stays taken too
+                (``_add``).
         """
         username = self.model.normalize_username(username)
-        if await self.get_by_natural_key(username) is not None:
+        if await self._username_used(username):
             raise UsernameTaken(f"The username {username!r} is taken.")
         hashed = (
             PasswordHash(await amake_password(password))

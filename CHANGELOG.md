@@ -156,6 +156,10 @@ and a status.
   browser login, `POST /auth/session`, checked the same password with no
   captcha, so a bot could guess passwords there. It asks for the same
   captcha now.
+- `create_user` (used by the admin API and `createsuperuser`) compared
+  usernames exactly, so `Alice` could be created next to `alice`, while
+  signup, the identity providers, and the login throttle took them as one
+  name. It refuses a name another user has in any case now.
 
 ### Fixed
 
