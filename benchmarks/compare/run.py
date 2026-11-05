@@ -155,6 +155,7 @@ def load(
         expected = "201" if method == "POST" else "200"
         results[name] = {
             "rps": report["summary"]["requestsPerSec"],
+            "mean_ms": report["summary"]["average"] * 1000,
             "p50_ms": report["latencyPercentiles"]["p50"] * 1000,
             "p99_ms": report["latencyPercentiles"]["p99"] * 1000,
             "errors": sum(n for code, n in codes.items() if code != expected),
@@ -165,13 +166,14 @@ def load(
 def table(results: dict[str, dict[str, dict[str, float]]]) -> str:
     """The results as a Markdown table."""
     lines = [
-        "| App | Route | Requests/s | p50 ms | p99 ms | Errors |",
-        "| --- | --- | ---: | ---: | ---: | ---: |",
+        "| App | Route | Requests/s | Mean ms | p50 ms | p99 ms | Errors |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for app, routes in results.items():
         for route, figures in routes.items():
             lines.append(
-                f"| {app} | {route} | {figures['rps']:,.0f} | {figures['p50_ms']:.2f} "
+                f"| {app} | {route} | {figures['rps']:,.0f} | {figures['mean_ms']:.2f} "
+                f"| {figures['p50_ms']:.2f} "
                 f"| {figures['p99_ms']:.2f} | {figures['errors']:.0f} |"
             )
     return "\n".join(lines) + "\n"
