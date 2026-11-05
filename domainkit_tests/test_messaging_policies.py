@@ -911,7 +911,11 @@ async def test_lag_is_the_age_of_the_oldest_waiting_due_message() -> None:
     assert 90 <= lag["default"] < 100
     assert 30 <= lag["other"] < 40
 
-    await Worker(queues=["default"])._claim(10)  # Running: no longer waiting.
+    # A lease that outlasts the checks below on any machine: FAST's 1 s
+    # visibility timeout ran out on a slow runner, and the claimed message
+    # was waiting again.
+    leasing = MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 60})
+    await Worker(leasing, queues=["default"])._claim(10)  # Running: not waiting.
     assert set(await outbox_admin.queue_lag(config)) == {"other"}
     await Worker(queues=["other"])._relay(MemoryBroker(), 10)  # Published: waits.
     assert set(await outbox_admin.queue_lag(config)) == {"other"}
