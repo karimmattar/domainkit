@@ -1138,6 +1138,13 @@ Each alias has a pool of connections per event loop (`POOL_SIZE`,
   SQLAlchemy wraps it in `BEGIN` and `ROLLBACK`, three round trips, which
   only PgBouncer needs, and keeps. Keep the test on: without it, the
   first request on each stale connection fails.
+  - On asyncpg outside PgBouncer, only a connection that rested in the
+    pool for a second or more is tested. asyncpg sees the server close a
+    connection without a round trip, and such a connection is replaced
+    as it leaves the pool; the test is for a network that dropped one
+    silently, which happens to connections at rest. A busy process then
+    sends no tests at all
+    ([ADR 0127](adr/0127-ping-a-pooled-connection-only-after-it-rested.md)).
 - **Reads on their own.** The first `Reads.STATEMENTS` unit of work on an
   alias opens a second pool for that alias, sized like the first. PostgreSQL holds its
   connections read-only from the start

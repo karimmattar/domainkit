@@ -1441,8 +1441,9 @@ Then:
   framework's own short writes run in a transaction through PgBouncer,
   which sets the timeouts.
 - A pool tests a connection (`POOL_PRE_PING`) with SQLAlchemy's own ping,
-  in the transaction its prepared statement needs. Elsewhere, domainkit
-  sends the ping without one.
+  in the transaction its prepared statement needs, at every checkout.
+  Elsewhere, domainkit sends the ping without one, and only to a
+  connection that rested in the pool for a second or more.
 
 Point `MIGRATION_URL` at PostgreSQL directly: migrations may take
 longer, and need the schema owner.

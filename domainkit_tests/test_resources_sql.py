@@ -406,7 +406,8 @@ async def test_commands_in_scope_run_where_the_scope_was_checked(
     assert out_of_scope.status_code == 404
     assert stored == {red.id: "renamed", blue.id: "blue"}
     assert sql.counts.transactions == sql.counts.checkouts == transactions
-    assert sql.counts.pings == transactions
+    # A busy asyncpg pool pings no connection (ADR 0127); SQLAlchemy's, each.
+    assert sql.counts.pings == (0 if "+asyncpg" in database else transactions)
     assert dict(sql.counts.verbs) == statements
 
 

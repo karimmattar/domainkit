@@ -234,7 +234,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         """Open a session and the repositories that share it."""
         if self.isolation is None:
             self.session = connections.session(
-                self.alias, readonly=self.readonly, reads=self.reads
+                self.alias,
+                readonly=self.readonly,
+                reads=self.reads,
+                transaction=self.schema is not None,  # SET LOCAL needs one.
             )
         else:
             self.session = AsyncSession(
