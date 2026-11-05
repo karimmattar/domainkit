@@ -26,6 +26,7 @@ which apps need which.
 | `domainkit.contrib.identity` | Logins through OpenID Connect, OAuth 2, SAML, and LDAP. | [Identity providers](auth/identity.md) |
 | `domainkit.contrib.devices` | Passkeys, keys bound to a user's devices, and push tokens. | [Passkeys and bound devices](auth/devices.md) |
 | `domainkit.contrib.phones` | Phone numbers that a user proved they receive text messages at. | [Phone numbers](auth/phones.md) |
+| `domainkit.contrib.ciba` | Sign-ins approved from the user's phone: push, QR codes, and OIDC CIBA. | [Sign-in approvals](auth/ciba.md) |
 | `domainkit.contrib.mail` | Email, sent by the worker through the outbox. | [Mail](mail.md) |
 | `domainkit.contrib.notifications` | Text messages (SMS) and push notifications, sent by the worker. | [Text messages and push notifications](mail.md#text-messages-and-push-notifications) |
 | `domainkit.contrib.privacy` | Export and erasure of a person's data, and purges of old rows. | [Privacy requests and retention](privacy.md) |
@@ -79,6 +80,7 @@ Each guide has the table of keys, and
 | `identity` | `IDENTITY` | `domainkit_identities`, `domainkit_identity_flows`, `domainkit_identity_tickets` |
 | `devices` | `DEVICES` | `domainkit_passkeys`, `domainkit_passkey_challenges`, `domainkit_devices`, `domainkit_push_tokens` |
 | `phones` | `PHONES` | `domainkit_phone_codes`, `domainkit_phones` |
+| `ciba` | `CIBA` | `domainkit_ciba_clients`, `domainkit_ciba_requests`, `domainkit_ciba_assertions` |
 | `mail` | `MAIL` | None |
 | `notifications` | `NOTIFICATIONS` | None |
 | `privacy` | None | None: it exports, erases, and purges the rows of other domains. |
@@ -96,8 +98,8 @@ app puts its tables where its work commits:
   `IDEMPOTENCY["DATABASE"]`, apart from the business data.
 - **In one database:** `accounting` and `approvals` keep all their
   tables together. `limits` keeps its tables in the books' database
-  when `accounting` is installed. `phones` must share the database of
-  `auth`.
+  when `accounting` is installed. `phones` and `ciba` must share the
+  database of `auth`.
 - **In no SQL database:** `evidence` writes to a ledger, and `privacy`
   keeps no tables.
 
@@ -119,6 +121,7 @@ names every missing app at once.
 | `domainkit.contrib.identity` | `domainkit.contrib.auth` | A provider's login becomes a user. |
 | `domainkit.contrib.devices` | `domainkit.contrib.auth` | Passkeys and devices belong to users. |
 | `domainkit.contrib.phones` | `domainkit.contrib.auth`, `domainkit.contrib.messaging`, `domainkit.contrib.notifications` | The worker sends the codes by text message. |
+| `domainkit.contrib.ciba` | `domainkit.contrib.auth`, `domainkit.contrib.messaging`, `domainkit.contrib.notifications`, `domainkit.contrib.devices` | Bound devices approve; the worker sends the pushes. |
 
 The order in `INSTALLED_DOMAINS` does not matter for these. Other apps
 use `messaging` when it is installed, for example for scheduled purges,

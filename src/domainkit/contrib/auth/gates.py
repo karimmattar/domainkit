@@ -7,7 +7,7 @@ request and the user, and raises to refuse the login::
 
     async def approved_from_the_phone(request: Request, user: AbstractBaseUser) -> None:
         if not await approved(request, user):
-            raise ApprovalRequired()
+            raise PhoneApprovalRequired()
 
     class SignInConfig(DomainConfig):
         def ready(self) -> None:

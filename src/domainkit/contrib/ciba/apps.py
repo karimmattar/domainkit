@@ -2,14 +2,23 @@
 
 from collections.abc import Mapping
 from importlib import import_module
+from typing import TYPE_CHECKING
 
 from domainkit.apps import DomainConfig
-from domainkit.apps.hooks import on_erase_subject, on_export_subject
+from domainkit.apps.hooks import (
+    on_check_application,
+    on_erase_subject,
+    on_export_subject,
+)
+from domainkit.checks import CheckMessage
 from domainkit.db.routing import router
 from domainkit.ddd import event_bus
 from domainkit.exceptions import ImproperlyConfigured
 
 from .settings import CibaSettings
+
+if TYPE_CHECKING:
+    from fastapi import APIRouter, FastAPI
 
 
 class CibaConfig(DomainConfig):
@@ -45,7 +54,55 @@ class CibaConfig(DomainConfig):
         event_bus.subscribe(UserDeleted, forget_requests)
         on_erase_subject(self.erase_person, domain=self.label)
         on_export_subject(self.export_person, domain=self.label)
+        on_check_application(self.application_problems)
         import_module(f"{self.name}.tasks")
+
+    def application_problems(self, app: "FastAPI") -> list[str]:
+        """What the routes served need and lack.
+
+        ``ciba.E002``: the OpenID Provider's routes are served, but
+        ``AUTH.JWT`` cannot sign ID tokens others verify: no ``ISSUER``, or
+        a shared-secret algorithm. ``ciba.E003``: ``APPROVE_LOGINS``
+        refuses web logins of users with a bound device, but the routes
+        that let them sign in from the web, or answer from the phone, are
+        not served.
+        """
+        from domainkit.apps import registry
+        from domainkit.contrib.auth.integration import auth_settings
+        from domainkit.contrib.devices.api import router as devices_router
+
+        from .api import router as sign_in_router
+        from .oidc import router as oidc_router
+
+        problems: list[str] = []
+        jwt = auth_settings().JWT
+        if _serves(app, oidc_router) and (
+            jwt.ISSUER is None or jwt.ALGORITHM.startswith("HS")
+        ):
+            problems.append(
+                CheckMessage(
+                    "ciba.E002",
+                    "Routes of domainkit.contrib.ciba.oidc issue ID tokens, but "
+                    "AUTH.JWT has no ISSUER or signs with a shared secret "
+                    f"({jwt.ALGORITHM}): clients could not verify them.",
+                    hint="Set AUTH.JWT.ALGORITHM to RS256, ES256 or EdDSA, its "
+                    "SIGNING_KEY and VERIFYING_KEY, and an ISSUER.",
+                )
+            )
+        if registry.settings(CibaSettings).APPROVE_LOGINS and not (
+            _serves(app, sign_in_router) and _serves(app, devices_router)
+        ):
+            problems.append(
+                CheckMessage(
+                    "ciba.E003",
+                    "CIBA.APPROVE_LOGINS refuses web logins of users with a bound "
+                    "device, but the routes of domainkit.contrib.ciba.api or "
+                    "domainkit.contrib.devices.api are not served: those users "
+                    "could not sign in on the web, or answer from the phone.",
+                    hint="Mount both routers, under /auth for example.",
+                )
+            )
+        return problems
 
     async def erase_person(self, subject: str, reason: str) -> Mapping[str, int]:
         """Remove what this app keeps of ``subject`` (``privacy erase``)."""
@@ -58,6 +115,14 @@ class CibaConfig(DomainConfig):
         from .personal import export_subject
 
         return await export_subject(subject)
+
+
+def _serves(app: "FastAPI", router: "APIRouter") -> bool:
+    """Whether ``app`` serves a route of ``router``."""
+    from domainkit.http.access import served_routes
+
+    called = {dependant.call for _, dependant in served_routes(app.routes) if dependant}
+    return bool(called & {route.endpoint for route in router.routes})  # type: ignore[attr-defined]
 
 
 async def forget_requests(event: object) -> None:

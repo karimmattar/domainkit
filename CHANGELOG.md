@@ -9,6 +9,41 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.contrib.ciba`: sign-ins approved from the user's phone
+  ([Sign-in approvals](docs/auth/ciba.md), ADR 0128).
+  - **Web pages:** `/app-sign-in/push` (the user's apps get a push; the page
+    shows two digits the phone types) or `/app-sign-in/qr` (a single-use
+    QR code the phone scans), then poll `/app-sign-in/token` or
+    `/app-sign-in/session` for a login.
+  - **The phone:** lists, claims, approves, denies or reports sign-ins with
+    requests its bound key signs.
+  - **OIDC clients:** the OpenID Provider's CIBA routes (`/bc-authorize`,
+    the `/qr-authorize` extension, the token endpoint with the CIBA grant,
+    discovery, JWKS) give registered clients a scoped access token and an
+    ID token signed with `AUTH.JWT`'s asymmetric key. Clients authenticate
+    with a hashed secret or `private_key_jwt`, and are managed with the
+    `ciba` command.
+  - **Defences:** decoys for users who are unknown or cannot be asked, no
+    `unknown_user_id`, at most `MAX_PENDING` pushes, a cooldown after a
+    report, `slow_down`, and handles that work once.
+- `CIBA.APPROVE_LOGINS` makes the mobile app the user's identity: a user
+  with a bound device logs in only from it, or once approved from it
+  (`403 phone_approval_required`).
+- Auth's login gates (`domainkit.contrib.auth.gates`): checks every login
+  passes. `/login`, `/session`, `/mfa/login`, `/session/mfa`, the passkey
+  and device logins, and the identity providers' logins run them, and a
+  login that skips them fails closed (`LoginNotGated`).
+- `DEVICES.DEVICE_LOGIN` adds `POST /devices/login`: a bound device logs
+  its user in by its signature alone.
+- `unbinddevices` unbinds a user's devices and ends their sessions, for
+  one who lost their phone.
+- `auth.integration` exports what apps built on auth use for these:
+  `start_browser_session`, `check_origin`, `CsrfOut`, `attempt`,
+  `address_key`, `audit_refusal`, `auth_settings`, `UserLoggedOut`, and
+  the login gates.
+
 ## [2.0.0] - 2026-11-05
 
 2.0 removes what 1.x deprecated: verification links are gone, and codes

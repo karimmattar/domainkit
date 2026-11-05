@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable, Iterator
 from datetime import timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -209,7 +209,7 @@ def test_a_push_sign_in_is_approved_from_the_phone_with_the_number(app: App) -> 
     with clock.freeze_time(clock.now() + timedelta(seconds=12)):
         again = redeem(web, started["request"])
     assert again.status_code == 400
-    assert again.json()["code"] == "invalid_grant"
+    assert again.json()["code"] == "sign_in_unknown"
     [event] = audited("ciba.sign_in_approved")
     assert event["actor"] is not None
 
@@ -439,7 +439,7 @@ def test_a_handle_works_only_for_what_it_started(app: App) -> None:
     """Unknown handles are refused; a denied QR request answers access_denied."""
     web = app()
     phone = Phone(app(PHONE))
-    assert redeem(web, "x" * 43).json()["code"] == "invalid_grant"
+    assert redeem(web, "x" * 43).json()["code"] == "sign_in_unknown"
     started = web.post("/auth/app-sign-in/qr").json()
     shown = phone.send(
         "POST", "/auth/app-sign-in/requests/claim", {"code": started["qr"]}
@@ -459,7 +459,7 @@ def test_an_approved_user_turned_off_meanwhile_gets_no_login(app: App) -> None:
     run_async(_deactivate("alice"))
     refused = redeem(web, started["request"])
     assert refused.status_code == 400
-    assert refused.json()["code"] == "invalid_grant"
+    assert refused.json()["code"] == "sign_in_unknown"
 
 
 # The mobile app as identity.
@@ -481,13 +481,13 @@ def test_with_approve_logins_the_phone_is_the_only_way_in(app: App) -> None:
         "/auth/login", json={"identifier": "alice", "password": PASSWORD}
     )
     assert refused.status_code == 403
-    assert refused.json()["code"] == "approval_required"
+    assert refused.json()["code"] == "phone_approval_required"
     session = web.post(
         "/auth/session",
         json={"identifier": "alice", "password": PASSWORD},
         headers=TRUSTED,
     )
-    assert session.json()["code"] == "approval_required"
+    assert session.json()["code"] == "phone_approval_required"
 
     signed = phone.send(
         "POST", "/auth/login", {"identifier": "alice", "password": PASSWORD}
@@ -590,3 +590,201 @@ def test_unbinddevices_lets_a_user_who_lost_the_phone_back_in(
     assert audited("devices.device_unbound")[0]["actor"] == "operator:mallory"
     with pytest.raises(CommandError, match="does not exist"):
         call_command("unbinddevices", "nobody", stdout=out)
+
+
+# Housekeeping.
+
+
+def test_ended_requests_are_purged_and_deleted_users_forgotten(app: App) -> None:
+    """A day after they end, requests go; a deleted user's go at once."""
+    from domainkit.contrib.ciba.apps import forget_requests
+    from domainkit.contrib.ciba.tasks import purge
+
+    web = app()
+    phone = Phone(app(PHONE))
+    with clock.freeze_time("2026-11-05T10:00:00Z") as frozen:
+        start_push(web, "nobody")
+        frozen.tick(timedelta(days=1, minutes=3))
+        start_push(web)
+        run_async(purge())
+    [kept] = rows()
+    assert kept["user_id"] == phone.user_id
+
+    class Deleted:
+        user_id: UUID = phone.user_id
+
+    run_async(forget_requests(Deleted()))
+    assert rows() == []
+
+
+def test_privacy_exports_and_erases_a_users_requests(app: App) -> None:
+    """Export lists when, how, from where; erase removes them; others untouched."""
+    from domainkit.apps import registry
+
+    web = app(NUMBER_MATCHING=False)
+    phone = Phone(app(PHONE))
+    start_push(web)
+    phone.approve(phone.waiting()[0]["id"])
+    start_push(web, "nobody")
+    config = registry.get_domain_config("ciba")
+    subject = str(phone.user_id)
+
+    exported = run_async(config.export_person(subject))  # type: ignore[attr-defined]
+    [entry] = exported["sign_in_requests"]
+    assert entry["channel"] == "push"
+    assert entry["address"] == LAPTOP[0]
+    assert entry["browser"] == AGENT
+    assert entry["approved_at"] is not None
+    assert entry["denied_at"] is None
+    assert run_async(config.export_person("not-a-user")) == {}  # type: ignore[attr-defined]
+    assert run_async(config.export_person(str(uuid4()))) == {}  # type: ignore[attr-defined]
+
+    erased = run_async(config.erase_person(subject, "request"))  # type: ignore[attr-defined]
+    assert erased == {"sign_in_requests": 1}
+    assert run_async(config.erase_person(subject, "request")) == {}  # type: ignore[attr-defined]
+    assert run_async(config.erase_person("x", "request")) == {}  # type: ignore[attr-defined]
+    assert len(rows()) == 1  # The decoy names nobody.
+
+
+def test_the_routes_served_are_checked(app: App) -> None:
+    """E002: ID tokens without an asymmetric key; E003: identity mode, no routes."""
+    from fastapi import FastAPI
+
+    from domainkit.apps import registry
+    from domainkit.http import get_asgi_application
+
+    app()
+    config = registry.get_domain_config("ciba")
+    problems = config.application_problems(get_asgi_application())  # type: ignore[attr-defined]
+    assert [problem.id for problem in problems] == ["ciba.E002"]
+    assert config.application_problems(FastAPI()) == []  # type: ignore[attr-defined]
+    with override_settings(CIBA={"APPROVE_LOGINS": True}):
+        bare = config.application_problems(FastAPI())  # type: ignore[attr-defined]
+        assert [problem.id for problem in bare] == ["ciba.E003"]
+
+
+def test_ciba_lives_with_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Routed to another database than auth's, the app refuses to start."""
+    import domainkit.contrib.ciba as ciba_module
+    from domainkit.contrib.ciba.apps import CibaConfig
+    from domainkit.db.routing import router
+    from domainkit.exceptions import ImproperlyConfigured
+
+    monkeypatch.setattr(router, "target_for", lambda label: label)
+    config = CibaConfig("domainkit.contrib.ciba", ciba_module)
+    with pytest.raises(ImproperlyConfigured, match="routed with 'auth'"):
+        config.ready()
+
+
+def test_settings_are_checked() -> None:
+    """The QR format holds the code once; rates read."""
+    from pydantic import ValidationError
+
+    from domainkit.contrib.ciba import CibaSettings
+
+    for text in ("no code", "{code}{code}", "{code}{x}"):
+        with pytest.raises(ValidationError, match="holds"):
+            CibaSettings(QR_FORMAT=text)
+    with pytest.raises(ValidationError, match="rate"):
+        CibaSettings(START_RATE="lots")
+    assert CibaSettings(START_RATE=None, CLIENT_RATE=None).START_RATE is None
+
+
+def test_reprs_keep_secrets_out(app: App) -> None:
+    """Requests, starts and clients show ids and states, never digests or codes."""
+    from domainkit.contrib.ciba.clients import register as register_client
+
+    web = app()
+    Phone(app(PHONE))
+    start_push(web)
+    from domainkit.contrib.ciba import CibaUnitOfWork
+
+    request_id = rows()[0]["id"]
+
+    async def stored() -> Any:  # noqa: ANN401 - a request.
+        async with CibaUnitOfWork() as uow:
+            return await uow.requests.get(request_id)
+
+    request = run_async(stored())
+    assert repr(request).startswith("SignInRequest(id=")
+    assert "pending" in repr(request)
+    assert request.handle_digest not in repr(request)
+    client, secret = run_async(register_client("Acme", method="client_secret_post"))
+    assert secret is not None
+    assert secret not in repr(client)
+    assert "Acme" in repr(client)
+
+
+# Races: the guarded update that matched no row lost to another answer.
+
+
+@pytest.mark.parametrize("lost", ["claim", "approve", "deny", "redeem"])
+def test_an_answer_that_loses_a_race_is_refused(
+    app: App, monkeypatch: pytest.MonkeyPatch, lost: str
+) -> None:
+    """Each state change is one guarded update: the loser gets the refusal."""
+    from domainkit.contrib.ciba.stores import SignInRequestStore
+
+    web = app(NUMBER_MATCHING=False)
+    phone = Phone(app(PHONE))
+    started = web.post("/auth/app-sign-in/qr").json()
+    claim_path = "/auth/app-sign-in/requests/claim"
+    if lost != "claim":
+        shown = phone.send("POST", claim_path, {"code": started["qr"]}).json()
+    if lost == "redeem":
+        phone.approve(shown["id"])
+
+    async def lose(*args: object, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(SignInRequestStore, lost, lose)
+    if lost == "claim":
+        answer = phone.send("POST", claim_path, {"code": started["qr"]})
+        assert answer.json()["code"] == "qr_code_expired"
+    elif lost == "approve":
+        assert phone.approve(shown["id"]).json()["code"] == "sign_in_not_found"
+    elif lost == "deny":
+        assert phone.deny(shown["id"]).json()["code"] == "sign_in_not_found"
+    else:
+        assert redeem(web, started["request"]).json()["code"] == "sign_in_unknown"
+
+
+def test_a_requests_state_follows_its_answers(app: App) -> None:
+    """pending, claimed, approved, denied, redeemed: as the row says."""
+    from dataclasses import replace
+
+    from domainkit.contrib.ciba import CibaUnitOfWork
+    from domainkit.contrib.ciba.services import Started
+
+    web = app()
+    Phone(app(PHONE))
+    start_push(web)
+    request_id = rows()[0]["id"]
+
+    async def stored() -> Any:  # noqa: ANN401 - a request.
+        async with CibaUnitOfWork() as uow:
+            return await uow.requests.get(request_id)
+
+    request = run_async(stored())
+    now = clock.now()
+    assert request.state == "pending"
+    assert replace(request, claimed_at=now).state == "claimed"
+    assert replace(request, denied_at=now).state == "denied"
+    assert replace(request, approved_at=now).state == "approved"
+    assert replace(request, approved_at=now, redeemed_at=now).state == "redeemed"
+    started = Started(handle="h" * 43, request_id=request_id, expires_in=1, interval=5)
+    assert repr(started) == f"Started(request_id={request_id!r})"
+
+
+def test_a_turned_off_users_device_logs_no_one_in(app: App) -> None:
+    """The device signs, but its user is inactive: refused like a bad signature."""
+    phone = Phone(app(PHONE))
+    with override_settings(DEVICES={"DEVICE_LOGIN": True}):
+        run_async(_deactivate("alice"))
+        moment = int(clock.now().timestamp() * 1000)
+        answer = phone.client.post(  # No bearer: the device alone logs in.
+            "/auth/devices/login",
+            headers=phone.device.headers("POST", "/auth/devices/login", when=moment),
+        )
+    assert answer.status_code == 401
+    assert answer.json()["code"] == "device_signature_refused"

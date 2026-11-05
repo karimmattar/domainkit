@@ -36,19 +36,16 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.routing import NoMatchFound
 
-from domainkit.contrib.auth import AbstractBaseUser
+from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
 from domainkit.contrib.auth.backends import get_all_permissions
-from domainkit.contrib.auth.integration import utc_now
+from domainkit.contrib.auth.integration import attempt, auth_settings, utc_now
 from domainkit.contrib.auth.models import UserId
-from domainkit.contrib.auth.settings import auth_settings
-from domainkit.contrib.auth.throttling import attempt
-from domainkit.contrib.auth.uow import AuthUnitOfWork
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import Public
 from domainkit.http.errors import APIError
 
 from .clients import ASSERTION_ALGORITHMS, METHODS, authenticate_client
-from .exceptions import OAuthError
+from .exceptions import OAuthError, PollRefused
 from .services import Requester, Started, ciba_settings, poll, start_push, start_qr
 from .stores import CibaClient, CibaUnitOfWork
 
@@ -88,7 +85,10 @@ async def _oauth(work: Callable[[], Awaitable[Mapping[str, Any]]]) -> JSONRespon
         return JSONResponse(
             error, status_code=exc.status_code, headers={**NO_STORE, **exc.headers}
         )
-    except APIError as exc:  # A poll's answer, or a throttle's.
+    except PollRefused as exc:
+        error = {"error": exc.oauth_error, "error_description": str(exc.detail)}
+        return JSONResponse(error, status_code=exc.status_code, headers=NO_STORE)
+    except APIError as exc:  # A throttle's.
         error = {"error": exc.code, "error_description": str(exc.detail)}
         return JSONResponse(
             error,

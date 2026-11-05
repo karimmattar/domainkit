@@ -408,6 +408,19 @@ async def start_session(
     return CsrfOut(csrf_token=token)
 
 
+async def start_browser_session(
+    request: Request, user: AbstractBaseUser, response: Response
+) -> CsrfOut:
+    """A browser session for ``user``, whose login was checked another way.
+
+    For apps that log users in by other means (a sign-in approved from
+    the phone): the session the request's cookie held ends, as at
+    ``/session``. Check the request's origin first (``check_origin``),
+    before anything is spent, and run the login gates or pass them.
+    """
+    return await start_session(user, response, previous=_session_of(request))
+
+
 def _session_of(request: Request) -> str | None:
     """The session token a browser's cookie authenticated the request with."""
     credentials = request.scope.get("auth")

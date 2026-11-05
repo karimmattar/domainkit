@@ -212,7 +212,7 @@ def test_a_client_asks_the_phone_and_gets_scoped_tokens(provider: MakeProvider) 
     with clock.freeze_time(clock.now() + timedelta(seconds=12)):
         again = poll(op, credentials, body["auth_req_id"])
     assert again.json()["error"] == "invalid_grant"
-    assert redeem(op.web, body["auth_req_id"]).json()["code"] == "invalid_grant"
+    assert redeem(op.web, body["auth_req_id"]).json()["code"] == "sign_in_unknown"
 
 
 def test_tokens_carry_only_the_users_permissions(provider: MakeProvider) -> None:
@@ -570,3 +570,73 @@ def test_the_ciba_command_manages_clients(
                 str(bad),
                 stdout=out,
             )
+
+
+def test_a_user_turned_off_after_approving_gets_no_tokens(
+    provider: MakeProvider,
+) -> None:
+    """Approved, then deactivated: the poll is refused, the handle spent."""
+    from domainkit_tests.test_ciba import _deactivate
+
+    op = provider()
+    phone = op.phone()
+    client_id, secret = new_client()
+    credentials = basic(client_id, secret or "")
+    handle = authorize(op, credentials).json()["auth_req_id"]
+    phone.approve(phone.waiting()[0]["id"])
+    run_async(_deactivate("alice"))
+    answer = poll(op, credentials, handle)
+    assert answer.json()["error"] == "invalid_grant"
+
+
+def test_an_id_token_hint_must_name_a_user_by_id(provider: MakeProvider) -> None:
+    """Signed by the provider for the client, but its sub is no user id."""
+    from domainkit.contrib.ciba.oidc import id_token_signer
+
+    op = provider()
+    client_id, secret = new_client()
+    signer = id_token_signer()
+    hint = jwt.encode(
+        {"iss": ISSUER, "sub": "not-an-id", "aud": client_id},
+        signer.signing_key,
+        algorithm="ES256",
+        headers={"kid": signer.key_id},
+    )
+    answer = authorize(
+        op, basic(client_id, secret or ""), login_hint="-", id_token_hint=hint
+    )
+    assert answer.json()["error"] == "invalid_request"
+
+
+def test_metadata_leaves_out_the_routes_not_served(provider: MakeProvider) -> None:
+    """Served without the CIBA routes, the metadata names no endpoint of theirs."""
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    from domainkit.contrib.ciba.oidc import metadata, well_known
+
+    provider()
+    alone = FastAPI()
+    alone.include_router(well_known)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/.well-known/openid-configuration",
+        "headers": [(b"host", b"id.example.com")],
+        "scheme": "https",
+        "server": ("id.example.com", 443),
+        "query_string": b"",
+        "router": alone.router,
+        "app": alone,
+    }
+    answer = run_async(metadata(Request(scope)))
+    assert "token_endpoint" not in answer
+    assert answer["jwks_uri"] == "https://id.example.com/.well-known/jwks.json"
+
+
+def test_a_client_needs_a_known_method() -> None:
+    """``register`` refuses a method it does not know, before the database."""
+    from domainkit.exceptions import ImproperlyConfigured
+
+    with pytest.raises(ImproperlyConfigured, match="method is one of"):
+        run_async(register("X", method="tls_client_auth"))

@@ -208,7 +208,7 @@ With `CIBA = {"APPROVE_LOGINS": True}`, the app registers a gate that:
 2. **Lets through a login signed by one of the user's bound devices.**
    That is the phone itself logging in, with a password, a passkey or a
    provider.
-3. **Refuses everything else** with `403 approval_required`. The web
+3. **Refuses everything else** with `403 phone_approval_required`. The web
    page then signs in through `/app-sign-in/push` or `/app-sign-in/qr`.
 
 Two more pieces complete the app's own cycle:
@@ -216,8 +216,8 @@ Two more pieces complete the app's own cycle:
 - `POST /devices/login` (`DEVICES.DEVICE_LOGIN`, off by default): a
   bound device logs its user in by its signature alone. That is the
   banking-app biometric login, next to passkeys.
-- `domainkit devices unbind`: staff remove a lost phone's binding, so the
-  user can log in with their other factors and bind a new one.
+- `unbinddevices`: staff remove a lost phone's binding, so the user can
+  log in with their other factors and bind a new one.
 
 Sessions and tokens issued before the setting is turned on stay valid.
 To end them, log users out everywhere.
@@ -254,7 +254,7 @@ Clients live in a table:
     in `iss` and `sub`. Its `aud` is the issuer or the endpoint. Its
     `exp` is at most `ASSERTION_MAX_AGE` (5 min) away, and its `jti` is
     kept until `exp`, so a replay is refused. It needs the `jwt` extra.
-- **Commands:** `domainkit ciba clients add|list|remove|rotate`.
+- **Commands:** `domainkit ciba add|list|rotate|remove`.
 
 What a client's tokens carry:
 
@@ -276,10 +276,12 @@ What a client's tokens carry:
   `ciba.*`.
 - Every problem has English and Arabic messages.
 - Checks:
-  - `ciba.E001`: the app is not routed with `auth`.
+  - The application refuses to start when the app is not routed with
+    `auth`.
   - `ciba.E002`: the OP routes are mounted without an asymmetric
     `AUTH.JWT` and an `ISSUER`.
-  - `ciba.W001`: `APPROVE_LOGINS` is on without the devices routes.
+  - `ciba.E003`: `APPROVE_LOGINS` is on without the sign-in or devices
+    routes.
 
 ### Not in this decision
 

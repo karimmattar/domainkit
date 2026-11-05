@@ -2,9 +2,12 @@
 
 A poll's answers follow CIBA's token errors (``authorization_pending``,
 ``slow_down``, ``expired_token``, ``access_denied``, ``invalid_grant``):
-the first-party routes answer them as any API error, the OIDC token
-endpoint in OAuth's format, by their ``code``.
+the first-party routes answer them as any API error, by their ``code``
+(``sign_in_unknown`` for ``invalid_grant``, a code another app uses), and
+the OIDC token endpoint in OAuth's format, by their ``oauth_error``.
 """
+
+from typing import ClassVar
 
 from fastapi import status
 
@@ -12,10 +15,10 @@ from domainkit.http.errors import APIError
 
 __all__ = [
     "AccessDenied",
-    "ApprovalRequired",
     "AuthorizationPending",
     "DifferentNetwork",
     "OAuthError",
+    "PhoneApprovalRequired",
     "PollRefused",
     "QrCodeExpired",
     "SignInExpired",
@@ -27,7 +30,7 @@ __all__ = [
 ]
 
 
-class ApprovalRequired(APIError):
+class PhoneApprovalRequired(APIError):
     """This login must be approved from the user's mobile app (403).
 
     ``CIBA.APPROVE_LOGINS``: start the sign-in at ``/app-sign-in/push`` or
@@ -35,11 +38,11 @@ class ApprovalRequired(APIError):
     """
 
     def __init__(self) -> None:
-        """Use status 403 and the code ``approval_required``."""
+        """Use status 403 and the code ``phone_approval_required``."""
         super().__init__(
             status.HTTP_403_FORBIDDEN,
             "Approve this sign-in from your mobile app.",
-            code="approval_required",
+            code="phone_approval_required",
         )
 
 
@@ -92,11 +95,18 @@ class WrongMatchCode(APIError):
 
 
 class PollRefused(APIError):
-    """A poll that gives no tokens (400); ``code`` says why, as CIBA names it."""
+    """A poll that gives no tokens (400); ``code`` says why.
+
+    ``oauth_error`` is CIBA's name for it, which the token endpoint answers.
+    """
+
+    oauth_error: ClassVar[str]
 
 
 class AuthorizationPending(PollRefused):
     """The phone has not answered yet: poll again after the interval."""
+
+    oauth_error = "authorization_pending"
 
     def __init__(self) -> None:
         """Use status 400 and the code ``authorization_pending``."""
@@ -110,6 +120,8 @@ class AuthorizationPending(PollRefused):
 class SlowDown(PollRefused):
     """A poll came before the interval: wait 5 seconds more from now on."""
 
+    oauth_error = "slow_down"
+
     def __init__(self) -> None:
         """Use status 400 and the code ``slow_down``."""
         super().__init__(
@@ -121,6 +133,8 @@ class SlowDown(PollRefused):
 
 class SignInExpired(PollRefused):
     """The request's time is up before the phone approved it."""
+
+    oauth_error = "expired_token"
 
     def __init__(self) -> None:
         """Use status 400 and the code ``expired_token``."""
@@ -134,6 +148,8 @@ class SignInExpired(PollRefused):
 class AccessDenied(PollRefused):
     """The phone denied the sign-in."""
 
+    oauth_error = "access_denied"
+
     def __init__(self) -> None:
         """Use status 400 and the code ``access_denied``."""
         super().__init__(
@@ -146,12 +162,14 @@ class AccessDenied(PollRefused):
 class SignInUnknown(PollRefused):
     """No request has that handle, or it was redeemed, or is another client's."""
 
+    oauth_error = "invalid_grant"
+
     def __init__(self) -> None:
-        """Use status 400 and the code ``invalid_grant``."""
+        """Use status 400 and the code ``sign_in_unknown`` (``invalid_grant``)."""
         super().__init__(
             status.HTTP_400_BAD_REQUEST,
             "No sign-in waits with that handle.",
-            code="invalid_grant",
+            code="sign_in_unknown",
         )
 
 

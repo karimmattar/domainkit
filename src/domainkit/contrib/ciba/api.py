@@ -16,7 +16,7 @@ per address):
   ``interval``, and ``qr``, what the page renders as a QR code.
 - ``POST /app-sign-in/token`` ``{"request"}``: tokens as ``/login`` gives
   them, once the phone approved; else 400 ``authorization_pending``,
-  ``slow_down``, ``expired_token``, ``access_denied`` or ``invalid_grant``.
+  ``slow_down``, ``expired_token``, ``access_denied`` or ``sign_in_unknown``.
 - ``POST /app-sign-in/session`` ``{"request"}``: the same, as a browser
   session in cookies (``/session``).
 
@@ -39,15 +39,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.captcha import captcha
-from domainkit.contrib.auth.cookies import (
+from domainkit.contrib.auth.integration import (
     CsrfOut,
-    _session_of,
+    TokenOut,
+    address_key,
+    attempt,
     check_origin,
-    start_session,
+    gates_passed,
+    issue_login,
+    start_browser_session,
 )
-from domainkit.contrib.auth.integration import TokenOut, gates_passed, issue_login
 from domainkit.contrib.auth.models import UserId
-from domainkit.contrib.auth.throttling import address_key, attempt
 from domainkit.contrib.devices import DeviceSigned
 from domainkit.contrib.devices.binding import signing_device
 from domainkit.http.access import IsUnscoped, Public, Require
@@ -288,7 +290,7 @@ async def start_approved_session(
     check_origin(request)
     user = await _approved_user(body)
     with gates_passed(user.id):
-        return await start_session(user, response, previous=_session_of(request))
+        return await start_browser_session(request, user, response)
 
 
 async def _device_id(request: Request, user: AbstractBaseUser) -> UUID:

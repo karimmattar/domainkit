@@ -1,9 +1,10 @@
 # Public API: users and permissions
 
 `domainkit.contrib.auth`, `domainkit.contrib.identity`, `domainkit.contrib.devices`,
-and their modules
+`domainkit.contrib.phones`, `domainkit.contrib.ciba`, and their modules
 ([auth.md](../auth.md), [identity](../auth/identity.md),
-[devices](../auth/devices.md)). Part of
+[devices](../auth/devices.md), [phones](../auth/phones.md),
+[sign-in approvals](../auth/ciba.md)). Part of
 the [public API](../api.md), under its compatibility policy.
 
 ## `domainkit.contrib.auth`
@@ -455,14 +456,21 @@ What apps built on auth use: log a user in, step them up, hear of them.
 
 - `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
 - `REAUTH_AGE`: How recent a step-up must be to stand for the password (`reauthenticate`).
+- `CsrfOut`: The token to send back in `X-CSRF-Token` with unsafe methods.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
 - `SteppedUp`: A user authenticated again, for acts that ask for it (`StepUp`).
 - `TokenOut`: Tokens (OAuth 2's token response): send `Authorization: Bearer ...`.
 - `UserDeleted`: A user was deleted.
+- `UserLoggedOut`: A user logged out: of this session, or `everywhere`.
 - `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
+- `address_key`: The count of `scope` attempts from the request's client address.
+- `attempt`: Count an attempt against each `(key, rate)`; refuse it past a rate.
+- `audit_refusal`: Record a refused attempt, without what was tried: it may be a secret.
+- `auth_settings`: The validated `AUTH` settings.
 - `challenge`: A challenge, if `user` has a second factor; None if not.
+- `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
@@ -472,6 +480,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
 - `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).
+- `start_browser_session`: A browser session for `user`, whose login was checked another way.
 - `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
 - `stepping_credentials`: The request's credentials, if they can keep a step-up.
 - `utc_now`: The current time in UTC.
@@ -562,12 +571,12 @@ Codes sent to phone numbers, and the numbers users verified.
 Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 
 - `AccessDenied`: The phone denied the sign-in.
-- `ApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
 - `CibaClient`: An OIDC client that may ask users' phones: who, how it proves it, what for.
 - `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
 - `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why, as CIBA names it.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
@@ -617,10 +626,10 @@ What happens to a user's sign-in requests (audited as `ciba.*`).
 What a sign-in request may be refused, and what a poll may answer.
 
 - `AccessDenied`: The phone denied the sign-in.
-- `ApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
+- `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why, as CIBA names it.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `SignInExpired`: The request's time is up before the phone approved it.

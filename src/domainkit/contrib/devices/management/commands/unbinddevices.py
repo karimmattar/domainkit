@@ -2,7 +2,7 @@
 
 from argparse import ArgumentParser
 
-from domainkit.contrib.auth.events import UserLoggedOut
+from domainkit.contrib.auth.integration import UserLoggedOut
 from domainkit.management.base import BaseCommand, CommandError, run_async
 
 from ...events import DeviceUnbound

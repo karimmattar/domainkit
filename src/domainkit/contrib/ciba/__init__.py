@@ -26,9 +26,9 @@ needs it: the mobile app is the user's identity. See ``docs/auth/ciba.md``.
 from .events import SignInApproved, SignInDenied, SignInReported
 from .exceptions import (
     AccessDenied,
-    ApprovalRequired,
     AuthorizationPending,
     DifferentNetwork,
+    PhoneApprovalRequired,
     PollRefused,
     QrCodeExpired,
     SignInExpired,
@@ -52,12 +52,12 @@ from .stores import CibaClient, CibaUnitOfWork, SignInRequest
 
 __all__ = [
     "AccessDenied",
-    "ApprovalRequired",
     "AuthorizationPending",
     "CibaClient",
     "CibaSettings",
     "CibaUnitOfWork",
     "DifferentNetwork",
+    "PhoneApprovalRequired",
     "PollRefused",
     "QrCodeExpired",
     "Requester",

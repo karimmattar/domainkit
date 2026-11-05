@@ -49,6 +49,10 @@ from domainkit.contrib.auth.integration import (
     PASSWORD_MAX_LENGTH,
     StepUpOut,
     TokenOut,
+    address_key,
+    attempt,
+    audit_refusal,
+    auth_settings,
     issue_login,
     pass_login_gates,
     record_step_up,
@@ -57,8 +61,6 @@ from domainkit.contrib.auth.integration import (
     utc_now,
 )
 from domainkit.contrib.auth.models import UserId
-from domainkit.contrib.auth.settings import auth_settings
-from domainkit.contrib.auth.throttling import address_key, attempt, audit_refusal
 from domainkit.http.access import IsUnscoped, Public, Require
 
 from .binding import DEVICE_ID, DeviceSigned, device_key, signing_device

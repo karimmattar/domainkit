@@ -9,7 +9,7 @@ With the setting on, a login of a user who bound a device works only:
    on the server side, past the gates.
 
 A user with no bound device logs in as before: the app's first login has
-to bind it. Anything else is refused with ``403 approval_required``.
+to bind it. Anything else is refused with ``403 phone_approval_required``.
 """
 
 from starlette.requests import Request
@@ -18,7 +18,7 @@ from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.devices import DevicesUnitOfWork
 from domainkit.contrib.devices.binding import signing_device
 
-from .exceptions import ApprovalRequired
+from .exceptions import PhoneApprovalRequired
 from .services import ciba_settings
 
 __all__ = ["approved_from_the_phone"]
@@ -28,7 +28,7 @@ async def approved_from_the_phone(request: Request, user: AbstractBaseUser) -> N
     """Let the login of ``user`` through if the app is not their identity, or signs it.
 
     Raises:
-        ApprovalRequired: ``APPROVE_LOGINS`` is on, the user bound a device,
+        PhoneApprovalRequired: ``APPROVE_LOGINS`` is on, the user bound a device,
             and none of theirs signed this request.
     """
     if not ciba_settings().APPROVE_LOGINS:
@@ -37,4 +37,4 @@ async def approved_from_the_phone(request: Request, user: AbstractBaseUser) -> N
         bound = await uow.devices.count(user.id)
     if not bound or await signing_device(request, user) is not None:
         return
-    raise ApprovalRequired()
+    raise PhoneApprovalRequired()

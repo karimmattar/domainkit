@@ -346,6 +346,7 @@ EXTRA_MESSAGES: Final = {
     "You cannot approve this request now.",  # approvals.rules
     "Too many attempts; try again later.",  # auth.mfa and auth.recovery, by keyword
     "Too many requests for mail; try again later.",  # auth.recovery and auth.signup
+    "Too many sign-ins were started; try again later.",  # ciba, a throttle's detail
     MoneyError.summary,
     UnknownCurrency.summary,
     InexactAmount.summary,
@@ -363,6 +364,7 @@ SCANNED: Final = (
     "storage",
     "contrib/approvals",
     "contrib/auth",
+    "contrib/ciba",
     "contrib/idempotency",
     "contrib/objectpermissions",
     "resources",

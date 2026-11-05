@@ -71,7 +71,7 @@ class Command(ActionCommand):
         self.write(f"client_secret: {secret}")
 
     @action(
-        help="remove a client; its requests and tokens stop working",
+        help="remove a client: it can start and poll no more; tokens it holds run out",
         options=[option("client_id")],
         operator=True,
     )

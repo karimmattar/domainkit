@@ -94,6 +94,7 @@ a user (`UserDeleted`) removes their passkeys, devices, and push tokens.
 | `MAX_DEVICES` | 10 (1 to 100) | Bound devices a user holds at once (`409 too_many_keys` past it). |
 | `MAX_PUSH_TOKENS` | 20 (1 to 100) | Push tokens a user holds; a new one past it ends the oldest. |
 | `SIGNATURE_WINDOW` | 2 minutes (at most 10) | How far a signed request's time may be from the server's. |
+| `DEVICE_LOGIN` | `False` | `POST /devices/login`: a bound device logs its user in by its signature alone ([Sign-in approvals](ciba.md#the-mobile-app-as-identity)). |
 
 ## Adding a key needs the user again
 
@@ -180,6 +181,7 @@ and `reauthenticate(request, user, password, action)`.
 | `GET /devices` | a user | The user's devices: `id`, `name`, `created_at`, `last_used_at`. |
 | `DELETE /devices/{id}` | a user | `204`: its signatures hold no more. `404 device_not_found` for another's. |
 | `POST /devices/step-up` | a user, signed by their device | A step-up, `amr` `["hwk"]`. |
+| `POST /devices/login` | anyone, signed by a bound device (`DEVICE_LOGIN`) | Tokens for the device's user, as `/login` gives them; `404 device_login_off` without the setting. |
 
 The key is P-256 or Ed25519, as SubjectPublicKeyInfo or, for P-256, the
 raw point that the Secure Enclave exports, in base64url. Anything else is

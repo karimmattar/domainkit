@@ -1082,3 +1082,36 @@ msgstr "لا يمكن لمنتحل الهوية أن ينتحل هوية أخر�
 
 msgid "Confirm it is you: send your password, or step up first."
 msgstr "أكّد أنك أنت: أرسل كلمة المرور، أو عزّز التحقق أولًا."
+
+msgid "Approve this sign-in from your mobile app."
+msgstr "وافق على تسجيل الدخول هذا من تطبيقك على الهاتف."
+
+msgid "No sign-in request of yours waits with that id."
+msgstr "لا يوجد طلب تسجيل دخول لك بهذا المعرّف ينتظر الرد."
+
+msgid "That code expired or was used; scan the new one on the page."
+msgstr "انتهت صلاحية هذا الرمز أو استُخدم؛ امسح الرمز الجديد على الصفحة."
+
+msgid "Scan the code from a phone on the same network as the page."
+msgstr "امسح الرمز من هاتف على الشبكة نفسها التي تُعرض عليها الصفحة."
+
+msgid "That is not the number on the sign-in page; the sign-in is denied."
+msgstr "هذا ليس الرقم الظاهر على صفحة تسجيل الدخول؛ رُفض تسجيل الدخول."
+
+msgid "The sign-in waits for the phone; ask again later."
+msgstr "تسجيل الدخول بانتظار الهاتف؛ اسأل مرة أخرى لاحقًا."
+
+msgid "Asked too often; wait longer between polls."
+msgstr "طلبات متكررة جدًا؛ انتظر مدة أطول بين الاستعلامات."
+
+msgid "The sign-in expired; start a new one."
+msgstr "انتهت صلاحية تسجيل الدخول؛ ابدأ تسجيلًا جديدًا."
+
+msgid "The sign-in was denied."
+msgstr "رُفض تسجيل الدخول."
+
+msgid "No sign-in waits with that handle."
+msgstr "لا يوجد تسجيل دخول ينتظر بهذا المعرّف."
+
+msgid "Too many sign-ins were started; try again later."
+msgstr "بُدئت محاولات تسجيل دخول كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
