@@ -41,6 +41,7 @@ in the worker, so no token is ever stored, not even in the outbox.
 
 import logging
 import math
+import warnings
 from datetime import timedelta
 from typing import Annotated, Final, cast
 from urllib.parse import quote
@@ -50,6 +51,7 @@ from fastapi import APIRouter, Depends, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from domainkit.contrib.messaging import enqueue, task
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError
 
@@ -223,6 +225,7 @@ async def request_password_reset(
         )
         await enqueue(send_password_reset_code, identifier=value)
         return AcceptedOut(detail="If an account uses it, a code is on its way.")
+    warn_links()
     email = validate_email(value)
     await _limit_mail(request, "password-reset", email_key("password-reset", email))
     await enqueue(send_password_reset, email=email)
@@ -375,6 +378,8 @@ async def request_email_verification(
     )
     await enqueue(send_email_verification, user_id=user.id)
     sent = "code" if auth_settings().VERIFICATION == "code" else "link"
+    if sent == "link":
+        warn_links()
     return AcceptedOut(detail=f"A {sent} to verify your address is on its way.")
 
 
@@ -490,7 +495,7 @@ async def send_password_reset_code(identifier: str) -> None:
         address = email_of(user)
         texted = number is not None and getattr(user, "mobile_number", None) == number
         if not texted and (address is None or not _mailable(user, address)):
-            return  # Texts can go: auth.E012 needs notifications for numbers.
+            return  # Texts can go: auth.E107 needs notifications for numbers.
         target = target_of(identifier)
         code = await uow.verification_codes.issue(
             PASSWORD_RESET, target, user_id=user.id
@@ -522,6 +527,16 @@ async def send_mobile_verification(user_id: UUID) -> None:
         )
         await text_code(number, code, "verify your number", uow)
         await uow.commit()
+
+
+def warn_links() -> None:
+    """Warn that links are deprecated (ADR 0126): codes replace them in 2.0."""
+    warnings.warn(
+        'Links are deprecated: set AUTH.VERIFICATION = "code"; links are '
+        "removed in domainkit 2.0.",
+        DomainkitDeprecationWarning,
+        stacklevel=2,
+    )
 
 
 def can_text(label: str) -> bool:

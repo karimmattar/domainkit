@@ -77,6 +77,7 @@ from .recovery import (
     code_context,
     describe,
     text_code,
+    warn_links,
 )
 from .repositories import PendingSignup
 from .settings import (
@@ -226,6 +227,8 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
             ttl=config.CODE_TTL if by_code else config.EMAIL_VERIFICATION_TIMEOUT,
             fields=given,
         )
+        if not by_code:
+            warn_links()
         sender = send_signup_code if by_code else send_signup_link
         uow.defer(sender, signup_id=pending.id)
         await uow.commit()
@@ -345,7 +348,7 @@ async def send_signup_code(signup_id: UUID) -> None:
         number = None if pending.email else pending.mobile_number
         if await _taken(uow, pending):
             await uow.signups.remove(pending.id)
-            if number is not None:  # auth.E012: notifications are installed.
+            if number is not None:  # auth.E107: notifications are installed.
                 await _text_taken(number, uow)
             await uow.commit()
             if number is None:

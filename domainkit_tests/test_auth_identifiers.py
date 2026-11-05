@@ -12,6 +12,7 @@ from domainkit.contrib.auth import (
 )
 from domainkit.contrib.auth.events import MobileNumberVerified
 from domainkit.contrib.auth.settings import identifier_fields
+from domainkit.contrib.auth.testing import fill_identifier
 from domainkit_tests.conftest import UseAuth
 
 HASH = PasswordHash("pbkdf2_sha256$1$salt$hash")
@@ -146,3 +147,29 @@ def test_identifiers_name_each_field_once(use_auth: UseAuth) -> None:
     [problem] = refused.value.messages
     assert getattr(problem, "id", None) == "auth.E011"
     assert "AUTH.IDENTIFIERS names a field twice: name each once." in str(problem)
+
+
+def test_test_users_get_an_identifier_the_project_names(use_auth: UseAuth) -> None:
+    """``fill_identifier``: the first of ``AUTH.IDENTIFIERS``, unless one is given."""
+    named: dict[str, object] = {}
+    use_auth()
+    fill_identifier(User, "user-1", named)
+    assert named == {}  # The username identifies users.
+
+    use_auth(IDENTIFIERS=("email", "mobile_number"))
+    by_email: dict[str, object] = {}
+    fill_identifier(User, "user-1", by_email)
+    given: dict[str, object] = {"mobile_number": "+33612345678"}
+    fill_identifier(User, "user-1", given)
+    assert by_email == {"email": "user-1@example.com"}
+    assert given == {"mobile_number": "+33612345678"}
+
+    use_auth(IDENTIFIERS=("mobile_number",))
+    by_number: dict[str, object] = {}
+    fill_identifier(User, "user-1", by_number)
+    assert normalize_mobile_number(str(by_number["mobile_number"])).startswith("+1555")
+
+    use_auth(IDENTIFIERS=("first_name",))
+    by_name: dict[str, object] = {}
+    fill_identifier(User, "user-1", by_name)
+    assert by_name == {"first_name": "user-1"}

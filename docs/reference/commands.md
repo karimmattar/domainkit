@@ -808,9 +808,15 @@ Superuser created successfully.
 ```
 
 `createsuperuser` asks for what the options leave out. It has one option
-per field: `--<USERNAME_FIELD>` and `--<field>` for each of
-`REQUIRED_FIELDS` (with the default user model, `--username` and
-`--email`).
+per field: `--<USERNAME_FIELD>`, `--<field>` for each field of
+`AUTH.IDENTIFIERS`, and one for each of `REQUIRED_FIELDS` (with the
+default user model, `--username` and `--email`, and `--mobile_number`
+where numbers identify users). Where the username does not identify
+users, it is optional, and the user needs one of the identifiers:
+
+```bash
+python manage.py createsuperuser --noinput --email admin@example.com
+```
 
 | Option | What it does |
 | --- | --- |

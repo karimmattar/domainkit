@@ -36,6 +36,11 @@ from domainkit_tests.test_auth_recovery import (
     token_in,
 )
 
+# These tests use links, deprecated since 1.8 (ADR 0126) and kept until 2.0.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::domainkit.deprecation.DomainkitDeprecationWarning"
+)
+
 PASSWORD = "Sign-up-pass-77"
 CONFIRM = "Confirm your sign-up"
 EXISTS = "Your sign-up"

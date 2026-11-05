@@ -46,7 +46,8 @@ and a status.
   code, and the new password.
 - Mobile number verification: `POST /auth/mobile-verification` texts a
   code, and `POST /auth/mobile-verification/code` takes it.
-- `auth.E012` refuses texted codes without `domainkit.contrib.notifications`.
+- `auth.E107`: the reset or signup routes send codes to numbers, and
+  `domainkit.contrib.notifications` is not installed.
 - Signup by code: `POST /auth/signup` takes an optional `username`, and,
   where numbers identify users, a `mobile_number` alone; the code goes by
   mail or text message, and `POST /auth/signup/code` makes the account.
@@ -55,6 +56,25 @@ and a status.
 - `normalize_mobile_number`, and the problems `invalid_mobile_number`,
   `mobile_number_taken`, `email_taken`, and `identifier_required`
   (`domainkit.contrib.auth`).
+
+### Changed
+
+- `init` writes `AUTH.IDENTIFIERS = ("email", "mobile_number")` and
+  `AUTH.VERIFICATION = "code"` for new projects: people log in with an
+  email address or a mobile number, and the username is optional.
+  `startdomain` prints the login by email address.
+- A new user needs one of the fields that `AUTH.IDENTIFIERS` names
+  (`422 identifier_required`); by default that is the username, as
+  before. The admin API's `POST /admin/auth/users`, `createsuperuser`,
+  and the test helpers (`create_user`, `client.authenticated()`) take no
+  username where it does not identify users. `createsuperuser` has an
+  option for each identifier, such as `--mobile_number`.
+
+### Deprecated
+
+- Links for email verification, password resets, and signups
+  (`AUTH.VERIFICATION = "link"`, the default in 1.x). They go in 2.0; use
+  codes ("Upgrading", 1.7 to 1.8).
 
 ### Fixed
 

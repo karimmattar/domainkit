@@ -47,13 +47,14 @@ SERVER: Final = "http://127.0.0.1:8000"
 PROMPT_LINE: Final = 'read -rsp "Password: " PASSWORD && export PASSWORD'
 """Ask for the password, so it is in no command line and no shell history."""
 LOGIN_CURL: Final = (
-    "TOKEN=$(python -c \"import json, os; print(json.dumps({'username': "
-    "'<username>', 'password': os.environ['PASSWORD']}))\" "
+    "TOKEN=$(python -c \"import json, os; print(json.dumps({'identifier': "
+    "'<email>', 'password': os.environ['PASSWORD']}))\" "
     f"| curl -s {SERVER}/auth/login "
     '-H "Content-Type: application/json" -d @- '
     "| python -c \"import json, sys; print(json.load(sys.stdin)['access_token'])\")"
 )
-"""Log in at the project template's ``/auth/login`` with the password typed at
+"""Log in at the project template's ``/auth/login``, by the email address
+(``AUTH.IDENTIFIERS``; a username where it identifies users), with the password typed at
 ``PROMPT_LINE`` (sent on stdin, never in an argument); keep the token in
 ``$TOKEN``."""
 UNSET_LINE: Final = "unset PASSWORD"

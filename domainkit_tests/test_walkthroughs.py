@@ -304,7 +304,7 @@ def test_the_quick_start_works_as_written(quick_start: QuickStart) -> None:
         "   # installs and mounts it"
     ]
     printed = [line.strip() for line in started.splitlines()[-4:]]
-    printed = [line.replace("<username>", "admin") for line in printed]
+    printed = [line.replace("<email>", "admin@example.com") for line in printed]
     server = lines.index(
         "python manage.py runserver            # http://127.0.0.1:8000/docs"
     )

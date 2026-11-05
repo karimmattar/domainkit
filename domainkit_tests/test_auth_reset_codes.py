@@ -9,12 +9,13 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from domainkit.checks import CheckFailed
 from domainkit.conf import override_settings
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, User, UserId
 from domainkit.contrib.auth.recovery import send_mobile_verification
 from domainkit.contrib.notifications.backends import sms_outbox
+from domainkit.http import get_asgi_application
+from domainkit.http.application import application_problems
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     IDENTITY,
@@ -23,7 +24,6 @@ from domainkit_tests.conftest import (
     ExitStackClients,
     Migrated,
     Shape,
-    UseAuth,
 )
 from domainkit_tests.test_auth_http import (
     PASSWORD,
@@ -118,8 +118,8 @@ def other(code: str) -> str:
 
 def test_a_mailed_code_sets_a_new_password(identity: Api) -> None:
     """A weak password keeps the code; a strong one spends it and ends sessions."""
-    ann = create_user(None, email="ann@example.com")
     client = identity(**MAILED)
+    ann = create_user(None, email="ann@example.com")
     old = bearer(login(client, "ann@example.com")["access_token"])
 
     answer = ask_reset(client, identifier="Ann@Example.com")
@@ -170,6 +170,7 @@ def test_an_unknown_identifier_gets_the_same_answer_and_nothing(identity: Api) -
     assert reset(client, "nobody@example.com", "123456") == WRONG
 
 
+@pytest.mark.filterwarnings("ignore::domainkit.deprecation.DomainkitDeprecationWarning")
 def test_links_take_an_address_only(identity: Api) -> None:
     """Without codes, an identifier must be an address; one value is needed."""
     client = identity()
@@ -182,8 +183,8 @@ def test_links_take_an_address_only(identity: Api) -> None:
 
 def test_a_texted_code_sets_a_new_password(texting: App) -> None:
     """A number gets a text message; it may be written any way."""
-    create_user(None, mobile_number=NUMBER, email="erin@example.com")
     client = texting(**CODES)
+    create_user(None, mobile_number=NUMBER, email="erin@example.com")
 
     ask_reset(client, identifier="+33 6 12 34 56 78")
     drain()
@@ -294,13 +295,20 @@ def test_a_user_without_a_number_gets_no_code(texting: App) -> None:
     assert client.post("/auth/mobile-verification").status_code == 401
 
 
-def test_texted_codes_need_notifications(use_auth: UseAuth) -> None:
-    """``auth.E012``: numbers identify users, and codes are on."""
-    with pytest.raises(CheckFailed) as refused:
-        use_auth(**CODES)
+def test_texted_codes_need_notifications(identity: Api) -> None:
+    """``auth.E107``: routes that text codes, without notifications."""
+    identity()
+    with override_settings(AUTH={**IDENTITY.settings["AUTH"], **CODES}):
+        problems = application_problems(get_asgi_application())
+    with override_settings(AUTH={**IDENTITY.settings["AUTH"], **MAILED}):
+        mailed = application_problems(get_asgi_application())
 
-    [problem] = refused.value.messages
-    assert getattr(problem, "id", None) == "auth.E012"
-    assert "add 'domainkit.contrib.notifications' to INSTALLED_DOMAINS" in str(problem)
-    use_auth(VERIFICATION="code", IDENTIFIERS=("email",))
-    use_auth(IDENTIFIERS=("email", "mobile_number"))
+    texts = (
+        "send codes to mobile numbers by text message: add "
+        "domainkit.contrib.notifications to INSTALLED_DOMAINS."
+    )
+    assert problems == [
+        f"Routes of domainkit.contrib.auth.recovery {texts}",
+        f"Routes of domainkit.contrib.auth.signup {texts}",
+    ]
+    assert mailed == []

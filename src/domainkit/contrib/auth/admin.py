@@ -159,7 +159,9 @@ class AdminUserIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    username: str = Field(min_length=1, max_length=255)
+    username: str | None = Field(default=None, min_length=1, max_length=255)
+    """Optional where the username does not identify users (``AUTH.IDENTIFIERS``):
+    ``fields`` then gives the email address or the mobile number."""
     password: str | None = Field(
         default=None, min_length=1, max_length=4096, repr=False
     )

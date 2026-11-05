@@ -53,6 +53,7 @@ from .events import UserLoggedIn
 from .exceptions import (
     EmailTaken,
     GroupNameTaken,
+    IdentifierRequired,
     InvalidPassword,
     UnknownGroup,
     UnknownPermission,
@@ -305,10 +306,17 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         """Store a new user, unless privacy erased its username from another.
 
         Raises:
+            IdentifierRequired: It has none of the fields of
+                ``AUTH.IDENTIFIERS`` (ADR 0126).
             InvalidUsername: The name starts with ``erased-``, which erasure
                 keeps for itself (for user models of any kind).
             UsernameTaken: It did: the name stays taken, as a live one is.
         """
+        identifiers = identifier_fields(self.model)
+        if not any(getattr(aggregate, name, None) for name in identifiers):
+            raise IdentifierRequired(
+                f"Give one of these, which identify users: {', '.join(identifiers)}."
+            )
         field = self.model.USERNAME_FIELD
         username = getattr(aggregate, field, None)
         if username is not None:

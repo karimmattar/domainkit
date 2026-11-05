@@ -4,6 +4,7 @@ import asyncio
 import getpass
 import io
 from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager
 from types import SimpleNamespace
 
 import pytest
@@ -422,3 +423,85 @@ def test_createsuperuser_asked_sets_a_lasting_password(
                 return await uow.passwords.must_change(admin.id)
 
         assert run_async(must_change()) is False
+
+
+def by_email_or_number() -> AbstractContextManager[None]:
+    """``AUTH.IDENTIFIERS`` set to the email address and the mobile number."""
+    from domainkit.contrib.auth.settings import auth_settings
+
+    auth = auth_settings().model_dump(exclude_unset=True)
+    return override_settings(AUTH={**auth, "IDENTIFIERS": ("email", "mobile_number")})
+
+
+def test_createsuperuser_by_email_or_number(
+    auth_project: str,
+    prompts: Prompts,
+    output: tuple[io.StringIO, io.StringIO],
+) -> None:
+    """The username is optional; an address or a number is enough."""
+    create("taken")
+    with by_email_or_number():
+        text = usage(createsuperuser.Command, "createsuperuser")
+        asked = prompts(
+            createsuperuser.Command,
+            plain=["taken", "", "", "+33 6 12 34 56 78"],
+            secret=[STRONG, STRONG],
+        )
+        stdout, stderr = output
+        call_command("createsuperuser", stdout=stdout, stderr=stderr)
+        call_command(
+            "createsuperuser", "--noinput", "--email", "Boss@X.org", stdout=stdout
+        )
+        with pytest.raises(CommandError) as nothing:
+            call_command("createsuperuser", "--noinput", stdout=io.StringIO())
+        with pytest.raises(CommandError) as taken_email:
+            call_command(
+                "createsuperuser", "--noinput", "--email", "boss@x.org", stdout=stdout
+            )
+        with pytest.raises(CommandError) as taken_name:
+            call_command(
+                "createsuperuser", "--noinput", "--username", "taken", stdout=stdout
+            )
+
+        async def find(identifier: str) -> AbstractBaseUser | None:
+            async with AuthUnitOfWork() as uow:
+                return await uow.users.find_by_identifier(identifier)
+
+        call_command(
+            "createsuperuser",
+            "--noinput",
+            "--username",
+            "chief",
+            "--mobile_number",
+            "+33699999999",
+            stdout=stdout,
+        )
+        by_number = run_async(find("+33612345678"))
+        by_address = run_async(find("boss@x.org"))
+        named = run_async(find("+33699999999"))
+
+    assert "--mobile_number MOBILE_NUMBER the user's Mobile number" in text
+    assert asked == [
+        "Username (optional): ",
+        "Username (optional): ",
+        "Email: ",
+        "Mobile number: ",
+        "Password: ",
+        "Password (again): ",
+    ]
+    assert stderr.getvalue() == "Error: That username is already taken.\n"
+    assert isinstance(by_number, User)
+    assert (by_number.username, by_number.email, by_number.is_superuser) == (
+        None,
+        "",
+        True,
+    )
+    assert isinstance(by_address, User)
+    assert by_address.username is None
+    assert str(nothing.value) == (
+        "Give a username, an email address, or a mobile number."
+    )
+    assert str(taken_email.value) == "Another user has that email address."
+    assert str(taken_name.value) == "The username 'taken' is taken."
+    assert isinstance(named, User)
+    assert named.username == "chief"

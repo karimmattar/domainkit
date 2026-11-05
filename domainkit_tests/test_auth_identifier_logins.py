@@ -6,7 +6,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import AuthUnitOfWork, EmailTaken, authenticate
+from domainkit.contrib.auth import (
+    AuthUnitOfWork,
+    EmailTaken,
+    IdentifierRequired,
+    authenticate,
+)
 from domainkit.contrib.auth.models import UserId
 from domainkit.contrib.auth.settings import auth_settings
 from domainkit.contrib.auth.throttling import account_digest
@@ -123,6 +128,20 @@ def test_an_address_identifies_one_user(api: Api) -> None:
         run_async(change("Gina@Example.com"))
     run_async(change("HAL@example.com"))  # Its own address, in another case.
     assert log_in(client, identifier="hal@example.com") == 200
+
+
+def test_a_new_user_needs_an_identifier_the_project_names(api: Api) -> None:
+    """``AUTH.IDENTIFIERS`` names what a new user must have, one at least."""
+    api()
+    with pytest.raises(IdentifierRequired) as refused:
+        create_user(None, email="kim@example.com")
+    assert refused.value.message == (
+        "Give one of these, which identify users: username."
+    )
+    api(IDENTIFIERS=("email", "mobile_number"))
+    with pytest.raises(IdentifierRequired):
+        create_user("lou")
+    create_user(None, mobile_number="+33633333333")
 
 
 def test_an_address_repeats_where_it_identifies_no_one(api: Api) -> None:

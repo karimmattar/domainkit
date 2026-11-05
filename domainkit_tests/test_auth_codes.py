@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -15,6 +16,7 @@ from domainkit.contrib.auth import AuthUnitOfWork, UserId
 from domainkit.contrib.auth.codes import EMAIL_VERIFICATION, Proven, target_of
 from domainkit.contrib.auth.tables import auth_codes
 from domainkit.db import connections
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import audited, bearer, create_user, login
@@ -144,11 +146,15 @@ def test_a_code_holds_for_the_address_it_went_to(identity: Api) -> None:
 
 
 def test_links_still_work_in_link_mode(identity: Api) -> None:
-    """``AUTH.VERIFICATION`` is ``"link"`` by default: no code is sent."""
+    """``AUTH.VERIFICATION`` is ``"link"`` by default: no code is sent.
+
+    Asking for a link warns that links are deprecated (removed in 2.0).
+    """
     create_user("erin", email="erin@example.com")
     client = identity()
     headers = bearer(login(client, "erin")["access_token"])
-    client.post("/auth/email-verification", headers=headers)
+    with pytest.warns(DomainkitDeprecationWarning, match="AUTH.VERIFICATION"):
+        client.post("/auth/email-verification", headers=headers)
     run_worker()
 
     assert "/" in mail.outbox[0].body or ":" in mail.outbox[0].body

@@ -498,9 +498,10 @@ gets `422`, and the code still works. The text message reads:
 482913 is your code to reset your password. It works for 10 minutes. Never give it to anyone.
 ```
 
-Where `mobile_number` is in `AUTH.IDENTIFIERS` and codes are on, startup
-refuses a project without `domainkit.contrib.notifications`
-(`auth.E012`).
+Where `mobile_number` is in `AUTH.IDENTIFIERS` and codes are on, a
+project that serves the reset or signup routes needs
+`domainkit.contrib.notifications`: `check` refuses it without
+(`auth.E107`).
 
 ### Email verification
 

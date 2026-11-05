@@ -96,13 +96,16 @@ the answer is `401 Unauthorized`, with the code `not_authenticated`:
 curl http://127.0.0.1:8000/api/v1/accounts/accounts   # 401
 ```
 
-Log in, typing the password again, and keep the token in `$TOKEN`. The
+Log in with the email address, typing the password again, and keep the
+token in `$TOKEN`. New projects log in with an email address or a mobile
+number, not the username ([Logging in with an email address or a mobile
+number](../auth/logging-in.md#logging-in-with-an-email-address-or-a-mobile-number)). The
 password goes to `curl` on its standard input (`-d @-`). It is then in
 no command line and in no shell history:
 
 ```bash
 read -rsp "Password: " PASSWORD && export PASSWORD
-TOKEN=$(python -c "import json, os; print(json.dumps({'username': 'admin', 'password': os.environ['PASSWORD']}))" \
+TOKEN=$(python -c "import json, os; print(json.dumps({'identifier': 'admin@example.com', 'password': os.environ['PASSWORD']}))" \
   | curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d @- \
   | python -c "import json, sys; print(json.load(sys.stdin)['access_token'])")
 unset PASSWORD

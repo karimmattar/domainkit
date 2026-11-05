@@ -66,10 +66,12 @@ groups and permissions.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `id` | `UserId`, a UUID | |
-| `username` | text, unique | 1 to 150 letters, digits, and `@ . + - _`, NFKC-normalized. Names that start with `erased-`, in any case, are kept for erased accounts. |
+| `username` | text, unique when set | Optional since 1.8. 1 to 150 letters, digits, and `@ . + - _`, NFKC-normalized. Names that start with `erased-`, in any case, are kept for erased accounts. |
 | `password` | `PasswordHash` | Never a raw password; see [Passwords](#passwords). |
 | `email`, `first_name`, `last_name` | text | The email is one plain address or empty, with its domain in lower case. |
 | `email_verified` | bool | Whether the user proved that they read mail at `email`. A new address clears it. |
+| `mobile_number` | text, unique when set | A number in international form (E.164), such as `+33612345678`. Spaces, dots, dashes, and brackets are dropped. |
+| `mobile_number_verified` | bool | Whether the user proved that they receive texts at `mobile_number`. A new number clears it. |
 | `is_active` | bool | An inactive user cannot log in and has no permissions. |
 | `is_staff` | bool | May use the [admin API](routes.md#the-admin-api), with its permissions. |
 | `is_superuser` | bool | Has every permission, without grants. |
@@ -91,9 +93,28 @@ A user changes through its methods, and each records an
 [event](../learning.md#words): `set_password(hash)`,
 `set_unusable_password()`, `set_active(value)`, `set_superuser(value)`,
 `set_staff(value)`, `join(group)`, `leave(group)`, `grant(*permissions)`,
-`revoke(*permissions)`, `verify_email()`, and `update(**fields)`.
-`get_username()`, `get_full_name()`, `get_short_name()`, and
-`has_usable_password()` read it.
+`revoke(*permissions)`, `verify_email()`, `verify_mobile_number()`, and
+`update(**fields)`. `get_username()`, `get_full_name()`,
+`get_short_name()`, and `has_usable_password()` read it.
+
+A user needs at least one identifier: a username, an email address, or a
+mobile number (`422 identifier_required`). The repository asks more: a new
+user needs one of the fields that `AUTH.IDENTIFIERS` names, which is the
+username alone by default. Where `email` is one of them, two users cannot
+have one address (`409 email_taken`). `get_username()` returns the
+username, or, without one, the email address or the mobile number. Events,
+the audit trail, and the admin API name a user by it.
+
+```python
+from domainkit.contrib.auth import PasswordHash, User
+
+user = User.create(password=PasswordHash.unusable(), mobile_number="+33 6 12 34 56 78")
+print(user.username, user.mobile_number, user.get_username())
+```
+
+```text
+None +33612345678 +33612345678
+```
 
 ### The repositories
 
@@ -113,6 +134,12 @@ are the methods you use most:
 | `uow.groups.create(name)`, `get_by_name(name)`, `get_many_by_name(names)`, `rename(group, name)` | Groups. |
 | `uow.permissions.get(key)`, `get_many(keys)`, `all()`, `keys()` | Permissions, by key. |
 | `uow.tokens.issue(user_id, ttl=...)`, `revoke_user(user_id)` | Tokens; see [Authenticating requests](authentication.md). |
+
+`uow.users.find_by_identifier(value)` finds the user that an email
+address, a mobile number, or a username names, by the fields of
+`AUTH.IDENTIFIERS` ([Logging in with an email address or a mobile
+number](logging-in.md#logging-in-with-an-email-address-or-a-mobile-number)).
+`create_user(None, password, email=...)` makes a user without a username.
 
 `create_user` refuses a username that a user has already, with
 `UsernameTaken` (409). It compares the name exactly, after NFKC, so
@@ -737,8 +764,10 @@ async def test_clerks_read(async_client) -> None:
 
 - `create_user(*permissions, password=None, groups=(), superuser=False, **fields)`
   grants the permission keys, joins the groups by name, and names the
-  user `user-<hex>` unless you give a username. With `password`, a test
-  can log in through the API.
+  user `user-<hex>` unless you give a username. Where the username does
+  not identify users, and you give no field that does, the first field of
+  `AUTH.IDENTIFIERS` gets a value: `user-<hex>@example.com` for `email`.
+  With `password`, a test can log in through the API.
 - `create_group(*permissions, name=None)` names the group `group-<hex>`
   unless you give a name.
 
@@ -768,6 +797,9 @@ and the full defaults.
 | `UsernameTaken` | 409 | `username_taken` | Another user has the username. |
 | `InvalidUsername` | 422 | `invalid_username` | Empty, too long, other characters, or starts with `erased-`. |
 | `InvalidEmail` | 422 | `invalid_email` | Not one plain address. |
+| `InvalidMobileNumber` | 422 | `invalid_mobile_number` | Not a number in international form. |
+| `IdentifierRequired` | 422 | `identifier_required` | No username, address, or number; or, for a new user, none of `AUTH.IDENTIFIERS`. |
+| `EmailTaken`, `MobileNumberTaken` | 409 | `email_taken`, `mobile_number_taken` | Another user has the address (where addresses identify users), or the number. |
 | `InvalidPassword` | 422 | `invalid_password` | A validator, or the history, refuses it; `errors` lists each rule. |
 | `GroupNameTaken` | 409 | `group_name_taken` | Another group has the name. |
 | `InvalidGroupName` | 422 | `invalid_group_name` | Empty, or more than 150 characters. |

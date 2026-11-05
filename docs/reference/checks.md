@@ -100,7 +100,6 @@ production ([commands](commands.md)).
 | `auth.E009` | everywhere, with `JWTAuthentication` | a key of `AUTH.JWT.PREVIOUS_KEYS` that retires more than a day ahead |
 | `auth.E010` | everywhere | a setting that contradicts `AUTH.PRESET`; each contradiction is named with its PCI DSS requirement ([PCI DSS v4.0's passwords](../auth/pci-dss.md)) |
 | `auth.E011` | everywhere | `AUTH.IDENTIFIERS` names a field the user model does not have, or one field twice ([Logging in with an email address or a mobile number](../auth/logging-in.md#logging-in-with-an-email-address-or-a-mobile-number)) |
-| `auth.E012` | everywhere | `AUTH.IDENTIFIERS` names `mobile_number`, `AUTH.VERIFICATION` is `"code"`, and `domainkit.contrib.notifications` is not installed: codes to numbers go by text message ([Resetting by code](../auth/logging-in.md#resetting-by-code)) |
 
 Two other apps refuse a setting without an id:
 
@@ -128,6 +127,7 @@ application logs them as a warning and starts.
 | `auth.E104` | auth's routes that send mail, with a user model that has no `EMAIL_FIELD` or no `email_verified` |
 | `auth.E105` | in staging and production: password and code attempts counted in each process (a `MemoryBackend` as `RATE_LIMIT_BACKEND`), unless `AUTH.REQUIRE_SHARED_THROTTLES = False` |
 | `auth.E106` | a route whose `StepUp(methods=...)` asks for methods that `AUTH.STEP_UP.METHODS` never proves, so it refuses everyone |
+| `auth.E107` | auth's routes that send codes (resets, signups) to mobile numbers, with `AUTH.VERIFICATION` set to `"code"`, without `domainkit.contrib.notifications` in `INSTALLED_DOMAINS` ([Resetting by code](../auth/logging-in.md#resetting-by-code)) |
 | `idempotency.E001` | a keyed route whose own `RequestTimeout` reaches `IDEMPOTENCY.LEASE_SECONDS` or has none: a retry with the same `Idempotency-Key` could take the key while the request runs |
 | `idempotency.E002` | in staging and production: keyed requests without a deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`), unless `IDEMPOTENCY.REQUIRE_DEADLINE = False` |
 | `keys.E001` | in staging and production: `KEYS.PROVIDER = "local"` without `KEYS.ALLOW_LOCAL_KEK`, whose key-encryption key derives from `SECRET_KEY` ([keys.md](../contrib/keys.md#providers)) |
