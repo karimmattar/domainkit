@@ -25,6 +25,7 @@ from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import UTCDateTime, connections, dbclock
 from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
+from domainkit.db.routing import router
 from domainkit.ddd import DeferredTask, DomainEvent, EventBus
 from domainkit.ddd.tenancy import current_tenant
 from domainkit.exceptions import ImproperlyConfigured
@@ -50,6 +51,15 @@ logger = logging.getLogger(__name__)
 
 CHANNEL: Final = "domainkit_messages"
 """The PostgreSQL notification channel; each payload is a queue's name."""
+
+
+def outbox_targets() -> tuple[str, ...]:
+    """Every target holding an outbox: ``MESSAGING.DATABASE``, then each host.
+
+    The home outbox is there even when no domain lives on it.
+    """
+    home = registry.settings(MessagingSettings).DATABASE
+    return tuple(dict.fromkeys((home, *router.hosting_targets())))
 
 
 def _now() -> datetime:

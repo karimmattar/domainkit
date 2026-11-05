@@ -239,8 +239,24 @@ from domainkit.tenancy import tenant_schema
 tenant_schema("Big-Co")  # 'tenant_big_co'
 ```
 
-Keep shared tables (users, the outbox) on another alias. Migrate each
-tenant's schema. `migrate` makes the schema if it is missing, and keeps
+Keep shared tables (users, the outbox, the audit records made outside a
+tenant) on another alias: the database's own schema holds no tables.
+Every setting that names an app's home database must name that alias,
+or the application refuses to start:
+
+```python
+DATABASES = {
+    "default": {"URL": "postgresql+asyncpg://app@db/app"},
+    "shared": {"URL": "postgresql+asyncpg://app@db/shared"},
+}
+TENANCY = {"SCHEMA_DATABASES": ["default"]}
+DATABASE_ROUTING = {"auth": "shared", "contenttypes": "shared"}
+AUDIT = {"DATABASE": "shared"}
+MESSAGING = {"DATABASE": "shared"}
+IDEMPOTENCY = {"DATABASE": "shared"}
+```
+
+Plain `migrate` migrates `shared`. Migrate each tenant's schema. `migrate` makes the schema if it is missing, and keeps
 its own revision history:
 
 ```bash
@@ -355,6 +371,10 @@ None
   use the same invoice number. Put `tenant_id` first in it.
 - **Plain `migrate` for a schema per tenant.** It leaves those databases
   out. Run `migrate --tenant <id>` for each tenant.
+- **A home database that keeps a schema per tenant.** `AUDIT.DATABASE`,
+  `MESSAGING.DATABASE`, `IDEMPOTENCY.DATABASE`, and the routing of shared
+  apps such as `auth` cannot name one of `SCHEMA_DATABASES`: its own schema
+  holds no tables. Name another alias.
 - **Using `all_tenants()` to read shared keys.** It also opens every
   tenant's rows. Use `shared_keys()` when only the keys are shared.
 

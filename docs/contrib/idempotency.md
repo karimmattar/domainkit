@@ -326,7 +326,10 @@ pinned nothing, and its key is released as usual. A crash after the pin
 leaves the key in progress until it expires.
 
 `IDEMPOTENCY.DATABASE` must name one database that is not part of a
-shard group.
+shard group, nor one that keeps a schema per tenant
+(`TENANCY.SCHEMA_DATABASES`): its own schema holds no tables. With a
+schema per tenant, keys go on the shared database, as
+[Multi-tenancy](../tenancy.md#a-schema-per-tenant-postgresql) shows.
 
 ## Purging old keys
 
@@ -391,7 +394,7 @@ other settings.
 | `idempotency.E001` | A keyed route's own `RequestTimeout` is at the lease or past it, or `None`. | Raise `LEASE_SECONDS` above the route's timeout, or shorten the timeout. |
 | `idempotency.E002` | Staging or production with no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`. | Set `REQUEST_TIMEOUT` below `LEASE_SECONDS` and list `DeadlineMiddleware`. |
 | `idempotency.W001` | The same, with `REQUIRE_DEADLINE = False`: a warning only. | The same. |
-| (startup) | `LEASE_SECONDS` is not above `REQUEST_TIMEOUT`, `TTL_SECONDS` is below `LEASE_SECONDS`, or `DATABASE` is in a shard group. | Change the settings that the message names. |
+| (startup) | `LEASE_SECONDS` is not above `REQUEST_TIMEOUT`, `TTL_SECONDS` is below `LEASE_SECONDS`, or `DATABASE` is in a shard group or keeps a schema per tenant. | Change the settings that the message names. |
 
 `idempotency.W002` warned in 0.10 while `ANONYMOUS` was left to
 `"per-address"`. It went with that default in 0.11; listed in
