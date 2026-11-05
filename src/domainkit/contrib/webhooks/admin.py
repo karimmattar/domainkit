@@ -31,9 +31,10 @@ from domainkit.contrib.auth.admin import staff
 from domainkit.db import connections
 from domainkit.ddd import NotFound
 from domainkit.http import error_responses
+from domainkit.http.guard import MAX_URL_LENGTH
 
 from .delivery import replay, webhooks_alias
-from .guard import MAX_URL_LENGTH, checked_url
+from .guard import checked_url
 from .models import MAX_DESCRIPTION, MAX_EVENT_TYPES, Subscription, SubscriptionId
 from .settings import WebhooksSettings
 from .tables import ERASED, attempts, deliveries

@@ -48,7 +48,7 @@ class MessagingSettings(BaseModel):
     """Seconds a stopping worker lets running messages finish; the rest run again.
 
     0.12 called it ``SHUTDOWN_TIMEOUT``, the name of the process's whole
-    shutdown budget too; the old key still works, with a warning, until 2.0.
+    shutdown budget too; 1.6 removed that key.
     """
     UNKNOWN_TARGET_GRACE: float = Field(default=3600.0, ge=0, le=MAX_DELAY)
     """Seconds a message naming a task or handler no worker knows waits for one.

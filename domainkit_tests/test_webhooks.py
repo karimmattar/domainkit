@@ -24,7 +24,6 @@ from domainkit.contrib.webhooks.guard import (
     UnsafeTarget,
     checked_address,
     checked_url,
-    refusal,
 )
 from domainkit.contrib.webhooks.models import (
     SECRET_PURPOSE,
@@ -43,6 +42,7 @@ from domainkit.contrib.webhooks.signing import InvalidSignature, sign, verify
 from domainkit.ddd import BusinessRuleViolation
 from domainkit.encryption import DecryptionFailed, SecretBox
 from domainkit.http import guard as http_guard
+from domainkit.http.guard import refusal
 
 pytestmark = pytest.mark.anyio
 

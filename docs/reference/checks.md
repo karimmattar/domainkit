@@ -137,7 +137,7 @@ application logs them as a warning and starts.
 | `limits.E001` | in any environment, at `setup()`: limits routed to another database than the ledger's ([limits.md](../contrib/limits.md)) |
 | `limits.E002` | in any environment, at `setup()`: a default of `LIMITS.DEFAULTS` that is not a limit |
 | `apps.E001` | in any environment, at `setup()`: a domain whose `requires` is not installed |
-| `apps.E002` | in any environment, at `setup()`: a domain that defines a hook method 1.0 removed, until 2.0 ([Extension points](extension-points.md)) |
+| `apps.E002` | in any environment, at `setup()`: a domain that defines a hook method 1.0 removed, in 2.0 too ([Extension points](extension-points.md)) |
 | `architecture.E001` | from `check`: an import that breaks the layer rules ([Layer rules](settings.md#layer-rules)) |
 | `migrations.E001` | from `check`: a target with more than one migration head (`makemigrations --merge` joins them) |
 

@@ -32,6 +32,10 @@ and a status.
   `EMAIL_VERIFICATION_URL`, `EMAIL_VERIFICATION_TIMEOUT`, and
   `SIGNUP_URL` are refused, each named, with what to do
   ([upgrading.md](docs/upgrading.md#18-to-20)).
+- **Breaking:** `domainkit.contrib.webhooks.guard` no longer passes on the
+  names of `domainkit.http.guard` (`MAX_URL_LENGTH`, `METADATA_ADDRESSES`,
+  `METADATA_HOSTS`, `NAT64`, `judged`, `refusal`), internals since 1.0:
+  import them from `domainkit.http.guard`. `apps.E002` stays.
 
 ### Fixed
 

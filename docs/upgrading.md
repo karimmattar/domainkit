@@ -72,6 +72,18 @@ setting:
 `auth.E006` (link URLs over `http://`) is retired with the settings it
 checked.
 
+### Internals no longer pass on other modules' names
+
+`domainkit.contrib.webhooks.guard` no longer passes on `MAX_URL_LENGTH`,
+`METADATA_ADDRESSES`, `METADATA_HOSTS`, `NAT64`, `judged`, and `refusal`:
+import them from `domainkit.http.guard`. They left the public API in 1.0,
+importable through 1.x. `UnsafeTarget` stays public, from
+`domainkit.contrib.webhooks`.
+
+`apps.E002`, which refuses a `DomainConfig` that still defines a hook
+method 1.0 removed, stays in 2.0: without it, an `erase_subject` left
+behind would be skipped in silence, and an erasure would report success.
+
 ### A home database cannot keep a schema per tenant
 
 `AUDIT.DATABASE`, `MESSAGING.DATABASE`, `IDEMPOTENCY.DATABASE`, and the
@@ -313,7 +325,7 @@ Each was deprecated in 0.12, with a warning that named its replacement.
           on_erase_subject(erase_documents)  # domainkit.apps.hooks
   ```
 
-  The refusal stays through 1.x, until 2.0, so a method left behind is
+  The refusal stays, in 2.0 too, so a method left behind is
   never silently skipped: an `erase_subject` nothing called would keep a
   person's data through an erasure that reports success
   ([ADR 0111](adr/0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md)
@@ -559,8 +571,8 @@ name has one home (DSGN-23, DSGN-24, DSGN-29):
 - `contrib.webhooks.WebhookSettings` is `WebhooksSettings`.
 - `Credentials.session` is `Credentials.login`.
 
-`apps.E002`, which refuses a hook method 1.0 removed, stays until 2.0
-too.
+`apps.E002`, which refuses a hook method 1.0 removed, stays in 2.0 too:
+without it, an `erase_subject` left behind would be skipped in silence.
 
 ### Projects that ran 0.13 to 0.15 from source
 
