@@ -8,6 +8,7 @@ the next caller a session as it was made. Pre-ping costs one round trip.
 """
 
 import asyncio
+import importlib
 import os
 import re
 import sys
@@ -15,7 +16,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import pytest
@@ -39,11 +40,14 @@ from domainkit.clock import freeze_time
 from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db import Reads, connections
 from domainkit.db.connections import (
+    PING_IDLE,
     READS_SUFFIX,
     RESET_SESSION,
     SNAPSHOT_BEGIN,
     ReadOnlySession,
     _closed,
+    _note_returned,
+    _ping_idle,
     _plain_select,
     _reset_session,
     _sent,
@@ -1206,11 +1210,97 @@ def test_a_ping_leaves_the_connection_as_it_found_it() -> None:
         assert (failing.pinged_with, failing.autocommit) == (True, autocommit)
 
 
+def test_a_connection_is_pinged_only_after_resting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """New, or back for less than ``PING_IDLE``: handed out as it is.
+
+    Rested longer, it is pinged through the dialect (so the ladder counts
+    it); one that is gone, or that asyncpg knows is closed, is replaced
+    (``DisconnectionError``).
+    """
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import DisconnectionError
+
+    now = [1000.0]
+    clock = importlib.import_module("domainkit.db.connections").time
+    monkeypatch.setattr(clock, "monotonic", lambda: now[0])
+
+    class Adapter:
+        def __init__(self, *, closed: bool = False, gone: bool = False) -> None:
+            self.driver_connection = SimpleNamespace(is_closed=lambda: closed)
+            self.gone = gone
+            self.pings = 0
+
+    class Dialect:
+        def _do_ping_w_event(self, adapter: Adapter) -> bool:
+            adapter.pings += 1
+            return not adapter.gone
+
+    def checkout(adapter: Adapter, record: Any) -> None:  # noqa: ANN401 - a record.
+        _ping_idle(cast(Any, Dialect()), adapter, record, cast(Any, None))
+
+    adapter, record = Adapter(), SimpleNamespace(info={})
+    checkout(adapter, record)  # Just made: no ping.
+    _note_returned(adapter, cast(Any, record))
+    now[0] += PING_IDLE - 0.01
+    checkout(adapter, record)  # Back a moment ago: no ping.
+    now[0] += 0.01
+    checkout(adapter, record)  # Rested: pinged.
+    assert adapter.pings == 1
+
+    silent = Adapter(gone=True)
+    returned = SimpleNamespace(info={})
+    _note_returned(silent, cast(Any, returned))
+    now[0] += PING_IDLE
+    with pytest.raises(DisconnectionError, match="did not answer"):
+        checkout(silent, returned)
+    with pytest.raises(DisconnectionError, match="server closed"):
+        checkout(Adapter(closed=True), SimpleNamespace(info={}))
+
+
+@asyncpg_only
+@pytest.mark.parametrize("idle", [3600.0, 0.0])
+async def test_a_connection_the_server_ended_in_the_pool_is_replaced(
+    tables: None, database: str, monkeypatch: pytest.MonkeyPatch, idle: float
+) -> None:
+    """A restart or a failover ends pooled connections: work goes on, on others.
+
+    Whether the connection rested long enough to be pinged or not: asyncpg
+    has seen the server close it.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    module = importlib.import_module("domainkit.db.connections")
+    monkeypatch.setattr(module, "PING_IDLE", idle)
+    engine = connections.engine()
+    async with engine.connect() as connection:
+        ended = await connection.scalar(text("SELECT pg_backend_pid()"))
+    outside = create_async_engine(database)
+    try:
+        async with outside.connect() as connection:
+            await connection.scalar(
+                text("SELECT pg_terminate_backend(:pid)"), {"pid": ended}
+            )
+    finally:
+        await outside.dispose()
+    await asyncio.sleep(0.2)  # asyncpg reads the server's goodbye.
+    pids = []
+    for _ in range(3):
+        async with engine.connect() as connection:
+            pids.append(await connection.scalar(text("SELECT pg_backend_pid()")))
+
+    assert ended not in pids
+
+
 def test_asyncpg_engines_ping_outside_a_transaction(tmp_path: Path) -> None:
     """Outside PgBouncer, which needs SQLAlchemy's transaction around the ping.
 
-    The engine of reads on their own does not ping: it runs a read once
-    more instead.
+    There, a connection is pinged only after resting (``_ping_idle``), not by
+    SQLAlchemy at each checkout. The engine of reads on their own does not
+    ping: it runs a read once more instead.
     """
     postgres = DatabaseConfig.model_validate({"URL": "postgresql+asyncpg://a@b/c"})
     local = DatabaseConfig.model_validate(
@@ -1222,14 +1312,27 @@ def test_asyncpg_engines_ping_outside_a_transaction(tmp_path: Path) -> None:
     assert create_engine(postgres).sync_engine.dialect.do_ping == ping
     for other in (local, bounced):
         assert create_engine(other).sync_engine.dialect.do_ping != ping
-    assert pre_pings(create_engine(postgres))
+    direct = create_engine(postgres)
+    assert (pre_pings(direct), pings_idle(direct)) == (False, True)
+    assert pre_pings(create_engine(bounced))
+    assert not pings_idle(create_engine(bounced))
     assert not pre_pings(create_engine(unpinged))
+    assert not pings_idle(create_engine(unpinged))
     assert not pre_pings(create_read_engine(postgres))
+    assert not pings_idle(create_read_engine(postgres))
 
 
 def pre_pings(engine: AsyncEngine) -> bool:
-    """Whether ``engine``'s pool tests a connection before handing it out."""
+    """Whether ``engine``'s pool tests a connection at every checkout."""
     return bool(engine.sync_engine.pool._pre_ping)
+
+
+def pings_idle(engine: AsyncEngine) -> bool:
+    """Whether ``engine``'s pool tests a connection that rested (``_ping_idle``)."""
+    return any(
+        getattr(listener, "func", None) is _ping_idle
+        for listener in engine.sync_engine.pool.dispatch.checkout
+    )
 
 
 class Sent:

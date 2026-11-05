@@ -541,11 +541,16 @@ def test_values_are_masked_in_the_errors_a_refusal_was_raised_from() -> None:
 def test_network_databases_wait_briefly_for_a_connection(tmp_path: Path) -> None:
     """``POOL_TIMEOUT`` defaults to 10 s for network databases; set, it wins."""
     from domainkit.conf import DatabaseConfig
-    from domainkit.db.connections import DEFAULT_POOL_TIMEOUT
+    from domainkit.db.connections import DEFAULT_POOL_TIMEOUT, _ping_idle
 
     def timeout(**config: object) -> float:
         engine = create_engine(DatabaseConfig.model_validate(config))
-        assert engine.sync_engine.pool._pre_ping is True  # Restarts are survived.
+        pool = engine.sync_engine.pool
+        tests = pool._pre_ping or any(  # Restarts are survived.
+            getattr(listener, "func", None) is _ping_idle
+            for listener in pool.dispatch.checkout
+        )
+        assert tests
         return engine.sync_engine.pool.timeout()  # type: ignore[attr-defined,no-any-return]
 
     network = "postgresql+asyncpg://app@db/app"

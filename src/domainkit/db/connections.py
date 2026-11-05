@@ -14,7 +14,11 @@ which ``assert_num_queries`` leaves out, as it does ``BEGIN``.
 With asyncpg, ``POOL_PRE_PING`` tests a connection with one round trip, a
 prepared ``;`` outside any transaction, where SQLAlchemy's own test takes
 three (``BEGIN``, the ``;``, ``ROLLBACK``); through PgBouncer, which needs
-the transaction, it keeps SQLAlchemy's.
+the transaction, it keeps SQLAlchemy's. Outside PgBouncer it tests only a
+connection idle for ``PING_IDLE`` or longer: asyncpg sees the server close
+one without a round trip, and such a connection is replaced as it leaves the
+pool, so the test is for a network that dropped it silently, which takes
+longer than that.
 
 With asyncpg outside PgBouncer, a connection whose statement a cancellation
 cut off (a deadline) is kept once it has settled, where SQLAlchemy would
@@ -35,16 +39,18 @@ made, and reset before another caller gets them (``_reset_session``).
 import asyncio
 import re
 import threading
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from functools import cache, lru_cache, partial
 from importlib.metadata import version
-from typing import Any, Final
+from typing import Any, Final, cast
 from weakref import WeakKeyDictionary
 
 from sqlalchemy import Select, TextClause, event, literal_column, make_url, select, text
 from sqlalchemy.engine import Connection, Engine, ExceptionContext, ExecutionContext
+from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -121,6 +127,11 @@ quote the value (``invalid input syntax for type integer: "x"``)."""
 _FIELD: Final = re.compile(r"\n(?:DETAIL|HINT|QUERY|CONTEXT|LINE [0-9]+):? ")
 _ALONE_DRIVERS: Final = frozenset({"asyncpg", "psycopg"})
 """PostgreSQL drivers whose connections can be held read-only at connect time."""
+PING_IDLE: Final = 1.0
+"""Seconds a connection rests in an asyncpg pool before it is tested again
+(``POOL_PRE_PING``); one used more recently is handed out as it is."""
+_RETURNED: Final = "domainkit.returned"
+"""Where a connection's record notes when it went back to the pool."""
 _SEES_CLOSING: Final = frozenset({"asyncpg"})
 """Drivers that notice the server closing an idle connection, without a round
 trip; the ``STATEMENTS`` pool pings the others' connections as it hands them
@@ -316,26 +327,32 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
     otherwise; past it, the request is refused as busy (503).
     """
     url = config.URL.get_secret_value()
+    backend = make_url(url)
+    direct = backend.get_driver_name() == "asyncpg" and not config.PGBOUNCER
     engine = create_async_engine(
         url,
         echo=config.ECHO,
         hide_parameters=not config.LOG_PARAMETERS,
-        pool_pre_ping=config.POOL_PRE_PING,
+        pool_pre_ping=config.POOL_PRE_PING and not direct,
         connect_args=connect_args(config),
         **_pool_options(config, url),
     )
-    backend = make_url(url)
     if backend.get_backend_name() == "postgresql":
         event.listen(engine.sync_engine, "begin", partial(_set_local, config))
     else:
         _listen(engine.sync_engine, "begin", _begin_snapshot)
         _listen(engine.sync_engine, "savepoint", _begin_before_savepoint)
         _listen(engine.sync_engine, "connect", _enforce_foreign_keys)
-    if backend.get_driver_name() == "asyncpg" and not config.PGBOUNCER:
+    if direct:
         engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
         _keep_settled(engine.sync_engine)
-        if not config.POOL_PRE_PING:
-            _listen(engine.sync_engine.pool, "checkout", _replace_closed)
+        pool = engine.sync_engine.pool
+        if config.POOL_PRE_PING:
+            _listen(pool, "checkin", _note_returned)
+            dialect = cast("DefaultDialect", engine.sync_engine.dialect)
+            _listen(pool, "checkout", partial(_ping_idle, dialect))
+        else:
+            _listen(pool, "checkout", _replace_closed)
     return _hiding_details(engine, config)
 
 
@@ -395,11 +412,20 @@ def reads_alone(config: DatabaseConfig) -> bool:
     On PostgreSQL through asyncpg or psycopg, which keep the timeouts in the
     session; not through PgBouncer, which keeps nothing there.
     """
-    url = make_url(config.URL.get_secret_value())
+    return not config.PGBOUNCER and _alone_driver(config.URL.get_secret_value())
+
+
+@lru_cache(maxsize=64)
+def _alone_driver(url: str) -> bool:
+    """Whether ``url`` is PostgreSQL through asyncpg or psycopg, parsed once.
+
+    A read-only session asks for each unit of work; parsing the URL each
+    time cost a read about a tenth of its time.
+    """
+    parsed = make_url(url)
     return (
-        url.get_backend_name() == "postgresql"
-        and url.get_driver_name() in _ALONE_DRIVERS
-        and not config.PGBOUNCER
+        parsed.get_backend_name() == "postgresql"
+        and parsed.get_driver_name() in _ALONE_DRIVERS
     )
 
 
@@ -648,6 +674,40 @@ def _replace_closed(
     """
     if _closed(dbapi_connection.driver_connection):
         raise DisconnectionError("The server closed this connection.")
+
+
+def _note_returned(
+    dbapi_connection: Any,  # noqa: ANN401 - SQLAlchemy's adapter.
+    record: ConnectionPoolEntry,
+) -> None:
+    """Note when a connection went back to the pool (``_ping_idle``)."""
+    record.info[_RETURNED] = time.monotonic()
+
+
+def _ping_idle(
+    dialect: DefaultDialect,
+    dbapi_connection: Any,  # noqa: ANN401 - SQLAlchemy's adapter.
+    record: ConnectionPoolEntry,
+    proxied: PoolProxiedConnection,
+) -> None:
+    """Test a connection as it leaves an asyncpg pool, if it rested long.
+
+    One the driver knows is closed is replaced, as without the test. One
+    back for less than ``PING_IDLE``, or just made (its record notes no
+    return: a new connection's is cleared), is handed out untested. The
+    test is SQLAlchemy's, through the dialect (``_ping``): an error that
+    means the connection is gone replaces it, and another is raised, as
+    ``pool_pre_ping`` does.
+
+    Raises:
+        DisconnectionError: It is closed, or gone; the pool connects afresh.
+    """
+    _replace_closed(dbapi_connection, record, proxied)
+    returned = record.info.get(_RETURNED)
+    if returned is None or time.monotonic() - returned < PING_IDLE:
+        return
+    if not dialect._do_ping_w_event(dbapi_connection):  # SQLAlchemy's own test.
+        raise DisconnectionError("The connection did not answer a ping.")
 
 
 def _reset_session(

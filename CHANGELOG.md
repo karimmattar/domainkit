@@ -9,6 +9,16 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- On asyncpg outside PgBouncer, `POOL_PRE_PING` tests only a connection
+  that rested in the pool for a second or more. One the server closed is
+  still replaced as it leaves the pool: asyncpg sees that without a round
+  trip. A busy process sends no pings: one fewer round trip for each
+  connection a request takes, two for an authenticated read (ADR 0127).
+- A read-only session no longer parses the database's URL each time it
+  opens: a `Reads.STATEMENTS` read costs about a tenth less.
+
 ### Fixed
 
 - In staging and production, a project whose audited database keeps a

@@ -93,92 +93,92 @@ modules = 822
 memory = 94
 
 [rungs.read]
-calls = 1715
+calls = 1660
 statements = 1
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 822
 memory = 94
 
 [rungs.resource-list]
-calls = 2765
+calls = 2684
 statements = 1
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 822
 memory = 94
 
 [rungs.write]
-calls = 2054
+calls = 1997
 statements = 1
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 822
 memory = 94
 
 [rungs.resource-read]
-calls = 1985
+calls = 1920
 statements = 1
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 822
 memory = 94
 
 [rungs.resource-command]
-calls = 2726
+calls = 2659
 statements = 1
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 822
 memory = 94
 
 [rungs.keyed-write]
-calls = 3530
+calls = 3394
 statements = 4
 transactions = 3
 checkouts = 3
-pings = 3
+pings = 0
 modules = 823
 memory = 94
 
 [rungs.money-write]
-calls = 2178
+calls = 2126
 statements = 1
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 891
 memory = 109
 
 [rungs.posting]
-calls = 8049
+calls = 7976
 statements = 14
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 891
 memory = 110
 
 [rungs.encrypted-read]
-calls = 1758
+calls = 1703
 statements = 1
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 891
 memory = 109
 
 [rungs.step-up]
-calls = 1580
+calls = 1525
 statements = 1
 transactions = 1
 checkouts = 1
-pings = 1
+pings = 0
 modules = 891
 memory = 109
 

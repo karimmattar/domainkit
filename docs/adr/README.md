@@ -137,6 +137,7 @@ statuses, and the amendments they name.
 | [0124](0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md) | Write a bank's controls on and wired, as a profile over the project template | Accepted; amended 2026-10-31 (at the end) |
 | [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) | Freeze the public API for 1.0, renaming what was never published | Accepted |
 | [0126](0126-identify-users-by-the-fields-a-project-chooses-and-verify-them-by-code.md) | Identify users by the fields a project chooses, and verify them by code | Accepted |
+| [0127](0127-ping-a-pooled-connection-only-after-it-rested.md) | Ping a pooled connection only after it rested | Accepted |
 
 ### Decisions still without a record
 
