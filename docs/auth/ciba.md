@@ -230,9 +230,11 @@ A domain registers one in `ready()`:
 ```python
 from domainkit.contrib.auth.gates import on_login_gate
 
+
 async def office_hours(request: Request, user: AbstractBaseUser) -> None:
     if not open_now():
         raise PermissionDenied("Logins open at 8.")
+
 
 class OfficeConfig(DomainConfig):
     def ready(self) -> None:
