@@ -250,11 +250,10 @@ async def _by_assertion(
         raise refused
     try:
         header = jwt.get_unverified_header(assertion)
-        unverified = jwt.decode(assertion, options={"verify_signature": False})
     except jwt.PyJWTError:
         raise refused from None
-    client_id = unverified.get("iss")
-    if not isinstance(client_id, str) or (named is not None and named != client_id):
+    client_id = _named_issuer(assertion)
+    if client_id is None or (named is not None and named != client_id):
         raise refused
     async with CibaUnitOfWork() as uow:
         client = await uow.clients.get(client_id)
@@ -269,6 +268,23 @@ async def _by_assertion(
             raise refused  # A replay.
         await uow.commit()
     return client
+
+
+def _named_issuer(assertion: str) -> str | None:
+    """The ``iss`` an assertion names, read without trusting it.
+
+    It only says whose keys to verify the assertion with: ``_verified``
+    then checks the signature, and that ``iss`` is that client. None: the
+    payload does not read, or names no issuer.
+    """
+    segment = assertion.split(".")[1]  # Its header read: three segments.
+    payload = segment + "=" * (-len(segment) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except (ValueError, RecursionError):  # binascii and Unicode errors are too.
+        return None
+    issuer = claims.get("iss") if isinstance(claims, dict) else None
+    return issuer if isinstance(issuer, str) else None
 
 
 def _verified(

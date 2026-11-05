@@ -479,6 +479,14 @@ def test_private_key_jwt_assertions_work_once(provider: MakeProvider) -> None:
         {**assertion(client_id, key), "client_id": "ciba_other"},
         {"client_assertion_type": ASSERTION_TYPE, "client_assertion": "x" * 9000},
         {"client_assertion_type": ASSERTION_TYPE, "client_assertion": "not.a.jwt"},
+        {
+            "client_assertion_type": ASSERTION_TYPE,
+            "client_assertion": "eyJhbGciOiJFUzI1NiJ9.bm90IGpzb24.c2ln",
+        },
+        {
+            "client_assertion_type": ASSERTION_TYPE,
+            "client_assertion": "eyJhbGciOiJFUzI1NiJ9.WzFd.c2ln",
+        },
     ]
     for fields in refused:
         answer = authorize(op, {}, **fields)
