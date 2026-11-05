@@ -32,6 +32,10 @@ class DevicesSettings(BaseModel):
         default=timedelta(minutes=2), gt=timedelta(0), le=timedelta(minutes=10)
     )
     """How far a signed request's time may be from the server's."""
+    DEVICE_LOGIN: bool = False
+    """Let a bound device log its user in by its signature alone
+    (``POST /devices/login``): the app keeps the key behind the phone's
+    biometrics, as banking apps do."""
 
     @model_validator(mode="after")
     def _origins_with_rp_id(self) -> "DevicesSettings":

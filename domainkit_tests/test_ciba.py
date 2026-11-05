@@ -516,3 +516,79 @@ def test_requests_name_their_user_by_id_only(app: App) -> None:
     assert row["user_id"] == phone.user_id
     assert str(phone.user_id) not in json.dumps(started)
     assert isinstance(row["id"], UUID)
+
+
+# The app's own logins.
+
+
+def test_a_bound_device_logs_in_by_its_signature(app: App) -> None:
+    """``DEVICE_LOGIN``: the signature is the login; past the gate too."""
+    from domainkit.conf import override_settings as override
+
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
+    off = phone.send("POST", "/auth/devices/login")
+    assert off.status_code == 404
+    assert off.json()["code"] == "device_login_off"
+    with override(DEVICES={"DEVICE_LOGIN": True}):
+        answer = phone.send("POST", "/auth/devices/login")
+        assert answer.status_code == 200, answer.json()
+        assert answer.headers["Cache-Control"] == "no-store"
+        me = phone.client.get(
+            "/auth/me", headers=bearer(answer.json()["access_token"])
+        )
+        assert me.json()["username"] == "alice"
+
+        replayed = phone.client.post(
+            "/auth/devices/login",
+            headers=phone.device.headers(
+                "POST", "/auth/devices/login", when=int(clock.now().timestamp() * 1000)
+            )
+            | {"X-Device-Id": "not-a-uuid"},
+        )
+        assert replayed.status_code == 401
+        assert replayed.json()["code"] == "device_signature_refused"
+        stranger = Device()
+        stranger.id = phone.device.id
+        forged = phone.client.post(
+            "/auth/devices/login",
+            headers=stranger.headers(
+                "POST",
+                "/auth/devices/login",
+                when=int(clock.now().timestamp() * 1000) + 1,
+            ),
+        )
+        assert forged.status_code == 401
+        assert len(audited("devices.login")) == 2
+
+
+def test_unbinddevices_lets_a_user_who_lost_the_phone_back_in(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staff unbind: sessions end; the password works on the web again."""
+    import io
+
+    from domainkit.management import call_command
+    from domainkit.management.base import CommandError
+
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "mallory")
+    web = app(APPROVE_LOGINS=True)
+    phone = Phone(app(PHONE))
+    out = io.StringIO()
+
+    call_command("unbinddevices", "alice", stdout=out)
+    call_command("unbinddevices", "alice", stdout=out)
+
+    assert out.getvalue() == (
+        "Unbound 1 device(s) of 'alice'; they log in again.\n"
+        "'alice' had no bound device.\n"
+    )
+    assert phone.client.get("/auth/me", headers=phone.headers).status_code == 401
+    assert (
+        web.post(
+            "/auth/login", json={"identifier": "alice", "password": PASSWORD}
+        ).status_code
+        == 200
+    )
+    assert audited("devices.device_unbound")[0]["actor"] == "operator:mallory"
+    with pytest.raises(CommandError, match="does not exist"):
+        call_command("unbinddevices", "nobody", stdout=out)

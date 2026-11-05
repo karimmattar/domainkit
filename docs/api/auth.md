@@ -356,6 +356,7 @@ Linked identities, logins on their way back from a provider, and tickets.
 Passkeys (WebAuthn) and bound devices: keys a user's devices hold.
 
 - `BoundDevice`: A user's device: a key it holds, which signs requests.
+- `DeviceLoginOff`: `DEVICES.DEVICE_LOGIN` is off: devices do not log in here (404).
 - `DeviceNotFound`: The user has no device with that id.
 - `DeviceSignatureRefused`: The request is not signed by a device of the user, now, once (401).
 - `DeviceSigned`: Requests a bound device of the user signed, now, once.
@@ -381,6 +382,7 @@ Requests signed by a bound device's key.
 - `DeviceSigned`: Requests a bound device of the user signed, now, once.
 - `device_key`: A device key's algorithm, and the key as SubjectPublicKeyInfo.
 - `signed_message`: What a device signs for a request.
+- `signing_device`: The device of `user` that signed the request, checked once a request.
 
 ## `domainkit.contrib.devices.events`
 
@@ -395,6 +397,7 @@ What happens to a user's passkeys and devices (audited as `devices.*`).
 
 What a passkey, or a bound device, may be refused.
 
+- `DeviceLoginOff`: `DEVICES.DEVICE_LOGIN` is off: devices do not log in here (404).
 - `DeviceNotFound`: The user has no device with that id.
 - `DeviceSignatureRefused`: The request is not signed by a device of the user, now, once (401).
 - `PasskeyNotFound`: The user has no passkey with that id.
