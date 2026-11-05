@@ -26,11 +26,38 @@ and a status.
 - A read-only session no longer parses the database's URL each time it
   opens: a `Reads.STATEMENTS` read costs about a tenth less.
 
+### Removed
+
+- **Breaking:** the links of password resets, email verification, and
+  signups, deprecated in 1.8 (ADR 0126). Codes are the only way: the
+  routes `POST /password-reset/confirm`, `/email-verification/confirm`,
+  and `/signup/confirm`, the tasks `send_password_reset` and
+  `send_signup_link`, the templates `auth/password_reset`,
+  `auth/email_verification`, and `auth/signup_confirm`, and the check
+  `auth.E006` are gone. The settings `AUTH.VERIFICATION`,
+  `PASSWORD_RESET_URL`, `PASSWORD_RESET_TIMEOUT`,
+  `EMAIL_VERIFICATION_URL`, `EMAIL_VERIFICATION_TIMEOUT`, and
+  `SIGNUP_URL` are refused, each named, with what to do
+  ([upgrading.md](docs/upgrading.md#18-to-20)).
+- **Breaking:** `domainkit.contrib.webhooks.guard` no longer passes on the
+  names of `domainkit.http.guard` (`MAX_URL_LENGTH`, `METADATA_ADDRESSES`,
+  `METADATA_HOSTS`, `NAT64`, `judged`, `refusal`), internals since 1.0:
+  import them from `domainkit.http.guard`. `apps.E002` stays.
+
 ### Fixed
 
 - `AUDIT.DATABASE` and `MESSAGING.DATABASE` on an alias where no domain
   lives had no tables: `migrate` left them out. `migrate` makes them now,
   and `runworker` and the publisher work the home outbox there.
+- A signup by code for an address that has an account deleted the
+  pending signup before mailing the address: when that mail failed, the
+  worker's retry told nothing. The mail now goes first, as it did for
+  links.
+- Two codes issued at once for one address or number (two signups with
+  one address, run by two workers) broke the codes table's unique key on
+  PostgreSQL: one task failed, and its code went out only on a retry. A
+  code is issued with one upsert now, and the later one is the code that
+  works.
 - In staging and production, a project whose audited database keeps a
   schema per tenant (`TENANCY.SCHEMA_DATABASES`) refused to start: the
   startup check asked the database's own schema for the trail's triggers,

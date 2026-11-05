@@ -123,22 +123,16 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `MAX_LIVE_TOKENS` | `100` | Live access tokens (logins and personal tokens) a user may hold and still make a personal token; past it, `409 too_many_tokens` (1 to 10,000). |
 | `PASSWORD_CHECKS_COUNT_AS_LOGINS` | `False` | Count wrong passwords of signed-in users (`/password`, a step-up, the second factor's changes) against the account's count of wrong logins too, so `LOGIN_RATE` bounds every guess at the password. `False` counts them apart, so others' wrong logins never keep a signed-in user from changing the password. |
 | `PERSONAL_TOKEN_MAX_AGE` | 90 days | The longest a personal token made at `POST /auth/tokens` may work, from a day to 3,650 days. A token asked without `expires_in_days` gets the shorter of 90 days and this; longer asks are `422 token_lifetime_too_long`. `None` allows tokens that work until revoked (`expires_in_days: null`), as before 1.0 ([Personal tokens](auth/authentication.md#personal-tokens-and-scopes)). |
-| `LOGIN_RATE` | `"10/minute"` | Wrong passwords at login per client address and per username, and at password changes per user. Also reset, verification, signup, and second-factor links that do not hold, per client address. Checks that succeed are not counted. `None` for no limit (`auth.W002` where deployed). |
+| `LOGIN_RATE` | `"10/minute"` | Wrong passwords at login per client address and per username, and at password changes per user. Also wrong reset, verification, and signup codes, and second-factor tokens that do not hold, per client address. Checks that succeed are not counted. `None` for no limit (`auth.W002` where deployed). |
 | `ACCOUNT_LOGIN_RATE` | `"100/day"` | Wrong passwords per username, from anywhere, over the day: `LOGIN_RATE` bounds bursts, this the total, as NIST SP 800-63B 5.2.2 asks (100 at most). It is counted in fixed windows, each UTC day for `"100/day"` (SEC-16a-2). Clients with a device proof for the account count at this rate per device, under a ceiling of twice it for all of them (SEC-16a-7). A signed-in user's password checks (`/auth/password`, a step-up, `POST /auth/tokens`) count at this rate per user too (SEC-16a-4). `None`: `LOGIN_RATE` alone, as before 1.0. `check` warns of that, or of more than 100 a day, where deployed (`auth.W006`) ([Wrong passwords](auth/logging-in.md#wrong-passwords-and-device-proofs)). |
 | `DEVICE_TTL` | 30 days | How long a client that logged in keeps a count of its own. A login that works hands out a signed, HttpOnly device proof for its account, and logins that send it count against `LOGIN_RATE` per device, not per account or address. From an hour to 400 days; `None` hands out none, as before 0.10 ([Wrong passwords](auth/logging-in.md#wrong-passwords-and-device-proofs)). |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
 | `THROTTLE_FAIL_CLOSED` | `None` | While `RATE_LIMIT_BACKEND` cannot count (Redis failing), refuse password and code checks, and requests for mail, with `503 throttle_unavailable`, instead of letting them through uncounted. `None`: `True` in staging and production, `False` elsewhere (since 0.11) ([Logging in and out](auth/logging-in.md#logging-in-and-out)). |
 | `REQUIRE_SHARED_THROTTLES` | `True` | Staging and production refuse to start while password and code attempts are counted in each process (a `MemoryBackend` as `RATE_LIMIT_BACKEND`, `auth.E105`), since 0.11. `False` only warns (`auth.W004`), as 0.10 did: for a deployment of one process. |
-| `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
-| `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where, and must be there. Staging and production refuse `http://`, here and in the other link URLs (`auth.E006`). |
-| `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link, or a signup link, works. |
-| `EMAIL_VERIFICATION_URL` | `None` | Your page that takes a verification token: `{token}` marks where. |
 | `IDENTIFIERS` | `None` | The user fields that identify a user (`None`: the user model's `USERNAME_FIELD` alone), in the order a login tries them, such as `("email", "mobile_number")`; at least one. Each must be a field of the user model, and named once (`auth.E011`) (ADR 0126). |
-| `VERIFICATION` | `"link"` | How signup, email verification, and password resets prove that someone reads an address or a number: a signed `"link"`, or a `"code"` of 6 digits. `init` writes `"code"`; links are deprecated, and go in 2.0. |
-| `CODE_TTL` | 10 minutes | How long a code works, from 1 minute to 1 hour. |
+| `CODE_TTL` | 10 minutes | How long a code works, from 1 minute to 1 hour. Signup, email and mobile verification, and password resets prove that someone reads an address or a number with a code of 6 digits; the links of 1.x, and their settings (`VERIFICATION`, `PASSWORD_RESET_URL`, `PASSWORD_RESET_TIMEOUT`, `EMAIL_VERIFICATION_URL`, `EMAIL_VERIFICATION_TIMEOUT`, `SIGNUP_URL`), were removed in 2.0: setting one is refused. |
 | `CODE_ATTEMPTS` | `5` | Wrong tries that spend a code, from 1 to 10. |
 | `SIGNUP_ENABLED` | `False` | Let anyone ask for an account at `/signup`. |
-| `SIGNUP_URL` | `None` | Your page that takes a signup link's token: `{token}` marks where. |
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
 | `MFA` | see below | Second factors (`auth.mfa`). |
 | `STEP_UP` | see below | Authenticating again for one act (`StepUp`, [Stepping up](auth/step-up.md)). |
@@ -232,7 +226,6 @@ application; a warning (`W`) is reported.
 | `auth.E003` | anywhere | `PRINCIPAL_CACHE.STAMPS` that is not a Redis cache of `CACHES`. |
 | `auth.E004` | staging, production | A hasher made for tests in `PASSWORD_HASHERS`. |
 | `auth.E005` | staging, production | `COOKIE.SECURE = False`. |
-| `auth.E006` | staging, production | A link URL (`PASSWORD_RESET_URL`, `EMAIL_VERIFICATION_URL`, `SIGNUP_URL`) over `http://`. |
 | `auth.E007` | staging, production | A network, not one address, in `CLIENT_CERT.PROXIES`. |
 | `auth.E008` | anywhere | A JSON Web Token previous key that is the signing key, or one listed twice. |
 | `auth.E009` | anywhere | A previous key's `RETIRED_AT` more than a day after startup. |

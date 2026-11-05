@@ -1543,7 +1543,7 @@ class Settings(BaseModel):
         if self.SECRET_KEY is None:
             yield CheckMessage(
                 "security.E016",
-                f"SECRET_KEY is required {where}: it signs reset links, cookies, "
+                f"SECRET_KEY is required {where}: it signs cookies, codes, "
                 "and other values the service hands out",
                 "Make one with: python -c 'import secrets; "
                 "print(secrets.token_urlsafe(64))'.",

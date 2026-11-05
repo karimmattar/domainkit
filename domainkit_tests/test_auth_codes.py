@@ -16,7 +16,6 @@ from domainkit.contrib.auth import AuthUnitOfWork, UserId
 from domainkit.contrib.auth.codes import EMAIL_VERIFICATION, Proven, target_of
 from domainkit.contrib.auth.tables import auth_codes
 from domainkit.db import connections
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import audited, bearer, create_user, login
@@ -69,7 +68,7 @@ def stored_codes() -> list[dict[str, Any]]:
 def test_a_mailed_code_verifies_the_address_once(identity: Api) -> None:
     """A wrong code is refused and audited; the right one works, once."""
     alice = create_user("alice", email="alice@example.com")
-    client = identity(VERIFICATION="code")
+    client = identity()
     headers = bearer(login(client, "alice")["access_token"])
 
     response = client.post("/auth/email-verification", headers=headers)
@@ -101,7 +100,7 @@ def test_a_mailed_code_verifies_the_address_once(identity: Api) -> None:
 def test_a_code_is_spent_after_its_wrong_tries(identity: Api) -> None:
     """Past ``AUTH.CODE_ATTEMPTS`` tries, even the right code is refused."""
     create_user("bob", email="bob@example.com")
-    client = identity(VERIFICATION="code", CODE_ATTEMPTS=2)
+    client = identity(CODE_ATTEMPTS=2)
     headers = bearer(login(client, "bob")["access_token"])
     code = ask(client, headers)
     wrong = "000000" if code != "000000" else "111111"
@@ -116,7 +115,7 @@ def test_a_code_is_spent_after_its_wrong_tries(identity: Api) -> None:
 def test_a_new_code_replaces_the_one_before(identity: Api) -> None:
     """Only the last code sent works."""
     create_user("carol", email="carol@example.com")
-    client = identity(VERIFICATION="code")
+    client = identity()
     headers = bearer(login(client, "carol")["access_token"])
     first = ask(client, headers)
     second = ask(client, headers)
@@ -130,7 +129,7 @@ def test_a_new_code_replaces_the_one_before(identity: Api) -> None:
 def test_a_code_holds_for_the_address_it_went_to(identity: Api) -> None:
     """Once the address changes, its code no longer works."""
     dave = create_user("dave", email="dave@example.com")
-    client = identity(VERIFICATION="code")
+    client = identity()
     headers = bearer(login(client, "dave")["access_token"])
     code = ask(client, headers)
 
@@ -145,27 +144,34 @@ def test_a_code_holds_for_the_address_it_went_to(identity: Api) -> None:
     assert not verified(client, headers)
 
 
-def test_links_still_work_in_link_mode(identity: Api) -> None:
-    """``AUTH.VERIFICATION`` is ``"link"`` by default: no code is sent.
+@pytest.mark.parametrize(
+    "key",
+    [
+        "VERIFICATION",
+        "PASSWORD_RESET_TIMEOUT",
+        "PASSWORD_RESET_URL",
+        "EMAIL_VERIFICATION_TIMEOUT",
+        "EMAIL_VERIFICATION_URL",
+        "SIGNUP_URL",
+    ],
+)
+def test_the_settings_of_links_are_refused_since_2_0(key: str) -> None:
+    """Codes are the only way: a key of 1.x's links names what to do."""
+    from pydantic import ValidationError
 
-    Asking for a link warns that links are deprecated (removed in 2.0).
-    """
-    create_user("erin", email="erin@example.com")
-    client = identity()
-    headers = bearer(login(client, "erin")["access_token"])
-    with pytest.warns(DomainkitDeprecationWarning, match="AUTH.VERIFICATION"):
-        client.post("/auth/email-verification", headers=headers)
-    run_worker()
+    from domainkit.contrib.auth.settings import AuthSettings
 
-    assert "/" in mail.outbox[0].body or ":" in mail.outbox[0].body
-    assert stored_codes() == []
-    assert confirm(client, headers, "123456") == WRONG
+    with pytest.raises(ValidationError) as refused:
+        AuthSettings.model_validate({key: "code", "CODE_TTL": "PT5M"})
+
+    assert f"AUTH.{key} was removed in 2.0" in str(refused.value)
+    assert f"Delete AUTH.{key}." in str(refused.value)
 
 
 def test_a_code_needs_the_user_and_an_address(identity: Api) -> None:
     """Anonymous callers get 401; a user without an address, 400."""
     create_user("noemail")
-    client = identity(VERIFICATION="code")
+    client = identity()
     headers = bearer(login(client, "noemail")["access_token"])
 
     assert (
@@ -239,3 +245,33 @@ def test_forgetting_a_users_credentials_forgets_their_codes(identity: Api) -> No
     assert [row["user_id"] for row in stored_codes()] == [frank]
     run_async(forget(frank))
     assert stored_codes() == []
+
+
+def test_codes_issued_at_once_for_one_target_both_succeed(identity: Api) -> None:
+    """Two workers, two signups with one address: neither fails, one code stays.
+
+    Deleting the code before and inserting the new one let both deletes see
+    nothing, and the second insert broke the unique key (PostgreSQL), so its
+    task failed, to be retried later. One upsert holds.
+    """
+    import asyncio
+
+    identity()
+    if not connections.config().URL.get_secret_value().startswith("postgresql"):
+        pytest.skip("concurrent writes need PostgreSQL: SQLite runs one at a time")
+    target = target_of("pat@example.com")
+
+    async def issue() -> str:
+        async with AuthUnitOfWork() as uow:
+            code = await uow.verification_codes.issue(EMAIL_VERIFICATION, target)
+            await asyncio.sleep(0.05)  # Both transactions are open at once.
+            await uow.commit()
+        return code
+
+    async def both() -> list[str]:
+        return list(await asyncio.gather(issue(), issue()))
+
+    codes = run_async(both())
+
+    assert len(codes) == 2
+    assert len(stored_codes()) == 1

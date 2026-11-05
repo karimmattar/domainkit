@@ -649,42 +649,6 @@ def test_deployments_refuse_test_hashers(use_auth: UseAuth) -> None:
     )
 
 
-@pytest.mark.parametrize("environment", ["staging", "production"])
-def test_deployments_refuse_links_over_plain_http(
-    use_auth: UseAuth, environment: str
-) -> None:
-    """Reset, verification, and signup links carry tokens: https only."""
-    deployed = {"ENVIRONMENT": environment, "ALLOWED_HOSTS": ["api.example.com"]}
-    hashers = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
-    plain = "HTTP://app.example.com/link?token={token}"
-
-    with pytest.raises(ImproperlyConfigured) as refused:
-        use_auth(
-            settings=deployed,
-            PASSWORD_HASHERS=hashers,
-            PASSWORD_RESET_URL=plain,
-            SIGNUP_URL=plain,
-        )
-    for key in ("EMAIL_VERIFICATION_URL", "SIGNUP_URL"):
-        with pytest.raises(ImproperlyConfigured, match=rf"AUTH\.{key} send"):
-            use_auth(settings=deployed, PASSWORD_HASHERS=hashers, **{key: plain})
-    secure = "https://app.example.com/link?token={token}"
-    use_auth(
-        settings=deployed,
-        PASSWORD_HASHERS=hashers,
-        PASSWORD_RESET_URL=secure,
-        EMAIL_VERIFICATION_URL=secure,
-        SIGNUP_URL=secure,
-    )
-    use_auth(settings={"ENVIRONMENT": "test"}, PASSWORD_RESET_URL=plain)
-
-    assert str(refused.value) == (
-        "AUTH settings cannot be used:\n"
-        "  auth.E006: AUTH.PASSWORD_RESET_URL, AUTH.SIGNUP_URL send links with "
-        f"their tokens over plain HTTP; use https:// in {environment}."
-    )
-
-
 def test_deployments_report_every_auth_refusal_at_once(use_auth: UseAuth) -> None:
     """Each refused AUTH setting is named, with its id, in one error (DSGN-08)."""
     deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
@@ -693,7 +657,6 @@ def test_deployments_report_every_auth_refusal_at_once(use_auth: UseAuth) -> Non
         use_auth(
             settings=deployed,
             COOKIE={"SECURE": False},
-            SIGNUP_URL="http://app.example.com/link?token={token}",
             PRINCIPAL_CACHE={"STAMPS": "default"},
         )
 
@@ -701,7 +664,6 @@ def test_deployments_report_every_auth_refusal_at_once(use_auth: UseAuth) -> Non
         "auth.E003",
         "auth.E004",
         "auth.E005",
-        "auth.E006",
     ]
 
 

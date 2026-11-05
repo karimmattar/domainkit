@@ -193,7 +193,7 @@ domains' own models keep those keys as secrets.
 | `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, the application's loop runs in asyncio's debug mode, and logs each step that holds it this many seconds or more ([runtime.md](../runtime.md#finding-blocking-code)). `None` turns it off. |
 | `PROJECT_NAME` | `"API"` | The OpenAPI title. |
 | `VERSION` | `"0.1.0"` | The OpenAPI version. |
-| `SECRET_KEY` | `None` | Signs what the service hands out: reset links, cookies, MFA challenges ([Signing](signing.md)). Required in staging and production, with 50 random characters or more. Never empty: leave it `None` instead. Shown as `**********`. |
+| `SECRET_KEY` | `None` | Signs what the service hands out: cookies, MFA challenges, the keys of codes ([Signing](signing.md)). Required in staging and production, with 50 random characters or more. Never empty: leave it `None` instead. Shown as `**********`. |
 | `SECRET_KEY_FALLBACKS` | `()` | Earlier keys. What they signed still verifies while `SECRET_KEY` signs, so you can replace a key without logging anyone out. Held to the same rules. |
 | `INSTALLED_DOMAINS` | `()` | Domain packages (Django's `INSTALLED_APPS`), started in order and stopped in reverse order. |
 | `ARCHITECTURE` | none added | What the project adds to the layer rules that `check` enforces: packages its domain layers may import, libraries and layers a layer must not use, and layers of its own ([Layer rules](#layer-rules)). |

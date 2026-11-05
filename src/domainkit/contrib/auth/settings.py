@@ -23,8 +23,6 @@ from domainkit.utils.rates import parse_rate
 PBKDF2: str = "domainkit.contrib.auth.hashers.PBKDF2PasswordHasher"
 VALIDATORS: str = "domainkit.contrib.auth.validators"
 AUTHENTICATION: str = "domainkit.contrib.auth.authentication"
-TOKEN_PLACEHOLDER: Final = "{token}"  # noqa: S105 - a placeholder, not a secret.
-"""Where a reset or verification link takes its token."""
 HEADER_NAME: Final = r"^[A-Za-z0-9-]{1,64}$"
 COOKIE_NAME: Final = r"^[A-Za-z0-9_.-]{1,64}$"
 """Cookie names: letters, digits, ``_ . -`` (``__Host-`` included)."""
@@ -44,6 +42,15 @@ MAX_PRINCIPAL_TTL: Final = timedelta(minutes=5)
 """The longest ``PRINCIPAL_CACHE.TTL`` may be: a JWT's default lifetime."""
 ROUTE_RULES: Final = "REQUIRE_ROUTE_RULES"
 """``AUTH.REQUIRE_ROUTE_RULES``: the core's since 0.10, refused here since 0.11."""
+LINK_KEYS: Final = (
+    "VERIFICATION",
+    "PASSWORD_RESET_TIMEOUT",
+    "PASSWORD_RESET_URL",
+    "EMAIL_VERIFICATION_TIMEOUT",
+    "EMAIL_VERIFICATION_URL",
+    "SIGNUP_URL",
+)
+"""The keys of 1.x's links, removed in 2.0 (ADR 0126): codes are the only way."""
 PCI_DSS_4: Final = "pci-dss-4"
 """``AUTH.PRESET`` for PCI DSS v4.0 (requirements 8.2.8 and 8.3)."""
 PCI_MIN_LENGTH: Final = 12
@@ -350,7 +357,7 @@ class AuthSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _refuse_removed(cls, data: object) -> object:
-        """Name the setting that replaced ``REQUIRE_ROUTE_RULES`` (DSGN-02).
+        """Name what replaced a removed key (DSGN-02; links, in 2.0).
 
         A ``PRESET`` then sets each key of its own left unset.
         """
@@ -483,8 +490,7 @@ class AuthSettings(BaseModel):
     ``RedisBackend`` lets requests through while Redis fails, so a brute
     force timed with an outage goes uncounted. True refuses password and
     code checks, and requests that send mail, instead, until it counts
-    again; other requests are not affected (links are counted after their
-    check, so nothing is guessed through them). None, the default, is True
+    again; other requests are not affected. None, the default, is True
     in staging and production (since 0.11) and False elsewhere.
     """
     REQUIRE_SHARED_THROTTLES: bool = True
@@ -493,26 +499,10 @@ class AuthSettings(BaseModel):
     only warns (``auth.W004``), as 0.10 did."""
     JWT: JWTSettings = JWTSettings()
     """Signing and lifetimes of JSON Web Tokens (``JWTAuthentication``)."""
-    PASSWORD_RESET_TIMEOUT: timedelta = Field(
-        default=timedelta(hours=1), gt=timedelta(0)
-    )
-    """How long a password reset link works; using it, or logging in, ends it."""
-    PASSWORD_RESET_URL: str | None = None
-    """The page that takes a reset link's ``{token}``; None sends the token alone."""
-    EMAIL_VERIFICATION_TIMEOUT: timedelta = Field(
-        default=timedelta(days=3), gt=timedelta(0)
-    )
-    """How long an email verification link works."""
-    EMAIL_VERIFICATION_URL: str | None = None
-    """The page that takes a verification link's ``{token}``."""
     IDENTIFIERS: tuple[str, ...] | None = Field(default=None, min_length=1)
     """The user fields that identify a user, in the order a login tries
     them, such as ``("email", "mobile_number")`` (ADR 0126). None: the user
     model's ``USERNAME_FIELD`` alone, as before 1.8."""
-    VERIFICATION: Literal["link", "code"] = "link"
-    """How signup, email verification, and password resets prove someone
-    reads an address or a number: a signed ``"link"``, or a ``"code"`` of
-    6 digits. ``init`` writes ``"code"``; links are deprecated, and go in 2.0."""
     CODE_TTL: timedelta = Field(
         default=timedelta(minutes=10),
         ge=timedelta(minutes=1),
@@ -523,9 +513,6 @@ class AuthSettings(BaseModel):
     """Wrong tries that spend a code, from 1 to 10."""
     SIGNUP_ENABLED: bool = False
     """Let anyone create an account at ``/signup`` (``auth.signup.router``)."""
-    SIGNUP_URL: str | None = None
-    """The page that takes a signup link's ``{token}``; it works for
-    ``EMAIL_VERIFICATION_TIMEOUT``."""
     COOKIE: CookieSettings = CookieSettings()
     """Browser sessions in cookies (``CookieAuthentication``)."""
     MFA: MfaSettings = MfaSettings()
@@ -567,26 +554,28 @@ class AuthSettings(BaseModel):
                 )
         return value
 
-    @field_validator("PASSWORD_RESET_URL", "EMAIL_VERIFICATION_URL", "SIGNUP_URL")
-    @classmethod
-    def _check_link(cls, value: str | None) -> str | None:
-        """A link must say where its token goes."""
-        if value is not None and TOKEN_PLACEHOLDER not in value:
-            raise ValueError(f"the URL needs {TOKEN_PLACEHOLDER} where the token goes")
-        return value
-
 
 def _removed_keys_refused(data: object) -> object:
-    """Return ``AUTH``'s raw ``data``, unless it sets a key removed in 0.11.
+    """Return ``AUTH``'s raw ``data``, unless it sets a removed key.
 
     Raises:
-        ValueError: It sets ``REQUIRE_ROUTE_RULES``: the message names the
-            setting to use instead.
+        ValueError: It sets ``REQUIRE_ROUTE_RULES`` (removed in 0.11), or a
+            key of 1.x's links (``LINK_KEYS``, removed in 2.0): the message
+            says what to do instead.
     """
-    if isinstance(data, Mapping) and ROUTE_RULES in data:
+    if not isinstance(data, Mapping):
+        return data
+    if ROUTE_RULES in data:
         raise ValueError(
             f"AUTH.{ROUTE_RULES} was removed in 0.11: set {ROUTE_RULES}, "
             "a setting of its own, outside AUTH"
+        )
+    removed = [key for key in LINK_KEYS if key in data]
+    if removed:
+        raise ValueError(
+            f"AUTH.{removed[0]} was removed in 2.0 with the links it set up: "
+            "codes are the only way (AUTH.CODE_TTL, AUTH.CODE_ATTEMPTS). "
+            f"Delete {', '.join(f'AUTH.{key}' for key in removed)}."
         )
     return data
 

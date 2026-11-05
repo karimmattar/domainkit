@@ -1,25 +1,25 @@
-"""Signing up: off by default, checked at once, made when the address confirms."""
+"""Signing up: off by default, checked at once, made when the code comes back.
 
+A signup by mobile number, and what is particular to codes, is in
+``test_auth_signup_codes``.
+"""
+
+import re
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
-from urllib.parse import unquote
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
-from domainkit import signing
 from domainkit.conf import override_settings
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, User
 from domainkit.contrib.auth.apps import _user_model
-from domainkit.contrib.auth.repositories import PendingSignup, SignupStore
-from domainkit.contrib.auth.signup import (
-    send_signup_link,
-    signup_of,
-    signup_token,
-)
+from domainkit.contrib.auth.repositories import PendingSignup
+from domainkit.contrib.auth.signup import send_signup_code
 from domainkit.contrib.auth.tables import pending_signups
 from domainkit.contrib.auth.tokens import utc_now
 from domainkit.db import connections
@@ -33,16 +33,11 @@ from domainkit_tests.test_auth_recovery import (
     outbox_payloads,
     outbox_targets,
     run_worker,
-    token_in,
-)
-
-# These tests use links, deprecated since 1.8 (ADR 0126) and kept until 2.0.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore::domainkit.deprecation.DomainkitDeprecationWarning"
 )
 
 PASSWORD = "Sign-up-pass-77"
-CONFIRM = "Confirm your sign-up"
+CONFIRM = "Your code to finish signing up"
+CODE = re.compile(r"\b[0-9]{6}\b")
 EXISTS = "Your sign-up"
 
 
@@ -52,11 +47,18 @@ def signup(client: TestClient, **fields: object) -> Any:  # noqa: ANN401 - a res
     return client.post("/auth/signup", json={**body, **fields})
 
 
-def confirm(client: TestClient, token: str, password: str = PASSWORD) -> Any:  # noqa: ANN401 - a response.
-    """Use a signup link's token, choosing ``password``."""
-    return client.post(
-        "/auth/signup/confirm", json={"token": token, "password": password}
-    )
+@dataclass(frozen=True)
+class Sent:
+    """A signup code, and the address it went to."""
+
+    identifier: str
+    code: str
+
+
+def confirm(client: TestClient, sent: Sent, password: str = PASSWORD) -> Any:  # noqa: ANN401 - a response.
+    """Use a signup code, choosing ``password``."""
+    body = {"identifier": sent.identifier, "code": sent.code, "password": password}
+    return client.post("/auth/signup/code", json=body)
 
 
 def usernames() -> list[str]:
@@ -86,14 +88,21 @@ def mails() -> list[tuple[str, str]]:
     return sorted((message.subject, message.to[0]) for message in mail.outbox)
 
 
-def link_to(address: str) -> str:
-    """The token in the last signup link mailed to ``address``."""
+def sent_in(message: mail.EmailMessage) -> Sent:
+    """The code a signup message carries, and the address it went to."""
+    found = CODE.search(message.body)
+    assert found is not None, message.body
+    return Sent(message.to[0], found[0])
+
+
+def code_to(address: str) -> Sent:
+    """The last signup code mailed to ``address``."""
     (message, *_) = [
         message
         for message in reversed(mail.outbox)
         if message.to == (address,) and message.subject == CONFIRM
     ]
-    return token_in(message)
+    return sent_in(message)
 
 
 def test_signup_is_off_by_default(identity: Api) -> None:
@@ -106,7 +115,7 @@ def test_signup_is_off_by_default(identity: Api) -> None:
 
 
 def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None:
-    """202 at once; the worker mails a link; the link makes the account."""
+    """202 at once; the worker mails a code; the code makes the account."""
     client = identity(SIGNUP_ENABLED=True)
 
     response = signup(client, username="Alice")
@@ -125,22 +134,22 @@ def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None
     }
     assert stored["fields"] is None  # User asks for no field beyond these.
     assert (stored["username"], stored["email"]) == ("Alice", "alice@example.com")
-    assert stored["expires_at"] - stored["created_at"] == timedelta(days=3)
+    assert stored["expires_at"] - stored["created_at"] == timedelta(minutes=10)
     # The outbox holds the pending signup's id alone: no hash, no address.
     assert outbox_payloads() == [{"signup_id": str(stored["id"])}]
-    assert outbox_targets() == ["domainkit.auth.send_signup_link"]
+    assert outbox_targets() == ["domainkit.auth.send_signup_code"]
     run_worker()
     (message,) = mail.outbox
     assert (message.subject, message.to) == (CONFIRM, ("alice@example.com",))
-    assert "choose your password within 3 days" in message.body
+    assert "It works for 10 minutes." in message.body
     assert "Alice" not in message.body  # A name the address's owner never chose.
-    assert usernames() == []  # No account until the link is used.
+    assert usernames() == []  # No account until the code is used.
     refused = client.post(
         "/auth/login", json={"username": "Alice", "password": PASSWORD}
     )
     assert refused.status_code == 401
 
-    confirmed = confirm(client, token_in(message))
+    confirmed = confirm(client, sent_in(message))
 
     assert confirmed.status_code == 204
     assert usernames() == ["Alice"]
@@ -152,8 +161,8 @@ def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None
     (created,) = audited("auth.user_created")
     assert signed_up["details"] == {"user_id": created["details"]["user_id"]}
     assert len(audited("auth.email_verified")) == 1
-    used = confirm(client, token_in(message))  # A link works once.
-    assert (used.status_code, used.json()["code"]) == (400, "invalid_token")
+    used = confirm(client, sent_in(message))  # A code works once.
+    assert (used.status_code, used.json()["code"]) == (400, "invalid_verification_code")
 
 
 def test_signups_tell_nobody_else_whether_an_address_has_an_account(
@@ -220,7 +229,7 @@ def test_taken_usernames_and_addresses_answer_the_same(identity: Api) -> None:
     assert "alice" not in exists.body.lower()
     assert "sign up with this email address (carol@example.com)" in exists.body
     assert [row["username"] for row in pending()] == ["bob"]  # The others are gone.
-    assert confirm(client, link_to("bob@example.com")).status_code == 204
+    assert confirm(client, code_to("bob@example.com")).status_code == 204
     assert usernames() == ["alice", "bob"]
 
 
@@ -271,7 +280,7 @@ def test_the_user_models_required_fields_come_with_the_signup(
     assert stored["fields"] == {"first_name": "Alice"}
     run_worker()
     (message,) = mail.outbox
-    assert confirm(client, token_in(message)).status_code == 204
+    assert confirm(client, sent_in(message)).status_code == 204
 
     async def made() -> User:
         async with AuthUnitOfWork() as uow:
@@ -298,15 +307,16 @@ def test_required_fields_must_be_fields_a_signup_may_give(
 
 
 def test_the_password_is_chosen_and_checked_when_confirming(identity: Api) -> None:
-    """The validators check it against the account; a refusal keeps the link."""
+    """The validators check it against the account; a refusal keeps the code."""
     client = identity(SIGNUP_ENABLED=True)
     signup(client)
     run_worker()
-    token = link_to("alice@example.com")
+    sent = code_to("alice@example.com")
 
-    weak = confirm(client, token, password="alice")
-    empty = client.post("/auth/signup/confirm", json={"token": token})
-    chosen = confirm(client, token, password=PASSWORD)
+    weak = confirm(client, sent, password="alice")
+    body = {"identifier": sent.identifier, "code": sent.code}
+    empty = client.post("/auth/signup/code", json=body)
+    chosen = confirm(client, sent, password=PASSWORD)
 
     assert (weak.status_code, weak.json()["code"]) == (422, "invalid_password")
     assert "too similar to the username" in weak.json()["detail"]
@@ -322,7 +332,7 @@ def test_whoever_asks_with_another_address_gains_nothing(identity: Api) -> None:
     password of their own; when the victim used the link mailed to them,
     the account was made with the attacker's password, which the attacker
     then logged in with. Now no password is taken when asking, and the
-    victim chooses it with the link.
+    victim chooses it with the code.
     """
     client = identity(SIGNUP_ENABLED=True)
     guess = "Attacker-pass-91"
@@ -333,7 +343,7 @@ def test_whoever_asks_with_another_address_gains_nothing(identity: Api) -> None:
     )
     asked = signup(attacker, username="victim", email="victim@example.com")
     run_worker()
-    confirmed = confirm(client, link_to("victim@example.com"), password=PASSWORD)
+    confirmed = confirm(client, code_to("victim@example.com"), password=PASSWORD)
     attempts = [
         attacker.post("/auth/login", json={"username": "victim", "password": guess}),
         client.post("/auth/login", json={"username": "victim", "password": PASSWORD}),
@@ -388,66 +398,27 @@ def test_signups_are_throttled_per_address_and_per_email(identity: Api) -> None:
 
 
 def test_the_first_signup_confirmed_gets_the_name(identity: Api) -> None:
-    """Pending signups reserve nothing; the later link answers 409.
+    """Pending signups reserve nothing; the later code answers 409, and is spent.
 
-    Each address is mailed a link: whoever confirms first gets the name.
+    Each address is sent a code: whoever confirms first gets the name.
     """
     client = identity(SIGNUP_ENABLED=True)
     signup(client, username="alice", email="alice@example.com")
     signup(from_address(client, "198.51.100.3"), email="other@example.com")
-    signup(
-        from_address(client, "198.51.100.4"), username="x", email="ALICE@example.com"
-    )
     run_worker()
-    first, second = link_to("other@example.com"), link_to("alice@example.com")
-    third = link_to("ALICE@example.com")
+    first, second = code_to("other@example.com"), code_to("alice@example.com")
 
     assert confirm(client, first).status_code == 204
     late = confirm(client, second)
-    same_address = confirm(client, third)
 
     assert (late.status_code, late.json()["code"]) == (409, "signup_taken")
     assert late.json()["detail"] == (
         "An account already uses this username or this address; sign up again "
         "with another username, or log in."
     )
-    assert same_address.status_code == 204  # Not alice's address: other's has it.
-    assert usernames() == ["alice", "x"]
+    assert usernames() == ["alice"]
     assert pending() == []
-    assert confirm(client, second).json()["code"] == "invalid_token"  # Gone.
-
-
-def test_signup_links_that_do_not_hold_are_refused(
-    identity: Api, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Wrong, forged, expired, or for a signup gone: one ``400 invalid_token``."""
-    client = identity(SIGNUP_ENABLED=True)
-    signup(client)
-    run_worker()
-    token = link_to("alice@example.com")
-    (stored,) = pending()
-    forged = signing.TimestampSigner(salt="domainkit.auth.other").sign(stored["id"].hex)
-    not_a_signup = signing.TimestampSigner(salt="domainkit.auth.signup").sign("x")
-    unknown = signup_token(uuid4())
-
-    for bad in (token + "x", forged, not_a_signup, unknown, "garbage"):
-        response = confirm(client, bad)
-        assert (response.status_code, response.json()["code"]) == (
-            400,
-            "invalid_token",
-        )
-    assert signup_of(token) == stored["id"]
-    assert signup_of(not_a_signup) is None
-    run_async(_set_expiry(stored["id"], utc_now() - timedelta(seconds=1)))
-    assert confirm(client, token).json()["code"] == "invalid_token"
-    run_async(_set_expiry(stored["id"], utc_now() + timedelta(days=3)))
-    now = signing._now()
-    monkeypatch.setattr(signing, "_now", lambda: now + 3 * 86400 + 1)
-    assert confirm(client, token).json()["code"] == "invalid_token"
-    monkeypatch.undo()
-    assert len(audited("auth.signup")) == 7
-    assert usernames() == []
-    assert confirm(client, token).status_code == 204
+    assert confirm(client, second).json()["code"] == "invalid_verification_code"
 
 
 async def _set_expiry(signup_id: Any, when: Any) -> None:  # noqa: ANN401 - row values.
@@ -460,35 +431,6 @@ async def _set_expiry(signup_id: Any, when: Any) -> None:  # noqa: ANN401 - row 
         )
 
 
-def test_two_uses_of_one_link_make_one_account(
-    identity: Api, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A link another request already used (its row gone) is refused."""
-    client = identity(SIGNUP_ENABLED=True)
-    signup(client)
-    run_worker()
-    token = link_to("alice@example.com")
-    (stored,) = pending()
-    snapshot = PendingSignup(**stored)
-    run_async(_remove(stored["id"]))
-
-    async def read_late(self: SignupStore, signup_id: Any) -> PendingSignup:  # noqa: ANN401
-        return snapshot  # Read before the other request deleted it.
-
-    monkeypatch.setattr(SignupStore, "get", read_late)
-    response = confirm(client, token)
-
-    assert response.json()["code"] == "invalid_token"
-    assert usernames() == []
-
-
-async def _remove(signup_id: Any) -> None:  # noqa: ANN401 - a row value.
-    """Delete a pending signup, as another request using its link would."""
-    async with AuthUnitOfWork() as uow:
-        await uow.signups.remove(signup_id)
-        await uow.commit()
-
-
 def test_the_worker_skips_signups_gone_or_expired(identity: Api) -> None:
     """Nothing is mailed for a pending signup deleted or expired meanwhile."""
     client = identity(SIGNUP_ENABLED=True)
@@ -496,13 +438,10 @@ def test_the_worker_skips_signups_gone_or_expired(identity: Api) -> None:
     (stored,) = pending()
     run_async(_set_expiry(stored["id"], utc_now()))
 
-    run_async(send_signup_link(stored["id"]))
-    run_async(send_signup_link(uuid4()))
+    run_async(send_signup_code(stored["id"]))
+    run_async(send_signup_code(uuid4()))
 
     assert mail.outbox == []
-    assert confirm(client, signup_token(stored["id"])).json()["code"] == (
-        "invalid_token"
-    )
 
 
 def test_a_taken_address_is_told_even_after_a_failed_delivery(
@@ -518,38 +457,16 @@ def test_a_taken_address_is_told_even_after_a_failed_delivery(
         override_settings(MAIL={"BACKEND": "domainkit_tests.test_auth_signup.Nope"}),
         pytest.raises(ImproperlyConfigured),
     ):
-        run_async(send_signup_link(stored["id"]))
+        run_async(send_signup_code(stored["id"]))
     assert len(pending()) == 1
-    run_async(send_signup_link(stored["id"]))
+    run_async(send_signup_code(stored["id"]))
 
     assert mails() == [(EXISTS, "alice@example.com")]
     assert pending() == []
 
 
-def test_links_point_to_the_signup_page(identity: Api) -> None:
-    """``AUTH.SIGNUP_URL`` takes the token, quoted, where it says."""
-    client = identity(
-        SIGNUP_ENABLED=True,
-        SIGNUP_URL="https://app.example.com/welcome?token={token}",
-        EMAIL_VERIFICATION_TIMEOUT=timedelta(hours=1),
-    )
-    signup(client)
-    run_worker()
-
-    (message,) = mail.outbox
-    (link,) = [line for line in message.body.splitlines() if line.startswith("https")]
-    prefix, _, token = link.partition("token=")
-    assert prefix == "https://app.example.com/welcome?"
-    assert "%3A" in token
-    assert "within 1 hour" in message.body
-    assert (pending()[0]["expires_at"] - pending()[0]["created_at"]) == timedelta(
-        hours=1
-    )
-    assert confirm(client, unquote(token)).status_code == 204
-
-
 def test_expired_signups_are_purged_hourly(identity: Api) -> None:
-    """With expired tokens: the hashes go once their link no longer works."""
+    """With expired tokens: the rows go once their code no longer works."""
     client = identity(SIGNUP_ENABLED=True)
     signup(client)
     signup(client, username="bob", email="bob@example.com")
@@ -564,7 +481,7 @@ def test_expired_signups_are_purged_hourly(identity: Api) -> None:
     assert [row["username"] for row in pending()] == ["bob"]
     assert pending_signups.info == {"domain": "auth", "fixtures": False}
     assert repr(PendingSignup(**second)) == f"PendingSignup(id={second['id']!r})"
-    # A link expires at its moment, not after it.
+    # A signup expires at its moment, not after it.
     bob = PendingSignup(**second)
     assert bob.expired(bob.expires_at)
     assert not bob.expired(bob.expires_at - timedelta(microseconds=1))
@@ -582,7 +499,7 @@ async def _clear(now: Any) -> int:  # noqa: ANN401 - a moment.
 
 
 def test_confirming_is_off_with_signups(identity: Api) -> None:
-    """``/signup/confirm`` answers 404 too while signing up is off."""
-    response = confirm(identity(), signup_token(uuid4()))
+    """``/signup/code`` answers 404 too while signing up is off."""
+    response = confirm(identity(), Sent("alice@example.com", "123456"))
 
     assert (response.status_code, response.json()["code"]) == (404, "not_found")

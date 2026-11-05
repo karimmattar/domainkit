@@ -1,7 +1,7 @@
 # 0126. Identify users by the fields a project chooses, and verify them by code
 
-- Status: Accepted
-- Date: 2026-11-04
+- Status: Accepted; links removed in 2.0, as decided here
+- Date: 2026-11-04; 2.0, 2026-11-05
 
 ## Context
 

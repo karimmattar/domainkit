@@ -642,8 +642,9 @@ These are alarms too:
 
 Read [upgrading.md](upgrading.md) for the version, and follow its steps:
 
-- Within 1.x, a minor release breaks nothing. Each deprecated name works,
-  with a warning, until 2.0.
+- Within a major version, a minor release breaks nothing. Each deprecated
+  name works, with a warning, until the next major version. 2.0 broke
+  what its "1.8 to 2.0" section lists.
 - From 0.12, the "0.12 to 1.0" section of upgrading.md is one upgrade,
   applied in the order it gives.
 - Find the deprecated names a project still uses with the tests and

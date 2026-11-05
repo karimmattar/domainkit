@@ -164,7 +164,7 @@ instead.
 
 | Deprecated in 0.12 | Use instead | What 0.13 did |
 | --- | --- | --- |
-| The hook methods of `DomainConfig` (`startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated`), overridden | The points `on_<method>` of `domainkit.apps.hooks` and `domainkit.db.hooks`, registered in `ready()` | Removed them; `setup()` refuses a configuration that still defines one (`apps.E002`), until 2.0 |
+| The hook methods of `DomainConfig` (`startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated`), overridden | The points `on_<method>` of `domainkit.apps.hooks` and `domainkit.db.hooks`, registered in `ready()` | Removed them; `setup()` refuses a configuration that still defines one (`apps.E002`), in 2.0 too |
 | `domainkit.ddd.preconditions.expect_version` | `UnitOfWork.expect(model, id, versions)` | Removed it, and the context-wide expectation |
 
 ### Removed after 1.5
@@ -187,8 +187,10 @@ instead.
 | `contrib.webhooks.WebhookSettings` | `WebhooksSettings` |
 | `Credentials.session` | `Credentials.login` |
 
-Names that left `__all__` in 1.0 (internals that no page used) still
-import, unchanged and without a warning, until 2.0.
+Names that left `__all__` in 1.0 (internals that no page used) imported,
+unchanged and without a warning, through 1.x. 2.0 makes them no promise:
+`domainkit.contrib.webhooks.guard` no longer passes on the names of
+`domainkit.http.guard`, and the others may change in any release.
 
 ## Security fixes and support
 

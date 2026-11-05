@@ -147,7 +147,6 @@ def alice_with_everything(client: TestClient, clock: list[float]) -> tuple[UUID,
 # Fixtures --------------------------------------------------------------------------
 
 
-@pytest.mark.filterwarnings("ignore::domainkit.deprecation.DomainkitDeprecationWarning")
 def test_fixtures_hold_no_secret_and_no_one_time_state(
     private: Api, clock: list[float]
 ) -> None:
@@ -277,7 +276,6 @@ def test_erasure_ends_the_account_and_its_credentials(
     assert len(audited("auth.user_status_changed")) == 1
 
 
-@pytest.mark.filterwarnings("ignore::domainkit.deprecation.DomainkitDeprecationWarning")
 def test_an_erased_username_stays_taken(private: Api) -> None:
     """In any case: nobody can sign up, or be created, as the person erased."""
     client = private(SIGNUP_ENABLED=True)

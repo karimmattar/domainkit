@@ -1,7 +1,8 @@
 """Which webhook URLs may be called: the guard against server-side request forgery.
 
-Internal since 1.0: these names import from here until 2.0, and are not
-public; ``UnsafeTarget`` is, from ``domainkit.contrib.webhooks``.
+Internal: ``UnsafeTarget`` is public, from ``domainkit.contrib.webhooks``.
+The shared guard's own names, which 1.x also imported from here, come
+from ``domainkit.http.guard`` since 2.0.
 
 A subscription's URL is checked when it is saved and again before every
 attempt, by the shared guard (``domainkit.http.guard``):
@@ -27,30 +28,7 @@ from typing import Final
 import httpx2
 
 from domainkit.http import guard
-from domainkit.http.guard import (
-    MAX_URL_LENGTH as MAX_URL_LENGTH,
-)
-from domainkit.http.guard import (
-    METADATA_ADDRESSES as METADATA_ADDRESSES,
-)
-from domainkit.http.guard import (
-    METADATA_HOSTS as METADATA_HOSTS,
-)
-from domainkit.http.guard import (
-    NAT64 as NAT64,
-)
-from domainkit.http.guard import (
-    Address,
-    Network,
-    UnsafeURL,
-    lookup,
-)
-from domainkit.http.guard import (
-    judged as judged,
-)
-from domainkit.http.guard import (
-    refusal as refusal,
-)
+from domainkit.http.guard import Address, Network, UnsafeURL, lookup
 
 SUBJECT: Final = "The webhook URL"
 

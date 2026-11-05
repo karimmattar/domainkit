@@ -160,7 +160,7 @@ unique constraint may name its own code
 | `invalid_setting_value` | 422 | `InvalidSettingValue` (contrib.flags.exceptions): The value does not fit the dynamic setting's type. |
 | `invalid_statement` | 422 | `InvalidStatement` (contrib.accounting.exceptions): A statement that cannot be imported: its format, or one of its lines. |
 | `invalid_tenant` | 400 | domainkit.tenancy: The tenant the request names is not a tenant id. |
-| `invalid_token` | 400 | contrib.auth.mfa: The login has expired; log in again. contrib.auth.recovery: The link is invalid or has expired. |
+| `invalid_token` | 400 | contrib.auth.mfa: The login has expired; log in again. |
 | `invalid_transaction` | 422 | `InvalidTransaction` (contrib.auth.sca): The amount, payee, or purpose cannot be authorized as given. |
 | `invalid_user_field` | 422 | `InvalidUserField` (contrib.auth.exceptions): A value does not fit the type of the user field it is for. |
 | `invalid_username` | 422 | `InvalidUsername` (contrib.auth.exceptions): The username is empty, too long, or uses characters it may not. |

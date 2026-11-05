@@ -1,6 +1,6 @@
 """AUTH-15: the password chosen at signup is never kept in the password history.
 
-``signup.confirm_signup`` hashes the password and adds the user itself
+``signup.confirm_signup_code`` hashes the password and adds the user itself
 (``uow.users.add``), not through ``create_user`` or ``set_password``, so
 ``PasswordHistoryStore.record`` never sees it. With ``PASSWORD_HISTORY``
 (4 under the PCI preset, 8.3.7: "not the same as any of the last four"),
@@ -8,17 +8,10 @@ a user who signed up with P1 and changed to P2 can change back to P1 at
 once: the history holds P2 alone, and the current password is P2.
 """
 
-import pytest
-
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import bearer, login
 from domainkit_tests.test_auth_recovery import run_worker
-from domainkit_tests.test_auth_signup import confirm, link_to, signup
-
-# These tests use links, deprecated since 1.8 (ADR 0126) and kept until 2.0.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore::domainkit.deprecation.DomainkitDeprecationWarning"
-)
+from domainkit_tests.test_auth_signup import code_to, confirm, signup
 
 FIRST = "Sign-up-pass-77"
 SECOND = "Second-pass-88x"
@@ -29,7 +22,7 @@ def test_the_signup_password_counts_among_the_last_ones(identity: Api) -> None:
     client = identity(SIGNUP_ENABLED=True, PASSWORD_HISTORY=4)
     assert signup(client).status_code == 202
     run_worker()
-    assert confirm(client, link_to("alice@example.com"), FIRST).status_code == 204
+    assert confirm(client, code_to("alice@example.com"), FIRST).status_code == 204
     headers = bearer(login(client, "alice", FIRST)["access_token"])
     changed = client.post(
         "/auth/password",

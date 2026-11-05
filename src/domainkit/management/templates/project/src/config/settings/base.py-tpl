@@ -21,7 +21,6 @@ INSTALLED_DOMAINS = [
 # before the first migrate. Other settings files extend this: AUTH = {**AUTH, ...}.
 AUTH: dict[str, object] = {
     "IDENTIFIERS": ("email", "mobile_number"),
-    "VERIFICATION": "code",
 }
 ROOT_ROUTER = "config.urls.router"
 # /docs, /redoc, and /openapi.json follow DEBUG: on locally, off when

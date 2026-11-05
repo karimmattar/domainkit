@@ -13,7 +13,7 @@ On this page you learn how to:
   locked out by strangers;
 - bound how many logins a user holds, and end idle ones;
 - turn on a second factor and log in with it;
-- send password reset and verification links, and let people sign up;
+- send password reset and verification codes, and let people sign up;
 - ask for a captcha on the routes that bots try.
 
 ## A first example
@@ -392,8 +392,9 @@ codes left), and refusals as `auth.mfa` (`invalid_token`,
 
 ## Password reset
 
-People who forgot their password ask for a link by mail, and choose a
-new password with it. Install messaging and mail
+People who forgot their password ask for a code, and choose a new
+password with it. The code has 6 digits, and goes by mail, or by text
+message to a mobile number (ADR 0126). Install messaging and mail
 ([mail.md](../mail.md)), and mount the router next to the one that logs
 in:
 
@@ -405,7 +406,6 @@ INSTALLED_DOMAINS = [
     "domainkit.contrib.auth",
     "shop",
 ]
-AUTH = {"PASSWORD_RESET_URL": "https://app.example.com/reset-password?token={token}"}
 ```
 
 ```python
@@ -416,57 +416,15 @@ router.include_router(recovery_router, prefix="/auth")
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /password-reset` | anyone | `{"email"}`, or `{"identifier"}` with codes | Always `202`; `422` for a value that is not one plain address (links); `429 rate_limited`. |
-| `POST /password-reset/confirm` | anyone | `{"token", "new_password"}` | `204`; `400 invalid_token`; `422` if a validator refuses the password. |
+| `POST /password-reset` | anyone | `{"identifier"}`, or `{"email"}` | Always `202`; `422 missing_value` without either; `429 rate_limited`. |
 | `POST /password-reset/code` | anyone | `{"identifier", "code", "new_password"}` | `204`; `400 invalid_verification_code`; `422` if a validator refuses the password. |
 | `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 rate_limited`. |
-| `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
 | `POST /email-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
 | `POST /mobile-verification` | a user, unscoped | | `202`; `429 rate_limited`. |
 | `POST /mobile-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
 
-How a reset works:
-
-1. **The request tells nothing.** It answers `202` whether or not an
-   account uses the address, with the same body, in the same time: it
-   only queues a task.
-2. **The worker sends the links.** It finds the address, in any case,
-   and mails every active user of it who has a usable password a link:
-   `PASSWORD_RESET_URL` with the token in place of `{token}` (the token
-   alone without the setting). The link works for
-   `PASSWORD_RESET_TIMEOUT` (an hour). A user whose stored address cannot
-   take mail, from before addresses were checked, is skipped with a
-   warning that names the user's id, never the address.
-3. **Your page posts the token and the new password** to
-   `/password-reset/confirm`. The validators check the password, and
-   every session of the user ends.
-
-About the tokens:
-
-- **They are never stored**, not even in the outbox: the worker makes
-  them as it mails them. They are signed with `SECRET_KEY`.
-- **They rest on the user's state**: the password hash, the last login,
-  the email, and the status. So a token stops working once it is used,
-  once the user logs in, or once any of those changes.
-- **Every refusal looks the same**: a wrong token, a used or expired one,
-  and one for no user all get `400 invalid_token`.
-- **Counting.** Requests for mail count against `EMAIL_RATE` (5 an hour)
-  per client address and per email address. Tokens that do not hold
-  count against `LOGIN_RATE` per client address, once checked. They are
-  not counted per user, nor before the check: a signature cannot be
-  guessed, and a count that anyone could fill with forged tokens would
-  lock people out of the links they were sent.
-
-The audit trail records `auth.password_reset_requested` for each link
-mailed, `auth.password_reset` for a reset (and `denied`, with the reason
-`invalid_token` or `throttled`, for refusals), and
-`auth.password_changed`.
-
-#### Resetting by code
-
-With `AUTH.VERIFICATION` set to `"code"`, a reset sends a code of 6
-digits, not a link. The person gives any identifier: an email address, a
-mobile number, or a username, by the fields of `AUTH.IDENTIFIERS`:
+The person gives any identifier: an email address, a mobile number, or
+a username, by the fields of `AUTH.IDENTIFIERS`:
 
 ```http
 POST /auth/password-reset
@@ -477,53 +435,70 @@ POST /auth/password-reset
 {"detail": "If an account uses it, a code is on its way."}
 ```
 
-The worker finds the one account the identifier names, active and with
-a usable password. A mobile number gets a text message through
-`domainkit.contrib.notifications`; any other identifier gets a mail to
-the account's address. An email address names the one account that has
-it, even where addresses do not log in. Then your app posts the same
-identifier, the code, and the new password:
+How a reset works:
 
-```http
-POST /auth/password-reset/code
-{"identifier": "+33612345678", "code": "482913", "new_password": "an0ther-Strong-pass!"}
-```
+1. **The request tells nothing.** It answers `202` whether or not an
+   account uses the value, with the same body, in the same time: it only
+   queues a task.
+2. **The worker sends the code.** It finds the one account the
+   identifier names, active and with a usable password. A mobile number
+   gets a text message through `domainkit.contrib.notifications`; any
+   other identifier gets a mail to the account's address. An email
+   address names the one account that has it, even where addresses do
+   not log in. A user whose stored address cannot take mail, from before
+   addresses were checked, is skipped with a warning that names the
+   user's id, never the address.
+3. **Your app posts the same identifier, the code, and the new
+   password:**
 
-The answer is `204`, and every session of the user ends. A wrong code,
-and a code for an identifier that no account uses, get the same
-`400 invalid_verification_code`. A password that a validator refuses
-gets `422`, and the code still works. The text message reads:
+   ```http
+   POST /auth/password-reset/code
+   {"identifier": "+33612345678", "code": "482913", "new_password": "an0ther-Strong-pass!"}
+   ```
+
+   The answer is `204`, and every session of the user ends. A password
+   that a validator refuses gets `422`, and the code still works.
+
+The text message reads:
 
 ```text
 482913 is your code to reset your password. It works for 10 minutes. Never give it to anyone.
 ```
 
-Where `mobile_number` is in `AUTH.IDENTIFIERS` and codes are on, a
-project that serves the reset or signup routes needs
-`domainkit.contrib.notifications`: `check` refuses it without
-(`auth.E107`).
+About the codes:
+
+- **They work for `AUTH.CODE_TTL`** (10 minutes), only for the
+  identifier they were sent for, and once. A new code replaces the one
+  before, and `AUTH.CODE_ATTEMPTS` (5) wrong tries spend it.
+- **They are kept only as HMACs.** The table `domainkit_auth_codes` keeps
+  an HMAC of the code and of the address or number, keyed from
+  `SECRET_KEY`. The worker makes the code, so it is never in the outbox.
+  The hourly task and `cleartokens` delete codes that no longer work.
+- **Every refusal looks the same**: a wrong code, a spent or expired one,
+  and one for an identifier that no account uses all get
+  `400 invalid_verification_code`.
+- **Counting.** Requests for a code count against `EMAIL_RATE` (5 an
+  hour) per client address and per recipient. Wrong codes count against
+  `LOGIN_RATE` per client address. A right code is never counted: the
+  code spends itself after its wrong tries instead.
+
+The audit trail records `auth.password_reset_requested` for each code
+sent, `auth.password_reset` for a reset (and `denied`, with the reason
+`invalid_verification_code` or `throttled`, for refusals), and
+`auth.password_changed`.
+
+Where `mobile_number` is in `AUTH.IDENTIFIERS`, a project that serves the
+reset or signup routes needs `domainkit.contrib.notifications`: `check`
+refuses it without (`auth.E107`).
+
+1.x also mailed links, with `AUTH.VERIFICATION = "link"`; 2.0 removed
+them, and the settings they took
+([upgrading.md](../upgrading.md#18-to-20)).
 
 ### Email verification
 
-`AbstractUser` has `email_verified`. It is false for new users, and for
-existing ones once the column is added (run `makemigrations` and
-`migrate`).
-
-1. A user asks for a link at `/email-verification`.
-2. The worker mails it to their address, unless it is verified already:
-   `EMAIL_VERIFICATION_URL` with the token in place of `{token}`.
-3. `/email-verification/confirm` with the token sets `email_verified`.
-
-The link works once, for `EMAIL_VERIFICATION_TIMEOUT` (3 days), and only
-for the address it went to: changing the email clears `email_verified`
-and ends the links sent before. Staff cannot set it in the admin API,
-where it is read-only. `user.verify_email()` sets it in code.
-Verifications are audited as `auth.email_verified`.
-
-#### Verifying by code
-
-With `AUTH.VERIFICATION` set to `"code"`, the worker mails a code of 6
-digits instead of a link. The user types it in the app that asked for it:
+`AbstractUser` has `email_verified`. It is false for new users. A user
+asks for a code, and types it in the app that asked:
 
 ```http
 POST /auth/email-verification
@@ -540,22 +515,13 @@ Authorization: Bearer dkt_...
 {"code": "482913"}
 ```
 
-The answer is `204`, and `email_verified` is now true. A code:
-
-- works for `AUTH.CODE_TTL` (10 minutes), and only for the address it
-  went to;
-- is spent after `AUTH.CODE_ATTEMPTS` (5) wrong tries;
-- works once, and a new code replaces the one before.
-
-A wrong, spent, or expired code gets `400 invalid_verification_code`,
-the same answer for each. Wrong codes count against `LOGIN_RATE` per
-client address, and are audited as `auth.email_verification`. The table
-`domainkit_auth_codes` keeps only an HMAC of the code and of the address,
-keyed from `SECRET_KEY`. The hourly task and `cleartokens` delete codes
-that no longer work.
-
-`init` writes `"code"` for new projects. Links stay the default in 1.x,
-and go in 2.0.
+The answer is `204`, and `email_verified` is now true. Nothing is sent
+to an address that is verified already. The code holds only for the
+address it went to: changing the email clears `email_verified`, and the
+code no longer works. Staff cannot set the mark in the admin API, where
+it is read-only. `user.verify_email()` sets it in code. Verifications
+are audited as `auth.email_verified`; wrong codes as
+`auth.email_verification`.
 
 ### Mobile number verification
 
@@ -564,9 +530,8 @@ asks for a code at `/mobile-verification`. The worker texts it to their
 number through `domainkit.contrib.notifications`, unless the number is
 verified already. `/mobile-verification/code` with the code sets
 `mobile_number_verified`. The code follows the same rules as an email
-code, in either `AUTH.VERIFICATION`. Changing the number clears the mark.
-Verifications are audited as `auth.mobile_number_verified`; refusals as
-`auth.mobile_verification`.
+code. Changing the number clears the mark. Verifications are audited as
+`auth.mobile_number_verified`; refusals as `auth.mobile_verification`.
 
 ### Signing up
 
@@ -577,79 +542,13 @@ until `AUTH.SIGNUP_ENABLED` is on:
 from domainkit.contrib.auth.signup import router as signup_router
 
 router.include_router(signup_router, prefix="/auth")
-AUTH = {
-    "SIGNUP_ENABLED": True,
-    "SIGNUP_URL": "https://app.example.com/signup/finish?token={token}",
-}
+AUTH = {"SIGNUP_ENABLED": True}
 ```
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"email", "fields"}`, an optional `"username"`, and with codes `"mobile_number"` | `202`; `422` for fields that do not fit, or `missing_value` without an address (or number); `429 rate_limited`. |
-| `POST /signup/code` | anyone | `{"identifier", "code", "password"}` | `204`: the account is made; `400 invalid_verification_code`; `409 signup_taken`; `422` for a password the validators refuse. |
-| `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
-
-How signing up works:
-
-1. **The request is checked, then kept.** `fields` holds the user model's
-   other `REQUIRED_FIELDS` (`signup_fields()`; none for the default
-   `User`), every one, as `{"phone": "+3161234567"}`. Each is converted to
-   its field's type and checked by its markers: a missing one is
-   `422 invalid_user_field`, another field `422 unknown_user_field`. No
-   password is taken. The request is kept as a pending signup, and the
-   route answers `202`, doing the same work whatever accounts exist.
-2. **The worker mails the address.** When neither the username (in any
-   case) nor the address has an account, it sends a link:
-   `AUTH.SIGNUP_URL` with the token in place of `{token}`, which works for
-   `EMAIL_VERIFICATION_TIMEOUT`. Otherwise it sends word that an account
-   uses the address or the username, and drops the pending signup.
-3. **Your page asks for a password**, and posts it with the token to
-   `/signup/confirm`. The validators check it; a refusal leaves the link
-   working, to try another. The account is made with that password and a
-   verified address, and the user can log in.
-
-Why the password comes last:
-
-- **Whoever reads the mail chooses the password.** So asking for an
-  account with someone else's address gains nothing (pre-account
-  hijacking): if the address's owner uses the link, the account is
-  theirs, with a password only they know. If a password were taken with
-  the request, the person who asked would set it, and an owner who used
-  the link would make an account that the asker can log in to.
-- **No account exists before its address is confirmed.** So nothing that
-  anyone else can see differs between an address that has an account and
-  one that has none. Only whoever reads mail at an address learns
-  whether it has an account. Usernames are not secret that way: someone
-  who signs up with their own address learns from the mail that a
-  username is taken, as any signup form must tell. `EMAIL_RATE` bounds
-  how fast.
-- **A pending signup reserves nothing**, neither its username nor its
-  address, so one that is never confirmed blocks no one. Several may name
-  the same username: each address gets its link, the first link used gets
-  the name, and the others answer `409 signup_taken`. A link for an
-  address that got an account meanwhile answers `409` too. A link works
-  once; a wrong, used, or expired one gets `400 invalid_token`, audited
-  as `auth.signup`.
-
-Pending signups keep the username and the address, and no password, in
-`domainkit_pending_signups` (run `makemigrations` and `migrate`). That
-table is never in fixtures: it holds the addresses of people who may
-never have asked. The outbox holds only a pending signup's id. A row goes
-when its link is used, when the worker has told its address that the
-name or the address is taken, or, past `EMAIL_VERIFICATION_TIMEOUT`,
-with the hourly purge of expired tokens. Signups count against
-`EMAIL_RATE` per client address and per email address, and links that do
-not hold against `LOGIN_RATE` per client address. New accounts are
-audited as `auth.user_signed_up`. Where `email` is in `AUTH.IDENTIFIERS`,
-two links for one new address used at the same moment make one account:
-the second gets `409 email_taken`. Elsewhere, both can make one, because
-email addresses are not unique in the user table.
-
-#### Signing up by code
-
-With `AUTH.VERIFICATION` set to `"code"`, the worker sends a code of 6
-digits instead of a link. The username is optional: the address, or the
-number, names the account.
+| `POST /signup` | anyone | `{"email", "fields"}`, an optional `"username"`, or `"mobile_number"` where numbers identify users | `202`; `422` for fields that do not fit, or `missing_value` without an address (or number); `429 rate_limited`. |
+| `POST /signup/code` | anyone | `{"identifier", "code", "password"}` | `204`: the account is made; `400 invalid_verification_code`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
 
 ```http
 POST /auth/signup
@@ -672,31 +571,75 @@ POST /auth/signup
 {"detail": "Check your text messages to finish signing up."}
 ```
 
-Then your app posts the address or number, the code, and the password:
+How signing up works:
 
-```http
-POST /auth/signup/code
-{"identifier": "+33612345678", "code": "482913", "password": "correct horse battery"}
-```
+1. **The request is checked, then kept.** `fields` holds the user model's
+   other `REQUIRED_FIELDS` (`signup_fields()`; none for the default
+   `User`), every one, as `{"phone": "+3161234567"}`. Each is converted to
+   its field's type and checked by its markers: a missing one is
+   `422 invalid_user_field`, another field `422 unknown_user_field`. No
+   password is taken. The request is kept as a pending signup, and the
+   route answers `202`, doing the same work whatever accounts exist.
+2. **The worker sends the code.** When neither the username (in any
+   case) nor the address or number has an account, it sends a code, which
+   works for `AUTH.CODE_TTL`. Otherwise it sends word that an account uses
+   the address or the username, and drops the pending signup.
+3. **Your app asks for a password**, and posts it with the address or
+   number and the code:
 
-The answer is `204`. The account is made with the address verified, or,
-for a signup by number alone, the number verified. A pending signup by
-code lasts `AUTH.CODE_TTL`. The other rules stay: whoever reads the code
-chooses the password, a taken address or number is told so instead, and
-a password the validators refuse leaves the code working. A number given
-where numbers do not identify users gets `422 unknown_user_field`.
+   ```http
+   POST /auth/signup/code
+   {"identifier": "+33612345678", "code": "482913", "password": "correct horse battery"}
+   ```
+
+   The validators check it; a refusal leaves the code working, to try
+   another. The account is made with that password, and the address, or
+   the number, verified.
+
+Why the password comes last:
+
+- **Whoever reads the code chooses the password.** So asking for an
+  account with someone else's address gains nothing (pre-account
+  hijacking): if the address's owner uses the code, the account is
+  theirs, with a password only they know. If a password were taken with
+  the request, the person who asked would set it, and an owner who used
+  the code would make an account that the asker can log in to.
+- **No account exists before its address is confirmed.** So nothing that
+  anyone else can see differs between an address that has an account and
+  one that has none. Only whoever reads mail at an address learns
+  whether it has an account. Usernames are not secret that way: someone
+  who signs up with their own address learns from the mail that a
+  username is taken, as any signup form must tell. `EMAIL_RATE` bounds
+  how fast.
+- **A pending signup reserves nothing**, neither its username nor its
+  address, so one that is never confirmed blocks no one. Several may name
+  the same username: each address gets its code, the first code used
+  gets the name, and the others answer `409 signup_taken`. A code for an
+  address that got an account meanwhile answers `409` too, and is spent.
+
+Pending signups keep the username and the address or number, and no
+password, in `domainkit_pending_signups`. That table is never in
+fixtures: it holds the addresses of people who may never have asked. The
+outbox holds only a pending signup's id. A row goes when its code is
+used, when the worker has told its address that the name or the address
+is taken, or, past `AUTH.CODE_TTL`, with the hourly purge of expired
+tokens. Signups count against `EMAIL_RATE` per client address and per
+address or number, and wrong codes against `LOGIN_RATE` per client
+address. New accounts are audited as `auth.user_signed_up`; refusals as
+`auth.signup`. A number given where numbers do not identify users gets
+`422 unknown_user_field`.
 
 ### The mail templates
 
-The worker renders the mail from the templates `auth/password_reset`,
-`auth/email_verification`, `auth/signup_confirm`, and
-`auth/signup_exists` (plain text). Replace them from
-`MAIL.TEMPLATE_DIRS`.
+The worker renders the mail from the templates
+`auth/password_reset_code`, `auth/email_verification_code`,
+`auth/signup_code`, and `auth/signup_exists` (plain text). Replace them
+from `MAIL.TEMPLATE_DIRS`.
 
 | Template | Its variables |
 | --- | --- |
-| `auth/password_reset`, `auth/email_verification` | `user`, `username`, `link`, and `valid_for` (`1 hour`). |
-| `auth/signup_confirm` | `link` and `valid_for` only: the username was chosen by whoever asked, who may not be the address's owner. |
+| `auth/password_reset_code`, `auth/email_verification_code` | `user`, `username`, `code`, and `valid_for` (`10 minutes`). |
+| `auth/signup_code` | `code` and `valid_for` only: the username was chosen by whoever asked, who may not be the address's owner. |
 | `auth/signup_exists` | `email` only. |
 
 `check` reports these routes mounted without messaging and mail
@@ -758,13 +701,12 @@ async def subscribe() -> None: ...
 | `MAX_LOGINS`, `IDLE_TIMEOUT` | 100, `None` | Logins a user holds; idle logins end. |
 | `MFA` | see the table | `ISSUER`, `CHALLENGE_TTL`, `RECOVERY_CODES`, `WINDOW`, `RATE`, `ADDRESS_RATE`. |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail. |
-| `PASSWORD_RESET_TIMEOUT`, `PASSWORD_RESET_URL` | 1 hour, `None` | Reset links. |
-| `EMAIL_VERIFICATION_TIMEOUT`, `EMAIL_VERIFICATION_URL` | 3 days, `None` | Verification links, and signup links. |
-| `SIGNUP_ENABLED`, `SIGNUP_URL` | `False`, `None` | Signing up. |
+| `CODE_TTL`, `CODE_ATTEMPTS` | 10 minutes, `5` | Codes for resets, verification, and signups. |
+| `IDENTIFIERS` | `None` | The fields that identify users. |
+| `SIGNUP_ENABLED` | `False` | Signing up. |
 | `CAPTCHA` | `None` | The captcha. |
 
-Each URL must hold `{token}`. Staging and production refuse `http://`
-URLs (`auth.E006`). [The settings tables](../auth.md#settings) give
+[The settings tables](../auth.md#settings) give
 every key with its bounds.
 
 ## Errors and refusals
@@ -778,7 +720,8 @@ every key with its bounds.
 | `password_change_required` | 403 | A password staff set must change first. |
 | `wrong_password` | 400 | `/password`, `/mfa/totp`, and the second factor's changes. |
 | `invalid_password` | 422 | A validator or the history refuses the new password. |
-| `invalid_token` | 400 | A challenge, reset, verification, or signup token that does not hold. |
+| `invalid_token` | 400 | A second factor's challenge token that does not hold. |
+| `invalid_verification_code` | 400 | A wrong, spent, or expired reset, verification, or signup code. |
 | `invalid_code` | 401 | A wrong or used code. |
 | `mfa_enabled`, `no_enrolment` | 409, 400 | Starting a factor twice; confirming without starting. |
 | `second_factor_unreadable` | 409 | No key opens the secret: run `resealmfa`, or `resetmfa`. |
@@ -791,11 +734,12 @@ every key with its bounds.
   allow the whole rate. Use `RedisBackend` where you run more than one.
 - **Dropping a `SECRET_KEY` fallback before `resealmfa`.** Users whose
   secret is still under it can no longer use their app.
-- **A reset URL without `{token}`.** The settings refuse it.
+- **Keeping a 1.x link setting.** `AUTH.VERIFICATION`, `PASSWORD_RESET_URL`,
+  and the other link keys are refused since 2.0: delete them.
 - **Forgetting the captcha token on a browser login.** With `login` in
   `ON`, `POST /auth/session` needs `X-Captcha-Token` too.
-- **Taking a password at `/signup`.** It is taken at `/signup/confirm`,
-  from whoever reads the mail.
+- **Taking a password at `/signup`.** It is taken at `/signup/code`, from
+  whoever reads the code.
 
 ## See also
 

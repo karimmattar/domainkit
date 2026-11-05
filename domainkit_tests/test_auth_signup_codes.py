@@ -29,7 +29,7 @@ from domainkit_tests.test_auth_signup import pending
 
 __all__ = ["texting"]
 
-BY_MAIL = {"SIGNUP_ENABLED": True, "VERIFICATION": "code", "IDENTIFIERS": ("email",)}
+BY_MAIL = {"SIGNUP_ENABLED": True, "IDENTIFIERS": ("email",)}
 BY_TEXT = {"SIGNUP_ENABLED": True, **CODES}
 
 
@@ -170,9 +170,7 @@ def test_an_address_taken_before_the_code_is_used_answers_409(identity: Api) -> 
 
 def test_a_username_may_come_with_the_address(identity: Api) -> None:
     """The username is kept; the account logs in by address too."""
-    client = identity(
-        SIGNUP_ENABLED=True, VERIFICATION="code", IDENTIFIERS=("username", "email")
-    )
+    client = identity(SIGNUP_ENABLED=True, IDENTIFIERS=("username", "email"))
     ask(client, email="sam@example.com", username="sam")
     run_worker()
 

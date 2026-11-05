@@ -1,18 +1,15 @@
-"""One-time tokens for links sent by email: password resets, email verification.
+"""Signed one-time tokens bound to a user's state (``UserTokenGenerator``).
 
 A token names a user, and is signed (``domainkit.signing``) under a key
-derived from ``SECRET_KEY`` and from the state of the user the link acts
-on (Django's ``PasswordResetTokenGenerator``). Nothing is stored:
+derived from ``SECRET_KEY`` and from the state of the user it acts on
+(Django's ``PasswordResetTokenGenerator``). Nothing is stored: a token
+stops working once any of that state changes, and expires. Checking a
+token for no user costs what checking one for a user does, so timing
+tells no user ids.
 
-- a reset token rests on the password hash, the last login, the email,
-  and whether the account is active, so it stops working once it is used,
-  or once the user logs in or any of those changes;
-- a verification token rests on the email and whether it is verified, so
-  it works once, and only for the address it was sent to.
-
-Both expire (``AUTH.PASSWORD_RESET_TIMEOUT``,
-``AUTH.EMAIL_VERIFICATION_TIMEOUT``). Checking a token for no user costs
-what checking one for a user does, so timing tells no user ids.
+1.x mailed password resets and email verification as links with such
+tokens; since 2.0 they are codes (``codes``), and second factors are what
+uses these tokens (``mfa``).
 """
 
 import hashlib
@@ -26,7 +23,6 @@ from uuid import UUID
 from domainkit.signing import BadSignature, TimestampSigner
 
 from .models import AbstractBaseUser, UserId
-from .settings import auth_settings
 
 TOKEN_MAX_LENGTH: Final = 256
 """Longer input is refused before any work."""
@@ -85,35 +81,3 @@ class UserTokenGenerator(ABC):
         parts = () if user is None else self.state(user)
         state = hashlib.sha256("\x1f".join(map(str, parts)).encode()).hexdigest()
         return TimestampSigner(salt=f"{self.salt}:{state}")
-
-
-class PasswordResetTokenGenerator(UserTokenGenerator):
-    """Reset tokens: they end when used, on login, or after the timeout."""
-
-    salt = "domainkit.auth.password_reset"
-
-    def state(self, user: AbstractBaseUser) -> Sequence[object]:
-        """The password hash, last login, email, and whether the user is active."""
-        return (user.password.value, user.last_login, email_of(user), user.is_active)
-
-    def max_age(self) -> timedelta:
-        """``AUTH.PASSWORD_RESET_TIMEOUT``."""
-        return auth_settings().PASSWORD_RESET_TIMEOUT
-
-
-class EmailVerificationTokenGenerator(UserTokenGenerator):
-    """Verification tokens: they work once, for the address they went to."""
-
-    salt = "domainkit.auth.email_verification"
-
-    def state(self, user: AbstractBaseUser) -> Sequence[object]:
-        """The email, and whether it is verified."""
-        return (email_of(user), getattr(user, "email_verified", None))
-
-    def max_age(self) -> timedelta:
-        """``AUTH.EMAIL_VERIFICATION_TIMEOUT``."""
-        return auth_settings().EMAIL_VERIFICATION_TIMEOUT
-
-
-password_reset_tokens: Final = PasswordResetTokenGenerator()
-email_verification_tokens: Final = EmailVerificationTokenGenerator()
