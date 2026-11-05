@@ -79,6 +79,7 @@ from .authentication import (
 from .captcha import captcha
 from .devices import hand_out
 from .events import UserLoggedOut
+from .gates import pass_login_gates
 from .mfa import MfaLoginIn, challenge, first_use_after_code, verify_challenge
 from .models import AbstractBaseUser, UserId
 from .principals import forget
@@ -280,6 +281,7 @@ async def log_in(
     _no_store(response)
     check_origin(request)
     user = await check_password(request, body)
+    await pass_login_gates(request, user)
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
         return pending  # The device proof waits for the second factor.
@@ -309,6 +311,7 @@ async def log_in_with_code(
     user = await first_use_after_code(
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
     )
+    await pass_login_gates(request, user)
     started = await start_session(user, response, previous=_session_of(request))
     await hand_out(request, response, user)
     return started

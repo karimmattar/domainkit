@@ -197,6 +197,7 @@ class AuthConfig(DomainConfig):
             NotFound: No user has the id.
         """
         from .cookies import cookie_names, start_session
+        from .gates import gates_passed
         from .uow import AuthUnitOfWork
 
         _only_in_tests("issue_test_session")
@@ -209,7 +210,8 @@ class AuthConfig(DomainConfig):
         async with AuthUnitOfWork() as uow:
             user = await uow.users.get(user_id)
         response = Response()
-        started = await start_session(user, response)
+        with gates_passed(user.id):  # A test's session: no request to judge.
+            started = await start_session(user, response)
         cookies: SimpleCookie = SimpleCookie()
         for header in response.headers.getlist("set-cookie"):
             cookies.load(header)

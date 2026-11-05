@@ -140,6 +140,17 @@ Device proofs: a client that logged in keeps a count of its own (SEC-r1-2).
 
 - `DEVICE_COOKIE`: The proof's cookie, `__Host-` prefixed where the prefix holds.
 
+## `domainkit.contrib.auth.gates`
+
+Login gates: checks every login passes before it is issued (ADR 0128).
+
+- `LoginGate`: A check of a login: return to let it through, raise to refuse it.
+- `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
+- `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
+- `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
+- `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
+
 ## `domainkit.contrib.auth.hashers`
 
 Password hashing (Django's `hashers`, with the same stored formats).
@@ -450,8 +461,11 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
 - `challenge`: A challenge, if `user` has a second factor; None if not.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
+- `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
 - `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).

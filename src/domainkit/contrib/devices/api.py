@@ -48,6 +48,7 @@ from domainkit.contrib.auth.integration import (
     StepUpOut,
     TokenOut,
     issue_login,
+    pass_login_gates,
     record_step_up,
     step_up_answer,
     stepping_credentials,
@@ -241,10 +242,13 @@ async def start_login() -> dict[str, Any]:
 
 
 @router.post("/passkeys/login", dependencies=[Public])
-async def finish_login(body: AssertionIn, response: Response) -> TokenOut:
+async def finish_login(
+    body: AssertionIn, request: Request, response: Response
+) -> TokenOut:
     """Tokens for the user whose passkey answered."""
     response.headers["Cache-Control"] = "no-store"
     user = await authenticate(body.credential.assertion(), LOGIN)
+    await pass_login_gates(request, user)
     issued = await issue_login(user, factor_proven=True)
     return TokenOut(
         access_token=issued.access_token,
