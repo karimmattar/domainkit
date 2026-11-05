@@ -15,6 +15,14 @@ around them.
 | One aggregate's storage is eight hand-written pieces | The unit of work's annotations: SQL repositories and `in_memory(...)` for tests are made from them. |
 | Only `MaxLength` limits text, and only at the API | `MinLength`, `Pattern`, and `Range`; every marker checked by the object itself, by request bodies, and in OpenAPI; `clean()` for rules across fields. |
 
+## Done in 1.7 and 1.8
+
+| Release | What it gives |
+| --- | --- |
+| 1.7 | The fixes of the outside review's first run (A1 to A7), seven of them breaking ([upgrading.md](upgrading.md#16-to-17)); the documentation rewritten, a guide page for each part, in plain English; about 98 calls fewer on every authenticated route. |
+| 1.7.1 | `domainkit init NAME .` writes into an existing directory, such as a fresh clone. |
+| 1.8 | Users identified by the fields a project chooses (`AUTH.IDENTIFIERS`), such as an email address or a mobile number; the username optional; codes of 6 digits instead of links for email verification, password resets, and signups, by mail or text message; new projects log in by email or number ([ADR 0126](adr/0126-identify-users-by-the-fields-a-project-chooses-and-verify-them-by-code.md), [upgrading.md](upgrading.md#17-to-18)). |
+
 ## First: revamp the core
 
 Building an application on 1.0 showed the core is hard to follow before it
@@ -170,12 +178,16 @@ below is one pushed commit with tests, as the core's were.
 | W1 | Speed | Writes | Measured again: FastAPI resolving a route's dependencies is the largest block of a write (about 600 calls of a posting, 560 of a resource command), and each dependency costs about a hundred calls even when it does nothing. A guarded route no longer resolves `bearer`, which only puts the token in OpenAPI: every authenticated route costs about 98 calls less (a write 2,054, a resource command 2,726, a posting 8,049). What is left on a write is spread thin: FastAPI's own work for each remaining dependency (the access rule, the unit of work), SQLAlchemy's execution of each statement, and building `Money` from stored amounts (about 300 calls of a posting). Each further cut is a few percent, and the last touches money's checks; none is taken without a measured need. | Done |
 | F1 | Follow-up | Generated text reads right | "An account", not "a account"; a new event goes with the other events. | Done |
 | F2 | Follow-up | The newest-dependencies job | An unclosed SQLite connection (aiosqlite) was seen once on Python 3.15 with the newest dependencies. It has not come back in that job's later runs, and it cannot be reproduced locally (the local 3.15 beta cannot import Hypothesis's compiled part). Not seen again: the job passed in every run since, the weekly runs of 26 October and 2 November among them, and on the last pull requests before this one (#106, #107). It keeps running on every pull request and weekly, so a return shows there. | Closed |
+| P3 | Speed | Reads under load | The first, indicative run of the comparison scripts (`benchmarks/compare`) measured a read at about 92 ms where FastAPI answered in 15 ms, under the same load. The ladder's call counts do not show it: find where the time goes under concurrency (the pool, the middleware, serialization), and cut it. | Planned |
+| S3 | Security | The review's leftovers | Pruning the audit trail, and the startup checks, visit each tenant's schema, as sealing and verifying do since 1.7 (A6-4); the project template pins its base image by digest. | Planned |
+| R1 | Removal | Links, in 2.0 | Links for email verification, password resets, and signups, deprecated in 1.8, are removed; codes are the only way. | Planned for 2.0 |
 
 What code alone cannot give, and needs others:
 
 - **An audit from outside**: a firm's review of the threat model, auth,
   signing, and the money paths. [The scope to give them](audit/scope.md)
-  is ready, with the areas in order and their size.
+  is ready, with the areas in order and their size. The review's first
+  run (A1 to A7) is fixed in 1.7; a firm's own review waits.
 - **A published comparison**: the same service on domainkit, Django,
   Litestar, and FastAPI, on the same machine. The scripts are ready
   (`benchmarks/compare`, with its README); each app answers right, and
