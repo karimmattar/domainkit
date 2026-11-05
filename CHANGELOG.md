@@ -11,7 +11,7 @@ and a status.
 
 ### Changed
 
-- An app's home database cannot keep a schema per tenant: `AUDIT.DATABASE`,
+- **Breaking:** an app's home database cannot keep a schema per tenant: `AUDIT.DATABASE`,
   `MESSAGING.DATABASE`, `IDEMPOTENCY.DATABASE`, and the database that
   `DATABASE_ROUTING` gives a shared app (such as `auth` or `flags`) refuse
   one of `TENANCY.SCHEMA_DATABASES`, as they refuse a shard group. Its own
