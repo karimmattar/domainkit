@@ -887,7 +887,7 @@ other settings.
 
 | `MESSAGING` key | Default | Meaning |
 | --- | --- | --- |
-| `DATABASE` | `"default"` | The home outbox: periodic tasks and `enqueue()` write here, and its worker schedules periodic tasks. One alias, not a shard group. |
+| `DATABASE` | `"default"` | The home outbox: periodic tasks and `enqueue()` write here, and its worker schedules periodic tasks. One alias, not a shard group, nor one of `TENANCY.SCHEMA_DATABASES`. `migrate` and `runworker` reach it even when no domain lives there. |
 | `MAX_ATTEMPTS` | `10` | Runs before dead-lettering, unless the task sets its own. |
 | `RETRY_BASE_SECONDS` | `2.0` | The first retry's delay; it doubles per attempt (at most 365 days). |
 | `RETRY_MAX_SECONDS` | `3600.0` | The longest retry delay (at most 365 days). |

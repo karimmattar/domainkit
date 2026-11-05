@@ -34,6 +34,21 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 1.8 to 2.0
+
+2.0 removes what 1.x deprecated, and refuses settings that never worked.
+Each change below says what to do.
+
+### A home database cannot keep a schema per tenant
+
+`AUDIT.DATABASE`, `MESSAGING.DATABASE`, `IDEMPOTENCY.DATABASE`, and the
+database that `DATABASE_ROUTING` gives a shared app (`auth`, `flags`, ...)
+must not be one of `TENANCY.SCHEMA_DATABASES`: the application refuses to
+start. Such a database holds no tables in its own schema, so the records
+made outside a tenant failed. Put the shared tables on another alias, as
+[Multi-tenancy](tenancy.md#a-schema-per-tenant-postgresql) shows, and run
+plain `migrate` for it.
+
 ## 1.7 to 1.8
 
 1.8 adds what ADR 0126 decides: users identified by the fields a project

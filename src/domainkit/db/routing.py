@@ -176,14 +176,24 @@ class DatabaseRouter:
         """Check that ``setting`` names a SQL alias outside every shard group.
 
         Apps keep their home rows there (the home outbox, explicit audit
-        records, idempotency keys), so it must be one database.
+        records, idempotency keys), so it must be one database, and one
+        whose own schema holds tables: not one of
+        ``TENANCY.SCHEMA_DATABASES``, where plain ``migrate`` makes none.
         """
-        if alias in settings.DATABASES and self.target_of_alias(alias) == alias:
-            return alias
-        raise ImproperlyConfigured(
-            f"{setting} = {alias!r} must name a SQL alias in DATABASES that is "
-            "not part of a shard group."
-        )
+        if alias not in settings.DATABASES or self.target_of_alias(alias) != alias:
+            raise ImproperlyConfigured(
+                f"{setting} = {alias!r} must name a SQL alias in DATABASES that is "
+                "not part of a shard group."
+            )
+        tenancy = settings.TENANCY
+        if tenancy is not None and alias in tenancy.SCHEMA_DATABASES:
+            raise ImproperlyConfigured(
+                f"{setting} = {alias!r} keeps a schema per tenant "
+                "(TENANCY.SCHEMA_DATABASES), so its own schema holds no tables. "
+                f"Name another alias in DATABASES for {setting}, such as one "
+                "that keeps the shared tables."
+            )
+        return alias
 
     def alias_for(self, target: str, shard_key: ShardKey | None = None) -> str:
         """The one alias a unit of work on ``target`` uses.

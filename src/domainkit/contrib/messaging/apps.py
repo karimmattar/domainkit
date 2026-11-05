@@ -26,7 +26,7 @@ from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.lifecycle import Phase
 
 from . import runs
-from .outbox import notify_committed, rows_for, write
+from .outbox import notify_committed, outbox_targets, rows_for, write
 from .settings import MessagingSettings
 
 _committing: WeakKeyDictionary[AsyncSession, list[dict[str, Any]]] = WeakKeyDictionary()
@@ -180,8 +180,11 @@ class MessagingConfig(DomainConfig):
         return {"messages": found} if found else {}
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
-        """Every hosting target: the outbox commits with each domain's data."""
-        return frozenset(router.hosting_targets())
+        """Every hosting target: the outbox commits with each domain's data.
+
+        And ``MESSAGING.DATABASE``, the home outbox, when no domain lives there.
+        """
+        return frozenset(outbox_targets())
 
     def get_settings(self) -> MessagingSettings:
         """Return the validated ``MESSAGING`` settings."""

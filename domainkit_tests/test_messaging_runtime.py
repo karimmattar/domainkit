@@ -550,8 +550,8 @@ def test_runworker_shares_one_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(router, "aliases_of", lambda target: (target,))
     call_command("runworker", "--once", stdout=io.StringIO())
 
-    assert len(budgets) == 2
-    assert budgets[0] is budgets[1]
+    assert len(budgets) == 3  # The home outbox's, on "default", too.
+    assert budgets[0] is budgets[1] is budgets[2]
     assert budgets[0].size == registry.settings(MessagingSettings).CONCURRENCY
 
 

@@ -293,7 +293,11 @@ tenant's schema. Each tenant trail is a chain of its own:
 
 A database that keeps a schema per tenant holds no trail of its own:
 plain `migrate` leaves its own schema out. The startup check does not
-ask for triggers there.
+ask for triggers there. So `AUDIT.DATABASE`, which keeps the records made
+outside a tenant (operator commands, refused requests, `record()` with
+no tenant) and the ledger states, must be another alias, and the
+application refuses to start otherwise. `migrate` makes its trail even
+when no domain lives there.
 
 ## Tamper evidence
 
@@ -553,7 +557,8 @@ cannot name. `AUDIT.REQUIRE_BASELINE = False` keeps 0.9's warnings.
 
 The application also refuses to start when `AUDIT.CHECKPOINT_PUBLIC_KEY`
 is not an Ed25519 public key in PEM, or cryptography is missing, and when
-`AUDIT.DATABASE` is part of a shard group.
+`AUDIT.DATABASE` is part of a shard group or keeps a schema per tenant
+(`TENANCY.SCHEMA_DATABASES`).
 
 ## History
 

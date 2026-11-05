@@ -29,6 +29,7 @@ from domainkit.contrib.messaging.management.commands.messages import (
 from domainkit.contrib.messaging.management.commands.runworker import (
     Command as RunWorker,
 )
+from domainkit.contrib.messaging.outbox import outbox_targets
 from domainkit.contrib.messaging.tables import (
     CANCELLED,
     DEAD,
@@ -37,6 +38,7 @@ from domainkit.contrib.messaging.tables import (
     messages,
 )
 from domainkit.db import connections
+from domainkit.db.routing import router
 from domainkit.ddd import Personal
 from domainkit.management import BaseCommand, CommandError
 from domainkit_tests.conftest import ALPHA, MakeDatabase
@@ -395,6 +397,14 @@ async def test_messages_shows_the_lag_of_the_outbox_named(installed: None) -> No
         await MessagesCommand(stdout=printed).status(database="archive")
 
     assert printed.getvalue().splitlines()[-1] == "lag archive: 3600.0s"
+
+
+async def test_the_home_outbox_is_migrated_and_worked_where_no_domain_lives(
+    installed: None,
+) -> None:
+    """``archive`` holds no domain: ``migrate`` and ``runworker`` still reach it."""
+    assert outbox_targets() == ("archive", "default")
+    assert "archive" in router.migration_targets()
 
 
 async def test_an_export_reads_every_outbox(installed: None) -> None:
