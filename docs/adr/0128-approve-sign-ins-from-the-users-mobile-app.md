@@ -1,0 +1,312 @@
+# 0128. Approve sign-ins from the user's mobile app
+
+- Status: Accepted
+- Date: 2026-11-05
+
+## Context
+
+Identity apps built on this framework want the mobile app to be the
+user's identity. A user signs up, verifies their email or number, binds
+the phone, and logs in with biometrics, all from the app. Most of that
+exists already:
+
+- Signup with a code (ADR 0126).
+- Passkeys and bound devices (`domainkit.contrib.devices`). A bound
+  device keeps its key behind the phone's biometrics and signs requests
+  with it (`DeviceSigned`).
+- Push tokens and push delivery (`devices`, `notifications`).
+
+Two pieces are missing:
+
+1. **Other parties cannot ask the phone.** A website, a call centre or a
+   point of sale cannot ask "is this really you?" and get an answer from
+   the phone. OpenID Connect's Client-Initiated Backchannel
+   Authentication (CIBA Core 1.0) is the standard for this. The client
+   names the user (`login_hint`), the provider reaches the user's
+   authentication device, and the client polls the token endpoint until
+   the user approves or denies.
+2. **Nothing makes the phone the only way in.** A project should be able
+   to require that any web sign-in is approved from the phone, as a
+   setting. Two ways of reaching the phone are wanted:
+   - **Push:** the user types their identifier on the web page, and the
+     phone gets a notification.
+   - **QR:** the web page shows a code, and the phone scans it.
+
+What the research found, and what this design takes from it:
+
+- **CIBA Core 1.0:**
+  - The requirements: the `openid` scope, exactly one hint, an
+    `auth_req_id` of at least 128 bits, and `expires_in` and `interval`.
+  - Errors on the token endpoint: `authorization_pending`, `slow_down`
+    (the interval grows by 5 s), `expired_token`, `access_denied`, and
+    `invalid_grant`.
+  - Errors on the authentication endpoint: `invalid_request`,
+    `invalid_scope`, `unknown_user_id`, `unauthorized_client`,
+    `invalid_binding_message`, `invalid_client` and `access_denied`.
+  - Three delivery modes: poll, ping and push. `binding_message` is shown
+    on both devices.
+- **FAPI-CIBA:** the push mode is forbidden, and clients authenticate
+  with `private_key_jwt` or mutual TLS.
+- **IETF cross-device flows BCP** (draft-ietf-oauth-cross-device-security):
+  - CIBA is the least phishable of the cross-device patterns, but an
+    attacker who knows an identifier can still bomb the user with
+    prompts.
+  - A QR code shown on the device that gets the session is the most
+    phishable pattern. The attacker relays their own code to the victim.
+  - The listed mitigations: codes that are short-lived, single-use and
+    unique; context on the phone, with "deny" as prominent as "approve";
+    rate limits; limited scopes and short-lived tokens; and proximity
+    where it can be had.
+- **CISA (2022), push fatigue:** prefer phishing-resistant factors. When
+  push is used, turn on **number matching**: the user types on the phone
+  a number shown on the page, and the prompt shows which app is asking,
+  from where and when.
+- **USENIX Security 2025** ("Demystifying the (In)Security of QR Code-based
+  Login") found six flaws, in 43% of the sites it tested:
+  - F1: the poll is not bound to the browser that started the login.
+  - F2: a QR code works again after use.
+  - F3: the QR identifier is predictable.
+  - F4: the client chooses the QR identifier.
+  - F5: the phone names the user in the request body.
+  - F6: personal data reaches the browser.
+- **FIDO hybrid** (CTAP 2.2, now the Proximity Exchange Protocol): the
+  browser's own QR code, with Bluetooth proving proximity, is the
+  phishing-resistant way to use a phone for a web login. Passkeys already
+  get it from the platform. A custom QR flow like this one cannot prove
+  proximity. It can only compare network addresses.
+
+## Decision
+
+A new app, `domainkit.contrib.ciba`, makes the framework an OpenID
+Provider for CIBA and lets a project require the phone's approval for
+every web sign-in. It is routed with `auth`, and it requires `auth`,
+`devices`, `notifications` and `messaging`.
+
+### One request, two ways to the phone, two kinds of initiator
+
+Everything is a **sign-in request** in one table. It has:
+
+- **An initiator:** either an OIDC client (CIBA, server to server,
+  authenticated) or the project's own web pages (first-party, public
+  routes).
+- **A channel:**
+  - **Push:** the initiator names the user. Every push token of that
+    user gets a notification, through the outbox, in the request's
+    transaction.
+  - **QR:** the initiator names nobody. Its page shows a code, and the
+    phone that scans it claims the request for its own user.
+- **A state:** pending, then claimed (QR only), then approved or denied,
+  then redeemed. Or it expires.
+
+Secrets, following the USENIX and BCP findings:
+
+- **The poll handle** (`auth_req_id`) is 256 random bits, generated by
+  the server, and stored as a SHA-256 digest (F3, F4). Only the initiator
+  gets it. It is never in the QR code or the push, so whoever sees the
+  code cannot poll (F1).
+- **The QR code** is a separate 256-bit secret, stored as a digest. It
+  works for one claim within `QR_TTL` (60 s), and the page asks for a new
+  one when it ends (F2). It is rendered through `QR_FORMAT`
+  (`"{code}"`, or a universal link such as `https://id.example.com/qr#{code}`).
+- **Redemption is atomic.** One update sets `redeemed_at` where it is
+  null, so a request is redeemed once (F2).
+- **The phone never names a user.** The user is the one its credentials
+  and device signature prove (F5).
+- **Polls answer only a state or tokens.** No identifier or name reaches
+  the initiator (F6).
+
+### Defences against prompt bombing and relayed codes
+
+- **Number matching:** a web push sign-in shows a two-digit code on the
+  page (`NUMBER_MATCHING`, on by default). The phone must type it to
+  approve. The phone's view of the request never contains it. A wrong
+  code denies the request.
+- **Binding message:** CIBA clients send `binding_message`, which
+  `REQUIRE_BINDING_MESSAGE` (on by default) makes mandatory. It is at
+  most 64 printable characters and is shown on both devices.
+- **Context on the phone:** the client's name (or "web sign-in"), the
+  binding message, the initiator's address and browser, the time, and
+  `same_network` (the initiator's address equals the phone's).
+- **Same network for QR:** `QR_SAME_NETWORK` is `"warn"` by default, and
+  the app shows a warning when the addresses differ. `"require"` refuses
+  the claim instead. It is not the default because a phone on mobile data
+  never shares the laptop's address.
+- **No enumeration:**
+  - Pushes are suppressed when the identifier is unknown, when the user
+    already has `MAX_PENDING` (3) live requests, or when the user
+    reported a request within `REPORT_COOLDOWN` (15 min).
+  - In all three cases the initiator still gets a well-formed request: a
+    decoy that nobody can approve, and that answers
+    `authorization_pending` until it expires.
+  - CIBA's `unknown_user_id` is therefore never sent. The BCP's advice
+    outweighs the spec's option.
+- **Rate limits:**
+  - Public starts are limited per address (`START_RATE`, through auth's
+    throttling).
+  - Client starts are limited per client (`CLIENT_RATE`).
+  - Polls are limited by the request's interval: a poll that comes too
+    early gets `slow_down`, and the interval grows by 5 s. One atomic
+    update decides it.
+- **Deny and report:** "This wasn't me" denies the request, denies the
+  user's other pending requests, records `SignInReported` for the audit
+  trail, and starts the cooldown.
+- **Short lifetimes:**
+  - `REQUEST_TTL` is 2 min for push, and `QR_TTL` is 60 s for QR.
+  - A CIBA access token lasts `ACCESS_TOKEN_TTL` (10 min) and is limited
+    to scopes. There is no refresh token.
+
+### The phone's routes
+
+All of them need a user's credentials without scopes and a signature by
+one of that user's bound devices (`IsUnscoped` and `DeviceSigned`). A
+stolen access token alone approves nothing.
+
+- `GET /app-sign-in/requests`: the user's pending requests, with their
+  context.
+- `POST /app-sign-in/requests/claim` `{"code"}`: claims a QR request for
+  this user and answers its context.
+- `POST /app-sign-in/requests/{id}/approve` `{"match_code"?}`: records the
+  device and the time. The `amr` is `["hwk"]`.
+- `POST /app-sign-in/requests/{id}/deny` `{"report"?}`.
+
+### First-party web sign-in
+
+These routes are public, with the login captcha:
+
+- `POST /app-sign-in/push` `{"identifier"}`: answers
+  `{"request", "expires_in", "interval", "match_code"}`.
+- `POST /app-sign-in/qr`: answers
+  `{"request", "qr", "expires_in", "interval"}`.
+- `POST /app-sign-in/token` `{"request"}`: answers tokens from the first
+  `AUTH.AUTHENTICATION_CLASSES` class, as `/login` does, or an error with
+  the code `authorization_pending`, `slow_down`, `expired_token` or
+  `access_denied`.
+- `POST /app-sign-in/session` `{"request"}`: starts a cookie session, as
+  `/session` does, with the same origin check.
+
+An approved request logs in like any other login: `issue_login` and
+`start_session`, `AUTH.MAX_LOGINS`, and the last-login time. The
+approval counts as the second factor (`factor_proven=True`).
+
+### The mobile app as identity (`APPROVE_LOGINS`)
+
+Auth gains a small, generic hook: **login gates**.
+
+- Auth's routes that issue a login call `pass_login_gates(request, user)`
+  before issuing anything. These are `/login`, `/session`, `/mfa/login`,
+  `/session/mfa`, the passkey login and the identity providers' logins.
+- Gates fail closed. While a gate is registered, `held_login` refuses a
+  login whose user has not passed the gates in the current context, so a
+  route that forgets the call cannot issue.
+- Code that issues on the server side, such as an approved sign-in or the
+  test helpers, wraps the call in `gates_passed(user_id)`.
+
+With `CIBA = {"APPROVE_LOGINS": True}`, the app registers a gate that:
+
+1. **Lets through a user with no bound device.** The phone's first login
+   has to bind it.
+2. **Lets through a login signed by one of the user's bound devices.**
+   That is the phone itself logging in, with a password, a passkey or a
+   provider.
+3. **Refuses everything else** with `403 approval_required`. The web
+   page then signs in through `/app-sign-in/push` or `/app-sign-in/qr`.
+
+Two more pieces complete the app's own cycle:
+
+- `POST /devices/login` (`DEVICES.DEVICE_LOGIN`, off by default): a
+  bound device logs its user in by its signature alone. That is the
+  banking-app biometric login, next to passkeys.
+- `domainkit devices unbind`: staff remove a lost phone's binding, so the
+  user can log in with their other factors and bind a new one.
+
+Sessions and tokens issued before the setting is turned on stay valid.
+To end them, log users out everywhere.
+
+### OpenID Provider routes for CIBA clients
+
+Mounted where the project chooses, `/oauth` for example. The endpoints
+take `application/x-www-form-urlencoded` bodies, parsed without a new
+dependency. They answer in OAuth's error format with
+`Cache-Control: no-store`.
+
+- `POST /bc-authorize`: the CIBA authentication request. It needs the
+  `openid` scope, exactly one of `login_hint` or `id_token_hint`, and a
+  binding message. `login_hint_token` and `user_code` are not supported.
+- `POST /qr-authorize`: an extension of this framework. The same request
+  with no hint answers a QR code for the client's page.
+- `POST /token` with
+  `grant_type=urn:openid:params:grant-type:ciba`: polls, then answers
+  `access_token`, `token_type`, `expires_in`, `scope` and `id_token`.
+- `GET /.well-known/openid-configuration` and `GET /.well-known/jwks.json`
+  (a router of their own, mounted at the root): the CIBA metadata (only
+  the `poll` mode, `backchannel_user_code_parameter_supported: false`)
+  and the public signing keys.
+
+Clients live in a table:
+
+- **What a client has:** a generated `client_id`, a name (shown on the
+  phone), allowed scopes, and an authentication method.
+- **Client authentication:**
+  - `client_secret_basic` and `client_secret_post`: the secret is 256
+    random bits, shown once and stored as a digest.
+  - `private_key_jwt`, as FAPI asks: the client's public JWKS is stored.
+    The assertion must use an asymmetric algorithm and name the client
+    in `iss` and `sub`. Its `aud` is the issuer or the endpoint. Its
+    `exp` is at most `ASSERTION_MAX_AGE` (5 min) away, and its `jti` is
+    kept until `exp`, so a replay is refused. It needs the `jwt` extra.
+- **Commands:** `domainkit ciba clients add|list|remove|rotate`.
+
+What a client's tokens carry:
+
+- **Scopes:** the scopes other than OIDC's are permission keys, as on
+  personal tokens. A client gets the scopes it asked for that it is
+  allowed, narrowed to the user's permissions. It never gets more.
+- **The ID token:** signed with `AUTH.JWT`'s key, which must be
+  asymmetric with an `ISSUER` (check `ciba.E002` when the OP routes are
+  mounted). It carries `iss`, `sub` (the user's id), `aud`, `iat`, `exp`,
+  `auth_time`, `amr` and `at_hash`.
+
+### Housekeeping
+
+- An hourly task purges requests a day after they end, and assertion ids
+  once they expire.
+- Deleting a user forgets their requests. `privacy export` and
+  `privacy erase` cover them, since they keep addresses and browsers.
+- Approvals, denials and reports are recorded on the user and audited as
+  `ciba.*`.
+- Every problem has English and Arabic messages.
+- Checks:
+  - `ciba.E001`: the app is not routed with `auth`.
+  - `ciba.E002`: the OP routes are mounted without an asymmetric
+    `AUTH.JWT` and an `ISSUER`.
+  - `ciba.W001`: `APPROVE_LOGINS` is on without the devices routes.
+
+### Not in this decision
+
+- **Delivery modes:** ping and push. FAPI forbids push.
+- **Stronger client requests:** signed authentication requests (request
+  objects) and mutual-TLS client authentication. Without them the
+  provider is not FAPI-CIBA certified.
+- **CIBA extras:** `user_code`, `login_hint_token`, and refresh tokens
+  for CIBA clients.
+- **Proximity:** a Bluetooth proof, which the platform's passkey QR flow
+  gives (use passkeys for that), and geolocating addresses.
+
+## Consequences
+
+- An identity app gets the whole cycle from the phone with settings and
+  routes: signup, verification, binding, biometric login, approving web
+  sign-ins, and answering other parties' CIBA requests.
+- The first-party web flow and CIBA share one table, one state machine
+  and one set of defences, so a fix to either reaches both.
+- Auth's login routes now call the gates, and a route added later must
+  do the same. Failing closed in `held_login` turns forgetting into a
+  refusal, not a bypass.
+- With `APPROVE_LOGINS`, a user who loses their only phone cannot log in
+  until staff unbind it. Projects need a support path for that.
+- The QR flow cannot prove proximity, and a relayed code is caught by the
+  context and the network warning, not prevented. Passkeys' hybrid QR
+  flow remains the phishing-resistant choice where it fits.
+- A user whose identifier is unknown, or who is rate-limited, gets the
+  same answers as anyone else, so clients cannot tell "no such user"
+  from "not approved".
