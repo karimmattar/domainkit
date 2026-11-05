@@ -2,12 +2,15 @@
 
 On a database that keeps a schema per tenant, a unit of work run as a
 tenant writes its audit rows to the tenant's schema. That trail was never
-protected by triggers, sealed, verified, or forgotten (A6-4).
+protected by triggers, sealed, verified, or forgotten (A6-4); nor pruned,
+exported, or probed at startup (A6-4's leftovers).
 """
 
 import io
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import text
@@ -15,16 +18,33 @@ from sqlalchemy.exc import DBAPIError
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import forget
+from domainkit.contrib.audit.baseline import protection_problems
+from domainkit.contrib.audit.pruning import export, prune
+from domainkit.contrib.audit.tables import (
+    audit_checkpoints,
+    audit_keys,
+    audit_log,
+    audit_seals,
+)
+from domainkit.contrib.audit.trails import in_trail
 from domainkit.db import connections
 from domainkit.management import call_command
 from domainkit.management.base import run_async
+from domainkit_tests.test_audit_checkpoints import keys
+
+T0 = datetime(2026, 1, 5, 12, tzinfo=UTC)
+T1 = T0 + timedelta(days=40)
 
 
 @pytest.fixture
 def tenants(database_url: str, tmp_path: Path) -> Iterator[None]:
-    """The audit app, in tenant acme's schema of a new database."""
+    """The audit app, in tenant acme's schema of a new database.
+
+    Checkpoints are signed with ``test_audit_checkpoints``' key.
+    """
     if not database_url.startswith("postgresql"):
         pytest.skip(
             "schemas per tenant need PostgreSQL: set DOMAINKIT_TEST_POSTGRES_URL"
@@ -38,7 +58,7 @@ def tenants(database_url: str, tmp_path: Path) -> Iterator[None]:
         DATABASES={"default": {"URL": database_url}},
         MIGRATIONS_DIR=tmp_path / "migrations",
         TENANCY={"SCHEMA_DATABASES": ["default"]},
-        AUDIT={},
+        AUDIT=keys(),
         LEDGERS={},
     ):
         setup()
@@ -97,3 +117,86 @@ def test_a_tenants_trail_is_protected_sealed_verified_and_forgotten(
     assert verified == "default/tenant_acme: 1 seals, 0 anchors: intact.\n"
     assert forgotten == 1
     assert [key for (key,) in keys if key == "ann"] == []  # The day's stay.
+
+
+def write_row() -> None:
+    """One row in tenant acme's trail, as a unit of work run as acme writes it."""
+    run_sql(
+        "INSERT INTO tenant_acme.domainkit_audit_log "
+        "(id, occurred_at, actor, action, outcome, details) VALUES "
+        "(gen_random_uuid(), now(), 'ann', 'notes.write', 'success', '{}')"
+    )
+
+
+def own_trail() -> None:
+    """Give the database's own schema a trail too, as ``AUDIT.DATABASE``'s is.
+
+    Plain ``migrate`` leaves the own schema of a database with a schema per
+    tenant out; operator commands record their runs in that trail.
+    """
+
+    async def make() -> None:
+        async with connections.engine("default").begin() as connection:
+            for table in (audit_log, audit_keys, audit_seals, audit_checkpoints):
+                await connection.run_sync(table.create)
+
+    run_async(make())
+
+
+def test_a_tenants_trail_is_pruned_and_exported(tenants: None, tmp_path: Path) -> None:
+    """``audit prune`` cuts it below a checkpoint; ``--export`` files it by name."""
+    for moment, count in ((T0, 3), (T1, 1)):
+        for _ in range(count):
+            write_row()
+        with freeze_time(moment):
+            run("seal")
+    with freeze_time(T1 + timedelta(days=1)), in_trail("tenant_acme"):
+        pruned = run_async(prune("default", before=T1 - timedelta(days=30)))
+    with freeze_time(T1 + timedelta(days=1)):
+        exported = run_async(export())
+    left = run_sql("SELECT count(*) FROM tenant_acme.domainkit_audit_log")
+    named = run_sql(
+        "SELECT target, details FROM tenant_acme.domainkit_audit_log "
+        "WHERE action = 'audit.pruned'"
+    )
+    own_trail()
+    with freeze_time(T1 + timedelta(days=2)):
+        again = run("prune", "--keep-days", "30")
+        verified = run("verify")
+
+    assert pruned.database == "default/tenant_acme"
+    assert pruned.checkpoint is not None
+    assert (pruned.checkpoint.database, pruned.checkpoint.seq) == (
+        "default/tenant_acme",
+        3,
+    )
+    assert pruned.rows == 3
+    assert left == [(2,)]  # The row sealed at T1, and the prune's own.
+    assert [
+        (target, cast(dict[str, Any], details)["rows"]) for target, details in named
+    ] == [("default/tenant_acme", 3)]
+    assert list(exported["databases"]) == ["default/tenant_acme"]
+    assert len(exported["databases"]["default/tenant_acme"]["checkpoints"]) == 2
+    assert again == (
+        "default: nothing to prune.\ndefault/tenant_acme: nothing to prune.\n"
+    )
+    assert "default/tenant_acme: 1 seals, 0 anchors: intact.\n" in verified
+
+
+def test_the_startup_probe_checks_each_tenants_trail(tenants: None) -> None:
+    """A trigger disabled in a tenant's schema is reported by the trail's name.
+
+    The database's own schema holds no trail here (plain ``migrate`` leaves
+    it out), and is not reported for it.
+    """
+    assert run_async(protection_problems()) == []
+
+    run_sql(
+        "ALTER TABLE tenant_acme.domainkit_audit_seals "
+        "DISABLE TRIGGER domainkit_audit_seals_append_only"
+    )
+    (problem,) = run_async(protection_problems())
+
+    assert "The audit trail in 'default/tenant_acme' is not append-only" in str(problem)
+    assert "domainkit_audit_seals_append_only" in str(problem)
+    assert "Run 'manage.py migrate --tenant acme'" in str(problem)

@@ -103,9 +103,10 @@ fails, and names the variable, when one is missing.
   uv pip compile pyproject.toml --generate-hashes -o requirements.lock
   ```
 
-  Pin the base image by digest too (`python:3.13-slim@sha256:...`), in
-  both stages of the `Dockerfile`. Let Renovate or Dependabot keep the
-  lock and the digest new.
+  `init` pins the base image by digest (`python:3.13-slim@sha256:...`),
+  in both stages of the `Dockerfile`, and writes `.github/dependabot.yml`:
+  Dependabot proposes the new digest, the lock's updates, and the
+  workflow's actions each week. Merge them once CI passes.
 
 - [ ] **Migrations committed.** `makemigrations` wrote one per model
   change. CI's `makemigrations --check` fails when one is missing.
@@ -196,8 +197,9 @@ fails, and names the variable, when one is missing.
 - **No `requirements.lock`.** Each build then installs the newest
   releases, so the image you tested is not the image you ship. Commit
   the lock.
-- **A base image by tag only.** `python:3.13-slim` moves. Pin it by
-  digest, and let a bot move the digest in a reviewed pull request.
+- **A base image by tag only.** `python:3.13-slim` moves. `init` pins it
+  by digest; keep the pin, and merge Dependabot's pull requests that move
+  it, so the image keeps up with security fixes.
 - **An env file next to the `Dockerfile`.** `.dockerignore` keeps it out
   of the image, but it is still one `git add` from the repository. Keep
   it outside the project.

@@ -284,10 +284,16 @@ tenant's schema. Each tenant trail is a chain of its own:
   `domainkit/audit/<NAMESPACE>/<alias>/<schema>`;
 - `audit verify` verifies it, and prints a line for it, such as
   `default/tenant_acme`;
-- `audit forget` and `privacy erase` delete a person's keys there too.
+- `audit forget` and `privacy erase` delete a person's keys there too;
+- `audit prune` prunes it, and records the prune in it; its checkpoints
+  name the trail, such as `default/tenant_acme`;
+- `audit verify --export` exports its checkpoints under that name;
+- the startup check of the triggers asks for them in each tenant's trail,
+  in one query per database.
 
-`audit prune` and the startup check of the triggers cover only the
-database's own schema.
+A database that keeps a schema per tenant holds no trail of its own:
+plain `migrate` leaves its own schema out. The startup check does not
+ask for triggers there.
 
 ## Tamper evidence
 
@@ -528,8 +534,9 @@ writes (its body is compared, whitespace aside). The probe cannot see a
 session that sets `session_replication_role = replica`, which only a
 superuser may do. It cannot stop a table owner from dropping the
 triggers between two starts either: `audit verify` checks what they
-protect. The probe looks at the database's own schema only, not at
-tenant schemas.
+protect. The probe looks at the database's own schema, and at each
+tenant's schema that holds a trail; a trail of a tenant is named
+`<alias>/<schema>`, and the fix is `migrate --tenant <tenant>`.
 
 Since 0.10 these checks refuse. `AUDIT.REQUIRE_BASELINE` is `True` by
 default, so staging and production do not start without the four parts,

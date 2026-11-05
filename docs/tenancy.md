@@ -257,8 +257,8 @@ the tenant writes its rows there.
   own ledger key (`<alias>/<schema>`).
 - `audit forget` and `privacy erase` delete a person's pseudonym keys in
   each tenant's schema.
-- `audit prune` and the startup check of the triggers cover only the
-  database's own schema.
+- `audit prune`, `audit verify --export`, and the startup check of the
+  triggers cover each tenant's trail too.
 
 ## Caches, limits, and logs
 

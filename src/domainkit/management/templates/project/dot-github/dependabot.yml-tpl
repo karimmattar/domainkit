@@ -1,0 +1,19 @@
+# Dependabot proposes, each week, a pull request for each update: the base
+# image's new digest (Dockerfile), the locked dependencies
+# (requirements.lock, once you write it), and the workflow's actions. CI runs
+# on each; review and merge them, so the image and the lock keep up with
+# security fixes (docs/deploying.md, "Before the first deployment").
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
