@@ -9,6 +9,26 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- In staging and production, a project whose audited database keeps a
+  schema per tenant (`TENANCY.SCHEMA_DATABASES`) refused to start: the
+  startup check asked the database's own schema for the trail's triggers,
+  and plain `migrate` never makes that trail. It is no longer asked there.
+- `audit prune`, `audit verify --export`, and the startup check of the
+  triggers covered the database's own schema only, not each tenant's
+  trail. They cover each tenant's trail now: a prune's checkpoint and
+  ledger key name the trail (`default/tenant_acme`), the prune is recorded
+  in the trail it pruned, and the startup check asks every tenant schema
+  for its triggers in one query (audit A6-4, its leftovers).
+
+### Security
+
+- A new project's `Dockerfile` pins its base image by digest, and `init`
+  writes `.github/dependabot.yml`, so Dependabot proposes the new digest,
+  the lock's updates, and the workflow's actions each week (audit A7-2,
+  its leftover).
+
 ## [1.8.0] - 2026-11-05
 
 ### Added

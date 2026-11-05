@@ -35,6 +35,7 @@ REDIS_URL = "rediss://:s3cret@cache.internal:6380/0"
 PROJECT_FILES = {
     ".dockerignore",
     ".env",
+    ".github/dependabot.yml",
     ".github/workflows/ci.yml",
     ".gitignore",
     "Dockerfile",
@@ -592,7 +593,11 @@ def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> 
 
     assert "{{" not in dockerfile
     assert "docker build -t billingapi ." in dockerfile
-    assert final == "FROM python:3.13-slim"
+    # Both stages start from one image, pinned by digest; Dependabot moves it.
+    assert re.fullmatch(r"FROM python:3\.13-slim@sha256:[0-9a-f]{64}", final)
+    assert f"{final} AS build" in lines
+    dependabot = (project / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    assert "package-ecosystem: docker" in dependabot
     stage = lines[lines.index(final) :]
     user = stage.index("USER 10001")
     assert [line for line in stage if line.startswith("COPY ")] == [

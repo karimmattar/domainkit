@@ -35,6 +35,11 @@ def in_trail(schema: str | None) -> Iterator[None]:
         _schema.reset(token)
 
 
+def current_schema() -> str | None:
+    """The schema of the trail the code works on (None: the connection's own)."""
+    return _schema.get()
+
+
 def label(database: str) -> str:
     """The name of the current trail of ``database``: ``<alias>[/<schema>]``.
 

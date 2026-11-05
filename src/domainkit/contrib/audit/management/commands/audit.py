@@ -262,17 +262,19 @@ class Command(ActionCommand):
         before = clock.now() - timedelta(days=keep_days)
         async with self.recorded("auditprune", keep_days=keep_days) as record:
             record["rows"] = 0
-            for alias in (database,) if database else audited_databases():
+            aliases = (database,) if database else audited_databases()
+            for alias, schema in await trails(aliases):
                 try:
-                    pruned = await prune(alias, before=before, ledger=ledger)
+                    with in_trail(schema):
+                        pruned = await prune(alias, before=before, ledger=ledger)
                 except PruneRefused as exc:
                     raise CommandError(str(exc)) from None
                 record["rows"] = int(str(record["rows"])) + pruned.rows
                 if pruned.checkpoint is None:
-                    self.write(f"{alias}: nothing to prune.")
+                    self.write(f"{pruned.database}: nothing to prune.")
                 else:
                     self.write(
-                        f"{alias}: pruned {pruned.rows} "
+                        f"{pruned.database}: pruned {pruned.rows} "
                         f"row{'' if pruned.rows == 1 else 's'} below seal "
                         f"#{pruned.checkpoint.seq}."
                     )

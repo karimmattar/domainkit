@@ -15,16 +15,21 @@ batch disables them in its own transaction, as the tables' owner
 (``MIGRATION_URL``): writers of the trail wait for that batch, a few
 milliseconds. The newest seal is never pruned, so sealing goes on from it.
 
-``export`` writes every database's stored checkpoints and one of its
-current head, for a verifier who holds only the public key
+On a database that keeps a schema per tenant, ``prune`` works on the
+trail ``trails.in_trail`` names: each tenant's is a chain of its own, its
+checkpoints and ledger key named ``<alias>/<schema>`` (``trails.label``),
+and ``export`` writes each of them.
+
+``export`` writes every trail's stored checkpoints and one of its current
+head, for a verifier who holds only the public key
 (``checkpoints.check_export``). See ADR 0082.
 """
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import Row, delete, func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -39,6 +44,7 @@ from domainkit.ledger import Ledger
 from .checkpoints import (
     EXPORT_FORMAT,
     Checkpoint,
+    Stored,
     key_id,
     public_pem,
     sign,
@@ -48,7 +54,7 @@ from .checkpoints import (
 )
 from .personal import audited_databases
 from .protection import trigger_names
-from .recorder import record
+from .recorder import Outcome, audit_row, write
 from .seals import (
     Report,
     _head,
@@ -61,6 +67,10 @@ from .seals import (
 )
 from .settings import AuditSettings, min_retention
 from .tables import audit_checkpoints, audit_log, audit_seals
+from .trails import connect, current_schema, in_trail, label, trails
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 __all__ = [
     "ExportRefused",
@@ -87,6 +97,7 @@ class Pruned:
     """What ``prune`` did to one database's trail."""
 
     database: str
+    """The trail's name: the alias, or ``<alias>/<schema>`` (``trails.label``)."""
     checkpoint: Checkpoint | None
     """The checkpoint it pruned below; None when there was nothing to prune."""
     rows: int
@@ -125,8 +136,9 @@ async def prune(
             f"prune before {(now - kept).isoformat()} at the "
             "latest. Nothing was pruned."
         )
+    name = label(database)
     history = [] if ledger is None else await _history(database, ledger)
-    async with connections.engine(database).connect() as connection:
+    async with connect(database) as connection:
         head = await _head(connection)
         cut = await connection.scalar(
             select(func.max(audit_seals.c.seq)).where(
@@ -134,11 +146,11 @@ async def prune(
                 audit_seals.c.seq < (head.seq if head else 0),
             )
         )
-        points = await stored(connection, database, public)
+        points = await stored(connection, name, public)
     accepted, forged = await starting_points(database, points, ledger, history, now=now)
     if forged:
         raise PruneRefused(
-            f"Checkpoints of {database!r} at seals {forged} do not verify "
+            f"Checkpoints of {name!r} at seals {forged} do not verify "
             "(audit verify); nothing was pruned."
         )
     last = accepted[points[-1].seq] if points else None
@@ -157,9 +169,9 @@ async def prune(
     if cut is None or (last is not None and cut <= last.seq):
         if left:
             await _record(database, last, left, before)
-        return Pruned(database, last if left else None, left)
-    _refuse_unless_intact(database, await verify(database, ledger, upto=cut))
-    async with connections.engine(database).begin() as connection:
+        return Pruned(name, last if left else None, left)
+    _refuse_unless_intact(name, await verify(database, ledger, upto=cut))
+    async with connect(database, begin=True) as connection:
         sealed = (
             await connection.execute(
                 select(audit_seals.c.link, audit_seals.c.sealed_at).where(
@@ -168,7 +180,7 @@ async def prune(
             )
         ).one()
         checkpoint = Checkpoint(
-            database=database,
+            database=name,
             namespace=config.NAMESPACE,
             seq=cut,
             link=sealed.link,
@@ -180,7 +192,7 @@ async def prune(
         )
         if ledger is not None:  # Recorded first: else it starts nothing.
             await ledger.append(
-                pruned_key(database, config.NAMESPACE),
+                pruned_key(name, config.NAMESPACE),
                 pruned_record(checkpoint.document()),
             )
         await connection.execute(
@@ -193,20 +205,30 @@ async def prune(
         )
     rows = left + await _delete(database, 0 if last is None else last.seq, cut)
     await _record(database, checkpoint, rows, before)
-    return Pruned(database, checkpoint, rows)
+    return Pruned(name, checkpoint, rows)
 
 
 async def _record(
     database: str, checkpoint: Checkpoint | None, rows: int, before: datetime
 ) -> None:
-    """Record a prune in the trail it pruned: below which seal, and how many rows."""
-    await record(
+    """Record a prune in the trail it pruned: below which seal, and how many rows.
+
+    The trail of ``database`` that ``trails.in_trail`` names, a tenant's
+    included: a database that keeps a schema per tenant may hold no trail
+    of its own.
+    """
+    row = audit_row(
         "audit.pruned",
-        target=database,
-        seq=None if checkpoint is None else checkpoint.seq,
-        rows=rows,
-        before=before.isoformat(),
+        Outcome.SUCCESS,
+        target=label(database),
+        details={
+            "seq": None if checkpoint is None else checkpoint.seq,
+            "rows": rows,
+            "before": before.isoformat(),
+        },
     )
+    async with connect(database, begin=True) as connection:
+        await write(connection, [row])
 
 
 async def _left_below(
@@ -216,7 +238,7 @@ async def _left_below(
 
     Checked first, as a new cut is: rows changed since would vanish unseen.
     """
-    async with connections.engine(database).connect() as connection:
+    async with connect(database) as connection:
         found = await connection.scalar(
             select(func.count())
             .select_from(audit_seals)
@@ -224,12 +246,14 @@ async def _left_below(
         )
     if not found:
         return 0
-    _refuse_unless_intact(database, await verify(database, ledger, upto=checkpoint.seq))
+    _refuse_unless_intact(
+        label(database), await verify(database, ledger, upto=checkpoint.seq)
+    )
     lowest = 0 if checkpoint.previous is None else checkpoint.previous[0]
     return await _delete(database, lowest, checkpoint.seq)
 
 
-def _refuse_unless_intact(database: str, report: Report) -> None:
+def _refuse_unless_intact(trail: str, report: Report) -> None:
     """Refuse to prune a chain with a problem up to the cut: pruning would hide it."""
     problems = {
         "changed rows": len(report.changed),
@@ -239,13 +263,17 @@ def _refuse_unless_intact(database: str, report: Report) -> None:
     }
     if found := {name: count for name, count in problems.items() if count}:
         raise PruneRefused(
-            f"The trail of {database!r} does not verify up to the cut ({found}); "
+            f"The trail of {trail!r} does not verify up to the cut ({found}); "
             "pruning it would hide that. Nothing was pruned: run audit verify."
         )
 
 
 async def _delete(database: str, lowest: int, cut: int) -> int:
-    """Delete seals above ``lowest`` up to ``cut``, and their rows, newest first."""
+    """Delete seals above ``lowest`` up to ``cut``, and their rows, newest first.
+
+    In the current trail's schema (``trails.in_trail``), as its owner.
+    """
+    schema = current_schema()
     postgres = connections.engine(database).dialect.name == "postgresql"
     engine = (
         create_owner_engine(connections.config(database))
@@ -259,7 +287,13 @@ async def _delete(database: str, lowest: int, cut: int) -> int:
             bottom = max(lowest, top - BATCH)
             in_batch = (audit_seals.c.seq > bottom) & (audit_seals.c.seq <= top)
             async with engine.begin() as connection:
-                disabled = await _disable_triggers(connection) if postgres else []
+                if schema is not None:
+                    await connection.execution_options(
+                        schema_translate_map={None: schema}
+                    )
+                disabled = (
+                    await _disable_triggers(connection, schema) if postgres else []
+                )
                 rows = await connection.execute(
                     delete(audit_log).where(
                         audit_log.c.id.in_(
@@ -276,7 +310,8 @@ async def _delete(database: str, lowest: int, cut: int) -> int:
         if sqlstate(exc) != "42501":
             raise
         raise PruneRefused(
-            f"The trail of {database!r} is protected by triggers only its owner may "
+            f"The trail of {label(database)!r} is protected by triggers only its "
+            "owner may "
             f"disable: set DATABASES[{database!r}]['MIGRATION_URL'] to the owner's "
             "URL. The checkpoint is stored; run audit prune again."
         ) from exc
@@ -286,25 +321,31 @@ async def _delete(database: str, lowest: int, cut: int) -> int:
     return deleted
 
 
-async def _disable_triggers(connection: AsyncConnection) -> list[str]:
+async def _disable_triggers(
+    connection: AsyncConnection, schema: str | None = None
+) -> list[str]:
     """Disable the ``protect()`` row triggers present; the statements that enable them.
 
     Until the transaction ends: the ``ALTER TABLE`` locks the tables, and a
-    rollback restores the triggers.
+    rollback restores the triggers. ``schema``: a tenant's tables, not the
+    connection's own.
     """
     enable = []
     quote = connection.dialect.identifier_preparer.quote
+    prefix = "" if schema is None else f"{quote(schema)}."
     for table in (audit_log, audit_seals):
         name, _ = trigger_names(table)
-        found = await connection.scalar(_ENABLED, {"table": table.name, "name": name})
+        qualified = prefix + quote(table.name)
+        found = await connection.scalar(_ENABLED, {"table": qualified, "name": name})
         if found is None:
             continue
-        # The names are the framework's own, quoted by the dialect.
+        # The names are the framework's own, or a tenant schema's that
+        # TENANCY.SCHEMA makes, quoted by the dialect.
         await connection.execute(
             # nosemgrep: avoid-sqlalchemy-text  # noqa: ERA001
-            text(f"ALTER TABLE {quote(table.name)} DISABLE TRIGGER {quote(name)}")
+            text(f"ALTER TABLE {qualified} DISABLE TRIGGER {quote(name)}")
         )
-        enable.append(f"ALTER TABLE {quote(table.name)} ENABLE TRIGGER {quote(name)}")
+        enable.append(f"ALTER TABLE {qualified} ENABLE TRIGGER {quote(name)}")
     return enable
 
 
@@ -315,7 +356,10 @@ class ExportRefused(DomainkitError):
 async def export(
     ledger: Ledger | None = None, *, now: datetime | None = None
 ) -> dict[str, Any]:
-    """Every audited database's checkpoints, and one of its head, signed.
+    """Every trail's checkpoints, and one of its head, signed.
+
+    A trail per audited database, and per tenant schema of a database that
+    keeps one per tenant, filed under its name (``trails.label``).
 
     Raises:
         ExportRefused: A trail does not verify (``verify``): a checkpoint
@@ -328,23 +372,9 @@ async def export(
     now = now or clock.now()
     namespace = registry.settings(AuditSettings).NAMESPACE
     databases: dict[str, Any] = {}
-    for database in audited_databases():
-        report = await verify(database, ledger, now=now)
-        if not report.intact:
-            raise ExportRefused(
-                f"The trail of {database!r} does not verify: run audit verify."
-            )
-        async with connections.engine(database).connect() as connection:
-            points = await stored(connection, database, public)
-            head = (
-                await connection.execute(
-                    select(
-                        audit_seals.c.seq, audit_seals.c.link, audit_seals.c.sealed_at
-                    )
-                    .order_by(audit_seals.c.seq.desc())
-                    .limit(1)
-                )
-            ).first()
+    for database, schema in await trails(audited_databases()):
+        with in_trail(schema):
+            name, head, points = await _exported(database, ledger, public, now)
         chain = [
             signed(point.checkpoint, point.signature)
             for point in points
@@ -353,7 +383,7 @@ async def export(
         last = points[-1].checkpoint if points else None
         if head is not None and (last is None or head.seq > last.seq):
             newest = Checkpoint(
-                database=database,
+                database=name,
                 namespace=namespace,
                 seq=head.seq,
                 link=head.link,
@@ -364,7 +394,7 @@ async def export(
                 kind="export",
             )
             chain.append(signed(newest, sign(newest, key)))
-        databases[database] = {"checkpoints": chain}
+        databases[name] = {"checkpoints": chain}
     return {
         "format": EXPORT_FORMAT,
         "exported_at": now.isoformat(),
@@ -373,3 +403,28 @@ async def export(
         "public_key": public_pem(public),
         "databases": databases,
     }
+
+
+async def _exported(
+    database: str, ledger: Ledger | None, public: "Ed25519PublicKey", now: datetime
+) -> tuple[str, Row[Any, Any, Any] | None, list[Stored]]:
+    """The current trail's name, head, and stored checkpoints, once it verifies.
+
+    Raises:
+        ExportRefused: The trail does not verify: a checkpoint of it would
+            vouch for what is wrong.
+    """
+    name = label(database)
+    report = await verify(database, ledger, now=now)
+    if not report.intact:
+        raise ExportRefused(f"The trail of {name!r} does not verify: run audit verify.")
+    async with connect(database) as connection:
+        points = await stored(connection, name, public)
+        head = (
+            await connection.execute(
+                select(audit_seals.c.seq, audit_seals.c.link, audit_seals.c.sealed_at)
+                .order_by(audit_seals.c.seq.desc())
+                .limit(1)
+            )
+        ).first()
+    return name, head, points
