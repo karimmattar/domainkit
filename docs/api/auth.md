@@ -553,3 +553,107 @@ Codes sent to phone numbers, and the numbers users verified.
 
 - `phone_codes`: Each code sent, as a keyed digest, until it is used, spent, or old: counted to limit sends.
 - `phones`: The numbers each user proved they receive messages at.
+
+## `domainkit.contrib.ciba`
+
+Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
+
+- `AccessDenied`: The phone denied the sign-in.
+- `ApprovalRequired`: This login must be approved from the user's mobile app (403).
+- `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
+- `CibaClient`: An OIDC client that may ask users' phones: who, how it proves it, what for.
+- `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
+- `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
+- `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `PollRefused`: A poll that gives no tokens (400); `code` says why, as CIBA names it.
+- `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
+- `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
+- `SignInApproved`: A user approved a sign-in from one of their bound devices.
+- `SignInDenied`: A user denied a sign-in.
+- `SignInExpired`: The request's time is up before the phone approved it.
+- `SignInNotFound`: The user has no sign-in request with that id that waits for an answer (404).
+- `SignInReported`: A user denied a sign-in they did not start: someone else knows them.
+- `SignInRequest`: A sign-in a phone is asked to approve, as its row keeps it.
+- `SignInUnknown`: No request has that handle, or it was redeemed, or is another client's.
+- `SlowDown`: A poll came before the interval: wait 5 seconds more from now on.
+- `Started`: A request started: what its initiator keeps, and shows on its page.
+- `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
+- `approve`: Approve the user's request from their device `device_id`.
+- `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
+- `deny`: Deny the user's request; with `report`, every other one waiting too.
+- `poll`: The approved request `handle` polls for, redeemed now; it works once.
+- `start_push`: Ask `user`'s phone to approve a sign-in; queue the push to their apps.
+- `start_qr`: A request for whichever phone scans its QR code, within `QR_TTL`.
+
+## `domainkit.contrib.ciba.api`
+
+The routes of sign-ins approved from the phone: the web's, and the phone's.
+
+- `router`: The routes: sign-ins approved from the phone: the web's, and the phone's.
+
+## `domainkit.contrib.ciba.events`
+
+What happens to a user's sign-in requests (audited as `ciba.*`).
+
+- `SignInApproved`: A user approved a sign-in from one of their bound devices.
+- `SignInDenied`: A user denied a sign-in.
+- `SignInReported`: A user denied a sign-in they did not start: someone else knows them.
+
+## `domainkit.contrib.ciba.exceptions`
+
+What a sign-in request may be refused, and what a poll may answer.
+
+- `AccessDenied`: The phone denied the sign-in.
+- `ApprovalRequired`: This login must be approved from the user's mobile app (403).
+- `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
+- `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `PollRefused`: A poll that gives no tokens (400); `code` says why, as CIBA names it.
+- `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
+- `SignInExpired`: The request's time is up before the phone approved it.
+- `SignInNotFound`: The user has no sign-in request with that id that waits for an answer (404).
+- `SignInUnknown`: No request has that handle, or it was redeemed, or is another client's.
+- `SlowDown`: A poll came before the interval: wait 5 seconds more from now on.
+- `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
+
+## `domainkit.contrib.ciba.gate`
+
+The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
+
+- `approved_from_the_phone`: Let the login of `user` through if the app is not their identity, or signs it.
+
+## `domainkit.contrib.ciba.services`
+
+Start a sign-in request, let the phone answer it, and poll it (ADR 0128).
+
+- `PUSH_KIND`: The `type` of a push's data: the app fetches the request it names.
+- `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
+- `Started`: A request started: what its initiator keeps, and shows on its page.
+- `approve`: Approve the user's request from their device `device_id`.
+- `ciba_settings`: `CIBA`, validated (the defaults when it is unset).
+- `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
+- `deny`: Deny the user's request; with `report`, every other one waiting too.
+- `poll`: The approved request `handle` polls for, redeemed now; it works once.
+- `start_push`: Ask `user`'s phone to approve a sign-in; queue the push to their apps.
+- `start_qr`: A request for whichever phone scans its QR code, within `QR_TTL`.
+
+## `domainkit.contrib.ciba.settings`
+
+Settings of `domainkit.contrib.ciba`: `CIBA = {...}`.
+
+- `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
+
+## `domainkit.contrib.ciba.stores`
+
+The CIBA tables, read and written in a `CibaUnitOfWork`.
+
+- `CibaClient`: An OIDC client that may ask users' phones: who, how it proves it, what for.
+- `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
+- `SignInRequest`: A sign-in a phone is asked to approve, as its row keeps it.
+
+## `domainkit.contrib.ciba.tables`
+
+CIBA clients, sign-in requests, and the client assertions already used.
+
+- `assertions`: The `jti` of each `private_key_jwt` assertion, until it expires: once.
+- `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba clients`).
+- `sign_in_requests`: Each sign-in a phone is asked to approve, from its start until purged.
