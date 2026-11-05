@@ -9,6 +9,12 @@ and a status.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-11-05
+
+2.0 removes what 1.x deprecated: verification links are gone, and codes
+are the only way. Each breaking change is marked **Breaking:** below, and
+[upgrading.md](docs/upgrading.md#18-to-20) says what to do for each.
+
 ### Changed
 
 - **Breaking:** an app's home database cannot keep a schema per tenant: `AUDIT.DATABASE`,
@@ -6212,7 +6218,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/karimmattar/domainkit/compare/v1.8.0...v2.0.0
 [1.8.0]: https://github.com/karimmattar/domainkit/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/karimmattar/domainkit/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/karimmattar/domainkit/compare/v1.6.0...v1.7.0

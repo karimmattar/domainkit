@@ -11,7 +11,9 @@ that keeps the old one where there is one.
 
 ## How to upgrade
 
-Within 1.x, upgrade to the newest minor, from any 1.x release. From 0.12,
+Within a major version, upgrade to the newest minor, from any release of
+it. From 1.x to 2.0, reach 1.8 first, with its deprecations as errors
+(step 2 below), then follow [1.8 to 2.0](#18-to-20). From 0.12,
 follow [0.12 to 1.0](#012-to-10): 0.13, 0.14 and 0.15 were never
 published, so 0.12.1 is the release 1.0 follows. From an older release,
 reach 0.12.1 first, one minor at a time, through the published releases
