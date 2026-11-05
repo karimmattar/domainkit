@@ -24,6 +24,11 @@ and a status.
 
 ### Security
 
+- A read-only unit of work with `reads=Reads.STATEMENTS`, run as a tenant
+  on a database of `TENANCY.SCHEMA_DATABASES`, read the database's own
+  schema, not the tenant's: `SET LOCAL search_path` sets nothing outside a
+  transaction, and those reads run without one. It reads in a transaction
+  there now, as `Reads.TRANSACTION` does.
 - A new project's `Dockerfile` pins its base image by digest, and `init`
   writes `.github/dependabot.yml`, so Dependabot proposes the new digest,
   the lock's updates, and the workflow's actions each week (audit A7-2,

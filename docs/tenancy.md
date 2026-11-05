@@ -225,7 +225,10 @@ SET LOCAL search_path TO "tenant_acme"
 
 The setting ends with the transaction, so a pooled connection never keeps
 another tenant's schema. With no tenant current, the unit of work is
-refused, and inside `all_tenants()` too: a schema holds one tenant.
+refused, and inside `all_tenants()` too: a schema holds one tenant. A
+read-only unit of work that reads `Reads.STATEMENTS` reads in a
+transaction there too, as `Reads.TRANSACTION` does: a statement on its
+own would not see the setting.
 
 `SCHEMA` names the schema. `{tenant}` is the id in lowercase, with `-`
 as `_`. `tenant_schema(tenant_id)` gives the name:

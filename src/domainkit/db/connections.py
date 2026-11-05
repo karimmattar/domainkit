@@ -1047,6 +1047,7 @@ class ConnectionHandler:
         *,
         readonly: bool = False,
         reads: Reads = Reads.TRANSACTION,
+        transaction: bool = False,
     ) -> AsyncSession:
         """Open a session; objects stay readable after commit.
 
@@ -1056,7 +1057,10 @@ class ConnectionHandler:
         writes is rolled back with them. ``reads`` says how it reads (see
         ``Reads``); with ``STATEMENTS`` or ``SNAPSHOT`` the session itself
         also refuses to flush or to run a statement that writes
-        (``ReadOnlyError``).
+        (``ReadOnlyError``). ``transaction`` reads ``STATEMENTS`` in a
+        transaction all the same, as through PgBouncer: a tenant's schema is
+        set in one (``SET LOCAL search_path``), which a statement on its own
+        would not see.
         """
         engine, sessions = self._pool(alias)
         if not readonly:
@@ -1065,7 +1069,11 @@ class ConnectionHandler:
             return AsyncSession(
                 self._bound(alias, engine, snapshot=False), expire_on_commit=False
             )
-        if reads is Reads.STATEMENTS and reads_alone(self.config(alias)):
+        if (
+            reads is Reads.STATEMENTS
+            and not transaction
+            and reads_alone(self.config(alias))
+        ):
             bind = self._read_engine(alias)
         else:
             bind = self._bound(alias, engine, snapshot=reads is Reads.SNAPSHOT)
