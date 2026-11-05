@@ -44,7 +44,7 @@ pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
     Hint: DEBUG shows tracebacks and settings to callers.
   security.E003: ALLOWED_HOSTS must list real host names in production
     Hint: List the names clients reach the service by, as 'api.example.com'.
-  security.E016: SECRET_KEY is required in production: it signs reset links, cookies, and other values the service hands out
+  security.E016: SECRET_KEY is required in production: it signs cookies, codes, and other values the service hands out
     Hint: Make one with: python -c 'import secrets; print(secrets.token_urlsafe(64))'. [type=value_error, ...]
 ```
 
@@ -94,7 +94,6 @@ production ([commands](commands.md)).
 | `auth.E003` | everywhere | `AUTH.PRINCIPAL_CACHE.STAMPS` that does not name a Redis cache of `CACHES`, which every process shares |
 | `auth.E004` | staging, production | a password hasher made for tests in `AUTH.PASSWORD_HASHERS` |
 | `auth.E005` | staging, production | `AUTH.COOKIE.SECURE = False`: session cookies sent over plain HTTP |
-| `auth.E006` | staging, production | `http://` in `AUTH.PASSWORD_RESET_URL`, `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL`: links with their tokens sent over plain HTTP |
 | `auth.E007` | staging, production | a network, not one address (`/32` or `/128`), in `AUTH.CLIENT_CERT.PROXIES`: any host there could name any user |
 | `auth.E008` | everywhere, with `JWTAuthentication` | a key of `AUTH.JWT.PREVIOUS_KEYS` that is the signing key, or that is listed twice ([Replacing a key](../auth/authentication.md#replacing-a-key)) |
 | `auth.E009` | everywhere, with `JWTAuthentication` | a key of `AUTH.JWT.PREVIOUS_KEYS` that retires more than a day ahead |
@@ -127,7 +126,7 @@ application logs them as a warning and starts.
 | `auth.E104` | auth's routes that send mail, with a user model that has no `EMAIL_FIELD` or no `email_verified` |
 | `auth.E105` | in staging and production: password and code attempts counted in each process (a `MemoryBackend` as `RATE_LIMIT_BACKEND`), unless `AUTH.REQUIRE_SHARED_THROTTLES = False` |
 | `auth.E106` | a route whose `StepUp(methods=...)` asks for methods that `AUTH.STEP_UP.METHODS` never proves, so it refuses everyone |
-| `auth.E107` | auth's routes that send codes (resets, signups) to mobile numbers, with `AUTH.VERIFICATION` set to `"code"`, without `domainkit.contrib.notifications` in `INSTALLED_DOMAINS` ([Resetting by code](../auth/logging-in.md#resetting-by-code)) |
+| `auth.E107` | auth's routes that send codes (resets, signups) to mobile numbers, where `mobile_number` is in `AUTH.IDENTIFIERS`, without `domainkit.contrib.notifications` in `INSTALLED_DOMAINS` ([Password reset](../auth/logging-in.md#password-reset)) |
 | `idempotency.E001` | a keyed route whose own `RequestTimeout` reaches `IDEMPOTENCY.LEASE_SECONDS` or has none: a retry with the same `Idempotency-Key` could take the key while the request runs |
 | `idempotency.E002` | in staging and production: keyed requests without a deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`), unless `IDEMPOTENCY.REQUIRE_DEADLINE = False` |
 | `keys.E001` | in staging and production: `KEYS.PROVIDER = "local"` without `KEYS.ALLOW_LOCAL_KEK`, whose key-encryption key derives from `SECRET_KEY` ([keys.md](../contrib/keys.md#providers)) |

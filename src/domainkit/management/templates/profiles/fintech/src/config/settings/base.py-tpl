@@ -66,7 +66,6 @@ TIME_ZONE = "UTC"
 AUTH = {
     # People log in with an email address or a mobile number, proven by code.
     "IDENTIFIERS": ("email", "mobile_number"),
-    "VERIFICATION": "code",
     "PRESET": "pci-dss-4",
     "MFA": {"ISSUER": "{{ project }}"},
     "STEP_UP": {"METHODS": ["otp"]},

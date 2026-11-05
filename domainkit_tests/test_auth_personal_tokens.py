@@ -584,7 +584,6 @@ def test_rules_need_something_to_check() -> None:
         HasScope()
 
 
-@pytest.mark.filterwarnings("ignore::domainkit.deprecation.DomainkitDeprecationWarning")
 def test_scoped_tokens_cannot_change_the_account(identity: Api) -> None:
     """Passwords, second factors, staff routes, and logging out everywhere."""
     create_user("alice", is_staff=True)

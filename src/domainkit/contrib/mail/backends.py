@@ -69,7 +69,7 @@ class MemoryBackend(MemoryDelivery[EmailMessage], BaseEmailBackend):
 class ConsoleBackend(ConsoleDelivery[EmailMessage], BaseEmailBackend):
     """Writes each message to standard output, for development.
 
-    Messages carry reset links and other secrets: deployments refuse it.
+    Messages carry codes and other secrets: deployments refuse it.
     """
 
     def render(self, message: EmailMessage) -> str:

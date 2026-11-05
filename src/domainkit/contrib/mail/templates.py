@@ -1,13 +1,13 @@
 """Mail templates: a subject, a plain-text body, and an HTML one, from files.
 
-A template named ``auth/password_reset`` is up to three files under
+A template named ``auth/password_reset_code`` is up to three files under
 ``templates/mail/`` in a domain package, or in a ``MAIL.TEMPLATE_DIRS``
 directory, which are searched first; then the installed domains, in
 ``INSTALLED_DOMAINS`` order. The first that has the text body wins::
 
-    auth/password_reset.subject.txt     one line
-    auth/password_reset.txt             the plain-text body
-    auth/password_reset.html            the HTML body (optional)
+    auth/password_reset_code.subject.txt     one line
+    auth/password_reset_code.txt             the plain-text body
+    auth/password_reset_code.html            the HTML body (optional)
 
 ``{{ name }}`` and ``{{ user.email }}`` take values from the context: keys
 of mappings, and attributes of other objects, never names that start with

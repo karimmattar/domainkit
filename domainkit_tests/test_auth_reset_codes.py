@@ -36,8 +36,8 @@ from domainkit_tests.test_auth_recovery import run_worker
 
 NEW_PASSWORD = "an0ther-Strong-pass!"
 NUMBER = "+33612345678"
-CODES = {"VERIFICATION": "code", "IDENTIFIERS": ("email", "mobile_number")}
-MAILED = {"VERIFICATION": "code", "IDENTIFIERS": ("email",)}
+CODES = {"IDENTIFIERS": ("email", "mobile_number")}
+MAILED = {"IDENTIFIERS": ("email",)}
 TEXTS = Shape(
     "texts",
     "texts",
@@ -148,7 +148,7 @@ def test_a_mailed_code_sets_a_new_password(identity: Api) -> None:
 def test_the_email_field_asks_for_a_code_too(identity: Api) -> None:
     """``{"email": ...}``, as before 1.8, gets a code where codes are on."""
     create_user("bob", email="bob@example.com")
-    client = identity(VERIFICATION="code")
+    client = identity()
 
     ask_reset(client, email="bob@example.com")
     run_worker()
@@ -170,13 +170,10 @@ def test_an_unknown_identifier_gets_the_same_answer_and_nothing(identity: Api) -
     assert reset(client, "nobody@example.com", "123456") == WRONG
 
 
-@pytest.mark.filterwarnings("ignore::domainkit.deprecation.DomainkitDeprecationWarning")
-def test_links_take_an_address_only(identity: Api) -> None:
-    """Without codes, an identifier must be an address; one value is needed."""
+def test_a_reset_needs_a_value(identity: Api) -> None:
+    """An identifier, or an email address: one value names the account."""
     client = identity()
 
-    response = client.post("/auth/password-reset", json={"identifier": NUMBER})
-    assert (response.status_code, response.json()["code"]) == (422, "invalid_email")
     response = client.post("/auth/password-reset", json={})
     assert (response.status_code, response.json()["code"]) == (422, "missing_value")
 
@@ -201,7 +198,7 @@ def test_a_texted_code_sets_a_new_password(texting: App) -> None:
 def test_a_username_gets_its_code_by_mail(identity: Api) -> None:
     """An identifier that is neither an address nor a number: the address."""
     create_user("frank", email="frank@example.com")
-    client = identity(VERIFICATION="code", IDENTIFIERS=("username", "email"))
+    client = identity(IDENTIFIERS=("username", "email"))
 
     ask_reset(client, identifier="frank")
     run_worker()
@@ -212,7 +209,7 @@ def test_a_username_gets_its_code_by_mail(identity: Api) -> None:
 def test_a_username_without_an_address_gets_nothing(identity: Api) -> None:
     """Nowhere to send the code: nothing is sent, nothing is kept."""
     create_user("jo")
-    client = identity(VERIFICATION="code", IDENTIFIERS=("username",))
+    client = identity(IDENTIFIERS=("username",))
 
     ask_reset(client, identifier="jo")
     run_worker()

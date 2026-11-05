@@ -59,7 +59,7 @@ def test_install_user_model_fills_the_auth_dict_init_writes(tmp_path: Path) -> N
     settings.parent.mkdir(parents=True)
     settings.write_text(
         'INSTALLED_DOMAINS = [\n    "domainkit.contrib.auth",\n]\n'
-        f'{OPEN_AUTH}    "VERIFICATION": "code",\n}}\n',
+        f'{OPEN_AUTH}    "IDENTIFIERS": ("email", "mobile_number"),\n}}\n',
         encoding="utf-8",
     )
     assert install_user_model("domains.accounts", "User", "users", tmp_path)
@@ -67,7 +67,7 @@ def test_install_user_model_fills_the_auth_dict_init_writes(tmp_path: Path) -> N
         "AUTH: dict[str, object] = {\n"
         '    "USER_MODEL": "domains.accounts.models.User",\n'
         '    "USER_TABLE": "domains.accounts.models.users",\n'
-        '    "VERIFICATION": "code",\n'
+        '    "IDENTIFIERS": ("email", "mobile_number"),\n'
         "}\n"
     )
 

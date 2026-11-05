@@ -152,7 +152,7 @@ Value error, headers are named with letters, digits, and '-', and may not replac
 
 A queued message is stored whole, in clear, in the outbox row's
 `payload` (`domainkit_messages`): its recipients, subject, and bodies,
-with any reset link or code in them.
+with any code in them.
 
 - It stays there only until it is sent. The worker blanks the payload in
   the statement that marks the message done, and a cancel does the same.
@@ -182,7 +182,7 @@ instance of it:
 | `domainkit.contrib.mail.providers.PostmarkBackend` | Postmark's Email API. |
 
 Staging and production refuse the console and memory backends: the
-console would print reset links into the logs.
+console would print reset codes into the logs.
 
 **SMTP.** The connection is encrypted: `STARTTLS` on port 587 by default,
 or TLS from the first byte on port 465. The server's certificate is
@@ -597,7 +597,7 @@ before every test. More in [testing.md](testing.md).
 
 - **Sending without `uow` inside a use case.** The message is stored at
   once, even if the use case then rolls back. Pass `uow=uow`.
-- **Putting a reset link in a queued message.** It sits in the outbox in
+- **Putting a reset code in a queued message.** It sits in the outbox in
   clear until it is sent. Queue the user's id, and build the message in
   the worker with `deliver`.
 - **Putting several addresses in one string.** It is refused. Pass a list

@@ -311,8 +311,7 @@ class AuthConfig(DomainConfig):
     def _texts_codes(self) -> bool:
         """Whether resets and signups send codes to numbers (ADR 0126)."""
         config = auth_settings()
-        identifiers = config.IDENTIFIERS or ()
-        return config.VERIFICATION == "code" and "mobile_number" in identifiers
+        return "mobile_number" in (config.IDENTIFIERS or ())
 
     def _mailing_problems(self, app: FastAPI) -> list[str]:
         """What routes that send mail lack: the apps, or an address to send to."""
@@ -571,23 +570,6 @@ class AuthConfig(DomainConfig):
                     "auth.E005",
                     f"AUTH.COOKIE.SECURE = False sends session cookies over plain "
                     f"HTTP; remove it in {where}.",
-                )
-            )
-        links = {
-            "PASSWORD_RESET_URL": config.PASSWORD_RESET_URL,
-            "EMAIL_VERIFICATION_URL": config.EMAIL_VERIFICATION_URL,
-            "SIGNUP_URL": config.SIGNUP_URL,
-        }
-        if plain := [
-            key
-            for key, url in links.items()
-            if url is not None and url.lower().startswith("http://")
-        ]:
-            errors.append(
-                CheckMessage(
-                    "auth.E006",
-                    f"AUTH.{', AUTH.'.join(plain)} send links with their tokens "
-                    f"over plain HTTP; use https:// in {where}.",
                 )
             )
         if networks := [

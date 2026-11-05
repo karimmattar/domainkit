@@ -34,6 +34,44 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 1.8 to 2.0
+
+2.0 removes what 1.x deprecated, and refuses settings that never worked.
+Each change below says what to do.
+
+### Codes are the only way to prove an address
+
+1.8 deprecated the links of password resets, email verification, and
+signups (ADR 0126); 2.0 removes them. A project that set
+`AUTH.VERIFICATION = "code"` (as `init` wrote) changes nothing but the
+setting:
+
+1. **Delete the link settings.** `AUTH.VERIFICATION`,
+   `PASSWORD_RESET_URL`, `PASSWORD_RESET_TIMEOUT`,
+   `EMAIL_VERIFICATION_URL`, `EMAIL_VERIFICATION_TIMEOUT`, and
+   `SIGNUP_URL` are refused, each with a message that names it. Codes
+   take `AUTH.CODE_TTL` and `AUTH.CODE_ATTEMPTS`.
+2. **Move your pages to codes.** `POST /password-reset/confirm`,
+   `/email-verification/confirm`, and `/signup/confirm` are gone. Your app
+   posts the code instead: `/password-reset/code` with `{"identifier",
+   "code", "new_password"}`, `/email-verification/code` with `{"code"}`,
+   and `/signup/code` with `{"identifier", "code", "password"}`
+   ([Password reset](auth/logging-in.md#password-reset)).
+   `POST /password-reset` still takes `{"email"}`, and `{"identifier"}`.
+3. **Let the worker drain first.** The tasks
+   `domainkit.auth.send_password_reset` and
+   `domainkit.auth.send_signup_link` are gone: a message for them still in
+   the outbox waits `MESSAGING.UNKNOWN_TARGET_GRACE`, then goes to the dead
+   letters. Links already mailed stop working.
+4. **Replace your copies of the link templates**, if you wrote any:
+   `auth/password_reset`, `auth/email_verification`, and
+   `auth/signup_confirm` become `auth/password_reset_code`,
+   `auth/email_verification_code`, and `auth/signup_code`, which take a
+   `code` in place of a `link`.
+
+`auth.E006` (link URLs over `http://`) is retired with the settings it
+checked.
+
 ## 1.7 to 1.8
 
 1.8 adds what ADR 0126 decides: users identified by the fields a project

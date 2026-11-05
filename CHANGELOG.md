@@ -9,7 +9,26 @@ and a status.
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking:** the links of password resets, email verification, and
+  signups, deprecated in 1.8 (ADR 0126). Codes are the only way: the
+  routes `POST /password-reset/confirm`, `/email-verification/confirm`,
+  and `/signup/confirm`, the tasks `send_password_reset` and
+  `send_signup_link`, the templates `auth/password_reset`,
+  `auth/email_verification`, and `auth/signup_confirm`, and the check
+  `auth.E006` are gone. The settings `AUTH.VERIFICATION`,
+  `PASSWORD_RESET_URL`, `PASSWORD_RESET_TIMEOUT`,
+  `EMAIL_VERIFICATION_URL`, `EMAIL_VERIFICATION_TIMEOUT`, and
+  `SIGNUP_URL` are refused, each named, with what to do
+  ([upgrading.md](docs/upgrading.md#18-to-20)).
+
 ### Fixed
+
+- A signup by code for an address that has an account deleted the
+  pending signup before mailing the address: when that mail failed, the
+  worker's retry told nothing. The mail now goes first, as it did for
+  links.
 
 - In staging and production, a project whose audited database keeps a
   schema per tenant (`TENANCY.SCHEMA_DATABASES`) refused to start: the

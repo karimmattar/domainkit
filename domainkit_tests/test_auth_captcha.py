@@ -48,7 +48,6 @@ def test_login_asks_for_a_solved_captcha_first(identity: Api) -> None:
     assert seen[-1] == {"secret": "site-secret", "response": "good"}
 
 
-@pytest.mark.filterwarnings("ignore::domainkit.deprecation.DomainkitDeprecationWarning")
 def test_signup_and_password_reset_ask_too(identity: Api) -> None:
     """Every route ``ON`` names; others are left alone."""
     client = identity(CAPTCHA=TURNSTILE, SIGNUP_ENABLED=True)
