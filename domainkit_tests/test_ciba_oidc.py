@@ -383,8 +383,11 @@ def test_an_id_token_hint_names_the_user_again(provider: MakeProvider) -> None:
 
 
 def test_a_client_shows_a_qr_code_for_the_phone(provider: MakeProvider) -> None:
-    """qr-authorize: no hint; the phone claims, sees the client, approves."""
-    op = provider()
+    """qr-authorize: no hint; the phone claims, sees the client, approves.
+
+    ``QR_SAME_NETWORK = "require"`` compares the project's pages only.
+    """
+    op = provider(QR_SAME_NETWORK="require")
     phone = op.phone()
     client_id, secret = new_client()
     credentials = basic(client_id, secret or "")
@@ -405,6 +408,7 @@ def test_a_client_shows_a_qr_code_for_the_phone(provider: MakeProvider) -> None:
     ).json()
     assert claimed["client"] == "Acme Bank"
     assert claimed["binding_message"] == "KIOSK 4"
+    assert claimed["same_network"] is None  # A client's server is not the page.
     phone.approve(claimed["id"])
     answer = poll(op, credentials, started["auth_req_id"])
     assert answer.status_code == 200, answer.json()
@@ -485,14 +489,22 @@ def test_private_key_jwt_assertions_work_once(provider: MakeProvider) -> None:
 
 
 def test_clients_are_rate_limited(provider: MakeProvider) -> None:
-    """``CLIENT_RATE``: past it, the client is told to wait."""
+    """``CLIENT_RATE`` counts starts, not polls: the interval paces those."""
+    from datetime import timedelta
+
+    from domainkit import clock
+
     op = provider(CLIENT_RATE="1/minute")
     client_id, secret = new_client()
     credentials = basic(client_id, secret or "")
-    assert authorize(op, credentials).status_code == 200
+    handle = authorize(op, credentials).json()["auth_req_id"]
     throttled = authorize(op, credentials)
     assert throttled.status_code == 429
     assert throttled.json()["error"] == "rate_limited"
+    for seconds in (0, 6, 12):
+        with clock.freeze_time(clock.now() + timedelta(seconds=seconds)):
+            polled = poll(op, credentials, handle)
+        assert polled.json()["error"] == "authorization_pending"
 
 
 def test_a_shared_key_cannot_sign_id_tokens(provider: MakeProvider) -> None:

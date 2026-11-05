@@ -40,7 +40,8 @@ class CibaSettings(BaseModel):
     """CIBA clients must send a ``binding_message``, shown on both devices."""
     QR_SAME_NETWORK: Literal["warn", "require"] = "warn"
     """When the phone claiming a QR code is on another address than the page
-    showing it: tell the app (``"warn"``), or refuse the claim."""
+    showing it: tell the app (``"warn"``), or refuse the claim. The
+    project's own pages only: a CIBA client's server is not the page."""
     QR_FORMAT: str = Field(default="{code}", max_length=300)
     """What a QR code holds; ``{code}`` is replaced by the secret
     (``"https://id.example.com/qr#{code}"`` for a universal link)."""

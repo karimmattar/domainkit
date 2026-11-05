@@ -36,6 +36,7 @@ from uuid import UUID
 from starlette.requests import Request
 
 from domainkit.apps.hooks import HookPoint
+from domainkit.exceptions import DomainkitError
 
 from .models import AbstractBaseUser
 
@@ -60,7 +61,7 @@ _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)
 """The id of the user whose login passed the gates in this context."""
 
 
-class LoginNotGated(RuntimeError):
+class LoginNotGated(RuntimeError, DomainkitError):
     """A login was issued without passing the gates: a route forgot them (500)."""
 
 

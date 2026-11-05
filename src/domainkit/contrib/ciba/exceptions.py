@@ -11,6 +11,7 @@ from typing import ClassVar
 
 from fastapi import status
 
+from domainkit.exceptions import DomainkitError
 from domainkit.http.errors import APIError
 
 __all__ = [
@@ -173,7 +174,7 @@ class SignInUnknown(PollRefused):
         )
 
 
-class OAuthError(Exception):
+class OAuthError(DomainkitError):
     """An OAuth error the OpenID Provider routes answer in OAuth's format.
 
     ``{"error": error, "error_description": description}``, with ``status``

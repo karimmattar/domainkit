@@ -282,13 +282,18 @@ async def claim(
     Raises:
         QrCodeExpired: No request has the code: unknown, claimed, or expired.
         DifferentNetwork: ``QR_SAME_NETWORK = "require"``, and the phone's
-            ``address`` is not the page's.
+            ``address`` is not the page's. A CIBA client's QR request has
+            no page address, and is not compared.
     """
     now = utc_now()
     request = await uow.requests.by_qr(secret_digest(_code_in(code)))
     if request is None or request.expired(now):
         raise QrCodeExpired()
-    if ciba_settings().QR_SAME_NETWORK == "require" and address != request.requester_ip:
+    if (
+        ciba_settings().QR_SAME_NETWORK == "require"
+        and request.requester_ip is not None  # A client's: no page to compare.
+        and address != request.requester_ip
+    ):
         raise DifferentNetwork()
     if not await uow.requests.claim(request.id, user_id, address, now):
         raise QrCodeExpired()

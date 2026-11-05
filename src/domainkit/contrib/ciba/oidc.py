@@ -142,11 +142,19 @@ def _endpoint(request: Request) -> str:
     return str(request.url.replace(query=""))
 
 
-async def _client(request: Request, form: Mapping[str, str]) -> CibaClient:
-    """The authenticated client, counted against ``CLIENT_RATE``."""
+async def _client(
+    request: Request, form: Mapping[str, str], *, starts: bool = True
+) -> CibaClient:
+    """The authenticated client; a start is counted against ``CLIENT_RATE``.
+
+    Polls are not: the interval paces them, and a client polls each of
+    the sign-ins it started.
+    """
     client = await authenticate_client(
         request, form, audiences={issuer(), _endpoint(request)}
     )
+    if not starts:
+        return client
     await attempt(
         request,
         [(f"ciba-client:{client.client_id}", ciba_settings().CLIENT_RATE)],
@@ -336,7 +344,7 @@ async def token(request: Request) -> JSONResponse:
 
     async def work() -> Mapping[str, Any]:
         form = await _form(request)
-        client = await _client(request, form)
+        client = await _client(request, form, starts=False)
         if form.get("grant_type") != CIBA_GRANT:
             raise OAuthError("unsupported_grant_type", "Only CIBA's grant is offered.")
         handle = form.get("auth_req_id", "")
