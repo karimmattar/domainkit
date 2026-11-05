@@ -1,8 +1,12 @@
 """The unit of work over users, groups, and permissions."""
 
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.db import SqlAlchemyUnitOfWork
+from domainkit.ddd import DeferredTask, DomainEvent
 
 from .repositories import (
     GroupRepository,
@@ -16,6 +20,9 @@ from .repositories import (
     TokenStore,
     UserRepository,
 )
+
+if TYPE_CHECKING:
+    from .codes import CodeStore
 
 
 class AuthUnitOfWork(SqlAlchemyUnitOfWork):
@@ -52,3 +59,20 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
         self.step_ups = StepUpStore(session)
         self.sca = ScaStore(session)
         self.passwords = PasswordHistoryStore(session)
+
+    async def _stage(
+        self, events: Sequence[DomainEvent], tasks: Sequence[DeferredTask]
+    ) -> None:
+        """Refuse an email address another user has, then stage as usual."""
+        await self.users.refuse_taken_emails(self.lock)
+        await super()._stage(events, tasks)
+
+    @property
+    def verification_codes(self) -> "CodeStore":
+        """The codes that verify addresses and numbers (``codes``).
+
+        Loaded on first use: a project that sends no code never imports it.
+        """
+        from .codes import CodeStore
+
+        return CodeStore(self.session)

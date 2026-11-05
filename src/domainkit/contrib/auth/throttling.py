@@ -49,6 +49,7 @@ from domainkit.http.ratelimit import RATE_LIMITED, Backend, Decision, client_gro
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
+from .models import as_mobile_number
 from .settings import auth_settings
 from .users import get_user_model
 
@@ -254,9 +255,11 @@ def account_key(scope: str, username: str) -> str:
 def account_digest(username: str) -> str:
     """The digest that names ``username``'s account in counts and proofs.
 
-    Names the lookup treats as one share it (NFKC, any case).
+    Names the lookup treats as one share it (NFKC, any case), and so do
+    the ways of writing one mobile number (``+33 6 12 34 56 78``).
     """
-    return _digest(get_user_model().normalize_username(username))
+    name = get_user_model().normalize_username(username).strip()
+    return _digest(as_mobile_number(name) or name)
 
 
 def email_key(scope: str, email: str) -> str:

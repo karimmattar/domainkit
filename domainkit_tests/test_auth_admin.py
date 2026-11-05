@@ -232,6 +232,8 @@ def test_users_are_listed_by_username_in_pages(api: Api) -> None:
     assert bob["fields"] == {
         "email": "bob@example.com",
         "email_verified": False,
+        "mobile_number": None,
+        "mobile_number_verified": False,
         "first_name": "",
         "last_name": "",
     }
@@ -314,6 +316,8 @@ def test_staff_create_users(api: Api) -> None:
         "fields": {
             "email": "New@example.com",
             "email_verified": False,
+            "mobile_number": None,
+            "mobile_number_verified": False,
             "first_name": "New",
             "last_name": "",
         },
@@ -1340,6 +1344,8 @@ def test_custom_user_fields(swapped: TestClient) -> None:
     assert set(made["fields"]) == {
         "email",
         "email_verified",
+        "mobile_number",
+        "mobile_number_verified",
         "first_name",
         "last_name",
         "date_joined",

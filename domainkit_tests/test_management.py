@@ -567,7 +567,7 @@ def test_startdomain_generates_a_working_domain(
         "superuser, typing its password at the prompt, and list the order lines:\n"
         '       read -rsp "Password: " PASSWORD && export PASSWORD\n'
         '       TOKEN=$(python -c "import json, os; '
-        "print(json.dumps({'username': '<username>', "
+        "print(json.dumps({'identifier': '<email>', "
         """'password': os.environ['PASSWORD']}))" """
         "| curl -s http://127.0.0.1:8000/auth/login "
         '-H "Content-Type: application/json" -d @- '

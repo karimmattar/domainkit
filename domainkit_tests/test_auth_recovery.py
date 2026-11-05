@@ -48,6 +48,11 @@ from domainkit_tests.test_auth_http import (
     stored_tokens,
 )
 
+# These tests use links, deprecated since 1.8 (ADR 0126) and kept until 2.0.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::domainkit.deprecation.DomainkitDeprecationWarning"
+)
+
 NEW_PASSWORD = "an0ther-Strong-pass!"
 MAIL_APP = "domainkit.contrib.mail"
 TOKEN = re.compile(r"[0-9a-f]{32}:[0-9A-Za-z]+:[A-Za-z0-9_-]{43}")

@@ -62,13 +62,17 @@ from .backends import (
     has_perms,
 )
 from .exceptions import (
+    EmailTaken,
     GroupNameTaken,
     GroupNotFound,
+    IdentifierRequired,
     InvalidEmail,
     InvalidGroupName,
+    InvalidMobileNumber,
     InvalidPassword,
     InvalidUserField,
     InvalidUsername,
+    MobileNumberTaken,
     UnknownGroup,
     UnknownPermission,
     UnknownUserField,
@@ -92,6 +96,7 @@ from .models import (
     Permission,
     User,
     UserId,
+    normalize_mobile_number,
 )
 from .settings import AuthSettings, JWTSettings
 from .tokens import AuthToken, TokenKind
@@ -117,12 +122,15 @@ __all__ = [
     "BaseBackend",
     "Credentials",
     "CurrentUser",
+    "EmailTaken",
     "Group",
     "GroupId",
     "GroupNameTaken",
     "GroupNotFound",
+    "IdentifierRequired",
     "InvalidEmail",
     "InvalidGroupName",
+    "InvalidMobileNumber",
     "InvalidPassword",
     "InvalidUserField",
     "InvalidUsername",
@@ -131,6 +139,7 @@ __all__ = [
     "IssuedTokens",
     "JWTAuthentication",
     "JWTSettings",
+    "MobileNumberTaken",
     "ModelBackend",
     "PasswordHash",
     "PasswordValidationError",
@@ -160,6 +169,7 @@ __all__ = [
     "has_perm",
     "has_perms",
     "make_password",
+    "normalize_mobile_number",
     "password_help_texts",
     "validate_password",
 ]

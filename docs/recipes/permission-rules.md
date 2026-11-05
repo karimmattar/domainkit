@@ -103,7 +103,7 @@ async def make(username: str, *, verified: bool) -> None:
 
 async def bearer(client: AsyncTestClient, username: str) -> dict[str, str]:
     """The headers of ``username``'s requests, once logged in."""
-    credentials = {"username": username, "password": PASSWORD}
+    credentials = {"identifier": f"{username}@example.com", "password": PASSWORD}
     answer = await client.post("/auth/login", json=credentials)
     return {"Authorization": f"Bearer {answer.json()['access_token']}"}
 

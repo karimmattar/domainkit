@@ -8,10 +8,17 @@ a user who signed up with P1 and changed to P2 can change back to P1 at
 once: the history holds P2 alone, and the current password is P2.
 """
 
+import pytest
+
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import bearer, login
 from domainkit_tests.test_auth_recovery import run_worker
 from domainkit_tests.test_auth_signup import confirm, link_to, signup
+
+# These tests use links, deprecated since 1.8 (ADR 0126) and kept until 2.0.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::domainkit.deprecation.DomainkitDeprecationWarning"
+)
 
 FIRST = "Sign-up-pass-77"
 SECOND = "Second-pass-88x"

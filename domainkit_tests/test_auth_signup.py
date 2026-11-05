@@ -36,6 +36,11 @@ from domainkit_tests.test_auth_recovery import (
     token_in,
 )
 
+# These tests use links, deprecated since 1.8 (ADR 0126) and kept until 2.0.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::domainkit.deprecation.DomainkitDeprecationWarning"
+)
+
 PASSWORD = "Sign-up-pass-77"
 CONFIRM = "Confirm your sign-up"
 EXISTS = "Your sign-up"
@@ -113,6 +118,7 @@ def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None
         "id",
         "username",
         "email",
+        "mobile_number",
         "fields",
         "created_at",
         "expires_at",

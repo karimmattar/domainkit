@@ -53,10 +53,11 @@ from domainkit.db import (
     register_column_type,
 )
 
-from .exceptions import GroupNameTaken, UsernameTaken
+from .exceptions import GroupNameTaken, MobileNumberTaken, UsernameTaken
 from .models import (
     EMAIL_MAX_LENGTH,
     GROUP_NAME_MAX_LENGTH,
+    MOBILE_NUMBER_MAX_LENGTH,
     USERNAME_MAX_LENGTH,
     AbstractBaseUser,
     Group,
@@ -163,13 +164,26 @@ def abstract_user_columns() -> list[Column[Any]]:
         Column(
             "username",
             String(USERNAME_MAX_LENGTH),
-            nullable=False,
+            nullable=True,  # Optional since 1.8 (ADR 0126); unique when set.
             unique=True,
             info={"duplicate": UsernameTaken},
         ),
         Column("email", String(254), nullable=False),
         # Existing rows start unverified when the column is added.
         Column("email_verified", Boolean, nullable=False, server_default=text("false")),
+        Column(
+            "mobile_number",
+            String(MOBILE_NUMBER_MAX_LENGTH),
+            nullable=True,
+            unique=True,
+            info={"duplicate": MobileNumberTaken},
+        ),
+        Column(
+            "mobile_number_verified",
+            Boolean,
+            nullable=False,
+            server_default=text("false"),
+        ),
         Column("first_name", String(150), nullable=False),
         Column("last_name", String(150), nullable=False),
         Column("is_staff", Boolean, nullable=False),
@@ -293,9 +307,11 @@ pending_signups = Table(
     metadata,
     # Random: the signup link carries it signed, so the id alone opens nothing.
     Column("id", Uuid, primary_key=True),
-    # Neither unique: a pending signup reserves no name and no address.
-    Column("username", String(USERNAME_MAX_LENGTH), nullable=False),
-    Column("email", String(EMAIL_MAX_LENGTH), nullable=False),
+    # None unique: a pending signup reserves no name, address, or number.
+    # Each may be missing, but not all: a code goes to the address or number.
+    Column("username", String(USERNAME_MAX_LENGTH), nullable=True),
+    Column("email", String(EMAIL_MAX_LENGTH), nullable=True),
+    Column("mobile_number", String(MOBILE_NUMBER_MAX_LENGTH), nullable=True),
     # The user model's other REQUIRED_FIELDS, as the client gave them.
     Column("fields", JSON, nullable=True),
     # No password: whoever reads the mail chooses it, when confirming.
@@ -323,6 +339,33 @@ step_ups = Table(
     info={"domain": "auth", "guarded": True, "fixtures": False},
 )
 """When each login last authenticated again, and how (``auth.stepup``)."""
+
+auth_codes = Table(
+    "domainkit_auth_codes",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    # What the code proves: "email_verification", "password_reset", ...
+    Column("purpose", String(32), nullable=False),
+    # An HMAC of the address or the number, keyed from SECRET_KEY: neither
+    # is kept here. One code per purpose and target: a new one replaces it.
+    Column("target", String(64), nullable=False),
+    # No foreign key: the user model may be swapped. None: a signup's code.
+    Column("user_id", Uuid, nullable=True),
+    # The pending signup a signup's code finishes; None for other codes.
+    Column("signup_id", Uuid, nullable=True),
+    # An HMAC of the code, keyed from SECRET_KEY: the code is never kept.
+    Column("digest", String(64), nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime, nullable=False),
+    UniqueConstraint(
+        "purpose", "target", name="uq_domainkit_auth_codes_purpose_target"
+    ),
+    Index("ix_domainkit_auth_codes_user_id", "user_id"),
+    Index("ix_domainkit_auth_codes_expires_at", "expires_at"),
+    info={"domain": "auth", "guarded": True, "fixtures": False},
+)
+"""Codes sent to prove someone reads an address or a number (ADR 0126)."""
 
 PAYEE_MAX_LENGTH = 255
 """The longest payee a transaction authorization names (an IBAN, an account id)."""

@@ -1,0 +1,9 @@
+Hello {{ username }},
+
+Your code to verify this email address is:
+
+{{ code }}
+
+It works for {{ valid_for }}. Never give it to anyone.
+
+If you did not ask for this, ignore this message.

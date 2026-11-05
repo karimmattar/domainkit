@@ -32,6 +32,7 @@ from .events import (
     GroupPermissionGranted,
     GroupPermissionRevoked,
     GroupRenamed,
+    MobileNumberVerified,
     PasswordChanged,
     UserCreated,
     UserDeleted,
@@ -43,8 +44,10 @@ from .events import (
     UserUpdated,
 )
 from .exceptions import (
+    IdentifierRequired,
     InvalidEmail,
     InvalidGroupName,
+    InvalidMobileNumber,
     InvalidUsername,
     UnknownUserField,
 )
@@ -77,6 +80,11 @@ answers without building the relationships (``principals``)."""
 EVERY: Final = "*"
 """``GRANTED``'s key for every permission a user holds, directly or by group."""
 USERNAME_MAX_LENGTH: Final = 150
+MOBILE_NUMBER_MAX_LENGTH: Final = 16
+"""A number in international form (E.164): ``+``, then at most 15 digits."""
+_MOBILE_NUMBER: Final = re.compile(r"\+[1-9][0-9]{6,14}")
+"""ASCII digits only: ``\\d`` takes any script's digits, which no carrier sends to."""
+_MOBILE_SEPARATORS: Final = re.compile(r"[\s().-]")
 GROUP_NAME_MAX_LENGTH: Final = 150
 EMAIL_MAX_LENGTH: Final = 254
 _USERNAME: Final = re.compile(r"[\w.@+-]+")
@@ -532,17 +540,30 @@ class AbstractUser(AbstractBaseUser):
     USERNAME_FIELD: ClassVar[str] = "username"
     EMAIL_FIELD: ClassVar[str | None] = "email"
     REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = ("email",)
+    IDENTIFIER_FIELDS: ClassVar[tuple[str, ...]] = (
+        "username",
+        "email",
+        "mobile_number",
+    )
+    """The fields that can identify a user (``AUTH.IDENTIFIERS`` picks among
+    them); a user has at least one of them."""
     EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"email", "first_name", "last_name"}
+        {"email", "mobile_number", "first_name", "last_name"}
     )
     READ_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"date_joined", "email_verified"}
+        {"date_joined", "email_verified", "mobile_number_verified"}
     )
 
-    username: Annotated[str, Personal(of="id")]
+    username: Annotated[str | None, Personal(of="id")] = None
+    """Optional (ADR 0126): unique among users, in any case, when set."""
     email: Annotated[str, Personal(of="id")] = ""
     email_verified: bool = False
     """Whether the user proved they read mail at ``email``; a new one resets it."""
+    mobile_number: Annotated[str | None, Personal(of="id")] = None
+    """In international form (E.164), unique among users when set."""
+    mobile_number_verified: bool = False
+    """Whether the user proved they receive texts at ``mobile_number``; a new
+    one resets it."""
     first_name: Annotated[str, Personal(of="id")] = ""
     last_name: Annotated[str, Personal(of="id")] = ""
     is_staff: bool = False
@@ -550,12 +571,39 @@ class AbstractUser(AbstractBaseUser):
 
     @classmethod
     def create(cls, *, password: PasswordHash, **fields: Any) -> Self:  # noqa: ANN401 - the fields of each user model.
-        """Check the username and the email (``clean_email``), then start the user."""
-        fields["username"] = validate_username(
-            cls.normalize_username(str(fields.get("username", "")))
+        """Check the identifiers, then start the user.
+
+        The username (if any) by ``validate_username``, the email by
+        ``clean_email``, and the mobile number by
+        ``normalize_mobile_number``.
+
+        Raises:
+            IdentifierRequired: The user would have no username, email,
+                or mobile number.
+        """
+        username = fields.get("username")
+        fields["username"] = (
+            validate_username(cls.normalize_username(str(username)))
+            if username
+            else None
         )
-        fields["email"] = clean_email(str(fields.get("email", "")))
+        fields["email"] = clean_email(str(fields.get("email") or ""))
+        mobile_number = fields.get("mobile_number")
+        fields["mobile_number"] = (
+            normalize_mobile_number(str(mobile_number)) if mobile_number else None
+        )
+        if not any(fields.get(name) for name in cls.IDENTIFIER_FIELDS):
+            raise IdentifierRequired(
+                "Give a username, an email address, or a mobile number."
+            )
         return super().create(password=password, **fields)
+
+    def get_username(self) -> str:
+        """The first identifier the user has: username, email, or mobile number."""
+        for name in self.IDENTIFIER_FIELDS:
+            if value := getattr(self, name, None):
+                return str(value)
+        return ""
 
     def set_staff(self, value: bool) -> None:
         """Let the user into the admin API (or stop it)."""
@@ -567,16 +615,38 @@ class AbstractUser(AbstractBaseUser):
             self.email_verified = True
             self.record(EmailVerified(user_id=self.id))
 
+    def verify_mobile_number(self) -> None:
+        """Record that the user receives texts at their current mobile number."""
+        if not self.mobile_number_verified:
+            self.mobile_number_verified = True
+            self.record(MobileNumberVerified(user_id=self.id))
+
     def update(self, **fields: object) -> None:
-        """Change editable fields; a new email address is not verified yet."""
-        email = self.email
+        """Change editable fields; a new email or number is not verified yet.
+
+        Raises:
+            IdentifierRequired: The change would leave the user without a
+                username, an email, or a mobile number.
+        """
+        email, mobile_number = self.email, self.mobile_number
         super().update(**fields)
+        if not any(getattr(self, name) for name in self.IDENTIFIER_FIELDS):
+            self.email, self.mobile_number = email, mobile_number
+            raise IdentifierRequired(
+                "Keep a username, an email address, or a mobile number."
+            )
         if self.email != email:
             self.email_verified = False
+        if self.mobile_number != mobile_number:
+            self.mobile_number_verified = False
 
     def clean_field(self, name: str, value: object) -> object:
-        """Check the email and lower-case its domain, as on creation."""
-        return clean_email(str(value)) if name == "email" else value
+        """Check the email and the mobile number, as on creation."""
+        if name == "email":
+            return clean_email(str(value))
+        if name == "mobile_number":
+            return normalize_mobile_number(str(value)) if value else None
+        return value
 
     def erase_personal_data(self, fields: frozenset[str]) -> None:
         """Erase the personal data (``domainkit.contrib.privacy``); end the account.
@@ -591,12 +661,19 @@ class AbstractUser(AbstractBaseUser):
         second factor are deleted right after (``erasure``). Erasing again
         changes nothing.
         """
-        if "username" in fields and not _ERASED.fullmatch(self.username):
+        if (
+            "username" in fields
+            and self.username is not None
+            and not _ERASED.fullmatch(self.username)
+        ):
             self.username = erased_username(self.username)
         for name in ("email", "first_name", "last_name"):
             if name in fields:
                 setattr(self, name, "")
+        if "mobile_number" in fields:
+            self.mobile_number = None
         self.email_verified = False
+        self.mobile_number_verified = False
         self.set_active(False)
         if self.has_usable_password():
             self.set_unusable_password()
@@ -689,6 +766,29 @@ def erased_username(username: str, *, key: bytes | None = None) -> str:
     return ERASED_USERNAME + digest[:32]
 
 
+def normalize_mobile_number(text: str) -> str:
+    """``text`` as ``+33612345678``: spaces, dots, dashes, and brackets dropped.
+
+    Raises:
+        InvalidMobileNumber: It is not a number in international form, in
+            ASCII digits.
+    """
+    number = _MOBILE_SEPARATORS.sub("", text)
+    if not _MOBILE_NUMBER.fullmatch(number):
+        raise InvalidMobileNumber(
+            "Give the number in international form, such as +33612345678."
+        )
+    return number
+
+
+def as_mobile_number(text: str) -> str | None:
+    """``text`` in international form, if it is a mobile number; else None."""
+    try:
+        return normalize_mobile_number(text)
+    except InvalidMobileNumber:
+        return None
+
+
 def validate_username(username: str) -> str:
     """Return ``username`` if it is 1 to 150 of letters, digits, and ``@.+-_``.
 
@@ -773,7 +873,12 @@ def same_email(first: str, second: str) -> bool:
     differently (``\u212a``, the KELVIN SIGN, becomes ``k``), which would
     let a look-alike address claim another's mail.
     """
-    return _ascii_lower(first.strip()) == _ascii_lower(second.strip())
+    return email_key(first) == email_key(second)
+
+
+def email_key(email: str) -> str:
+    """The form that addresses ``same_email`` treats as one share."""
+    return _ascii_lower(email.strip())
 
 
 def _ascii_lower(text: str) -> str:

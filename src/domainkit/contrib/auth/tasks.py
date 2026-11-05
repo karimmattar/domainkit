@@ -1,4 +1,4 @@
-"""Hourly purge of expired tokens and signups (needs ``contrib.messaging``)."""
+"""Hourly purge of expired tokens, codes, and signups (needs ``contrib.messaging``)."""
 
 from datetime import timedelta
 
@@ -13,13 +13,14 @@ from .uow import AuthUnitOfWork
 async def clear_expired_tokens() -> None:
     """Delete tokens whose lifetime is over (``cleartokens`` does it by hand).
 
-    Pending signups whose link no longer works go too, with their hashes;
-    so do step-ups older than any ``StepUp`` takes, and transactions whose
-    authorization no longer works.
+    Pending signups whose link no longer works go too, with their hashes,
+    and codes that no longer work; so do step-ups older than any
+    ``StepUp`` takes, and transactions whose authorization no longer works.
     """
     async with AuthUnitOfWork() as uow:
         await uow.tokens.clear_expired()
         await uow.signups.clear_expired()
+        await uow.verification_codes.clear_expired()
         await uow.step_ups.clear_older(utc_now() - MAX_STEP_UP_AGE)
         await uow.sca.clear_expired()
         await uow.commit()

@@ -32,7 +32,7 @@ class Command(BaseCommand):
             self.write(f"Deleted {count} token(s) of {user!r}.")
 
     async def _expired(self) -> int:
-        """Delete tokens past their lifetime; step-ups and authorizations too.
+        """Delete tokens past their lifetime; step-ups, codes, and authorizations too.
 
         Step-ups older than any ``StepUp`` takes, and transactions whose
         authorization no longer works, go with them (``auth.tasks``).
@@ -41,6 +41,7 @@ class Command(BaseCommand):
             count = await uow.tokens.clear_expired()
             await uow.step_ups.clear_older(utc_now() - MAX_STEP_UP_AGE)
             await uow.sca.clear_expired()
+            await uow.verification_codes.clear_expired()
             await uow.commit()
         return count
 

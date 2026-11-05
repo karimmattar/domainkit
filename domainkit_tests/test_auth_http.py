@@ -77,7 +77,7 @@ class OwnerBackend(BaseBackend):
 
 
 def create_user(
-    username: str,
+    username: str | None,
     password: str | None = PASSWORD,
     **fields: Any,  # noqa: ANN401 - user fields.
 ) -> UUID:

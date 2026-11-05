@@ -82,6 +82,7 @@ async def test_an_async_test_signs_in_through_groups(routes: None) -> None:
         await signed_in.aclose()
 
     assert editors.name.startswith("group-")
+    assert ann.username is not None
     assert ann.username.startswith("user-")
     assert (ann.email, ann.is_superuser) == ("a@x.example", False)
     assert listed.json() == added.json() == {"user": ann.username}

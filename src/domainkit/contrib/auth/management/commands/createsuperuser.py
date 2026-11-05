@@ -1,10 +1,13 @@
 """``createsuperuser``: create a user with every permission (Django's).
 
-It asks for the username, the model's ``REQUIRED_FIELDS``, and a password,
-unless options give them. With ``--noinput`` it asks nothing and reads
-what the options leave out from ``<PREFIX>SUPERUSER_<FIELD>`` (or a
-``_FILE`` holding it), such as ``BILLING_API_SUPERUSER_PASSWORD``; without
-a password the user gets an unusable one.
+It asks for the username, the fields of ``AUTH.IDENTIFIERS`` (such as the
+email address and the mobile number), the model's ``REQUIRED_FIELDS``, and
+a password, unless options give them. Where the username does not identify
+users, it is optional; the user needs one identifier at least. With
+``--noinput`` it asks nothing and reads what the options leave out from
+``<PREFIX>SUPERUSER_<FIELD>`` (or a ``_FILE`` holding it), such as
+``BILLING_API_SUPERUSER_PASSWORD``; without a password the user gets an
+unusable one.
 
 A password the validators refuse is kept only on request, and only where
 no ``AUTH.PRESET`` holds and outside staging and production
@@ -26,12 +29,16 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.management.base import BaseCommand, CommandError, run_async
 
 from ...exceptions import (
+    EmailTaken,
+    IdentifierRequired,
     InvalidEmail,
+    InvalidMobileNumber,
     InvalidPassword,
     InvalidUsername,
+    MobileNumberTaken,
     UsernameTaken,
 )
-from ...settings import auth_settings
+from ...settings import auth_settings, identifier_fields
 from ...uow import AuthUnitOfWork
 from ...users import get_user_model
 from ...validators import validate_password
@@ -54,6 +61,19 @@ def _label(field: str) -> str:
     return field.replace("_", " ").capitalize()
 
 
+def _fields() -> list[str]:
+    """What it asks for: the username, the identifiers, ``REQUIRED_FIELDS``."""
+    model = get_user_model()
+    names = [model.USERNAME_FIELD, *identifier_fields(model), *model.REQUIRED_FIELDS]
+    return list(dict.fromkeys(names))
+
+
+def _username_identifies() -> bool:
+    """Whether the username is one of ``AUTH.IDENTIFIERS``: then it is required."""
+    model = get_user_model()
+    return model.USERNAME_FIELD in identifier_fields(model)
+
+
 class Command(BaseCommand):
     """Create a superuser, interactively or from options and variables."""
 
@@ -66,8 +86,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser: ArgumentParser) -> None:
         """One option per field the user model needs, and ``--noinput``."""
         setup()
-        model = get_user_model()
-        for field in (model.USERNAME_FIELD, *model.REQUIRED_FIELDS):
+        for field in _fields():
             parser.add_argument(f"--{field}", help=f"the user's {_label(field)}")
         parser.add_argument(
             "--noinput",
@@ -105,27 +124,58 @@ class Command(BaseCommand):
             raise CommandError("Operation cancelled.") from None
         try:
             run_async(self._create(values, password, temporary=temporary))
-        except (UsernameTaken, InvalidUsername, InvalidEmail) as exc:
+        except (
+            UsernameTaken,
+            InvalidUsername,
+            InvalidEmail,
+            InvalidMobileNumber,
+            IdentifierRequired,
+            EmailTaken,
+            MobileNumberTaken,
+        ) as exc:
             raise CommandError(exc.message) from None
         self.write("Superuser created successfully.")
 
     def _values(
         self, interactive: bool, options: dict[str, str | None]
     ) -> dict[str, str]:
-        """The username and required fields, from options, variables, or prompts."""
+        """The fields to set, from options, variables, or prompts.
+
+        An optional username, or identifier, left blank is left out.
+        """
         model = get_user_model()
         env = Env()
+        identifiers = identifier_fields(model)
         values: dict[str, str] = {}
-        for field in (model.USERNAME_FIELD, *model.REQUIRED_FIELDS):
+        for field in _fields():
             value = options.get(field)
             if value is None and not interactive:
                 value = env.str(f"SUPERUSER_{field.upper()}", None)
-            if field == model.USERNAME_FIELD:
+            if field == model.USERNAME_FIELD and _username_identifies():
                 value = self._username(value, interactive, env)
-            elif value is None:
-                value = self.ask(f"{_label(field)}: ").strip() if interactive else ""
-            values[field] = value
+            elif field == model.USERNAME_FIELD:
+                value = self._optional_username(value, interactive)
+            elif value is None and interactive:
+                value = self.ask(f"{_label(field)}: ").strip()
+            if value or (field not in identifiers and field != model.USERNAME_FIELD):
+                values[field] = value or ""
         return values
+
+    def _optional_username(self, given: str | None, interactive: bool) -> str | None:
+        """A free username, or None: asked ones may be left blank."""
+        field = get_user_model().USERNAME_FIELD
+        while True:
+            if given is None and interactive:
+                given = self.ask(f"{_label(field)} (optional): ")
+            username = (given or "").strip()
+            if not username:
+                return None
+            if not run_async(self._taken(username)):
+                return username
+            if not interactive:
+                raise CommandError(f"The {field} {username!r} is taken.")
+            self._error(f"That {field} is already taken.")
+            given = None
 
     def _username(self, given: str | None, interactive: bool, env: Env) -> str:
         """A free username: a given one must be; asked ones are asked again."""
@@ -194,7 +244,7 @@ class Command(BaseCommand):
     ) -> None:
         """Store the superuser; a ``temporary`` password changes at first use."""
         fields = dict(values)
-        username = fields.pop(get_user_model().USERNAME_FIELD)
+        username = fields.pop(get_user_model().USERNAME_FIELD, None)
         async with AuthUnitOfWork() as uow:
             user = await uow.users.create_superuser(username, password, **fields)
             if password is not None and temporary:

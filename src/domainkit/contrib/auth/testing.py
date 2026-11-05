@@ -24,6 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 from .models import AbstractBaseUser, Group
+from .settings import identifier_fields
 from .uow import AuthUnitOfWork
 
 __all__ = ["create_group", "create_user"]
@@ -42,7 +43,9 @@ async def create_user(
     gives; with one, it is hashed with ``AUTH.PASSWORD_HASHERS``, so a test
     can log in through the API. ``superuser`` makes a superuser (and staff,
     if the model has it). Keyword arguments set the user's fields; the
-    username is ``user-<hex>`` unless given.
+    username is ``user-<hex>`` unless given. Where the username does not
+    identify users (``AUTH.IDENTIFIERS``), and no field that does is given,
+    the first of them gets one: ``user-<hex>@example.com``, or a number.
 
     Raises:
         UnknownPermission: A key names no permission.
@@ -52,6 +55,7 @@ async def create_user(
     async with AuthUnitOfWork() as uow:
         field = uow.users.model.USERNAME_FIELD
         username = fields.pop(field, None) or f"user-{uuid4().hex}"
+        fill_identifier(uow.users.model, username, fields)
         create = uow.users.create_superuser if superuser else uow.users.create_user
         user = await create(username, password, **fields)
         user.grant(*await uow.permissions.get_many(permissions))
@@ -59,6 +63,25 @@ async def create_user(
             user.join(group)
         await uow.commit()
     return user
+
+
+def fill_identifier(
+    model: type[AbstractBaseUser], username: str, fields: dict[str, Any]
+) -> None:
+    """Give a test user one of ``AUTH.IDENTIFIERS``, if its username is not one.
+
+    Nothing changes when ``fields`` gives one already. The first identifier
+    gets ``<username>@example.com`` for an email field, a number for
+    ``mobile_number``, or the username for any other field.
+    """
+    identifiers = identifier_fields(model)
+    if model.USERNAME_FIELD in identifiers or any(fields.get(n) for n in identifiers):
+        return
+    first = identifiers[0]
+    if first == "mobile_number":
+        fields[first] = f"+1555{uuid4().int % 10**7:07d}"
+    else:
+        fields[first] = f"{username}@example.com" if first == "email" else username
 
 
 async def create_group(*permissions: str, name: str | None = None) -> Group:

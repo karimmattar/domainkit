@@ -147,6 +147,7 @@ def alice_with_everything(client: TestClient, clock: list[float]) -> tuple[UUID,
 # Fixtures --------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("ignore::domainkit.deprecation.DomainkitDeprecationWarning")
 def test_fixtures_hold_no_secret_and_no_one_time_state(
     private: Api, clock: list[float]
 ) -> None:
@@ -202,7 +203,7 @@ def test_users_are_people_to_privacy(private: Api) -> None:
     (user,) = [model for model in personal_models() if model.key == "auth.user"]
 
     assert dict(user.subjects) == {
-        "id": ("username", "email", "first_name", "last_name")
+        "id": ("username", "email", "mobile_number", "first_name", "last_name")
     }
     assert user.erases_itself()
     assert problems() == []
@@ -223,6 +224,7 @@ def test_exports_hold_the_users_personal_fields(private: Api) -> None:
             "fields": {
                 "username": "alice",
                 "email": "alice@example.com",
+                "mobile_number": None,
                 "first_name": "Alice",
                 "last_name": "Smith",
             },
@@ -262,6 +264,7 @@ def test_erasure_ends_the_account_and_its_credentials(
     assert erased["details"]["fields"] == [
         "username",
         "email",
+        "mobile_number",
         "first_name",
         "last_name",
     ]
@@ -274,6 +277,7 @@ def test_erasure_ends_the_account_and_its_credentials(
     assert len(audited("auth.user_status_changed")) == 1
 
 
+@pytest.mark.filterwarnings("ignore::domainkit.deprecation.DomainkitDeprecationWarning")
 def test_an_erased_username_stays_taken(private: Api) -> None:
     """In any case: nobody can sign up, or be created, as the person erased."""
     client = private(SIGNUP_ENABLED=True)

@@ -31,7 +31,7 @@ router.include_router(auth_router, prefix="/auth")
 
 ```http
 POST /auth/login
-{"username": "alice", "password": "correct horse battery"}
+{"identifier": "alice", "password": "correct horse battery"}
 ```
 
 ```json
@@ -50,15 +50,18 @@ in the same time:
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `POST /login` | `{"username", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `202` with a challenge for a user with a second factor; `401 invalid_credentials`; `429 rate_limited`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
+| `POST /login` | `{"identifier", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `202` with a challenge for a user with a second factor; `401 invalid_credentials`; `429 rate_limited`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` | `204`: this login's tokens end, or every token of the user. Scoped credentials end only themselves (`403` with `everywhere`). |
 | `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions` (with a scoped token, those its scopes allow). |
 | `POST /password` | `{"old_password", "new_password"}` | `204`: every other login of the user ends; `400 wrong_password`; `422 invalid_password` if a validator refuses the new password; `429`. |
 | `POST /step-up` (`auth.stepup.router`) | `{"code"}`, and `"password"` where asked | `200` with when and how the credentials stepped up ([Stepping up](step-up.md)). |
 
-`username` is the user model's `USERNAME_FIELD` (the email, for a model
-that logs in with its email). Tokens come as OAuth 2's token response.
+`identifier` is a value of one of the fields that `AUTH.IDENTIFIERS`
+names: an email address, a mobile number, or a username. By default it
+is the user model's `USERNAME_FIELD` alone (the email, for a model that
+logs in with its email). The old name, `username`, still works. Tokens
+come as OAuth 2's token response.
 With [JSON Web Tokens](authentication.md#json-web-tokens), the answer
 also has a `refresh_token`:
 
@@ -72,6 +75,50 @@ refused login is audited as `auth.login` with the outcome `denied`,
 without the username, which may be a password typed in the wrong field.
 Throttled logins are audited once per count and period, so a flood adds
 no rows.
+
+### Logging in with an email address or a mobile number
+
+`AUTH.IDENTIFIERS` names the user fields that identify a user, in the
+order a login tries them:
+
+```python
+AUTH = {
+    "IDENTIFIERS": ("email", "mobile_number"),
+}
+```
+
+Then each of these logs in the same user:
+
+```http
+POST /auth/login
+{"identifier": "Ann@Example.com", "password": "correct horse battery"}
+```
+
+```http
+POST /auth/login
+{"identifier": "+33 6 12 34 56 78", "password": "correct horse battery"}
+```
+
+domainkit reads the form of the value:
+
+- A value with `@` is an email address. It matches in any case of its
+  ASCII letters.
+- A value that is a number in international form (`+`, a country code,
+  and up to 15 digits) is a mobile number. Spaces, dots, dashes, and
+  brackets do not count.
+- Any other value is tried against the other fields you named, in order.
+- The `USERNAME_FIELD` always matches exactly, as before 1.8.
+
+Where `email` is in `AUTH.IDENTIFIERS`, two users cannot have one
+address: a second one gets `409 email_taken`. An address that two users
+already shared before (rows written before 1.8) logs in neither of them,
+until you change one. Wrong passwords count against one account however
+its number or address is written. Startup refuses a field the user model
+does not have (`auth.E011`).
+
+Without `AUTH.IDENTIFIERS`, only the `USERNAME_FIELD` logs in, as in
+1.7. [Users](users.md) shows the `mobile_number` field and the optional
+`username`.
 
 ### Wrong passwords
 
@@ -369,10 +416,14 @@ router.include_router(recovery_router, prefix="/auth")
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /password-reset` | anyone | `{"email"}` | Always `202`; `422` for a value that is not one plain address; `429 rate_limited`. |
+| `POST /password-reset` | anyone | `{"email"}`, or `{"identifier"}` with codes | Always `202`; `422` for a value that is not one plain address (links); `429 rate_limited`. |
 | `POST /password-reset/confirm` | anyone | `{"token", "new_password"}` | `204`; `400 invalid_token`; `422` if a validator refuses the password. |
+| `POST /password-reset/code` | anyone | `{"identifier", "code", "new_password"}` | `204`; `400 invalid_verification_code`; `422` if a validator refuses the password. |
 | `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 rate_limited`. |
 | `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
+| `POST /email-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
+| `POST /mobile-verification` | a user, unscoped | | `202`; `429 rate_limited`. |
+| `POST /mobile-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
 
 How a reset works:
 
@@ -411,6 +462,47 @@ mailed, `auth.password_reset` for a reset (and `denied`, with the reason
 `invalid_token` or `throttled`, for refusals), and
 `auth.password_changed`.
 
+#### Resetting by code
+
+With `AUTH.VERIFICATION` set to `"code"`, a reset sends a code of 6
+digits, not a link. The person gives any identifier: an email address, a
+mobile number, or a username, by the fields of `AUTH.IDENTIFIERS`:
+
+```http
+POST /auth/password-reset
+{"identifier": "+33 6 12 34 56 78"}
+```
+
+```json
+{"detail": "If an account uses it, a code is on its way."}
+```
+
+The worker finds the one account the identifier names, active and with
+a usable password. A mobile number gets a text message through
+`domainkit.contrib.notifications`; any other identifier gets a mail to
+the account's address. An email address names the one account that has
+it, even where addresses do not log in. Then your app posts the same
+identifier, the code, and the new password:
+
+```http
+POST /auth/password-reset/code
+{"identifier": "+33612345678", "code": "482913", "new_password": "an0ther-Strong-pass!"}
+```
+
+The answer is `204`, and every session of the user ends. A wrong code,
+and a code for an identifier that no account uses, get the same
+`400 invalid_verification_code`. A password that a validator refuses
+gets `422`, and the code still works. The text message reads:
+
+```text
+482913 is your code to reset your password. It works for 10 minutes. Never give it to anyone.
+```
+
+Where `mobile_number` is in `AUTH.IDENTIFIERS` and codes are on, a
+project that serves the reset or signup routes needs
+`domainkit.contrib.notifications`: `check` refuses it without
+(`auth.E107`).
+
 ### Email verification
 
 `AbstractUser` has `email_verified`. It is false for new users, and for
@@ -427,6 +519,54 @@ for the address it went to: changing the email clears `email_verified`
 and ends the links sent before. Staff cannot set it in the admin API,
 where it is read-only. `user.verify_email()` sets it in code.
 Verifications are audited as `auth.email_verified`.
+
+#### Verifying by code
+
+With `AUTH.VERIFICATION` set to `"code"`, the worker mails a code of 6
+digits instead of a link. The user types it in the app that asked for it:
+
+```http
+POST /auth/email-verification
+Authorization: Bearer dkt_...
+```
+
+```json
+{"detail": "A code to verify your address is on its way."}
+```
+
+```http
+POST /auth/email-verification/code
+Authorization: Bearer dkt_...
+{"code": "482913"}
+```
+
+The answer is `204`, and `email_verified` is now true. A code:
+
+- works for `AUTH.CODE_TTL` (10 minutes), and only for the address it
+  went to;
+- is spent after `AUTH.CODE_ATTEMPTS` (5) wrong tries;
+- works once, and a new code replaces the one before.
+
+A wrong, spent, or expired code gets `400 invalid_verification_code`,
+the same answer for each. Wrong codes count against `LOGIN_RATE` per
+client address, and are audited as `auth.email_verification`. The table
+`domainkit_auth_codes` keeps only an HMAC of the code and of the address,
+keyed from `SECRET_KEY`. The hourly task and `cleartokens` delete codes
+that no longer work.
+
+`init` writes `"code"` for new projects. Links stay the default in 1.x,
+and go in 2.0.
+
+### Mobile number verification
+
+`AbstractUser` has `mobile_number` and `mobile_number_verified`. A user
+asks for a code at `/mobile-verification`. The worker texts it to their
+number through `domainkit.contrib.notifications`, unless the number is
+verified already. `/mobile-verification/code` with the code sets
+`mobile_number_verified`. The code follows the same rules as an email
+code, in either `AUTH.VERIFICATION`. Changing the number clears the mark.
+Verifications are audited as `auth.mobile_number_verified`; refusals as
+`auth.mobile_verification`.
 
 ### Signing up
 
@@ -445,7 +585,8 @@ AUTH = {
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"username", "email", "fields"}` | `202`; `422` for fields that do not fit; `429 rate_limited`. |
+| `POST /signup` | anyone | `{"email", "fields"}`, an optional `"username"`, and with codes `"mobile_number"` | `202`; `422` for fields that do not fit, or `missing_value` without an address (or number); `429 rate_limited`. |
+| `POST /signup/code` | anyone | `{"identifier", "code", "password"}` | `204`: the account is made; `400 invalid_verification_code`; `409 signup_taken`; `422` for a password the validators refuse. |
 | `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
 
 How signing up works:
@@ -499,9 +640,51 @@ name or the address is taken, or, past `EMAIL_VERIFICATION_TIMEOUT`,
 with the hourly purge of expired tokens. Signups count against
 `EMAIL_RATE` per client address and per email address, and links that do
 not hold against `LOGIN_RATE` per client address. New accounts are
-audited as `auth.user_signed_up`. Two links for one new address used at
-the same moment can both make an account: email addresses are not unique
-in the user table.
+audited as `auth.user_signed_up`. Where `email` is in `AUTH.IDENTIFIERS`,
+two links for one new address used at the same moment make one account:
+the second gets `409 email_taken`. Elsewhere, both can make one, because
+email addresses are not unique in the user table.
+
+#### Signing up by code
+
+With `AUTH.VERIFICATION` set to `"code"`, the worker sends a code of 6
+digits instead of a link. The username is optional: the address, or the
+number, names the account.
+
+```http
+POST /auth/signup
+{"email": "nina@example.com"}
+```
+
+```json
+{"detail": "Check your email to finish signing up."}
+```
+
+Where `mobile_number` is in `AUTH.IDENTIFIERS`, a person may sign up
+with a number alone, and the code goes by text message:
+
+```http
+POST /auth/signup
+{"mobile_number": "+33 6 12 34 56 78"}
+```
+
+```json
+{"detail": "Check your text messages to finish signing up."}
+```
+
+Then your app posts the address or number, the code, and the password:
+
+```http
+POST /auth/signup/code
+{"identifier": "+33612345678", "code": "482913", "password": "correct horse battery"}
+```
+
+The answer is `204`. The account is made with the address verified, or,
+for a signup by number alone, the number verified. A pending signup by
+code lasts `AUTH.CODE_TTL`. The other rules stay: whoever reads the code
+chooses the password, a taken address or number is told so instead, and
+a password the validators refuse leaves the code working. A number given
+where numbers do not identify users gets `422 unknown_user_field`.
 
 ### The mail templates
 

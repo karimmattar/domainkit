@@ -51,7 +51,9 @@ from domainkit.signing import derive_keys
 
 from .events import UserLoggedIn
 from .exceptions import (
+    EmailTaken,
     GroupNameTaken,
+    IdentifierRequired,
     InvalidPassword,
     UnknownGroup,
     UnknownPermission,
@@ -67,7 +69,9 @@ from .models import (
     PasswordHash,
     Permission,
     UserId,
+    as_mobile_number,
     check_not_reserved,
+    email_key,
     erased_username,
     same_email,
 )
@@ -88,8 +92,9 @@ from .principals import (
     user_target,
     withhold_password,
 )
-from .settings import auth_settings
+from .settings import auth_settings, identifier_fields
 from .tables import (
+    auth_codes,
     group_permissions,
     groups,
     mfa_devices,
@@ -116,6 +121,10 @@ from .users import get_user_model, get_user_table
 security_logger = logging.getLogger(SECURITY_LOGGER)
 
 
+MOBILE_NUMBER: Final = "mobile_number"
+"""The field that holds a mobile number, where one identifies users."""
+
+
 class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
     """Users of the configured model (``AUTH.USER_MODEL``)."""
 
@@ -123,6 +132,88 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         """Work with the user model in use."""
         super().__init__(session)
         self.model = get_user_model()
+        self._emails: dict[UUID, str | None] = {}
+        """The address each user had when it was seen: None for new users."""
+
+    def _track(self, aggregate: AbstractBaseUser) -> None:
+        """Remember the user, and the address it was seen with."""
+        field = self.model.EMAIL_FIELD
+        if field is not None:
+            self._emails.setdefault(aggregate.id, getattr(aggregate, field, None))
+        super()._track(aggregate)
+
+    async def find_by_identifier(self, value: str) -> AbstractBaseUser | None:
+        """The user ``value`` identifies, by the fields of ``AUTH.IDENTIFIERS``.
+
+        The fields are tried in order. The ``USERNAME_FIELD`` matches
+        exactly, after NFKC, as before 1.8. A value with ``@`` is an email
+        address, in any case, and one in international form a mobile
+        number, where those fields identify users; other fields are tried
+        only for other values. An address that two users share (rows
+        written before 1.8, or outside the repository) identifies neither.
+        """
+        fields = identifier_fields(self.model)
+        username_field, email_field = self.model.USERNAME_FIELD, self.model.EMAIL_FIELD
+        number = as_mobile_number(value)
+        claimed = ("@" in value and email_field in fields) or (
+            number is not None and MOBILE_NUMBER in fields
+        )
+        for name in fields:
+            if name == username_field:  # As before 1.8: exactly, after NFKC.
+                user = await self.get_by_natural_key(value)
+            elif name == email_field:
+                found = await self.find_by_email(value) if "@" in value else []
+                user = found[0] if len(found) == 1 else None
+            elif name == MOBILE_NUMBER:
+                user = None if number is None else await self._find_by(name, number)
+            elif claimed:
+                continue
+            else:
+                user = await self._find_by(name, value)
+            if user is not None:
+                return user
+        return None
+
+    async def _find_by(self, name: str, value: str) -> AbstractBaseUser | None:
+        """The user whose field ``name`` is ``value``, exactly."""
+        field = getattr(self.model, name)
+        user = await self.session.scalar(select(self.model).where(field == value))
+        if user is not None:
+            self._track(user)
+        return user
+
+    async def refuse_taken_emails(self, lock: Callable[[str], Awaitable[None]]) -> None:
+        """Refuse a new or changed address that another user has (ADR 0126).
+
+        Only where email addresses identify users (``AUTH.IDENTIFIERS``).
+        ``lock`` takes a lock on the address first, so two transactions
+        never both take it: the second waits, then sees the first's user.
+
+        Raises:
+            EmailTaken: Another user has the address, in any case.
+        """
+        field = self.model.EMAIL_FIELD
+        if field is None or field not in identifier_fields(self.model):
+            return
+        table = get_user_table()
+        column = table.c[field]
+        for user in self.seen:
+            email = getattr(user, field, None)
+            before = self._emails.get(user.id)
+            if not email or (before is not None and same_email(before, email)):
+                continue
+            await lock(f"domainkit.auth.email:{email_key(email)}")
+            statement = select(column).where(
+                func.lower(column) == func.lower(email.strip()), table.c.id != user.id
+            )
+            if any(
+                same_email(other, email)
+                for other in await self.session.scalars(statement)
+            ):
+                raise EmailTaken(
+                    "Another user has that email address.", fields=(field,)
+                )
+            self._emails[user.id] = email
 
     async def get_by_natural_key(self, username: str) -> AbstractBaseUser | None:
         """The user whose ``USERNAME_FIELD`` is ``username`` (normalized)."""
@@ -132,6 +223,11 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         if user is not None:
             self._track(user)
         return user
+
+    async def mobile_number_taken(self, number: str) -> bool:
+        """Whether a user has ``number`` (a model with a ``mobile_number``)."""
+        column = get_user_table().c[MOBILE_NUMBER]
+        return bool(await self.session.scalar(select(exists().where(column == number))))
 
     async def username_taken(self, username: str) -> bool:
         """Whether a user has ``username`` (normalized), in any case, or had it.
@@ -197,28 +293,38 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         Its sessions, personal tokens, refresh tokens, and client
         certificates, its authenticator's secret and recovery codes, its
         step-ups, its transactions' authorizations, and the hashes of its
-        last passwords: secrets of an account nobody may use. Every
+        last passwords, and its codes: secrets of an account nobody may use. Every
         principal of the user
         is read again after the commit. The caller commits.
         """
         await TokenStore(self.session).revoke_user(user_id)
         await MfaStore(self.session).remove(user_id)
-        for table in (step_ups, sca_challenges, password_history):
+        for table in (step_ups, sca_challenges, password_history, auth_codes):
             await self.session.execute(delete(table).where(table.c.user_id == user_id))
 
     async def _add(self, aggregate: AbstractBaseUser) -> None:
         """Store a new user, unless privacy erased its username from another.
 
         Raises:
+            IdentifierRequired: It has none of the fields of
+                ``AUTH.IDENTIFIERS`` (ADR 0126).
             InvalidUsername: The name starts with ``erased-``, which erasure
                 keeps for itself (for user models of any kind).
             UsernameTaken: It did: the name stays taken, as a live one is.
         """
-        check_not_reserved(aggregate.get_username())
-        if await self.username_erased(aggregate.get_username()):
-            field = self.model.USERNAME_FIELD
-            raise UsernameTaken(f"The {field} is already taken.", fields=(field,))
+        identifiers = identifier_fields(self.model)
+        if not any(getattr(aggregate, name, None) for name in identifiers):
+            raise IdentifierRequired(
+                f"Give one of these, which identify users: {', '.join(identifiers)}."
+            )
+        field = self.model.USERNAME_FIELD
+        username = getattr(aggregate, field, None)
+        if username is not None:
+            check_not_reserved(str(username))
+            if await self.username_erased(str(username)):
+                raise UsernameTaken(f"The {field} is already taken.", fields=(field,))
         await super()._add(aggregate)
+        self._emails[aggregate.id] = None
 
     async def find_by_email(self, email: str) -> list[AbstractBaseUser]:
         """Users whose ``EMAIL_FIELD`` is ``email``, in any case; none without one.
@@ -248,11 +354,14 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
 
     async def create_user(
         self,
-        username: str,
+        username: str | None,
         password: str | None = None,
         **fields: Any,  # noqa: ANN401 - the fields of each user model.
     ) -> AbstractBaseUser:
         """Add a user; without ``password``, it gets an unusable one.
+
+        ``username`` may be None where the user model allows it: the user
+        then needs another identifier, such as an email address.
 
         Passwords are hashed, not validated: call ``validate_password``
         first where people choose them.
@@ -264,9 +373,10 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
                 counts as one. A name privacy erased stays taken too
                 (``_add``).
         """
-        username = self.model.normalize_username(username)
-        if await self._username_used(username):
-            raise UsernameTaken(f"The username {username!r} is taken.")
+        if username is not None:
+            username = self.model.normalize_username(username)
+            if await self._username_used(username):
+                raise UsernameTaken(f"The username {username!r} is taken.")
         hashed = (
             PasswordHash(await amake_password(password))
             if password is not None
@@ -282,7 +392,7 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
 
     async def create_superuser(
         self,
-        username: str,
+        username: str | None,
         password: str | None = None,
         **fields: Any,  # noqa: ANN401 - the fields of each user model.
     ) -> AbstractBaseUser:
@@ -1194,10 +1304,12 @@ class PendingSignup:
     """
 
     id: UUID
-    username: str = dataclasses.field(repr=False)
-    email: str = dataclasses.field(repr=False)
+    username: str | None = dataclasses.field(repr=False)
+    email: str | None = dataclasses.field(repr=False)
     created_at: datetime = dataclasses.field(repr=False)
     expires_at: datetime = dataclasses.field(repr=False)
+    mobile_number: str | None = dataclasses.field(default=None, repr=False)
+    """The number a signup by code verifies (ADR 0126); None for others."""
     fields: dict[str, Any] | None = dataclasses.field(default=None, repr=False)
     """The user model's other ``REQUIRED_FIELDS``, as the client gave them."""
 
@@ -1216,13 +1328,14 @@ class SignupStore:
     async def add(
         self,
         *,
-        username: str,
-        email: str,
+        username: str | None,
+        email: str | None,
         ttl: timedelta,
         fields: Mapping[str, Any] | None = None,
         now: datetime | None = None,
+        mobile_number: str | None = None,
     ) -> PendingSignup:
-        """Store an account to make once ``email`` is confirmed, for ``ttl``."""
+        """Store an account to make once its address or number is confirmed."""
         moment = now or utc_now()
         pending = PendingSignup(
             id=uuid.uuid4(),
@@ -1230,6 +1343,7 @@ class SignupStore:
             email=email,
             created_at=moment,
             expires_at=moment + ttl,
+            mobile_number=mobile_number,
             fields=dict(fields) if fields else None,
         )
         await self.session.execute(

@@ -23,12 +23,15 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `BaseBackend`: A backend that knows no one and grants nothing; override what you need.
 - `Credentials`: Who sent a request, and with what (`request.auth`).
 - `CurrentUser`: The request's user, or `AnonymousUser`: the core's dependency, typed so.
+- `EmailTaken`: Another user has that email address, and it identifies users.
 - `Group`: A named set of permissions; every member has them all.
 - `GroupId`: A group's id: a UUID typed apart from other ids.
 - `GroupNameTaken`: Another group has that name.
 - `GroupNotFound`: No group has that id.
+- `IdentifierRequired`: A user needs at least one identifier: a username, an email, or a number.
 - `InvalidEmail`: The email address is not one plain address mail can go to.
 - `InvalidGroupName`: The group name is empty or too long.
+- `InvalidMobileNumber`: The mobile number is not one in international form (E.164).
 - `InvalidPassword`: The password breaks the configured rules (`PASSWORD_VALIDATORS`).
 - `InvalidUserField`: A value does not fit the type of the user field it is for.
 - `InvalidUsername`: The username is empty, too long, or uses characters it may not.
@@ -37,6 +40,7 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `IssuedTokens`: What logging in or refreshing returns (OAuth 2's token response).
 - `JWTAuthentication`: Signed access tokens (JSON Web Tokens) and opaque refresh tokens.
 - `JWTSettings`: `AUTH["JWT"]`: signed access tokens (`JWTAuthentication`).
+- `MobileNumberTaken`: Another user has that mobile number.
 - `ModelBackend`: Passwords from the user table; permissions of users and their groups.
 - `PasswordHash`: A stored password: a hasher's `<algorithm>$...`, or unusable (`!...`).
 - `PasswordValidationError`: A password breaks one rule; the message says which.
@@ -66,6 +70,7 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `has_perm`: Whether `user` has `perm` (on `obj`).
 - `has_perms`: Whether `user` has every one of `perms` (on `obj`).
 - `make_password`: Hash `password` with `hasher` (default: the preferred one).
+- `normalize_mobile_number`: `text` as `+33612345678`: spaces, dots, dashes, and brackets dropped.
 - `password_help_texts`: What each configured rule asks of a password, for API clients.
 - `validate_password`: Raise `InvalidPassword` listing every rule `password` breaks.
 

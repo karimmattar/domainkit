@@ -114,7 +114,7 @@ async def serving(keys: dict[str, Any]) -> AsyncIterator[AsyncTestClient]:
 
 async def login(client: AsyncTestClient) -> str:
     """Log in as ann; the access token."""
-    credentials = {"username": "ann", "password": PASSWORD}
+    credentials = {"identifier": "ann@example.com", "password": PASSWORD}
     answer = await client.post("/auth/login", json=credentials)
     assert answer.status_code == 200, answer.json()
     token: str = answer.json()["access_token"]
@@ -135,7 +135,7 @@ async def test_the_old_keys_tokens_work_through_the_rollout(
     The old key's tokens lasted an hour: retiring it refuses them unexpired.
     """
     async with AuthUnitOfWork() as uow:
-        await uow.users.create_user("ann", PASSWORD)
+        await uow.users.create_user("ann", PASSWORD, email="ann@example.com")
         await uow.commit()
     new = settings.AUTH["JWT"]
     retired = {"KEY": OLD_KEY, "RETIRED_AT": ROLLOUT_ENDED}

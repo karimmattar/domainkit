@@ -64,6 +64,9 @@ TIME_ZONE = "UTC"
 # for a fresh second factor (StepUp, config/rules.py), and transfers for one
 # confirmed for their amount and payee (docs/auth/step-up.md).
 AUTH = {
+    # People log in with an email address or a mobile number, proven by code.
+    "IDENTIFIERS": ("email", "mobile_number"),
+    "VERIFICATION": "code",
     "PRESET": "pci-dss-4",
     "MFA": {"ISSUER": "{{ project }}"},
     "STEP_UP": {"METHODS": ["otp"]},

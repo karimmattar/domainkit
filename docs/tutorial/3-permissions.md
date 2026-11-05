@@ -52,12 +52,13 @@ python manage.py runserver
 The project mounts the admin API at `/admin/auth`, in
 `src/config/urls.py`. The admin API manages users, groups, and
 permissions over REST, for staff. From the second shell, as the
-superuser (`$TOKEN`), make a user called `clerk`. You type a password
-for the clerk, and you keep the clerk's id in `$CLERK`:
+superuser (`$TOKEN`), make a user called `clerk`, with the address
+`clerk@example.com`. You type a password for the clerk, and you keep the
+clerk's id in `$CLERK`:
 
 ```bash
 read -rsp "Clerk's password: " CLERK_PASSWORD && export CLERK_PASSWORD
-CLERK=$(python -c "import json, os; print(json.dumps({'username': 'clerk', 'password': os.environ['CLERK_PASSWORD']}))" \
+CLERK=$(python -c "import json, os; print(json.dumps({'username': 'clerk', 'fields': {'email': 'clerk@example.com'}, 'password': os.environ['CLERK_PASSWORD']}))" \
   | curl -s http://127.0.0.1:8000/admin/auth/users -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" -d @- \
   | python -c "import json, sys; print(json.load(sys.stdin)['id'])")
@@ -65,11 +66,11 @@ CLERK=$(python -c "import json, os; print(json.dumps({'username': 'clerk', 'pass
 
 `POST /admin/auth/users` answers `201 Created` with the new user.
 
-Log in as the clerk, keep the clerk's token in `$CLERK_TOKEN`, and then
-remove the password from the shell:
+Log in as the clerk with the address, keep the clerk's token in
+`$CLERK_TOKEN`, and then remove the password from the shell:
 
 ```bash
-CLERK_TOKEN=$(python -c "import json, os; print(json.dumps({'username': 'clerk', 'password': os.environ['CLERK_PASSWORD']}))" \
+CLERK_TOKEN=$(python -c "import json, os; print(json.dumps({'identifier': 'clerk@example.com', 'password': os.environ['CLERK_PASSWORD']}))" \
   | curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d @- \
   | python -c "import json, sys; print(json.load(sys.stdin)['access_token'])")
 unset CLERK_PASSWORD

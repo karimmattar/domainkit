@@ -34,6 +34,52 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 1.7 to 1.8
+
+1.8 adds what ADR 0126 decides: users identified by the fields a project
+chooses, and codes instead of links. Nothing changes in a project until
+it sets the new options, but the tables change once.
+
+### Run the migrations once
+
+The built-in `User` gets `mobile_number` and `mobile_number_verified`,
+and its `username` may be empty. Pending signups get a `mobile_number`,
+and a new table, `domainkit_auth_codes`, keeps codes. Make and apply the
+revisions:
+
+```bash
+python manage.py makemigrations -m "users by email or number"
+python manage.py migrate
+```
+
+### Choose how users log in, and how they prove an address
+
+Two options, both off by default:
+
+```python
+AUTH = {
+    "IDENTIFIERS": ("email", "mobile_number"),
+    "VERIFICATION": "code",
+}
+```
+
+- `IDENTIFIERS` names the fields that log in. Without it, only the
+  username logs in, as in 1.7. Before you add `email`, find addresses
+  that two users share: neither of them can log in by that address
+  until you change one, and new users cannot take one that is taken.
+- `VERIFICATION` set to `"code"` sends codes of 6 digits instead of
+  links. Your app then posts to `/email-verification/code`,
+  `/password-reset/code`, and `/signup/code`. Where numbers identify
+  users, install `domainkit.contrib.notifications` (`auth.E107`).
+
+`POST /auth/login` takes `identifier`; `username` still works. `init`
+writes both options for new projects.
+
+### Links are deprecated
+
+`AUTH.VERIFICATION = "link"` keeps working in 1.x and goes in 2.0. Move
+to codes before then.
+
 ## 1.6 to 1.7
 
 The security fixes of the outside review's first run (audit A1 to A7)

@@ -505,6 +505,22 @@ class AuthSettings(BaseModel):
     """How long an email verification link works."""
     EMAIL_VERIFICATION_URL: str | None = None
     """The page that takes a verification link's ``{token}``."""
+    IDENTIFIERS: tuple[str, ...] | None = Field(default=None, min_length=1)
+    """The user fields that identify a user, in the order a login tries
+    them, such as ``("email", "mobile_number")`` (ADR 0126). None: the user
+    model's ``USERNAME_FIELD`` alone, as before 1.8."""
+    VERIFICATION: Literal["link", "code"] = "link"
+    """How signup, email verification, and password resets prove someone
+    reads an address or a number: a signed ``"link"``, or a ``"code"`` of
+    6 digits. ``init`` writes ``"code"``; links are deprecated, and go in 2.0."""
+    CODE_TTL: timedelta = Field(
+        default=timedelta(minutes=10),
+        ge=timedelta(minutes=1),
+        le=timedelta(hours=1),
+    )
+    """How long a code works, from 1 minute to 1 hour."""
+    CODE_ATTEMPTS: int = Field(default=5, ge=1, le=10)
+    """Wrong tries that spend a code, from 1 to 10."""
     SIGNUP_ENABLED: bool = False
     """Let anyone create an account at ``/signup`` (``auth.signup.router``)."""
     SIGNUP_URL: str | None = None
@@ -586,3 +602,9 @@ def _with_preset(data: object) -> object:
 def auth_settings() -> AuthSettings:
     """The validated ``AUTH`` settings."""
     return registry.settings(AuthSettings)
+
+
+def identifier_fields(model: type[Any]) -> tuple[str, ...]:
+    """``AUTH.IDENTIFIERS``, or the ``USERNAME_FIELD`` of ``model`` without it."""
+    configured = auth_settings().IDENTIFIERS
+    return configured if configured is not None else (model.USERNAME_FIELD,)

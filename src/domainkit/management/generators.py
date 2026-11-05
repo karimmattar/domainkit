@@ -331,30 +331,36 @@ def install(
 
 
 EMPTY_AUTH: Final = "AUTH: dict[str, object] = {}"
-"""The ``AUTH`` line ``init`` writes in the base settings."""
+"""The ``AUTH`` line ``init`` wrote in the base settings before 1.8."""
+OPEN_AUTH: Final = "AUTH: dict[str, object] = {\n"
+"""The first line of the ``AUTH`` dict ``init`` writes since 1.8."""
 
 
 def install_user_model(package: str, model: str, table: str, root: Path) -> list[str]:
     """Install the user domain ``package`` and name its model and table in ``AUTH``.
 
     Safe means the base settings are as ``init`` writes them: a literal
-    ``INSTALLED_DOMAINS`` and the empty ``AUTH`` line. Returns what was
-    done; nothing if it was not safe.
+    ``INSTALLED_DOMAINS`` and the ``AUTH`` dict ``init`` starts (empty
+    before 1.8). Returns what was done; nothing if it was not safe.
     """
     settings_path = root / SETTINGS_FILE
     try:
         settings = Source.read(settings_path)
     except CommandError:
         return []
-    if settings.text.count(EMPTY_AUTH) != 1 or not _add_installed(settings, package):
-        return []
-    settings.text = settings.text.replace(
-        EMPTY_AUTH,
-        "AUTH: dict[str, object] = {\n"
+    named = (
         f'    "USER_MODEL": "{package}.models.{model}",\n'
         f'    "USER_TABLE": "{package}.models.{table}",\n'
-        "}",
     )
+    if settings.text.count(EMPTY_AUTH) == 1:
+        line, filled = EMPTY_AUTH, OPEN_AUTH + named + "}"
+    elif settings.text.count(OPEN_AUTH) == 1:
+        line, filled = OPEN_AUTH, OPEN_AUTH + named
+    else:
+        return []
+    if not _add_installed(settings, package):  # Edits INSTALLED_DOMAINS alone.
+        return []
+    settings.text = settings.text.replace(line, filled)
     settings.save()
     format_python([settings_path])
     return [

@@ -113,6 +113,7 @@ def test_the_contrib_tables_have_server_defaults_to_check() -> None:
         "domainkit_messages.priority",
         "domainkit_messages.queue",
         "domainkit_users.email_verified",
+        "domainkit_users.mobile_number_verified",
     ]
 
 

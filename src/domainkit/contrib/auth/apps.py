@@ -48,6 +48,7 @@ from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
 from .validators import get_password_validators, preset_contradictions
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
+NOTIFICATIONS = "domainkit.contrib.notifications"
 MESSAGING = "domainkit.contrib.messaging"
 MAIL = "domainkit.contrib.mail"
 PRIVACY = "domainkit.contrib.privacy"
@@ -150,10 +151,12 @@ class AuthConfig(DomainConfig):
         Raises:
             ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
         """
+        from .testing import fill_identifier
         from .uow import AuthUnitOfWork
 
         _only_in_tests("issue_test_token")
         username = fields.pop(self.user_model.USERNAME_FIELD, f"user-{uuid4().hex}")
+        fill_identifier(self.user_model, username, fields)
         async with AuthUnitOfWork() as uow:
             user = await uow.users.create_user(username, **fields)
             user.grant(*await uow.permissions.get_many(permissions))
@@ -305,6 +308,12 @@ class AuthConfig(DomainConfig):
         module = import_module(f"{self.name}.{name}")
         return bool(called & {route.endpoint for route in module.router.routes})
 
+    def _texts_codes(self) -> bool:
+        """Whether resets and signups send codes to numbers (ADR 0126)."""
+        config = auth_settings()
+        identifiers = config.IDENTIFIERS or ()
+        return config.VERIFICATION == "code" and "mobile_number" in identifiers
+
     def _mailing_problems(self, app: FastAPI) -> list[str]:
         """What routes that send mail lack: the apps, or an address to send to."""
         problems: list[str] = []
@@ -319,6 +328,14 @@ class AuthConfig(DomainConfig):
                         "auth.E103",
                         f"Routes of {module} send mail: add {', '.join(missing)} "
                         "to INSTALLED_DOMAINS.",
+                    )
+                )
+            if self._texts_codes() and not installed(NOTIFICATIONS):
+                problems.append(
+                    CheckMessage(
+                        "auth.E107",
+                        f"Routes of {module} send codes to mobile numbers by text "
+                        f"message: add {NOTIFICATIONS} to INSTALLED_DOMAINS.",
                     )
                 )
             if self.user_model.EMAIL_FIELD is None or not hasattr(
@@ -471,6 +488,24 @@ class AuthConfig(DomainConfig):
     def _deployment_errors(self, config: AuthSettings) -> list[CheckMessage]:
         """What ``_check_deployment`` refuses, in the order it is checked."""
         errors = []
+        names = {field.name for field in dataclasses.fields(self.user_model)}
+        identifiers = config.IDENTIFIERS or ()
+        if unknown := [name for name in identifiers if name not in names]:
+            errors.append(
+                CheckMessage(
+                    "auth.E011",
+                    f"AUTH.IDENTIFIERS names {', '.join(map(repr, unknown))}, which "
+                    f"{self.user_model.__name__} has no field for; name its fields, "
+                    "such as 'email' or 'mobile_number'.",
+                )
+            )
+        if len(set(identifiers)) != len(identifiers):
+            errors.append(
+                CheckMessage(
+                    "auth.E011",
+                    "AUTH.IDENTIFIERS names a field twice: name each once.",
+                )
+            )
         if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
             errors.append(
                 CheckMessage(

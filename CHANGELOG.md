@@ -9,6 +9,81 @@ and a status.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-05
+
+### Added
+
+- The built-in `User` has a `mobile_number` (E.164, unique when set) and
+  a `mobile_number_verified` flag, and its `username` is optional (unique
+  when set). A user needs at least one of a username, an email address,
+  or a mobile number (`422 identifier_required`). `get_username()`
+  returns the first one that is set. Run `makemigrations` and `migrate`
+  once (ADR 0126).
+- `AUTH.IDENTIFIERS` names the user fields that identify a user, in the
+  order a login tries them, such as `("email", "mobile_number")`. Its
+  default is the user model's `USERNAME_FIELD` alone, as before. A field
+  the user model does not have, or one named twice, stops startup
+  (`auth.E011`).
+- `AUTH.VERIFICATION` (`"link"` or `"code"`), `AUTH.CODE_TTL`, and
+  `AUTH.CODE_ATTEMPTS`, for verification by code (ADR 0126).
+- `POST /auth/login` and `POST /auth/session` take an `identifier`: an
+  email address, a mobile number, or a username, by the fields of
+  `AUTH.IDENTIFIERS`. `username`, its old name, still works, and
+  backends get the value under both names. Wrong logins count against
+  one account however its number is written.
+- Where `email` is in `AUTH.IDENTIFIERS`, a second user with an address
+  that another has, in any case, is refused (`409 email_taken`), under a
+  lock on the address on PostgreSQL.
+- `UserRepository.find_by_identifier`, and `create_user` with no
+  username.
+- Email verification by code: with `AUTH.VERIFICATION` set to `"code"`,
+  `POST /auth/email-verification` mails 6 digits, and
+  `POST /auth/email-verification/code` takes them (`400
+  invalid_verification_code` when wrong, spent, or expired). Codes live
+  in the new table `domainkit_auth_codes`, as HMACs only; run
+  `makemigrations` and `migrate`.
+- Password reset by code: `POST /auth/password-reset` takes an
+  `identifier` and sends a code by mail, or by text message for a mobile
+  number; `POST /auth/password-reset/code` takes the identifier, the
+  code, and the new password.
+- Mobile number verification: `POST /auth/mobile-verification` texts a
+  code, and `POST /auth/mobile-verification/code` takes it.
+- `auth.E107`: the reset or signup routes send codes to numbers, and
+  `domainkit.contrib.notifications` is not installed.
+- Signup by code: `POST /auth/signup` takes an optional `username`, and,
+  where numbers identify users, a `mobile_number` alone; the code goes by
+  mail or text message, and `POST /auth/signup/code` makes the account.
+  `domainkit_pending_signups` gets a `mobile_number`, and its `username`
+  and `email` may be empty; `domainkit_auth_codes` keeps the `signup_id`.
+- `normalize_mobile_number`, and the problems `invalid_mobile_number`,
+  `mobile_number_taken`, `email_taken`, and `identifier_required`
+  (`domainkit.contrib.auth`).
+
+### Changed
+
+- `init` writes `AUTH.IDENTIFIERS = ("email", "mobile_number")` and
+  `AUTH.VERIFICATION = "code"` for new projects: people log in with an
+  email address or a mobile number, and the username is optional.
+  `startdomain` prints the login by email address.
+- A new user needs one of the fields that `AUTH.IDENTIFIERS` names
+  (`422 identifier_required`); by default that is the username, as
+  before. The admin API's `POST /admin/auth/users`, `createsuperuser`,
+  and the test helpers (`create_user`, `client.authenticated()`) take no
+  username where it does not identify users. `createsuperuser` has an
+  option for each identifier, such as `--mobile_number`.
+
+### Deprecated
+
+- Links for email verification, password resets, and signups
+  (`AUTH.VERIFICATION = "link"`, the default in 1.x). They go in 2.0; use
+  codes ("Upgrading", 1.7 to 1.8).
+
+### Fixed
+
+- `contrib.phones` took digits of any script (`\d`) in a phone number,
+  such as Arabic-Indic digits. It now takes ASCII digits only, as E.164
+  says.
+
 ## [1.7.1] - 2026-11-04
 
 ### Fixed
@@ -6065,7 +6140,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.7.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/karimmattar/domainkit/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/karimmattar/domainkit/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/karimmattar/domainkit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/karimmattar/domainkit/compare/v1.5.0...v1.6.0
