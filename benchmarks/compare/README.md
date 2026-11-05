@@ -55,6 +55,34 @@ Without it, the runner measures each route of each app and prints a
 Markdown table: requests a second, median and 99th percentile latency,
 and the answers that were not the expected status.
 
+## Reading the numbers
+
+With 64 connections, one process is saturated, so a request's latency is
+mostly the time it waits for the requests ahead of it. The mean is then
+about the connections over the requests a second (Little's law), and it
+follows the cost of a request. The median does not: it depends on how
+fairly each framework's event loop and pool serve the waiting requests.
+A framework that lets most requests through quickly and makes a few wait
+long has a low median and a high 90th percentile, at the same mean.
+
+The first, indicative run measured a read at a median of 92 ms here and
+15 ms on FastAPI. Measured again at three loads, one uvicorn process each,
+against the same PostgreSQL:
+
+| Connections | ours: mean | ours: p50 | ours: p90 | FastAPI: mean | FastAPI: p50 | FastAPI: p90 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.71 ms | 1.63 ms | 2.09 ms | 1.14 ms | 1.06 ms | 1.45 ms |
+| 10 | 13.4 ms | 13.2 ms | 16.8 ms | 8.3 ms | 8.2 ms | 9.9 ms |
+| 64 | 78.7 ms | 73.0 ms | 136.8 ms | 52.3 ms | 12.0 ms | 164.7 ms |
+
+So a read costs this framework about 0.6 ms more than FastAPI's
+SQLAlchemy Core app, 1.5 times its time, not 6 times. Compare the means,
+and run once with `--connections 1` for the cost of one request without
+waiting. The ladder (`python -m benchmarks read --profile-dir DIR`) shows
+where the time goes: about a quarter in the ORM's unit of work (the
+session, loading, the identity map, events), and 1 to 4% in each layer of
+the default middleware.
+
 ## Publishing the numbers
 
 Publish them only with:
