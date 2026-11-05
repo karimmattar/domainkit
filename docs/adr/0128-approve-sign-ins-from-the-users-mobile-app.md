@@ -247,8 +247,9 @@ Clients live in a table:
 - **What a client has:** a generated `client_id`, a name (shown on the
   phone), allowed scopes, and an authentication method.
 - **Client authentication:**
-  - `client_secret_basic` and `client_secret_post`: the secret is 256
-    random bits, shown once and stored as a digest.
+  - `client_secret_basic` and `client_secret_post`: the operator
+    generates the secret (at least 32 characters) and pipes it to the
+    command, which never prints it and stores only its digest.
   - `private_key_jwt`, as FAPI asks: the client's public JWKS is stored.
     The assertion must use an asymmetric algorithm and name the client
     in `iss` and `sub`. Its `aud` is the issuer or the endpoint. Its

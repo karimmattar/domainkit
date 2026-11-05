@@ -948,18 +948,23 @@ binds the new phone. Check who is asking before you run it.
 ### `ciba`: register the clients that ask users' phones
 
 ```bash
-python manage.py ciba add "Acme Bank" --scope payments.add_payment
+openssl rand -base64 32 > acme.secret
+python manage.py ciba add "Acme Bank" --scope payments.add_payment < acme.secret
 python manage.py ciba add "Kiosk" --method private_key_jwt --jwks kiosk-jwks.json
 python manage.py ciba list
-python manage.py ciba rotate ciba_2kQ...
+openssl rand -base64 32 > acme.secret
+python manage.py ciba rotate ciba_2kQ... < acme.secret
 python manage.py ciba remove ciba_2kQ...
 ```
 
 `ciba` manages the OpenID Connect clients of the CIBA routes
 ([Sign-in approvals](../auth/ciba.md#oidc-clients)). `add` prints the new
-`client_id`, and the secret once: it is stored as its SHA-256. `list`
-(the default) shows each client's id, name, method, and scopes. `rotate`
-gives a client a new secret; the old one stops working. `remove` deletes
+`client_id`. A client's secret, for the secret methods, is read from the
+first line of the standard input: at least 32 characters, never printed,
+stored as its SHA-256. Generate it, and give it to the client yourself.
+`list` (the default) shows each client's id, name, method, and scopes.
+`rotate` gives a client the secret read the same way; the old one stops
+working. `remove` deletes
 a client: it can start and poll no more, and tokens it holds run out.
 
 | Option | What it does |

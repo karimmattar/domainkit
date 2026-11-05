@@ -709,9 +709,12 @@ def test_reprs_keep_secrets_out(app: App) -> None:
     assert repr(request).startswith("SignInRequest(id=")
     assert "pending" in repr(request)
     assert request.handle_digest not in repr(request)
-    client, secret = run_async(register_client("Acme", method="client_secret_post"))
-    assert secret is not None
-    assert secret not in repr(client)
+    secret = "s" * 40
+    client = run_async(
+        register_client("Acme", method="client_secret_post", secret=secret)
+    )
+    assert client.secret_digest is not None
+    assert client.secret_digest not in repr(client)
     assert "Acme" in repr(client)
 
 

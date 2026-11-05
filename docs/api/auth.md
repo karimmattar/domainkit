@@ -577,7 +577,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
-- `PollRefused`: A poll that gives no tokens (400); `code` says why, as CIBA names it.
+- `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
 - `SignInApproved`: A user approved a sign-in from one of their bound devices.
@@ -610,8 +610,8 @@ CIBA clients: registered by staff, authenticated on every request.
 - `ASSERTION_TYPE`: The `client_assertion_type` of `private_key_jwt` (RFC 7523).
 - `METHODS`: How clients prove who they are (`token_endpoint_auth_methods_supported`).
 - `authenticate_client`: The client the request proves it is, by the one method it uses.
-- `register`: Register a client; the client, and its secret (shown once) if it has one.
-- `rotate_secret`: A new secret for the client; the old one stops working now.
+- `register`: Register a client, which proves itself with `secret` or `jwks`.
+- `rotate_secret`: Give the client `secret`; the old one stops working now.
 
 ## `domainkit.contrib.ciba.events`
 
@@ -630,7 +630,7 @@ What a sign-in request may be refused, and what a poll may answer.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
-- `PollRefused`: A poll that gives no tokens (400); `code` says why, as CIBA names it.
+- `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `SignInExpired`: The request's time is up before the phone approved it.
 - `SignInNotFound`: The user has no sign-in request with that id that waits for an answer (404).

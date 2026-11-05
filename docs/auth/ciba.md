@@ -274,22 +274,23 @@ AUTH = {
 }
 ```
 
-Register each client with the `ciba` command:
+Register each client with the `ciba` command. Generate its secret, and
+pipe it in: the command reads it from the standard input, never prints
+it, and keeps only its SHA-256. Hand the secret to the client yourself.
 
 ```bash
-python manage.py ciba add "Acme Bank" --scope payments.add_payment
+openssl rand -base64 32 > acme.secret
+python manage.py ciba add "Acme Bank" --scope payments.add_payment < acme.secret
 ```
 
 ```text
 client_id: ciba_2kQ...
-client_secret: d9Z...
-Keep the secret now: it is shown once, and stored hashed.
 ```
 
 A client proves itself one of three ways:
 
-- `client_secret_basic` (the default) or `client_secret_post`: the secret
-  is 256 random bits, kept as its SHA-256.
+- `client_secret_basic` (the default) or `client_secret_post`: a secret of
+  at least 32 characters, kept as its SHA-256.
 - `private_key_jwt` (`--method private_key_jwt --jwks file.json`), as
   FAPI asks: the client signs an assertion (RFC 7523) with one of its
   public keys. It must use an asymmetric algorithm, and name the client

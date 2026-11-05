@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import secrets
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -106,9 +107,10 @@ def new_client(
     scopes: tuple[str, ...] = ("shop.change_product",),
     jwks: str | None = None,
 ) -> tuple[str, str | None]:
-    """Register a client: its id and secret."""
-    client, secret = run_async(
-        register("Acme Bank", scopes=scopes, method=method, jwks=jwks)
+    """Register a client: its id, and the secret it was given, if any."""
+    secret = None if jwks is not None else secrets.token_urlsafe(32)
+    client = run_async(
+        register("Acme Bank", scopes=scopes, method=method, jwks=jwks, secret=secret)
     )
     return client.client_id, secret
 
@@ -525,17 +527,23 @@ def test_a_shared_key_cannot_sign_id_tokens(provider: MakeProvider) -> None:
 
 
 def test_the_ciba_command_manages_clients(
-    provider: MakeProvider, tmp_path: Path
+    provider: MakeProvider, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """add, list, rotate, remove; a JWK Set from a file; refusals."""
-    provider()
+    """add, list, rotate, remove; secrets from stdin, never printed; refusals."""
+    from domainkit.contrib.ciba.management.commands.ciba import Command
+
+    op = provider()
+    given = ["first-secret-" + "x" * 30 + "\n"]
+    monkeypatch.setattr(Command, "read_secret", staticmethod(lambda: given[0]))
     out = io.StringIO()
     call_command("ciba", stdout=out)
     assert out.getvalue() == "No CIBA client is registered.\n"
     call_command("ciba", "add", "Acme", "--scope", "shop.change_product", stdout=out)
     lines = out.getvalue().splitlines()
     client_id = lines[1].removeprefix("client_id: ")
-    assert lines[2].startswith("client_secret: ")
+    assert len(lines) == 2  # The secret is never printed.
+    first = given[0].strip()
+    assert authorize(op, basic(client_id, first)).status_code == 200
     key = ec.generate_private_key(ec.SECP256R1())
     jwks = tmp_path / "jwks.json"
     jwks.write_text(
@@ -554,14 +562,25 @@ def test_the_ciba_command_manages_clients(
         str(jwks),
         stdout=out,
     )
-    assert "client_secret" not in out.getvalue()
+    assert out.getvalue().startswith("client_id: ")
     out = io.StringIO()
     call_command("ciba", "list", stdout=out)
     assert "'Acme'  client_secret_basic  scopes: shop.change_product" in out.getvalue()
     assert "'Kiosk'  private_key_jwt  scopes: -" in out.getvalue()
     out = io.StringIO()
+    given[0] = "second-secret-" + "y" * 30
     call_command("ciba", "rotate", client_id, stdout=out)
-    assert out.getvalue().startswith("client_secret: ")
+    assert out.getvalue() == (
+        f"The secret of {client_id} changed; the old one stopped working.\n"
+    )
+    assert authorize(op, basic(client_id, first)).status_code == 401
+    assert authorize(op, basic(client_id, given[0])).status_code == 200
+    given[0] = "short"
+    with pytest.raises(CommandError, match="at least 32"):
+        call_command("ciba", "rotate", client_id, stdout=out)
+    with pytest.raises(CommandError, match="at least 32"):
+        call_command("ciba", "add", "Short", stdout=out)
+    given[0] = "z" * 40
     call_command("ciba", "remove", client_id, stdout=out)
     for args in (
         ("rotate", client_id),

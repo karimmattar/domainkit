@@ -4,8 +4,9 @@ A client is registered with ``domainkit ciba add`` (or ``register``). It
 gets a generated ``client_id``, a name the phone shows, the permission
 keys its tokens may carry, and one way to prove itself:
 
-- ``client_secret_basic`` or ``client_secret_post``: a generated 256-bit
-  secret, shown once and kept as its SHA-256.
+- ``client_secret_basic`` or ``client_secret_post``: a secret of at least
+  32 characters, which the operator generates and gives the client. It is
+  never shown or kept here, only its SHA-256.
 - ``private_key_jwt`` (FAPI asks for it): the client's public keys (a JWK
   Set); it signs a short-lived assertion (RFC 7523) with an asymmetric
   algorithm, naming itself in ``iss`` and ``sub``, the provider in
@@ -65,17 +66,13 @@ ASSERTION_LENGTH: Final = 8192
 JTI_LENGTH: Final = 255
 SKEW: Final = timedelta(seconds=30)
 """How far a client's clock may be ahead of the provider's."""
-SECRET_BYTES: Final = 32
+SECRET_LENGTH: Final = 32
+"""Characters a client secret has at least: 32 random bytes in base64 have 44."""
 
 
 def _client_id() -> str:
     """A new client id: 128 random bits, URL-safe."""
     return f"ciba_{secrets.token_urlsafe(16)}"
-
-
-def _secret() -> str:
-    """A new client secret: 256 random bits, URL-safe."""
-    return secrets.token_urlsafe(SECRET_BYTES)
 
 
 def _checked_jwks(jwks: str) -> str:
@@ -106,22 +103,48 @@ def _checked_jwks(jwks: str) -> str:
     return json.dumps(loaded, separators=(",", ":"))
 
 
+def _checked_secret(secret: str) -> str:
+    """``secret``, long enough to hold 256 random bits.
+
+    Raises:
+        ImproperlyConfigured: It is shorter than ``SECRET_LENGTH``.
+    """
+    if len(secret) < SECRET_LENGTH:
+        raise ImproperlyConfigured(
+            f"A client secret has at least {SECRET_LENGTH} characters: generate "
+            "one, such as with: openssl rand -base64 32"
+        )
+    return secret
+
+
 async def register(
-    name: str, *, scopes: Collection[str] = (), method: str, jwks: str | None = None
-) -> tuple[CibaClient, str | None]:
-    """Register a client; the client, and its secret (shown once) if it has one.
+    name: str,
+    *,
+    scopes: Collection[str] = (),
+    method: str,
+    jwks: str | None = None,
+    secret: str | None = None,
+) -> CibaClient:
+    """Register a client, which proves itself with ``secret`` or ``jwks``.
+
+    The secret is given, never made or shown here: the operator generates
+    it and hands it to the client; only its SHA-256 is kept.
 
     Raises:
         ImproperlyConfigured: ``method`` is unknown; ``private_key_jwt``
-            without a usable ``jwks``, or a secret method with one.
+            without a usable ``jwks``; a secret method without a secret of
+            ``SECRET_LENGTH`` characters; or both, or neither.
     """
     if method not in METHODS:
         raise ImproperlyConfigured(f"method is one of {', '.join(METHODS)}.")
-    if (method == PRIVATE_KEY_JWT) != (jwks is not None):
+    if (method == PRIVATE_KEY_JWT) != (jwks is not None) or (
+        (jwks is None) == (secret is None)
+    ):
         raise ImproperlyConfigured(
-            "private_key_jwt takes the client's JWK Set; the secret methods none."
+            "private_key_jwt takes the client's JWK Set; the secret methods a secret."
         )
-    secret = None if jwks is not None else _secret()
+    if secret is not None:
+        _checked_secret(secret)
     client = CibaClient(
         client_id=_client_id(),
         name=name,
@@ -134,23 +157,23 @@ async def register(
     async with CibaUnitOfWork() as uow:
         await uow.clients.add(client)
         await uow.commit()
-    return client, secret
+    return client
 
 
-async def rotate_secret(client_id: str) -> str:
-    """A new secret for the client; the old one stops working now.
+async def rotate_secret(client_id: str, secret: str) -> None:
+    """Give the client ``secret``; the old one stops working now.
 
     Raises:
-        ImproperlyConfigured: No client has the id, or it signs assertions.
+        ImproperlyConfigured: No client has the id, it signs assertions, or
+            ``secret`` is too short.
     """
+    _checked_secret(secret)
     async with CibaUnitOfWork() as uow:
         client = await uow.clients.get(client_id)
         if client is None or client.secret_digest is None:
             raise ImproperlyConfigured(f"No client with a secret has id {client_id!r}.")
-        secret = _secret()
         await uow.clients.replace(client, secret_digest=secret_digest(secret))
         await uow.commit()
-    return secret
 
 
 async def authenticate_client(

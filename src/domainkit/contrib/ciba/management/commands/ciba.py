@@ -1,5 +1,14 @@
-"""``ciba``: register, list, rotate, and remove CIBA clients."""
+"""``ciba``: register, list, rotate, and remove CIBA clients.
 
+A client's secret is read from the standard input, one line, never from
+the command line (where shell history and process lists keep it) and
+never printed: generate it, and pipe it in::
+
+    openssl rand -base64 32 | tee acme.secret | manage.py ciba add "Acme Bank"
+"""
+
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +24,8 @@ class Command(ActionCommand):
 
     help = "Register, list, rotate, and remove the OIDC clients that use CIBA."
     default_action = "list"
+    read_secret: Callable[[], str] = staticmethod(lambda: sys.stdin.readline())
+    """Read a client's secret: a line of the standard input; tests replace it."""
 
     @action(name="list", help="every client: its id, name, method, and scopes")
     async def listed(self) -> None:
@@ -30,7 +41,7 @@ class Command(ActionCommand):
             )
 
     @action(
-        help="register a client; a secret is shown once",
+        help="register a client; its secret is read from the standard input",
         options=[
             option("name", help="what the user's phone shows"),
             option("--scope", nargs="*", default=[], help="permission keys allowed"),
@@ -40,35 +51,33 @@ class Command(ActionCommand):
         operator=True,
     )
     async def add(self, **options: Any) -> None:  # noqa: ANN401 - the options.
-        """Register the client and print its id, and its secret if any."""
+        """Register the client and print its id."""
         path: Path | None = options["jwks"]
         try:
             jwks = None if path is None else _read(path)
-            client, secret = await register(
+            client = await register(
                 options["name"],
                 scopes=options["scope"],
                 method=options["method"],
                 jwks=jwks,
+                secret=None if jwks is not None else self._secret(),
             )
         except (ImproperlyConfigured, OSError) as exc:
             raise CommandError(str(exc)) from None
         self.write(f"client_id: {client.client_id}")
-        if secret is not None:
-            self.write(f"client_secret: {secret}")
-            self.write("Keep the secret now: it is shown once, and stored hashed.")
 
     @action(
-        help="give a client a new secret; the old one stops working",
+        help="give a client the secret read from the standard input; the old stops",
         options=[option("client_id")],
         operator=True,
     )
     async def rotate(self, *, client_id: str) -> None:
-        """Print the new secret."""
+        """Give the client its new secret."""
         try:
-            secret = await rotate_secret(client_id)
+            await rotate_secret(client_id, self._secret())
         except ImproperlyConfigured as exc:
             raise CommandError(str(exc)) from None
-        self.write(f"client_secret: {secret}")
+        self.write(f"The secret of {client_id} changed; the old one stopped working.")
 
     @action(
         help="remove a client: it can start and poll no more; tokens it holds run out",
@@ -83,6 +92,10 @@ class Command(ActionCommand):
         if not removed:
             raise CommandError(f"No client has id {client_id!r}.")
         self.write(f"Removed {client_id}.")
+
+    def _secret(self) -> str:
+        """The secret on the standard input's first line, without its newline."""
+        return self.read_secret().strip()
 
 
 def _read(path: Path) -> str:
