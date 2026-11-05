@@ -53,6 +53,11 @@ and a status.
   pending signup before mailing the address: when that mail failed, the
   worker's retry told nothing. The mail now goes first, as it did for
   links.
+- Two codes issued at once for one address or number (two signups with
+  one address, run by two workers) broke the codes table's unique key on
+  PostgreSQL: one task failed, and its code went out only on a retry. A
+  code is issued with one upsert now, and the later one is the code that
+  works.
 - In staging and production, a project whose audited database keeps a
   schema per tenant (`TENANCY.SCHEMA_DATABASES`) refused to start: the
   startup check asked the database's own schema for the trail's triggers,

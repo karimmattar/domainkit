@@ -26,7 +26,8 @@ from datetime import datetime
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import delete, insert, update
+from sqlalchemy import delete, update
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import signing
@@ -99,25 +100,31 @@ class CodeStore:
         """Make a code for ``purpose`` and ``target``; return it, to send.
 
         The code before it, for the same purpose and target, stops working.
+        One statement, an upsert: two codes issued at once for one target
+        (two signups with one address, run by two workers) both succeed,
+        and the later one is the code that works.
         """
         moment = now or utc_now()
         code, code_id = new_code(), uuid.uuid4()
-        await self.session.execute(
-            delete(auth_codes).where(
-                auth_codes.c.purpose == purpose, auth_codes.c.target == target
-            )
+        fresh = {
+            "id": code_id,
+            "user_id": user_id,
+            "signup_id": signup_id,
+            "digest": code_digest(code_id, code, signing.derive_key(CODE_PURPOSE)),
+            "attempts": 0,
+            "created_at": moment,
+            "expires_at": moment + auth_settings().CODE_TTL,
+        }
+        dialect = self.session.get_bind().dialect.name
+        statement = (postgresql if dialect == "postgresql" else sqlite).insert(
+            auth_codes
         )
         await self.session.execute(
-            insert(auth_codes).values(
-                id=code_id,
-                purpose=purpose,
-                target=target,
-                user_id=user_id,
-                signup_id=signup_id,
-                digest=code_digest(code_id, code, signing.derive_key(CODE_PURPOSE)),
-                attempts=0,
-                created_at=moment,
-                expires_at=moment + auth_settings().CODE_TTL,
+            statement.values(
+                purpose=purpose, target=target, **fresh
+            ).on_conflict_do_update(
+                index_elements=[auth_codes.c.purpose, auth_codes.c.target],
+                set_=fresh,
             )
         )
         return code

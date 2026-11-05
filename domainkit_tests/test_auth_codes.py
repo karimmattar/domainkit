@@ -245,3 +245,33 @@ def test_forgetting_a_users_credentials_forgets_their_codes(identity: Api) -> No
     assert [row["user_id"] for row in stored_codes()] == [frank]
     run_async(forget(frank))
     assert stored_codes() == []
+
+
+def test_codes_issued_at_once_for_one_target_both_succeed(identity: Api) -> None:
+    """Two workers, two signups with one address: neither fails, one code stays.
+
+    Deleting the code before and inserting the new one let both deletes see
+    nothing, and the second insert broke the unique key (PostgreSQL), so its
+    task failed, to be retried later. One upsert holds.
+    """
+    import asyncio
+
+    identity()
+    if not connections.config().URL.get_secret_value().startswith("postgresql"):
+        pytest.skip("concurrent writes need PostgreSQL: SQLite runs one at a time")
+    target = target_of("pat@example.com")
+
+    async def issue() -> str:
+        async with AuthUnitOfWork() as uow:
+            code = await uow.verification_codes.issue(EMAIL_VERIFICATION, target)
+            await asyncio.sleep(0.05)  # Both transactions are open at once.
+            await uow.commit()
+        return code
+
+    async def both() -> list[str]:
+        return list(await asyncio.gather(issue(), issue()))
+
+    codes = run_async(both())
+
+    assert len(codes) == 2
+    assert len(stored_codes()) == 1
