@@ -51,7 +51,6 @@ from fastapi import APIRouter, Depends, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from domainkit.contrib.messaging import enqueue, task
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError
 
@@ -531,6 +530,9 @@ async def send_mobile_verification(user_id: UUID) -> None:
 
 def warn_links() -> None:
     """Warn that links are deprecated (ADR 0126): codes replace them in 2.0."""
+    # Imported here: a process that never sends a link never loads it.
+    from domainkit.deprecation import DomainkitDeprecationWarning
+
     warnings.warn(
         'Links are deprecated: set AUTH.VERIFICATION = "code"; links are '
         "removed in domainkit 2.0.",
