@@ -160,7 +160,7 @@ finish.
 
 ## About these pages
 
-These pages describe domainkit 1.x. The pages of each release are under
+These pages describe domainkit 2.x. The pages of each release are under
 its tag in the repository (`docs/` at `vX.Y.Z`). The pages on `main`
 describe the next release. [Upgrading](upgrading.md) and the
 [changelog](../CHANGELOG.md) say what changes between versions, and

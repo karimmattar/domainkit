@@ -22,9 +22,9 @@ A version number has three parts: `MAJOR.MINOR.PATCH`.
 
 | Release | May contain | May not contain |
 | --- | --- | --- |
-| `1.x.Y` (patch) | Bug and security fixes; documentation. Always safe to take. | A new feature, setting, or deprecation; any change a project relies on, except the security exception below. |
-| `1.X.0` (minor) | New features, settings, commands, routes, and checks; new problem codes; deprecations, each with its replacement; a new optional table or column, with its migration; a raised dependency floor, or a dropped Python or PostgreSQL version that its maintainers stopped fixing. | Removing or renaming anything public; changing a default; changing what a public name, setting, route, or format means; a new error or deployment check that refuses what 1.0 accepted. |
-| `2.0.0` (major) | Removing what 1.x deprecated, and changes to defaults and formats. | |
+| `2.x.Y` (patch) | Bug and security fixes; documentation. Always safe to take. | A new feature, setting, or deprecation; any change a project relies on, except the security exception below. |
+| `2.X.0` (minor) | New features, settings, commands, routes, and checks; new problem codes; deprecations, each with its replacement; a new optional table or column, with its migration; a raised dependency floor, or a dropped Python or PostgreSQL version that its maintainers stopped fixing. | Removing or renaming anything public; changing a default; changing what a public name, setting, route, or format means; a new error or deployment check that refuses what 2.0 accepted. |
+| `3.0.0` (major) | Removing what 2.x deprecated, and changes to defaults and formats. 2.0.0 was this for 1.x ([upgrading.md](upgrading.md#18-to-20)). | |
 
 Before 1.0, the minor number played the role of the major one: 0.x minor
 releases changed defaults and broke behaviours, each listed in
@@ -32,12 +32,15 @@ releases changed defaults and broke behaviours, each listed in
 
 A project pins a compatible range: from the release it was made with, up
 to the next major release. The `pyproject.toml` that `domainkit init`
-writes with 1.6.0 has:
+writes with 2.0.0 has:
 
 ```toml
 [project]
-dependencies = ["domainkit[postgres,redis,sqlite]>=1.6.0,<2"]
+dependencies = ["domainkit[postgres,redis,sqlite]>=2.0.0,<3"]
 ```
+
+A project made with 1.x pins `<2`: it moves to 2.0 on purpose, with
+[upgrading.md](upgrading.md#18-to-20).
 
 ## What is public
 
@@ -74,9 +77,9 @@ changed only in 2.0:
   (`dk1:`) and blind indexes, wrapped data keys, signed values
   (`domainkit.signing`), tokens and cursors, webhook signatures (Standard
   Webhooks' `v1`), the audit chain, its seals, checkpoints, and exports,
-  and the outbox's messages. So a 1.x worker runs what another 1.x
-  release wrote, and a value written by one 1.x release is read by every
-  later one.
+  and the outbox's messages. So a worker runs what another release of its
+  major version wrote, and a value written by one release is read by every
+  later one. 2.0 changed none of these formats: it reads what 1.x wrote.
 - **The extras** (`domainkit[postgres]`, `domainkit[keys]`, ...) and what
   each one makes work. Removing or renaming an extra breaks a project
   without a clear error: pip only warns about an extra it does not know,
@@ -97,7 +100,7 @@ changed only in 2.0:
 
 Metric and span names and labels
 ([reference/observability.md](reference/observability.md)) are kept
-within 1.x where possible; a change to one gets a changelog entry of its
+within a major version where possible; a change to one gets a changelog entry of its
 own.
 
 Until 0.9.2 the rule named only what a package's `__init__` exported.
@@ -123,8 +126,9 @@ A public API is never removed without warning:
 
 2. The changelog lists it under **Deprecated**, with the replacement, and
    [upgrading.md](upgrading.md) says what to write instead.
-3. From 1.0, it is removed only in the next major release (2.0 for what
-   1.x deprecates), and the changelog lists it under **Removed**. Before
+3. From 1.0, it is removed only in the next major release (2.0 removed
+   what 1.x deprecated; 3.0 removes what 2.x deprecates), and the
+   changelog lists it under **Removed**. Before
    1.0, the next minor release could remove it.
 
 A security fix may break compatibility in a patch release, when there is
@@ -195,32 +199,31 @@ unchanged and without a warning, through 1.x. 2.0 makes them no promise:
 ## Security fixes and support
 
 [SECURITY.md](../SECURITY.md) says how to report a vulnerability, and how
-fast each step is answered. From 1.0, these release lines get fixes
-(INFRA-18):
+fast each step is answered. Since 2.0.0 (2026-11-05), these release
+lines get fixes (INFRA-18):
 
 | Release line | Gets | For how long |
 | --- | --- | --- |
-| The latest minor of the current major (`1.X`, until 2.0 is released) | Every fix, of bugs and of vulnerabilities of every severity, as patch releases (`1.X.Y`) | Until the next minor is released |
-| The last 1.x minor, once 2.0 is released | Fixes for critical and high severity vulnerabilities, as patch releases | 12 months from the release of 2.0.0 |
-| Every other 1.x minor | Nothing: upgrade to the latest minor, which breaks nothing | |
-| Every 0.x release | Nothing: upgrade to 1.x ([upgrading.md](upgrading.md)) | |
+| The latest minor of the current major (`2.X`) | Every fix, of bugs and of vulnerabilities of every severity, as patch releases (`2.X.Y`) | Until the next minor is released |
+| 1.8, the last 1.x minor | Fixes for critical and high severity vulnerabilities, as patch releases (`1.8.Y`) | Until 2027-11-05, 12 months from the release of 2.0.0 |
+| The last 2.x minor, once 3.0 is released | Fixes for critical and high severity vulnerabilities, as patch releases | 12 months from the release of 3.0.0 |
+| Every other 1.x and 2.x minor | Nothing: upgrade to the latest minor of its major, which breaks nothing | |
+| Every 0.x release | Nothing: upgrade to 1.8, then to 2.0 ([upgrading.md](upgrading.md)) | |
 
 - The severity is the one that `SECURITY.md`'s steps confirm. Each fix is
   published as a GitHub security advisory, which names the patch releases
   that carry it.
-- A fix that cannot be backported to the last 1.x minor without a
-  breaking change is not backported: the advisory says so, and says what
-  to upgrade to.
+- A fix that cannot be backported to 1.8 without a breaking change is not
+  backported: the advisory says so, and says what to upgrade to.
 - Only the newest patch release of a supported line is supported. Upgrade
   within a line as soon as a patch is out.
 - The Python versions a release supports are the ones its
   `requires-python` admits; CI tests every one of them (below). A Python
   version that its maintainers stop fixing is dropped in the next minor
   release.
-- 2.0's own support statement says what its last minor gets after 3.0.
-- Fixes for the last 1.x minor after 2.0 are made on a `1.x` maintenance
-  branch. `release.yml` and the rulesets, which release only commits of
-  `main`, gain that branch when 2.0 is released.
+- Fixes for 1.8 are made on a `1.x` maintenance branch, made from the
+  `v1.8.0` tag when the first one is needed. `release.yml` and the
+  rulesets, which release only commits of `main`, gain that branch then.
 
 ## Supported Python and dependencies
 
