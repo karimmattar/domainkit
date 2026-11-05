@@ -8,6 +8,7 @@ from domainkit.apps import registry
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging.budget import Budget
 from domainkit.contrib.messaging.dispatch import BrokerWorkers
+from domainkit.contrib.messaging.outbox import outbox_targets
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.messaging.worker import Worker
 from domainkit.db.routing import router
@@ -85,7 +86,7 @@ class Command(BaseCommand):
             except ImportError as exc:  # pragma: no cover - needs the extra absent.
                 raise CommandError("--metrics-port needs domainkit[metrics].") from exc
             start_http_server(metrics_port, addr=metrics_address)
-        targets = (database,) if database else router.hosting_targets()
+        targets = (database,) if database else outbox_targets()
         aliases = dict.fromkeys(
             alias for target in targets for alias in router.aliases_of(target)
         )

@@ -129,5 +129,10 @@ class AuditConfig(DomainConfig):
         await write(uow.session, event_rows(events, config))
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
-        """Every hosting target: events are audited where they commit."""
-        return frozenset(router.hosting_targets())
+        """Every hosting target, where events are audited as they commit.
+
+        And ``AUDIT.DATABASE``, which keeps the explicit records and the
+        ledger states, when no domain lives there.
+        """
+        config = registry.settings(AuditSettings)
+        return frozenset({*router.hosting_targets(), config.DATABASE})

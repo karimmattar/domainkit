@@ -44,6 +44,7 @@ from domainkit.tasks import supervise
 from .breaker import Breaker, Watched
 from .budget import Budget
 from .ordering import Promoted
+from .outbox import outbox_targets
 from .settings import MessagingSettings
 from .worker import (
     HELPER_GRACE,
@@ -580,7 +581,5 @@ def publish_committed(
 def _hosting_aliases() -> frozenset[str]:
     """Every database alias that holds an outbox."""
     return frozenset(
-        alias
-        for target in router.hosting_targets()
-        for alias in router.aliases_of(target)
+        alias for target in outbox_targets() for alias in router.aliases_of(target)
     )

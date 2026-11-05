@@ -9,7 +9,21 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- An app's home database cannot keep a schema per tenant: `AUDIT.DATABASE`,
+  `MESSAGING.DATABASE`, `IDEMPOTENCY.DATABASE`, and the database that
+  `DATABASE_ROUTING` gives a shared app (such as `auth` or `flags`) refuse
+  one of `TENANCY.SCHEMA_DATABASES`, as they refuse a shard group. Its own
+  schema holds no tables, so the records made outside a tenant (operator
+  commands, refused logins, ledger states, periodic tasks) failed. Name
+  another alias for these settings, and run plain `migrate` for it.
+
 ### Fixed
+
+- `AUDIT.DATABASE` and `MESSAGING.DATABASE` on an alias where no domain
+  lives had no tables: `migrate` left them out. `migrate` makes them now,
+  and `runworker` and the publisher work the home outbox there.
 
 - In staging and production, a project whose audited database keeps a
   schema per tenant (`TENANCY.SCHEMA_DATABASES`) refused to start: the
