@@ -7,6 +7,7 @@ from domainkit.ddd import BusinessRuleViolation, Conflict, NotFound
 from domainkit.http.errors import APIError
 
 __all__ = [
+    "DeviceLoginOff",
     "DeviceNotFound",
     "DeviceSignatureRefused",
     "PasskeyNotFound",
@@ -40,6 +41,12 @@ class DeviceSignatureRefused(APIError):
             "Sign this request with this device's key.",
             code="device_signature_refused",
         )
+
+
+class DeviceLoginOff(NotFound):
+    """``DEVICES.DEVICE_LOGIN`` is off: devices do not log in here (404)."""
+
+    code = "device_login_off"
 
 
 class PasskeysOff(NotFound):

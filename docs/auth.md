@@ -81,6 +81,7 @@ deployed service from starting ([Deny by default](auth/routes.md#deny-by-default
 | [Identity providers](auth/identity.md) | OpenID Connect, OAuth 2, SAML, and LDAP (`domainkit.contrib.identity`). |
 | [Passkeys and bound devices](auth/devices.md) | WebAuthn passkeys, signed requests, and push tokens (`domainkit.contrib.devices`). |
 | [Phone numbers](auth/phones.md) | Verifying a number with a text message (`domainkit.contrib.phones`). |
+| [Sign-in approvals](auth/ciba.md) | Sign-ins approved from the user's phone, by push or QR code; OIDC CIBA; the mobile app as identity (`domainkit.contrib.ciba`). |
 
 ## Settings
 
@@ -212,7 +213,7 @@ Each `PREVIOUS_KEYS` entry:
 `REQUIRE_ROUTE_RULES` replaces it ([reference/settings.md](reference/settings.md)).
 The settings of the other auth domains are on their pages:
 [`IDENTITY`](auth/identity.md#settings), [`DEVICES`](auth/devices.md#settings),
-and [`PHONES`](auth/phones.md#settings).
+[`PHONES`](auth/phones.md#settings), and [`CIBA`](auth/ciba.md#settings).
 
 ## Checks
 

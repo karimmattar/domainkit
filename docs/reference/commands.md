@@ -929,6 +929,53 @@ SHA-256, with `AUTH.CLIENT_CERT.MATCH = "fingerprint"`.
 | `--name` | What it is for (default: `certificate`). |
 | `--operator` | Who runs it. |
 
+### `unbinddevices`: unbind a lost phone
+
+```bash
+python manage.py unbinddevices ann
+```
+
+`unbinddevices` unbinds every device of a user who lost their phone,
+forgets its push tokens, and ends every session of the user. With
+`CIBA.APPROVE_LOGINS`, the user then logs in with their other factors and
+binds the new phone. Check who is asking before you run it.
+
+| Option | What it does |
+| --- | --- |
+| `username` | Whose devices. |
+| `--operator` | Who runs it. |
+
+### `ciba`: register the clients that ask users' phones
+
+```bash
+openssl rand -base64 32 > acme.secret
+python manage.py ciba add "Acme Bank" --scope payments.add_payment < acme.secret
+python manage.py ciba add "Kiosk" --method private_key_jwt --jwks kiosk-jwks.json
+python manage.py ciba list
+openssl rand -base64 32 > acme.secret
+python manage.py ciba rotate ciba_2kQ... < acme.secret
+python manage.py ciba remove ciba_2kQ...
+```
+
+`ciba` manages the OpenID Connect clients of the CIBA routes
+([Sign-in approvals](../auth/ciba.md#oidc-clients)). `add` prints the new
+`client_id`. A client's secret, for the secret methods, is read from the
+first line of the standard input: at least 32 characters, never printed,
+stored as its SHA-256. Generate it, and give it to the client yourself.
+`list` (the default) shows each client's id, name, method, and scopes.
+`rotate` gives a client the secret read the same way; the old one stops
+working. `remove` deletes
+a client: it can start and poll no more, and tokens it holds run out.
+
+| Option | What it does |
+| --- | --- |
+| `name` | What the user's phone shows (`add`). |
+| `--scope` | The permission keys its tokens may carry (`add`). |
+| `--method` | `client_secret_basic` (the default), `client_secret_post`, or `private_key_jwt` (`add`). |
+| `--jwks` | A file of the client's public JWK Set, for `private_key_jwt` (`add`). |
+| `client_id` | The client (`rotate`, `remove`). |
+| `--operator` | Who runs it (`add`, `rotate`, `remove`). |
+
 ## Audit, evidence, privacy, and keys
 
 ### `audit`: read and protect the audit trail

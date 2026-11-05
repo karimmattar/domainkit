@@ -45,7 +45,7 @@ from .settings import DevicesSettings
 from .stores import BoundDevice, DevicesUnitOfWork
 from .webauthn import EDDSA, ES256, WebAuthnError, b64decode, verify_signature
 
-__all__ = ["DeviceSigned", "device_key", "signed_message"]
+__all__ = ["DeviceSigned", "device_key", "signed_message", "signing_device"]
 
 DEVICE_ID: Final = "x-device-id"
 DEVICE_TIME: Final = "x-device-time"
