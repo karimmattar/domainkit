@@ -405,6 +405,47 @@ async def test_a_schema_databases_transactions_work_in_the_tenants_schema(
     assert after != "tenant_acme"
 
 
+@pytest.mark.parametrize("reads", ["transaction", "statements", "snapshot"])
+async def test_a_read_only_unit_of_work_reads_the_tenants_schema(
+    database_access: None, reads: str
+) -> None:
+    """Each way of reading works in the tenant's schema, ``STATEMENTS`` too.
+
+    ``STATEMENTS`` reads without a transaction, where ``SET LOCAL`` sets
+    nothing: it reads in one, as through PgBouncer.
+    """
+    import os
+
+    from sqlalchemy import text
+
+    from domainkit.db import SqlAlchemyUnitOfWork, connections
+
+    url = os.environ.get("DOMAINKIT_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("set DOMAINKIT_TEST_POSTGRES_URL")
+
+    class Work(SqlAlchemyUnitOfWork):
+        database = "default"
+
+    with override_settings(
+        DATABASES={"default": {"URL": url}},
+        TENANCY={"SCHEMA_DATABASES": ["default"]},
+    ):
+        try:
+            async with connections.engine("default").begin() as connection:
+                await connection.execute(
+                    text('CREATE SCHEMA IF NOT EXISTS "tenant_acme"')
+                )
+            with tenant("acme"):
+                async with Work(reads=reads) as uow:
+                    first = await uow.session.scalar(text("SELECT current_schema()"))
+                    second = await uow.session.scalar(text("SELECT current_schema()"))
+        finally:
+            await connections.close_all()
+
+    assert (first, second) == ("tenant_acme", "tenant_acme")
+
+
 class NotesWork(UnitOfWork):
     """A unit of work over ``Notes``, committing nothing anywhere."""
 

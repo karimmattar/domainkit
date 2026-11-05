@@ -18,6 +18,13 @@ and a status.
   schema holds no tables, so the records made outside a tenant (operator
   commands, refused logins, ledger states, periodic tasks) failed. Name
   another alias for these settings, and run plain `migrate` for it.
+- On asyncpg outside PgBouncer, `POOL_PRE_PING` tests only a connection
+  that rested in the pool for a second or more. One the server closed is
+  still replaced as it leaves the pool: asyncpg sees that without a round
+  trip. A busy process sends no pings: one fewer round trip for each
+  connection a request takes, two for an authenticated read (ADR 0127).
+- A read-only session no longer parses the database's URL each time it
+  opens: a `Reads.STATEMENTS` read costs about a tenth less.
 
 ### Removed
 
@@ -59,6 +66,11 @@ and a status.
 
 ### Security
 
+- A read-only unit of work with `reads=Reads.STATEMENTS`, run as a tenant
+  on a database of `TENANCY.SCHEMA_DATABASES`, read the database's own
+  schema, not the tenant's: `SET LOCAL search_path` sets nothing outside a
+  transaction, and those reads run without one. It reads in a transaction
+  there now, as `Reads.TRANSACTION` does.
 - A new project's `Dockerfile` pins its base image by digest, and `init`
   writes `.github/dependabot.yml`, so Dependabot proposes the new digest,
   the lock's updates, and the workflow's actions each week (audit A7-2,

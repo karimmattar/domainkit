@@ -74,6 +74,8 @@ from domainkit.db.connections import (
     _drop_detail,
     _enforce_foreign_keys,
     _keep_cut_off,
+    _note_returned,
+    _ping_idle,
     _read_alone,
     _read_alone_no_params,
     _replace_closed,
@@ -1181,6 +1183,7 @@ def own_listeners(engine: AsyncEngine) -> list[Any]:
         *dialect.handle_error,
         *pool.connect,
         *pool.checkout,
+        *pool.checkin,
         *pool.reset,
         *sync.dispatch.begin,
     ]
@@ -1212,7 +1215,11 @@ def test_engines_never_share_a_listener() -> None:
     unpinged_listeners = [_keep_cut_off, _drop_detail, _replace_closed, _set_local]
     for build, config, functions in [
         (create_read_engine, network, read),
-        (create_engine, network, [_keep_cut_off, _drop_detail, _set_local]),
+        (
+            create_engine,
+            network,
+            [_keep_cut_off, _drop_detail, _ping_idle, _note_returned, _set_local],
+        ),
         (create_engine, unpinged, unpinged_listeners),
         (create_engine, local, [_drop_detail, _enforce_foreign_keys, _begin_snapshot]),
     ]:

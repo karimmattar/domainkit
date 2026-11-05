@@ -898,7 +898,7 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
 | `Reads` | On PostgreSQL | Statements see |
 | --- | --- | --- |
 | `TRANSACTION` (`readonly=True` alone) | A `READ ONLY` transaction: `BEGIN`, the statements, `ROLLBACK`. | What was committed when each statement started. |
-| `STATEMENTS` | Each statement on its own: no `BEGIN`, no `ROLLBACK`. | What was committed when each statement started. |
+| `STATEMENTS` | Each statement on its own: no `BEGIN`, no `ROLLBACK`. In a tenant's schema (`TENANCY.SCHEMA_DATABASES`) and through PgBouncer, as `TRANSACTION`. | What was committed when each statement started. |
 | `SNAPSHOT` | A `REPEATABLE READ`, `READ ONLY` transaction. | What was committed when the first statement started. |
 
 - **Snapshots.** Two statements of a `STATEMENTS` or `TRANSACTION` unit
