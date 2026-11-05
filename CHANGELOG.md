@@ -9,6 +9,16 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** an app's home database cannot keep a schema per tenant: `AUDIT.DATABASE`,
+  `MESSAGING.DATABASE`, `IDEMPOTENCY.DATABASE`, and the database that
+  `DATABASE_ROUTING` gives a shared app (such as `auth` or `flags`) refuse
+  one of `TENANCY.SCHEMA_DATABASES`, as they refuse a shard group. Its own
+  schema holds no tables, so the records made outside a tenant (operator
+  commands, refused logins, ledger states, periodic tasks) failed. Name
+  another alias for these settings, and run plain `migrate` for it.
+
 ### Removed
 
 - **Breaking:** the links of password resets, email verification, and
@@ -25,11 +35,13 @@ and a status.
 
 ### Fixed
 
+- `AUDIT.DATABASE` and `MESSAGING.DATABASE` on an alias where no domain
+  lives had no tables: `migrate` left them out. `migrate` makes them now,
+  and `runworker` and the publisher work the home outbox there.
 - A signup by code for an address that has an account deleted the
   pending signup before mailing the address: when that mail failed, the
   worker's retry told nothing. The mail now goes first, as it did for
   links.
-
 - In staging and production, a project whose audited database keeps a
   schema per tenant (`TENANCY.SCHEMA_DATABASES`) refused to start: the
   startup check asked the database's own schema for the trail's triggers,

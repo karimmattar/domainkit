@@ -16,14 +16,13 @@ from typing import Any, Final
 from sqlalchemy import Row, not_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.ddd.personal import fields_about, subjects_in
 
 from .admin import blanked
+from .outbox import outbox_targets
 from .registry import get_task
-from .settings import MessagingSettings
 from .tables import BLANKED, DEAD, HELD, PENDING, messages
 from .worker import _event_classes
 
@@ -33,10 +32,11 @@ KEPT: Final = (PENDING, HELD, DEAD)
 
 def outboxes() -> tuple[str, ...]:
     """Every alias holding an outbox: ``MESSAGING.DATABASE`` and each host's."""
-    aliases = [registry.settings(MessagingSettings).DATABASE]
-    for target in router.hosting_targets():
-        aliases.extend(router.aliases_of(target))
-    return tuple(dict.fromkeys(aliases))
+    return tuple(
+        dict.fromkeys(
+            alias for target in outbox_targets() for alias in router.aliases_of(target)
+        )
+    )
 
 
 def subjects_of(row: Row[Any], events: Mapping[str, type[Any]]) -> frozenset[str]:

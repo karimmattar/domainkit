@@ -72,6 +72,16 @@ setting:
 `auth.E006` (link URLs over `http://`) is retired with the settings it
 checked.
 
+### A home database cannot keep a schema per tenant
+
+`AUDIT.DATABASE`, `MESSAGING.DATABASE`, `IDEMPOTENCY.DATABASE`, and the
+database that `DATABASE_ROUTING` gives a shared app (`auth`, `flags`, ...)
+must not be one of `TENANCY.SCHEMA_DATABASES`: the application refuses to
+start. Such a database holds no tables in its own schema, so the records
+made outside a tenant failed. Put the shared tables on another alias, as
+[Multi-tenancy](tenancy.md#a-schema-per-tenant-postgresql) shows, and run
+plain `migrate` for it.
+
 ## 1.7 to 1.8
 
 1.8 adds what ADR 0126 decides: users identified by the fields a project
