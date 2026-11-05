@@ -15,6 +15,7 @@ __all__ = [
     "ApprovalRequired",
     "AuthorizationPending",
     "DifferentNetwork",
+    "OAuthError",
     "PollRefused",
     "QrCodeExpired",
     "SignInExpired",
@@ -22,6 +23,7 @@ __all__ = [
     "SignInUnknown",
     "SlowDown",
     "WrongMatchCode",
+    "invalid_client",
 ]
 
 
@@ -151,3 +153,36 @@ class SignInUnknown(PollRefused):
             "No sign-in waits with that handle.",
             code="invalid_grant",
         )
+
+
+class OAuthError(Exception):
+    """An OAuth error the OpenID Provider routes answer in OAuth's format.
+
+    ``{"error": error, "error_description": description}``, with ``status``
+    (400, or 401 for ``invalid_client``) and ``Cache-Control: no-store``.
+    """
+
+    def __init__(
+        self,
+        error: str,
+        description: str,
+        *,
+        status_code: int = status.HTTP_400_BAD_REQUEST,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        """Keep what the answer carries."""
+        super().__init__(description)
+        self.error = error
+        self.description = description
+        self.status_code = status_code
+        self.headers = headers or {}
+
+
+def invalid_client(description: str, *, basic: bool = False) -> OAuthError:
+    """``401 invalid_client``; a challenge where Basic authentication was tried."""
+    return OAuthError(
+        "invalid_client",
+        description,
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        headers={"WWW-Authenticate": 'Basic realm="ciba"'} if basic else None,
+    )

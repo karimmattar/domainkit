@@ -533,9 +533,7 @@ def test_a_bound_device_logs_in_by_its_signature(app: App) -> None:
         answer = phone.send("POST", "/auth/devices/login")
         assert answer.status_code == 200, answer.json()
         assert answer.headers["Cache-Control"] == "no-store"
-        me = phone.client.get(
-            "/auth/me", headers=bearer(answer.json()["access_token"])
-        )
+        me = phone.client.get("/auth/me", headers=bearer(answer.json()["access_token"]))
         assert me.json()["username"] == "alice"
 
         replayed = phone.client.post(

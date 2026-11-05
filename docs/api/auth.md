@@ -592,7 +592,17 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 
 The routes of sign-ins approved from the phone: the web's, and the phone's.
 
-- `router`: The routes: sign-ins approved from the phone: the web's, and the phone's.
+- `router`: The routes: the web's sign-ins, and the phone's answers.
+
+## `domainkit.contrib.ciba.clients`
+
+CIBA clients: registered by staff, authenticated on every request.
+
+- `ASSERTION_TYPE`: The `client_assertion_type` of `private_key_jwt` (RFC 7523).
+- `METHODS`: How clients prove who they are (`token_endpoint_auth_methods_supported`).
+- `authenticate_client`: The client the request proves it is, by the one method it uses.
+- `register`: Register a client; the client, and its secret (shown once) if it has one.
+- `rotate_secret`: A new secret for the client; the old one stops working now.
 
 ## `domainkit.contrib.ciba.events`
 
@@ -610,6 +620,7 @@ What a sign-in request may be refused, and what a poll may answer.
 - `ApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PollRefused`: A poll that gives no tokens (400); `code` says why, as CIBA names it.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `SignInExpired`: The request's time is up before the phone approved it.
@@ -617,12 +628,22 @@ What a sign-in request may be refused, and what a poll may answer.
 - `SignInUnknown`: No request has that handle, or it was redeemed, or is another client's.
 - `SlowDown`: A poll came before the interval: wait 5 seconds more from now on.
 - `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
+- `invalid_client`: `401 invalid_client`; a challenge where Basic authentication was tried.
 
 ## `domainkit.contrib.ciba.gate`
 
 The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
 
 - `approved_from_the_phone`: Let the login of `user` through if the app is not their identity, or signs it.
+
+## `domainkit.contrib.ciba.oidc`
+
+The OpenID Provider's CIBA routes, for clients that ask a user's phone.
+
+- `CIBA_GRANT`: The grant type a client polls the token endpoint with (CIBA 10.1).
+- `id_token_signer`: `AUTH.JWT`'s keys, as `JWTAuthentication` loads and checks them.
+- `router`: The routes: authentication and QR requests, and the token endpoint.
+- `well_known`: The provider's metadata and keys, mounted at the root: `/.well-known/...`.
 
 ## `domainkit.contrib.ciba.services`
 
