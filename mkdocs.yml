@@ -110,6 +110,7 @@ nav:
           - auth/identity.md
           - auth/devices.md
           - auth/phones.md
+          - auth/ciba.md
           - auth/pci-dss.md
       - Optional apps:
           - contrib.md

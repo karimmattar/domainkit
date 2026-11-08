@@ -73,6 +73,7 @@ unique constraint may name its own code
 
 | Code | Status | Answered by |
 | --- | --- | --- |
+| `access_denied` | 400 | `AccessDenied` (contrib.ciba.exceptions): The phone denied the sign-in. |
 | `account_closed` | 422 | `AccountNotOpen` (contrib.accounting.exceptions): A posting or a hold on an account that is closed. |
 | `account_code_taken` | 409 | `AccountCodeTaken` (contrib.accounting.exceptions): Another account has that code. |
 | `account_not_empty` | 422 | `AccountNotEmpty` (contrib.accounting.exceptions): Closing an account that still has a balance, or holds. |
@@ -84,6 +85,7 @@ unique constraint may name its own code
 | `approval_request_not_found` | 404 | `RequestNotFound` (contrib.approvals.exceptions): No approval request has that id. |
 | `approval_required` | 403 | `ApprovalRequired` (contrib.approvals.exceptions): A guarded command was called directly: it runs only once approved (403). |
 | `authentication_failed` | 401 | `AuthenticationFailed` (contrib.auth.authentication): Credentials were presented and do not hold. |
+| `authorization_pending` | 400 | `AuthorizationPending` (contrib.ciba.exceptions): The phone has not answered yet: poll again after the interval. |
 | `bad_request` | 400 | Starlette or FastAPI. |
 | `business_rule_violation` | 422 | `BusinessRuleViolation` (ddd.exceptions): The request is well-formed but breaks an invariant of the model. |
 | `captcha_failed` | 400 | contrib.auth.captcha: The captcha was missing or not solved. |
@@ -98,8 +100,10 @@ unique constraint may name its own code
 | `currency_not_limited` | 422 | `CurrencyNotLimited` (contrib.limits.exceptions): A movement in a currency none of its subject's limits names (FIN-89). |
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
+| `device_login_off` | 404 | `DeviceLoginOff` (contrib.devices.exceptions): `DEVICES.DEVICE_LOGIN` is off: devices do not log in here. |
 | `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
 | `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
+| `different_network` | 403 | `DifferentNetwork` (contrib.ciba.exceptions): The phone is not on the address of the page (`QR_SAME_NETWORK`). |
 | `domain_error` | 400 | `DomainError` (ddd.exceptions): A business rule refused the operation; the message is safe to show. |
 | `duplicate_value` | 409 | `DuplicateValue` (ddd.exceptions): A value that must be unique is taken (a unique constraint refused it). |
 | `earlier_period_open` | 422 | `EarlierPeriodOpen` (contrib.accounting.exceptions): Closing a period while one before it is still open. |
@@ -110,6 +114,7 @@ unique constraint may name its own code
 | `erasure_held` | 422 | `ErasureHeld` (contrib.privacy.operations): A person's data must be kept for now: nothing of it was erased (FIN-94). |
 | `evidence_conflict` | 409 | `EvidenceConflict` (contrib.evidence.models): A different record already uses that evidence id. |
 | `evidence_not_found` | 404 | `EvidenceNotFound` (contrib.evidence.models): No evidence is stored under that key. |
+| `expired_token` | 400 | `SignInExpired` (contrib.ciba.exceptions): The request's time is up before the phone approved it. |
 | `export_too_large` | 422 | resources.renderers: This export would be too large; narrow it with filters. |
 | `field_not_editable` | 403 | `FieldNotEditable` (resources.policies): A partial change sets a field the caller may not change. |
 | `file_not_found` | 404 | `FileMissing` (storage.base): No file has the name (a malformed name names none): 404 over HTTP. |
@@ -164,8 +169,8 @@ unique constraint may name its own code
 | `invalid_transaction` | 422 | `InvalidTransaction` (contrib.auth.sca): The amount, payee, or purpose cannot be authorized as given. |
 | `invalid_user_field` | 422 | `InvalidUserField` (contrib.auth.exceptions): A value does not fit the type of the user field it is for. |
 | `invalid_username` | 422 | `InvalidUsername` (contrib.auth.exceptions): The username is empty, too long, or uses characters it may not. |
-| `invalid_verification_code` | 400 | contrib.auth.recovery: The code is wrong or has expired; ask for a new one. |
 | `invalid_value` | 422 | http.errors: A value cannot be stored: it is too long, out of range, or holds a character the database refuses. |
+| `invalid_verification_code` | 400 | contrib.auth.recovery: The code is wrong or has expired; ask for a new one. |
 | `invalid_webhook_event_types` | 422 | `InvalidEventTypes` (contrib.webhooks.models): A subscription's event types are missing or malformed. |
 | `last_superuser` | 409 | `LastSuperuser` (contrib.auth.exceptions): The step would leave no active superuser to run the system. |
 | `limit_exceeded` | 422 | `LimitExceeded` (contrib.limits.exceptions): A movement over what a limit allows in its window: an amount, or a count. |
@@ -203,10 +208,12 @@ unique constraint may name its own code
 | `periods_overlap` | 422 | `PeriodsOverlap` (contrib.accounting.exceptions): A new period whose dates another period covers, or that ends before it starts. |
 | `permission_denied` | 403 | `PermissionDenied` (ddd.exceptions): The actor may not perform the operation. |
 | `phone_already_verified` | 409 | `PhoneAlreadyVerified` (contrib.phones.exceptions): The user verified this number already. |
+| `phone_approval_required` | 403 | `PhoneApprovalRequired` (contrib.ciba.exceptions): This login must be approved from the user's mobile app (`CIBA.APPROVE_LOGINS`). |
 | `phone_not_found` | 404 | `PhoneNotFound` (contrib.phones.exceptions): The user has no verified number with that id. |
 | `policy_removed` | 409 | `PolicyRemoved` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
+| `qr_code_expired` | 422 | `QrCodeExpired` (contrib.ciba.exceptions): The QR code is unknown, was claimed, or expired. |
 | `rate_limited` | 429 | http.ratelimit: `RATE_LIMIT` or a route's `Throttle`; contrib.auth: login, password, code, link, and signup throttles. |
 | `reauthentication_required` | 401 | `ReauthenticationRequired` (contrib.auth.stepup): A change to how one logs in needs the password, or a recent step-up. |
 | `reference_reused` | 409 | `ReferenceReused` (contrib.accounting.exceptions): A source and reference that name an entry or a hold made otherwise. |
@@ -219,7 +226,10 @@ unique constraint may name its own code
 | `scope_not_held` | 403 | contrib.auth.personal_tokens: a token asked for a scope its owner does not hold. |
 | `second_factor_unreadable` | 409 | `SecondFactorUnreadable` (contrib.auth.mfa): No key held opens the user's TOTP secret: `SECRET_KEY` changed without it in `SECRET_KEY_FALLBACKS` (`resealmfa`, `resetmfa`). |
 | `service_busy` | 503 | `ServiceBusy` (exceptions): Something the operation needs is busy now; trying again later may work. |
+| `sign_in_not_found` | 404 | `SignInNotFound` (contrib.ciba.exceptions): The user has no sign-in request with that id that waits for an answer. |
+| `sign_in_unknown` | 400 | `SignInUnknown` (contrib.ciba.exceptions): No request has that handle, or it was redeemed, or is another client's. |
 | `signup_taken` | 409 | contrib.auth.signup: An account already uses this username or this address; sign up again with another username, or log in. |
+| `slow_down` | 400 | `SlowDown` (contrib.ciba.exceptions): A poll came before the interval: wait 5 seconds more from now on. |
 | `step_up_required` | 401 | contrib.auth.access: Confirm it is you: authenticate again to do this. |
 | `step_up_unsupported` | 400 | contrib.auth.stepup: These credentials cannot step up: log in, then step up. |
 | `tenant_mismatch` | 403 | `TenantMismatch` (ddd.tenancy): An aggregate of another tenant was handed to this tenant's repository. |
@@ -261,6 +271,7 @@ unique constraint may name its own code
 | `webhook_subscription_limit` | 422 | `SubscriptionLimitReached` (contrib.webhooks.owned): The owner has ``WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER`` subscriptions. |
 | `webhook_subscription_not_found` | 404 | `SubscriptionNotFound` (contrib.webhooks.models): No webhook subscription has that id. |
 | `wrong_code` | 422 | `WrongCode` (contrib.phones.exceptions): The code is not the one sent; a few more tries are left. |
+| `wrong_match_code` | 422 | `WrongMatchCode` (contrib.ciba.exceptions): The number typed is not the page's: the sign-in is denied. |
 | `wrong_password` | 400 | contrib.auth.api: Your old password was entered incorrectly. contrib.auth.mfa: Your password was entered incorrectly. contrib.auth.stepup: Your password was entered incorrectly. |
 
 ## See also

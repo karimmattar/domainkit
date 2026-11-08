@@ -67,6 +67,7 @@ from .api import (
 )
 from .devices import hand_out
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
+from .gates import pass_login_gates
 from .models import AbstractBaseUser, UserId
 from .onetime import TOKEN_MAX_LENGTH, UserTokenGenerator
 from .repositories import TotpDevice
@@ -542,6 +543,7 @@ async def mfa_login(body: MfaLoginIn, request: Request, response: Response) -> T
     user = await first_use_after_code(
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
     )
+    await pass_login_gates(request, user)
     issued = await issue_login(user)
     await hand_out(request, response, user)
     return _token_out(issued)

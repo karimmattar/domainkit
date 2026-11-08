@@ -17,6 +17,7 @@ user up. See ``docs/auth/devices.md``.
 
 from .binding import DeviceSigned
 from .exceptions import (
+    DeviceLoginOff,
     DeviceNotFound,
     DeviceSignatureRefused,
     PasskeyNotFound,
@@ -30,6 +31,7 @@ from .stores import BoundDevice, DevicesUnitOfWork, Passkey
 
 __all__ = [
     "BoundDevice",
+    "DeviceLoginOff",
     "DeviceNotFound",
     "DeviceSignatureRefused",
     "DeviceSigned",

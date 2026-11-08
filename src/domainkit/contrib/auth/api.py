@@ -50,6 +50,7 @@ from .devices import (
     proven_limits,
 )
 from .events import UserLoggedOut
+from .gates import check_gates_passed, pass_login_gates
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
@@ -190,6 +191,7 @@ async def login(
     """Check an identifier and password; return tokens, or a second-factor challenge."""
     _no_store(response)
     user = await check_password(request, body)
+    await pass_login_gates(request, user)
     from .mfa import challenge  # Imports this module.
 
     if (pending := await challenge(user)) is not None:
@@ -278,7 +280,10 @@ async def issue_login(
     """Record the user's login, and issue them tokens (the first class's).
 
     Past ``AUTH.MAX_LOGINS``, the user's oldest logins end. The login is
-    held to what was checked (``held_login``).
+    held to what was checked (``held_login``). A route of the project's
+    that issues a login runs ``pass_login_gates(request, user)`` first:
+    while a login gate is registered, one that skipped them raises
+    ``LoginNotGated``.
     """
     with _acting_as(user):
         async with audited_changes(), AuthUnitOfWork() as uow:
@@ -303,10 +308,15 @@ async def held_login(
     a factor on hold, so a login checked before them and issued after
     never survives them (SEC-16a-6).
 
+    The user passed the login gates first (``gates``): a login that skipped
+    them is refused while any is registered.
+
     Raises:
         AuthenticationFailed: The password changed, or a factor was turned
             on, since the check: the login starts again.
+        LoginNotGated: A gate is registered, and the login skipped them.
     """
+    check_gates_passed(user)
     await uow.tokens.lock_user(user.id)
     stored = await uow.users.get(UserId(user.id))
     if stored.password != user.password or (

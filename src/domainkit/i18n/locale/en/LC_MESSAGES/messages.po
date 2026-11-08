@@ -1072,3 +1072,36 @@ msgstr ""
 
 msgid "Confirm it is you: send your password, or step up first."
 msgstr ""
+
+msgid "Approve this sign-in from your mobile app."
+msgstr ""
+
+msgid "No sign-in request of yours waits with that id."
+msgstr ""
+
+msgid "That code expired or was used; scan the new one on the page."
+msgstr ""
+
+msgid "Scan the code from a phone on the same network as the page."
+msgstr ""
+
+msgid "That is not the number on the sign-in page; the sign-in is denied."
+msgstr ""
+
+msgid "The sign-in waits for the phone; ask again later."
+msgstr ""
+
+msgid "Asked too often; wait longer between polls."
+msgstr ""
+
+msgid "The sign-in expired; start a new one."
+msgstr ""
+
+msgid "The sign-in was denied."
+msgstr ""
+
+msgid "No sign-in waits with that handle."
+msgstr ""
+
+msgid "Too many sign-ins were started; try again later."
+msgstr ""

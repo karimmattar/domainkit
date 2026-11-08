@@ -138,6 +138,7 @@ statuses, and the amendments they name.
 | [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) | Freeze the public API for 1.0, renaming what was never published | Accepted |
 | [0126](0126-identify-users-by-the-fields-a-project-chooses-and-verify-them-by-code.md) | Identify users by the fields a project chooses, and verify them by code | Accepted; links removed in 2.0, as decided here |
 | [0127](0127-ping-a-pooled-connection-only-after-it-rested.md) | Ping a pooled connection only after it rested | Accepted |
+| [0128](0128-approve-sign-ins-from-the-users-mobile-app.md) | Approve sign-ins from the user's mobile app | Accepted |
 
 ### Decisions still without a record
 
