@@ -36,6 +36,41 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.0 to 2.1
+
+2.1 adds sign-ins, step-ups and payments approved from the user's phone
+([Sign-in approvals](auth/ciba.md)). Nothing changes in a project until
+it installs the new app, and no existing table changes.
+
+### A client of the identity providers' login calls it by its new name
+
+The identity providers' login, `POST /auth/identity/{name}/login`, is
+named `start_provider_login`. Its operation id was `start_login`, which
+was the passkey login's too: a project that mounted both apps failed
+`check` (`openapi.E001`), and could not start in staging or production.
+The path, the method and the answers are unchanged, so a client that
+calls the URL changes nothing. A client generated from the OpenAPI
+schema calls the method by the new name once you generate it again; code
+that builds the URL with `url_path_for("start_login", ...)` names
+`start_provider_login`. The passkey login keeps `start_login`.
+
+### The devices app has an extra
+
+`domainkit.contrib.devices` imports `cryptography`, which 2.0 installed
+only through another extra. Install `domainkit[devices]`, and
+`domainkit[devices,push]` for the new `domainkit.contrib.ciba`. An app
+whose extra is missing now says which one to install.
+
+### Phone approvals, if you want them
+
+Install `domainkit.contrib.ciba` after `devices`, make and apply its
+migration, and follow [Sign-in approvals](auth/ciba.md). Its strict
+modes (`CIBA.APPROVE_LOGINS`) register a login gate. While a gate is
+registered, a login that your own code issues without passing the gates
+is refused (`LoginNotGated`): call `pass_login_gates` before you issue
+one, or `gates_passed(user_id)` for one issued on the server's side
+([Login gates](auth/ciba.md#login-gates)).
+
 ## 1.8 to 2.0
 
 2.0 removes what 1.x deprecated, and refuses settings that never worked.
