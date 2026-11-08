@@ -1,8 +1,9 @@
 # Passkeys and bound devices
 
 `domainkit.contrib.devices` keeps keys that a user's devices hold. The
-server stores only public keys. Passkeys are checked with `cryptography`
-alone, so you need no new dependency. The domain has three parts:
+server stores only public keys. Passkeys and devices' signatures are
+checked with `cryptography` alone, which the `devices` extra installs.
+The domain has three parts:
 
 - **passkeys** (WebAuthn), which log a user in with no password and no
   second factor, and step them up;
@@ -21,6 +22,12 @@ On this page you learn how to:
 - register push tokens and notify a user.
 
 ## A first example
+
+Install the `devices` extra:
+
+```bash
+pip install "domainkit[devices]"
+```
 
 Install the domain after auth, run `makemigrations` and `migrate`, and
 mount its routes:

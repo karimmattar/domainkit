@@ -107,7 +107,7 @@ async def providers() -> ProvidersOut:
 
 
 @router.post("/identity/{name}/login", dependencies=[Public])
-async def start_login(name: str) -> AuthorizationOut:
+async def start_provider_login(name: str) -> AuthorizationOut:
     """Start a login at ``name``."""
     return _started(await begin(name, LOGIN))
 

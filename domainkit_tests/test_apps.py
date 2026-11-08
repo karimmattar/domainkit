@@ -88,6 +88,24 @@ def test_uninstallable_domains(make_package: MakePackage) -> None:
         DomainConfig.create("apps_errors.single")
 
 
+def test_domainkits_apps_name_the_extra_they_miss(
+    make_package: MakePackage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One of domainkit's apps whose dependency is missing says what to install."""
+    from domainkit.apps import config
+
+    make_package("apps_extras", {"needy/__init__.py": "import gone_extra_module\n"})
+    monkeypatch.setitem(config.EXTRAS, "apps_extras.needy", "devices")
+
+    with pytest.raises(ImproperlyConfigured) as raised:
+        DomainConfig.create("apps_extras.needy")
+
+    assert str(raised.value) == (
+        "Installed domain 'apps_extras.needy' needs 'gone_extra_module', which is "
+        'not installed: pip install "domainkit[devices]".'
+    )
+
+
 def test_registry_populates_in_order() -> None:
     """Domains load in settings order, get ready once, and can be looked up."""
     domains = DomainRegistry()

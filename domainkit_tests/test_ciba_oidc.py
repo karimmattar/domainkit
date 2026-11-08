@@ -479,6 +479,7 @@ def test_private_key_jwt_assertions_work_once(provider: MakeProvider) -> None:
         assertion(client_id, other),
         assertion(client_id, key, audience="https://elsewhere"),
         assertion(client_id, key, lifetime=3600),
+        assertion(client_id, key, lifetime=10**12),  # Past any date: no 500.
         assertion(client_id, key, lifetime=-120),
         assertion(client_id, "s" * 32, algorithm="HS256"),
         assertion(client_id, key, kid="k2"),

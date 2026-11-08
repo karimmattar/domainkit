@@ -22,6 +22,13 @@ records why it works this way.
 
 ## A first example
 
+Install the `devices` extra, which the bound devices need, and `push`
+for the push backends (FCM and APNs):
+
+```bash
+pip install "domainkit[devices,push]"
+```
+
 Install the domain after auth, messaging, notifications, and devices, run
 `makemigrations` and `migrate`, and mount its routes:
 

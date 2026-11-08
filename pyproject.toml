@@ -53,8 +53,12 @@ jwt = ["pyjwt[crypto] (>=2.15.0,<3.0.0)"]
 # Second factors for domainkit.contrib.auth: AES-GCM for the TOTP secrets
 # it stores (auth.mfa).
 mfa = ["cryptography (>=50.0.2,<51.0.0)"]
+# Passkeys and bound devices (domainkit.contrib.devices, and the sign-in
+# approvals of domainkit.contrib.ciba): their signatures are checked with
+# cryptography.
+devices = ["cryptography (>=50.0.2,<51.0.0)"]
 # Signed checkpoints of the audit trail (AUDIT.CHECKPOINT_KEY, Ed25519):
-# auditprune and auditverify --export.
+# "audit prune" and "audit verify --export".
 audit = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
 # grpcio for TLS channels, ecdsa's signature error, and protobuf's Empty

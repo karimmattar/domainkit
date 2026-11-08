@@ -104,7 +104,9 @@ def comparable(criteria: Criteria | None) -> bool:
 WORDED = sorted(TEXT_LOOKUPS - {"search"})
 leaves = st.one_of(
     st.builds(F("name").lookup, st.sampled_from(WORDED), TEXT),
-    st.builds(F("name").search, TEXT.filter(str.split)),
+    # A lambda, not str.split: Hypothesis 6.169 rewrites that filter, and
+    # lets text of spaces alone through.
+    st.builds(F("name").search, TEXT.filter(lambda text: bool(text.split()))),
     st.builds(F("name").__eq__, TEXT),
     st.builds(F("label").lookup, st.sampled_from(WORDED), TEXT),
     st.builds(F("price").lookup, COMPARISONS, QUERY_PRICES),

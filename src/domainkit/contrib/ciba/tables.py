@@ -32,7 +32,7 @@ clients = Table(
     Column("created_at", UTCDateTime, nullable=False),
     info={"domain": "ciba", "fixtures": False},
 )
-"""The OIDC clients that may ask a user's phone (``domainkit ciba clients``)."""
+"""The OIDC clients that may ask a user's phone (``domainkit ciba add``, ``list``)."""
 
 sign_in_requests = Table(
     "domainkit_ciba_requests",

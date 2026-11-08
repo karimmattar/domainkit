@@ -71,6 +71,29 @@ and a status.
     `needs_second_factor`, `second_factor_holds`, `first_use_after_code`,
     `sca_transaction` and `confirm_transaction_with`.
 
+### Changed
+
+- The identity providers' login route is named `start_provider_login`
+  (its OpenAPI operation id): `start_login` was the passkey login's
+  name too, so a project that mounted both apps failed `check`
+  (`openapi.E001`).
+
+### Fixed
+
+- `domainkit.contrib.devices` (and `ciba`, which uses it) needed
+  `cryptography`, which no extra named: a plain install failed with a
+  `ModuleNotFoundError`, while its page said nothing was needed. The new
+  `devices` extra installs it, and an app of domainkit's that misses its
+  extra names it.
+- `dbshell` passes a port given in the URL's query (`?host=/run/pg&port=5433`)
+  and `host:port` pairs to `psql`, as asyncpg reads them; it connected to
+  5432 before.
+- A `private_key_jwt` assertion that expires past year 9999 is
+  `invalid_client`, not a 500.
+- CIBA's step-up and transaction routes have names of their own; one was
+  the passkey step-up's. A test now mounts every router the apps ship and
+  requires their names to differ.
+
 ## [2.0.0] - 2026-11-05
 
 2.0 removes what 1.x deprecated: verification links are gone, and codes
