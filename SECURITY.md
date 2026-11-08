@@ -22,9 +22,10 @@ reporters are credited unless they ask not to be.
 
 | Release line | Gets | For how long |
 | --- | --- | --- |
-| The latest minor of the current major (`1.X`, until 2.0 is released) | Every fix, of every severity, as patch releases | Until the next minor is released |
-| The last 1.x minor, once 2.0 is released | Fixes for critical and high severity vulnerabilities | 12 months from the release of 2.0.0 |
-| Every other 1.x minor, and every 0.x release | Nothing | |
+| The latest minor of the current major (`2.X`) | Every fix, of every severity, as patch releases | Until the next minor is released |
+| 1.8, the last 1.x minor | Fixes for critical and high severity vulnerabilities | Until 2027-11-05, 12 months from the release of 2.0.0 |
+| The last 2.x minor, once 3.0 is released | Fixes for critical and high severity vulnerabilities | 12 months from the release of 3.0.0 |
+| Every other 1.x and 2.x minor, and every 0.x release | Nothing | |
 
 Only the newest patch release of a supported line is supported. The Python
 versions supported are those `requires-python` admits, each of which CI
