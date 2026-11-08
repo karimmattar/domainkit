@@ -23,7 +23,8 @@ class DevicesConfig(DomainConfig):
         """Check the device tables share auth's database; forget deleted users.
 
         Raises:
-            ImproperlyConfigured: ``devices`` is routed elsewhere than ``auth``.
+            ImproperlyConfigured: ``devices`` is routed elsewhere than ``auth``,
+                or ``ENROLLMENT`` is on without ``domainkit.contrib.messaging``.
         """
         if router.target_for(self.label) != router.target_for("auth"):
             raise ImproperlyConfigured(
@@ -33,9 +34,20 @@ class DevicesConfig(DomainConfig):
         from domainkit.apps import registry
         from domainkit.contrib.auth.integration import UserDeleted
 
+        messaging = registry.is_installed("domainkit.contrib.messaging")
+        if registry.settings(DevicesSettings).ENROLLMENT and not messaging:
+            raise ImproperlyConfigured(
+                "DEVICES.ENROLLMENT needs 'domainkit.contrib.messaging' in "
+                "INSTALLED_DOMAINS: its worker sends the codes."
+            )
+
         event_bus.subscribe(UserDeleted, forget_devices)
         on_erase_subject(self.erase_person, domain=self.label)
         on_export_subject(self.export_person, domain=self.label)
+        if messaging:
+            from .enrollment import register_tasks
+
+            register_tasks()
         if registry.is_installed("domainkit.contrib.notifications"):
             from domainkit.contrib.notifications.events import PushTokenExpired
 

@@ -100,6 +100,7 @@ unique constraint may name its own code
 | `currency_not_limited` | 422 | `CurrencyNotLimited` (contrib.limits.exceptions): A movement in a currency none of its subject's limits names (FIN-89). |
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
+| `device_already_bound` | 409 | `DeviceAlreadyBound` (contrib.devices.exceptions): The user has a bound device: approve the new one from it. |
 | `device_login_off` | 404 | `DeviceLoginOff` (contrib.devices.exceptions): `DEVICES.DEVICE_LOGIN` is off: devices do not log in here. |
 | `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
 | `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
@@ -109,6 +110,8 @@ unique constraint may name its own code
 | `earlier_period_open` | 422 | `EarlierPeriodOpen` (contrib.accounting.exceptions): Closing a period while one before it is still open. |
 | `email_taken` | 409 | `EmailTaken` (contrib.auth.exceptions): Another user has that email address, and it identifies users. |
 | `empty_file` | 400 | http.uploads: The file is empty. |
+| `enrollment_off` | 404 | `EnrollmentOff` (contrib.devices.exceptions): `DEVICES.ENROLLMENT` is off: devices do not enroll here. |
+| `enrollment_refused` | 401 | `EnrollmentRefused` (contrib.devices.exceptions): The code, the password, or the key's signature does not hold. |
 | `entry_not_found` | 404 | `EntryNotFound` (contrib.accounting.exceptions): No journal entry has that id. |
 | `entry_not_reversible` | 422 | `EntryNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
 | `erasure_held` | 422 | `ErasureHeld` (contrib.privacy.operations): A person's data must be kept for now: nothing of it was erased (FIN-94). |
@@ -224,6 +227,7 @@ unique constraint may name its own code
 | `request_timeout` | 408 | http.middleware: The request body took too long to arrive. |
 | `scanner_unavailable` | 503 | `ScannerUnavailable` (storage.scanning): The virus scanner could not scan the upload: 503, nothing kept. |
 | `scope_not_held` | 403 | contrib.auth.personal_tokens: a token asked for a scope its owner does not hold. |
+| `second_factor_required` | 401 | `SecondFactorRequired` (contrib.devices.exceptions): The user has a second factor: enrollment needs its code too. |
 | `second_factor_unreadable` | 409 | `SecondFactorUnreadable` (contrib.auth.mfa): No key held opens the user's TOTP secret: `SECRET_KEY` changed without it in `SECRET_KEY_FALLBACKS` (`resealmfa`, `resetmfa`). |
 | `service_busy` | 503 | `ServiceBusy` (exceptions): Something the operation needs is busy now; trying again later may work. |
 | `sign_in_not_found` | 404 | `SignInNotFound` (contrib.ciba.exceptions): The user has no sign-in request with that id that waits for an answer. |

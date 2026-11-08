@@ -1,0 +1,9 @@
+Hello {{ username }},
+
+Your code to enroll your phone is:
+
+{{ code }}
+
+It works for {{ valid_for }}. Never give it to anyone.
+
+If you did not ask for this, someone knows your password: change it now.

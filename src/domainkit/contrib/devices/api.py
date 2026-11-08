@@ -27,6 +27,9 @@ Devices:
   step-up proving ``hwk``.
 - ``POST /devices/login`` (anyone, signed by a bound device;
   ``DEVICE_LOGIN``): tokens for the device's user, with no password.
+- ``POST /devices/enroll/code``, ``POST /devices/enroll`` (anyone;
+  ``ENROLLMENT``): a user with no bound device binds the first one with a
+  code, the password, and the new key's signature, and is logged in.
 
 Push tokens:
 
@@ -45,6 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from domainkit.apps import registry
 from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
 from domainkit.contrib.auth.authentication import Credentials, Proof
+from domainkit.contrib.auth.captcha import captcha
 from domainkit.contrib.auth.integration import (
     PASSWORD_MAX_LENGTH,
     StepUpOut,
@@ -69,6 +73,7 @@ from .exceptions import (
     DeviceLoginOff,
     DeviceNotFound,
     DeviceSignatureRefused,
+    EnrollmentOff,
     PasskeyNotFound,
     TooManyKeys,
 )
@@ -361,6 +366,104 @@ async def _signer(request: Request) -> AbstractBaseUser | None:
     if user is None or not user.is_active:
         return None
     return user if await signing_device(request, user) is not None else None
+
+
+class EnrollCodeIn(BaseModel):
+    """Who enrolls a phone: an email address, a mobile number, or a username."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    identifier: str = Field(min_length=1, max_length=255)
+
+
+class EnrollIn(EnrollCodeIn):
+    """The code sent, the password, and the device to bind."""
+
+    code: str = Field(min_length=1, max_length=20, repr=False)
+    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
+    name: str = Field(min_length=1, max_length=100)
+    public_key: str = Field(min_length=1, max_length=1000)
+    otp: str | None = Field(default=None, min_length=1, max_length=64, repr=False)
+    """A code of the user's second factor (TOTP or recovery), if they turned one on."""
+    new_password: str | None = Field(
+        default=None, min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False
+    )
+    """The password to change to, where staff set the current one
+    (``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``)."""
+
+
+class EnrolledOut(TokenOut):
+    """The device bound, and the tokens of the login it made."""
+
+    device: DeviceOut
+
+
+@router.post(
+    "/devices/enroll/code",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Public, captcha("login")],
+)
+async def ask_for_enrollment_code(body: EnrollCodeIn, request: Request) -> None:
+    """Send a code to enroll a first device; the answer is the same for anyone.
+
+    Counted against ``AUTH.LOGIN_RATE`` for the client's address: each
+    one is a message someone pays for.
+    """
+    from domainkit.contrib.messaging import enqueue
+
+    from .enrollment import send_enrollment_code
+
+    if not _settings().ENROLLMENT:
+        raise EnrollmentOff("Devices do not enroll here.")
+    await attempt(
+        request,
+        [(address_key(request, "device-enroll-code"), auth_settings().LOGIN_RATE)],
+        action="devices.enroll",
+        detail=LOGIN_THROTTLED,
+    )
+    await enqueue(send_enrollment_code, identifier=body.identifier)
+
+
+@router.post(
+    "/devices/enroll",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Public],
+    response_model_exclude_none=True,
+)
+async def enroll_device(
+    body: EnrollIn, request: Request, response: Response
+) -> EnrolledOut:
+    """Bind the user's first device, signed by its key, and log the user in."""
+    from .enrollment import enroll
+
+    response.headers["Cache-Control"] = "no-store"
+    if not _settings().ENROLLMENT:
+        raise EnrollmentOff("Devices do not enroll here.")
+    algorithm, key = device_key(body.public_key)
+    user, device = await enroll(
+        request,
+        identifier=body.identifier,
+        code=body.code,
+        password=body.password,
+        otp=body.otp,
+        new_password=body.new_password,
+        name=body.name,
+        algorithm=algorithm,
+        public_key=key,
+    )
+    await pass_login_gates(request, user)
+    issued = await issue_login(user, factor_proven=True)
+    return EnrolledOut(
+        access_token=issued.access_token,
+        expires_in=issued.expires_in,
+        refresh_token=issued.refresh_token,
+        device=DeviceOut(
+            id=device.id,
+            name=device.name,
+            created_at=device.created_at,
+            last_used_at=None,
+        ),
+    )
 
 
 @router.post("/devices", status_code=status.HTTP_201_CREATED)

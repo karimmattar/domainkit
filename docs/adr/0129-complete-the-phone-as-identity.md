@@ -55,6 +55,12 @@ login first.
     caller holds the key.
   - It needs the code and the password: two factors, as a password reset
     with a code needs.
+  - It takes nothing a login would ask for. A user who turned a second
+    factor on sends a code of it too (`otp`), or the email address and
+    the password alone would move the account to an attacker's phone. A
+    password staff set is changed first (`new_password`). The signature
+    and the password are checked, and the second factor asked for, before
+    the code is spent.
   - It is refused while the user has a bound device. A new phone is
     approved from the old one through `/app-sign-in`, then binds as
     usual. A user who lost every phone goes to support, who checks who is
