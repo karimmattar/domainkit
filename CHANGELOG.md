@@ -9,6 +9,15 @@ and a status.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-08
+
+2.1 makes the user's phone their identity: web sign-ins, step-ups and
+payments approved from the mobile app, and OpenID Connect CIBA for other
+clients. It breaks nothing a 2.0 project relies on. One route was renamed
+to end a clash that kept two apps from running together; if your clients
+call the identity providers' login by its operation id, see
+[upgrading.md](docs/upgrading.md#20-to-21).
+
 ### Added
 
 - `domainkit.contrib.ciba`: sign-ins approved from the user's phone
@@ -64,19 +73,20 @@ and a status.
     asks the phone to confirm an `auth.sca` transaction. The phone is
     shown its amount and payee, and the answer is its authorization.
   - Each request has a `kind` and is bound to the session that asked: a
-    step-up never redeems as a login. `domainkit_ciba_requests` gains
-    `kind`, `credential_digest` and `sca_challenge_id`: make the
-    migration with `makemigrations`.
+    step-up never redeems as a login.
   - `auth.integration` adds `send_code`, `target_of`, `account_key`,
     `needs_second_factor`, `second_factor_holds`, `first_use_after_code`,
     `sca_transaction` and `confirm_transaction_with`.
 
 ### Changed
 
-- The identity providers' login route is named `start_provider_login`
-  (its OpenAPI operation id): `start_login` was the passkey login's
-  name too, so a project that mounted both apps failed `check`
-  (`openapi.E001`).
+- The identity providers' login route (`POST /auth/identity/{name}/login`)
+  is named `start_provider_login`, which is its OpenAPI operation id:
+  `start_login` was the passkey login's name too, so a project that
+  mounted both apps failed `check` (`openapi.E001`) and could not start
+  in staging or production. Its path, method and answers are unchanged; a
+  client generated from the schema calls it by the new name
+  ([upgrading.md](docs/upgrading.md#20-to-21)).
 
 ### Fixed
 
@@ -6303,7 +6313,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/karimmattar/domainkit/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/karimmattar/domainkit/compare/v1.8.0...v2.0.0
 [1.8.0]: https://github.com/karimmattar/domainkit/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/karimmattar/domainkit/compare/v1.7.0...v1.7.1
