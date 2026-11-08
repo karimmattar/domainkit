@@ -82,7 +82,7 @@ X-Device-Signature: MEUCIQ...
 ```
 
 ```json
-[{"id": "0b6f...", "channel": "push", "client": null, "binding_message": null, "address": "203.0.113.7", "browser": "Mozilla/5.0 ...", "same_network": false, "match_required": true, "created_at": "...", "expires_at": "..."}]
+[{"id": "0b6f...", "kind": "sign_in", "channel": "push", "client": null, "binding_message": null, "address": "203.0.113.7", "browser": "Mozilla/5.0 ...", "same_network": false, "match_required": true, "transaction": null, "created_at": "...", "expires_at": "..."}]
 ```
 
 The user types the number the page shows, and approves:
@@ -142,9 +142,14 @@ device_signature_refused`.
 
 A request shows:
 
+- `kind`: `sign_in`, `step_up` (an action of a signed-in session), or
+  `transaction` ([below](#asking-the-phone-from-a-signed-in-session));
 - `client`: the name of the service that asks, or `null` for your own
   pages;
-- `binding_message`: the text that service shows too;
+- `binding_message`: the text that service shows too, or what a step-up
+  is for;
+- `transaction`: a transaction's `amount`, `payee`, and `purpose`, read
+  from auth's record; `null` for the other kinds;
 - `address` and `browser`: where the sign-in was started;
 - `same_network`: whether the phone is on that address now;
 - `match_required`: whether approving needs the page's number.

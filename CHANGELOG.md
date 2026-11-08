@@ -43,6 +43,33 @@ and a status.
   `start_browser_session`, `check_origin`, `CsrfOut`, `attempt`,
   `address_key`, `audit_refusal`, `auth_settings`, `UserLoggedOut`, and
   the login gates.
+- The phone as identity, completed (ADR 0129):
+  - **Enrollment:** `DEVICES.ENROLLMENT` adds `POST /devices/enroll/code`
+    and `POST /devices/enroll`. A user with no bound device binds the
+    first one with a code sent to the account, the password, and the new
+    key's signature, and is logged in. A user with a second factor sends
+    its code too (`otp`), and a password staff set is changed first
+    (`new_password`). A user with a bound device enrolls no other
+    (`409 device_already_bound`). A lost phone is recovered through
+    support only (`unbinddevices`).
+  - **Strict mode:** `CIBA.APPROVE_LOGINS = "always"` refuses users with
+    no bound device too (`403 phone_enrollment_required`). Every login
+    is signed by a bound device, approved from one, or the enrollment.
+    `ciba.E005` refuses it without `DEVICES.ENROLLMENT`.
+  - **Step-ups from the phone:** a signed-in web session asks the phone
+    to approve an action (`/app-sign-in/step-up`). Once approved, the
+    session steps up with `amr` `["hwk"]`, and `StepUp` rules let it
+    through.
+  - **Transactions from the phone:** `/app-sign-in/transactions/{id}`
+    asks the phone to confirm an `auth.sca` transaction. The phone is
+    shown its amount and payee, and the answer is its authorization.
+  - Each request has a `kind` and is bound to the session that asked: a
+    step-up never redeems as a login. `domainkit_ciba_requests` gains
+    `kind`, `credential_digest` and `sca_challenge_id`: make the
+    migration with `makemigrations`.
+  - `auth.integration` adds `send_code`, `target_of`, `account_key`,
+    `needs_second_factor`, `second_factor_holds`, `first_use_after_code`,
+    `sca_transaction` and `confirm_transaction_with`.
 
 ## [2.0.0] - 2026-11-05
 

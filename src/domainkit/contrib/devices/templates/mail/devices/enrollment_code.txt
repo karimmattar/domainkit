@@ -6,4 +6,5 @@ Your code to enroll your phone is:
 
 It works for {{ valid_for }}. Never give it to anyone.
 
-If you did not ask for this, someone knows your password: change it now.
+If you did not ask for this, ignore this message: no phone enrolls
+without this code and your password.

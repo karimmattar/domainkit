@@ -938,7 +938,9 @@ python manage.py unbinddevices ann
 `unbinddevices` unbinds every device of a user who lost their phone,
 forgets its push tokens, and ends every session of the user. With
 `CIBA.APPROVE_LOGINS`, the user then logs in with their other factors and
-binds the new phone. Check who is asking before you run it.
+binds the new phone; with `APPROVE_LOGINS = "always"`, the new phone
+enrolls (`POST /devices/enroll`). It is the only way back for a user who
+lost every phone: check who is asking before you run it.
 
 | Option | What it does |
 | --- | --- |
