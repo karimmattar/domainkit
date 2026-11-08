@@ -10,6 +10,11 @@ With the setting on, a login of a user who bound a device works only:
 
 A user with no bound device logs in as before: the app's first login has
 to bind it. Anything else is refused with ``403 phone_approval_required``.
+
+With ``"always"``, a user with no bound device does not log in at all
+(``403 phone_enrollment_required``): the app enrolls its key first
+(``/devices/enroll``), and that request, signed by the key it binds, is
+the user's first login.
 """
 
 from typing import Final
@@ -20,7 +25,7 @@ from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.devices import DevicesUnitOfWork
 from domainkit.contrib.devices.binding import signing_device
 
-from .exceptions import PhoneApprovalRequired
+from .exceptions import PhoneApprovalRequired, PhoneEnrollmentRequired
 from .services import ciba_settings
 
 __all__ = ["approved_from_the_phone", "mark_approved"]
@@ -43,11 +48,17 @@ async def approved_from_the_phone(request: Request, user: AbstractBaseUser) -> N
     Raises:
         PhoneApprovalRequired: ``APPROVE_LOGINS`` is on, the user bound a device,
             none of theirs signed this request, and no phone approved it.
+        PhoneEnrollmentRequired: ``APPROVE_LOGINS`` is ``"always"``, and the
+            user has no bound device.
     """
-    if not ciba_settings().APPROVE_LOGINS or request.scope.get(APPROVED) == user.id:
+    mode = ciba_settings().APPROVE_LOGINS
+    if not mode or request.scope.get(APPROVED) == user.id:
         return
     async with DevicesUnitOfWork() as uow:
         bound = await uow.devices.count(user.id)
-    if not bound or await signing_device(request, user) is not None:
+    if not bound:
+        if mode == "always":
+            raise PhoneEnrollmentRequired()
         return
-    raise PhoneApprovalRequired()
+    if await signing_device(request, user) is None:
+        raise PhoneApprovalRequired()

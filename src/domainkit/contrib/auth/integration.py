@@ -11,10 +11,18 @@ from starlette.requests import HTTPConnection
 
 from .access import _impersonated, proof_of
 from .api import PASSWORD_MAX_LENGTH, MfaChallengeOut, TokenOut, issue_login
+from .codes import target_of
 from .cookies import CsrfOut, check_origin, start_browser_session
 from .events import SteppedUp, UserDeleted, UserLoggedOut, UserSignedUp
 from .gates import gates_passed, on_login_gate, pass_login_gates
-from .mfa import challenge
+from .mfa import (
+    challenge,
+    first_use_after_code,
+    needs_second_factor,
+    second_factor_holds,
+)
+from .recovery import send_code
+from .sca import confirm_transaction_with, sca_transaction
 from .settings import auth_settings
 from .stepup import (
     REAUTH_AGE,
@@ -26,7 +34,7 @@ from .stepup import (
     step_up_answer,
     stepping_credentials,
 )
-from .throttling import address_key, attempt, audit_refusal
+from .throttling import account_key, address_key, attempt, audit_refusal
 from .tokens import utc_now
 
 __all__ = [
@@ -41,6 +49,7 @@ __all__ = [
     "UserDeleted",
     "UserLoggedOut",
     "UserSignedUp",
+    "account_key",
     "address_key",
     "attempt",
     "audit_refusal",
@@ -48,17 +57,24 @@ __all__ = [
     "challenge",
     "check_origin",
     "check_password_again",
+    "confirm_transaction_with",
+    "first_use_after_code",
     "gates_passed",
     "impersonated",
     "issue_login",
+    "needs_second_factor",
     "on_login_gate",
     "pass_login_gates",
     "proof_of",
     "reauthenticate",
     "record_step_up",
+    "sca_transaction",
+    "second_factor_holds",
+    "send_code",
     "start_browser_session",
     "step_up_answer",
     "stepping_credentials",
+    "target_of",
     "utc_now",
 ]
 

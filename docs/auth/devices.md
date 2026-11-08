@@ -95,6 +95,7 @@ a user (`UserDeleted`) removes their passkeys, devices, and push tokens.
 | `MAX_PUSH_TOKENS` | 20 (1 to 100) | Push tokens a user holds; a new one past it ends the oldest. |
 | `SIGNATURE_WINDOW` | 2 minutes (at most 10) | How far a signed request's time may be from the server's. |
 | `DEVICE_LOGIN` | `False` | `POST /devices/login`: a bound device logs its user in by its signature alone ([Sign-in approvals](ciba.md#the-mobile-app-as-identity)). |
+| `ENROLLMENT` | `False` | `POST /devices/enroll/code` and `POST /devices/enroll`: a user with no bound device binds the first one with no login first ([Enrolling a first device](#enrolling-a-first-device)). Needs `domainkit.contrib.messaging`. |
 
 ## Adding a key needs the user again
 
@@ -243,6 +244,54 @@ possession factor as the authenticator app is. So it stands for the code
 {"auth_time": "2026-11-04T18:37:36.410418Z", "amr": ["hwk"]}
 ```
 
+## Enrolling a first device
+
+With `ENROLLMENT`, a phone app binds the first device of a user who has
+none, with no login first. This is how a user starts once
+`CIBA.APPROVE_LOGINS` lets no password log in
+([Sign-in approvals](ciba.md#the-mobile-app-as-identity)).
+
+| Endpoint | Who | Answer |
+| --- | --- | --- |
+| `POST /devices/enroll/code` | anyone | `{"identifier"}`: `202`, always. The worker sends a code to the account. |
+| `POST /devices/enroll` | anyone, signed by the new key | `{"identifier", "code", "password", "name", "public_key"}`: `201` with the tokens of a login and the `device`. |
+
+1. The app asks for a code. `identifier` is what the user logs in with
+   (`AUTH.IDENTIFIERS`): a mobile number gets a text message; anything
+   else, a mail to the account's address. The answer is `202` whoever it
+   names. Nothing is sent to an unknown, inactive, or passwordless
+   account, nor to one with a bound device already.
+2. The app makes its key, and sends the code, the password, and the
+   public key, signed by the new key. The headers are those of any signed
+   request, without `X-Device-Id`: there is no device yet.
+
+The code and the password are two factors; the signature proves the app
+holds the key it binds. Each is checked before the code is spent, in
+this order:
+
+- The signature and the password. Either wrong: `401 enrollment_refused`.
+- A user who turned a second factor on sends `otp` too: a code of the
+  authenticator app, or a recovery code. Without it, the answer is
+  `401 second_factor_required`, and the code is not spent: send again
+  with `otp`.
+- The code, then `otp`. Either wrong: `401 enrollment_refused`, and the
+  code is spent: ask for another.
+- A password staff set (`AUTH.PASSWORD_CHANGE_ON_FIRST_USE`) needs
+  `new_password`, as `/login` does: `403 password_change_required`
+  without it.
+
+A refusal never says which proof failed. Refusals count against
+`AUTH.LOGIN_RATE`, for the client's address and for the account; asking
+for codes counts against it for the address.
+
+A user with a bound device enrolls no other: `409 device_already_bound`.
+A new phone is approved from the old one, then binds with `POST /devices`
+as usual. A user who lost every phone goes to support, who checks who is
+asking and runs `unbinddevices`; there is no self-service replacement.
+
+The login the enrollment issues passes the login gates as any login does,
+signed by the device it bound: `CIBA.APPROVE_LOGINS` lets it through.
+
 ## Push tokens
 
 | Endpoint | Who | Answer |
@@ -277,6 +326,7 @@ With `domainkit.contrib.audit` installed: `devices.passkey_added`,
 `devices.passkey_removed`, `devices.device_bound`, and
 `devices.device_unbound` (the events `PasskeyAdded`, `PasskeyRemoved`,
 `DeviceBound`, `DeviceUnbound`), and step-ups as `auth.stepped_up`.
+Refused enrollments are audited as `devices.enroll`.
 
 ## The Python names
 
@@ -302,6 +352,10 @@ async with DevicesUnitOfWork() as uow:
 | `ReauthenticationRequired` | `401 reauthentication_required` | Adding a key without the password or a recent step-up, or under impersonation. |
 | `PasskeyRefused` | `401 passkey_refused` | Any passkey answer that does not hold; the reason is logged. |
 | `DeviceSignatureRefused` | `401 device_signature_refused` | A request not signed, signed by another's device, out of the window, or signed again. |
+| `EnrollmentRefused` | `401 enrollment_refused` | An enrollment whose signature, password, code, or `otp` is wrong. |
+| `SecondFactorRequired` | `401 second_factor_required` | An enrollment of a user with a second factor, without `otp`. |
+| `EnrollmentOff` | `404 enrollment_off` | `ENROLLMENT` is off. |
+| `DeviceAlreadyBound` | `409 device_already_bound` | An enrollment of a user who has a bound device. |
 | `PasskeysOff` | `404 passkeys_off` | `RP_ID` is not set. |
 | `PasskeyNotFound`, `DeviceNotFound` | `404 passkey_not_found`, `404 device_not_found` | Not one of the user's. |
 | `TooManyKeys` | `409 too_many_keys` | Past `MAX_PASSKEYS` or `MAX_DEVICES`. |
@@ -317,6 +371,9 @@ async with DevicesUnitOfWork() as uow:
   its query, as sent.
 - **Sending two signed requests in the same millisecond.** The second is
   refused; give each its own time.
+- **Enrolling with an identifier that does not log in.** The code goes
+  only to an account that `identifier` logs in as (`AUTH.IDENTIFIERS`):
+  with logins by username only, send the username.
 - **Scoped tokens on a `DeviceSigned` route.** `DeviceSigned` does not
   check scopes; add a rule that does, or the request is refused.
 

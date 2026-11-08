@@ -34,6 +34,7 @@ async def export_subject(subject: str) -> Mapping[str, object]:
                 select(
                     columns.created_at,
                     columns.client_id,
+                    columns.kind,
                     columns.channel,
                     columns.requester_ip,
                     columns.requester_agent,

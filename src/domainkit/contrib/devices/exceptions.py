@@ -7,13 +7,17 @@ from domainkit.ddd import BusinessRuleViolation, Conflict, NotFound
 from domainkit.http.errors import APIError
 
 __all__ = [
+    "DeviceAlreadyBound",
     "DeviceLoginOff",
     "DeviceNotFound",
     "DeviceSignatureRefused",
+    "EnrollmentOff",
+    "EnrollmentRefused",
     "PasskeyNotFound",
     "PasskeyRefused",
     "PasskeysOff",
     "ReauthenticationRequired",
+    "SecondFactorRequired",
     "TooManyKeys",
     "UnsupportedKey",
 ]
@@ -43,10 +47,40 @@ class DeviceSignatureRefused(APIError):
         )
 
 
+class EnrollmentRefused(APIError):
+    """The code, the password, or the key's signature does not hold (401)."""
+
+    def __init__(self) -> None:
+        """Use status 401 and the code ``enrollment_refused``: never which."""
+        super().__init__(
+            status.HTTP_401_UNAUTHORIZED,
+            "The code, the password, or the device's signature is wrong.",
+            code="enrollment_refused",
+        )
+
+
+class SecondFactorRequired(APIError):
+    """The user has a second factor: enrollment needs its code too (401)."""
+
+    def __init__(self) -> None:
+        """Use status 401 and the code ``second_factor_required``."""
+        super().__init__(
+            status.HTTP_401_UNAUTHORIZED,
+            "Your account has a second factor: send a code from it too.",
+            code="second_factor_required",
+        )
+
+
 class DeviceLoginOff(NotFound):
     """``DEVICES.DEVICE_LOGIN`` is off: devices do not log in here (404)."""
 
     code = "device_login_off"
+
+
+class EnrollmentOff(NotFound):
+    """``DEVICES.ENROLLMENT`` is off: devices do not enroll here (404)."""
+
+    code = "enrollment_off"
 
 
 class PasskeysOff(NotFound):
@@ -71,6 +105,12 @@ class TooManyKeys(Conflict):
     """The user has ``MAX_PASSKEYS`` (or ``MAX_DEVICES``) already: remove one first."""
 
     code = "too_many_keys"
+
+
+class DeviceAlreadyBound(Conflict):
+    """The user has a bound device: approve the new one from it (409)."""
+
+    code = "device_already_bound"
 
 
 class UnsupportedKey(BusinessRuleViolation):

@@ -100,6 +100,7 @@ unique constraint may name its own code
 | `currency_not_limited` | 422 | `CurrencyNotLimited` (contrib.limits.exceptions): A movement in a currency none of its subject's limits names (FIN-89). |
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
+| `device_already_bound` | 409 | `DeviceAlreadyBound` (contrib.devices.exceptions): The user has a bound device: approve the new one from it. |
 | `device_login_off` | 404 | `DeviceLoginOff` (contrib.devices.exceptions): `DEVICES.DEVICE_LOGIN` is off: devices do not log in here. |
 | `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
 | `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
@@ -109,6 +110,8 @@ unique constraint may name its own code
 | `earlier_period_open` | 422 | `EarlierPeriodOpen` (contrib.accounting.exceptions): Closing a period while one before it is still open. |
 | `email_taken` | 409 | `EmailTaken` (contrib.auth.exceptions): Another user has that email address, and it identifies users. |
 | `empty_file` | 400 | http.uploads: The file is empty. |
+| `enrollment_off` | 404 | `EnrollmentOff` (contrib.devices.exceptions): `DEVICES.ENROLLMENT` is off: devices do not enroll here. |
+| `enrollment_refused` | 401 | `EnrollmentRefused` (contrib.devices.exceptions): The code, the password, or the key's signature does not hold. |
 | `entry_not_found` | 404 | `EntryNotFound` (contrib.accounting.exceptions): No journal entry has that id. |
 | `entry_not_reversible` | 422 | `EntryNotReversible` (contrib.accounting.exceptions): Reversing a reversal: it would move the money of the entry it undid again. |
 | `erasure_held` | 422 | `ErasureHeld` (contrib.privacy.operations): A person's data must be kept for now: nothing of it was erased (FIN-94). |
@@ -209,7 +212,9 @@ unique constraint may name its own code
 | `permission_denied` | 403 | `PermissionDenied` (ddd.exceptions): The actor may not perform the operation. |
 | `phone_already_verified` | 409 | `PhoneAlreadyVerified` (contrib.phones.exceptions): The user verified this number already. |
 | `phone_approval_required` | 403 | `PhoneApprovalRequired` (contrib.ciba.exceptions): This login must be approved from the user's mobile app (`CIBA.APPROVE_LOGINS`). |
+| `phone_enrollment_required` | 403 | `PhoneEnrollmentRequired` (contrib.ciba.exceptions): The user has no bound device, and every login comes from one (`CIBA.APPROVE_LOGINS = "always"`). |
 | `phone_not_found` | 404 | `PhoneNotFound` (contrib.phones.exceptions): The user has no verified number with that id. |
+| `phone_unavailable` | 409 | `PhoneUnavailable` (contrib.ciba.exceptions): No phone of the signed-in user can be asked now: none is bound, `MAX_PENDING` requests wait, or the user reported one within `REPORT_COOLDOWN`. |
 | `policy_removed` | 409 | `PolicyRemoved` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
@@ -224,6 +229,7 @@ unique constraint may name its own code
 | `request_timeout` | 408 | http.middleware: The request body took too long to arrive. |
 | `scanner_unavailable` | 503 | `ScannerUnavailable` (storage.scanning): The virus scanner could not scan the upload: 503, nothing kept. |
 | `scope_not_held` | 403 | contrib.auth.personal_tokens: a token asked for a scope its owner does not hold. |
+| `second_factor_required` | 401 | `SecondFactorRequired` (contrib.devices.exceptions): The user has a second factor: enrollment needs its code too. |
 | `second_factor_unreadable` | 409 | `SecondFactorUnreadable` (contrib.auth.mfa): No key held opens the user's TOTP secret: `SECRET_KEY` changed without it in `SECRET_KEY_FALLBACKS` (`resealmfa`, `resetmfa`). |
 | `service_busy` | 503 | `ServiceBusy` (exceptions): Something the operation needs is busy now; trying again later may work. |
 | `sign_in_not_found` | 404 | `SignInNotFound` (contrib.ciba.exceptions): The user has no sign-in request with that id that waits for an answer. |
@@ -242,9 +248,11 @@ unique constraint may name its own code
 | `too_many_keys` | 409 | `TooManyKeys` (contrib.devices.exceptions): The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already. |
 | `too_many_phones` | 409 | `TooManyPhones` (contrib.phones.exceptions): The user holds `PHONES.MAX_PHONES` numbers already. |
 | `too_many_tokens` | 409 | contrib.auth.personal_tokens: the user holds the most personal tokens allowed. |
+| `transaction_closed` | 409 | `TransactionClosed` (contrib.ciba.exceptions): The transaction was confirmed or used already, or expired. |
 | `transaction_confirmed` | 409 | contrib.auth.sca: This transaction was confirmed already. |
 | `transaction_expired` | 409 | contrib.auth.sca: This transaction can no longer be confirmed; start it again. |
 | `transaction_limit_exceeded` | 422 | `TransactionLimitExceeded` (contrib.limits.exceptions): A movement over the most one movement may be (``per_transaction``). |
+| `transaction_needs_other_factors` | 409 | `TransactionNeedsOtherFactors` (contrib.ciba.exceptions): `AUTH.SCA.METHODS` asks for more than the phone's key proves: confirm with `/sca/{id}/confirm`. |
 | `transaction_not_authorized` | 403 | `TransactionNotAuthorized` (contrib.auth.sca): No authorization holds for this transaction: get one, then try again (403). |
 | `transaction_not_found` | 404 | `TransactionNotFound` (contrib.auth.sca): No transaction of the user waits under that id (404). |
 | `unauthorized` | 401 | http.metrics: A valid metrics token is required. |

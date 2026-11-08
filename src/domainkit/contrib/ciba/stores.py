@@ -21,6 +21,9 @@ __all__ = ["CibaClient", "CibaUnitOfWork", "SignInRequest"]
 
 PUSH = "push"
 QR = "qr"
+SIGN_IN = "sign_in"
+STEP_UP = "step_up"
+TRANSACTION = "transaction"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -75,12 +78,18 @@ class SignInRequest:
     denied_at: datetime | None
     reported: bool
     redeemed_at: datetime | None
+    kind: str = SIGN_IN
+    """``sign_in``, ``step_up``, or ``transaction``."""
+    credential_digest: str | None = None
+    """A step-up's or a transaction's: the session that asked, which redeems it."""
+    sca_challenge_id: UUID | None = None
+    """A transaction's: the ``auth.sca`` transaction it confirms."""
 
     def __repr__(self) -> str:
-        """The id, channel and state: digests, addresses and codes stay out."""
+        """The id, kind, channel and state: digests, addresses and codes stay out."""
         return (
-            f"SignInRequest(id={self.id!r}, channel={self.channel!r}, "
-            f"state={self.state!r})"
+            f"SignInRequest(id={self.id!r}, kind={self.kind!r}, "
+            f"channel={self.channel!r}, state={self.state!r})"
         )
 
     @property

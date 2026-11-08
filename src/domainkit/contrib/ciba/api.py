@@ -21,6 +21,17 @@ per address):
 - ``POST /app-sign-in/session`` ``{"request"}``: the same, as a browser
   session in cookies (``/session``).
 
+A signed-in web session (credentials without scopes) asks the user's
+phone for more (ADR 0129); only that session redeems the answer:
+
+- ``POST /app-sign-in/step-up`` ``{"message"}``: approve an action the
+  message names. ``POST /app-sign-in/step-up/token`` ``{"request"}``
+  steps the session up, ``amr`` ``["hwk"]``, once approved.
+- ``POST /app-sign-in/transactions/{challenge_id}``: confirm one of the
+  user's ``auth.sca`` transactions; the phone is shown its amount and
+  payee. ``POST /app-sign-in/transactions/token`` ``{"request"}``
+  answers its authorization ``<id>.<code>``, as ``/sca/{id}/confirm``.
+
 The phone (a user's credentials without scopes, and a request signed by
 one of their bound devices, ``DeviceSigned``):
 
@@ -36,45 +47,69 @@ from typing import Annotated, Final
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from domainkit.contrib.auth import AbstractBaseUser
+from domainkit.contrib.auth.authentication import Credentials, Proof
 from domainkit.contrib.auth.captcha import captcha
 from domainkit.contrib.auth.integration import (
     CsrfOut,
+    ReauthenticationRequired,
+    StepUpOut,
     TokenOut,
     address_key,
     attempt,
+    auth_settings,
     check_origin,
+    confirm_transaction_with,
+    impersonated,
     issue_login,
     pass_login_gates,
+    record_step_up,
+    sca_transaction,
     start_browser_session,
+    step_up_answer,
+    stepping_credentials,
 )
 from domainkit.contrib.auth.models import UserId
-from domainkit.contrib.devices import DeviceSigned
+from domainkit.contrib.devices import DeviceSigned, DevicesUnitOfWork
 from domainkit.contrib.devices.binding import signing_device
+from domainkit.ddd import NotFound
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import error_responses
+from domainkit.money import Money
 
-from .exceptions import SignInUnknown, WrongMatchCode
+from .exceptions import (
+    SignInUnknown,
+    TransactionClosed,
+    TransactionNeedsOtherFactors,
+    WrongMatchCode,
+)
 from .gate import mark_approved
 from .services import (
     Requester,
     Started,
     approve,
+    ask_signed_in,
     ciba_settings,
     claim,
     deny,
     poll,
+    secret_digest,
     start_push,
     start_qr,
 )
-from .stores import CibaUnitOfWork, SignInRequest
+from .stores import STEP_UP, TRANSACTION, CibaUnitOfWork, SignInRequest
 
 __all__ = ["router"]
 
 router = APIRouter(tags=["sign-in approvals"])
 DEVICE_SIGNED = Depends(Require(IsUnscoped(), DeviceSigned()))
+SIGNED_IN = Depends(Require(IsUnscoped()))
+MESSAGE_LENGTH: Final = 64
+"""Characters a step-up's message may have: the phone shows it whole."""
+HWK: Final = frozenset({"hwk"})
+"""What the phone's approval proves: a key in its hardware (RFC 8176)."""
 HANDLE_LENGTH: Final = 100
 """Characters a poll handle may be sent with: 43 are made."""
 CODE_LENGTH: Final = 400
@@ -138,10 +173,46 @@ class DenyIn(BaseModel):
     report: bool = False
 
 
+class StepUpIn(BaseModel):
+    """What the phone is asked to approve, in words the user recognizes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=MESSAGE_LENGTH)
+    """Such as "Transfer 250.00 EUR to DE89…": printable characters only."""
+
+    @field_validator("message")
+    @classmethod
+    def _printable(cls, message: str) -> str:
+        """Refuse control characters: the phone shows the message as is."""
+        if not message.isprintable() or not message.strip():
+            msg = "A message is printable characters, not only spaces."
+            raise ValueError(msg)
+        return message
+
+
+class TransactionOut(BaseModel):
+    """The transaction the phone is asked to confirm, as auth keeps it."""
+
+    amount: Money
+    payee: str
+    purpose: str
+
+
+class AuthorizationOut(BaseModel):
+    """The transaction's authorization: hand it to the use case that acts, once."""
+
+    authorization: str = Field(repr=False)
+    expires_at: datetime
+
+
 class SignInOut(BaseModel):
-    """A sign-in waiting for the phone's answer: who asks, from where, when."""
+    """A request waiting for the phone's answer: what, who asks, from where, when."""
 
     id: UUID
+    kind: str
+    """``sign_in``, ``step_up`` (``binding_message`` says what for), or
+    ``transaction`` (``transaction`` says what)."""
     channel: str
     """``push`` or ``qr``."""
     client: str | None
@@ -156,6 +227,8 @@ class SignInOut(BaseModel):
     """Whether the phone is on that address now; None: unknown."""
     match_required: bool
     """Approving needs the number the sign-in page shows."""
+    transaction: TransactionOut | None = None
+    """A transaction's amount, payee and purpose, read from auth's record."""
     created_at: datetime
     expires_at: datetime
 
@@ -319,14 +392,20 @@ async def _out(
 ) -> list[SignInOut]:
     """What the phone is shown of each request."""
     names: dict[str, str] = {}
+    transactions: dict[UUID, TransactionOut | None] = {}
     for each in sign_ins:
         if each.client_id is not None and each.client_id not in names:
             client = await uow.clients.get(each.client_id)
             names[each.client_id] = each.client_id if client is None else client.name
+        if each.sca_challenge_id is not None and each.user_id is not None:
+            transactions[each.id] = await _transaction(
+                each.sca_challenge_id, each.user_id
+            )
     here = _address(request)
     return [
         SignInOut(
             id=each.id,
+            kind=each.kind,
             channel=each.channel,
             client=None if each.client_id is None else names[each.client_id],
             binding_message=each.binding_message,
@@ -338,11 +417,23 @@ async def _out(
                 else here == each.requester_ip
             ),
             match_required=each.match_code is not None,
+            transaction=transactions.get(each.id),
             created_at=each.created_at,
             expires_at=each.expires_at,
         )
         for each in sign_ins
     ]
+
+
+async def _transaction(challenge_id: UUID, user_id: UUID) -> TransactionOut | None:
+    """What the phone is shown of a transaction; None if auth no longer has it."""
+    try:
+        challenge = await sca_transaction(challenge_id, user_id)
+    except NotFound:
+        return None
+    return TransactionOut(
+        amount=challenge.amount, payee=challenge.payee, purpose=challenge.purpose
+    )
 
 
 @router.get("/app-sign-in/requests")
@@ -411,3 +502,163 @@ async def deny_sign_in(
     async with CibaUnitOfWork() as uow:
         await deny(uow, user.id, request_id, report=body.report)
         await uow.commit()
+
+
+def _session_of(request: Request) -> tuple[Credentials, str]:
+    """The session's credentials, and the digest a request is bound to.
+
+    Raises:
+        ReauthenticationRequired: Staff act as the user: the phone is theirs.
+        APIError: 400 ``step_up_unsupported``: the credentials cannot keep
+            a step-up, nor be told apart.
+    """
+    if impersonated(request):
+        raise ReauthenticationRequired
+    credentials = stepping_credentials(request)
+    held = credentials.token_id or str(credentials.login)
+    return credentials, secret_digest(f"{credentials.scheme}:{held}")
+
+
+async def _ask(
+    request: Request,
+    user: AbstractBaseUser,
+    digest: str,
+    *,
+    kind: str,
+    message: str | None = None,
+    sca_challenge_id: UUID | None = None,
+) -> StartedOut:
+    """Ask the user's phone, counted against ``START_RATE``."""
+    await _count_start(request)
+    async with CibaUnitOfWork() as uow:
+        started = await ask_signed_in(
+            uow,
+            user,
+            kind=kind,
+            credential_digest=digest,
+            requester=_requester(request),
+            message=message,
+            sca_challenge_id=sca_challenge_id,
+            match=ciba_settings().NUMBER_MATCHING,
+        )
+        await uow.commit()
+    return _started(started)
+
+
+async def _redeemed(body: PollIn, digest: str, kind: str) -> SignInRequest:
+    """The request of ``kind`` this session asked, approved, and redeemed now.
+
+    The session's credentials are the user's: a request bound to them is
+    theirs.
+
+    Raises:
+        PollRefused: Not approved (yet), or not this session's to redeem.
+    """
+    return await poll(body.request, client_id=None, kind=kind, credential_digest=digest)
+
+
+@router.post(
+    "/app-sign-in/step-up",
+    response_model_exclude_none=True,
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_409_CONFLICT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def start_step_up(
+    body: StepUpIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> StartedOut:
+    """Ask the user's phone to approve what ``message`` says, for this session."""
+    _no_store(response)
+    _, digest = _session_of(request)
+    return await _ask(request, user, digest, kind=STEP_UP, message=body.message)
+
+
+@router.post(
+    "/app-sign-in/step-up/token",
+    response_model_exclude_none=True,
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
+)
+async def redeem_step_up(
+    body: PollIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> StepUpOut:
+    """Step this session up, ``hwk``, once the phone approved; until then, why not."""
+    _no_store(response)
+    credentials, digest = _session_of(request)
+    approved = await _redeemed(body, digest, STEP_UP)
+    proof = Proof(approved.approved_at or approved.created_at, HWK)
+    async with DevicesUnitOfWork() as uow:
+        await record_step_up(uow, credentials, user, proof)
+        await uow.commit()
+    return step_up_answer(credentials, proof)
+
+
+@router.post(
+    "/app-sign-in/transactions/token",
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+    ),
+)
+async def redeem_transaction(  # Before /{challenge_id}, which "token" would match.
+    body: PollIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> AuthorizationOut:
+    """The transaction's authorization, once the phone confirmed it."""
+    _no_store(response)
+    _, digest = _session_of(request)
+    approved = await _redeemed(body, digest, TRANSACTION)
+    assert approved.sca_challenge_id is not None  # noqa: S101 - a transaction's.
+    challenge = await sca_transaction(approved.sca_challenge_id, user.id)
+    authorization = await confirm_transaction_with(challenge, HWK)
+    return AuthorizationOut(
+        authorization=authorization, expires_at=challenge.expires_at
+    )
+
+
+@router.post(
+    "/app-sign-in/transactions/{challenge_id}",
+    response_model_exclude_none=True,
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def start_transaction(
+    challenge_id: UUID,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> StartedOut:
+    """Ask the user's phone to confirm one of their transactions."""
+    _no_store(response)
+    _, digest = _session_of(request)
+    challenge = await sca_transaction(challenge_id, user.id)
+    if set(auth_settings().SCA.METHODS) - {"otp"}:  # hwk stands for otp alone.
+        raise TransactionNeedsOtherFactors()
+    if (
+        challenge.confirmed_at is not None
+        or challenge.consumed_at is not None
+        or challenge.expired()
+    ):
+        raise TransactionClosed()
+    return await _ask(
+        request, user, digest, kind=TRANSACTION, sca_challenge_id=challenge.id
+    )

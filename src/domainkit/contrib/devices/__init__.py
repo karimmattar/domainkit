@@ -17,13 +17,17 @@ user up. See ``docs/auth/devices.md``.
 
 from .binding import DeviceSigned
 from .exceptions import (
+    DeviceAlreadyBound,
     DeviceLoginOff,
     DeviceNotFound,
     DeviceSignatureRefused,
+    EnrollmentOff,
+    EnrollmentRefused,
     PasskeyNotFound,
     PasskeyRefused,
     PasskeysOff,
     ReauthenticationRequired,
+    SecondFactorRequired,
     TooManyKeys,
     UnsupportedKey,
 )
@@ -31,16 +35,20 @@ from .stores import BoundDevice, DevicesUnitOfWork, Passkey
 
 __all__ = [
     "BoundDevice",
+    "DeviceAlreadyBound",
     "DeviceLoginOff",
     "DeviceNotFound",
     "DeviceSignatureRefused",
     "DeviceSigned",
     "DevicesUnitOfWork",
+    "EnrollmentOff",
+    "EnrollmentRefused",
     "Passkey",
     "PasskeyNotFound",
     "PasskeyRefused",
     "PasskeysOff",
     "ReauthenticationRequired",
+    "SecondFactorRequired",
     "TooManyKeys",
     "UnsupportedKey",
 ]

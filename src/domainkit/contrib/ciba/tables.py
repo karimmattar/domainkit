@@ -66,11 +66,18 @@ sign_in_requests = Table(
     Column("denied_at", UTCDateTime, nullable=True),
     Column("reported", Boolean, nullable=False),
     Column("redeemed_at", UTCDateTime, nullable=True),
+    # sign_in, step_up, or transaction: a handle redeems as its kind only.
+    Column("kind", String(16), nullable=False, server_default="sign_in"),
+    # The SHA-256 of the credentials of the session a step-up, or a
+    # transaction, was asked from: only that session redeems it.
+    Column("credential_digest", String(64), nullable=True),
+    # The auth.sca transaction a request confirms. No foreign key: auth's.
+    Column("sca_challenge_id", Uuid, nullable=True),
     Index("ix_domainkit_ciba_requests_user", "user_id", "expires_at"),
     Index("ix_domainkit_ciba_requests_expires_at", "expires_at"),
     info={"domain": "ciba", "fixtures": False},
 )
-"""Each sign-in a phone is asked to approve, from its start until purged."""
+"""Each sign-in, step-up, or transaction a phone is asked to approve, until purged."""
 
 assertions = Table(
     "domainkit_ciba_assertions",

@@ -256,7 +256,13 @@ POST /auth/sca/9f0c.../confirm {"code": "123456"}
 | `consume_authorization(authorization, *, user_id, amount, payee, purpose)` | Spends the authorization on this transaction, once; returns the `ScaChallenge`. Raises `TransactionNotAuthorized` (403). |
 | `ScaChallenge` | The stored request: its `id`, the user, `amount`, `payee`, `purpose`, and when it expires, was confirmed, and was used. |
 | `router` | `GET /sca/{id}` and `POST /sca/{id}/confirm`, for credentials without scopes. |
+| `sca_transaction(challenge_id, user_id)` | The user's transaction, to show it; `TransactionNotFound` (404) for none or another's. |
+| `confirm_transaction_with(challenge, methods)` | Confirms it with `methods` another app proved, such as the phone's `hwk`; returns the authorization. |
 | `InvalidTransaction` | The amount, payee, or purpose cannot be authorized as given (422). |
+
+With [sign-in approvals](ciba.md#asking-the-phone-from-a-signed-in-session),
+the user's phone confirms the transaction instead of a code: it is shown
+the amount and payee from this row, and its approval proves `hwk`.
 
 How it holds:
 

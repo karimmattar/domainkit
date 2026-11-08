@@ -82,7 +82,7 @@ X-Device-Signature: MEUCIQ...
 ```
 
 ```json
-[{"id": "0b6f...", "channel": "push", "client": null, "binding_message": null, "address": "203.0.113.7", "browser": "Mozilla/5.0 ...", "same_network": false, "match_required": true, "created_at": "...", "expires_at": "..."}]
+[{"id": "0b6f...", "kind": "sign_in", "channel": "push", "client": null, "binding_message": null, "address": "203.0.113.7", "browser": "Mozilla/5.0 ...", "same_network": false, "match_required": true, "transaction": null, "created_at": "...", "expires_at": "..."}]
 ```
 
 The user types the number the page shows, and approves:
@@ -142,9 +142,14 @@ device_signature_refused`.
 
 A request shows:
 
+- `kind`: `sign_in`, `step_up` (an action of a signed-in session), or
+  `transaction` ([below](#asking-the-phone-from-a-signed-in-session));
 - `client`: the name of the service that asks, or `null` for your own
   pages;
-- `binding_message`: the text that service shows too;
+- `binding_message`: the text that service shows too, or what a step-up
+  is for;
+- `transaction`: a transaction's `amount`, `payee`, and `purpose`, read
+  from auth's record; `null` for the other kinds;
 - `address` and `browser`: where the sign-in was started;
 - `same_network`: whether the phone is on that address now;
 - `match_required`: whether approving needs the page's number.
@@ -176,6 +181,56 @@ phone approves.
 The answer to `/push` is the same whoever the identifier names. The page
 cannot tell a user who exists from one who does not, or who cannot be
 asked now (see [What holds](#what-holds)).
+
+## Asking the phone from a signed-in session
+
+A web session that is signed in already can ask the user's phone to
+approve an action, or to confirm a transaction. The routes need
+credentials without scopes, and only the session that asked redeems the
+answer: the request is bound to its credentials.
+
+| Route | Body | Answer |
+| --- | --- | --- |
+| `POST /auth/app-sign-in/step-up` | `{"message"}` | `request`, `expires_in`, `interval`, `match_code`. |
+| `POST /auth/app-sign-in/step-up/token` | `{"request"}` | The step-up, `amr` `["hwk"]`, as `/auth/step-up` answers it; or a poll's answer. |
+| `POST /auth/app-sign-in/transactions/{challenge_id}` | | `request`, `expires_in`, `interval`, `match_code`. |
+| `POST /auth/app-sign-in/transactions/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/sca/{id}/confirm` answers; or a poll's answer. |
+
+The message of a step-up names the action in words the user recognizes,
+such as `"Add payee DE89 3704 0044"`: at most 64 printable characters.
+The phone lists the request with `kind` `step_up` and the message in
+`binding_message`, and approves it as a sign-in, with the page's number
+under `NUMBER_MATCHING`. Once approved, the session's step-up proves
+`hwk`, which stands for an authenticator's code: a route behind
+`StepUp(...)` lets it through, as after `/auth/step-up`.
+
+```python
+from datetime import timedelta
+
+from fastapi import Depends
+
+from domainkit.contrib.auth import StepUp
+from domainkit.http.access import Require
+
+
+@router.post("/payees", dependencies=[Depends(Require(StepUp(timedelta(minutes=5))))])
+async def add_payee(payee: PayeeIn) -> PayeeOut: ...
+```
+
+A transaction is one of the user's `auth.sca` transactions
+([Transactions authorized for one amount and payee](step-up.md#transactions-authorized-for-one-amount-and-payee)).
+The phone lists it with `kind` `transaction` and a `transaction` object:
+the amount, payee, and purpose read from auth's record, never text the
+page sent. Once approved, the authorization is spent as any other: on
+that amount and payee, once. A transaction whose `AUTH.SCA.METHODS` asks
+for the password too is refused with `409 transaction_needs_other_factors`:
+a key in the phone proves possession, not what the user knows.
+
+A handle redeems only as what it was asked for: a step-up is never a
+login, and a login request never steps a session up. Staff acting as the
+user cannot ask their phone (`401 reauthentication_required`). A user
+whose phone cannot be asked now (none bound, `MAX_PENDING` waiting, or a
+recent report) gets `409 phone_unavailable`.
 
 ## The mobile app as identity
 
@@ -209,15 +264,18 @@ keeps the key behind the phone's biometrics, so unlocking it is the
 login, as banking apps do. Refused signatures count against
 `AUTH.LOGIN_RATE` per address.
 
-A user who lost their only phone cannot log in anywhere. Staff check who
-is asking, then run `unbinddevices`:
+A user who lost every bound phone cannot log in anywhere, and recovers
+through support only: no code and password alone move an account to a
+new phone. Staff check who is asking, then run `unbinddevices`:
 
 ```bash
 python manage.py unbinddevices ann
 ```
 
 Every device and push token of the user goes, and every session ends.
-The user logs in with their other factors, and binds the new phone.
+The user logs in with their other factors, and binds the new phone; in
+[strict mode](#strict-mode-every-login-from-the-phone) the new phone
+enrolls.
 
 A user who moves to a new phone signs the new app in as the web does:
 the new app starts `/app-sign-in/push` (the old phone gets the push) or
@@ -230,6 +288,31 @@ log users out everywhere.
 A sign-in approved from the phone runs every login gate too, as `/login`
 does: the approval stands for the device's signature in this app's gate,
 and the gates of your own domains still judge it.
+
+### Strict mode: every login from the phone
+
+With `CIBA = {"APPROVE_LOGINS": "always"}`, a user with no bound device
+does not log in either: `403 phone_enrollment_required`. Every login is
+then one of these:
+
+- signed by a bound device;
+- approved from one, through `/app-sign-in`;
+- the enrollment of the user's first device (`POST /devices/enroll`,
+  [Enrolling a first device](devices.md#enrolling-a-first-device)).
+
+No web page logs in with a password. A user signs up and verifies
+(`/signup`, a code), enrolls the phone, and from then on the phone is the
+only way in: its signed logins, or `DEVICE_LOGIN` behind the phone's
+biometrics. Turn enrollment on with it:
+
+```python
+CIBA = {"APPROVE_LOGINS": "always"}
+DEVICES = {"ENROLLMENT": True, "DEVICE_LOGIN": True}
+```
+
+`ciba.E005` refuses `"always"` without `DEVICES.ENROLLMENT`: nobody could
+log in at all. Users who logged in before you turned it on keep their
+logins until they end.
 
 ### Login gates
 
@@ -384,7 +467,7 @@ other, not `unknown_user_id`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `APPROVE_LOGINS` | `False` | Make the mobile app the user's identity ([above](#the-mobile-app-as-identity)). |
+| `APPROVE_LOGINS` | `False` | Make the mobile app the user's identity ([above](#the-mobile-app-as-identity)); `"always"` refuses users with no bound device too ([strict mode](#strict-mode-every-login-from-the-phone)). |
 | `REQUEST_TTL` | 2 minutes (at most 10) | How long a push request waits for the phone. |
 | `QR_TTL` | 60 seconds (at most 5 minutes) | How long a QR code can be scanned; once scanned, `REQUEST_TTL` to answer it. |
 | `INTERVAL` | 5 (1 to 60) | Seconds between polls; sooner gets `slow_down`. |
@@ -401,8 +484,8 @@ other, not `unknown_user_id`.
 | `ASSERTION_MAX_AGE` | 5 minutes (at most 1 hour) | The furthest a `private_key_jwt` assertion may expire. |
 | `PUSH_TITLE`, `PUSH_BODY` | `"Approve sign-in?"`, `"Open the app to approve or deny it."` | The notification's text. Keep personal data out of it. |
 
-`DEVICES.DEVICE_LOGIN` (`False`) is the devices app's
-([above](#the-mobile-app-as-identity)).
+`DEVICES.DEVICE_LOGIN` and `DEVICES.ENROLLMENT` (both `False`) are the
+devices app's ([above](#the-mobile-app-as-identity)).
 
 ## What holds
 
@@ -479,12 +562,16 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | Exception | Status and code | When |
 | --- | --- | --- |
 | `PhoneApprovalRequired` | `403 phone_approval_required` | `APPROVE_LOGINS`: a web login of a user with a bound device. |
+| `PhoneEnrollmentRequired` | `403 phone_enrollment_required` | `APPROVE_LOGINS = "always"`: any login of a user with no bound device. |
 | `SignInNotFound` | `404 sign_in_not_found` | The phone answers a request that is not its user's, was answered, or expired. |
 | `QrCodeExpired` | `422 qr_code_expired` | The QR code is unknown, was claimed, or expired. |
 | `DifferentNetwork` | `403 different_network` | `QR_SAME_NETWORK = "require"`, and the phone is elsewhere. |
 | `WrongMatchCode` | `422 wrong_match_code` | Not the page's number: the request is denied. |
 | `AuthorizationPending`, `SlowDown`, `SignInExpired`, `AccessDenied`, `SignInUnknown` | `400 authorization_pending`, `slow_down`, `expired_token`, `access_denied`, `sign_in_unknown` | A poll's answers ([above](#how-a-sign-in-works)). |
 | `DeviceLoginOff` | `404 device_login_off` | `POST /devices/login` without `DEVICES.DEVICE_LOGIN`. |
+| `PhoneUnavailable` | `409 phone_unavailable` | A step-up or a transaction asked of a user whose phone cannot be asked now. |
+| `TransactionClosed` | `409 transaction_closed` | A transaction confirmed or used already, or expired. |
+| `TransactionNeedsOtherFactors` | `409 transaction_needs_other_factors` | `AUTH.SCA.METHODS` asks for the password too. |
 
 ## Common mistakes
 

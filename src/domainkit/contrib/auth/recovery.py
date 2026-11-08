@@ -365,6 +365,41 @@ async def send_password_reset_code(identifier: str) -> None:
         await _mail_code(user, cast(str, address), code, "auth/password_reset_code")
 
 
+async def send_code(
+    user: AbstractBaseUser,
+    identifier: str,
+    *,
+    purpose: str,
+    wording: str,
+    template: str,
+) -> bool:
+    """Issue a code for ``purpose`` and send it where ``identifier`` reaches ``user``.
+
+    A mobile number of the user's gets a text message, with ``wording``
+    ("reset your password"), through the outbox; anything else, a mail to
+    the user's address from ``template`` (given ``username``, ``code``,
+    ``valid_for``). The code is kept for ``identifier``: check it with
+    ``uow.verification_codes.check(purpose, target_of(identifier), code)``.
+    False, and nothing issued, where nothing can be sent. For apps built
+    on auth, from a task (``integration``).
+    """
+    number = as_mobile_number(identifier)
+    texted = number is not None and getattr(user, "mobile_number", None) == number
+    address = None if texted else email_of(user)
+    if not texted and (address is None or not _mailable(user, address)):
+        return False
+    async with AuthUnitOfWork() as uow:
+        code = await uow.verification_codes.issue(
+            purpose, target_of(identifier), user_id=user.id
+        )
+        if texted:
+            await text_code(cast(str, number), code, wording, uow)
+        await uow.commit()
+    if not texted:
+        await _mail_code(user, cast(str, address), code, template)
+    return True
+
+
 async def send_mobile_verification(user_id: UUID) -> None:
     """Text a verification code to the user's mobile number, unless verified.
 
