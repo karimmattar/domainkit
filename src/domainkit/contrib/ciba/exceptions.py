@@ -20,6 +20,7 @@ __all__ = [
     "DifferentNetwork",
     "OAuthError",
     "PhoneApprovalRequired",
+    "PhoneEnrollmentRequired",
     "PollRefused",
     "QrCodeExpired",
     "SignInExpired",
@@ -44,6 +45,22 @@ class PhoneApprovalRequired(APIError):
             status.HTTP_403_FORBIDDEN,
             "Approve this sign-in from your mobile app.",
             code="phone_approval_required",
+        )
+
+
+class PhoneEnrollmentRequired(APIError):
+    """The user has no bound device, and every login comes from one (403).
+
+    ``CIBA.APPROVE_LOGINS = "always"``: enroll the phone first, at
+    ``/devices/enroll``; that is the user's first login.
+    """
+
+    def __init__(self) -> None:
+        """Use status 403 and the code ``phone_enrollment_required``."""
+        super().__init__(
+            status.HTTP_403_FORBIDDEN,
+            "Enroll your mobile app first: you log in from it.",
+            code="phone_enrollment_required",
         )
 
 

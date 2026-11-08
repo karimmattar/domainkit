@@ -209,15 +209,18 @@ keeps the key behind the phone's biometrics, so unlocking it is the
 login, as banking apps do. Refused signatures count against
 `AUTH.LOGIN_RATE` per address.
 
-A user who lost their only phone cannot log in anywhere. Staff check who
-is asking, then run `unbinddevices`:
+A user who lost every bound phone cannot log in anywhere, and recovers
+through support only: no code and password alone move an account to a
+new phone. Staff check who is asking, then run `unbinddevices`:
 
 ```bash
 python manage.py unbinddevices ann
 ```
 
 Every device and push token of the user goes, and every session ends.
-The user logs in with their other factors, and binds the new phone.
+The user logs in with their other factors, and binds the new phone; in
+[strict mode](#strict-mode-every-login-from-the-phone) the new phone
+enrolls.
 
 A user who moves to a new phone signs the new app in as the web does:
 the new app starts `/app-sign-in/push` (the old phone gets the push) or
@@ -230,6 +233,31 @@ log users out everywhere.
 A sign-in approved from the phone runs every login gate too, as `/login`
 does: the approval stands for the device's signature in this app's gate,
 and the gates of your own domains still judge it.
+
+### Strict mode: every login from the phone
+
+With `CIBA = {"APPROVE_LOGINS": "always"}`, a user with no bound device
+does not log in either: `403 phone_enrollment_required`. Every login is
+then one of these:
+
+- signed by a bound device;
+- approved from one, through `/app-sign-in`;
+- the enrollment of the user's first device (`POST /devices/enroll`,
+  [Enrolling a first device](devices.md#enrolling-a-first-device)).
+
+No web page logs in with a password. A user signs up and verifies
+(`/signup`, a code), enrolls the phone, and from then on the phone is the
+only way in: its signed logins, or `DEVICE_LOGIN` behind the phone's
+biometrics. Turn enrollment on with it:
+
+```python
+CIBA = {"APPROVE_LOGINS": "always"}
+DEVICES = {"ENROLLMENT": True, "DEVICE_LOGIN": True}
+```
+
+`ciba.E005` refuses `"always"` without `DEVICES.ENROLLMENT`: nobody could
+log in at all. Users who logged in before you turned it on keep their
+logins until they end.
 
 ### Login gates
 
@@ -384,7 +412,7 @@ other, not `unknown_user_id`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `APPROVE_LOGINS` | `False` | Make the mobile app the user's identity ([above](#the-mobile-app-as-identity)). |
+| `APPROVE_LOGINS` | `False` | Make the mobile app the user's identity ([above](#the-mobile-app-as-identity)); `"always"` refuses users with no bound device too ([strict mode](#strict-mode-every-login-from-the-phone)). |
 | `REQUEST_TTL` | 2 minutes (at most 10) | How long a push request waits for the phone. |
 | `QR_TTL` | 60 seconds (at most 5 minutes) | How long a QR code can be scanned; once scanned, `REQUEST_TTL` to answer it. |
 | `INTERVAL` | 5 (1 to 60) | Seconds between polls; sooner gets `slow_down`. |
@@ -401,8 +429,8 @@ other, not `unknown_user_id`.
 | `ASSERTION_MAX_AGE` | 5 minutes (at most 1 hour) | The furthest a `private_key_jwt` assertion may expire. |
 | `PUSH_TITLE`, `PUSH_BODY` | `"Approve sign-in?"`, `"Open the app to approve or deny it."` | The notification's text. Keep personal data out of it. |
 
-`DEVICES.DEVICE_LOGIN` (`False`) is the devices app's
-([above](#the-mobile-app-as-identity)).
+`DEVICES.DEVICE_LOGIN` and `DEVICES.ENROLLMENT` (both `False`) are the
+devices app's ([above](#the-mobile-app-as-identity)).
 
 ## What holds
 
@@ -479,6 +507,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | Exception | Status and code | When |
 | --- | --- | --- |
 | `PhoneApprovalRequired` | `403 phone_approval_required` | `APPROVE_LOGINS`: a web login of a user with a bound device. |
+| `PhoneEnrollmentRequired` | `403 phone_enrollment_required` | `APPROVE_LOGINS = "always"`: any login of a user with no bound device. |
 | `SignInNotFound` | `404 sign_in_not_found` | The phone answers a request that is not its user's, was answered, or expired. |
 | `QrCodeExpired` | `422 qr_code_expired` | The QR code is unknown, was claimed, or expired. |
 | `DifferentNetwork` | `403 different_network` | `QR_SAME_NETWORK = "require"`, and the phone is elsewhere. |

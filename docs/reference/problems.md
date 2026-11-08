@@ -212,6 +212,7 @@ unique constraint may name its own code
 | `permission_denied` | 403 | `PermissionDenied` (ddd.exceptions): The actor may not perform the operation. |
 | `phone_already_verified` | 409 | `PhoneAlreadyVerified` (contrib.phones.exceptions): The user verified this number already. |
 | `phone_approval_required` | 403 | `PhoneApprovalRequired` (contrib.ciba.exceptions): This login must be approved from the user's mobile app (`CIBA.APPROVE_LOGINS`). |
+| `phone_enrollment_required` | 403 | `PhoneEnrollmentRequired` (contrib.ciba.exceptions): The user has no bound device, and every login comes from one (`CIBA.APPROVE_LOGINS = "always"`). |
 | `phone_not_found` | 404 | `PhoneNotFound` (contrib.phones.exceptions): The user has no verified number with that id. |
 | `policy_removed` | 409 | `PolicyRemoved` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |

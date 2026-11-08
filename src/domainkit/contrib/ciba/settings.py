@@ -15,9 +15,11 @@ class CibaSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    APPROVE_LOGINS: bool = False
+    APPROVE_LOGINS: Literal["always"] | bool = False
     """Make the mobile app the user's identity: a login of a user with a
-    bound device works only from that device, or once approved from it."""
+    bound device works only from that device, or once approved from it.
+    ``"always"`` refuses users with no bound device too: they enroll one
+    first (``DEVICES.ENROLLMENT``)."""
     REQUEST_TTL: timedelta = Field(
         default=timedelta(minutes=2), gt=timedelta(0), le=timedelta(minutes=10)
     )

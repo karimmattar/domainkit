@@ -20,7 +20,9 @@ key signs; the initiator polls until then. The project's own web pages
 start requests at ``/app-sign-in`` and get a login or a browser session;
 OIDC clients use the CIBA endpoints and get a scoped token and an ID
 token. With ``APPROVE_LOGINS``, every login of a user with a bound device
-needs it: the mobile app is the user's identity. See ``docs/auth/ciba.md``.
+needs it: the mobile app is the user's identity. With ``"always"``, users
+with none enroll one first (``DEVICES.ENROLLMENT``). See
+``docs/auth/ciba.md``.
 """
 
 from .events import SignInApproved, SignInDenied, SignInReported
@@ -29,6 +31,7 @@ from .exceptions import (
     AuthorizationPending,
     DifferentNetwork,
     PhoneApprovalRequired,
+    PhoneEnrollmentRequired,
     PollRefused,
     QrCodeExpired,
     SignInExpired,
@@ -58,6 +61,7 @@ __all__ = [
     "CibaUnitOfWork",
     "DifferentNetwork",
     "PhoneApprovalRequired",
+    "PhoneEnrollmentRequired",
     "PollRefused",
     "QrCodeExpired",
     "Requester",

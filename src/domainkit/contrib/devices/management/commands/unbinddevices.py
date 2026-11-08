@@ -15,7 +15,8 @@ class Command(BaseCommand):
     help = (
         "Unbind every device of a user who lost their phone, and forget its push "
         "tokens; every session of the user ends. With CIBA.APPROVE_LOGINS, the "
-        "user then logs in with their other factors and binds the new phone. "
+        "user then logs in with their other factors and binds the new phone; "
+        "with APPROVE_LOGINS = 'always', the new phone enrolls (/devices/enroll). "
         "Check who is asking first."
     )
     operator_actions = True

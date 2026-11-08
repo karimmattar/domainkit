@@ -1086,6 +1086,9 @@ msgstr "أكّد أنك أنت: أرسل كلمة المرور، أو عزّز �
 msgid "Approve this sign-in from your mobile app."
 msgstr "وافق على تسجيل الدخول هذا من تطبيقك على الهاتف."
 
+msgid "Enroll your mobile app first: you log in from it."
+msgstr "سجّل تطبيقك على الهاتف أولًا: منه تسجّل الدخول."
+
 msgid "No sign-in request of yours waits with that id."
 msgstr "لا يوجد طلب تسجيل دخول لك بهذا المعرّف ينتظر الرد."
 

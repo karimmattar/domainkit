@@ -599,6 +599,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
+- `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
@@ -652,6 +653,7 @@ What a sign-in request may be refused, and what a poll may answer.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
+- `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `SignInExpired`: The request's time is up before the phone approved it.

@@ -67,10 +67,13 @@ class CibaConfig(DomainConfig):
         that let them sign in from the web, or answer from the phone, are
         not served. ``ciba.E004``: ``/app-sign-in/session`` is served, but
         no authentication class reads the browser session it starts.
+        ``ciba.E005``: ``APPROVE_LOGINS`` is ``"always"``, but devices do not
+        enroll (``DEVICES.ENROLLMENT``): nobody could log in.
         """
         from domainkit.apps import registry
         from domainkit.contrib.auth.integration import auth_settings
         from domainkit.contrib.devices.api import router as devices_router
+        from domainkit.contrib.devices.settings import DevicesSettings
 
         from .api import router as sign_in_router
         from .api import start_approved_session
@@ -102,6 +105,20 @@ class CibaConfig(DomainConfig):
                     "domainkit.contrib.devices.api are not served: those users "
                     "could not sign in on the web, or answer from the phone.",
                     hint="Mount both routers, under /auth for example.",
+                )
+            )
+        if (
+            registry.settings(CibaSettings).APPROVE_LOGINS == "always"
+            and not registry.settings(DevicesSettings).ENROLLMENT
+        ):
+            problems.append(
+                CheckMessage(
+                    "ciba.E005",
+                    'CIBA.APPROVE_LOGINS = "always" lets users log in only from '
+                    "a bound device, but DEVICES.ENROLLMENT is off: no user "
+                    "could bind a first one, nor log in at all.",
+                    hint='Set DEVICES = {"ENROLLMENT": True}, or APPROVE_LOGINS '
+                    "to True.",
                 )
             )
         cookies = "domainkit.contrib.auth.cookies.CookieAuthentication"
