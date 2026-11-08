@@ -725,5 +725,5 @@ The CIBA tables, read and written in a `CibaUnitOfWork`.
 CIBA clients, sign-in requests, and the client assertions already used.
 
 - `assertions`: The `jti` of each `private_key_jwt` assertion, until it expires: once.
-- `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba clients`).
+- `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba add`, `list`).
 - `sign_in_requests`: Each sign-in, step-up, or transaction a phone is asked to approve, until purged.

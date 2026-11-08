@@ -349,7 +349,8 @@ def _verified(
             and isinstance(jti, str)
             and 0 < len(jti) <= JTI_LENGTH
             and isinstance(claims["exp"], int | float)
-            and datetime.fromtimestamp(claims["exp"], UTC) <= latest
+            # Compared as numbers: a date past 9999 has no datetime.
+            and claims["exp"] <= latest.timestamp()
         ):
             return claims
         return None
