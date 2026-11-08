@@ -75,6 +75,7 @@ class Phone:
         assert answer.status_code == 200, answer.json()
         self.headers = bearer(answer.json()["access_token"])
         self.device = Device()
+        self.last_moment = 0
         assert bind(client, self.headers, self.device).status_code == 201
         registered = client.post(
             "/auth/devices/push-tokens",
@@ -86,9 +87,14 @@ class Phone:
     def send(
         self, method: str, path: str, payload: dict[str, Any] | None = None
     ) -> Any:  # noqa: ANN401 - a response.
-        """``method path`` with ``payload``, signed by the device, at clock time."""
+        """``method path`` with ``payload``, signed by the device, at clock time.
+
+        Each signature is later than the last, as a real app's must be: two
+        requests signed in one millisecond would be refused as a replay.
+        """
         body = b"" if payload is None else json.dumps(payload).encode()
-        moment = int(clock.now().timestamp() * 1000)
+        moment = max(int(clock.now().timestamp() * 1000), self.last_moment + 1)
+        self.last_moment = moment
         return self.client.request(
             method,
             path,
@@ -368,8 +374,9 @@ def test_a_qr_sign_in_is_claimed_approved_and_becomes_a_session(app: App) -> Non
     web = app()
     phone = Phone(app(LAPTOP))  # Same network as the page.
     started = web.post("/auth/app-sign-in/qr", headers={"User-Agent": AGENT}).json()
-    assert set(started) == {"request", "expires_in", "interval", "qr"}
-    assert started["expires_in"] == 60
+    assert set(started) == {"request", "expires_in", "interval", "qr", "qr_expires_in"}
+    assert started["qr_expires_in"] == 60  # To scan it,
+    assert started["expires_in"] == 180  # then REQUEST_TTL to answer.
     assert started["request"] not in started["qr"]
     assert sign_in_pushes() == []
 
@@ -791,3 +798,167 @@ def test_a_turned_off_users_device_logs_no_one_in(app: App) -> None:
         )
     assert answer.status_code == 401
     assert answer.json()["code"] == "device_signature_refused"
+
+
+def test_a_qr_code_scanned_late_still_leaves_time_to_answer(app: App) -> None:
+    """Scanned at 55 s: the phone has REQUEST_TTL from then, not 5 s."""
+    web = app(NUMBER_MATCHING=False)
+    phone = Phone(app(PHONE))
+    with clock.freeze_time("2026-11-08T10:00:00Z") as frozen:
+        started = web.post("/auth/app-sign-in/qr").json()
+        frozen.tick(55)
+        shown = phone.send(
+            "POST", "/auth/app-sign-in/requests/claim", {"code": started["qr"]}
+        )
+        assert shown.status_code == 200, shown.json()
+        frozen.tick(30)
+        assert redeem(web, started["request"]).json()["code"] == (
+            "authorization_pending"
+        )
+        assert phone.approve(shown.json()["id"]).status_code == 204
+        frozen.tick(6)
+        assert redeem(web, started["request"]).status_code == 200
+    with clock.freeze_time("2026-11-08T11:00:00Z") as frozen:
+        unanswered = web.post("/auth/app-sign-in/qr").json()
+        frozen.tick(30)
+        claimed = phone.send(
+            "POST", "/auth/app-sign-in/requests/claim", {"code": unanswered["qr"]}
+        )
+        frozen.tick(151)  # Past QR_TTL + REQUEST_TTL: nobody answered.
+        assert phone.approve(claimed.json()["id"]).status_code == 404
+        assert redeem(web, unanswered["request"]).json()["code"] == "expired_token"
+
+
+def test_other_domains_gates_judge_approved_sign_ins_too(app: App) -> None:
+    """The phone's approval passes ciba's gate, not every gate."""
+    from fastapi import status as http_status
+    from starlette.requests import Request
+
+    from domainkit.contrib.auth import AbstractBaseUser
+    from domainkit.contrib.auth.gates import on_login_gate
+    from domainkit.http.errors import APIError
+
+    web = app(NUMBER_MATCHING=False, APPROVE_LOGINS=True)
+    phone = Phone(app(PHONE))
+    judged: list[str] = []
+
+    async def office_hours(request: Request, user: AbstractBaseUser) -> None:
+        judged.append(request.url.path)
+        raise APIError(http_status.HTTP_403_FORBIDDEN, "Closed.", code="closed")
+
+    on_login_gate(office_hours, domain="ciba")
+    for route in ("token", "session"):
+        started = start_push(web)
+        phone.approve(phone.waiting()[0]["id"])
+        refused = redeem(web, started["request"], route)
+        assert refused.status_code == 403
+        assert refused.json()["code"] == "closed"
+    assert judged == ["/auth/app-sign-in/token", "/auth/app-sign-in/session"]
+
+
+def test_a_session_route_needs_the_cookie_class(app: App) -> None:
+    """E004: /app-sign-in/session served without CookieAuthentication."""
+    from domainkit.apps import registry
+    from domainkit.http import get_asgi_application
+    from domainkit_tests.conftest import IDENTITY
+
+    app()
+    config = registry.get_domain_config("ciba")
+    auth = {
+        **IDENTITY.settings["AUTH"],
+        "AUTHENTICATION_CLASSES": [
+            "domainkit.contrib.auth.authentication.TokenAuthentication"
+        ],
+    }
+    with override_settings(AUTH=auth):
+        problems = config.application_problems(get_asgi_application())  # type: ignore[attr-defined]
+    assert "ciba.E004" in [problem.id for problem in problems]
+
+
+def test_concurrent_polls_redeem_once(app: App) -> None:
+    """Eight polls race on an approved request: exactly one redeems it."""
+    import asyncio
+
+    from domainkit.contrib.ciba import (
+        CibaUnitOfWork,
+        PollRefused,
+        Requester,
+        approve,
+        poll,
+    )
+    from domainkit.contrib.ciba import (
+        start_push as start,
+    )
+
+    app(NUMBER_MATCHING=False)
+    Phone(app(PHONE))
+
+    async def scenario() -> list[str]:
+        async with CibaUnitOfWork() as uow:
+            user = await uow.users.find_by_identifier("alice")
+            assert user is not None
+            started = await start(uow, user, requester=Requester(None, None))
+            await uow.commit()
+        async with CibaUnitOfWork() as uow:
+            device = (await uow.devices.of_user(user.id))[0]
+            await approve(uow, user.id, started.request_id, device.id)
+            await uow.commit()
+
+        async def one() -> str:
+            try:
+                await poll(started.handle, client_id=None)
+            except PollRefused as exc:
+                return exc.code
+            return "redeemed"
+
+        return list(await asyncio.gather(*(one() for _ in range(8))))
+
+    results = run_async(scenario())
+    assert results.count("redeemed") == 1
+    assert set(results) <= {"redeemed", "sign_in_unknown", "slow_down"}
+
+
+def test_a_concurrent_approve_and_deny_have_one_winner(app: App) -> None:
+    """Approvals and denials race: one answer wins, the others are refused."""
+    import asyncio
+
+    from domainkit.contrib.ciba import (
+        CibaUnitOfWork,
+        Requester,
+        SignInNotFound,
+        approve,
+        deny,
+    )
+    from domainkit.contrib.ciba import (
+        start_push as start,
+    )
+
+    app(NUMBER_MATCHING=False)
+    Phone(app(PHONE))
+
+    async def scenario() -> list[str]:
+        async with CibaUnitOfWork() as uow:
+            user = await uow.users.find_by_identifier("alice")
+            assert user is not None
+            started = await start(uow, user, requester=Requester(None, None))
+            await uow.commit()
+            device = (await uow.devices.of_user(user.id))[0]
+
+        async def answer(yes: bool) -> str:
+            try:
+                async with CibaUnitOfWork() as uow:
+                    if yes:
+                        await approve(uow, user.id, started.request_id, device.id)
+                    else:
+                        await deny(uow, user.id, started.request_id)
+                    await uow.commit()
+            except SignInNotFound:
+                return "refused"
+            return "approved" if yes else "denied"
+
+        return list(await asyncio.gather(*(answer(i % 2 == 0) for i in range(6))))
+
+    results = run_async(scenario())
+    assert results.count("refused") == 5
+    [row] = rows()
+    assert (row["approved_at"] is None) != (row["denied_at"] is None)

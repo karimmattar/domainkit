@@ -272,6 +272,7 @@ def _started(started: Started) -> dict[str, Any]:
     }
     if started.qr is not None:
         answer["qr"] = started.qr
+        answer["qr_expires_in"] = started.qr_expires_in
     return answer
 
 

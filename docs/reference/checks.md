@@ -129,6 +129,7 @@ application logs them as a warning and starts.
 | `auth.E107` | auth's routes that send codes (resets, signups) to mobile numbers, where `mobile_number` is in `AUTH.IDENTIFIERS`, without `domainkit.contrib.notifications` in `INSTALLED_DOMAINS` ([Password reset](../auth/logging-in.md#password-reset)) |
 | `ciba.E002` | the OpenID Provider's CIBA routes served, but `AUTH.JWT` has no `ISSUER` or signs with a shared secret, so clients could not verify ID tokens ([Sign-in approvals](../auth/ciba.md#oidc-clients)) |
 | `ciba.E003` | `CIBA.APPROVE_LOGINS` on, but the routes of `domainkit.contrib.ciba.api` or `domainkit.contrib.devices.api` not served, so users with a bound phone could not sign in on the web ([Sign-in approvals](../auth/ciba.md#the-mobile-app-as-identity)) |
+| `ciba.E004` | `/app-sign-in/session` served, but `AUTH.AUTHENTICATION_CLASSES` lacks `CookieAuthentication`, so the browser would get a cookie nothing reads |
 | `idempotency.E001` | a keyed route whose own `RequestTimeout` reaches `IDEMPOTENCY.LEASE_SECONDS` or has none: a retry with the same `Idempotency-Key` could take the key while the request runs |
 | `idempotency.E002` | in staging and production: keyed requests without a deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`), unless `IDEMPOTENCY.REQUIRE_DEADLINE = False` |
 | `keys.E001` | in staging and production: `KEYS.PROVIDER = "local"` without `KEYS.ALLOW_LOCAL_KEK`, whose key-encryption key derives from `SECRET_KEY` ([keys.md](../contrib/keys.md#providers)) |

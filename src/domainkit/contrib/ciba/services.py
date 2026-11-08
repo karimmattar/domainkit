@@ -101,6 +101,10 @@ class Started:
     """The two digits the page shows, for the phone to type."""
     qr: str | None = None
     """What the page renders as a QR code."""
+    qr_expires_in: int | None = None
+    """Seconds the QR code can be scanned; then the page shows a new one.
+    Once scanned, the request waits ``REQUEST_TTL`` for the phone's answer:
+    ``expires_in`` covers both."""
 
     def __repr__(self) -> str:
         """The request's id: the handle and the codes stay out of logs."""
@@ -244,7 +248,11 @@ async def start_qr(
     scope: str = "",
     binding_message: str | None = None,
 ) -> Started:
-    """A request for whichever phone scans its QR code, within ``QR_TTL``."""
+    """A request for whichever phone scans its QR code, within ``QR_TTL``.
+
+    The code can be scanned for ``QR_TTL``; the phone that scans it then has
+    ``REQUEST_TTL`` to answer, as for a push.
+    """
     config = ciba_settings()
     now = utc_now()
     handle = secrets.token_urlsafe(SECRET_BYTES)
@@ -254,20 +262,30 @@ async def start_qr(
             channel=QR,
             handle=handle,
             now=now,
-            ttl=config.QR_TTL,
             requester=requester,
             client_id=client_id,
             scope=scope,
             binding_message=binding_message,
             qr_digest=secret_digest(code),
+            ttl=config.QR_TTL + config.REQUEST_TTL,
         )
     )
     return Started(
         handle=handle,
         request_id=request.id,
-        expires_in=_seconds(config.QR_TTL),
+        expires_in=_seconds(config.QR_TTL + config.REQUEST_TTL),
         interval=request.interval,
         qr=config.QR_FORMAT.replace("{code}", code),
+        qr_expires_in=_seconds(config.QR_TTL),
+    )
+
+
+def unscanned_too_long(request: SignInRequest, now: datetime) -> bool:
+    """Whether ``request`` is a QR request no phone scanned within ``QR_TTL``."""
+    return (
+        request.channel == QR
+        and request.claimed_at is None
+        and now >= request.created_at + ciba_settings().QR_TTL
     )
 
 
@@ -287,7 +305,7 @@ async def claim(
     """
     now = utc_now()
     request = await uow.requests.by_qr(secret_digest(_code_in(code)))
-    if request is None or request.expired(now):
+    if request is None or request.expired(now) or unscanned_too_long(request, now):
         raise QrCodeExpired()
     if (
         ciba_settings().QR_SAME_NETWORK == "require"
@@ -420,7 +438,8 @@ async def poll(handle: str, *, client_id: str | None) -> SignInRequest:
         SignInUnknown: No request of the initiator has the handle, or it
             was redeemed.
         AccessDenied: The phone denied it.
-        SignInExpired: Its time is up.
+        SignInExpired: Its time is up, or its QR code was not scanned in
+            ``QR_TTL``.
         SlowDown: The poll came within the interval, which grows by 5 s.
         AuthorizationPending: The phone has not answered yet.
     """
@@ -435,7 +454,7 @@ async def poll(handle: str, *, client_id: str | None) -> SignInRequest:
             raise SignInUnknown()
         if request.denied_at is not None:
             raise AccessDenied()
-        if request.expired(now):
+        if request.expired(now) or unscanned_too_long(request, now):
             raise SignInExpired()
         if not await uow.requests.polled(request.id, now, request.interval):
             await uow.requests.slow_down(request.id, now, SLOW_DOWN_STEP)

@@ -13,7 +13,8 @@ per address):
   push. Answers the poll handle ``request``, ``expires_in``, ``interval``,
   and the ``match_code`` the page shows (``NUMBER_MATCHING``).
 - ``POST /app-sign-in/qr``: answers ``request``, ``expires_in``,
-  ``interval``, and ``qr``, what the page renders as a QR code.
+  ``interval``, ``qr``, what the page renders as a QR code, and
+  ``qr_expires_in``, when to show a new one if no phone scanned it.
 - ``POST /app-sign-in/token`` ``{"request"}``: tokens as ``/login`` gives
   them, once the phone approved; else 400 ``authorization_pending``,
   ``slow_down``, ``expired_token``, ``access_denied`` or ``sign_in_unknown``.
@@ -45,8 +46,8 @@ from domainkit.contrib.auth.integration import (
     address_key,
     attempt,
     check_origin,
-    gates_passed,
     issue_login,
+    pass_login_gates,
     start_browser_session,
 )
 from domainkit.contrib.auth.models import UserId
@@ -56,6 +57,7 @@ from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import error_responses
 
 from .exceptions import SignInUnknown, WrongMatchCode
+from .gate import mark_approved
 from .services import (
     Requester,
     Started,
@@ -99,6 +101,9 @@ class StartedOut(BaseModel):
     """Show it: the phone types it to approve."""
     qr: str | None = Field(default=None, repr=False)
     """Render it as a QR code for the phone to scan."""
+    qr_expires_in: int | None = None
+    """Seconds the QR code can be scanned: then start a new one. Once
+    scanned, keep polling: the phone has ``expires_in`` to answer."""
 
 
 class PollIn(BaseModel):
@@ -193,6 +198,7 @@ def _started(started: Started) -> StartedOut:
         interval=started.interval,
         match_code=started.match_code,
         qr=started.qr,
+        qr_expires_in=started.qr_expires_in,
     )
 
 
@@ -264,12 +270,19 @@ async def _approved_user(body: PollIn) -> AbstractBaseUser:
     response_model_exclude_none=True,
     responses=error_responses(status.HTTP_400_BAD_REQUEST),
 )
-async def redeem_sign_in(body: PollIn, response: Response) -> TokenOut:
-    """Tokens, once the phone approved; until then, why not."""
+async def redeem_sign_in(
+    body: PollIn, request: Request, response: Response
+) -> TokenOut:
+    """Tokens, once the phone approved; until then, why not.
+
+    The login runs every login gate, as ``/login`` does; the phone's
+    approval stands for its device's signature.
+    """
     _no_store(response)
     user = await _approved_user(body)
-    with gates_passed(user.id):  # The phone approved: that was the gate.
-        issued = await issue_login(user, factor_proven=True)
+    mark_approved(request, user)
+    await pass_login_gates(request, user)
+    issued = await issue_login(user, factor_proven=True)
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -289,8 +302,9 @@ async def start_approved_session(
     _no_store(response)
     check_origin(request)
     user = await _approved_user(body)
-    with gates_passed(user.id):
-        return await start_browser_session(request, user, response)
+    mark_approved(request, user)
+    await pass_login_gates(request, user)
+    return await start_browser_session(request, user, response)
 
 
 async def _device_id(request: Request, user: AbstractBaseUser) -> UUID:

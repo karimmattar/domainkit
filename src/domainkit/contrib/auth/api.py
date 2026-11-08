@@ -280,7 +280,10 @@ async def issue_login(
     """Record the user's login, and issue them tokens (the first class's).
 
     Past ``AUTH.MAX_LOGINS``, the user's oldest logins end. The login is
-    held to what was checked (``held_login``).
+    held to what was checked (``held_login``). A route of the project's
+    that issues a login runs ``pass_login_gates(request, user)`` first:
+    while a login gate is registered, one that skipped them raises
+    ``LoginNotGated``.
     """
     with _acting_as(user):
         async with audited_changes(), AuthUnitOfWork() as uow:

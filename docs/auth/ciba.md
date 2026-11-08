@@ -109,8 +109,10 @@ A sign-in request starts on one of two channels:
 - **QR code.** The initiator names nobody (`/app-sign-in/qr`). Its page
   renders `qr` as a QR code. The phone that scans it sends it to
   `/app-sign-in/requests/claim`, and the request becomes its user's. A
-  code works once, for `QR_TTL` (60 seconds); the page asks for a new one
-  when it expires.
+  code works once, and can be scanned for `QR_TTL` (60 seconds,
+  `qr_expires_in`); the page shows a new one if no phone scanned it.
+  Once scanned, the phone has `REQUEST_TTL` to answer, as for a push:
+  `expires_in` covers both, so keep polling after the code is scanned.
 
 Then the phone approves or denies, and the initiator polls with the
 handle it got (`request`, or CIBA's `auth_req_id`). The poll answers:
@@ -121,7 +123,7 @@ handle it got (`request`, or CIBA's `auth_req_id`). The poll answers:
 | `authorization_pending` | Not answered yet. Poll again after `interval`. |
 | `slow_down` | This poll came before `interval` was up. The interval grows by 5 seconds, from now on. |
 | `access_denied` | The phone denied it. |
-| `expired_token` | Its time is up: `REQUEST_TTL` (2 minutes) for a push, `QR_TTL` for a QR code. |
+| `expired_token` | Its time is up: `REQUEST_TTL` (2 minutes) to answer a push or a scanned QR code, or `QR_TTL` for a QR code no phone scanned. |
 | `sign_in_unknown` | No request has the handle, or it was redeemed, or it is another initiator's. |
 
 ## The phone's routes
@@ -217,8 +219,17 @@ python manage.py unbinddevices ann
 Every device and push token of the user goes, and every session ends.
 The user logs in with their other factors, and binds the new phone.
 
+A user who moves to a new phone signs the new app in as the web does:
+the new app starts `/app-sign-in/push` (the old phone gets the push) or
+shows `/app-sign-in/qr` (the old phone scans it), and binds itself once
+approved. Only a user who lost every bound phone needs `unbinddevices`.
+
 Logins issued before you turn the setting on stay valid. To end them,
 log users out everywhere.
+
+A sign-in approved from the phone runs every login gate too, as `/login`
+does: the approval stands for the device's signature in this app's gate,
+and the gates of your own domains still judge it.
 
 ### Login gates
 
@@ -243,8 +254,22 @@ class OfficeConfig(DomainConfig):
 
 Gates fail closed. While one is registered, a login issued without
 passing them raises `LoginNotGated`, so a route that forgets them cannot
-issue. Code that issues a login on the server side, with no request to
-judge, wraps it in `gates_passed(user.id)`.
+issue. A login route of your own calls them before it issues:
+
+```python
+from domainkit.contrib.auth.integration import issue_login, pass_login_gates
+
+
+@router.post("/kiosk/login", dependencies=[Public])
+async def kiosk_login(body: KioskIn, request: Request) -> TokenOut:
+    user = await check_kiosk_card(body)
+    await pass_login_gates(request, user)
+    issued = await issue_login(user)
+    ...
+```
+
+Code that issues a login on the server side, with no request to judge,
+wraps it in `gates_passed(user.id)`.
 
 ## OIDC clients
 
@@ -361,7 +386,7 @@ other, not `unknown_user_id`.
 | --- | --- | --- |
 | `APPROVE_LOGINS` | `False` | Make the mobile app the user's identity ([above](#the-mobile-app-as-identity)). |
 | `REQUEST_TTL` | 2 minutes (at most 10) | How long a push request waits for the phone. |
-| `QR_TTL` | 60 seconds (at most 5 minutes) | How long a QR code can be claimed, and its request waits. |
+| `QR_TTL` | 60 seconds (at most 5 minutes) | How long a QR code can be scanned; once scanned, `REQUEST_TTL` to answer it. |
 | `INTERVAL` | 5 (1 to 60) | Seconds between polls; sooner gets `slow_down`. |
 | `MAX_PENDING` | 3 (1 to 20) | Push requests a user may have waiting; past it, no push is sent. |
 | `REPORT_COOLDOWN` | 15 minutes (at most 1 day) | How long no push reaches a user who reported a request. |
@@ -403,6 +428,11 @@ other, not `unknown_user_id`.
 - **What the phone sees, and what the page sees.** The phone sees where
   the sign-in started; the page sees only states and tokens, never who
   the user is.
+- **Pushes can be crowded out.** Someone who knows a user's identifier can
+  keep `MAX_PENDING` push requests waiting for them, so the user's own
+  push sign-ins become decoys until those expire or are denied. QR codes
+  still work, and a report pauses the pushes. Lower `START_RATE` if this
+  is abused.
 - **A relayed QR code is caught, not prevented.** An attacker can show
   their own page's code to a victim. The phone shows the page's address
   and browser, and warns when it is not on the same network. Passkeys'

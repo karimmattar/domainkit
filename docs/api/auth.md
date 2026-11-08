@@ -644,6 +644,7 @@ What a sign-in request may be refused, and what a poll may answer.
 The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
 
 - `approved_from_the_phone`: Let the login of `user` through if the app is not their identity, or signs it.
+- `mark_approved`: Say that `request` redeemed a sign-in `user`'s phone approved.
 
 ## `domainkit.contrib.ciba.oidc`
 

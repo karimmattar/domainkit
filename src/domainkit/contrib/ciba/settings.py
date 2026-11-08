@@ -21,11 +21,11 @@ class CibaSettings(BaseModel):
     REQUEST_TTL: timedelta = Field(
         default=timedelta(minutes=2), gt=timedelta(0), le=timedelta(minutes=10)
     )
-    """How long a push request waits for the phone (``expires_in``)."""
+    """How long a push request, or a scanned QR code's, waits for the phone."""
     QR_TTL: timedelta = Field(
         default=timedelta(seconds=60), gt=timedelta(0), le=timedelta(minutes=5)
     )
-    """How long a QR code can be claimed, and its request waits for the phone."""
+    """How long a QR code can be scanned; then ``REQUEST_TTL`` to answer it."""
     INTERVAL: int = Field(default=5, ge=1, le=60)
     """Seconds an initiator waits between polls; sooner gets ``slow_down``."""
     MAX_PENDING: int = Field(default=3, ge=1, le=20)

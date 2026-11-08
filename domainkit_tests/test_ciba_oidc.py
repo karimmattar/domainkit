@@ -404,7 +404,13 @@ def test_a_client_shows_a_qr_code_for_the_phone(provider: MakeProvider) -> None:
         {"scope": "openid", "binding_message": "KIOSK 4"},
         **credentials,
     ).json()
-    assert set(started) == {"auth_req_id", "expires_in", "interval", "qr"}
+    assert set(started) == {
+        "auth_req_id",
+        "expires_in",
+        "interval",
+        "qr",
+        "qr_expires_in",
+    }
     claimed = phone.send(
         "POST", "/auth/app-sign-in/requests/claim", {"code": started["qr"]}
     ).json()

@@ -151,7 +151,8 @@ Secrets, following the USENIX and BCP findings:
   user's other pending requests, records `SignInReported` for the audit
   trail, and starts the cooldown.
 - **Short lifetimes:**
-  - `REQUEST_TTL` is 2 min for push, and `QR_TTL` is 60 s for QR.
+  - `REQUEST_TTL` is 2 min for push. A QR code can be scanned for
+    `QR_TTL` (60 s); once scanned, the phone has `REQUEST_TTL` to answer.
   - A CIBA access token lasts `ACCESS_TOKEN_TTL` (10 min) and is limited
     to scopes. There is no refresh token.
 
@@ -198,8 +199,12 @@ Auth gains a small, generic hook: **login gates**.
 - Gates fail closed. While a gate is registered, `held_login` refuses a
   login whose user has not passed the gates in the current context, so a
   route that forgets the call cannot issue.
-- Code that issues on the server side, such as an approved sign-in or the
-  test helpers, wraps the call in `gates_passed(user_id)`.
+- Code that issues on the server side with no request to judge, such as
+  the test helpers, wraps the call in `gates_passed(user_id)`.
+- An approved sign-in is no exception: its redemption marks the request
+  as approved by the phone and runs every gate. The CIBA gate takes the
+  approval for the device's signature, and the project's own gates still
+  judge the login.
 
 With `CIBA = {"APPROVE_LOGINS": True}`, the app registers a gate that:
 

@@ -65,13 +65,15 @@ class CibaConfig(DomainConfig):
         a shared-secret algorithm. ``ciba.E003``: ``APPROVE_LOGINS``
         refuses web logins of users with a bound device, but the routes
         that let them sign in from the web, or answer from the phone, are
-        not served.
+        not served. ``ciba.E004``: ``/app-sign-in/session`` is served, but
+        no authentication class reads the browser session it starts.
         """
         from domainkit.apps import registry
         from domainkit.contrib.auth.integration import auth_settings
         from domainkit.contrib.devices.api import router as devices_router
 
         from .api import router as sign_in_router
+        from .api import start_approved_session
         from .oidc import router as oidc_router
 
         problems: list[str] = []
@@ -102,6 +104,21 @@ class CibaConfig(DomainConfig):
                     hint="Mount both routers, under /auth for example.",
                 )
             )
+        cookies = "domainkit.contrib.auth.cookies.CookieAuthentication"
+        if (
+            start_approved_session in _served_endpoints(app)
+            and cookies not in auth_settings().AUTHENTICATION_CLASSES
+        ):
+            problems.append(
+                CheckMessage(
+                    "ciba.E004",
+                    "/app-sign-in/session starts browser sessions, but "
+                    f"AUTH.AUTHENTICATION_CLASSES lacks {cookies}: the browser "
+                    "would get a cookie nothing reads.",
+                    hint=f"Add {cookies} to AUTH.AUTHENTICATION_CLASSES, or "
+                    "redeem with /app-sign-in/token.",
+                )
+            )
         return problems
 
     async def erase_person(self, subject: str, reason: str) -> Mapping[str, int]:
@@ -117,12 +134,17 @@ class CibaConfig(DomainConfig):
         return await export_subject(subject)
 
 
-def _serves(app: "FastAPI", router: "APIRouter") -> bool:
-    """Whether ``app`` serves a route of ``router``."""
+def _served_endpoints(app: "FastAPI") -> set[object]:
+    """The functions of the routes ``app`` serves."""
     from domainkit.http.access import served_routes
 
-    called = {dependant.call for _, dependant in served_routes(app.routes) if dependant}
-    return bool(called & {route.endpoint for route in router.routes})  # type: ignore[attr-defined]
+    return {dependant.call for _, dependant in served_routes(app.routes) if dependant}
+
+
+def _serves(app: "FastAPI", router: "APIRouter") -> bool:
+    """Whether ``app`` serves a route of ``router``."""
+    endpoints = {route.endpoint for route in router.routes}  # type: ignore[attr-defined]
+    return bool(_served_endpoints(app) & endpoints)
 
 
 async def forget_requests(event: object) -> None:
