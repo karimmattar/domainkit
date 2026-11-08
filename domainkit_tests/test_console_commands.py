@@ -425,7 +425,7 @@ def test_dbshell_passes_every_host(client: Client) -> None:
 @pytest.mark.parametrize(
     ("query", "host", "port"),
     [
-        ("host=/tmp&port=55432", "/tmp", "55432"),
+        ("host=/run/postgresql&port=55432", "/run/postgresql", "55432"),
         ("host=db1:5433&host=db2:5434", "db1,db2", "5433,5434"),
         ("host=db1:5433&host=/run/b", "db1,/run/b", "5433,"),
     ],
