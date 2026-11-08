@@ -691,12 +691,18 @@ def _upgrade_entries(section: str) -> list[str]:
 
 
 def test_the_upgrade_guide_covers_every_breaking_change_and_deprecation() -> None:
-    """Each audit id of a Breaking or Deprecated entry is on upgrading.md."""
+    """Each audit id of a Breaking or Deprecated entry is on upgrading.md.
+
+    A minor release may have no such entry (it breaks nothing,
+    ``docs/versioning.md``), but the guide has its section all the same.
+    """
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     guide = (DOCS / "upgrading.md").read_text(encoding="utf-8")
     entries = upgrade_entries(changelog)
+    newest = re.search(r"^## \[(\d+\.\d+)\.0\]", changelog, flags=re.MULTILINE)
 
-    assert entries, "no Breaking or Deprecated entry in the newest minor release"
+    assert newest is not None
+    assert re.search(rf"^## \d+\.\d+ to {re.escape(newest[1])}$", guide, re.MULTILINE)
     cited = {ident for entry in entries for ident in _AUDIT_ID.findall(entry)}
     assert sorted(i for i in cited if not re.search(rf"\b{i}\b", guide)) == []
 
