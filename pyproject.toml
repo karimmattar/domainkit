@@ -58,7 +58,7 @@ mfa = ["cryptography (>=50.0.2,<51.0.0)"]
 # cryptography.
 devices = ["cryptography (>=50.0.2,<51.0.0)"]
 # Signed checkpoints of the audit trail (AUDIT.CHECKPOINT_KEY, Ed25519):
-# auditprune and auditverify --export.
+# "audit prune" and "audit verify --export".
 audit = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
 # grpcio for TLS channels, ecdsa's signature error, and protobuf's Empty
