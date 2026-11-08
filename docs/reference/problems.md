@@ -214,6 +214,7 @@ unique constraint may name its own code
 | `phone_approval_required` | 403 | `PhoneApprovalRequired` (contrib.ciba.exceptions): This login must be approved from the user's mobile app (`CIBA.APPROVE_LOGINS`). |
 | `phone_enrollment_required` | 403 | `PhoneEnrollmentRequired` (contrib.ciba.exceptions): The user has no bound device, and every login comes from one (`CIBA.APPROVE_LOGINS = "always"`). |
 | `phone_not_found` | 404 | `PhoneNotFound` (contrib.phones.exceptions): The user has no verified number with that id. |
+| `phone_unavailable` | 409 | `PhoneUnavailable` (contrib.ciba.exceptions): No phone of the signed-in user can be asked now: none is bound, `MAX_PENDING` requests wait, or the user reported one within `REPORT_COOLDOWN`. |
 | `policy_removed` | 409 | `PolicyRemoved` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
@@ -247,9 +248,11 @@ unique constraint may name its own code
 | `too_many_keys` | 409 | `TooManyKeys` (contrib.devices.exceptions): The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already. |
 | `too_many_phones` | 409 | `TooManyPhones` (contrib.phones.exceptions): The user holds `PHONES.MAX_PHONES` numbers already. |
 | `too_many_tokens` | 409 | contrib.auth.personal_tokens: the user holds the most personal tokens allowed. |
+| `transaction_closed` | 409 | `TransactionClosed` (contrib.ciba.exceptions): The transaction was confirmed or used already, or expired. |
 | `transaction_confirmed` | 409 | contrib.auth.sca: This transaction was confirmed already. |
 | `transaction_expired` | 409 | contrib.auth.sca: This transaction can no longer be confirmed; start it again. |
 | `transaction_limit_exceeded` | 422 | `TransactionLimitExceeded` (contrib.limits.exceptions): A movement over the most one movement may be (``per_transaction``). |
+| `transaction_needs_other_factors` | 409 | `TransactionNeedsOtherFactors` (contrib.ciba.exceptions): `AUTH.SCA.METHODS` asks for more than the phone's key proves: confirm with `/sca/{id}/confirm`. |
 | `transaction_not_authorized` | 403 | `TransactionNotAuthorized` (contrib.auth.sca): No authorization holds for this transaction: get one, then try again (403). |
 | `transaction_not_found` | 404 | `TransactionNotFound` (contrib.auth.sca): No transaction of the user waits under that id (404). |
 | `unauthorized` | 401 | http.metrics: A valid metrics token is required. |

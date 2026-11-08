@@ -177,6 +177,56 @@ The answer to `/push` is the same whoever the identifier names. The page
 cannot tell a user who exists from one who does not, or who cannot be
 asked now (see [What holds](#what-holds)).
 
+## Asking the phone from a signed-in session
+
+A web session that is signed in already can ask the user's phone to
+approve an action, or to confirm a transaction. The routes need
+credentials without scopes, and only the session that asked redeems the
+answer: the request is bound to its credentials.
+
+| Route | Body | Answer |
+| --- | --- | --- |
+| `POST /auth/app-sign-in/step-up` | `{"message"}` | `request`, `expires_in`, `interval`, `match_code`. |
+| `POST /auth/app-sign-in/step-up/token` | `{"request"}` | The step-up, `amr` `["hwk"]`, as `/auth/step-up` answers it; or a poll's answer. |
+| `POST /auth/app-sign-in/transactions/{challenge_id}` | | `request`, `expires_in`, `interval`, `match_code`. |
+| `POST /auth/app-sign-in/transactions/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/sca/{id}/confirm` answers; or a poll's answer. |
+
+The message of a step-up names the action in words the user recognizes,
+such as `"Add payee DE89 3704 0044"`: at most 64 printable characters.
+The phone lists the request with `kind` `step_up` and the message in
+`binding_message`, and approves it as a sign-in, with the page's number
+under `NUMBER_MATCHING`. Once approved, the session's step-up proves
+`hwk`, which stands for an authenticator's code: a route behind
+`StepUp(...)` lets it through, as after `/auth/step-up`.
+
+```python
+from datetime import timedelta
+
+from fastapi import Depends
+
+from domainkit.contrib.auth import StepUp
+from domainkit.http.access import Require
+
+
+@router.post("/payees", dependencies=[Depends(Require(StepUp(timedelta(minutes=5))))])
+async def add_payee(payee: PayeeIn) -> PayeeOut: ...
+```
+
+A transaction is one of the user's `auth.sca` transactions
+([Transactions authorized for one amount and payee](step-up.md#transactions-authorized-for-one-amount-and-payee)).
+The phone lists it with `kind` `transaction` and a `transaction` object:
+the amount, payee, and purpose read from auth's record, never text the
+page sent. Once approved, the authorization is spent as any other: on
+that amount and payee, once. A transaction whose `AUTH.SCA.METHODS` asks
+for the password too is refused with `409 transaction_needs_other_factors`:
+a key in the phone proves possession, not what the user knows.
+
+A handle redeems only as what it was asked for: a step-up is never a
+login, and a login request never steps a session up. Staff acting as the
+user cannot ask their phone (`401 reauthentication_required`). A user
+whose phone cannot be asked now (none bound, `MAX_PENDING` waiting, or a
+recent report) gets `409 phone_unavailable`.
+
 ## The mobile app as identity
 
 With `CIBA = {"APPROVE_LOGINS": True}`, a user who bound a device logs in
@@ -514,6 +564,9 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | `WrongMatchCode` | `422 wrong_match_code` | Not the page's number: the request is denied. |
 | `AuthorizationPending`, `SlowDown`, `SignInExpired`, `AccessDenied`, `SignInUnknown` | `400 authorization_pending`, `slow_down`, `expired_token`, `access_denied`, `sign_in_unknown` | A poll's answers ([above](#how-a-sign-in-works)). |
 | `DeviceLoginOff` | `404 device_login_off` | `POST /devices/login` without `DEVICES.DEVICE_LOGIN`. |
+| `PhoneUnavailable` | `409 phone_unavailable` | A step-up or a transaction asked of a user whose phone cannot be asked now. |
+| `TransactionClosed` | `409 transaction_closed` | A transaction confirmed or used already, or expired. |
+| `TransactionNeedsOtherFactors` | `409 transaction_needs_other_factors` | `AUTH.SCA.METHODS` asks for the password too. |
 
 ## Common mistakes
 

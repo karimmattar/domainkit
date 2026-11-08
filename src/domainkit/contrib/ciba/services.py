@@ -6,6 +6,11 @@ A request starts on one of two channels:
 - ``start_qr``: the initiator names nobody; its page shows a QR code, and
   the phone that scans it claims the request (``claim``).
 
+``ask_signed_in`` asks the phone of a user who is signed in already: to
+approve an action (a step-up), or one of their transactions (ADR 0129).
+Only the session that asked redeems it, and a handle redeems as its kind
+alone: a step-up is never a login.
+
 The phone answers with ``approve`` or ``deny``; the initiator polls with
 ``poll`` until it is approved (the request is redeemed, once), denied, or
 expired. Each of these but ``poll`` runs in a ``CibaUnitOfWork`` the
@@ -41,6 +46,7 @@ from .exceptions import (
     AccessDenied,
     AuthorizationPending,
     DifferentNetwork,
+    PhoneUnavailable,
     QrCodeExpired,
     SignInExpired,
     SignInNotFound,
@@ -48,13 +54,14 @@ from .exceptions import (
     SlowDown,
 )
 from .settings import CibaSettings
-from .stores import PUSH, QR, CibaUnitOfWork, SignInRequest
+from .stores import PUSH, QR, SIGN_IN, CibaUnitOfWork, SignInRequest
 
 __all__ = [
     "PUSH_KIND",
     "Requester",
     "Started",
     "approve",
+    "ask_signed_in",
     "ciba_settings",
     "claim",
     "deny",
@@ -133,6 +140,9 @@ def _request(
     decoy: bool = False,
     qr_digest: str | None = None,
     match_code: str | None = None,
+    kind: str = SIGN_IN,
+    credential_digest: str | None = None,
+    sca_challenge_id: UUID | None = None,
 ) -> SignInRequest:
     """A new request, as its row keeps it."""
     agent = requester.agent[:AGENT_LENGTH] if requester.agent else None
@@ -160,6 +170,9 @@ def _request(
         denied_at=None,
         reported=False,
         redeemed_at=None,
+        kind=kind,
+        credential_digest=credential_digest,
+        sca_challenge_id=sca_challenge_id,
     )
 
 
@@ -202,6 +215,61 @@ async def start_push(
     )
     if asked is not None:
         await _notify(uow, asked.id, request.id, config)
+    return Started(
+        handle=handle,
+        request_id=request.id,
+        expires_in=_seconds(config.REQUEST_TTL),
+        interval=request.interval,
+        match_code=match_code,
+    )
+
+
+async def ask_signed_in(
+    uow: CibaUnitOfWork,
+    user: AbstractBaseUser,
+    *,
+    kind: str,
+    credential_digest: str,
+    requester: Requester,
+    message: str | None = None,
+    sca_challenge_id: UUID | None = None,
+    match: bool = False,
+) -> Started:
+    """Ask the phone of ``user``, who is signed in, to approve ``kind``.
+
+    ``kind`` is ``step_up`` (``message`` says what for) or ``transaction``
+    (``sca_challenge_id``). Only the credentials ``credential_digest``
+    names redeem it. The push leaves with ``uow``'s commit.
+
+    Raises:
+        PhoneUnavailable: No phone of the user can be asked now: none is
+            bound, ``MAX_PENDING`` requests wait, or the user reported one
+            within ``REPORT_COOLDOWN``.
+    """
+    config = ciba_settings()
+    now = utc_now()
+    if not await _askable(uow, user, now):
+        raise PhoneUnavailable()
+    handle = secrets.token_urlsafe(SECRET_BYTES)
+    match_code = f"{secrets.randbelow(100):02d}" if match else None
+    request = await uow.requests.add(
+        _request(
+            channel=PUSH,
+            handle=handle,
+            now=now,
+            ttl=config.REQUEST_TTL,
+            requester=requester,
+            client_id=None,
+            scope="",
+            binding_message=message,
+            user_id=user.id,
+            match_code=match_code,
+            kind=kind,
+            credential_digest=credential_digest,
+            sca_challenge_id=sca_challenge_id,
+        )
+    )
+    await _notify(uow, user.id, request.id, config)
     return Started(
         handle=handle,
         request_id=request.id,
@@ -426,17 +494,24 @@ async def _answer_no(
     )
 
 
-async def poll(handle: str, *, client_id: str | None) -> SignInRequest:
+async def poll(
+    handle: str,
+    *,
+    client_id: str | None,
+    kind: str = SIGN_IN,
+    credential_digest: str | None = None,
+) -> SignInRequest:
     """The approved request ``handle`` polls for, redeemed now; it works once.
 
     ``client_id`` is the initiator: a CIBA client's id, or None for the
-    project's own pages; a handle polls only for its initiator. Commits
-    what the poll changed (its time, the interval, the redemption) before
-    it answers.
+    project's own pages; a handle polls only for its initiator, as its
+    ``kind``, and for a step-up or a transaction only from the credentials
+    that asked (``credential_digest``). Commits what the poll changed (its
+    time, the interval, the redemption) before it answers.
 
     Raises:
-        SignInUnknown: No request of the initiator has the handle, or it
-            was redeemed.
+        SignInUnknown: No request of the initiator, of ``kind``, and of
+            these credentials has the handle, or it was redeemed.
         AccessDenied: The phone denied it.
         SignInExpired: Its time is up, or its QR code was not scanned in
             ``QR_TTL``.
@@ -449,6 +524,8 @@ async def poll(handle: str, *, client_id: str | None) -> SignInRequest:
         if (
             request is None
             or request.client_id != client_id
+            or request.kind != kind
+            or request.credential_digest != credential_digest
             or request.redeemed_at is not None
         ):
             raise SignInUnknown()

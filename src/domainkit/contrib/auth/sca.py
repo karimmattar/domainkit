@@ -39,6 +39,7 @@ import hashlib
 import hmac
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import datetime
 from typing import Final, cast
@@ -69,9 +70,11 @@ __all__ = [
     "InvalidTransaction",
     "ScaChallenge",
     "TransactionNotAuthorized",
+    "confirm_transaction_with",
     "consume_authorization",
     "request_authorization",
     "router",
+    "sca_transaction",
 ]
 
 KEY_PURPOSE: Final = "auth.sca"
@@ -289,27 +292,11 @@ async def confirm_transaction(
     """Confirm a transaction with a second factor; return its authorization."""
     _no_store(response)
     challenge = await _own(challenge_id, user.id)
-    if challenge.confirmed_at is not None or challenge.consumed_at is not None:
-        raise APIError(
-            status.HTTP_409_CONFLICT,
-            "This transaction was confirmed already.",
-            code="transaction_confirmed",
-        )
+    _unconfirmed(challenge)
     methods = tuple(sorted(auth_settings().SCA.METHODS))
 
     async def confirm(uow: AuthUnitOfWork) -> bool:
-        if not await uow.sca.confirm(challenge.id, utc_now(), methods):
-            return False
-        stored = await uow.users.get(UserId(user.id))
-        stored.record(
-            TransactionAuthorized(
-                user_id=user.id,
-                challenge_id=challenge.id,
-                purpose=challenge.purpose,
-                methods=methods,
-            )
-        )
-        return True
+        return await _record_confirmation(uow, challenge, methods)
 
     if challenge.expired() or not await verify_factors(
         request,
@@ -320,15 +307,92 @@ async def confirm_transaction(
         action=ACTION,
         then=confirm,
     ):
+        raise _expired()
+    return AuthorizationOut(
+        authorization=_authorization(challenge), expires_at=challenge.expires_at
+    )
+
+
+async def sca_transaction(challenge_id: UUID, user_id: UUID) -> ScaChallenge:
+    """The user's transaction ``challenge_id``: its amount, payee, and state.
+
+    Raises:
+        TransactionNotFound: There is none, or it is another user's.
+    """
+    return await _own(challenge_id, user_id)
+
+
+async def confirm_transaction_with(
+    challenge: ScaChallenge, methods: Iterable[str]
+) -> str:
+    """Confirm ``challenge``, which ``methods`` proved; return its authorization.
+
+    For an app that proves a factor auth does not check itself, such as a
+    bound phone's approval (``hwk``): the caller proved ``methods``, and
+    checked they stand for what ``AUTH.SCA.METHODS`` asks. The
+    authorization is ``<id>.<code>``, as ``/sca/{id}/confirm`` answers it.
+
+    Raises:
+        APIError: 409 ``transaction_confirmed``: confirmed or used already;
+            409 ``transaction_expired``: it can no longer be confirmed.
+    """
+    _unconfirmed(challenge)
+    proven = tuple(sorted(set(methods)))
+    async with AuthUnitOfWork() as uow:
+        confirmed = not challenge.expired() and await _record_confirmation(
+            uow, challenge, proven
+        )
+        if confirmed:
+            await uow.commit()
+    if not confirmed:
+        raise _expired()
+    return _authorization(challenge)
+
+
+def _unconfirmed(challenge: ScaChallenge) -> None:
+    """Refuse a transaction confirmed or used already.
+
+    Raises:
+        APIError: 409 ``transaction_confirmed``.
+    """
+    if challenge.confirmed_at is not None or challenge.consumed_at is not None:
         raise APIError(
             status.HTTP_409_CONFLICT,
-            "This transaction can no longer be confirmed; start it again.",
-            code="transaction_expired",
+            "This transaction was confirmed already.",
+            code="transaction_confirmed",
         )
-    return AuthorizationOut(
-        authorization=f"{challenge.id}.{authentication_code(challenge)}",
-        expires_at=challenge.expires_at,
+
+
+def _expired() -> APIError:
+    """409 ``transaction_expired``: confirm it no more; start it again."""
+    return APIError(
+        status.HTTP_409_CONFLICT,
+        "This transaction can no longer be confirmed; start it again.",
+        code="transaction_expired",
     )
+
+
+async def _record_confirmation(
+    uow: AuthUnitOfWork, challenge: ScaChallenge, methods: tuple[str, ...]
+) -> bool:
+    """Confirm ``challenge`` by ``methods`` in ``uow``; False if it no longer can."""
+    if not await uow.sca.confirm(challenge.id, utc_now(), methods):
+        return False
+    stored = await uow.users.get(UserId(challenge.user_id))
+    stored.record(
+        TransactionAuthorized(
+            user_id=challenge.user_id,
+            challenge_id=challenge.id,
+            purpose=challenge.purpose,
+            methods=methods,
+        )
+    )
+    return True
+
+
+def _authorization(challenge: ScaChallenge) -> str:
+    """``<id>.<code>``: what spends ``challenge``, once."""
+    return f"{challenge.id}.{authentication_code(challenge)}"
 
 
 def authentication_code(challenge: ScaChallenge, key: bytes | None = None) -> str:

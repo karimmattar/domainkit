@@ -21,12 +21,15 @@ __all__ = [
     "OAuthError",
     "PhoneApprovalRequired",
     "PhoneEnrollmentRequired",
+    "PhoneUnavailable",
     "PollRefused",
     "QrCodeExpired",
     "SignInExpired",
     "SignInNotFound",
     "SignInUnknown",
     "SlowDown",
+    "TransactionClosed",
+    "TransactionNeedsOtherFactors",
     "WrongMatchCode",
     "invalid_client",
 ]
@@ -45,6 +48,50 @@ class PhoneApprovalRequired(APIError):
             status.HTTP_403_FORBIDDEN,
             "Approve this sign-in from your mobile app.",
             code="phone_approval_required",
+        )
+
+
+class PhoneUnavailable(APIError):
+    """No phone of the signed-in user can be asked now (409).
+
+    None is bound, ``MAX_PENDING`` requests wait, or the user reported one
+    within ``REPORT_COOLDOWN``.
+    """
+
+    def __init__(self) -> None:
+        """Use status 409 and the code ``phone_unavailable``."""
+        super().__init__(
+            status.HTTP_409_CONFLICT,
+            "Your mobile app cannot be asked now: bind it, or answer what waits.",
+            code="phone_unavailable",
+        )
+
+
+class TransactionClosed(APIError):
+    """The transaction was confirmed or used already, or expired (409)."""
+
+    def __init__(self) -> None:
+        """Use status 409 and the code ``transaction_closed``."""
+        super().__init__(
+            status.HTTP_409_CONFLICT,
+            "This transaction was confirmed already, or expired; start it again.",
+            code="transaction_closed",
+        )
+
+
+class TransactionNeedsOtherFactors(APIError):
+    """``AUTH.SCA.METHODS`` asks for more than the phone's key proves (409).
+
+    A bound device proves ``hwk``, which stands for an authenticator's code
+    (``otp``) and nothing else: confirm with ``/sca/{id}/confirm`` instead.
+    """
+
+    def __init__(self) -> None:
+        """Use status 409 and the code ``transaction_needs_other_factors``."""
+        super().__init__(
+            status.HTTP_409_CONFLICT,
+            "This transaction needs your password too: confirm it on this page.",
+            code="transaction_needs_other_factors",
         )
 
 

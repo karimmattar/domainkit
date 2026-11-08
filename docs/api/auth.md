@@ -217,9 +217,11 @@ Transactions authorized for one amount and one payee (PSD2's dynamic linking).
 - `InvalidTransaction`: The amount, payee, or purpose cannot be authorized as given.
 - `ScaChallenge`: A transaction waiting for its user's authorization, or holding it.
 - `TransactionNotAuthorized`: No authorization holds for this transaction: get one, then try again (403).
+- `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
 - `consume_authorization`: Spend `authorization` on this transaction, once; return what it was for.
 - `request_authorization`: Store a transaction for `user_id` to confirm, for `AUTH.SCA.TTL`.
 - `router`: The routes: transactions authorized for one amount and one payee (PSD2's dynamic linking).
+- `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
 
 ## `domainkit.contrib.auth.signup`
 
@@ -489,6 +491,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `challenge`: A challenge, if `user` has a second factor; None if not.
 - `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
+- `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
 - `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
@@ -499,6 +502,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
 - `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).
+- `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
 - `second_factor_holds`: Whether `code` proves `user`'s second factor; a code that does is spent.
 - `send_code`: Issue a code for `purpose` and send it where `identifier` reaches `user`.
 - `start_browser_session`: A browser session for `user`, whose login was checked another way.
@@ -600,6 +604,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
+- `PhoneUnavailable`: No phone of the signed-in user can be asked now (409).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
@@ -612,8 +617,11 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `SignInUnknown`: No request has that handle, or it was redeemed, or is another client's.
 - `SlowDown`: A poll came before the interval: wait 5 seconds more from now on.
 - `Started`: A request started: what its initiator keeps, and shows on its page.
+- `TransactionClosed`: The transaction was confirmed or used already, or expired (409).
+- `TransactionNeedsOtherFactors`: `AUTH.SCA.METHODS` asks for more than the phone's key proves (409).
 - `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
 - `approve`: Approve the user's request from their device `device_id`.
+- `ask_signed_in`: Ask the phone of `user`, who is signed in, to approve `kind`.
 - `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
 - `deny`: Deny the user's request; with `report`, every other one waiting too.
 - `poll`: The approved request `handle` polls for, redeemed now; it works once.
@@ -654,12 +662,15 @@ What a sign-in request may be refused, and what a poll may answer.
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
+- `PhoneUnavailable`: No phone of the signed-in user can be asked now (409).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
 - `SignInExpired`: The request's time is up before the phone approved it.
 - `SignInNotFound`: The user has no sign-in request with that id that waits for an answer (404).
 - `SignInUnknown`: No request has that handle, or it was redeemed, or is another client's.
 - `SlowDown`: A poll came before the interval: wait 5 seconds more from now on.
+- `TransactionClosed`: The transaction was confirmed or used already, or expired (409).
+- `TransactionNeedsOtherFactors`: `AUTH.SCA.METHODS` asks for more than the phone's key proves (409).
 - `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
 - `invalid_client`: `401 invalid_client`; a challenge where Basic authentication was tried.
 
@@ -687,6 +698,7 @@ Start a sign-in request, let the phone answer it, and poll it (ADR 0128).
 - `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
 - `Started`: A request started: what its initiator keeps, and shows on its page.
 - `approve`: Approve the user's request from their device `device_id`.
+- `ask_signed_in`: Ask the phone of `user`, who is signed in, to approve `kind`.
 - `ciba_settings`: `CIBA`, validated (the defaults when it is unset).
 - `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
 - `deny`: Deny the user's request; with `report`, every other one waiting too.
@@ -714,4 +726,4 @@ CIBA clients, sign-in requests, and the client assertions already used.
 
 - `assertions`: The `jti` of each `private_key_jwt` assertion, until it expires: once.
 - `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba clients`).
-- `sign_in_requests`: Each sign-in a phone is asked to approve, from its start until purged.
+- `sign_in_requests`: Each sign-in, step-up, or transaction a phone is asked to approve, until purged.

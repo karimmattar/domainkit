@@ -115,6 +115,11 @@ A signed-in web session asks the user's phone to approve an action:
 - A transaction whose `AUTH.SCA.METHODS` a device key cannot prove (one
   that asks for the password too) is refused with
   `409 transaction_needs_other_factors`.
+- A transaction confirmed, used, or expired already is refused with
+  `409 transaction_closed`. A user whose phone cannot be asked now (none
+  bound, `MAX_PENDING` waiting, a recent report) gets
+  `409 phone_unavailable`: the session is signed in, so there is nobody
+  to hide the answer from, unlike a sign-in's decoys.
 
 ### The table
 

@@ -1079,6 +1079,15 @@ msgstr ""
 msgid "Enroll your mobile app first: you log in from it."
 msgstr ""
 
+msgid "Your mobile app cannot be asked now: bind it, or answer what waits."
+msgstr ""
+
+msgid "This transaction was confirmed already, or expired; start it again."
+msgstr ""
+
+msgid "This transaction needs your password too: confirm it on this page."
+msgstr ""
+
 msgid "No sign-in request of yours waits with that id."
 msgstr ""
 

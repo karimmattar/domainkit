@@ -22,6 +22,7 @@ from .mfa import (
     second_factor_holds,
 )
 from .recovery import send_code
+from .sca import confirm_transaction_with, sca_transaction
 from .settings import auth_settings
 from .stepup import (
     REAUTH_AGE,
@@ -56,6 +57,7 @@ __all__ = [
     "challenge",
     "check_origin",
     "check_password_again",
+    "confirm_transaction_with",
     "first_use_after_code",
     "gates_passed",
     "impersonated",
@@ -66,6 +68,7 @@ __all__ = [
     "proof_of",
     "reauthenticate",
     "record_step_up",
+    "sca_transaction",
     "second_factor_holds",
     "send_code",
     "start_browser_session",
