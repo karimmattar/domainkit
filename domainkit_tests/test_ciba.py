@@ -891,6 +891,8 @@ def test_concurrent_polls_redeem_once(app: App) -> None:
     )
 
     app(NUMBER_MATCHING=False)
+    if not connections.config().URL.get_secret_value().startswith("postgresql"):
+        pytest.skip("concurrent writes need PostgreSQL: SQLite runs one at a time")
     Phone(app(PHONE))
 
     async def scenario() -> list[str]:
@@ -934,6 +936,8 @@ def test_a_concurrent_approve_and_deny_have_one_winner(app: App) -> None:
     )
 
     app(NUMBER_MATCHING=False)
+    if not connections.config().URL.get_secret_value().startswith("postgresql"):
+        pytest.skip("concurrent writes need PostgreSQL: SQLite runs one at a time")
     Phone(app(PHONE))
 
     async def scenario() -> list[str]:
