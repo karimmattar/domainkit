@@ -567,7 +567,7 @@ async def _redeemed(body: PollIn, digest: str, kind: str) -> SignInRequest:
         status.HTTP_429_TOO_MANY_REQUESTS,
     ),
 )
-async def start_step_up(
+async def ask_phone_step_up(
     body: StepUpIn,
     request: Request,
     response: Response,
@@ -586,7 +586,7 @@ async def start_step_up(
         status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
     ),
 )
-async def redeem_step_up(
+async def redeem_phone_step_up(
     body: PollIn,
     request: Request,
     response: Response,
@@ -612,7 +612,7 @@ async def redeem_step_up(
         status.HTTP_409_CONFLICT,
     ),
 )
-async def redeem_transaction(  # Before /{challenge_id}, which "token" would match.
+async def redeem_phone_transaction(  # Before /{challenge_id}, which "token" matches.
     body: PollIn,
     request: Request,
     response: Response,
@@ -641,7 +641,7 @@ async def redeem_transaction(  # Before /{challenge_id}, which "token" would mat
         status.HTTP_429_TOO_MANY_REQUESTS,
     ),
 )
-async def start_transaction(
+async def ask_phone_transaction(
     challenge_id: UUID,
     request: Request,
     response: Response,

@@ -20,6 +20,11 @@ if TYPE_CHECKING:
     from domainkit.db.routing import DatabaseRouter
 
 CONFIG_MODULE = "apps"
+EXTRAS: Final = {
+    "domainkit.contrib.ciba": "devices",
+    "domainkit.contrib.devices": "devices",
+}
+"""The extra each of domainkit's apps needs to be imported at all, if any."""
 MODELS_MODULE: Final = "models"
 CONTROLLERS_MODULE: Final = "controllers"
 """Where a four-file domain's use cases and ``@handles`` handlers live."""
@@ -249,7 +254,7 @@ def defined_hook_methods(config: DomainConfig) -> list[tuple[str, str]]:
 
 
 def _import_domain(name: str) -> ModuleType:
-    """Import a domain package, explaining a missing one."""
+    """Import a domain package, explaining a missing one, or a missing extra."""
     try:
         module = import_module(name)
     except ModuleNotFoundError as exc:
@@ -258,6 +263,11 @@ def _import_domain(name: str) -> ModuleType:
         ):
             raise ImproperlyConfigured(
                 f"Installed domain {name!r} cannot be imported."
+            ) from exc
+        if name in EXTRAS:
+            raise ImproperlyConfigured(
+                f"Installed domain {name!r} needs {exc.name!r}, which is not "
+                f'installed: pip install "domainkit[{EXTRAS[name]}]".'
             ) from exc
         raise
     if not hasattr(module, "__path__"):
