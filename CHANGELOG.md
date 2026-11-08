@@ -9,6 +9,91 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.contrib.ciba`: sign-ins approved from the user's phone
+  ([Sign-in approvals](docs/auth/ciba.md), ADR 0128).
+  - **Web pages:** `/app-sign-in/push` (the user's apps get a push; the page
+    shows two digits the phone types) or `/app-sign-in/qr` (a single-use
+    QR code the phone scans), then poll `/app-sign-in/token` or
+    `/app-sign-in/session` for a login.
+  - **The phone:** lists, claims, approves, denies or reports sign-ins with
+    requests its bound key signs.
+  - **OIDC clients:** the OpenID Provider's CIBA routes (`/bc-authorize`,
+    the `/qr-authorize` extension, the token endpoint with the CIBA grant,
+    discovery, JWKS) give registered clients a scoped access token and an
+    ID token signed with `AUTH.JWT`'s asymmetric key. Clients authenticate
+    with a hashed secret or `private_key_jwt`, and are managed with the
+    `ciba` command.
+  - **Defences:** decoys for users who are unknown or cannot be asked, no
+    `unknown_user_id`, at most `MAX_PENDING` pushes, a cooldown after a
+    report, `slow_down`, and handles that work once.
+- `CIBA.APPROVE_LOGINS` makes the mobile app the user's identity: a user
+  with a bound device logs in only from it, or once approved from it
+  (`403 phone_approval_required`).
+- Auth's login gates (`domainkit.contrib.auth.gates`): checks every login
+  passes. `/login`, `/session`, `/mfa/login`, `/session/mfa`, the passkey
+  and device logins, and the identity providers' logins run them, and a
+  login that skips them fails closed (`LoginNotGated`).
+- `DEVICES.DEVICE_LOGIN` adds `POST /devices/login`: a bound device logs
+  its user in by its signature alone.
+- `unbinddevices` unbinds a user's devices and ends their sessions, for
+  one who lost their phone.
+- `auth.integration` exports what apps built on auth use for these:
+  `start_browser_session`, `check_origin`, `CsrfOut`, `attempt`,
+  `address_key`, `audit_refusal`, `auth_settings`, `UserLoggedOut`, and
+  the login gates.
+- The phone as identity, completed (ADR 0129):
+  - **Enrollment:** `DEVICES.ENROLLMENT` adds `POST /devices/enroll/code`
+    and `POST /devices/enroll`. A user with no bound device binds the
+    first one with a code sent to the account, the password, and the new
+    key's signature, and is logged in. A user with a second factor sends
+    its code too (`otp`), and a password staff set is changed first
+    (`new_password`). A user with a bound device enrolls no other
+    (`409 device_already_bound`). A lost phone is recovered through
+    support only (`unbinddevices`).
+  - **Strict mode:** `CIBA.APPROVE_LOGINS = "always"` refuses users with
+    no bound device too (`403 phone_enrollment_required`). Every login
+    is signed by a bound device, approved from one, or the enrollment.
+    `ciba.E005` refuses it without `DEVICES.ENROLLMENT`.
+  - **Step-ups from the phone:** a signed-in web session asks the phone
+    to approve an action (`/app-sign-in/step-up`). Once approved, the
+    session steps up with `amr` `["hwk"]`, and `StepUp` rules let it
+    through.
+  - **Transactions from the phone:** `/app-sign-in/transactions/{id}`
+    asks the phone to confirm an `auth.sca` transaction. The phone is
+    shown its amount and payee, and the answer is its authorization.
+  - Each request has a `kind` and is bound to the session that asked: a
+    step-up never redeems as a login. `domainkit_ciba_requests` gains
+    `kind`, `credential_digest` and `sca_challenge_id`: make the
+    migration with `makemigrations`.
+  - `auth.integration` adds `send_code`, `target_of`, `account_key`,
+    `needs_second_factor`, `second_factor_holds`, `first_use_after_code`,
+    `sca_transaction` and `confirm_transaction_with`.
+
+### Changed
+
+- The identity providers' login route is named `start_provider_login`
+  (its OpenAPI operation id): `start_login` was the passkey login's
+  name too, so a project that mounted both apps failed `check`
+  (`openapi.E001`).
+
+### Fixed
+
+- `domainkit.contrib.devices` (and `ciba`, which uses it) needed
+  `cryptography`, which no extra named: a plain install failed with a
+  `ModuleNotFoundError`, while its page said nothing was needed. The new
+  `devices` extra installs it, and an app of domainkit's that misses its
+  extra names it.
+- `dbshell` passes a port given in the URL's query (`?host=/run/pg&port=5433`)
+  and `host:port` pairs to `psql`, as asyncpg reads them; it connected to
+  5432 before.
+- A `private_key_jwt` assertion that expires past year 9999 is
+  `invalid_client`, not a 500.
+- CIBA's step-up and transaction routes have names of their own; one was
+  the passkey step-up's. A test now mounts every router the apps ship and
+  requires their names to differ.
+
 ## [2.0.0] - 2026-11-05
 
 2.0 removes what 1.x deprecated: verification links are gone, and codes

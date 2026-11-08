@@ -1,9 +1,10 @@
 # Public API: users and permissions
 
 `domainkit.contrib.auth`, `domainkit.contrib.identity`, `domainkit.contrib.devices`,
-and their modules
+`domainkit.contrib.phones`, `domainkit.contrib.ciba`, and their modules
 ([auth.md](../auth.md), [identity](../auth/identity.md),
-[devices](../auth/devices.md)). Part of
+[devices](../auth/devices.md), [phones](../auth/phones.md),
+[sign-in approvals](../auth/ciba.md)). Part of
 the [public API](../api.md), under its compatibility policy.
 
 ## `domainkit.contrib.auth`
@@ -140,6 +141,17 @@ Device proofs: a client that logged in keeps a count of its own (SEC-r1-2).
 
 - `DEVICE_COOKIE`: The proof's cookie, `__Host-` prefixed where the prefix holds.
 
+## `domainkit.contrib.auth.gates`
+
+Login gates: checks every login passes before it is issued (ADR 0128).
+
+- `LoginGate`: A check of a login: return to let it through, raise to refuse it.
+- `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
+- `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
+- `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
+- `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
+
 ## `domainkit.contrib.auth.hashers`
 
 Password hashing (Django's `hashers`, with the same stored formats).
@@ -205,9 +217,11 @@ Transactions authorized for one amount and one payee (PSD2's dynamic linking).
 - `InvalidTransaction`: The amount, payee, or purpose cannot be authorized as given.
 - `ScaChallenge`: A transaction waiting for its user's authorization, or holding it.
 - `TransactionNotAuthorized`: No authorization holds for this transaction: get one, then try again (403).
+- `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
 - `consume_authorization`: Spend `authorization` on this transaction, once; return what it was for.
 - `request_authorization`: Store a transaction for `user_id` to confirm, for `AUTH.SCA.TTL`.
 - `router`: The routes: transactions authorized for one amount and one payee (PSD2's dynamic linking).
+- `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
 
 ## `domainkit.contrib.auth.signup`
 
@@ -345,15 +359,20 @@ Linked identities, logins on their way back from a provider, and tickets.
 Passkeys (WebAuthn) and bound devices: keys a user's devices hold.
 
 - `BoundDevice`: A user's device: a key it holds, which signs requests.
+- `DeviceAlreadyBound`: The user has a bound device: approve the new one from it (409).
+- `DeviceLoginOff`: `DEVICES.DEVICE_LOGIN` is off: devices do not log in here (404).
 - `DeviceNotFound`: The user has no device with that id.
 - `DeviceSignatureRefused`: The request is not signed by a device of the user, now, once (401).
 - `DeviceSigned`: Requests a bound device of the user signed, now, once.
 - `DevicesUnitOfWork`: The auth unit of work, with the device tables (on the same database).
+- `EnrollmentOff`: `DEVICES.ENROLLMENT` is off: devices do not enroll here (404).
+- `EnrollmentRefused`: The code, the password, or the key's signature does not hold (401).
 - `Passkey`: A user's passkey: a WebAuthn credential's public key and counter.
 - `PasskeyNotFound`: The user has no passkey with that id.
 - `PasskeyRefused`: A passkey's answer does not hold (401); the reason is logged, not sent.
 - `PasskeysOff`: `DEVICES.RP_ID` is not set: no passkeys here (404).
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
+- `SecondFactorRequired`: The user has a second factor: enrollment needs its code too (401).
 - `TooManyKeys`: The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already: remove one first.
 - `UnsupportedKey`: Not a P-256 or Ed25519 public key (SubjectPublicKeyInfo, base64url).
 
@@ -370,6 +389,15 @@ Requests signed by a bound device's key.
 - `DeviceSigned`: Requests a bound device of the user signed, now, once.
 - `device_key`: A device key's algorithm, and the key as SubjectPublicKeyInfo.
 - `signed_message`: What a device signs for a request.
+- `signing_device`: The device of `user` that signed the request, checked once a request.
+
+## `domainkit.contrib.devices.enrollment`
+
+Enrollment: the first device of a user who has none, with no login first.
+
+- `ENROLLMENT`: The purpose of the codes that enroll a first device.
+- `enroll`: Bind the user's first device, proven by a code, the password, and its key.
+- `send_enrollment_code`: Send an enrollment code to the account `identifier` names, if it may enroll.
 
 ## `domainkit.contrib.devices.events`
 
@@ -384,12 +412,17 @@ What happens to a user's passkeys and devices (audited as `devices.*`).
 
 What a passkey, or a bound device, may be refused.
 
+- `DeviceAlreadyBound`: The user has a bound device: approve the new one from it (409).
+- `DeviceLoginOff`: `DEVICES.DEVICE_LOGIN` is off: devices do not log in here (404).
 - `DeviceNotFound`: The user has no device with that id.
 - `DeviceSignatureRefused`: The request is not signed by a device of the user, now, once (401).
+- `EnrollmentOff`: `DEVICES.ENROLLMENT` is off: devices do not enroll here (404).
+- `EnrollmentRefused`: The code, the password, or the key's signature does not hold (401).
 - `PasskeyNotFound`: The user has no passkey with that id.
 - `PasskeyRefused`: A passkey's answer does not hold (401); the reason is logged, not sent.
 - `PasskeysOff`: `DEVICES.RP_ID` is not set: no passkeys here (404).
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
+- `SecondFactorRequired`: The user has a second factor: enrollment needs its code too (401).
 - `TooManyKeys`: The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already: remove one first.
 - `UnsupportedKey`: Not a P-256 or Ed25519 public key (SubjectPublicKeyInfo, base64url).
 
@@ -441,22 +474,41 @@ What apps built on auth use: log a user in, step them up, hear of them.
 
 - `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
 - `REAUTH_AGE`: How recent a step-up must be to stand for the password (`reauthenticate`).
+- `CsrfOut`: The token to send back in `X-CSRF-Token` with unsafe methods.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
 - `SteppedUp`: A user authenticated again, for acts that ask for it (`StepUp`).
 - `TokenOut`: Tokens (OAuth 2's token response): send `Authorization: Bearer ...`.
 - `UserDeleted`: A user was deleted.
+- `UserLoggedOut`: A user logged out: of this session, or `everywhere`.
 - `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
+- `account_key`: The count of `scope` attempts at the account `username` names.
+- `address_key`: The count of `scope` attempts from the request's client address.
+- `attempt`: Count an attempt against each `(key, rate)`; refuse it past a rate.
+- `audit_refusal`: Record a refused attempt, without what was tried: it may be a secret.
+- `auth_settings`: The validated `AUTH` settings.
 - `challenge`: A challenge, if `user` has a second factor; None if not.
+- `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
+- `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
+- `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
+- `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
+- `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
 - `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).
+- `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
+- `second_factor_holds`: Whether `code` proves `user`'s second factor; a code that does is spent.
+- `send_code`: Issue a code for `purpose` and send it where `identifier` reaches `user`.
+- `start_browser_session`: A browser session for `user`, whose login was checked another way.
 - `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
 - `stepping_credentials`: The request's credentials, if they can keep a step-up.
+- `target_of`: What the table keeps of an address or a number: an HMAC of it.
 - `utc_now`: The current time in UTC.
 
 ## `domainkit.contrib.phones`
@@ -539,3 +591,139 @@ Codes sent to phone numbers, and the numbers users verified.
 
 - `phone_codes`: Each code sent, as a keyed digest, until it is used, spent, or old: counted to limit sends.
 - `phones`: The numbers each user proved they receive messages at.
+
+## `domainkit.contrib.ciba`
+
+Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
+
+- `AccessDenied`: The phone denied the sign-in.
+- `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
+- `CibaClient`: An OIDC client that may ask users' phones: who, how it proves it, what for.
+- `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
+- `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
+- `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
+- `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
+- `PhoneUnavailable`: No phone of the signed-in user can be asked now (409).
+- `PollRefused`: A poll that gives no tokens (400); `code` says why.
+- `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
+- `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
+- `SignInApproved`: A user approved a sign-in from one of their bound devices.
+- `SignInDenied`: A user denied a sign-in.
+- `SignInExpired`: The request's time is up before the phone approved it.
+- `SignInNotFound`: The user has no sign-in request with that id that waits for an answer (404).
+- `SignInReported`: A user denied a sign-in they did not start: someone else knows them.
+- `SignInRequest`: A sign-in a phone is asked to approve, as its row keeps it.
+- `SignInUnknown`: No request has that handle, or it was redeemed, or is another client's.
+- `SlowDown`: A poll came before the interval: wait 5 seconds more from now on.
+- `Started`: A request started: what its initiator keeps, and shows on its page.
+- `TransactionClosed`: The transaction was confirmed or used already, or expired (409).
+- `TransactionNeedsOtherFactors`: `AUTH.SCA.METHODS` asks for more than the phone's key proves (409).
+- `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
+- `approve`: Approve the user's request from their device `device_id`.
+- `ask_signed_in`: Ask the phone of `user`, who is signed in, to approve `kind`.
+- `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
+- `deny`: Deny the user's request; with `report`, every other one waiting too.
+- `poll`: The approved request `handle` polls for, redeemed now; it works once.
+- `start_push`: Ask `user`'s phone to approve a sign-in; queue the push to their apps.
+- `start_qr`: A request for whichever phone scans its QR code, within `QR_TTL`.
+
+## `domainkit.contrib.ciba.api`
+
+The routes of sign-ins approved from the phone: the web's, and the phone's.
+
+- `router`: The routes: the web's sign-ins, and the phone's answers.
+
+## `domainkit.contrib.ciba.clients`
+
+CIBA clients: registered by staff, authenticated on every request.
+
+- `ASSERTION_TYPE`: The `client_assertion_type` of `private_key_jwt` (RFC 7523).
+- `METHODS`: How clients prove who they are (`token_endpoint_auth_methods_supported`).
+- `authenticate_client`: The client the request proves it is, by the one method it uses.
+- `register`: Register a client, which proves itself with `secret` or `jwks`.
+- `rotate_secret`: Give the client `secret`; the old one stops working now.
+
+## `domainkit.contrib.ciba.events`
+
+What happens to a user's sign-in requests (audited as `ciba.*`).
+
+- `SignInApproved`: A user approved a sign-in from one of their bound devices.
+- `SignInDenied`: A user denied a sign-in.
+- `SignInReported`: A user denied a sign-in they did not start: someone else knows them.
+
+## `domainkit.contrib.ciba.exceptions`
+
+What a sign-in request may be refused, and what a poll may answer.
+
+- `AccessDenied`: The phone denied the sign-in.
+- `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
+- `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
+- `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
+- `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
+- `PhoneUnavailable`: No phone of the signed-in user can be asked now (409).
+- `PollRefused`: A poll that gives no tokens (400); `code` says why.
+- `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
+- `SignInExpired`: The request's time is up before the phone approved it.
+- `SignInNotFound`: The user has no sign-in request with that id that waits for an answer (404).
+- `SignInUnknown`: No request has that handle, or it was redeemed, or is another client's.
+- `SlowDown`: A poll came before the interval: wait 5 seconds more from now on.
+- `TransactionClosed`: The transaction was confirmed or used already, or expired (409).
+- `TransactionNeedsOtherFactors`: `AUTH.SCA.METHODS` asks for more than the phone's key proves (409).
+- `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
+- `invalid_client`: `401 invalid_client`; a challenge where Basic authentication was tried.
+
+## `domainkit.contrib.ciba.gate`
+
+The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
+
+- `approved_from_the_phone`: Let the login of `user` through if the app is not their identity, or signs it.
+- `mark_approved`: Say that `request` redeemed a sign-in `user`'s phone approved.
+
+## `domainkit.contrib.ciba.oidc`
+
+The OpenID Provider's CIBA routes, for clients that ask a user's phone.
+
+- `CIBA_GRANT`: The grant type a client polls the token endpoint with (CIBA 10.1).
+- `id_token_signer`: `AUTH.JWT`'s keys, as `JWTAuthentication` loads and checks them.
+- `router`: The routes: authentication and QR requests, and the token endpoint.
+- `well_known`: The provider's metadata and keys, mounted at the root: `/.well-known/...`.
+
+## `domainkit.contrib.ciba.services`
+
+Start a sign-in request, let the phone answer it, and poll it (ADR 0128).
+
+- `PUSH_KIND`: The `type` of a push's data: the app fetches the request it names.
+- `Requester`: Who started a sign-in, as the phone is shown it: an address, a browser.
+- `Started`: A request started: what its initiator keeps, and shows on its page.
+- `approve`: Approve the user's request from their device `device_id`.
+- `ask_signed_in`: Ask the phone of `user`, who is signed in, to approve `kind`.
+- `ciba_settings`: `CIBA`, validated (the defaults when it is unset).
+- `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
+- `deny`: Deny the user's request; with `report`, every other one waiting too.
+- `poll`: The approved request `handle` polls for, redeemed now; it works once.
+- `start_push`: Ask `user`'s phone to approve a sign-in; queue the push to their apps.
+- `start_qr`: A request for whichever phone scans its QR code, within `QR_TTL`.
+
+## `domainkit.contrib.ciba.settings`
+
+Settings of `domainkit.contrib.ciba`: `CIBA = {...}`.
+
+- `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
+
+## `domainkit.contrib.ciba.stores`
+
+The CIBA tables, read and written in a `CibaUnitOfWork`.
+
+- `CibaClient`: An OIDC client that may ask users' phones: who, how it proves it, what for.
+- `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
+- `SignInRequest`: A sign-in a phone is asked to approve, as its row keeps it.
+
+## `domainkit.contrib.ciba.tables`
+
+CIBA clients, sign-in requests, and the client assertions already used.
+
+- `assertions`: The `jti` of each `private_key_jwt` assertion, until it expires: once.
+- `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba add`, `list`).
+- `sign_in_requests`: Each sign-in, step-up, or transaction a phone is asked to approve, until purged.

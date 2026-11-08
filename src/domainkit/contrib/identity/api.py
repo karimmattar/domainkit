@@ -34,6 +34,7 @@ from domainkit.contrib.auth.integration import (
     TokenOut,
     challenge,
     issue_login,
+    pass_login_gates,
     reauthenticate,
 )
 from domainkit.contrib.auth.models import UserId
@@ -106,7 +107,7 @@ async def providers() -> ProvidersOut:
 
 
 @router.post("/identity/{name}/login", dependencies=[Public])
-async def start_login(name: str) -> AuthorizationOut:
+async def start_provider_login(name: str) -> AuthorizationOut:
     """Start a login at ``name``."""
     return _started(await begin(name, LOGIN))
 
@@ -146,7 +147,7 @@ async def start_link(
     responses={status.HTTP_202_ACCEPTED: {"model": MfaChallengeOut}},
 )
 async def callback(
-    name: str, body: CallbackIn, response: Response
+    name: str, body: CallbackIn, request: Request, response: Response
 ) -> TokenOut | MfaChallengeOut | LinkedOut:
     """Finish a login (tokens, or a challenge) or a link, in the browser that began it.
 
@@ -160,7 +161,7 @@ async def callback(
     flow, user = await complete(name, body.code, body.state)
     if user is None:
         return LinkedOut(linked=flow.provider)
-    return await logged_in(user, response)
+    return await logged_in(request, user, response)
 
 
 @router.post(
@@ -189,7 +190,7 @@ async def redeem(
         await uow.commit()
     if user is None or not user.is_active:
         raise NoAccount("That ticket expired or was used; log in again.")
-    return await logged_in(user, response)
+    return await logged_in(request, user, response)
 
 
 @router.get("/identity/linked")
@@ -216,9 +217,13 @@ def _started(authorization_url: str) -> AuthorizationOut:
 
 
 async def logged_in(
-    user: AbstractBaseUser, response: Response
+    request: Request, user: AbstractBaseUser, response: Response
 ) -> TokenOut | MfaChallengeOut:
-    """Tokens for ``user``, or their second factor's challenge (202)."""
+    """Tokens for ``user``, or their second factor's challenge (202).
+
+    The login passes the login gates first (``auth.gates``).
+    """
+    await pass_login_gates(request, user)
     pending = await challenge(user)
     if pending is not None:
         response.status_code = status.HTTP_202_ACCEPTED

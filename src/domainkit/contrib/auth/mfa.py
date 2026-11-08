@@ -67,6 +67,7 @@ from .api import (
 )
 from .devices import hand_out
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
+from .gates import pass_login_gates
 from .models import AbstractBaseUser, UserId
 from .onetime import TOKEN_MAX_LENGTH, UserTokenGenerator
 from .repositories import TotpDevice
@@ -308,6 +309,36 @@ async def verify_challenge(request: Request, token: str, code: str) -> AbstractB
     return user
 
 
+async def needs_second_factor(user: AbstractBaseUser) -> bool:
+    """Whether ``user`` turned a second factor on: a login needs its code."""
+    async with AuthUnitOfWork() as uow:
+        return await uow.mfa.enabled(user.id)
+
+
+async def second_factor_holds(
+    request: Request, user: AbstractBaseUser, code: str
+) -> bool:
+    """Whether ``code`` proves ``user``'s second factor; a code that does is spent.
+
+    For a login made with no challenge, as a device's enrollment is. A
+    TOTP code or a recovery code; each try counts against
+    ``AUTH.MFA.RATE`` for the user, and one that works is given back.
+
+    Raises:
+        SecondFactorUnreadable: No key held opens the user's secret.
+        APIError: 429 past ``AUTH.MFA.RATE``.
+    """
+    counted = await _limit_user(request, user)
+    async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
+        stored = await uow.users.get(UserId(user.id))
+        method = await spend_code(uow, stored, code)
+        if method is None:
+            return False
+        await uow.commit()
+    await counted.succeeded()
+    return True
+
+
 async def first_use_after_code(
     user: AbstractBaseUser, new_password: str | None
 ) -> AbstractBaseUser:
@@ -542,6 +573,7 @@ async def mfa_login(body: MfaLoginIn, request: Request, response: Response) -> T
     user = await first_use_after_code(
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
     )
+    await pass_login_gates(request, user)
     issued = await issue_login(user)
     await hand_out(request, response, user)
     return _token_out(issued)

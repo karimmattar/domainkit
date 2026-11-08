@@ -1193,6 +1193,7 @@ jobs:
               domainkit.contrib.auth.hashers.* domainkit.contrib.auth.management.*
               domainkit.contrib.auth.middleware.* domainkit.contrib.auth.repositories.*
               domainkit.contrib.auth.settings.* domainkit.contrib.auth.users.*
+              domainkit.contrib.auth.gates.* domainkit.contrib.ciba.*
           - name: auth-4
             mutants: >-
               domainkit.contrib.auth.access.* domainkit.contrib.auth.certificates.*

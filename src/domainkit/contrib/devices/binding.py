@@ -45,7 +45,7 @@ from .settings import DevicesSettings
 from .stores import BoundDevice, DevicesUnitOfWork
 from .webauthn import EDDSA, ES256, WebAuthnError, b64decode, verify_signature
 
-__all__ = ["DeviceSigned", "device_key", "signed_message"]
+__all__ = ["DeviceSigned", "device_key", "signed_message", "signing_device"]
 
 DEVICE_ID: Final = "x-device-id"
 DEVICE_TIME: Final = "x-device-time"
@@ -134,15 +134,15 @@ async def signing_device(connection: HTTPConnection, user: Any) -> BoundDevice |
     return device
 
 
-async def _check(connection: HTTPConnection, user: Any) -> BoundDevice | None:  # noqa: ANN401
-    """The device that signed, if every part holds; its time recorded."""
-    if not isinstance(connection, Request) or not getattr(
-        user, "is_authenticated", False
-    ):
-        return None
-    headers = connection.headers
+async def read_signature(request: Request) -> tuple[int, bytes, bytes] | None:
+    """The time, the signature, and the message signed, if they are well formed.
+
+    None when a header is missing or malformed, or the time is outside
+    ``DEVICES.SIGNATURE_WINDOW``. The signature is not checked: the caller
+    checks it with the key it expects.
+    """
+    headers = request.headers
     try:
-        device_id = UUID(headers.get(DEVICE_ID, ""))
         time = int(headers.get(DEVICE_TIME, ""))
         encoded = headers.get(DEVICE_SIGNATURE, "")
         if len(encoded) > MAX_SIGNATURE:
@@ -154,12 +154,30 @@ async def _check(connection: HTTPConnection, user: Any) -> BoundDevice | None:  
     now = int(utc_now().timestamp() * 1000)
     if abs(now - time) > window.total_seconds() * 1000:
         return None
-    target = (
-        connection.scope.get("raw_path", b"").decode("latin-1") or connection.url.path
-    )
-    if query := connection.scope.get("query_string", b""):
+    target = request.scope.get("raw_path", b"").decode("latin-1") or request.url.path
+    if query := request.scope.get("query_string", b""):
         target = f"{target}?{query.decode('latin-1')}"
-    message = signed_message(connection.method, target, time, await connection.body())
+    return (
+        time,
+        signature,
+        signed_message(request.method, target, time, await request.body()),
+    )
+
+
+async def _check(connection: HTTPConnection, user: Any) -> BoundDevice | None:  # noqa: ANN401
+    """The device that signed, if every part holds; its time recorded."""
+    if not isinstance(connection, Request) or not getattr(
+        user, "is_authenticated", False
+    ):
+        return None
+    try:
+        device_id = UUID(connection.headers.get(DEVICE_ID, ""))
+    except ValueError:
+        return None
+    signed = await read_signature(connection)
+    if signed is None:
+        return None
+    time, signature, message = signed
     async with DevicesUnitOfWork() as uow:
         device = await uow.devices.get(device_id)
         if (

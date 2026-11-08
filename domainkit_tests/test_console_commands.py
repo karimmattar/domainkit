@@ -422,6 +422,26 @@ def test_dbshell_passes_every_host(client: Client) -> None:
     assert "PGHOST" not in none
 
 
+@pytest.mark.parametrize(
+    ("query", "host", "port"),
+    [
+        ("host=/run/postgresql&port=55432", "/run/postgresql", "55432"),
+        ("host=db1:5433&host=db2:5434", "db1,db2", "5433,5434"),
+        ("host=db1:5433&host=/run/b", "db1,/run/b", "5433,"),
+    ],
+)
+def test_dbshell_passes_ports_given_in_the_query(
+    client: Client, query: str, host: str, port: str
+) -> None:
+    """A ``port`` value, or ``host:port`` pairs, reach libpq as asyncpg reads them."""
+    url = f"postgresql+asyncpg://app@/shop?{query}"
+    with override_settings(DATABASES={"default": {"URL": url}}):
+        run("dbshell")
+
+    [(_, environment)] = client.calls
+    assert (environment["PGHOST"], environment["PGPORT"]) == (host, port)
+
+
 def test_diffsettings_names_the_classes_logging_holds(restore_logging: None) -> None:
     """``build_logging_config`` puts classes in ``LOGGING``: shown by their path.
 

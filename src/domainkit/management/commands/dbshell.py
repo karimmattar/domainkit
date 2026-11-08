@@ -116,12 +116,13 @@ def _libpq(url: URL, config: DatabaseConfig) -> dict[str, str]:
     """The libpq variables for ``url`` and the alias's TLS options.
 
     Several ``host`` query values (asyncpg tries them in turn) become
-    libpq's comma-separated list.
+    libpq's comma-separated lists. A query ``host`` may carry its port
+    (``db1:5433``), and a query ``port`` is the port, as asyncpg reads them.
     """
-    host = url.host or url.query.get("host")
+    hosts, ports = _hosts(url)
     found = {
-        "PGHOST": host if isinstance(host, str) else ",".join(host or ()),
-        "PGPORT": None if url.port is None else str(url.port),
+        "PGHOST": ",".join(hosts),
+        "PGPORT": ",".join(ports) if any(ports) else "",
         "PGUSER": url.username,
         "PGPASSWORD": url.password,
         "PGDATABASE": url.database,
@@ -130,6 +131,25 @@ def _libpq(url: URL, config: DatabaseConfig) -> dict[str, str]:
         value = getattr(config, option)
         found[variable] = None if value is None else str(value)
     return {name: value for name, value in found.items() if value}
+
+
+def _hosts(url: URL) -> tuple[list[str], list[str]]:
+    """The hosts of ``url``, and the port of each ("" for libpq's default)."""
+    port = url.port or url.query.get("port")
+    default = "" if port is None or not isinstance(port, str | int) else str(port)
+    if url.host:
+        return [url.host], [default]
+    given = url.query.get("host") or ()
+    hosts, ports = [], []
+    for each in [given] if isinstance(given, str) else list(given):
+        name, colon, number = each.rpartition(":")
+        if colon and not each.startswith("/") and number.isdigit():
+            hosts.append(name)
+            ports.append(number)
+        else:
+            hosts.append(each)
+            ports.append(default)
+    return hosts, ports
 
 
 def _sqlite_file(url: URL) -> str:

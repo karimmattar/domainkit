@@ -11,6 +11,7 @@ PostgreSQL refuses for a boolean column.
 import ast
 import importlib
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,23 +31,15 @@ from sqlalchemy import (
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from domainkit import contrib
 from domainkit.db import metadata
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import MakeDatabase
 
-APPS = (
-    "accounting",
-    "approvals",
-    "audit",
-    "auth",
-    "contenttypes",
-    "flags",
-    "idempotency",
-    "keys",
-    "limits",
-    "messaging",
-    "objectpermissions",
-    "webhooks",
+APPS = tuple(
+    sorted(
+        path.parent.name for path in Path(contrib.__file__).parent.glob("*/tables.py")
+    )
 )
 """Every contrib app with tables of its own."""
 for app in APPS:
@@ -105,9 +98,10 @@ def read_default(url: str, column: Column[Any], default: str | TextClause) -> ob
 
 
 def test_the_contrib_tables_have_server_defaults_to_check() -> None:
-    """The booleans of auth, audit, and idempotency, and messaging's queue."""
+    """The booleans of auth, audit, and idempotency, messaging's queue, ciba's kind."""
     assert [str(column) for column in DEFAULTED] == [
         "domainkit_audit_seals.late",
+        "domainkit_ciba_requests.kind",
         "domainkit_idempotency_keys.pinned",
         "domainkit_idempotency_keys.tombstone",
         "domainkit_messages.priority",

@@ -5795,6 +5795,7 @@ propcache = ">=0.2.1"
 argon2 = ["argon2-cffi"]
 audit = ["cryptography"]
 cloud = ["cryptography", "httpcore2", "httpx2"]
+devices = ["cryptography"]
 granian = ["granian"]
 httpclient = ["httpcore2", "httpx2"]
 identity = ["httpcore2", "httpx2", "pyjwt"]
@@ -5824,4 +5825,4 @@ webhooks = ["cryptography", "httpx2"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4"
-content-hash = "07f7d1689ef6a55ea50d594a3d474501210d0809a3ef47dfcbc1da5938cbf4f2"
+content-hash = "eba7bc5f694bb08375ee7623502761f1f009c11c04f5c9307887f4053e7fbc85"
