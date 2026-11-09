@@ -42,6 +42,10 @@ never published), with each section below.
 ([Sign-in approvals](auth/ciba.md)). Nothing changes in a project until
 it installs the new app, and no existing table changes.
 
+2.1.0 was never published: its release stopped before reaching PyPI.
+Upgrade to 2.1.1, the first published 2.1 release, which has the same
+changes.
+
 ### A client of the identity providers' login calls it by its new name
 
 The identity providers' login, `POST /auth/identity/{name}/login`, is
