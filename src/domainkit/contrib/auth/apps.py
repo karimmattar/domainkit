@@ -1,7 +1,7 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from http.cookies import SimpleCookie
 from importlib import import_module
 from typing import Any, Final
@@ -13,7 +13,11 @@ from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig, registry
-from domainkit.apps.hooks import on_check_application, on_deployment_warnings
+from domainkit.apps.hooks import (
+    on_check_application,
+    on_deployment_warnings,
+    on_export_subject,
+)
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
@@ -123,6 +127,7 @@ class AuthConfig(DomainConfig):
             from .erasure import forget_credentials
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
+        on_export_subject(_export_logins, domain=self.label)
         on_check_application(self.application_problems)
         on_deployment_warnings(self.weak_settings)
 
@@ -777,3 +782,10 @@ def _only_in_tests(what: str) -> None:
             f"{what} signs users in without credentials, so it needs "
             f'ENVIRONMENT = "test", not {settings.ENVIRONMENT!r}.'
         )
+
+
+async def _export_logins(subject: str) -> Mapping[str, object]:
+    """What auth keeps of ``subject``'s logins (``privacy export``)."""
+    from .erasure import export_logins
+
+    return await export_logins(subject)

@@ -9,6 +9,31 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- Each login records where it came from: how it signed in (`method`:
+  `password`, `passkey`, `device`, `push`, `qr`, `provider`, or
+  `impersonation`), the browser or app (`agent`), the address (`ip`), and
+  the bound device that logged in (`device_id`). `GET /auth/tokens`
+  answers them with each token, so a user can tell one login from
+  another ([Where each login came from](docs/auth/logging-in.md#where-each-login-came-from),
+  ADR 0130). The tokens table gains four nullable columns: run
+  `makemigrations`, then `migrate`.
+- `POST /auth/logout` with `{"others": true}` ends every other login of
+  the user and keeps the one asking. Personal tokens stay.
+- Auth's `on_manage_logins` hook (`domainkit.contrib.auth.gates`): checks
+  that run before a user's logins are listed, before one that is not the
+  request's own ends, and before `everywhere` or `others`.
+- With `CIBA.APPROVE_LOGINS` set, only the user's bound phone manages
+  their logins: those requests must be signed by the device, else
+  `403 phone_required`. The phone lists the web sessions and ends one,
+  all but itself, or all ([Managing logins from the
+  phone](docs/auth/ciba.md#managing-logins-from-the-phone)).
+- `issue_login` and `start_browser_session` take `method=` and
+  `device_id=`; `LoginMethod` is in `auth.integration`.
+- `privacy export` lists the user's tokens under `copies.auth`: their
+  kind, name, dates, and origin, never their value.
+
 ## [2.1.2] - 2026-11-09
 
 A fix for projects whose users log in by email address or mobile number

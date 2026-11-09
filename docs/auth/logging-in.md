@@ -52,7 +52,7 @@ in the same time:
 | --- | --- | --- |
 | `POST /login` | `{"identifier", "password"}`, and `"new_password"` where the password must change | `200` with tokens; `202` with a challenge for a user with a second factor; `401 invalid_credentials`; `429 rate_limited`; `403 password_change_required` for a password staff set, with `AUTH.PASSWORD_CHANGE_ON_FIRST_USE` ([PCI DSS v4.0's passwords](pci-dss.md)). |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
-| `POST /logout` | optional `{"everywhere": true}` | `204`: this login's tokens end, or every token of the user. Scoped credentials end only themselves (`403` with `everywhere`). |
+| `POST /logout` | optional `{"everywhere": true}` or `{"others": true}` | `204`: this login's tokens end; with `everywhere`, every token of the user; with `others`, every other login of the user, while this one and the personal tokens stay. Scoped credentials end only themselves (`403` with either). Both at once: `422`. |
 | `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions` (with a scoped token, those its scopes allow). |
 | `POST /password` | `{"old_password", "new_password"}` | `204`: every other login of the user ends; `400 wrong_password`; `422 invalid_password` if a validator refuses the new password; `429`. |
 | `POST /step-up` (`auth.stepup.router`) | `{"code"}`, and `"password"` where asked | `200` with when and how the credentials stepped up ([Stepping up](step-up.md)). |
@@ -254,8 +254,10 @@ A login is a login token, a browser session, or a JSON Web Token login.
   oldest, so no user is refused for their own history. Personal tokens
   neither count nor end.
 - **The session list.** `GET /auth/tokens` (`personal_tokens.router`)
-  lists them, with `kind`, `created_at`, `last_used_at`, and `current`.
-  `DELETE /auth/tokens/{id}` ends one, wherever it is used.
+  lists them, with `kind`, `created_at`, `last_used_at`, `current`, and
+  where each came from (below). `DELETE /auth/tokens/{id}` ends one,
+  wherever it is used. `POST /auth/logout` with `{"others": true}` ends
+  all but the one asking.
 - **Idle logins end.** With `AUTH.IDLE_TIMEOUT` (off by default; 5 minutes
   to 30 days), a login token or a browser session that authenticated
   nothing for that long is refused: `401` "Session ended after
@@ -277,6 +279,48 @@ More about idle logins:
 - **A kept principal that looks idle is read again** before it is
   refused: another process may have served it since.
 - **Personal tokens and certificates have no idle timeout.**
+
+#### Where each login came from
+
+Each login records how it signed in, and from what (since 2.2,
+[ADR 0130](../adr/0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md)).
+`GET /auth/tokens` answers them with each token, so a user can tell
+"Chrome on Windows, by QR, two minutes ago" from the login they want to
+end:
+
+| Field | What it holds |
+| --- | --- |
+| `method` | `password`, `passkey`, `device` (a bound device's signature or enrollment), `push` or `qr` ([approved from the phone](ciba.md)), `provider` (an identity provider), or `impersonation`. |
+| `agent` | The request's `User-Agent`, at most 200 characters. |
+| `ip` | The client's address, as `TRUSTED_PROXIES` resolves it. |
+| `device_id` | The bound device that logged in, for a device's own login. |
+
+They are `null` for personal tokens, and for logins made before 2.2. A
+refreshed JSON Web Token login keeps its first request's origin. They
+are personal data: they end with the login, `privacy export` lists them
+with the user's tokens, and `privacy erase` deletes the tokens.
+
+A login route of your own names its method:
+`issue_login(user, method=LoginMethod.PASSWORD)`, or
+`start_browser_session(request, user, response, method=...)`
+(`LoginMethod` is in `auth.integration`). Without one, the login records
+its agent and address, and no method.
+
+#### Who manages logins
+
+The hook point `on_manage_logins` (`domainkit.contrib.auth.gates`) runs
+its checks before:
+
+- listing the user's tokens (`GET /auth/tokens`);
+- ending a token that is not the request's own login;
+- logging out `everywhere` or `others`.
+
+A check takes the request and the user, and refuses by raising. With
+none registered, any login of the user manages the others. Logging out
+of the request's own login is never checked: a user can always sign out
+of the browser in front of them. With `CIBA.APPROVE_LOGINS`, the ciba app
+registers one: [only the phone manages
+logins](ciba.md#managing-logins-from-the-phone).
 
 ## Two-factor logins
 

@@ -251,6 +251,12 @@ possession factor as the authenticator app is. So it stands for the code
 {"auth_time": "2026-11-04T18:37:36.410418Z", "amr": ["hwk"]}
 ```
 
+A device's login, by `/devices/login` or by enrolling, records the method
+`device` and the device's id; a passkey's records `passkey`. The user's
+login list (`GET /auth/tokens`) shows them, so the phone can tell its own
+login from the web's ([Where each login came
+from](logging-in.md#where-each-login-came-from)).
+
 ## Enrolling a first device
 
 With `ENROLLMENT`, a phone app binds the first device of a user who has

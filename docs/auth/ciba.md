@@ -321,6 +321,39 @@ DEVICES = {"ENROLLMENT": True, "DEVICE_LOGIN": True}
 log in at all. Users who logged in before you turned it on keep their
 logins until they end.
 
+### Managing logins from the phone
+
+In both modes, the phone is where a user sees and ends their logins
+(since 2.2). The app calls auth's routes, signed by its device key like
+its other requests:
+
+| Request | Answer |
+| --- | --- |
+| `GET /auth/tokens` | Each login, with how it signed in (`push`, `qr`, `password`, ...), its browser or app, its address, and `current` for the phone's own ([Where each login came from](logging-in.md#where-each-login-came-from)). |
+| `DELETE /auth/tokens/{id}` | `204`: that login ends, wherever it is used. |
+| `POST /auth/logout` with `{"others": true}` | `204`: every login but the phone's ends. Personal tokens stay. |
+| `POST /auth/logout` with `{"everywhere": true}` | `204`: every token of the user ends, the phone's too. |
+
+```http
+GET /auth/tokens
+Authorization: Bearer dkt_...
+X-Device-Id: 7b1c...
+X-Device-Time: 1767225600123
+X-Device-Signature: MEUCIQ...
+```
+
+For a user with a bound device, the same requests unsigned, from a web
+session or anything else, are `403 phone_required` ("Manage your logins
+from your mobile app."). A stolen web session cannot list the logins or
+end the phone's, and the phone sees it and ends it. A web page can still
+log itself out (`POST /auth/logout` without a body, or `DELETE` of its
+own token), and create personal tokens. A user with no bound device
+manages their logins as before.
+
+The check is auth's `on_manage_logins` hook
+([Who manages logins](logging-in.md#who-manages-logins)); the app
+registers it when it starts.
+
 ### Login gates
 
 The setting works through auth's login gates
@@ -570,6 +603,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | --- | --- | --- |
 | `PhoneApprovalRequired` | `403 phone_approval_required` | `APPROVE_LOGINS`: a web login of a user with a bound device. |
 | `PhoneEnrollmentRequired` | `403 phone_enrollment_required` | `APPROVE_LOGINS = "always"`: any login of a user with no bound device. |
+| `PhoneRequired` | `403 phone_required` | `APPROVE_LOGINS`: listing a user's logins, or ending one but the request's own, unsigned by their bound device. |
 | `SignInNotFound` | `404 sign_in_not_found` | The phone answers a request that is not its user's, was answered, or expired. |
 | `QrCodeExpired` | `422 qr_code_expired` | The QR code is unknown, was claimed, or expired. |
 | `DifferentNetwork` | `403 different_network` | `QR_SAME_NETWORK = "require"`, and the phone is elsewhere. |

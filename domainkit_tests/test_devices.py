@@ -33,6 +33,7 @@ from domainkit_tests.conftest import (
     Shape,
 )
 from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
+from domainkit_tests.test_auth_login_origins import origins
 
 DEVICES = Shape(
     "devices",
@@ -236,6 +237,7 @@ def test_a_passkey_logs_in_with_no_password_and_no_second_factor(app: App) -> No
     assert tokens.headers["cache-control"] == "no-store"
     me = client.get("/auth/me", headers=bearer(tokens.json()["access_token"]))
     assert me.json()["username"] == "ann"
+    assert origins()[-1] == ("passkey", None)
     listed = client.get("/auth/passkeys", headers=headers).json()
     assert [each["name"] for each in listed] == ["Laptop"]
     assert listed[0]["last_used_at"] is not None

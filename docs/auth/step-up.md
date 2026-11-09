@@ -343,7 +343,7 @@ async def logged_in(user: AbstractBaseUser) -> TokenOut | MfaChallengeOut:
 
 | Name | What it is |
 | --- | --- |
-| `issue_login(user, *, factor_proven=True)` | Records the login and issues tokens of the first authentication class. Past `MAX_LOGINS`, the oldest logins end. |
+| `issue_login(user, *, factor_proven=True, method=None, device_id=None)` | Records the login and issues tokens of the first authentication class. Past `MAX_LOGINS`, the oldest logins end. `method`, a `LoginMethod`, and `device_id` say how it signed in ([Where each login came from](logging-in.md#where-each-login-came-from)). |
 | `challenge(user)` | The second factor's challenge (`MfaChallengeOut`), or `None` when the user has no second factor. |
 | `TokenOut`, `MfaChallengeOut` | The answers of a login: tokens, or `{"mfa_required", "mfa_token", "expires_in"}`. |
 | `reauthenticate(request, user, password, action)` | The user proved it is them again: the password, or a step-up within `REAUTH_AGE` (10 minutes). Raises `ReauthenticationRequired` (`401 reauthentication_required`), always under impersonation. |

@@ -32,6 +32,7 @@ from domainkit_tests.test_auth_http import (
     create_user,
     login,
 )
+from domainkit_tests.test_auth_login_origins import origins
 
 PROVIDERS = Shape(
     "providers",
@@ -177,6 +178,7 @@ def test_a_new_identity_signs_up_and_logs_in_again(app: App, idp: FakeIdP) -> No
     )
     assert me.json()["email_verified"] is True
     assert again.status_code == 200
+    assert [method for method, _ in origins()] == ["provider", "provider"]
     linked = client.get(
         "/auth/identity/linked", headers=bearer(again.json()["access_token"])
     )

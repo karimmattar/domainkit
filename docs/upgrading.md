@@ -36,6 +36,34 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.1 to 2.2
+
+2.2 shows where each login came from, and lets the phone manage the
+user's logins ([ADR 0130](adr/0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md)).
+
+### Make and apply the tokens' migration
+
+The tokens table gains four nullable columns: `method`, `agent`, `ip`,
+and `device_id`. Run `python manage.py makemigrations`, review the
+revision, then `migrate`. Logins made before it show `null` for them until
+they end.
+
+### Name the method in your own login routes
+
+A login route of your own that calls `issue_login` or
+`start_browser_session` records the agent and the address on its own.
+Pass `method=` (a `LoginMethod`, from `auth.integration`) so the user's
+list says how it signed in, and `device_id=` for a device's own login.
+
+### In the phone modes, web pages no longer list logins
+
+With `CIBA.APPROVE_LOGINS` set, `GET /auth/tokens`, ending another login,
+and logging out `everywhere` or `others` need a request signed by the
+user's bound device (`403 phone_required` otherwise). A web page that
+listed the user's sessions or personal tokens moves that to the mobile
+app. Logging the page itself out is unchanged, and so is creating a
+personal token. Users with no bound device are not affected.
+
 ## 2.0 to 2.1
 
 2.1 adds sign-ins, step-ups and payments approved from the user's phone

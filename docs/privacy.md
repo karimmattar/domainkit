@@ -153,6 +153,9 @@ domain and every database that a domain uses (each shard too), as JSON:
 their aggregates, by the domain's label. Each domain gives them through
 its own `on_export_subject` hook:
 
+- `auth`: the user's tokens, never their value: each one's kind, name,
+  dates, and, for a login, how and from where it signed in (method,
+  agent, address, device; since 2.2).
 - `phones`: the numbers the user proved, and when.
 - `identity`: the accounts at identity providers linked to the user: the
   provider, the user's id there, the email, and when it was linked.
@@ -164,8 +167,8 @@ its own `on_export_subject` hook:
 - `limits`, `accounting`, `approvals`: limits, accounts, and approval
   requests about the subject, when those apps are installed.
 
-The subject of `phones`, `identity`, and `devices` is a user's id (a
-UUID). Another subject finds nothing there.
+The subject of `auth`, `phones`, `identity`, and `devices` is a user's id
+(a UUID). Another subject finds nothing there.
 
 A copy may hold other people's data too (an appointment names the patient
 and the doctor). So each copy gives only what is about the subject:
