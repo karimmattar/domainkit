@@ -1076,6 +1076,9 @@ msgstr ""
 msgid "Approve this sign-in from your mobile app."
 msgstr ""
 
+msgid "Manage your logins from your mobile app."
+msgstr ""
+
 msgid "Enroll your mobile app first: you log in from it."
 msgstr ""
 

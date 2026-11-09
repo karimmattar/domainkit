@@ -25,10 +25,10 @@ from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.devices import DevicesUnitOfWork
 from domainkit.contrib.devices.binding import signing_device
 
-from .exceptions import PhoneApprovalRequired, PhoneEnrollmentRequired
+from .exceptions import PhoneApprovalRequired, PhoneEnrollmentRequired, PhoneRequired
 from .services import ciba_settings
 
-__all__ = ["approved_from_the_phone", "mark_approved"]
+__all__ = ["approved_from_the_phone", "managed_from_the_phone", "mark_approved"]
 
 APPROVED: Final = "domainkit.ciba.approved_user"
 """Where a request that redeemed an approved sign-in keeps its user's id."""
@@ -62,3 +62,23 @@ async def approved_from_the_phone(request: Request, user: AbstractBaseUser) -> N
         return
     if await signing_device(request, user) is None:
         raise PhoneApprovalRequired()
+
+
+async def managed_from_the_phone(request: Request, user: AbstractBaseUser) -> None:
+    """Let ``user``'s logins be managed only from their bound device (ADR 0130).
+
+    With ``APPROVE_LOGINS`` on, a user who bound a device lists and ends
+    other logins only from one of those devices, which signs the request:
+    a web session cannot end the phone's login. A user with no bound
+    device manages them as before.
+
+    Raises:
+        PhoneRequired: ``APPROVE_LOGINS`` is on, the user bound a device, and
+            none of theirs signed this request.
+    """
+    if not ciba_settings().APPROVE_LOGINS:
+        return
+    async with DevicesUnitOfWork() as uow:
+        bound = await uow.devices.count(user.id)
+    if bound and await signing_device(request, user) is None:
+        raise PhoneRequired()

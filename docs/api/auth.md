@@ -609,6 +609,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
+- `PhoneRequired`: Only the user's mobile app manages their logins (403).
 - `PhoneUnavailable`: No phone of the signed-in user can be asked now (409).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
@@ -667,6 +668,7 @@ What a sign-in request may be refused, and what a poll may answer.
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
+- `PhoneRequired`: Only the user's mobile app manages their logins (403).
 - `PhoneUnavailable`: No phone of the signed-in user can be asked now (409).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
@@ -684,6 +686,7 @@ What a sign-in request may be refused, and what a poll may answer.
 The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
 
 - `approved_from_the_phone`: Let the login of `user` through if the app is not their identity, or signs it.
+- `managed_from_the_phone`: Let `user`'s logins be managed only from their bound device (ADR 0130).
 - `mark_approved`: Say that `request` redeemed a sign-in `user`'s phone approved.
 
 ## `domainkit.contrib.ciba.oidc`

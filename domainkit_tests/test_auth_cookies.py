@@ -505,7 +505,11 @@ def test_logging_out_ends_the_session_and_clears_the_cookies(identity: Api) -> N
     assert all("Max-Age=0" in header for header in cleared.values())
     assert stored_tokens(alice) == []
     (logged_out,) = audited("auth.user_logged_out")
-    assert logged_out["details"] == {"user_id": str(alice), "everywhere": False}
+    assert logged_out["details"] == {
+        "user_id": str(alice),
+        "everywhere": False,
+        "others": False,
+    }
 
     stale = TestClient(client.app, base_url=SITE, cookies={SESSION: session})
     assert stale.get("/whoami").json() == {"user": "", "scheme": None}
