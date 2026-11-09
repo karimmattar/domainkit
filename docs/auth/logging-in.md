@@ -54,7 +54,7 @@ in the same time:
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` or `{"others": true}` | `204`: this login's tokens end; with `everywhere`, every token of the user; with `others`, every other login of the user, while this one and the personal tokens stay. Scoped credentials end only themselves (`403` with either). Both at once: `422`. |
 | `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions` (with a scoped token, those its scopes allow). |
-| `POST /password` | `{"old_password", "new_password"}`, and `"keep_device_logins"` with `AUTH.PASSWORD_CHANGE_DEVICE_LOGINS = "ask"` | `204`: every other login of the user ends, the bound devices' as [the setting says](#password-changes-and-the-phone); `400 wrong_password`; `422 invalid_password` if a validator refuses the new password; `422 device_logins_not_asked`; `429`. |
+| `POST /password` | `{"old_password", "new_password"}`, and `"keep_device_logins"` with `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"` | `204`: every other login of the user ends, the bound devices' as [the setting says](#credential-changes-and-the-phone); `400 wrong_password`; `422 invalid_password` if a validator refuses the new password; `422 device_logins_not_asked`; `429`. |
 | `POST /step-up` (`auth.stepup.router`) | `{"code"}`, and `"password"` where asked | `200` with when and how the credentials stepped up ([Stepping up](step-up.md)). |
 
 `identifier` is a value of one of the fields that `AUTH.IDENTIFIERS`
@@ -322,15 +322,17 @@ of the browser in front of them. With `CIBA.APPROVE_LOGINS`, the ciba app
 registers one: [only the phone manages
 logins](ciba.md#managing-logins-from-the-phone).
 
-#### Password changes and the phone
+#### Credential changes and the phone
 
-A password change ends every other login of the user, and a reset all of
-them: whoever held one with the old password is out. The logins of the
-user's bound devices ([Bound devices](devices.md#bound-devices)) follow
-`AUTH.PASSWORD_CHANGE_DEVICE_LOGINS` (since 2.2,
-[ADR 0131](../adr/0131-choose-what-a-password-change-does-to-the-devices-logins.md)):
+A password change ends every other login of the user, a reset all of
+them, and turning the second factor on every other: whoever held one
+before is out. The logins of the user's bound devices
+([Bound devices](devices.md#bound-devices)) follow
+`AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS` (since 2.2,
+[ADR 0131](../adr/0131-choose-what-a-password-change-does-to-the-devices-logins.md),
+[ADR 0132](../adr/0132-manage-the-second-factors-from-the-phone.md)):
 
-| Value | `POST /password` and `POST /password-reset/code` |
+| Value | `POST /password`, `POST /password-reset/code`, `POST /mfa/totp/confirm` |
 | --- | --- |
 | `"end"` (default) | End them too, as before 2.2. |
 | `"keep"` | Keep them, as Google keeps the devices a user verifies sign-ins with. |
@@ -355,6 +357,12 @@ POST /auth/password
 - **Staff and operators end everything.** A password set through the
   admin API or `changepassword`, and one changed at login, end every
   login: those follow an incident as often as not.
+- **In the phone modes, the phone manages the second factors.** Turning
+  the authenticator app on or off, new recovery codes, and adding or
+  removing a passkey run the same checks: a web session gets
+  `403 phone_required`, so a thief who knows the password cannot add a
+  factor of their own and step up without the phone
+  ([ADR 0132](../adr/0132-manage-the-second-factors-from-the-phone.md)).
 
 With [the phone as identity](ciba.md#the-mobile-app-as-identity), choose
 `"keep"` or `"ask"`: under `"end"`, anyone who knows the password, from a
@@ -409,7 +417,7 @@ and `POST /session/mfa` sets the cookies.
 | --- | --- | --- | --- |
 | `GET /mfa` | a user | | `{"enabled", "recovery_codes_left"}`. |
 | `POST /mfa/totp` | a user | `{"password"}` | `{"secret", "otpauth_uri"}`: the secret in base 32, and the URI for a QR code; `400 wrong_password`; `409 mfa_enabled`. |
-| `POST /mfa/totp/confirm` | a user | `{"code"}` | `{"recovery_codes"}`, shown once: the second factor is on, and every other login and token of the user ends; `401 invalid_code`; `400 no_enrolment`. |
+| `POST /mfa/totp/confirm` | a user | `{"code"}`, and `"keep_device_logins"` with `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"` | `{"recovery_codes"}`, shown once: the second factor is on, and every other login and token of the user ends, the bound devices' as [the setting says](#credential-changes-and-the-phone); `401 invalid_code`; `400 no_enrolment`; `422 device_logins_not_asked`. |
 | `POST /mfa/totp/disable` | a user | `{"password", "code"}` | `204`: it is off. |
 | `POST /mfa/recovery-codes` | a user | `{"password", "code"}` | `{"recovery_codes"}`: new codes replace the old ones. |
 | `POST /mfa/login` | anyone | `{"mfa_token", "code"}`, and `"new_password"` where the password must change | The tokens `/login` would have returned; `400 invalid_token`; `401 invalid_code`; `429 rate_limited`. |
@@ -499,7 +507,7 @@ router.include_router(recovery_router, prefix="/auth")
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
 | `POST /password-reset` | anyone | `{"identifier"}`, or `{"email"}` | Always `202`; `422 missing_value` without either; `429 rate_limited`. |
-| `POST /password-reset/code` | anyone | `{"identifier", "code", "new_password"}`, and `"keep_device_logins"` with `AUTH.PASSWORD_CHANGE_DEVICE_LOGINS = "ask"` | `204`: every login ends, the bound devices' as [the setting says](#password-changes-and-the-phone); `400 invalid_verification_code`; `422` if a validator refuses the password. |
+| `POST /password-reset/code` | anyone | `{"identifier", "code", "new_password"}`, and `"keep_device_logins"` with `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"` | `204`: every login ends, the bound devices' as [the setting says](#credential-changes-and-the-phone); `400 invalid_verification_code`; `422` if a validator refuses the password. |
 | `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 rate_limited`. |
 | `POST /email-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
 | `POST /mobile-verification` | a user, unscoped | | `202`; `429 rate_limited`. |

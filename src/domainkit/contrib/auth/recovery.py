@@ -119,7 +119,7 @@ class PasswordResetCodeIn(BaseModel):
     code: str = Field(min_length=1, max_length=32, repr=False)
     new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
     keep_device_logins: bool | None = None
-    """With ``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins of
+    """With ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins of
     the user's bound devices (true, the default), or end them too."""
 
 
@@ -197,7 +197,7 @@ async def confirm_password_reset_code(
     A wrong code, and one for an identifier no account uses, get the same
     answer. A password the validators refuse leaves the code working. The
     logins of the user's bound devices end too, or stay, as
-    ``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS`` says (ADR 0131).
+    ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` says (ADR 0131).
     """
     keep_devices = device_logins_kept(body.keep_device_logins)
     if body.keep_device_logins is False:

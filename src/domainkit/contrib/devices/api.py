@@ -240,16 +240,24 @@ class DeviceOut(BaseModel):
 async def start_registration(
     body: ReauthIn, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> dict[str, Any]:
-    """The options to make a passkey with, once the user authenticated again."""
+    """The options to make a passkey with, once the user authenticated again.
+
+    Checked by auth's ``on_manage_logins`` first: in the phone modes, the
+    phone signs it (ADR 0132).
+    """
+    await check_manage_logins(request, user)
     await reauthenticate(request, user, body.password, ADD_PASSKEY)
     return await creation_options(user)
 
 
 @router.post("/passkeys/register", status_code=status.HTTP_201_CREATED)
 async def finish_registration(
-    body: RegistrationIn, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    body: RegistrationIn,
+    request: Request,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
 ) -> PasskeyOut:
-    """Store the passkey the browser made."""
+    """Store the passkey the browser made; checked as its options are."""
+    await check_manage_logins(request, user)
     passkey = await register(
         user,
         client_data_json=body.credential.response.clientDataJSON,
@@ -312,9 +320,10 @@ async def list_passkeys(
 
 @router.delete("/passkeys/{passkey_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_passkey(
-    passkey_id: UUID, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    passkey_id: UUID, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> None:
-    """Remove one of the user's passkeys."""
+    """Remove one of the user's passkeys; checked by ``on_manage_logins``."""
+    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         if not await uow.passkeys.remove(user.id, passkey_id):
             raise PasskeyNotFound("You have no passkey with that id.")

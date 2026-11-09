@@ -147,7 +147,7 @@ class PasswordIn(BaseModel):
     old_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
     new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
     keep_device_logins: bool | None = None
-    """With ``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins of
+    """With ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins of
     the user's bound devices (true, the default), or end them too."""
 
 
@@ -466,7 +466,7 @@ async def change_password(
     """Change the password; every other session of the user ends.
 
     The logins of the user's bound devices end too, or stay, as
-    ``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS`` says (ADR 0131).
+    ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` says (ADR 0131).
     """
     keep_devices = device_logins_kept(body.keep_device_logins)
     counted = await _throttle(request, user)
@@ -496,7 +496,7 @@ async def change_password(
 def device_logins_kept(asked: bool | None) -> bool:
     """Whether a password change keeps the bound devices' logins (ADR 0131).
 
-    ``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS`` decides; with ``"ask"``, the
+    ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` decides; with ``"ask"``, the
     request's ``keep_device_logins`` (``asked``) does, true when left out.
     A request that asks ending them runs the ``on_manage_logins`` checks
     first (the caller's to do, once it knows the user).
@@ -505,14 +505,14 @@ def device_logins_kept(asked: bool | None) -> bool:
         APIError: 422 ``device_logins_not_asked``: ``asked`` is given, but
             the setting decides.
     """
-    decided = auth_settings().PASSWORD_CHANGE_DEVICE_LOGINS
+    decided = auth_settings().CREDENTIAL_CHANGE_DEVICE_LOGINS
     if decided == "ask":
         return asked is not False
     if asked is not None:
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "This server decides what a password change does to your devices' "
-            "logins: leave keep_device_logins out.",
+            "This server decides what this change does to your devices' logins: "
+            "leave keep_device_logins out.",
             code="device_logins_not_asked",
         )
     return decided == "keep"

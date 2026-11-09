@@ -62,12 +62,13 @@ from .api import (
     _no_store,
     _throttle,
     _token_out,
+    device_logins_kept,
     issue_login,
     password_holds,
 )
 from .devices import hand_out
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
-from .gates import pass_login_gates
+from .gates import check_manage_logins, pass_login_gates
 from .models import AbstractBaseUser, UserId
 from .onetime import TOKEN_MAX_LENGTH, UserTokenGenerator
 from .repositories import TotpDevice
@@ -148,6 +149,9 @@ class CodeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     code: str = Field(min_length=1, max_length=64, repr=False)
+    keep_device_logins: bool | None = None
+    """With ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins
+    of the user's bound devices (true, the default), or end them too."""
 
 
 class ReauthenticateIn(PasswordIn):
@@ -431,8 +435,13 @@ async def mfa_status(user: AuthenticatedUser) -> MfaStatusOut:
 async def start_enrolment(
     body: PasswordIn, request: Request, response: Response, user: AuthenticatedUser
 ) -> EnrolmentOut:
-    """A new secret for the authenticator app; confirm it with a code."""
+    """A new secret for the authenticator app; confirm it with a code.
+
+    Checked by ``on_manage_logins`` first: in the phone modes, the phone
+    signs it (ADR 0132).
+    """
     _no_store(response)
+    await check_manage_logins(request, user)
     await _reauthenticate(request, user, body.password)
     secret = totp.new_secret()
     sealed = secret_box().encrypt(secret, associated=user.id.bytes)
@@ -471,9 +480,13 @@ async def confirm_enrolment(
 
     Every other login and token of the user ends, as a new password ends
     them: what logged in with the password alone, before the factor, may
-    not be the user's.
+    not be the user's. The logins of the user's bound devices end too, or
+    stay, as ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` says. Checked by
+    ``on_manage_logins`` first (ADR 0132).
     """
     _no_store(response)
+    keep_devices = device_logins_kept(body.keep_device_logins)
+    await check_manage_logins(request, user)
     counted = await _limit_user(request, user)
     codes = new_recovery_codes(auth_settings().MFA.RECOVERY_CODES)
     async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
@@ -495,7 +508,10 @@ async def confirm_enrolment(
             )
             credentials = _credentials(request)
             await uow.tokens.revoke_user(
-                user.id, keep=credentials.token_id, keep_family=credentials.login
+                user.id,
+                keep=credentials.token_id,
+                keep_family=credentials.login,
+                keep_devices=keep_devices,
             )
             stored = await uow.users.get(UserId(user.id))
             stored.record(MfaEnabled(user_id=user.id))
@@ -520,7 +536,11 @@ async def confirm_enrolment(
 async def disable(
     body: ReauthenticateIn, request: Request, user: AuthenticatedUser
 ) -> None:
-    """Turn the second factor off: the password and a code are needed."""
+    """Turn the second factor off: the password and a code are needed.
+
+    Checked by ``on_manage_logins`` first (ADR 0132).
+    """
+    await check_manage_logins(request, user)
     await _reauthenticate(request, user, body.password, body.code)
     async with AuthUnitOfWork() as uow:
         await uow.mfa.remove(user.id)
@@ -544,8 +564,12 @@ async def regenerate_recovery_codes(
     response: Response,
     user: AuthenticatedUser,
 ) -> RecoveryCodesOut:
-    """Replace the recovery codes: the password and a code are needed."""
+    """Replace the recovery codes: the password and a code are needed.
+
+    Checked by ``on_manage_logins`` first (ADR 0132).
+    """
     _no_store(response)
+    await check_manage_logins(request, user)
     await _reauthenticate(request, user, body.password, body.code)
     codes = new_recovery_codes(auth_settings().MFA.RECOVERY_CODES)
     async with AuthUnitOfWork() as uow:

@@ -74,12 +74,20 @@ needs a request signed by one of the user's devices: a web page that
 unbinds devices moves that to the mobile app. A user who lost every
 phone still recovers through `unbinddevices`.
 
-### Choose what a password change does to the phone
+### In the phone modes, the phone manages the second factors
 
-`AUTH.PASSWORD_CHANGE_DEVICE_LOGINS` keeps 2.1's behaviour by default
-(`"end"`). With the phone as identity, set `"keep"`, or `"ask"` to let the
-user choose ([Password changes and the
-phone](auth/logging-in.md#password-changes-and-the-phone)).
+With `CIBA.APPROVE_LOGINS` set, turning the authenticator app on or off,
+new recovery codes, and adding or removing a passkey need a request
+signed by one of the user's devices (`403 phone_required` otherwise). A
+web page that offered them moves them to the mobile app. Users with no
+bound device are not affected.
+
+### Choose what a credential change does to the phone
+
+`AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS` decides what a password change or
+reset, and turning the second factor on, do to the phone's login. It keeps
+2.1's behaviour by default (`"end"`). With the phone as identity, set
+`"keep"`, or `"ask"` to let the user choose ([Credential changes and the phone](auth/logging-in.md#credential-changes-and-the-phone)).
 
 ## 2.0 to 2.1
 

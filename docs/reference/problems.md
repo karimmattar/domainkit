@@ -102,7 +102,7 @@ unique constraint may name its own code
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
 | `device_already_bound` | 409 | `DeviceAlreadyBound` (contrib.devices.exceptions): The user has a bound device: approve the new one from it. |
 | `device_login_off` | 404 | `DeviceLoginOff` (contrib.devices.exceptions): `DEVICES.DEVICE_LOGIN` is off: devices do not log in here. |
-| `device_logins_not_asked` | 422 | contrib.auth.api: This server decides what a password change does to your devices' logins: leave keep_device_logins out. |
+| `device_logins_not_asked` | 422 | contrib.auth.api: This server decides what this change does to your devices' logins: leave keep_device_logins out. |
 | `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
 | `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
 | `different_network` | 403 | `DifferentNetwork` (contrib.ciba.exceptions): The phone is not on the address of the page (`QR_SAME_NETWORK`). |

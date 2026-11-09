@@ -1089,8 +1089,8 @@ msgstr "وافق على تسجيل الدخول هذا من تطبيقك على 
 msgid "Manage your logins from your mobile app."
 msgstr "أدِر تسجيلات دخولك من تطبيقك على الهاتف."
 
-msgid "This server decides what a password change does to your devices' logins: leave keep_device_logins out."
-msgstr "يحدد الخادم ما يفعله تغيير كلمة المرور بتسجيلات دخول أجهزتك: لا ترسل keep_device_logins."
+msgid "This server decides what this change does to your devices' logins: leave keep_device_logins out."
+msgstr "يحدد الخادم ما يفعله هذا التغيير بتسجيلات دخول أجهزتك: لا ترسل keep_device_logins."
 
 msgid "Enroll your mobile app first: you log in from it."
 msgstr "سجّل تطبيقك على الهاتف أولًا: منه تسجّل الدخول."

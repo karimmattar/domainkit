@@ -3,6 +3,10 @@
 - Status: Accepted
 - Date: 2026-11-09
 
+[ADR 0132](0132-manage-the-second-factors-from-the-phone.md) renames the
+setting `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`, and widens it to turning
+the second factor on, before any release carried this name.
+
 ## Context
 
 A password change (`POST /auth/password`) ends every other login of the

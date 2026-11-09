@@ -1,6 +1,6 @@
 """What a password change does to the bound devices' logins (ADR 0131).
 
-``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS``: ``"end"`` (the default) ends them
+``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS``: ``"end"`` (the default) ends them
 with the other logins, ``"keep"`` keeps them, ``"ask"`` lets the request
 say. A phone's login is the one its device signed, or bound the device.
 """
@@ -15,21 +15,22 @@ from fastapi.testclient import TestClient
 from domainkit.conf import override_settings, settings
 from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_login_origins import origins
+from domainkit_tests.test_auth_mfa import clock, code_at, secret_of
 from domainkit_tests.test_auth_reset_codes import NEW_PASSWORD, ask_reset, drain
 from domainkit_tests.test_auth_reset_codes import code_in as code_of
 from domainkit_tests.test_ciba import PHONE, App, Phone, app
 from domainkit_tests.test_ciba_logins import web_login
 
-__all__ = ["app"]  # The fixture the tests take.
+__all__ = ["app", "clock"]  # The fixtures the tests take.
 
 EMAIL = "alice@example.com"
 
 
 @contextmanager
 def device_logins(mode: str) -> Iterator[None]:
-    """``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS = mode`` inside."""
+    """``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = mode`` inside."""
     with override_settings(
-        AUTH={**settings.AUTH, "PASSWORD_CHANGE_DEVICE_LOGINS": mode}  # type: ignore[attr-defined]
+        AUTH={**settings.AUTH, "CREDENTIAL_CHANGE_DEVICE_LOGINS": mode}  # type: ignore[attr-defined]
     ):
         yield
 
@@ -278,3 +279,101 @@ def test_credentials_naming_no_login_mark_nothing(app: App) -> None:
             return await uow.tokens.attach_device(alice, uuid4())
 
     assert run_async(attach()) == 0
+
+
+# The second factor (ADR 0132).
+
+
+def turn_on(
+    client: TestClient,
+    headers: dict[str, str],
+    clock: list[float],
+    **body: Any,  # noqa: ANN401 - fields of the request.
+) -> Any:  # noqa: ANN401 - a response.
+    """Start the authenticator app, then confirm it with ``body`` added."""
+    started = client.post(
+        "/auth/mfa/totp", json={"password": PASSWORD}, headers=headers
+    )
+    assert started.status_code == 200, started.json()
+    return client.post(
+        "/auth/mfa/totp/confirm",
+        json={"code": code_at(secret_of(started.json()), clock[0]), **body},
+        headers=headers,
+    )
+
+
+def test_turning_the_second_factor_on_follows_the_setting(
+    app: App, clock: list[float]
+) -> None:
+    """``"end"`` signs the phone out; ``"keep"`` keeps it; ``"ask"`` asks."""
+    for mode, extra, kept in (
+        ("end", {}, False),
+        ("keep", {}, True),
+        ("ask", {}, True),
+        ("ask", {"keep_device_logins": False}, False),
+    ):
+        name = f"{mode}-{len(extra)}"
+        phone = Phone(app(PHONE), username=name)
+        web = app()
+        laptop = bearer(login(web, name)["access_token"])
+        tablet = bearer(login(web, name)["access_token"])
+        with device_logins(mode):
+            answer = turn_on(web, laptop, clock, **extra)
+        assert answer.status_code == 200, (mode, answer.json())
+        assert alive(phone) is kept, mode
+        assert web.get("/auth/me", headers=tablet).status_code == 401
+        assert web.get("/auth/me", headers=laptop).status_code == 200
+
+
+def test_the_confirmation_may_not_choose_when_the_setting_decides(
+    app: App, clock: list[float]
+) -> None:
+    """``keep_device_logins`` under ``"keep"``: 422, and the factor stays off."""
+    create_user("alice")
+    web = app()
+    laptop = bearer(login(web, "alice")["access_token"])
+
+    with device_logins("keep"):
+        answer = turn_on(web, laptop, clock, keep_device_logins=True)
+
+    assert (answer.status_code, answer.json()["code"]) == (
+        422,
+        "device_logins_not_asked",
+    )
+    assert web.get("/auth/mfa", headers=laptop).json()["enabled"] is False
+
+
+def test_in_the_phone_modes_only_the_phone_manages_the_factors(
+    app: App, clock: list[float]
+) -> None:
+    """A web session cannot add or change a second factor; the phone can."""
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
+    web = app()
+    laptop = web_login(web, phone)
+    reauth = {"password": PASSWORD, "code": "123456"}
+
+    refused = [
+        web.post("/auth/mfa/totp", json={"password": PASSWORD}, headers=laptop),
+        web.post("/auth/mfa/totp/confirm", json={"code": "123456"}, headers=laptop),
+        web.post("/auth/mfa/totp/disable", json=reauth, headers=laptop),
+        web.post("/auth/mfa/recovery-codes", json=reauth, headers=laptop),
+        web.post(
+            "/auth/passkeys/register/options",
+            json={"password": PASSWORD},
+            headers=laptop,
+        ),
+        web.delete(f"/auth/passkeys/{UUID(int=1)}", headers=laptop),
+    ]
+
+    assert [(each.status_code, each.json()["code"]) for each in refused] == [
+        (403, "phone_required")
+    ] * len(refused)
+    started = phone.send("POST", "/auth/mfa/totp", {"password": PASSWORD})
+    assert started.status_code == 200, started.json()
+    confirmed = phone.send(
+        "POST",
+        "/auth/mfa/totp/confirm",
+        {"code": code_at(secret_of(started.json()), clock[0])},
+    )
+    assert confirmed.status_code == 200, confirmed.json()
+    assert alive(phone)

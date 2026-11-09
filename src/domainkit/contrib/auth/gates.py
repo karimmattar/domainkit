@@ -66,12 +66,15 @@ type LoginsCheck = Callable[[Request, AbstractBaseUser], Awaitable[None]]
 on_manage_logins: Final[HookPoint[LoginsCheck]] = HookPoint(
     "manage logins", arguments=2, awaited=True
 )
-"""Register a check of requests that manage logins (ADR 0130).
+"""Register a check of requests that manage logins (ADR 0130, 0131, 0132).
 
 It runs before ``GET /tokens``, before ``DELETE /tokens/{id}`` ends a token
-that is not the request's own login, and before ``/logout`` ends
-``everywhere`` or the ``others``. Logging out of the request's own login
-is never checked.
+that is not the request's own login, before ``/logout`` ends
+``everywhere`` or the ``others``, before a credential change that asks to
+end the devices' logins, and before the requests that change the factors
+logins rest on: the authenticator app's, the recovery codes, passkeys,
+unbinding a device. Logging out of the request's own login is never
+checked.
 """
 
 _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)
