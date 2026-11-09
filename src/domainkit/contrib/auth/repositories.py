@@ -113,6 +113,7 @@ from .tables import (
 )
 from .tokens import (
     AGENT_MAX_LENGTH,
+    LOGIN_DEVICE,
     LOGIN_NAME,
     AuthToken,
     TokenKind,
@@ -932,13 +933,20 @@ class TokenStore:
         return await self._revoke(tokens.c.family == family, family_target(family))
 
     async def revoke_user(
-        self, user_id: UUID, *, keep: str | None = None, keep_family: UUID | None = None
+        self,
+        user_id: UUID,
+        *,
+        keep: str | None = None,
+        keep_family: UUID | None = None,
+        keep_devices: bool = False,
     ) -> int:
         """Delete every token of ``user_id``, except one token or one family.
 
-        Every principal of the user is read again after the commit, the
-        kept token's too. The user's credentials lock is held first, so a
-        token being issued is deleted too, or sees this end.
+        ``keep_devices`` keeps the logins of the user's bound devices too:
+        the rows that name a device (ADR 0131). Every principal of the user
+        is read again after the commit, the kept tokens' too. The user's
+        credentials lock is held first, so a token being issued is deleted
+        too, or sees this end.
         """
         await self.lock_user(user_id)
         condition = tokens.c.user_id == user_id
@@ -946,7 +954,48 @@ class TokenStore:
             condition &= tokens.c.id != keep
         if keep_family is not None:
             condition &= (tokens.c.family != keep_family) | tokens.c.family.is_(None)
+        if keep_devices:
+            condition &= tokens.c.device_id.is_(None)
         return await self._revoke(condition, user_target(user_id))
+
+    async def attach_device(
+        self,
+        user_id: UUID,
+        device_id: UUID,
+        *,
+        token: str | None = None,
+        family: UUID | None = None,
+    ) -> int:
+        """Mark the login ``token`` or ``family`` names as ``device_id``'s.
+
+        The login a device was bound with (ADR 0131); a login marked
+        already keeps its device, and a personal token is no login. How
+        many rows were marked.
+        """
+        if token is None and family is None:
+            return 0
+        names = (
+            tokens.c.family == family if family is not None else tokens.c.id == token
+        )
+        result = await self.session.execute(
+            update(tokens)
+            .where(
+                tokens.c.user_id == user_id,
+                tokens.c.device_id.is_(None),
+                (tokens.c.kind == TokenKind.SESSION) | (tokens.c.name == LOGIN_NAME),
+                names,
+            )
+            .values(device_id=device_id)
+            .execution_options(**HANDLED)  # Where a login came from: no principal.
+        )
+        return _count(result)
+
+    async def end_device_logins(self, user_id: UUID, device_id: UUID) -> int:
+        """Delete the tokens of ``user_id`` marked as ``device_id``'s: how many."""
+        await self.lock_user(user_id)
+        return await self._revoke(
+            (tokens.c.user_id == user_id) & (tokens.c.device_id == device_id)
+        )
 
     async def clear_expired(self, now: datetime | None = None) -> int:
         """Delete tokens whose lifetime is over.
@@ -1115,6 +1164,8 @@ def _origin_of(kind: str, name: str, like: AuthToken | None) -> dict[str, Any]:
 
     Only a login's token records it, or one issued while ``logging_in``
     names its origin (an impersonation); a personal token records nothing.
+    The device is the origin's, or the one ``note_login_device`` says signed
+    this request (ADR 0131).
     """
     if like is not None:
         return {
@@ -1127,15 +1178,17 @@ def _origin_of(kind: str, name: str, like: AuthToken | None) -> dict[str, Any]:
     if origin is None and not is_login(kind, name):
         return {}
     request = current_request()
-    headers = getattr(request, "scope", {}).get("headers", ())
+    scope = getattr(request, "scope", {})
+    headers = scope.get("headers", ())
     agent = next((value for key, value in headers if key == b"user-agent"), None)
+    device = None if origin is None else origin.device_id
     return {
         "method": None if origin is None else origin.method,
         "agent": None
         if agent is None
         else agent.decode("latin-1")[:AGENT_MAX_LENGTH] or None,
         "ip": None if request is None else request.client_ip,
-        "device_id": None if origin is None else origin.device_id,
+        "device_id": device if device is not None else scope.get(LOGIN_DEVICE),
     }
 
 

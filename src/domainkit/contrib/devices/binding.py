@@ -37,7 +37,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from starlette.requests import HTTPConnection, Request
 
 from domainkit.apps import registry
-from domainkit.contrib.auth.integration import utc_now
+from domainkit.contrib.auth.integration import note_login_device, utc_now
 from domainkit.http.access import BasePermission
 
 from .exceptions import DeviceSignatureRefused, UnsupportedKey
@@ -129,7 +129,10 @@ class DeviceSigned(BasePermission):
 async def signing_device(connection: HTTPConnection, user: Any) -> BoundDevice | None:  # noqa: ANN401
     """The device of ``user`` that signed the request, checked once a request."""
     if SIGNING_DEVICE not in connection.scope:
-        connection.scope[SIGNING_DEVICE] = await _check(connection, user)
+        checked = await _check(connection, user)
+        connection.scope[SIGNING_DEVICE] = checked
+        if checked is not None:
+            note_login_device(connection, checked.id)  # Its login is the device's.
     device: BoundDevice | None = connection.scope[SIGNING_DEVICE]
     return device
 

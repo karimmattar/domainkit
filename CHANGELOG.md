@@ -33,6 +33,21 @@ and a status.
   `device_id=`; `LoginMethod` is in `auth.integration`.
 - `privacy export` lists the user's tokens under `copies.auth`: their
   kind, name, dates, and origin, never their value.
+- `AUTH.PASSWORD_CHANGE_DEVICE_LOGINS` chooses what the user's password
+  change or reset does to the logins of their bound devices: `"end"` (the
+  default, as before), `"keep"`, or `"ask"`, where the request's
+  `keep_device_logins` decides, and asking to end them is checked as
+  managing logins (`403 phone_required` in the phone modes). Every other
+  login ends in each case ([Password changes and the
+  phone](docs/auth/logging-in.md#password-changes-and-the-phone), ADR 0131).
+- A login whose request a bound device signed, and the login a device was
+  bound with, record the device's id.
+
+### Changed
+
+- Unbinding a device (`DELETE /devices/{id}`) ends its logins, and in the
+  phone modes needs a request one of the user's devices signs
+  (`403 phone_required`): a stolen web session could unbind the phone.
 
 ## [2.1.2] - 2026-11-09
 

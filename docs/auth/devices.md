@@ -187,7 +187,7 @@ and `reauthenticate(request, user, password, action)`.
 | --- | --- | --- |
 | `POST /devices` | a user, authenticated again | `{"name", "public_key", "password"}`: `201` with the device's `id`. |
 | `GET /devices` | a user | The user's devices: `id`, `name`, `created_at`, `last_used_at`. |
-| `DELETE /devices/{id}` | a user | `204`: its signatures hold no more. `404 device_not_found` for another's. |
+| `DELETE /devices/{id}` | a user; in the [phone modes](ciba.md#managing-logins-from-the-phone), signed by one of their devices | `204`: its signatures hold no more, and its logins end. `404 device_not_found` for another's; `403 phone_required` unsigned in the phone modes. |
 | `POST /devices/step-up` | a user, signed by their device | A step-up, `amr` `["hwk"]`. |
 | `POST /devices/login` | anyone, signed by a bound device (`DEVICE_LOGIN`) | Tokens for the device's user, as `/login` gives them; `404 device_login_off` without the setting. |
 
@@ -252,10 +252,13 @@ possession factor as the authenticator app is. So it stands for the code
 ```
 
 A device's login, by `/devices/login` or by enrolling, records the method
-`device` and the device's id; a passkey's records `passkey`. The user's
-login list (`GET /auth/tokens`) shows them, so the phone can tell its own
-login from the web's ([Where each login came
-from](logging-in.md#where-each-login-came-from)).
+`device` and the device's id; a passkey's records `passkey`. So do a login
+whose request the device signed, and the login a device was bound with.
+The user's login list (`GET /auth/tokens`) shows them, so the phone can
+tell its own login from the web's ([Where each login came
+from](logging-in.md#where-each-login-came-from)), and a password change
+can keep it ([Password changes and the
+phone](logging-in.md#password-changes-and-the-phone)).
 
 ## Enrolling a first device
 

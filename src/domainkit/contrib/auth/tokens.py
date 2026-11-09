@@ -99,6 +99,20 @@ def login_origin() -> LoginOrigin | None:
     return _origin.get()
 
 
+LOGIN_DEVICE: Final = "domainkit.auth.login_device"
+"""Where a request keeps the bound device that signed it, for its login."""
+
+
+def note_login_device(connection: object, device_id: UUID) -> None:
+    """Say that the user's bound device ``device_id`` signed this request.
+
+    A login issued while serving it records the device, so a password
+    change can keep it (ADR 0131). The devices app calls it once a
+    signature holds; ``connection`` is the request.
+    """
+    connection.scope[LOGIN_DEVICE] = device_id  # type: ignore[attr-defined]
+
+
 class AuthToken(Entity[str]):
     """A stored token: its digest (the ``id``), owner, kind, and lifetime."""
 

@@ -489,18 +489,22 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
 - `account_key`: The count of `scope` attempts at the account `username` names.
 - `address_key`: The count of `scope` attempts from the request's client address.
+- `attach_login_device`: Mark the login that sent `request` as the bound device `device_id`'s.
 - `attempt`: Count an attempt against each `(key, rate)`; refuse it past a rate.
 - `audit_refusal`: Record a refused attempt, without what was tried: it may be a secret.
 - `auth_settings`: The validated `AUTH` settings.
 - `challenge`: A challenge, if `user` has a second factor; None if not.
+- `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
 - `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
+- `end_device_logins`: End the logins marked as the bound device `device_id`'s: how many.
 - `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
+- `note_login_device`: Say that the user's bound device `device_id` signed this request.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.

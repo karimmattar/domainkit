@@ -55,9 +55,12 @@ from domainkit.contrib.auth.integration import (
     StepUpOut,
     TokenOut,
     address_key,
+    attach_login_device,
     attempt,
     audit_refusal,
     auth_settings,
+    check_manage_logins,
+    end_device_logins,
     issue_login,
     pass_login_gates,
     record_step_up,
@@ -490,6 +493,7 @@ async def bind_device(
         stored = await uow.users.get(UserId(user.id))
         stored.record(DeviceBound(user_id=user.id, device_id=device.id))
         await uow.commit()
+    await attach_login_device(request, device.id)  # The app's login: the device's.
     return DeviceOut(
         id=device.id, name=device.name, created_at=device.created_at, last_used_at=None
     )
@@ -510,15 +514,21 @@ async def list_devices(user: Annotated[AbstractBaseUser, SIGNED_IN]) -> list[Dev
 
 @router.delete("/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def unbind_device(
-    device_id: UUID, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    device_id: UUID, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> None:
-    """Unbind one of the user's devices."""
+    """Unbind one of the user's devices; its logins end (ADR 0131).
+
+    Checked by auth's ``on_manage_logins`` first: in the phone modes, one
+    of the user's devices signs the request.
+    """
+    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         if not await uow.devices.remove(user.id, device_id):
             raise DeviceNotFound("You have no device with that id.")
         stored = await uow.users.get(UserId(user.id))
         stored.record(DeviceUnbound(user_id=user.id, device_id=device_id))
         await uow.commit()
+    await end_device_logins(user.id, device_id)
 
 
 @router.post("/devices/push-tokens", status_code=status.HTTP_201_CREATED)

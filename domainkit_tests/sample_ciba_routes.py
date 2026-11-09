@@ -9,6 +9,7 @@ from domainkit.contrib.auth.api import router as auth_router
 from domainkit.contrib.auth.cookies import router as session_router
 from domainkit.contrib.auth.mfa import router as mfa_router
 from domainkit.contrib.auth.personal_tokens import router as tokens_router
+from domainkit.contrib.auth.recovery import router as recovery_router
 from domainkit.contrib.auth.sca import router as sca_router
 from domainkit.contrib.ciba.api import router as sign_in_router
 from domainkit.contrib.ciba.oidc import router as ciba_router
@@ -24,6 +25,7 @@ for included in (
     session_router,
     mfa_router,
     tokens_router,
+    recovery_router,
     devices_router,
     sca_router,
 ):

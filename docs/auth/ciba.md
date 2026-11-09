@@ -354,6 +354,18 @@ The check is auth's `on_manage_logins` hook
 ([Who manages logins](logging-in.md#who-manages-logins)); the app
 registers it when it starts.
 
+The same check guards unbinding a device (`DELETE /auth/devices/{id}`):
+only one of the user's devices unbinds one, and the device's logins end
+with it. And choose what a password change does to the phone's login:
+`AUTH.PASSWORD_CHANGE_DEVICE_LOGINS = "keep"` (or `"ask"`), so a thief
+who knows the password cannot sign the phone out ([Password changes and
+the phone](logging-in.md#password-changes-and-the-phone)):
+
+```python
+CIBA = {"APPROVE_LOGINS": True}
+AUTH = {**AUTH, "PASSWORD_CHANGE_DEVICE_LOGINS": "keep"}
+```
+
 ### Login gates
 
 The setting works through auth's login gates
@@ -603,7 +615,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | --- | --- | --- |
 | `PhoneApprovalRequired` | `403 phone_approval_required` | `APPROVE_LOGINS`: a web login of a user with a bound device. |
 | `PhoneEnrollmentRequired` | `403 phone_enrollment_required` | `APPROVE_LOGINS = "always"`: any login of a user with no bound device. |
-| `PhoneRequired` | `403 phone_required` | `APPROVE_LOGINS`: listing a user's logins, or ending one but the request's own, unsigned by their bound device. |
+| `PhoneRequired` | `403 phone_required` | `APPROVE_LOGINS`: listing a user's logins, ending one but the request's own, unbinding a device, or asking a password change to end the devices' logins, unsigned by their bound device. |
 | `SignInNotFound` | `404 sign_in_not_found` | The phone answers a request that is not its user's, was answered, or expired. |
 | `QrCodeExpired` | `422 qr_code_expired` | The QR code is unknown, was claimed, or expired. |
 | `DifferentNetwork` | `403 different_network` | `QR_SAME_NETWORK = "require"`, and the phone is elsewhere. |

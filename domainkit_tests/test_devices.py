@@ -674,22 +674,25 @@ def test_binding_needs_the_user_again_a_known_key_and_room(app: App) -> None:
 
 
 def test_devices_are_listed_and_unbound(app: App) -> None:
-    """Listed with their last use; unbound, they sign nothing; twice: 404."""
+    """Listed; unbound, they sign nothing and their logins end; twice: 404."""
     client = app()
     headers = signed_in(client)
     device = Device()
     bind(client, headers, device)
     send(client, headers, device, {"a": 1})
+    other = bearer(login(client, "ann")["access_token"])
 
     listed = client.get("/auth/devices", headers=headers).json()
-    removed = client.delete(f"/auth/devices/{device.id}", headers=headers)
-    again = client.delete(f"/auth/devices/{device.id}", headers=headers)
+    removed = client.delete(f"/auth/devices/{device.id}", headers=other)
+    again = client.delete(f"/auth/devices/{device.id}", headers=other)
 
     assert listed[0]["name"] == "Phone"
     assert listed[0]["last_used_at"] is not None
     assert removed.status_code == 204
     assert again.json()["code"] == "device_not_found"
-    assert send(client, headers, device, {"a": 2}).status_code == 401
+    assert client.get("/auth/me", headers=headers).status_code == 401
+    assert client.get("/auth/me", headers=other).status_code == 200
+    assert send(client, other, device, {"a": 2}).status_code == 401
 
 
 def test_a_recent_step_up_stands_in_for_the_password(app: App) -> None:

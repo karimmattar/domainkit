@@ -66,10 +66,15 @@ def app(migrated: Migrated) -> Iterator[App]:
 class Phone:
     """A user's phone: logged in, a bound device, a push token; signs requests."""
 
-    def __init__(self, client: TestClient, username: str = "alice") -> None:
+    def __init__(
+        self,
+        client: TestClient,
+        username: str = "alice",
+        **fields: Any,  # noqa: ANN401 - user fields.
+    ) -> None:
         """Log ``username`` in from ``client``, bind a key, register a token."""
         self.client = client
-        self.user_id = create_user(username)
+        self.user_id = create_user(username, **fields)
         answer = client.post(
             "/auth/login", json={"identifier": username, "password": PASSWORD}
         )

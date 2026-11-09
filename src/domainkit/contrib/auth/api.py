@@ -146,6 +146,9 @@ class PasswordIn(BaseModel):
 
     old_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
     new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
+    keep_device_logins: bool | None = None
+    """With ``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins of
+    the user's bound devices (true, the default), or end them too."""
 
 
 class TokenOut(BaseModel):
@@ -460,7 +463,12 @@ async def me(request: Request, user: AuthenticatedUser) -> UserOut:
 async def change_password(
     request: Request, body: PasswordIn, user: AuthenticatedUser
 ) -> None:
-    """Change the password; every other session of the user ends."""
+    """Change the password; every other session of the user ends.
+
+    The logins of the user's bound devices end too, or stay, as
+    ``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS`` says (ADR 0131).
+    """
+    keep_devices = device_logins_kept(body.keep_device_logins)
     counted = await _throttle(request, user)
     if not await password_holds(user, body.old_password, priority=True):
         raise APIError(
@@ -470,14 +478,72 @@ async def change_password(
         )
     await counted.succeeded()
     validate_password(body.new_password, user)
+    if body.keep_device_logins is False:
+        await check_manage_logins(request, user)
     credentials = _credentials(request)
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         await uow.users.set_password(stored, body.new_password, priority=True)
         await uow.tokens.revoke_user(
-            user.id, keep=credentials.token_id, keep_family=credentials.login
+            user.id,
+            keep=credentials.token_id,
+            keep_family=credentials.login,
+            keep_devices=keep_devices,
         )
         await uow.commit()
+
+
+def device_logins_kept(asked: bool | None) -> bool:
+    """Whether a password change keeps the bound devices' logins (ADR 0131).
+
+    ``AUTH.PASSWORD_CHANGE_DEVICE_LOGINS`` decides; with ``"ask"``, the
+    request's ``keep_device_logins`` (``asked``) does, true when left out.
+    A request that asks ending them runs the ``on_manage_logins`` checks
+    first (the caller's to do, once it knows the user).
+
+    Raises:
+        APIError: 422 ``device_logins_not_asked``: ``asked`` is given, but
+            the setting decides.
+    """
+    decided = auth_settings().PASSWORD_CHANGE_DEVICE_LOGINS
+    if decided == "ask":
+        return asked is not False
+    if asked is not None:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "This server decides what a password change does to your devices' "
+            "logins: leave keep_device_logins out.",
+            code="device_logins_not_asked",
+        )
+    return decided == "keep"
+
+
+async def attach_login_device(request: Request, device_id: UUID) -> None:
+    """Mark the login that sent ``request`` as the bound device ``device_id``'s.
+
+    The devices app calls it once the request bound the device: the app
+    logged in, then bound its key (ADR 0131).
+    """
+    credentials = _credentials(request)
+    async with AuthUnitOfWork() as uow:
+        await uow.tokens.attach_device(
+            credentials.user.id,
+            device_id,
+            token=credentials.token_id,
+            family=credentials.login,
+        )
+        await uow.commit()
+
+
+async def end_device_logins(user_id: UUID, device_id: UUID) -> int:
+    """End the logins marked as the bound device ``device_id``'s: how many.
+
+    The devices app calls it once it unbinds the device (ADR 0131).
+    """
+    async with AuthUnitOfWork() as uow:
+        ended = await uow.tokens.end_device_logins(user_id, device_id)
+        await uow.commit()
+    return ended
 
 
 async def password_holds(

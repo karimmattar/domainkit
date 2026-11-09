@@ -412,6 +412,12 @@ class AuthSettings(BaseModel):
     """A password set by staff (the admin API) logs in only once it is
     changed: ``/login`` and ``/session`` answer ``403
     password_change_required`` until the login sends ``new_password``."""
+    PASSWORD_CHANGE_DEVICE_LOGINS: Literal["end", "keep", "ask"] = "end"  # noqa: S105
+    """What the user's password change (``/password``) or reset
+    (``/password-reset/code``) does to the logins of their bound devices
+    (ADR 0131): ``"end"`` ends them with the other logins; ``"keep"`` keeps
+    them; ``"ask"`` does as the request's ``keep_device_logins`` says, true
+    by default. Every other login ends in each case."""
     BACKENDS: tuple[str, ...] = Field(
         default=("domainkit.contrib.auth.backends.ModelBackend",), min_length=1
     )

@@ -1079,6 +1079,9 @@ msgstr ""
 msgid "Manage your logins from your mobile app."
 msgstr ""
 
+msgid "This server decides what a password change does to your devices' logins: leave keep_device_logins out."
+msgstr ""
+
 msgid "Enroll your mobile app first: you log in from it."
 msgstr ""
 

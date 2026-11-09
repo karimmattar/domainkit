@@ -38,8 +38,10 @@ never published), with each section below.
 
 ## 2.1 to 2.2
 
-2.2 shows where each login came from, and lets the phone manage the
-user's logins ([ADR 0130](adr/0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md)).
+2.2 shows where each login came from, lets the phone manage the user's
+logins ([ADR 0130](adr/0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md)),
+and lets a project choose what a password change does to the phone's
+login ([ADR 0131](adr/0131-choose-what-a-password-change-does-to-the-devices-logins.md)).
 
 ### Make and apply the tokens' migration
 
@@ -63,6 +65,21 @@ user's bound device (`403 phone_required` otherwise). A web page that
 listed the user's sessions or personal tokens moves that to the mobile
 app. Logging the page itself out is unchanged, and so is creating a
 personal token. Users with no bound device are not affected.
+
+### Unbinding a device ends its logins
+
+`DELETE /auth/devices/{id}` ends the logins of the device it unbinds,
+the login that bound it included. With `CIBA.APPROVE_LOGINS` set, it
+needs a request signed by one of the user's devices: a web page that
+unbinds devices moves that to the mobile app. A user who lost every
+phone still recovers through `unbinddevices`.
+
+### Choose what a password change does to the phone
+
+`AUTH.PASSWORD_CHANGE_DEVICE_LOGINS` keeps 2.1's behaviour by default
+(`"end"`). With the phone as identity, set `"keep"`, or `"ask"` to let the
+user choose ([Password changes and the
+phone](auth/logging-in.md#password-changes-and-the-phone)).
 
 ## 2.0 to 2.1
 
