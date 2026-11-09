@@ -19,7 +19,12 @@ class Command(BaseCommand):
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Optionally, the user to log out everywhere."""
         parser.add_argument(
-            "--user", metavar="USERNAME", help="delete all of this user's tokens"
+            "--user",
+            metavar="USER",
+            help=(
+                "delete all of this user's tokens: a username, email address, "
+                "or mobile number"
+            ),
         )
 
     def handle(self, *, user: str | None) -> None:
@@ -48,7 +53,7 @@ class Command(BaseCommand):
     async def _of_user(self, username: str) -> int:
         """Delete every token of ``username``; record ``UserLoggedOut``."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key(username)
+            user = await uow.users.find_for_staff(username)
             if user is None:
                 raise CommandError(f"User {username!r} does not exist.")
             count = await uow.tokens.revoke_user(user.id)

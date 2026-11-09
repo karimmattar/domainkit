@@ -25,7 +25,12 @@ class Command(BaseCommand):
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept the username, and whether the password is to change."""
         parser.add_argument(
-            "username", nargs="?", help="whose password (default: your login name)"
+            "username",
+            nargs="?",
+            help=(
+                "whose password: a username, email address, "
+                "or mobile number (default: your login name)"
+            ),
         )
         parser.add_argument(
             "--temporary",
@@ -81,12 +86,12 @@ class Command(BaseCommand):
     async def _find(self, username: str) -> AbstractBaseUser | None:
         """The user called ``username``."""
         async with AuthUnitOfWork() as uow:
-            return await uow.users.get_by_natural_key(username)
+            return await uow.users.find_for_staff(username)
 
     async def _save(self, username: str, password: str, *, temporary: bool) -> None:
         """Hash and store the password; the user's tokens stop working."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key(username)
+            user = await uow.users.find_for_staff(username)
             if user is None:
                 raise CommandError(f"User {username!r} does not exist.")
             await uow.users.set_password(user, password, temporary=temporary)

@@ -328,7 +328,7 @@ action: `view`, `add`, `change`, or `delete` on the user model
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `GET /users` | `?limit=50&cursor=&search=` | A page of users by username; `search` matches part of it, in any case. |
+| `GET /users` | `?limit=50&cursor=&search=` | A page of users, by the first field of `AUTH.IDENTIFIERS` (by username without it). `search` matches part of the username, or of the email address or mobile number where `AUTH.IDENTIFIERS` names them, in any case; a mobile number also in any form that normalizes to it. An encrypted field matches only its whole value, with a blind index. |
 | `POST /users` | `{"username", "password", "is_active", "is_staff", "is_superuser", "fields"}` | `201` and the user. The password is validated; without one, it is unusable. |
 | `GET /users/{id}` | | The user. |
 | `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what you leave out stays. |

@@ -312,7 +312,10 @@ def test_token_commands_explain_their_options(use_auth: UseAuth) -> None:
         in created
     )
     cleared = usage(cleartokens.Command, "cleartokens")
-    assert "--user USERNAME delete all of this user's tokens" in cleared
+    assert (
+        "--user USER delete all of this user's tokens: a username, email address, "
+        "or mobile number"
+    ) in cleared
     assert "Delete expired tokens; with --user, every token of that user." in cleared
     with pytest.raises(SystemExit):
         call_command("createtoken", "alice", "--days", "1", "--no-expiry")

@@ -566,6 +566,39 @@ def test_a_bound_device_logs_in_by_its_signature(app: App) -> None:
         assert len(audited("devices.login")) == 2
 
 
+def test_unbinddevices_finds_a_user_by_email_or_number(app: App) -> None:
+    """A user with no username is named by their address or number (1.8)."""
+    import io
+
+    from domainkit.contrib.auth.settings import auth_settings
+    from domainkit.management import call_command
+    from domainkit.management.base import CommandError
+
+    auth = auth_settings().model_dump(exclude_unset=True)
+    with override_settings(AUTH={**auth, "IDENTIFIERS": ("email", "mobile_number")}):
+        web = app()
+        create_user(None, email="nina@example.com")
+        create_user(None, mobile_number="+33612345678")
+        login = web.post(
+            "/auth/login",
+            json={"identifier": "nina@example.com", "password": PASSWORD},
+        )
+        assert (
+            bind(web, bearer(login.json()["access_token"]), Device()).status_code == 201
+        )
+        out = io.StringIO()
+
+        call_command("unbinddevices", "Nina@Example.com", stdout=out)
+        call_command("unbinddevices", "+33 6 12 34 56 78", stdout=out)
+        with pytest.raises(CommandError, match="does not exist"):
+            call_command("unbinddevices", "ghost@example.com", stdout=out)
+
+    assert out.getvalue() == (
+        "Unbound 1 device(s) of 'Nina@Example.com'; they log in again.\n"
+        "'+33 6 12 34 56 78' had no bound device.\n"
+    )
+
+
 def test_unbinddevices_lets_a_user_who_lost_the_phone_back_in(
     app: App, monkeypatch: pytest.MonkeyPatch
 ) -> None:

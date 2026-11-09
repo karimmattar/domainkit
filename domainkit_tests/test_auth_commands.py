@@ -314,7 +314,10 @@ def test_changepassword_usage(auth_project: str) -> None:
     text = usage(changepassword.Command, "changepassword")
 
     assert "[username]" in text
-    assert "username whose password (default: your login name)" in text
+    assert (
+        "username whose password: a username, email address, or mobile number "
+        "(default: your login name)"
+    ) in text
     assert (
         "--temporary, --no-temporary the user changes it at the first login "
         "(default: for a user named, with AUTH.PASSWORD_CHANGE_ON_FIRST_USE)"
@@ -431,6 +434,45 @@ def by_email_or_number() -> AbstractContextManager[None]:
 
     auth = auth_settings().model_dump(exclude_unset=True)
     return override_settings(AUTH={**auth, "IDENTIFIERS": ("email", "mobile_number")})
+
+
+def test_operator_commands_find_a_user_by_email_or_number(
+    auth_project: str, prompts: Prompts
+) -> None:
+    """Since 1.8 a user may have no username: commands take the address or number.
+
+    A username still names its user where ``AUTH.IDENTIFIERS`` leaves it
+    out; without the setting, only usernames identify users, as before.
+    """
+
+    async def add() -> None:
+        async with AuthUnitOfWork() as uow:
+            await uow.users.create_user(None, STRONG, email="nina@example.com")
+            await uow.users.create_user(None, STRONG, mobile_number="+33612345678")
+            await uow.users.create_user("omar", STRONG, email="omar@example.com")
+            await uow.commit()
+
+    out = io.StringIO()
+    with by_email_or_number():
+        run_async(add())
+        prompts(changepassword.Command, secret=["n3w-Passw0rd!"] * 2)
+        call_command("changepassword", "Nina@Example.com", stdout=out)
+        call_command("createtoken", "+33 6 12 34 56 78", stdout=io.StringIO())
+        call_command("cleartokens", "--user", "+33612345678", stdout=out)
+        call_command("resetmfa", "nina@example.com", stdout=out)
+        call_command("resetmfa", "omar", stdout=out)
+        with pytest.raises(CommandError, match=r"'ghost@example\.com' does not exist"):
+            call_command("resetmfa", "ghost@example.com", stdout=out)
+    with pytest.raises(CommandError, match=r"'nina@example\.com' does not exist"):
+        call_command("resetmfa", "nina@example.com", stdout=out)
+
+    assert out.getvalue().splitlines() == [
+        "Changing password for user 'Nina@Example.com'",
+        "Password changed successfully for user 'Nina@Example.com'",
+        "Deleted 1 token(s) of '+33612345678'.",
+        "'nina@example.com' had no second factor.",
+        "'omar' had no second factor.",
+    ]
 
 
 def test_createsuperuser_by_email_or_number(

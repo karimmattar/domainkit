@@ -19,7 +19,10 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """The user."""
-        parser.add_argument("username", help="whose second factor")
+        parser.add_argument(
+            "username",
+            help="whose second factor: a username, email address, or mobile number",
+        )
 
     def handle(self, *, username: str) -> None:
         """Remove the factor and say so."""
@@ -31,7 +34,7 @@ class Command(BaseCommand):
     async def _reset(self, username: str) -> bool:
         """Remove the factor and the sessions; record ``MfaDisabled``."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key(username)
+            user = await uow.users.find_for_staff(username)
             if user is None:
                 raise CommandError(f"User {username!r} does not exist.")
             if not await uow.mfa.remove(user.id):

@@ -23,7 +23,10 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """The user."""
-        parser.add_argument("username", help="whose devices")
+        parser.add_argument(
+            "username",
+            help="whose devices: a username, email address, or mobile number",
+        )
 
     def handle(self, *, username: str) -> None:
         """Unbind the devices and say how many."""
@@ -36,7 +39,7 @@ class Command(BaseCommand):
     async def _unbind(self, username: str) -> int:
         """Unbind, forget the tokens, end the sessions; record each unbinding."""
         async with DevicesUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key(username)
+            user = await uow.users.find_for_staff(username)
             if user is None:
                 raise CommandError(f"User {username!r} does not exist.")
             devices = await uow.devices.of_user(user.id)
