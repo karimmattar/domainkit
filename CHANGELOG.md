@@ -9,6 +9,15 @@ and a status.
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-11-09
+
+The release of 2.1.0 stopped before publishing: its tag was put on a later
+commit, not on the release commit, and the release's check refused it. So
+2.1.0 reached no package index, and 2.1.1 is the first published release
+with 2.1.0's changes (below). Upgrade from 2.0 to 2.1.1 as the 2.1.0
+entries and [upgrading.md](docs/upgrading.md#20-to-21) describe. Nothing
+else changed for projects.
+
 ## [2.1.0] - 2026-11-08
 
 2.1 makes the user's phone their identity: web sign-ins, step-ups and
@@ -6313,7 +6322,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/karimmattar/domainkit/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/karimmattar/domainkit/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/karimmattar/domainkit/compare/v1.8.0...v2.0.0
 [1.8.0]: https://github.com/karimmattar/domainkit/compare/v1.7.1...v1.8.0
