@@ -46,11 +46,12 @@ from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError
 
 from .access import AuthenticatedUser
-from .api import PASSWORD_MAX_LENGTH, _errors
+from .api import PASSWORD_MAX_LENGTH, _errors, device_logins_kept
 from .captcha import captcha
 from .codes import EMAIL_VERIFICATION, MOBILE_VERIFICATION, PASSWORD_RESET, target_of
 from .events import PasswordReset, PasswordResetRequested
 from .exceptions import InvalidEmail
+from .gates import check_manage_logins
 from .models import (
     EMAIL_MAX_LENGTH,
     AbstractBaseUser,
@@ -117,6 +118,9 @@ class PasswordResetCodeIn(BaseModel):
     identifier: str = Field(min_length=1, max_length=IDENTIFIER_MAX_LENGTH)
     code: str = Field(min_length=1, max_length=32, repr=False)
     new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
+    keep_device_logins: bool | None = None
+    """With ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins of
+    the user's bound devices (true, the default), or end them too."""
 
 
 class CodeIn(BaseModel):
@@ -191,26 +195,44 @@ async def confirm_password_reset_code(
     """Set a new password with the code sent for ``identifier``; sessions end.
 
     A wrong code, and one for an identifier no account uses, get the same
-    answer. A password the validators refuse leaves the code working.
+    answer. A password the validators refuse leaves the code working. The
+    logins of the user's bound devices end too, or stay, as
+    ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` says (ADR 0131).
     """
+    keep_devices = device_logins_kept(body.keep_device_logins)
+    if body.keep_device_logins is False:
+        # Ending the devices' logins is managing logins: checked once the
+        # code names the user, in a transaction that spends nothing.
+        async with AuthUnitOfWork() as uow:
+            named = await _proven_user(uow, body)
+        if named is not None:
+            await check_manage_logins(request, named)
     user = None
     async with AuthUnitOfWork() as uow:
-        target = target_of(body.identifier)
-        proven = await uow.verification_codes.check(PASSWORD_RESET, target, body.code)
-        if proven is not None and proven.user_id is not None:
-            user = await uow.users.find(UserId(proven.user_id))
-        if user is not None and user.is_active:
+        user = await _proven_user(uow, body)
+        if user is not None:
             validate_password(body.new_password, user)  # Raises: nothing is spent.
             await uow.users.set_password(user, body.new_password)
-            await uow.tokens.revoke_user(user.id)
+            await uow.tokens.revoke_user(user.id, keep_devices=keep_devices)
             user.record(PasswordReset(user_id=user.id))
-        else:
-            user = None
         await uow.commit()  # A wrong try stays counted.
     if user is None:
         await _count_failed_check(request, "password-reset")
         await audit_refusal("auth.password_reset", "invalid_verification_code")
         raise InvalidCode
+
+
+async def _proven_user(
+    uow: AuthUnitOfWork, body: PasswordResetCodeIn
+) -> AbstractBaseUser | None:
+    """The active user ``body``'s code was sent for, if the code holds."""
+    proven = await uow.verification_codes.check(
+        PASSWORD_RESET, target_of(body.identifier), body.code
+    )
+    if proven is None or proven.user_id is None:
+        return None
+    user = await uow.users.find(UserId(proven.user_id))
+    return user if user is not None and user.is_active else None
 
 
 @router.post(

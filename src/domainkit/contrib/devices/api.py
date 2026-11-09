@@ -51,12 +51,16 @@ from domainkit.contrib.auth.authentication import Credentials, Proof
 from domainkit.contrib.auth.captcha import captcha
 from domainkit.contrib.auth.integration import (
     PASSWORD_MAX_LENGTH,
+    LoginMethod,
     StepUpOut,
     TokenOut,
     address_key,
+    attach_login_device,
     attempt,
     audit_refusal,
     auth_settings,
+    check_manage_logins,
+    end_device_logins,
     issue_login,
     pass_login_gates,
     record_step_up,
@@ -236,16 +240,24 @@ class DeviceOut(BaseModel):
 async def start_registration(
     body: ReauthIn, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> dict[str, Any]:
-    """The options to make a passkey with, once the user authenticated again."""
+    """The options to make a passkey with, once the user authenticated again.
+
+    Checked by auth's ``on_manage_logins`` first: in the phone modes, the
+    phone signs it (ADR 0132).
+    """
+    await check_manage_logins(request, user)
     await reauthenticate(request, user, body.password, ADD_PASSKEY)
     return await creation_options(user)
 
 
 @router.post("/passkeys/register", status_code=status.HTTP_201_CREATED)
 async def finish_registration(
-    body: RegistrationIn, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    body: RegistrationIn,
+    request: Request,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
 ) -> PasskeyOut:
-    """Store the passkey the browser made."""
+    """Store the passkey the browser made; checked as its options are."""
+    await check_manage_logins(request, user)
     passkey = await register(
         user,
         client_data_json=body.credential.response.clientDataJSON,
@@ -269,7 +281,7 @@ async def finish_login(
     response.headers["Cache-Control"] = "no-store"
     user = await authenticate(body.credential.assertion(), LOGIN)
     await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True)
+    issued = await issue_login(user, factor_proven=True, method=LoginMethod.PASSKEY)
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -308,9 +320,10 @@ async def list_passkeys(
 
 @router.delete("/passkeys/{passkey_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_passkey(
-    passkey_id: UUID, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    passkey_id: UUID, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> None:
-    """Remove one of the user's passkeys."""
+    """Remove one of the user's passkeys; checked by ``on_manage_logins``."""
+    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         if not await uow.passkeys.remove(user.id, passkey_id):
             raise PasskeyNotFound("You have no passkey with that id.")
@@ -346,7 +359,13 @@ async def device_login(request: Request, response: Response) -> TokenOut:
         raise DeviceSignatureRefused()
     await counted.succeeded()
     await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True)
+    signer = await signing_device(request, user)  # ``_signer`` checked it.
+    issued = await issue_login(
+        user,
+        factor_proven=True,
+        method=LoginMethod.DEVICE,
+        device_id=None if signer is None else signer.id,
+    )
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -452,7 +471,9 @@ async def enroll_device(
         public_key=key,
     )
     await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True)
+    issued = await issue_login(
+        user, factor_proven=True, method=LoginMethod.DEVICE, device_id=device.id
+    )
     return EnrolledOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -481,6 +502,7 @@ async def bind_device(
         stored = await uow.users.get(UserId(user.id))
         stored.record(DeviceBound(user_id=user.id, device_id=device.id))
         await uow.commit()
+    await attach_login_device(request, device.id)  # The app's login: the device's.
     return DeviceOut(
         id=device.id, name=device.name, created_at=device.created_at, last_used_at=None
     )
@@ -501,15 +523,21 @@ async def list_devices(user: Annotated[AbstractBaseUser, SIGNED_IN]) -> list[Dev
 
 @router.delete("/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def unbind_device(
-    device_id: UUID, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    device_id: UUID, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> None:
-    """Unbind one of the user's devices."""
+    """Unbind one of the user's devices; its logins end (ADR 0131).
+
+    Checked by auth's ``on_manage_logins`` first: in the phone modes, one
+    of the user's devices signs the request.
+    """
+    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         if not await uow.devices.remove(user.id, device_id):
             raise DeviceNotFound("You have no device with that id.")
         stored = await uow.users.get(UserId(user.id))
         stored.record(DeviceUnbound(user_id=user.id, device_id=device_id))
         await uow.commit()
+    await end_device_logins(user.id, device_id)
 
 
 @router.post("/devices/push-tokens", status_code=status.HTTP_201_CREATED)

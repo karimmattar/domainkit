@@ -46,11 +46,16 @@ class CibaConfig(DomainConfig):
                 "reads the user's devices and records its event on the user, in "
                 "one transaction."
             )
-        from domainkit.contrib.auth.integration import UserDeleted, on_login_gate
+        from domainkit.contrib.auth.integration import (
+            UserDeleted,
+            on_login_gate,
+            on_manage_logins,
+        )
 
-        from .gate import approved_from_the_phone
+        from .gate import approved_from_the_phone, managed_from_the_phone
 
         on_login_gate(approved_from_the_phone)
+        on_manage_logins(managed_from_the_phone)
         event_bus.subscribe(UserDeleted, forget_requests)
         on_erase_subject(self.erase_person, domain=self.label)
         on_export_subject(self.export_person, domain=self.label)

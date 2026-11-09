@@ -438,6 +438,7 @@ class JWTAuthentication(BaseAuthentication):
             name=token.name,
             family=token.family,
             now=now,
+            like=token,  # The login keeps where it came from (ADR 0130).
         )
         return self._pair(user, token.family, refresh)
 

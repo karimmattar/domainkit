@@ -266,6 +266,11 @@ tokens = Table(
     # Permission keys the token is limited to; NULL: every one of its user's.
     Column("scopes", ScopesType),
     Column("last_used_at", UTCDateTime),
+    # Where a login came from (ADR 0130): personal data, ending with it.
+    Column("method", String(16)),
+    Column("agent", String(200)),
+    Column("ip", String(45)),
+    Column("device_id", Uuid),
     Index("ix_domainkit_tokens_user_id", "user_id"),
     Index("ix_domainkit_tokens_family", "family"),
     Index("ix_domainkit_tokens_expires_at", "expires_at"),

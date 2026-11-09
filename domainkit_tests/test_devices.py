@@ -33,6 +33,7 @@ from domainkit_tests.conftest import (
     Shape,
 )
 from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
+from domainkit_tests.test_auth_login_origins import origins
 
 DEVICES = Shape(
     "devices",
@@ -236,6 +237,7 @@ def test_a_passkey_logs_in_with_no_password_and_no_second_factor(app: App) -> No
     assert tokens.headers["cache-control"] == "no-store"
     me = client.get("/auth/me", headers=bearer(tokens.json()["access_token"]))
     assert me.json()["username"] == "ann"
+    assert origins()[-1] == ("passkey", None)
     listed = client.get("/auth/passkeys", headers=headers).json()
     assert [each["name"] for each in listed] == ["Laptop"]
     assert listed[0]["last_used_at"] is not None
@@ -672,22 +674,25 @@ def test_binding_needs_the_user_again_a_known_key_and_room(app: App) -> None:
 
 
 def test_devices_are_listed_and_unbound(app: App) -> None:
-    """Listed with their last use; unbound, they sign nothing; twice: 404."""
+    """Listed; unbound, they sign nothing and their logins end; twice: 404."""
     client = app()
     headers = signed_in(client)
     device = Device()
     bind(client, headers, device)
     send(client, headers, device, {"a": 1})
+    other = bearer(login(client, "ann")["access_token"])
 
     listed = client.get("/auth/devices", headers=headers).json()
-    removed = client.delete(f"/auth/devices/{device.id}", headers=headers)
-    again = client.delete(f"/auth/devices/{device.id}", headers=headers)
+    removed = client.delete(f"/auth/devices/{device.id}", headers=other)
+    again = client.delete(f"/auth/devices/{device.id}", headers=other)
 
     assert listed[0]["name"] == "Phone"
     assert listed[0]["last_used_at"] is not None
     assert removed.status_code == 204
     assert again.json()["code"] == "device_not_found"
-    assert send(client, headers, device, {"a": 2}).status_code == 401
+    assert client.get("/auth/me", headers=headers).status_code == 401
+    assert client.get("/auth/me", headers=other).status_code == 200
+    assert send(client, other, device, {"a": 2}).status_code == 401
 
 
 def test_a_recent_step_up_stands_in_for_the_password(app: App) -> None:

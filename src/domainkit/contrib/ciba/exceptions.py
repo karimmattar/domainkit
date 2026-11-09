@@ -21,6 +21,7 @@ __all__ = [
     "OAuthError",
     "PhoneApprovalRequired",
     "PhoneEnrollmentRequired",
+    "PhoneRequired",
     "PhoneUnavailable",
     "PollRefused",
     "QrCodeExpired",
@@ -48,6 +49,22 @@ class PhoneApprovalRequired(APIError):
             status.HTTP_403_FORBIDDEN,
             "Approve this sign-in from your mobile app.",
             code="phone_approval_required",
+        )
+
+
+class PhoneRequired(APIError):
+    """Only the user's mobile app manages their logins (403).
+
+    ``CIBA.APPROVE_LOGINS``: list and end logins from a bound device, which
+    signs the request (ADR 0130).
+    """
+
+    def __init__(self) -> None:
+        """Use status 403 and the code ``phone_required``."""
+        super().__init__(
+            status.HTTP_403_FORBIDDEN,
+            "Manage your logins from your mobile app.",
+            code="phone_required",
         )
 
 

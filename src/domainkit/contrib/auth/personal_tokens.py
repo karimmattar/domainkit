@@ -32,6 +32,7 @@ keeps, never by their value.
 
 from datetime import datetime, timedelta
 from typing import Annotated, Final
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -51,6 +52,7 @@ from .api import PASSWORD_MAX_LENGTH, _credentials, _errors, _no_store
 from .authentication import AuthenticationFailed, Credentials
 from .backends import get_all_permissions
 from .events import TokenCreated, TokenRevoked
+from .gates import check_manage_logins
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
 from .stepup import check_password_again
@@ -126,6 +128,16 @@ class TokenInfo(BaseModel):
     """When it last authenticated a request, to five minutes."""
     current: bool
     """Whether this request uses it."""
+    method: str | None = None
+    """How its login signed in (``LoginMethod``): ``password``, ``passkey``,
+    ``device``, ``push``, ``qr``, ``provider``, or ``impersonation``; null
+    for personal tokens, and logins made before 2.2."""
+    agent: str | None = None
+    """The ``User-Agent`` its login was made from, at most 200 characters."""
+    ip: str | None = None
+    """The address its login was made from."""
+    device_id: UUID | None = None
+    """The bound device that made its login: the phone's own login."""
 
 
 class NewToken(TokenInfo):
@@ -149,8 +161,12 @@ async def list_tokens(
         str | None, Query(pattern=CURSOR_PATTERN, max_length=MAX_CURSOR_LENGTH)
     ] = None,
 ) -> TokenPage:
-    """The user's tokens, newest first."""
+    """The user's tokens, newest first, and where each login came from.
+
+    Checked by ``on_manage_logins`` first (ADR 0130).
+    """
     credentials = _credentials(request)
+    await check_manage_logins(request, credentials.user)
     before = None
     if cursor is not None:
         created, token_id = decode_cursor(cursor, 2)
@@ -229,14 +245,21 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
 async def revoke_token(
     token_id: Annotated[str, Path(pattern=DIGEST_PATTERN)], request: Request
 ) -> None:
-    """Revoke one of the user's tokens; a refresh token ends its login."""
-    user = _credentials(request).user
+    """Revoke one of the user's tokens; a refresh token ends its login.
+
+    Ending another login than the request's own is checked by
+    ``on_manage_logins`` first (ADR 0130).
+    """
+    credentials = _credentials(request)
+    user = credentials.user
     async with AuthUnitOfWork() as uow:
         token = await uow.tokens.find_digest(token_id)
         if token is None or token.user_id != user.id:
             raise APIError(
                 status.HTTP_404_NOT_FOUND, "No such token.", code="token_not_found"
             )
+        if not _own(token, credentials):
+            await check_manage_logins(request, user)
         if token.kind == TokenKind.REFRESH and token.family is not None:
             await uow.tokens.revoke_family(token.family)
         else:
@@ -316,12 +339,15 @@ async def reauthenticate(
         raise await rule.refusal(request, user)
 
 
-def _info(token: AuthToken, request: Request) -> TokenInfo:
-    """What the list shows of ``token``."""
-    credentials = _credentials(request)
-    current = token.id == credentials.token_id or (
+def _own(token: AuthToken, credentials: Credentials) -> bool:
+    """Whether ``token`` is the login ``credentials`` authenticate with."""
+    return token.id == credentials.token_id or (
         token.family is not None and token.family == credentials.login
     )
+
+
+def _info(token: AuthToken, request: Request) -> TokenInfo:
+    """What the list shows of ``token``."""
     return TokenInfo(
         id=token.id,
         name=token.name,
@@ -330,7 +356,11 @@ def _info(token: AuthToken, request: Request) -> TokenInfo:
         created_at=token.created_at,
         expires_at=token.expires_at,
         last_used_at=token.last_used_at,
-        current=current,
+        current=_own(token, _credentials(request)),
+        method=token.method,
+        agent=token.agent,
+        ip=token.ip,
+        device_id=token.device_id,
     )
 
 

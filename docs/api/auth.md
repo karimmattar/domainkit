@@ -147,9 +147,12 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 
 - `LoginGate`: A check of a login: return to let it through, raise to refuse it.
 - `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
+- `LoginsCheck`: A check of a request that manages the user's other logins: raise to refuse.
 - `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
+- `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 
 ## `domainkit.contrib.auth.hashers`
@@ -475,6 +478,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
 - `REAUTH_AGE`: How recent a step-up must be to stand for the password (`reauthenticate`).
 - `CsrfOut`: The token to send back in `X-CSRF-Token` with unsafe methods.
+- `LoginMethod`: How a login signed in (ADR 0130): shown with it, to tell logins apart.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
@@ -485,19 +489,24 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
 - `account_key`: The count of `scope` attempts at the account `username` names.
 - `address_key`: The count of `scope` attempts from the request's client address.
+- `attach_login_device`: Mark the login that sent `request` as the bound device `device_id`'s.
 - `attempt`: Count an attempt against each `(key, rate)`; refuse it past a rate.
 - `audit_refusal`: Record a refused attempt, without what was tried: it may be a secret.
 - `auth_settings`: The validated `AUTH` settings.
 - `challenge`: A challenge, if `user` has a second factor; None if not.
+- `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
 - `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
+- `end_device_logins`: End the logins marked as the bound device `device_id`'s: how many.
 - `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
+- `note_login_device`: Say that the user's bound device `device_id` signed this request.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
@@ -604,6 +613,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
+- `PhoneRequired`: Only the user's mobile app manages their logins (403).
 - `PhoneUnavailable`: No phone of the signed-in user can be asked now (409).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
@@ -662,6 +672,7 @@ What a sign-in request may be refused, and what a poll may answer.
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
+- `PhoneRequired`: Only the user's mobile app manages their logins (403).
 - `PhoneUnavailable`: No phone of the signed-in user can be asked now (409).
 - `PollRefused`: A poll that gives no tokens (400); `code` says why.
 - `QrCodeExpired`: The QR code is unknown, was claimed, or expired (422).
@@ -679,6 +690,7 @@ What a sign-in request may be refused, and what a poll may answer.
 The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
 
 - `approved_from_the_phone`: Let the login of `user` through if the app is not their identity, or signs it.
+- `managed_from_the_phone`: Let `user`'s logins be managed only from their bound device (ADR 0130).
 - `mark_approved`: Say that `request` redeemed a sign-in `user`'s phone approved.
 
 ## `domainkit.contrib.ciba.oidc`

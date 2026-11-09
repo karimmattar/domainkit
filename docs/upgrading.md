@@ -36,6 +36,59 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.1 to 2.2
+
+2.2 shows where each login came from, lets the phone manage the user's
+logins ([ADR 0130](adr/0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md)),
+and lets a project choose what a password change does to the phone's
+login ([ADR 0131](adr/0131-choose-what-a-password-change-does-to-the-devices-logins.md)).
+
+### Make and apply the tokens' migration
+
+The tokens table gains four nullable columns: `method`, `agent`, `ip`,
+and `device_id`. Run `python manage.py makemigrations`, review the
+revision, then `migrate`. Logins made before it show `null` for them until
+they end.
+
+### Name the method in your own login routes
+
+A login route of your own that calls `issue_login` or
+`start_browser_session` records the agent and the address on its own.
+Pass `method=` (a `LoginMethod`, from `auth.integration`) so the user's
+list says how it signed in, and `device_id=` for a device's own login.
+
+### In the phone modes, web pages no longer list logins
+
+With `CIBA.APPROVE_LOGINS` set, `GET /auth/tokens`, ending another login,
+and logging out `everywhere` or `others` need a request signed by the
+user's bound device (`403 phone_required` otherwise). A web page that
+listed the user's sessions or personal tokens moves that to the mobile
+app. Logging the page itself out is unchanged, and so is creating a
+personal token. Users with no bound device are not affected.
+
+### Unbinding a device ends its logins
+
+`DELETE /auth/devices/{id}` ends the logins of the device it unbinds,
+the login that bound it included. With `CIBA.APPROVE_LOGINS` set, it
+needs a request signed by one of the user's devices: a web page that
+unbinds devices moves that to the mobile app. A user who lost every
+phone still recovers through `unbinddevices`.
+
+### In the phone modes, the phone manages the second factors
+
+With `CIBA.APPROVE_LOGINS` set, turning the authenticator app on or off,
+new recovery codes, and adding or removing a passkey need a request
+signed by one of the user's devices (`403 phone_required` otherwise). A
+web page that offered them moves them to the mobile app. Users with no
+bound device are not affected.
+
+### Choose what a credential change does to the phone
+
+`AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS` decides what a password change or
+reset, and turning the second factor on, do to the phone's login. It keeps
+2.1's behaviour by default (`"end"`). With the phone as identity, set
+`"keep"`, or `"ask"` to let the user choose ([Credential changes and the phone](auth/logging-in.md#credential-changes-and-the-phone)).
+
 ## 2.0 to 2.1
 
 2.1 adds sign-ins, step-ups and payments approved from the user's phone

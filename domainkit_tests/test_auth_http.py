@@ -1567,7 +1567,11 @@ def test_token_commands_are_audited(api: Api, monkeypatch: pytest.MonkeyPatch) -
     )
     (logged_out,) = audited("auth.user_logged_out")
     assert logged_out["actor"] == "operator:bob"
-    assert logged_out["details"] == {"user_id": str(alice), "everywhere": True}
+    assert logged_out["details"] == {
+        "user_id": str(alice),
+        "everywhere": True,
+        "others": False,
+    }
 
 
 def test_nothing_held_means_no_address_is_looked_at(

@@ -946,7 +946,7 @@ def test_staff_set_passwords_and_end_sessions(api: Api) -> None:
     logged_out = audited("auth.user_logged_out")[-1]
     assert (logged_out["actor"], logged_out["details"]) == (
         admin_id,
-        {"user_id": str(bob), "everywhere": True},
+        {"user_id": str(bob), "everywhere": True, "others": False},
     )
     missing = client.post(f"{ADMIN}/users/{uuid4()}/logout", headers=headers)
     assert error(missing, 404)[0] == "user_not_found"

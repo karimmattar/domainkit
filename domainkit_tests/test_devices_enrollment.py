@@ -5,6 +5,7 @@ import re
 import time
 from collections.abc import Iterator
 from typing import Any
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +22,7 @@ from domainkit_tests.test_auth_http import (
     create_user,
     login,
 )
+from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_auth_mfa import clock, code_at, enrol
 from domainkit_tests.test_auth_recovery import run_worker
 from domainkit_tests.test_auth_reset_codes import drain
@@ -119,6 +121,7 @@ def test_a_first_device_enrolls_and_logs_in(app: App) -> None:
         assert client.get("/auth/me", headers=headers).json()["id"] == str(alice)
         listed = client.get("/auth/devices", headers=headers).json()
         assert [each["id"] for each in listed] == [out["device"]["id"]]
+        assert origins() == [("device", UUID(out["device"]["id"]))]
         assert len(audited("devices.device_bound")) == 1
 
         again = enroll(client, Device(), code=code)

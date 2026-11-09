@@ -25,6 +25,7 @@ from domainkit_tests.conftest import (
 )
 from domainkit_tests.test_auth_cookies import TRUSTED
 from domainkit_tests.test_auth_http import PASSWORD, audited, bearer, create_user
+from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_devices import Device, bind, queued_pushes
 
 CIBA = Shape(
@@ -65,10 +66,15 @@ def app(migrated: Migrated) -> Iterator[App]:
 class Phone:
     """A user's phone: logged in, a bound device, a push token; signs requests."""
 
-    def __init__(self, client: TestClient, username: str = "alice") -> None:
+    def __init__(
+        self,
+        client: TestClient,
+        username: str = "alice",
+        **fields: Any,  # noqa: ANN401 - user fields.
+    ) -> None:
         """Log ``username`` in from ``client``, bind a key, register a token."""
         self.client = client
-        self.user_id = create_user(username)
+        self.user_id = create_user(username, **fields)
         answer = client.post(
             "/auth/login", json={"identifier": username, "password": PASSWORD}
         )
@@ -212,6 +218,7 @@ def test_a_push_sign_in_is_approved_from_the_phone_with_the_number(app: App) -> 
         assert set(tokens.json()) >= {"access_token", "token_type"}
         me = web.get("/auth/me", headers=bearer(tokens.json()["access_token"]))
         assert me.json()["username"] == "alice"
+        assert origins()[-1] == ("push", None)
     with clock.freeze_time(clock.now() + timedelta(seconds=12)):
         again = redeem(web, started["request"])
     assert again.status_code == 400
@@ -403,6 +410,7 @@ def test_a_qr_sign_in_is_claimed_approved_and_becomes_a_session(app: App) -> Non
         cookie.startswith("__Host-dk_session=")
         for cookie in session.headers.get_list("set-cookie")
     )
+    assert origins()[-1] == ("qr", None)
 
 
 def test_a_qr_code_holds_the_format_and_expires(app: App) -> None:
@@ -542,6 +550,7 @@ def test_a_bound_device_logs_in_by_its_signature(app: App) -> None:
         assert answer.headers["Cache-Control"] == "no-store"
         me = phone.client.get("/auth/me", headers=bearer(answer.json()["access_token"]))
         assert me.json()["username"] == "alice"
+        assert origins()[-1] == ("device", UUID(phone.device.id))
 
         replayed = phone.client.post(
             "/auth/devices/login",

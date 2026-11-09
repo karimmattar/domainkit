@@ -21,11 +21,11 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Request, Response, status
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from domainkit.context import bind_request, current_request
 from domainkit.ddd import PermissionDenied
@@ -50,7 +50,7 @@ from .devices import (
     proven_limits,
 )
 from .events import UserLoggedOut
-from .gates import check_gates_passed, pass_login_gates
+from .gates import check_gates_passed, check_manage_logins, pass_login_gates
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
@@ -63,6 +63,7 @@ from .throttling import (
     attempt,
     audit_refusal,
 )
+from .tokens import LoginMethod, logging_in
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
@@ -120,11 +121,22 @@ class RefreshIn(BaseModel):
 
 
 class LogoutIn(BaseModel):
-    """Whether to end every session of the user, not only this one."""
+    """What to end: this login, every token of the user, or their other logins."""
 
     model_config = ConfigDict(extra="forbid")
 
     everywhere: bool = False
+    """Every token of the user, personal tokens included."""
+    others: bool = False
+    """Every other login of the user, and not this one (ADR 0130); personal
+    tokens and certificates stay."""
+
+    @model_validator(mode="after")
+    def _one(self) -> Self:
+        """``everywhere`` and ``others`` cannot be asked together."""
+        if self.everywhere and self.others:
+            raise ValueError("Ask for everywhere or others, not both.")
+        return self
 
 
 class PasswordIn(BaseModel):
@@ -134,6 +146,9 @@ class PasswordIn(BaseModel):
 
     old_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
     new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
+    keep_device_logins: bool | None = None
+    """With ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins of
+    the user's bound devices (true, the default), or end them too."""
 
 
 class TokenOut(BaseModel):
@@ -197,7 +212,7 @@ async def login(
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
         return pending  # The device proof waits for the second factor.
-    issued = await issue_login(user, factor_proven=False)
+    issued = await issue_login(user, factor_proven=False, method=LoginMethod.PASSWORD)
     await hand_out(request, response, user)
     return _token_out(issued)
 
@@ -275,7 +290,11 @@ async def _changed_on_first_use(
 
 
 async def issue_login(
-    user: AbstractBaseUser, *, factor_proven: bool = True
+    user: AbstractBaseUser,
+    *,
+    factor_proven: bool = True,
+    method: str | None = None,
+    device_id: UUID | None = None,
 ) -> IssuedTokens:
     """Record the user's login, and issue them tokens (the first class's).
 
@@ -283,9 +302,10 @@ async def issue_login(
     held to what was checked (``held_login``). A route of the project's
     that issues a login runs ``pass_login_gates(request, user)`` first:
     while a login gate is registered, one that skipped them raises
-    ``LoginNotGated``.
+    ``LoginNotGated``. ``method`` (a ``LoginMethod``) and ``device_id``
+    say how it signed in, shown with it in ``GET /tokens`` (ADR 0130).
     """
-    with _acting_as(user):
+    with _acting_as(user), _origin(method, device_id):
         async with audited_changes(), AuthUnitOfWork() as uow:
             stored = await held_login(uow, user, factor_proven=factor_proven)
             await uow.tokens.end_oldest_logins(
@@ -370,23 +390,33 @@ async def logout(
     user: AuthenticatedUser,
     body: Annotated[LogoutIn | None, Body()] = None,
 ) -> None:
-    """End this session's tokens, or every token of the user.
+    """End this session's tokens, every token of the user, or their other logins.
 
-    Credentials limited to scopes end only themselves.
+    Credentials limited to scopes end only themselves. Ending ``everywhere``
+    or the ``others`` is checked by ``on_manage_logins`` first (ADR 0130).
     """
     everywhere = body is not None and body.everywhere
+    others = body is not None and body.others
     credentials = _credentials(request)
-    if everywhere and credentials.scopes is not None:
+    if (everywhere or others) and credentials.scopes is not None:
         raise PermissionDenied("Credentials limited to scopes end only themselves.")
+    if everywhere or others:
+        await check_manage_logins(request, user)
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         if everywhere:
             await uow.tokens.revoke_user(user.id)
+        elif others:
+            await uow.tokens.end_other_logins(
+                user.id, token=credentials.token_id, family=credentials.login
+            )
         elif credentials.token_id is not None:
             await uow.tokens.revoke(credentials.token_id)
         elif credentials.login is not None:
             await uow.tokens.revoke_family(credentials.login)
-        stored.record(UserLoggedOut(user_id=user.id, everywhere=everywhere))
+        stored.record(
+            UserLoggedOut(user_id=user.id, everywhere=everywhere, others=others)
+        )
         await uow.commit()
 
 
@@ -433,7 +463,12 @@ async def me(request: Request, user: AuthenticatedUser) -> UserOut:
 async def change_password(
     request: Request, body: PasswordIn, user: AuthenticatedUser
 ) -> None:
-    """Change the password; every other session of the user ends."""
+    """Change the password; every other session of the user ends.
+
+    The logins of the user's bound devices end too, or stay, as
+    ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` says (ADR 0131).
+    """
+    keep_devices = device_logins_kept(body.keep_device_logins)
     counted = await _throttle(request, user)
     if not await password_holds(user, body.old_password, priority=True):
         raise APIError(
@@ -443,14 +478,72 @@ async def change_password(
         )
     await counted.succeeded()
     validate_password(body.new_password, user)
+    if body.keep_device_logins is False:
+        await check_manage_logins(request, user)
     credentials = _credentials(request)
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         await uow.users.set_password(stored, body.new_password, priority=True)
         await uow.tokens.revoke_user(
-            user.id, keep=credentials.token_id, keep_family=credentials.login
+            user.id,
+            keep=credentials.token_id,
+            keep_family=credentials.login,
+            keep_devices=keep_devices,
         )
         await uow.commit()
+
+
+def device_logins_kept(asked: bool | None) -> bool:
+    """Whether a password change keeps the bound devices' logins (ADR 0131).
+
+    ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` decides; with ``"ask"``, the
+    request's ``keep_device_logins`` (``asked``) does, true when left out.
+    A request that asks ending them runs the ``on_manage_logins`` checks
+    first (the caller's to do, once it knows the user).
+
+    Raises:
+        APIError: 422 ``device_logins_not_asked``: ``asked`` is given, but
+            the setting decides.
+    """
+    decided = auth_settings().CREDENTIAL_CHANGE_DEVICE_LOGINS
+    if decided == "ask":
+        return asked is not False
+    if asked is not None:
+        raise APIError(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "This server decides what this change does to your devices' logins: "
+            "leave keep_device_logins out.",
+            code="device_logins_not_asked",
+        )
+    return decided == "keep"
+
+
+async def attach_login_device(request: Request, device_id: UUID) -> None:
+    """Mark the login that sent ``request`` as the bound device ``device_id``'s.
+
+    The devices app calls it once the request bound the device: the app
+    logged in, then bound its key (ADR 0131).
+    """
+    credentials = _credentials(request)
+    async with AuthUnitOfWork() as uow:
+        await uow.tokens.attach_device(
+            credentials.user.id,
+            device_id,
+            token=credentials.token_id,
+            family=credentials.login,
+        )
+        await uow.commit()
+
+
+async def end_device_logins(user_id: UUID, device_id: UUID) -> int:
+    """End the logins marked as the bound device ``device_id``'s: how many.
+
+    The devices app calls it once it unbinds the device (ADR 0131).
+    """
+    async with AuthUnitOfWork() as uow:
+        ended = await uow.tokens.end_device_logins(user_id, device_id)
+        await uow.commit()
+    return ended
 
 
 async def password_holds(
@@ -552,6 +645,16 @@ def _ceiling(rate: str | None) -> Window | None:
 async def _audit_refusal(reason: str) -> None:
     """Record a refused login, without the username: it may be a password."""
     await audit_refusal("auth.login", reason)
+
+
+@contextmanager
+def _origin(method: str | None, device_id: UUID | None) -> Iterator[None]:
+    """Record the logins issued inside as made by ``method``, if one is given."""
+    if method is None:
+        yield
+        return
+    with logging_in(method, device_id):
+        yield
 
 
 @contextmanager

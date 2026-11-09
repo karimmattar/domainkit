@@ -17,6 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     Executable,
+    Select,
     String,
     Subquery,
     Table,
@@ -42,6 +43,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.sql.elements import ColumnElement
 
 from domainkit.conf import settings
+from domainkit.context import current_request
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
 from domainkit.db.encrypted import EncryptedType
@@ -110,10 +112,14 @@ from .tables import (
     user_link_tables,
 )
 from .tokens import (
+    AGENT_MAX_LENGTH,
+    LOGIN_DEVICE,
     LOGIN_NAME,
     AuthToken,
     TokenKind,
+    is_login,
     last_used_every,
+    login_origin,
     new_token,
     token_digest,
     utc_now,
@@ -686,11 +692,13 @@ class TokenStore:
         family: UUID | None = None,
         now: datetime | None = None,
         scopes: frozenset[str] | None = None,
+        like: AuthToken | None = None,
     ) -> str:
         """Store a new token for ``user_id`` and return it (shown only now).
 
         It works for ``ttl`` from ``now`` (default: the current time), with
-        the permission keys in ``scopes`` only, if given.
+        the permission keys in ``scopes`` only, if given. ``like``: a token
+        whose login's origin it keeps (``create``).
         """
         raw, _ = await self.create(
             user_id,
@@ -700,6 +708,7 @@ class TokenStore:
             family=family,
             now=now,
             scopes=scopes,
+            like=like,
         )
         return raw
 
@@ -713,8 +722,15 @@ class TokenStore:
         family: UUID | None = None,
         now: datetime | None = None,
         scopes: frozenset[str] | None = None,
+        like: AuthToken | None = None,
     ) -> tuple[str, AuthToken]:
-        """``issue``, returning the stored token with the raw one."""
+        """``issue``, returning the stored token with the raw one.
+
+        A login's token records where the login came from (ADR 0130): how
+        it signed in and its device (``logging_in``), and the request's
+        address and agent. ``like`` gives a token whose origin it keeps
+        instead, as a refreshed login does.
+        """
         raw = new_token(auth_settings().TOKEN_PREFIX)
         now = now or utc_now()
         token = AuthToken(
@@ -726,6 +742,7 @@ class TokenStore:
             created_at=now,
             expires_at=None if ttl is None else now + ttl,
             scopes=scopes,
+            **_origin_of(kind, name, like),
         )
         self.session.add(token)
         return raw, token
@@ -803,27 +820,42 @@ class TokenStore:
         (by their unused refresh token, which ends the whole login); not
         personal tokens or certificates. Newest by when they were issued.
         """
-        moment = utc_now()
         statement = (
             select(tokens.c.id, tokens.c.family)
-            .where(
-                tokens.c.user_id == user_id,
-                (tokens.c.kind == TokenKind.SESSION)
-                | (
-                    tokens.c.kind.in_([TokenKind.ACCESS, TokenKind.REFRESH])
-                    & (tokens.c.name == LOGIN_NAME)
-                    & tokens.c.used_at.is_(None)
-                ),
-                tokens.c.expires_at.is_(None) | (tokens.c.expires_at > moment),
-            )
+            .where(tokens.c.user_id == user_id, _live_login(utc_now()))
             .order_by(tokens.c.created_at.desc(), tokens.c.id.desc())
             .offset(keep)
         )
-        oldest = (await self.session.execute(statement)).all()
-        if not oldest:
+        return await self._end_logins(statement)
+
+    async def end_other_logins(
+        self, user_id: UUID, *, token: str | None = None, family: UUID | None = None
+    ) -> int:
+        """End the user's live logins but the one ``token`` or ``family`` names.
+
+        Logins as in ``end_oldest_logins``; personal tokens and
+        certificates stay. Under the user's credentials lock, so a login
+        being issued is ended too, or sees this end.
+        """
+        await self.lock_user(user_id)
+        statement = select(tokens.c.id, tokens.c.family).where(
+            tokens.c.user_id == user_id, _live_login(utc_now())
+        )
+        if token is not None:
+            statement = statement.where(tokens.c.id != token)
+        if family is not None:
+            statement = statement.where(
+                tokens.c.family.is_(None) | (tokens.c.family != family)
+            )
+        return await self._end_logins(statement)
+
+    async def _end_logins(self, statement: Select[str, UUID | None]) -> int:
+        """End the logins of the ``(id, family)`` rows ``statement`` selects."""
+        found = (await self.session.execute(statement)).all()
+        if not found:
             return 0
-        digests = [digest for digest, family in oldest if family is None]
-        families = [family for _, family in oldest if family is not None]
+        digests = [digest for digest, family in found if family is None]
+        families = [family for _, family in found if family is not None]
         return await self._revoke(
             tokens.c.id.in_(digests) | tokens.c.family.in_(families),
             *(family_target(family) for family in families),
@@ -901,13 +933,20 @@ class TokenStore:
         return await self._revoke(tokens.c.family == family, family_target(family))
 
     async def revoke_user(
-        self, user_id: UUID, *, keep: str | None = None, keep_family: UUID | None = None
+        self,
+        user_id: UUID,
+        *,
+        keep: str | None = None,
+        keep_family: UUID | None = None,
+        keep_devices: bool = False,
     ) -> int:
         """Delete every token of ``user_id``, except one token or one family.
 
-        Every principal of the user is read again after the commit, the
-        kept token's too. The user's credentials lock is held first, so a
-        token being issued is deleted too, or sees this end.
+        ``keep_devices`` keeps the logins of the user's bound devices too:
+        the rows that name a device (ADR 0131). Every principal of the user
+        is read again after the commit, the kept tokens' too. The user's
+        credentials lock is held first, so a token being issued is deleted
+        too, or sees this end.
         """
         await self.lock_user(user_id)
         condition = tokens.c.user_id == user_id
@@ -915,7 +954,48 @@ class TokenStore:
             condition &= tokens.c.id != keep
         if keep_family is not None:
             condition &= (tokens.c.family != keep_family) | tokens.c.family.is_(None)
+        if keep_devices:
+            condition &= tokens.c.device_id.is_(None)
         return await self._revoke(condition, user_target(user_id))
+
+    async def attach_device(
+        self,
+        user_id: UUID,
+        device_id: UUID,
+        *,
+        token: str | None = None,
+        family: UUID | None = None,
+    ) -> int:
+        """Mark the login ``token`` or ``family`` names as ``device_id``'s.
+
+        The login a device was bound with (ADR 0131); a login marked
+        already keeps its device, and a personal token is no login. How
+        many rows were marked.
+        """
+        if token is None and family is None:
+            return 0
+        names = (
+            tokens.c.family == family if family is not None else tokens.c.id == token
+        )
+        result = await self.session.execute(
+            update(tokens)
+            .where(
+                tokens.c.user_id == user_id,
+                tokens.c.device_id.is_(None),
+                (tokens.c.kind == TokenKind.SESSION) | (tokens.c.name == LOGIN_NAME),
+                names,
+            )
+            .values(device_id=device_id)
+            .execution_options(**HANDLED)  # Where a login came from: no principal.
+        )
+        return _count(result)
+
+    async def end_device_logins(self, user_id: UUID, device_id: UUID) -> int:
+        """Delete the tokens of ``user_id`` marked as ``device_id``'s: how many."""
+        await self.lock_user(user_id)
+        return await self._revoke(
+            (tokens.c.user_id == user_id) & (tokens.c.device_id == device_id)
+        )
 
     async def clear_expired(self, now: datetime | None = None) -> int:
         """Delete tokens whose lifetime is over.
@@ -1061,6 +1141,55 @@ class PrincipalStore:
             usable_password=usable,
         )
         return Snapshot(principal=principal, current=bool(rows[0][-1]))
+
+
+def _live_login(moment: datetime) -> ColumnElement[bool]:
+    """Whether a row is a live login's, at ``moment``.
+
+    A browser session, a login token, or a JSON Web Token login's unused
+    refresh token; not a personal token or a certificate.
+    """
+    return (
+        (tokens.c.kind == TokenKind.SESSION)
+        | (
+            tokens.c.kind.in_([TokenKind.ACCESS, TokenKind.REFRESH])
+            & (tokens.c.name == LOGIN_NAME)
+            & tokens.c.used_at.is_(None)
+        )
+    ) & (tokens.c.expires_at.is_(None) | (tokens.c.expires_at > moment))
+
+
+def _origin_of(kind: str, name: str, like: AuthToken | None) -> dict[str, Any]:
+    """Where a new token's login came from: ``like``'s, or this request's.
+
+    Only a login's token records it, or one issued while ``logging_in``
+    names its origin (an impersonation); a personal token records nothing.
+    The device is the origin's, or the one ``note_login_device`` says signed
+    this request (ADR 0131).
+    """
+    if like is not None:
+        return {
+            "method": like.method,
+            "agent": like.agent,
+            "ip": like.ip,
+            "device_id": like.device_id,
+        }
+    origin = login_origin()
+    if origin is None and not is_login(kind, name):
+        return {}
+    request = current_request()
+    scope = getattr(request, "scope", {})
+    headers = scope.get("headers", ())
+    agent = next((value for key, value in headers if key == b"user-agent"), None)
+    device = None if origin is None else origin.device_id
+    return {
+        "method": None if origin is None else origin.method,
+        "agent": None
+        if agent is None
+        else agent.decode("latin-1")[:AGENT_MAX_LENGTH] or None,
+        "ip": None if request is None else request.client_ip,
+        "device_id": device if device is not None else scope.get(LOGIN_DEVICE),
+    }
 
 
 def searched_fields(model: type[AbstractBaseUser]) -> tuple[str, ...]:

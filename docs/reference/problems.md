@@ -102,6 +102,7 @@ unique constraint may name its own code
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
 | `device_already_bound` | 409 | `DeviceAlreadyBound` (contrib.devices.exceptions): The user has a bound device: approve the new one from it. |
 | `device_login_off` | 404 | `DeviceLoginOff` (contrib.devices.exceptions): `DEVICES.DEVICE_LOGIN` is off: devices do not log in here. |
+| `device_logins_not_asked` | 422 | contrib.auth.api: This server decides what this change does to your devices' logins: leave keep_device_logins out. |
 | `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
 | `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
 | `different_network` | 403 | `DifferentNetwork` (contrib.ciba.exceptions): The phone is not on the address of the page (`QR_SAME_NETWORK`). |
@@ -214,6 +215,7 @@ unique constraint may name its own code
 | `phone_approval_required` | 403 | `PhoneApprovalRequired` (contrib.ciba.exceptions): This login must be approved from the user's mobile app (`CIBA.APPROVE_LOGINS`). |
 | `phone_enrollment_required` | 403 | `PhoneEnrollmentRequired` (contrib.ciba.exceptions): The user has no bound device, and every login comes from one (`CIBA.APPROVE_LOGINS = "always"`). |
 | `phone_not_found` | 404 | `PhoneNotFound` (contrib.phones.exceptions): The user has no verified number with that id. |
+| `phone_required` | 403 | `PhoneRequired` (contrib.ciba.exceptions): Only the user's mobile app manages their logins (`CIBA.APPROVE_LOGINS`, ADR 0130). |
 | `phone_unavailable` | 409 | `PhoneUnavailable` (contrib.ciba.exceptions): No phone of the signed-in user can be asked now: none is bound, `MAX_PENDING` requests wait, or the user reported one within `REPORT_COOLDOWN`. |
 | `policy_removed` | 409 | `PolicyRemoved` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |

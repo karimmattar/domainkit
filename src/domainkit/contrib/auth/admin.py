@@ -71,6 +71,7 @@ from .exceptions import (
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
+from .tokens import LoginMethod, logging_in
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, get_user_table, typed_fields
 from .validators import validate_password
@@ -519,9 +520,10 @@ async def impersonate(
         if not user.is_active:
             raise PermissionDenied("Only active users can be impersonated.")
         await _may_change(actor, user)
-        raw = await uow.tokens.issue(
-            user.id, ttl=ttl, name=IMPERSONATION, family=staff_id
-        )
+        with logging_in(LoginMethod.IMPERSONATION):
+            raw = await uow.tokens.issue(
+                user.id, ttl=ttl, name=IMPERSONATION, family=staff_id
+            )
         user.record(
             UserImpersonated(
                 user_id=user.id, impersonator_id=staff_id, reason=body.reason

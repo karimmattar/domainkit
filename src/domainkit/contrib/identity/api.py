@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.integration import (
     PASSWORD_MAX_LENGTH,
+    LoginMethod,
     MfaChallengeOut,
     TokenOut,
     challenge,
@@ -228,7 +229,7 @@ async def logged_in(
     if pending is not None:
         response.status_code = status.HTTP_202_ACCEPTED
         return pending
-    issued = await issue_login(user, factor_proven=False)
+    issued = await issue_login(user, factor_proven=False, method=LoginMethod.PROVIDER)
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
