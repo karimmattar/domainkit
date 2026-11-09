@@ -140,6 +140,7 @@ statuses, and the amendments they name.
 | [0127](0127-ping-a-pooled-connection-only-after-it-rested.md) | Ping a pooled connection only after it rested | Accepted |
 | [0128](0128-approve-sign-ins-from-the-users-mobile-app.md) | Approve sign-ins from the user's mobile app | Accepted |
 | [0129](0129-complete-the-phone-as-identity.md) | Complete the phone as identity | Accepted |
+| [0130](0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md) | Show where each login came from, and manage logins from the phone | Accepted |
 
 ### Decisions still without a record
 
