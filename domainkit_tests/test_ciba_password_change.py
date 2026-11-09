@@ -261,3 +261,20 @@ def test_unbinding_a_device_ends_its_logins_and_is_the_phones_to_do(
     assert unbound.status_code == 204, unbound.json()
     assert phone.client.get("/auth/me", headers=phone.headers).status_code == 401
     assert web.get("/auth/me", headers=laptop).status_code == 200
+
+
+def test_credentials_naming_no_login_mark_nothing(app: App) -> None:
+    """A certificate, say: no token and no family to mark as the device's."""
+    from uuid import uuid4
+
+    from domainkit.contrib.auth import AuthUnitOfWork
+    from domainkit.management.base import run_async
+
+    alice = create_user("alice")
+    app()
+
+    async def attach() -> int:
+        async with AuthUnitOfWork() as uow:
+            return await uow.tokens.attach_device(alice, uuid4())
+
+    assert run_async(attach()) == 0
