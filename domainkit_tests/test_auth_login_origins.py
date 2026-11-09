@@ -258,7 +258,8 @@ def test_privacy_exports_each_logins_origin_but_never_its_digest(
     exported = run_async(hook.call(str(alice)))
 
     # The login, and the device it remembers for the second factor.
-    entry, remembered = exported["tokens"]
+    rows: list[dict[str, Any]] = exported["tokens"]  # type: ignore[assignment]
+    entry, remembered = rows
     assert (remembered["kind"], remembered["method"]) == ("device", None)
     assert {key: entry[key] for key in ("kind", "name", "method", "agent", "ip")} == {
         "kind": "access",
