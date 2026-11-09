@@ -40,6 +40,7 @@ from pydantic import (
 )
 
 from domainkit.apps import registry
+from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import F
 from domainkit.ddd.query import Selection as Listing
@@ -68,10 +69,10 @@ from .exceptions import (
     UserNotFound,
 )
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
-from .repositories import GroupRepository
-from .settings import auth_settings
+from .repositories import GroupRepository, user_search
+from .settings import auth_settings, identifier_fields
 from .uow import AuthUnitOfWork
-from .users import FieldValue, get_user_model, typed_fields
+from .users import FieldValue, get_user_model, get_user_table, typed_fields
 from .validators import validate_password
 
 __all__ = [
@@ -278,12 +279,34 @@ CHANGE: Final = (*ONE, status.HTTP_409_CONFLICT, status.HTTP_422_UNPROCESSABLE_C
 async def user_listing(
     search: Annotated[
         str | None,
-        Query(max_length=150, description="Part of the username, in any case."),
+        Query(
+            max_length=150,
+            description=(
+                "Part of the username, the email address, or the mobile number "
+                "(those of AUTH.IDENTIFIERS), in any case."
+            ),
+        ),
     ] = None,
 ) -> Listing:
-    """Users by username; ``search`` keeps those whose name contains it."""
-    name = F(get_user_model().USERNAME_FIELD)
-    return Listing(name.icontains(search) if search else None, ordering=[name])
+    """Users by their first identifier; ``search`` keeps those it finds.
+
+    ``user_search`` finds them by the username and the fields of
+    ``AUTH.IDENTIFIERS``. They are ordered by the first of those fields
+    that is not encrypted (``AUTH.IDENTIFIERS[0]``, else the username), and
+    by id among equal values.
+    """
+    model = get_user_model()
+    found = user_search(model, search) if search else None
+    return Listing(found, ordering=[F(_ordered_by(model))])
+
+
+def _ordered_by(model: type[AbstractBaseUser]) -> str:
+    """The first identifier that is not encrypted, else the username, as before."""
+    columns = get_user_table().c
+    for name in identifier_fields(model):
+        if not isinstance(columns[name].type, EncryptedType):
+            return name
+    return model.USERNAME_FIELD
 
 
 async def group_listing() -> Listing:
@@ -305,7 +328,7 @@ users = ResourceRouter(
     pagination=pages,
     rule=staff_rules(get_user_model),
 )
-"""``GET /users`` (by username; ``search`` matches part of it) and ``/users/{id}``."""
+"""``GET /users`` (``search`` matches part of an identifier) and ``/users/{id}``."""
 groups = ResourceRouter(
     "/groups",
     model=Group,

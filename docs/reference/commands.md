@@ -797,6 +797,14 @@ cancelled 0
 These commands come with `domainkit.contrib.auth` ([auth.md](../auth.md)).
 Each one takes `--operator` and is audited.
 
+A command that names a user (`changepassword`, `createtoken`,
+`cleartokens --user`, `resetmfa`, `addcertificate`, and `unbinddevices`)
+takes the username. Where `AUTH.IDENTIFIERS` names them, it also takes the
+email address, in any case, or the mobile number, in any form that
+[normalizes](../auth/users.md) to the same number. Before 2.1.2 these
+commands took the username alone, so they could not name a user who had
+none.
+
 ### `createsuperuser`: make a user who may do everything
 
 ```bash
@@ -838,7 +846,7 @@ user's tokens end.
 
 | Option | What it does |
 | --- | --- |
-| `[username]` | Whose password (default: your login name). |
+| `[username]` | Whose password: a username, an email address, or a mobile number (default: your login name). |
 | `--temporary`, `--no-temporary` | Whether the user must change it at the first login. By default: for a user you name, under `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`. |
 | `--operator` | Who runs it. |
 
@@ -857,7 +865,7 @@ once; the database keeps only its hash.
 
 | Option | What it does |
 | --- | --- |
-| `username` | Whose token. |
+| `username` | Whose token: a username, an email address, or a mobile number. |
 | `--name` | What it is for (default: `cli`). `login` is refused: it is the name of logins' tokens. |
 | `--days` | Days it works (default: 90). |
 | `--no-expiry` | Works until it is revoked (`cleartokens --user`). |
@@ -892,7 +900,7 @@ asking before you run it.
 
 | Option | What it does |
 | --- | --- |
-| `username` | Whose second factor. |
+| `username` | Whose second factor: a username, an email address, or a mobile number. |
 | `--operator` | Who runs it. |
 
 ### `resealmfa`: encrypt second factors under the current key
@@ -924,7 +932,7 @@ SHA-256, with `AUTH.CLIENT_CERT.MATCH = "fingerprint"`.
 
 | Option | What it does |
 | --- | --- |
-| `username` | The user the certificate logs in as. |
+| `username` | The user the certificate logs in as: a username, an email address, or a mobile number. |
 | `certificate` | The certificate, in PEM. |
 | `--name` | What it is for (default: `certificate`). |
 | `--operator` | Who runs it. |
@@ -944,7 +952,7 @@ lost every phone: check who is asking before you run it.
 
 | Option | What it does |
 | --- | --- |
-| `username` | Whose devices. |
+| `username` | Whose devices: a username, an email address, or a mobile number. |
 | `--operator` | Who runs it. |
 
 ### `ciba`: register the clients that ask users' phones

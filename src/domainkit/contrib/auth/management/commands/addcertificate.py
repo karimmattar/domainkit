@@ -23,7 +23,13 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """The user, the certificate file, and a name."""
-        parser.add_argument("username", help="whom the certificate logs in as")
+        parser.add_argument(
+            "username",
+            help=(
+                "whom the certificate logs in as: a username, email address, "
+                "or mobile number"
+            ),
+        )
         parser.add_argument("certificate", type=Path, help="the certificate, in PEM")
         parser.add_argument("--name", default="certificate", help="what it is for")
 
@@ -41,7 +47,7 @@ class Command(BaseCommand):
     async def _add(self, username: str, digest: str, name: str) -> None:
         """Store the certificate as a token of its kind; record ``TokenCreated``."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key(username)
+            user = await uow.users.find_for_staff(username)
             if user is None:
                 raise CommandError(f"User {username!r} does not exist.")
             existing = await uow.tokens.find_digest(digest)

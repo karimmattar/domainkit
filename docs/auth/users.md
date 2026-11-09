@@ -126,11 +126,12 @@ are the methods you use most:
 | `uow.users.create_user(username, password=None, **fields)` | Hashes the password and adds the user. Without a password, the password is unusable. It does not run the validators: call `validate_password` first. |
 | `uow.users.create_superuser(username, password=None, **fields)` | The same, with `is_superuser`, and `is_staff` if the model has it. |
 | `uow.users.get(user_id)`, `get_by_natural_key(username)` | One user, by id or by username. |
+| `uow.users.find_for_staff(value)` | The user an operator names: by username, then by `find_by_identifier`. The commands use it. |
 | `uow.users.find_by_email(email)` | Every user with that address, in any case of its ASCII letters. |
 | `uow.users.set_password(user, password)` | Hashes and stores a new password; `None` makes it unusable. Refuses a password of the user's history (`PASSWORD_HISTORY`). |
 | `uow.users.password_hash(user_id)` | The stored hash, read from the table. |
 | `uow.users.remove(user)` | Deletes the user and every credential of theirs (below). |
-| `uow.users.page(limit=..., after=..., search=...)` | A page of users by username. |
+| `uow.users.page(limit=..., after=..., search=...)` | A page of users by username, after the username `after`. `search` matches part of the username, or of the email address or mobile number where `AUTH.IDENTIFIERS` names them, in any case. Users with no username sort last, where `after`, a username, cannot reach them: page those with the admin API (`GET /users`) and its cursors. |
 | `uow.groups.create(name)`, `get_by_name(name)`, `get_many_by_name(names)`, `rename(group, name)` | Groups. |
 | `uow.permissions.get(key)`, `get_many(keys)`, `all()`, `keys()` | Permissions, by key. |
 | `uow.tokens.issue(user_id, ttl=...)`, `revoke_user(user_id)` | Tokens; see [Authenticating requests](authentication.md). |

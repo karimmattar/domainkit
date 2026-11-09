@@ -9,6 +9,25 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- Users known by an email address or a mobile number alone (1.8's
+  `AUTH.IDENTIFIERS`, with no username) could not be found by staff:
+  - The admin API's `GET /admin/auth/users?search=` matched the username
+    alone, so it never found them. It now matches part of the username,
+    the email address, or the mobile number, those of `AUTH.IDENTIFIERS`,
+    in any case; a mobile number also in any form that normalizes to it
+    (`+20 100 123 4567`). An encrypted field matches only its whole
+    value, through its blind index. The users are listed by the first
+    field of `AUTH.IDENTIFIERS` (by username without the setting, as
+    before), and every page reaches them.
+  - `changepassword`, `createtoken`, `cleartokens --user`, `resetmfa`,
+    `addcertificate`, and `unbinddevices` took the username alone, and
+    answered `User '...' does not exist.` for them. They take the email
+    address or the mobile number too, where `AUTH.IDENTIFIERS` names
+    them; a username still names its user.
+  - `uow.users.page(search=...)` searches the same fields.
+
 ## [2.1.1] - 2026-11-09
 
 The release of 2.1.0 stopped before publishing: its tag was put on a later

@@ -535,7 +535,7 @@ server {
 `AUTH.CLIENT_CERT.MATCH` decides who a certificate logs in as:
 
 - **`"fingerprint"`**, the default: the user that
-  `addcertificate <username> <cert.pem>` registered it for, by its
+  `addcertificate <user> <cert.pem>` registered it for, by its
   SHA-256. `cleartokens --user` and `DELETE /auth/tokens/{id}` remove it,
   and so does whatever ends every token of the user (a new password, a
   reset, logging out everywhere). Register it again then.

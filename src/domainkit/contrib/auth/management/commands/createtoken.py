@@ -24,7 +24,10 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """The user, a name for the token, and its lifetime."""
-        parser.add_argument("username", help="whose token")
+        parser.add_argument(
+            "username",
+            help="whose token: a username, email address, or mobile number",
+        )
         parser.add_argument("--name", default="cli", help="what it is for (cli)")
         parser.add_argument(
             "--scope",
@@ -79,7 +82,7 @@ class Command(BaseCommand):
     ) -> str:
         """Issue the token; record ``TokenCreated``."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key(username)
+            user = await uow.users.find_for_staff(username)
             if user is None:
                 raise CommandError(f"User {username!r} does not exist.")
             if scopes is not None and (

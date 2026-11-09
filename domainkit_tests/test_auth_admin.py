@@ -285,6 +285,105 @@ def test_users_are_found_by_part_of_their_name(api: Api) -> None:
     assert found("zz") == set()
 
 
+def test_users_known_by_an_address_or_a_number_are_found_and_listed(
+    api: Api,
+) -> None:
+    """Since 1.8 a user may have no username (``AUTH.IDENTIFIERS``).
+
+    ``search`` matches the email address and the mobile number too, the
+    number however it is written; users are listed by the first
+    identifier, and every one is reached through the pages, those whose
+    value is missing included.
+    """
+    client = api(IDENTIFIERS=("email", "mobile_number"))
+    headers = staff("admin", "auth.view_user", email="admin@example.com")
+    create_user(None, email="nina.ali@example.com")
+    create_user(None, email="omar@example.org")
+    create_user(None, mobile_number="+201001234567")
+    create_user("zed", email="zed@example.com")
+    url = f"{ADMIN}/users"
+
+    def found(search: str) -> set[str]:
+        response = client.get(url, params={"search": search}, headers=headers)
+        return {user["username"] for user in response.json()["items"]}
+
+    def every(limit: int) -> list[str]:
+        names: list[str] = []
+        params: dict[str, Any] = {"limit": limit}
+        while True:
+            page = client.get(url, params=params, headers=headers).json()
+            names += [user["username"] for user in page["items"]]
+            if page["next_cursor"] is None:
+                return names
+            params["cursor"] = page["next_cursor"]
+
+    assert found("NINA") == {"nina.ali@example.com"}
+    assert found("example.org") == {"omar@example.org"}
+    assert found("1001234") == {"+201001234567"}
+    assert found("+20 100 123 4567") == {"+201001234567"}
+    assert found("zed") == {"zed"}
+    assert found("ghost") == set()
+    assert every(2) == [
+        "+201001234567",
+        "admin",
+        "nina.ali@example.com",
+        "omar@example.org",
+        "zed",
+    ]
+    api(IDENTIFIERS=("mobile_number", "email"))
+    by_number = every(2)
+    assert by_number[0] == "+201001234567"
+    assert sorted(by_number) == sorted(every(5))
+    assert len(set(by_number)) == 5
+
+
+def test_encrypted_identifiers_are_searched_by_whole_value_or_not_at_all(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blind index finds the whole value; no index, no search; never a 500.
+
+    The users are listed by the first identifier that is not encrypted, as
+    an encrypted column cannot be ordered, else by the username.
+    """
+    from sqlalchemy import Column, MetaData, String, Table
+
+    from domainkit.contrib.auth import admin, repositories
+    from domainkit.contrib.auth.repositories import user_search
+    from domainkit.db.encrypted import EncryptedType
+    from domainkit.ddd import F
+
+    def users(**kinds: Any) -> Table:  # noqa: ANN401 - column types.
+        names = ("username", "email", "mobile_number")
+        return Table(
+            "users",
+            MetaData(),
+            *(Column(name, kinds.get(name, String())) for name in names),
+        )
+
+    def use(table: Table) -> None:
+        monkeypatch.setattr(repositories, "get_user_table", lambda: table)
+        monkeypatch.setattr(admin, "get_user_table", lambda: table)
+
+    indexed = EncryptedType(subject="id", blind_index="email_index")
+    sealed = EncryptedType(subject="id")
+    api(IDENTIFIERS=("email", "mobile_number"))
+    use(users(email=indexed, mobile_number=sealed))
+    assert user_search(User, "Nina@x.org") == (
+        F("username").icontains("Nina@x.org") | (F("email") == "Nina@x.org")
+    )
+    assert admin._ordered_by(User) == "username"
+    use(users(email=indexed))
+    assert user_search(User, "+20 100 123 4567") == (
+        F("username").icontains("+20 100 123 4567")
+        | (F("email") == "+20 100 123 4567")
+        | F("mobile_number").icontains("+20 100 123 4567")
+        | (F("mobile_number") == "+201001234567")
+    )
+    assert admin._ordered_by(User) == "mobile_number"
+    use(users(username=sealed, email=sealed, mobile_number=sealed))
+    assert user_search(User, "nina") == F("id").in_(())
+
+
 def test_staff_create_users(api: Api) -> None:
     """A new user has the fields given, logs in, and is audited as the actor's."""
     client = api()

@@ -10,7 +10,8 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from functools import cache
+from functools import cache, reduce
+from operator import or_
 from typing import Any, Final
 from uuid import UUID
 
@@ -43,8 +44,9 @@ from sqlalchemy.sql.elements import ColumnElement
 from domainkit.conf import settings
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
+from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import F, Page, RowLock, SoftDeletable
-from domainkit.ddd.query import Selection
+from domainkit.ddd.query import Criteria, Selection
 from domainkit.log import SECURITY_LOGGER
 from domainkit.money import Money
 from domainkit.signing import derive_keys
@@ -173,6 +175,16 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             if user is not None:
                 return user
         return None
+
+    async def find_for_staff(self, value: str) -> AbstractBaseUser | None:
+        """The user an operator names: by username, then as ``find_by_identifier``.
+
+        A username finds its user, as the commands did before 1.8, even
+        where ``AUTH.IDENTIFIERS`` leaves it out; an email address or a
+        mobile number finds one where it identifies users.
+        """
+        user = await self.get_by_natural_key(value)
+        return user if user is not None else await self.find_by_identifier(value)
 
     async def _find_by(self, name: str, value: str) -> AbstractBaseUser | None:
         """The user whose field ``name`` is ``value``, exactly."""
@@ -433,9 +445,10 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         await history.record(user.id, hashed, temporary=temporary)
 
     def listing(self, search: str | None = None) -> Selection:
-        """Users by username; ``search`` keeps those whose name contains it."""
+        """Users by username; ``search`` keeps those it finds (``user_search``)."""
         name = F(self.model.USERNAME_FIELD)
-        return Selection(name.icontains(search) if search else None, ordering=[name])
+        found = user_search(self.model, search) if search else None
+        return Selection(found, ordering=[name])
 
     async def page(
         self, *, limit: int, after: str | None = None, search: str | None = None
@@ -1048,6 +1061,37 @@ class PrincipalStore:
             usable_password=usable,
         )
         return Snapshot(principal=principal, current=bool(rows[0][-1]))
+
+
+def searched_fields(model: type[AbstractBaseUser]) -> tuple[str, ...]:
+    """The fields staff find users by: the username, then ``AUTH.IDENTIFIERS``."""
+    return tuple(dict.fromkeys((model.USERNAME_FIELD, *identifier_fields(model))))
+
+
+def user_search(model: type[AbstractBaseUser], search: str) -> Criteria:
+    """Users whose username or identifiers contain ``search``, in any case.
+
+    Since 1.8 a user may have no username, and be known by an email
+    address or a mobile number alone (``AUTH.IDENTIFIERS``): each of
+    ``searched_fields`` is searched. A mobile number also matches however
+    ``search`` writes it (``+20 100 123 4567``). An encrypted field matches
+    only the whole value, through its blind index, and is skipped without
+    one: its ciphertext holds no part of the value.
+    """
+    columns = get_user_table().c
+    number = as_mobile_number(search)
+    found: list[Criteria] = []
+    for name in searched_fields(model):
+        kind = columns[name].type
+        if not isinstance(kind, EncryptedType):
+            found.append(F(name).icontains(search))
+        elif kind.blind_index is not None:
+            found.append(F(name) == search)
+        else:
+            continue
+        if name == MOBILE_NUMBER and number is not None:
+            found.append(F(name) == number)
+    return reduce(or_, found) if found else F("id").in_(())  # None searchable.
 
 
 def _sorted(granted: dict[int, GrantedPermission]) -> tuple[GrantedPermission, ...]:

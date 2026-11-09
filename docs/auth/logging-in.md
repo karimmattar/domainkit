@@ -382,7 +382,7 @@ What changes with the factor:
   `409 second_factor_unreadable`, audited and logged, wherever a code is
   checked. Recovery codes still work, and `resetmfa` turns the factor
   off.
-- **`resetmfa <username>`** turns it off for a user who lost the app and
+- **`resetmfa <user>`** (a username, an email address, or a mobile number) turns it off for a user who lost the app and
   the codes, and ends their sessions. Check who is asking first.
 
 The audit trail records `auth.mfa_enabled`, `auth.mfa_disabled`,
