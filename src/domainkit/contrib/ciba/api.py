@@ -54,6 +54,7 @@ from domainkit.contrib.auth.authentication import Credentials, Proof
 from domainkit.contrib.auth.captcha import captcha
 from domainkit.contrib.auth.integration import (
     CsrfOut,
+    LoginMethod,
     ReauthenticationRequired,
     StepUpOut,
     TokenOut,
@@ -99,7 +100,7 @@ from .services import (
     start_push,
     start_qr,
 )
-from .stores import STEP_UP, TRANSACTION, CibaUnitOfWork, SignInRequest
+from .stores import QR, STEP_UP, TRANSACTION, CibaUnitOfWork, SignInRequest
 
 __all__ = ["router"]
 
@@ -319,8 +320,10 @@ async def start_qr_sign_in(request: Request, response: Response) -> StartedOut:
     return _started(started)
 
 
-async def _approved_user(body: PollIn) -> AbstractBaseUser:
-    """The user whose phone approved the page's request, redeemed now.
+async def _approved_user(body: PollIn) -> tuple[AbstractBaseUser, str]:
+    """The user whose phone approved the page's request, redeemed now, and how.
+
+    How: ``LoginMethod.PUSH`` or ``QR``, the request's channel.
 
     Raises:
         PollRefused: Not approved (yet), or not this page's to redeem.
@@ -334,7 +337,8 @@ async def _approved_user(body: PollIn) -> AbstractBaseUser:
         )
     if user is None or not user.is_active:
         raise SignInUnknown()
-    return user
+    method = LoginMethod.QR if approved.channel == QR else LoginMethod.PUSH
+    return user, method
 
 
 @router.post(
@@ -352,10 +356,10 @@ async def redeem_sign_in(
     approval stands for its device's signature.
     """
     _no_store(response)
-    user = await _approved_user(body)
+    user, method = await _approved_user(body)
     mark_approved(request, user)
     await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True)
+    issued = await issue_login(user, factor_proven=True, method=method)
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -374,10 +378,10 @@ async def start_approved_session(
     """A browser session in cookies, once the phone approved (as ``/session``)."""
     _no_store(response)
     check_origin(request)
-    user = await _approved_user(body)
+    user, method = await _approved_user(body)
     mark_approved(request, user)
     await pass_login_gates(request, user)
-    return await start_browser_session(request, user, response)
+    return await start_browser_session(request, user, response, method=method)
 
 
 async def _device_id(request: Request, user: AbstractBaseUser) -> UUID:

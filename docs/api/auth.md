@@ -147,9 +147,12 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 
 - `LoginGate`: A check of a login: return to let it through, raise to refuse it.
 - `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
+- `LoginsCheck`: A check of a request that manages the user's other logins: raise to refuse.
 - `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
+- `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 
 ## `domainkit.contrib.auth.hashers`
@@ -475,6 +478,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
 - `REAUTH_AGE`: How recent a step-up must be to stand for the password (`reauthenticate`).
 - `CsrfOut`: The token to send back in `X-CSRF-Token` with unsafe methods.
+- `LoginMethod`: How a login signed in (ADR 0130): shown with it, to tell logins apart.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
@@ -498,6 +502,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.

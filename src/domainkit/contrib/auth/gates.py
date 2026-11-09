@@ -43,9 +43,12 @@ from .models import AbstractBaseUser
 __all__ = [
     "LoginGate",
     "LoginNotGated",
+    "LoginsCheck",
     "check_gates_passed",
+    "check_manage_logins",
     "gates_passed",
     "on_login_gate",
+    "on_manage_logins",
     "pass_login_gates",
 ]
 
@@ -56,6 +59,20 @@ on_login_gate: Final[HookPoint[LoginGate]] = HookPoint(
     "login gate", arguments=2, awaited=True
 )
 """Register a gate every login passes (``on_login_gate(gate)`` in ``ready()``)."""
+
+type LoginsCheck = Callable[[Request, AbstractBaseUser], Awaitable[None]]
+"""A check of a request that manages the user's other logins: raise to refuse."""
+
+on_manage_logins: Final[HookPoint[LoginsCheck]] = HookPoint(
+    "manage logins", arguments=2, awaited=True
+)
+"""Register a check of requests that manage logins (ADR 0130).
+
+It runs before ``GET /tokens``, before ``DELETE /tokens/{id}`` ends a token
+that is not the request's own login, and before ``/logout`` ends
+``everywhere`` or the ``others``. Logging out of the request's own login
+is never checked.
+"""
 
 _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)
 """The id of the user whose login passed the gates in this context."""
@@ -89,6 +106,16 @@ def gates_passed(user_id: UUID | object) -> Iterator[None]:
         yield
     finally:
         _passed.reset(token)
+
+
+async def check_manage_logins(request: Request, user: AbstractBaseUser) -> None:
+    """Run every check of ``on_manage_logins`` on ``request``.
+
+    Raises:
+        Exception: Whatever the first refusing check raises.
+    """
+    for hook in on_manage_logins:
+        await hook.call(request, user)
 
 
 def check_gates_passed(user: AbstractBaseUser) -> None:

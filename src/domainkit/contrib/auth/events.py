@@ -30,10 +30,12 @@ class UserLoggedIn(DomainEvent):
 
 
 class UserLoggedOut(DomainEvent):
-    """A user logged out: of this session, or ``everywhere``."""
+    """A user logged out: of this session, ``everywhere``, or of the ``others``."""
 
     user_id: UUID
     everywhere: bool
+    others: bool = False
+    """Every other login ended, and the one that asked stayed (ADR 0130)."""
 
 
 class UserImpersonated(DomainEvent):

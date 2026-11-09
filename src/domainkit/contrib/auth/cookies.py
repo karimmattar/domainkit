@@ -45,6 +45,7 @@ HTTPS, so a sibling subdomain cannot plant a session or a CSRF token
 import secrets
 from typing import Final
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from fastapi import APIRouter, Request, Response, status
 from pydantic import BaseModel, Field
@@ -63,6 +64,7 @@ from .api import (
     _credentials,
     _errors,
     _no_store,
+    _origin,
     audited_changes,
     check_password,
     held_login,
@@ -86,6 +88,7 @@ from .principals import forget
 from .settings import auth_settings
 from .tokens import (
     LAST_USED_EVERY,
+    LoginMethod,
     TokenKind,
     last_used_every,
     token_digest,
@@ -286,7 +289,11 @@ async def log_in(
         response.status_code = status.HTTP_202_ACCEPTED
         return pending  # The device proof waits for the second factor.
     started = await start_session(
-        user, response, previous=_session_of(request), factor_proven=False
+        user,
+        response,
+        previous=_session_of(request),
+        factor_proven=False,
+        method=LoginMethod.PASSWORD,
     )
     await hand_out(request, response, user)
     return started
@@ -312,7 +319,9 @@ async def log_in_with_code(
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
     )
     await pass_login_gates(request, user)
-    started = await start_session(user, response, previous=_session_of(request))
+    started = await start_session(
+        user, response, previous=_session_of(request), method=LoginMethod.PASSWORD
+    )
     await hand_out(request, response, user)
     return started
 
@@ -370,6 +379,8 @@ async def start_session(
     *,
     previous: str | None = None,
     factor_proven: bool = True,
+    method: str | None = None,
+    device_id: UUID | None = None,
 ) -> CsrfOut:
     """Record the login, store a session token, and set both cookies.
 
@@ -380,7 +391,7 @@ async def start_session(
     """
     configured = auth_settings()
     config = configured.COOKIE
-    with _acting_as(user):
+    with _acting_as(user), _origin(method, device_id):
         async with audited_changes(), AuthUnitOfWork() as uow:
             stored = await held_login(uow, user, factor_proven=factor_proven)
             if previous is not None and config.END_PREVIOUS_SESSION:
@@ -409,7 +420,12 @@ async def start_session(
 
 
 async def start_browser_session(
-    request: Request, user: AbstractBaseUser, response: Response
+    request: Request,
+    user: AbstractBaseUser,
+    response: Response,
+    *,
+    method: str | None = None,
+    device_id: UUID | None = None,
 ) -> CsrfOut:
     """A browser session for ``user``, whose login was checked another way.
 
@@ -417,8 +433,16 @@ async def start_browser_session(
     the phone): the session the request's cookie held ends, as at
     ``/session``. Check the request's origin first (``check_origin``),
     before anything is spent, and run the login gates or pass them.
+    ``method`` (a ``LoginMethod``) and ``device_id`` say how it signed in
+    (ADR 0130).
     """
-    return await start_session(user, response, previous=_session_of(request))
+    return await start_session(
+        user,
+        response,
+        previous=_session_of(request),
+        method=method,
+        device_id=device_id,
+    )
 
 
 def _session_of(request: Request) -> str | None:

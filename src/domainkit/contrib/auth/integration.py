@@ -14,7 +14,7 @@ from .api import PASSWORD_MAX_LENGTH, MfaChallengeOut, TokenOut, issue_login
 from .codes import target_of
 from .cookies import CsrfOut, check_origin, start_browser_session
 from .events import SteppedUp, UserDeleted, UserLoggedOut, UserSignedUp
-from .gates import gates_passed, on_login_gate, pass_login_gates
+from .gates import gates_passed, on_login_gate, on_manage_logins, pass_login_gates
 from .mfa import (
     challenge,
     first_use_after_code,
@@ -35,12 +35,13 @@ from .stepup import (
     stepping_credentials,
 )
 from .throttling import account_key, address_key, attempt, audit_refusal
-from .tokens import utc_now
+from .tokens import LoginMethod, utc_now
 
 __all__ = [
     "PASSWORD_MAX_LENGTH",
     "REAUTH_AGE",
     "CsrfOut",
+    "LoginMethod",
     "MfaChallengeOut",
     "ReauthenticationRequired",
     "StepUpOut",
@@ -64,6 +65,7 @@ __all__ = [
     "issue_login",
     "needs_second_factor",
     "on_login_gate",
+    "on_manage_logins",
     "pass_login_gates",
     "proof_of",
     "reauthenticate",

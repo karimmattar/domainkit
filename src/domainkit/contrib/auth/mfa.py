@@ -80,6 +80,7 @@ from .throttling import (
     audit_refusal,
     count_failure,
 )
+from .tokens import LoginMethod
 from .uow import AuthUnitOfWork
 
 __all__ = [
@@ -574,7 +575,7 @@ async def mfa_login(body: MfaLoginIn, request: Request, response: Response) -> T
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
     )
     await pass_login_gates(request, user)
-    issued = await issue_login(user)
+    issued = await issue_login(user, method=LoginMethod.PASSWORD)
     await hand_out(request, response, user)
     return _token_out(issued)
 

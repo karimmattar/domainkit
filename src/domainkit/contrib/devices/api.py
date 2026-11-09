@@ -51,6 +51,7 @@ from domainkit.contrib.auth.authentication import Credentials, Proof
 from domainkit.contrib.auth.captcha import captcha
 from domainkit.contrib.auth.integration import (
     PASSWORD_MAX_LENGTH,
+    LoginMethod,
     StepUpOut,
     TokenOut,
     address_key,
@@ -269,7 +270,7 @@ async def finish_login(
     response.headers["Cache-Control"] = "no-store"
     user = await authenticate(body.credential.assertion(), LOGIN)
     await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True)
+    issued = await issue_login(user, factor_proven=True, method=LoginMethod.PASSKEY)
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -346,7 +347,13 @@ async def device_login(request: Request, response: Response) -> TokenOut:
         raise DeviceSignatureRefused()
     await counted.succeeded()
     await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True)
+    signer = await signing_device(request, user)  # ``_signer`` checked it.
+    issued = await issue_login(
+        user,
+        factor_proven=True,
+        method=LoginMethod.DEVICE,
+        device_id=None if signer is None else signer.id,
+    )
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -452,7 +459,9 @@ async def enroll_device(
         public_key=key,
     )
     await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True)
+    issued = await issue_login(
+        user, factor_proven=True, method=LoginMethod.DEVICE, device_id=device.id
+    )
     return EnrolledOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,

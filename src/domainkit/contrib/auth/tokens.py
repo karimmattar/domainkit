@@ -13,6 +13,10 @@ together if a used token comes back.
 import hashlib
 import re
 import secrets
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Final
@@ -30,6 +34,8 @@ LOGIN_NAME: Final = "login"
 """The name of the tokens logging in issues."""
 IDLE_PRECISION: Final = 10
 """Last uses are written this many times per ``AUTH.IDLE_TIMEOUT``."""
+AGENT_MAX_LENGTH: Final = 200
+"""A login keeps this much of its ``User-Agent`` at most."""
 
 
 class TokenKind(StrEnum):
@@ -46,6 +52,51 @@ class TokenKind(StrEnum):
     DEVICE = "device"
     """A client that logged in, by the SHA-256 of its device proof's id
     (``auth.devices``): it never authenticates a request."""
+
+
+class LoginMethod(StrEnum):
+    """How a login signed in (ADR 0130): shown with it, to tell logins apart."""
+
+    PASSWORD = "password"  # noqa: S105 - a method's name, not a secret.
+    """A password, and the second factor where the user has one."""
+    PASSKEY = "passkey"
+    """A passkey (WebAuthn)."""
+    DEVICE = "device"
+    """A bound device's signature: the phone's own login, or its enrollment."""
+    PUSH = "push"
+    """Approved on the user's phone, after a push."""
+    QR = "qr"
+    """Approved on the user's phone, which scanned the page's QR code."""
+    PROVIDER = "provider"
+    """An identity provider (OpenID Connect, OAuth 2, SAML, LDAP)."""
+    IMPERSONATION = "impersonation"
+    """Staff acting as the user."""
+
+
+@dataclass(frozen=True, slots=True)
+class LoginOrigin:
+    """How a login being issued signed in, and the device that made it."""
+
+    method: str
+    device_id: UUID | None = None
+
+
+_origin: ContextVar[LoginOrigin | None] = ContextVar("login_origin", default=None)
+
+
+@contextmanager
+def logging_in(method: str, device_id: UUID | None = None) -> Iterator[None]:
+    """Record the logins issued inside as made by ``method`` (and ``device_id``)."""
+    reset = _origin.set(LoginOrigin(method, device_id))
+    try:
+        yield
+    finally:
+        _origin.reset(reset)
+
+
+def login_origin() -> LoginOrigin | None:
+    """How the login being issued signed in, if its issuer said (``logging_in``)."""
+    return _origin.get()
 
 
 class AuthToken(Entity[str]):
@@ -66,6 +117,15 @@ class AuthToken(Entity[str]):
     """The permission keys it is limited to; None: all of its user's."""
     last_used_at: datetime | None = None
     """When it last authenticated a request, to ``LAST_USED_EVERY``."""
+    method: str | None = None
+    """How its login signed in (``LoginMethod``); None for other tokens, and
+    logins made before 2.2."""
+    agent: str | None = None
+    """The ``User-Agent`` its login was made from, cut to ``AGENT_MAX_LENGTH``."""
+    ip: str | None = None
+    """The address its login was made from (``TRUSTED_PROXIES`` resolves it)."""
+    device_id: UUID | None = None
+    """The bound device that made its login: the phone's own."""
 
     class Meta:
         """Its content type's name."""
