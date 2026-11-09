@@ -9,6 +9,12 @@ and a status.
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-11-09
+
+A fix for projects whose users log in by email address or mobile number
+(`AUTH.IDENTIFIERS`): staff can find those users again, in the admin API
+and from the command line. Without `AUTH.IDENTIFIERS`, nothing changes.
+
 ### Fixed
 
 - Users known by an email address or a mobile number alone (1.8's
@@ -6341,7 +6347,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.1.2...HEAD
+[2.1.2]: https://github.com/karimmattar/domainkit/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/karimmattar/domainkit/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/karimmattar/domainkit/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/karimmattar/domainkit/compare/v1.8.0...v2.0.0
