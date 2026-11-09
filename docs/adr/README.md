@@ -141,6 +141,7 @@ statuses, and the amendments they name.
 | [0128](0128-approve-sign-ins-from-the-users-mobile-app.md) | Approve sign-ins from the user's mobile app | Accepted |
 | [0129](0129-complete-the-phone-as-identity.md) | Complete the phone as identity | Accepted |
 | [0130](0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md) | Show where each login came from, and manage logins from the phone | Accepted |
+| [0131](0131-choose-what-a-password-change-does-to-the-devices-logins.md) | Choose what a password change does to the devices' logins | Accepted |
 
 ### Decisions still without a record
 
