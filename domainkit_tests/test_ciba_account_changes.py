@@ -235,3 +235,40 @@ def test_check_warns_of_a_phone_a_password_change_signs_out(app: App) -> None:
         for chosen in ("keep", "ask"):
             with override_settings(AUTH={"CREDENTIAL_CHANGE_DEVICE_LOGINS": chosen}):
                 assert warnings() == []
+
+
+def test_an_app_outside_a_unit_of_work_marks_and_ends_a_devices_logins(
+    app: App,
+) -> None:
+    """``attach_login_device`` and ``end_device_logins`` without ``uow=``: their own."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from sqlalchemy import select
+    from starlette.requests import Request
+
+    from domainkit.contrib.auth.authentication import Credentials
+    from domainkit.contrib.auth.integration import (
+        attach_login_device,
+        end_device_logins,
+    )
+
+    phone = Phone(app(PHONE))
+    device = uuid4()
+
+    async def mark() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(update(tokens).values(device_id=None))
+            login = await connection.scalar(
+                select(tokens.c.id).where(tokens.c.method == "password")
+            )
+        user: Any = SimpleNamespace(id=phone.user_id)
+        credentials = Credentials(user=user, scheme="token", token_id=login)
+        await attach_login_device(
+            Request({"type": "http", "auth": credentials}), device
+        )
+
+    run_async(mark())
+    assert logins() == [("password", device)]
+    assert run_async(end_device_logins(phone.user_id, device)) == 1
+    assert phone.client.get("/auth/me", headers=phone.headers).status_code == 401
