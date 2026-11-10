@@ -143,6 +143,7 @@ statuses, and the amendments they name.
 | [0130](0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md) | Show where each login came from, and manage logins from the phone | Accepted |
 | [0131](0131-choose-what-a-password-change-does-to-the-devices-logins.md) | Choose what a password change does to the devices' logins | Accepted |
 | [0132](0132-manage-the-second-factors-from-the-phone.md) | Manage the second factors from the phone | Accepted |
+| [0133](0133-a-signup-takes-an-address-its-holder-never-proved.md) | A signup takes an address its holder never proved | Accepted |
 
 ### Decisions still without a record
 

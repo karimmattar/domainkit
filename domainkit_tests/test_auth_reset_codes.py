@@ -134,7 +134,9 @@ def test_a_mailed_code_sets_a_new_password(identity: Api) -> None:
 
     assert reset(client, "ann@example.com", other(code)) == WRONG
     assert reset(client, "ann@example.com", code, "short") == (422, "invalid_password")
+    assert user_of(ann).email_verified is False
     assert reset(client, "ANN@example.com", code) == (204, None)
+    assert user_of(ann).email_verified is True  # The code reached it (ADR 0133).
     assert reset(client, "ann@example.com", code) == WRONG
     assert logs_in(client, "ann@example.com", NEW_PASSWORD)
     assert not logs_in(client, "ann@example.com", PASSWORD)
@@ -181,7 +183,7 @@ def test_a_reset_needs_a_value(identity: Api) -> None:
 def test_a_texted_code_sets_a_new_password(texting: App) -> None:
     """A number gets a text message; it may be written any way."""
     client = texting(**CODES)
-    create_user(None, mobile_number=NUMBER, email="erin@example.com")
+    erin = create_user(None, mobile_number=NUMBER, email="erin@example.com")
 
     ask_reset(client, identifier="+33 6 12 34 56 78")
     drain()
@@ -193,17 +195,20 @@ def test_a_texted_code_sets_a_new_password(texting: App) -> None:
 
     assert reset(client, "+33 (6) 12-34-56-78", code) == (204, None)
     assert logs_in(client, NUMBER, NEW_PASSWORD)
+    proved = user_of(erin)
+    assert (proved.mobile_number_verified, proved.email_verified) == (True, False)
 
 
 def test_a_username_gets_its_code_by_mail(identity: Api) -> None:
     """An identifier that is neither an address nor a number: the address."""
-    create_user("frank", email="frank@example.com")
+    frank = create_user("frank", email="frank@example.com")
     client = identity(IDENTIFIERS=("username", "email"))
 
     ask_reset(client, identifier="frank")
     run_worker()
     code = code_in(mail.outbox[0].body)
     assert reset(client, "frank", code) == (204, None)
+    assert user_of(frank).email_verified is False  # It may have changed since.
 
 
 def test_a_username_without_an_address_gets_nothing(identity: Api) -> None:
@@ -309,3 +314,13 @@ def test_texted_codes_need_notifications(identity: Api) -> None:
         f"Routes of domainkit.contrib.auth.signup {texts}",
     ]
     assert mailed == []
+
+
+def user_of(user_id: UUID) -> User:
+    """The user ``user_id``, as stored."""
+
+    async def read() -> User:
+        async with AuthUnitOfWork() as uow:
+            return cast(User, await uow.users.get(UserId(user_id)))
+
+    return run_async(read())

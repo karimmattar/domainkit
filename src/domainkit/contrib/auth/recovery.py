@@ -58,6 +58,7 @@ from .models import (
     AbstractUser,
     UserId,
     as_mobile_number,
+    same_email,
     validate_email,
 )
 from .onetime import email_of
@@ -214,12 +215,32 @@ async def confirm_password_reset_code(
             validate_password(body.new_password, user)  # Raises: nothing is spent.
             await uow.users.set_password(user, body.new_password)
             await uow.tokens.revoke_user(user.id, keep_devices=keep_devices)
+            _prove_reached(user, body.identifier)
             user.record(PasswordReset(user_id=user.id))
         await uow.commit()  # A wrong try stays counted.
     if user is None:
         await _count_failed_check(request, "password-reset")
         await audit_refusal("auth.password_reset", "invalid_verification_code")
         raise InvalidCode
+
+
+def _prove_reached(user: AbstractBaseUser, identifier: str) -> None:
+    """Mark proved the address or the number a reset code reached.
+
+    The code went to the user's number when ``identifier`` is it, and to
+    their address when ``identifier`` is it: whoever used it reads there
+    (ADR 0133). A code asked for by username went to an address that may
+    have changed since: nothing is marked.
+    """
+    number = as_mobile_number(identifier)
+    if number is not None and getattr(user, "mobile_number", None) == number:
+        verify = getattr(user, "verify_mobile_number", None)
+    elif "@" in identifier and same_email(email_of(user) or "", identifier):
+        verify = getattr(user, "verify_email", None)
+    else:
+        return
+    if verify is not None:
+        verify()
 
 
 async def _proven_user(

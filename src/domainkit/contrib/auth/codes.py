@@ -161,6 +161,19 @@ class CodeStore:
         await self.session.execute(delete(auth_codes).where(auth_codes.c.id == row.id))
         return Proven(user_id=row.user_id, signup_id=row.signup_id)
 
+    async def forget(self, user_id: UUID, targets: list[str]) -> int:
+        """Delete ``user_id``'s codes sent to ``targets``; return how many.
+
+        An address or a number the user gave up (ADR 0133): a code mailed or
+        texted to it before must not reach their account any more.
+        """
+        result = await self.session.execute(
+            delete(auth_codes).where(
+                auth_codes.c.user_id == user_id, auth_codes.c.target.in_(targets)
+            )
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
     async def clear_expired(self, now: datetime | None = None) -> int:
         """Delete the codes that no longer work; return how many."""
         result = await self.session.execute(

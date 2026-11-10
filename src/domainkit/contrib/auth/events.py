@@ -119,6 +119,18 @@ class MobileNumberVerified(DomainEvent):
     user_id: UUID
 
 
+class EmailReleased(DomainEvent):
+    """The user lost an address they never proved: a signup proved it (ADR 0133)."""
+
+    user_id: UUID
+
+
+class MobileNumberReleased(DomainEvent):
+    """The user lost a number they never proved: a signup proved it (ADR 0133)."""
+
+    user_id: UUID
+
+
 class UserSignedUp(DomainEvent):
     """Someone created their own account (``AUTH.SIGNUP_ENABLED``)."""
 

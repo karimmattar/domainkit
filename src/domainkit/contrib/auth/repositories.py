@@ -242,6 +242,14 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             self._track(user)
         return user
 
+    async def find_by_mobile_number(self, number: str) -> AbstractBaseUser | None:
+        """The user whose mobile number is ``number`` (in international form)."""
+        column = get_user_table().c[MOBILE_NUMBER]
+        user = await self.session.scalar(select(self.model).where(column == number))
+        if user is not None:
+            self._track(user)
+        return user
+
     async def mobile_number_taken(self, number: str) -> bool:
         """Whether a user has ``number`` (a model with a ``mobile_number``)."""
         column = get_user_table().c[MOBILE_NUMBER]

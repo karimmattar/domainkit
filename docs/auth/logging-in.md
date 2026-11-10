@@ -705,7 +705,25 @@ Why the password comes last:
   address, so one that is never confirmed blocks no one. Several may name
   the same username: each address gets its code, the first code used
   gets the name, and the others answer `409 signup_taken`. A code for an
-  address that got an account meanwhile answers `409` too, and is spent.
+  address that an account proved meanwhile answers `409` too, and is spent.
+- **An address held unproved belongs to whoever proves it** (since 2.2.1,
+  [ADR 0133](../adr/0133-a-signup-takes-an-address-its-holder-never-proved.md)).
+  An account may hold an address it never proved: staff or the project's
+  code made it, or its user changed to the address and never confirmed.
+  That does not stop a signup: the code goes out, and the signup that
+  uses it takes the address, verified. The holder loses it
+  (`auth.email_released` in the audit trail), and its codes sent there
+  stop working. A number held unproved moves the same way
+  (`auth.mobile_number_released`).
+  - The code's mail warns the reader (`auth/signup_code_held`): an
+    account that is theirs keeps the address if they log in or reset
+    their password instead. A reset whose code was sent to the address
+    or the number proves it.
+  - A holder left with nothing it logs in by (`AUTH.IDENTIFIERS`) is
+    ended as an erased account is: deactivated, its password unusable,
+    its tokens and second factor deleted. Its data stays, for staff.
+  - An address or a number an account proved, and a username, still
+    stop a signup, as before.
 
 Pending signups keep the username and the address or number, and no
 password, in `domainkit_pending_signups`. That table is never in
@@ -723,13 +741,14 @@ address. New accounts are audited as `auth.user_signed_up`; refusals as
 
 The worker renders the mail from the templates
 `auth/password_reset_code`, `auth/email_verification_code`,
-`auth/signup_code`, and `auth/signup_exists` (plain text). Replace them
-from `MAIL.TEMPLATE_DIRS`.
+`auth/signup_code`, `auth/signup_code_held`, and `auth/signup_exists`
+(plain text). Replace them from `MAIL.TEMPLATE_DIRS`.
 
 | Template | Its variables |
 | --- | --- |
 | `auth/password_reset_code`, `auth/email_verification_code` | `user`, `username`, `code`, and `valid_for` (`10 minutes`). |
 | `auth/signup_code` | `code` and `valid_for` only: the username was chosen by whoever asked, who may not be the address's owner. |
+| `auth/signup_code_held` | The same, sent instead when an account holds the address unproved: it says what using the code does to that account. |
 | `auth/signup_exists` | `email` only. |
 
 `check` reports these routes mounted without messaging and mail
