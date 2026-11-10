@@ -182,6 +182,7 @@ below is one pushed commit with tests, as the core's were.
 | S3 | Security | The review's leftovers | Pruning the audit trail, and the startup checks, visit each tenant's schema, as sealing and verifying do since 1.7 (A6-4); the project template pins its base image by digest. | Done |
 | R1 | Removal | Links, in 2.0 | Links for email verification, password resets, and signups, deprecated in 1.8, are removed; codes are the only way ([upgrading.md](upgrading.md#18-to-20)). | Done for 2.0 |
 | C1 | Identity | The phone as identity, in 2.1 | Web sign-ins, step-ups and payments approved from the user's mobile app, by push or QR code, with device enrollment and a strict mode where every login is signed or approved by a bound device; OpenID Connect CIBA for other clients ([Sign-in approvals](auth/ciba.md), ADRs 0128 and 0129). | Done for 2.1 |
+| C2 | Identity | Logins managed from the phone, in 2.2 | Each login records how it signed in, its browser and address; the phone lists the web sessions and ends one, all but itself, or all. In the phone modes, only the phone manages logins, devices and second factors, and a project chooses what a credential change does to the phone's login ([Sessions](auth/logging-in.md#sessions), ADRs 0130 to 0132). | Done for 2.2 |
 
 What code alone cannot give, and needs others:
 
