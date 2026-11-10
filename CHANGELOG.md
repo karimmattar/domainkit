@@ -9,6 +9,18 @@ and a status.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-10
+
+2.2 lets the user's phone see and end their web sessions, and keeps a
+stolen web session from turning against the phone. Each login now records
+how it signed in, and from which browser and address. In the phone modes,
+only the phone lists and ends logins, unbinds devices, and manages the
+second factors. A project chooses whether a password change, a reset, or
+turning the second factor on signs the phone out too
+(`AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`; ADRs 0130 to 0132). Make and apply
+the tokens' migration; see [upgrading.md](docs/upgrading.md#21-to-22) for
+what changes in the phone modes.
+
 ### Added
 
 - Each login records where it came from: how it signed in (`method`:
@@ -6393,7 +6405,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.1.2...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/karimmattar/domainkit/compare/v2.1.2...v2.2.0
 [2.1.2]: https://github.com/karimmattar/domainkit/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/karimmattar/domainkit/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/karimmattar/domainkit/compare/v2.0.0...v2.1.0
