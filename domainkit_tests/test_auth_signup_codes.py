@@ -1,6 +1,7 @@
 """Signing up by code, with an email address or a mobile number (ADR 0126)."""
 
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -9,7 +10,8 @@ from fastapi.testclient import TestClient
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, User
 from domainkit.contrib.auth.codes import EMAIL_VERIFICATION, target_of
-from domainkit.contrib.auth.models import UserId
+from domainkit.contrib.auth.models import PasswordHash, UserId
+from domainkit.contrib.auth.recovery import _prove_reached
 from domainkit.contrib.auth.signup import send_signup_code
 from domainkit.contrib.notifications.backends import sms_outbox
 from domainkit.management.base import run_async
@@ -263,6 +265,50 @@ def test_a_number_held_unproved_moves_too(texting: App) -> None:
         "kai@example.com",
     )
     assert len(audited("auth.mobile_number_released")) == 1
+    assert run_async(_number_taken(NUMBER)) is True
+
+
+def test_one_holder_of_both_loses_both(texting: App) -> None:
+    """The address and the number, held by one account unproved, both move."""
+    client = texting(**BY_TEXT)
+    holder = create_user(None, email="max@example.com", mobile_number=NUMBER)
+
+    ask(client, email="max@example.com", mobile_number=NUMBER)
+    drain()
+    (message,) = mail.outbox
+    assert finish(client, "max@example.com", code_in(message.body)) == (204, None)
+
+    ended = _user(holder)
+    assert (ended.email, ended.mobile_number, ended.is_active) == ("", None, False)
+    made = stored("max@example.com")
+    assert (made.email_verified, made.mobile_number) == (True, NUMBER)
+
+
+def test_what_a_user_proved_is_never_released() -> None:
+    """``release_email`` and ``release_mobile_number`` leave proof alone."""
+    user = User.create(
+        password=PasswordHash.unusable(),
+        email="nell@example.com",
+        mobile_number=NUMBER,
+    )
+    user.verify_email()
+    user.verify_mobile_number()
+    user.release_email()
+    user.release_mobile_number()
+    assert (user.email, user.mobile_number) == ("nell@example.com", NUMBER)
+
+
+def test_a_reset_proves_nothing_on_a_model_that_keeps_no_proof() -> None:
+    """A user model with no ``verify_*`` methods: a reset marks nothing."""
+    plain = SimpleNamespace(mobile_number=NUMBER, email="")
+    _prove_reached(plain, NUMBER)  # type: ignore[arg-type]
+    assert vars(plain) == {"mobile_number": NUMBER, "email": ""}
+
+
+async def _number_taken(number: str) -> bool:
+    """Whether a user has ``number``."""
+    async with AuthUnitOfWork() as uow:
+        return await uow.users.mobile_number_taken(number)
 
 
 def test_a_holder_that_proves_it_first_keeps_it(identity: Api) -> None:

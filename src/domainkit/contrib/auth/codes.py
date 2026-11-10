@@ -167,8 +167,6 @@ class CodeStore:
         An address or a number the user gave up (ADR 0133): a code mailed or
         texted to it before must not reach their account any more.
         """
-        if not targets:
-            return 0
         result = await self.session.execute(
             delete(auth_codes).where(
                 auth_codes.c.user_id == user_id, auth_codes.c.target.in_(targets)
