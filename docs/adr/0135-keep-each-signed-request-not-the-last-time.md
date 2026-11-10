@@ -73,6 +73,17 @@ window are deleted then. With messaging installed, an hourly task
 (`domainkit.devices.purge_signatures`) deletes those of devices that
 stopped. Unbinding a device, and deleting a user, delete theirs.
 
+### Measured
+
+One device, 400 signed requests sent from 8 threads, on PostgreSQL 16,
+and the statements each request of a single thread runs for the check:
+
+| | Refused (`401`) | Statements | Requests a second |
+| --- | --- | --- | --- |
+| Before: later than the last | 92 of 400 | `SELECT`, `UPDATE` | 229 |
+| `"database"` | 0 | `SELECT`, `INSERT` | 216 |
+| `"cache"` (memory) | 0 | `SELECT` | 302 |
+
 ## Consequences
 
 - **Apps may send signed requests together.** Each still needs its own
