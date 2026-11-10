@@ -9,6 +9,16 @@ and a status.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-10
+
+A fix for signups: an address or a mobile number that another account
+holds, but never proved, no longer stops its owner from signing up with
+it. The signup that proves it takes it, and the account that held it
+loses it (ADR 0133). Usernames, and addresses and numbers an account
+proved, still stop a signup. Nothing to migrate; a project that overrides
+the `auth/signup_code` mail template may override the new
+`auth/signup_code_held` too.
+
 ### Fixed
 
 - A signup with an address or a mobile number that another account holds
@@ -6425,7 +6435,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/karimmattar/domainkit/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/karimmattar/domainkit/compare/v2.1.2...v2.2.0
 [2.1.2]: https://github.com/karimmattar/domainkit/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/karimmattar/domainkit/compare/v2.1.0...v2.1.1
