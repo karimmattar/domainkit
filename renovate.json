@@ -4,6 +4,7 @@
   "schedule": ["before 9am on monday"],
   "minimumReleaseAge": "14 days",
   "internalChecksFilter": "strict",
+  "rebaseWhen": "conflicted",
   "labels": ["dependencies"],
   "lockFileMaintenance": {
     "enabled": true,
