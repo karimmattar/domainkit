@@ -36,6 +36,24 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.2 to 2.3
+
+### Make and apply the devices' migration
+
+Signed requests are kept in a new table, `domainkit_device_signatures`
+([ADR 0135](adr/0135-keep-each-signed-request-not-the-last-time.md)). Run
+`python manage.py makemigrations`, review the revision, then `migrate`,
+before the new code serves requests: a signed request is refused with an
+error until the table exists.
+
+### Signed requests pass in any order
+
+A device's request no longer has to be later than its last one. An app
+that worked around it, by sending its requests one at a time, may send
+them together. `DeviceStore.advance` is gone: call `use` and `touch` if
+your own code called it. A device's `last_used_at` is now written at most
+once a minute.
+
 ## 2.1 to 2.2
 
 2.2 shows where each login came from, lets the phone manage the user's

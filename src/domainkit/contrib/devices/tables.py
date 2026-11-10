@@ -7,6 +7,7 @@ from sqlalchemy import (
     Index,
     Integer,
     LargeBinary,
+    PrimaryKeyConstraint,
     String,
     Table,
     Uuid,
@@ -14,7 +15,7 @@ from sqlalchemy import (
 
 from domainkit.db import UTCDateTime, metadata
 
-__all__ = ["challenges", "devices", "passkeys", "push_tokens"]
+__all__ = ["challenges", "devices", "passkeys", "push_tokens", "signatures"]
 
 passkeys = Table(
     "domainkit_passkeys",
@@ -57,13 +58,28 @@ devices = Table(
     Column("name", String(100), nullable=False),
     Column("algorithm", Integer, nullable=False),
     Column("public_key", LargeBinary(2048), nullable=False),
-    # The time of the last signed request, in milliseconds: each is later.
+    # The latest time a request of the device was signed at, in milliseconds,
+    # as last noted (``DeviceStore.touch``). Before 2.3, each had to be later.
     Column("last_time", BigInteger, nullable=False),
     Column("created_at", UTCDateTime, nullable=False),
     Column("last_used_at", UTCDateTime, nullable=True),
     info={"domain": "devices"},
 )
 """Each user's bound devices: a key the device holds, which signs requests."""
+
+signatures = Table(
+    "domainkit_device_signatures",
+    metadata,
+    Column("device_id", Uuid, nullable=False),
+    # The signed message's SHA-256: its time, method, target, and body.
+    Column("digest", String(64), nullable=False),
+    # The time it was signed at, in milliseconds: kept while it could be sent again.
+    Column("time", BigInteger, nullable=False),
+    PrimaryKeyConstraint("device_id", "digest", name="pk_domainkit_device_signatures"),
+    Index("ix_domainkit_device_signatures_time", "time"),
+    info={"domain": "devices", "fixtures": False},
+)
+"""Each signed request a device sent, while its time is within the window: once."""
 
 push_tokens = Table(
     "domainkit_push_tokens",
