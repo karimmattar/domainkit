@@ -82,13 +82,15 @@ class Phone:
         self.headers = bearer(answer.json()["access_token"])
         self.device = Device()
         self.last_moment = 0
-        assert bind(client, self.headers, self.device).status_code == 201
+        # Before the key is bound: once it is, the phone modes ask that the
+        # device sign this (ADR 0134).
         registered = client.post(
             "/auth/devices/push-tokens",
             json={"token": f"token-of-{username}", "platform": "fcm"},
             headers=self.headers,
         )
         assert registered.status_code == 201, registered.json()
+        assert bind(client, self.headers, self.device).status_code == 201
 
     def send(
         self, method: str, path: str, payload: dict[str, Any] | None = None

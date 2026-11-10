@@ -193,6 +193,10 @@ Rules of `POST /tokens`:
 - **A user holds at most `AUTH.MAX_LIVE_TOKENS`** live tokens (100); past
   it, `409 too_many_tokens`.
 
+In the [phone modes](ciba.md#managing-logins-from-the-phone), a user
+with a bound device makes a personal token only by a request the device
+signs (`403 phone_required` otherwise, since 2.2.2).
+
 A personal token is not a login. `IDLE_TIMEOUT` and `MAX_LOGINS` do not
 end it, and neither does logging out of the session that made it
 (`DELETE /session`, `/logout` without `everywhere`). A password change

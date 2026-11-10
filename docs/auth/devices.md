@@ -185,7 +185,7 @@ and `reauthenticate(request, user, password, action)`.
 
 | Endpoint | Who | Answer |
 | --- | --- | --- |
-| `POST /devices` | a user, authenticated again | `{"name", "public_key", "password"}`: `201` with the device's `id`. |
+| `POST /devices` | a user, authenticated again; in the [phone modes](ciba.md#managing-logins-from-the-phone), signed by one of their devices once they have one | `{"name", "public_key", "password"}`: `201` with the device's `id`. `403 phone_required` unsigned in the phone modes. |
 | `GET /devices` | a user | The user's devices: `id`, `name`, `created_at`, `last_used_at`. |
 | `DELETE /devices/{id}` | a user; in the [phone modes](ciba.md#managing-logins-from-the-phone), signed by one of their devices | `204`: its signatures hold no more, and its logins end. `404 device_not_found` for another's; `403 phone_required` unsigned in the phone modes. |
 | `POST /devices/step-up` | a user, signed by their device | A step-up, `amr` `["hwk"]`. |
@@ -259,6 +259,25 @@ tell its own login from the web's ([Where each login came
 from](logging-in.md#where-each-login-came-from)), and a password change
 can keep it ([Credential changes and the phone](logging-in.md#credential-changes-and-the-phone)).
 
+### Binding another device
+
+In the [phone modes](ciba.md#managing-logins-from-the-phone), a user who
+bound a device binds another only from it (since 2.2.2,
+[ADR 0134](../adr/0134-bind-another-device-from-a-bound-one.md)): the
+password alone would let a stolen web session bind a phone of its thief's.
+
+1. The new phone makes its key, and shows the public key, as a QR code
+   for example.
+2. The old phone reads it, and sends `POST /devices` with the new
+   `public_key` and a `name`, signed by its own key, with the password or
+   after a step-up (`POST /devices/step-up`).
+3. The new phone logs in with its key: `POST /devices/login`
+   (`DEVICE_LOGIN`).
+
+The old phone's login stays its own. Unsigned, the request is
+`403 phone_required`. A user who lost every phone goes to support
+(`unbinddevices`), then enrolls again.
+
 ## Enrolling a first device
 
 With `ENROLLMENT`, a phone app binds the first device of a user who has
@@ -311,9 +330,13 @@ signed by the device it bound: `CIBA.APPROVE_LOGINS` lets it through.
 
 | Endpoint | Who | Answer |
 | --- | --- | --- |
-| `POST /devices/push-tokens` | a user | `{"token", "platform"}` (`fcm`, `apns`, `huawei`): `201` with `id`, `platform`, `created_at`, `last_seen_at`. |
+| `POST /devices/push-tokens` | a user; in the phone modes, signed by one of their devices once they have one | `{"token", "platform"}` (`fcm`, `apns`, `huawei`): `201` with `id`, `platform`, `created_at`, `last_seen_at`. |
 | `GET /devices/push-tokens` | a user | The user's tokens, never the token itself. |
-| `DELETE /devices/push-tokens/{id}` | a user | `204`, when the app logs out. |
+| `DELETE /devices/push-tokens/{id}` | a user; signed as registering one is | `204`, when the app logs out. |
+
+In the phone modes, a web session could otherwise register a token of
+its own and read the user's sign-in pushes, or remove the phone's so that
+none arrive (`403 phone_required`, since 2.2.2).
 
 An app registers the token its push service gave it. A token moves to
 whoever registers it last (a phone that changed hands). Past
