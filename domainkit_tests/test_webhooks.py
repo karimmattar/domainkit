@@ -777,15 +777,15 @@ class Receiver:
 
 
 def settings_for(**options: Any) -> WebhooksSettings:  # noqa: ANN401 - settings.
-    """Settings that let 127.0.0.1 through, with short timeouts."""
-    return WebhooksSettings(
-        **{
-            "ALLOWED_PRIVATE_NETWORKS": ["127.0.0.0/8"],
-            "TIMEOUT": 2,
-            "CONNECT_TIMEOUT": 1,
-            **options,
-        }
-    )
+    """Settings that let 127.0.0.1 through, with short timeouts.
+
+    Connecting may take the whole attempt's time unless a test says
+    otherwise: on a busy CI runner, a connection to 127.0.0.1 has taken
+    more than a second.
+    """
+    chosen = {"ALLOWED_PRIVATE_NETWORKS": ["127.0.0.0/8"], "TIMEOUT": 2, **options}
+    chosen.setdefault("CONNECT_TIMEOUT", chosen["TIMEOUT"])
+    return WebhooksSettings(**chosen)
 
 
 HEADERS = {"webhook-id": "msg_1", "webhook-timestamp": "1", "webhook-signature": "v1,x"}
@@ -1133,12 +1133,14 @@ async def test_reading_stops_at_the_limit_however_the_answer_arrives() -> None:
             receiver.url(),
             b"{}",
             HEADERS,
-            settings_for(MAX_RESPONSE_BYTES=1024, TIMEOUT=3),
+            settings_for(MAX_RESPONSE_BYTES=1024, TIMEOUT=10),
             allow_http=True,
         )
 
+    # Left at the limit: a receiver read to its end answers nothing within
+    # TIMEOUT. The bound is far from both, for a busy CI runner.
     assert (outcome.ok, outcome.error) == (True, None)
-    assert outcome.seconds < 2
+    assert outcome.seconds < 6
 
 
 async def test_proxies_from_the_environment_are_ignored(

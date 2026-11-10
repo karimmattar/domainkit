@@ -49,7 +49,7 @@ from domainkit.management import call_command
 from domainkit.money import currencies_kept
 from domainkit.reporting import flush_reports
 from domainkit.testing import DatabaseBlocker
-from domainkit_tests import engine_events  # noqa: F401 - its listeners first.
+from domainkit_tests import engine_events  # Imported early: its listeners first.
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
 type MakePackage = Callable[[str, dict[str, str]], Path]
@@ -95,6 +95,38 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
             noted.write(
                 f"failed {report.nodeid} ({report.when})\n{report.longreprtext}\n"
             )
+
+
+LEAKS: Final = "domainkit_leaked_connections"
+"""Where a pytest-xdist worker hands the leaks it saw to the process that reports."""
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """Hand a worker's leaked connections to the process that prints the summary."""
+    output = getattr(session.config, "workeroutput", None)
+    if output is not None:
+        output[LEAKS] = list(engine_events.leaks)
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: Any) -> None:  # noqa: ANN401 - pytest-xdist's node.
+    """Take a finished worker's leaked connections."""
+    engine_events.leaks.extend(getattr(node, "workeroutput", {}).get(LEAKS, ()))
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """Name each test that leaked a pooled connection, where CI reads it.
+
+    The collector closes a leaked connection in whichever test runs then:
+    that one fails, or a later one, and its output never names the test
+    that took the connection (``engine_events``).
+    """
+    if not engine_events.leaks:
+        return
+    terminalreporter.section("leaked database connections", sep="=", red=True)
+    for leak in engine_events.leaks:
+        terminalreporter.line(leak)
+        terminalreporter.line("")
 
 
 @pytest.hookimpl(trylast=True)
