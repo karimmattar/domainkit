@@ -9,6 +9,26 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- A signup with an address or a mobile number that another account holds
+  but never proved was refused, so the address's owner could never sign
+  up with it. Such an account no longer stops a signup:
+  - The code goes out, and the signup that uses it takes the address or
+    the number, verified. The holder loses it, recorded as
+    `auth.email_released` or `auth.mobile_number_released`, and its codes
+    sent there stop working.
+  - A holder left with nothing it logs in by is ended as an erased
+    account is: deactivated, its password unusable, its tokens deleted.
+  - The code's mail (`auth/signup_code_held`) warns that an account holds
+    the address unproved, and that logging in or resetting the password
+    keeps it.
+  - A password reset whose code was sent to the address or the number now
+    proves it.
+
+  A username, and an address or a number an account proved, still stop a
+  signup ([Signing up](docs/auth/logging-in.md#signing-up), ADR 0133).
+
 ## [2.2.0] - 2026-11-10
 
 2.2 lets the user's phone see and end their web sessions, and keeps a

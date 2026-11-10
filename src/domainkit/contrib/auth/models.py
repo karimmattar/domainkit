@@ -26,12 +26,14 @@ from domainkit.ddd import AggregateRoot, Entity, Personal, Sensitive, ValueObjec
 from domainkit.signing import derive_key
 
 from .events import (
+    EmailReleased,
     EmailVerified,
     GroupCreated,
     GroupDeleted,
     GroupPermissionGranted,
     GroupPermissionRevoked,
     GroupRenamed,
+    MobileNumberReleased,
     MobileNumberVerified,
     PasswordChanged,
     UserCreated,
@@ -620,6 +622,26 @@ class AbstractUser(AbstractBaseUser):
         if not self.mobile_number_verified:
             self.mobile_number_verified = True
             self.record(MobileNumberVerified(user_id=self.id))
+
+    def release_email(self) -> None:
+        """Give up an address the user never proved: someone else proved it.
+
+        A signup whose code reached the address takes it (ADR 0133). An
+        address the user proved stays theirs: nothing changes.
+        """
+        if self.email and not self.email_verified:
+            self.email = ""
+            self.record(EmailReleased(user_id=self.id))
+
+    def release_mobile_number(self) -> None:
+        """Give up a number the user never proved: someone else proved it.
+
+        A signup whose code reached the number takes it (ADR 0133). A number
+        the user proved stays theirs: nothing changes.
+        """
+        if self.mobile_number and not self.mobile_number_verified:
+            self.mobile_number = None
+            self.record(MobileNumberReleased(user_id=self.id))
 
     def update(self, **fields: object) -> None:
         """Change editable fields; a new email or number is not verified yet.

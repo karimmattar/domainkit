@@ -226,6 +226,7 @@ Changes are recorded as events, never with passwords or hashes in them:
 | `UserLoggedIn`, `UserLoggedOut`, `TokenCreated`, `TokenRevoked` | Logins and tokens. |
 | `RefreshTokenReused` | A used JSON Web Token refresh token came back, so its login was ended. It is also logged as a security warning. |
 | `UserImpersonated`, `SteppedUp`, `EmailVerified`, `UserSignedUp` | See [Protecting routes](routes.md#impersonation), [Stepping up](step-up.md), and [Logging in](logging-in.md). |
+| `EmailReleased`, `MobileNumberReleased` | The user lost an address or a number they never proved: a signup proved it ([Signing up](logging-in.md#signing-up)). |
 
 The events live in `domainkit.contrib.auth.events`. `UserDeleted`,
 `UserSignedUp`, and `SteppedUp` are also exported from

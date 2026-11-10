@@ -1,0 +1,15 @@
+Hello,
+
+Someone asked for an account with this email address. If it was you,
+type this code to choose your password and make the account:
+
+{{ code }}
+
+It works for {{ valid_for }}. Never give it to anyone.
+
+An account already uses this address, but has never proved it. If that
+account is yours, do not use this code: log in, or reset your password,
+to keep it. Using this code moves the address to the new account, and
+the other account loses it.
+
+If it was not you, ignore this message: no account is made.

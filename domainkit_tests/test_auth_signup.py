@@ -175,7 +175,7 @@ def test_signups_tell_nobody_else_whether_an_address_has_an_account(
     had an account. Now neither has an account until the address's owner
     confirms, and a pending signup reserves no username.
     """
-    create_user("victim", email="victim@example.com")
+    create_user("victim", email="victim@example.com", email_verified=True)
     client = identity(SIGNUP_ENABLED=True)
 
     taken = signup(client, username="probe1", email="victim@example.com")
@@ -210,7 +210,7 @@ def test_signups_tell_nobody_else_whether_an_address_has_an_account(
 
 def test_taken_usernames_and_addresses_answer_the_same(identity: Api) -> None:
     """Nothing in the answer tells; the address given is told by mail."""
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", email_verified=True)
     client = identity(SIGNUP_ENABLED=True)
 
     fresh = signup(client, username="bob", email="bob@example.com")
@@ -448,7 +448,7 @@ def test_a_taken_address_is_told_even_after_a_failed_delivery(
     identity: Api,
 ) -> None:
     """The pending signup goes once the mail went, so a retry still tells."""
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", email_verified=True)
     client = identity(SIGNUP_ENABLED=True)
     signup(client, username="x")
     (stored,) = pending()

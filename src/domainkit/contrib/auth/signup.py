@@ -16,10 +16,13 @@ are checked at once: a refusal there says nothing about other accounts.
 Then the request is kept as a pending signup, and it answers 202, doing
 the same work whatever accounts exist. The worker sends a code of 6
 digits (ADR 0126) to the address, or by text message to the number, or,
-when the username, the address, or the number is taken, word that it
-is. ``POST /signup/code`` (anyone) takes the address or the number, the
-code, and a password, checked by ``AUTH.PASSWORD_VALIDATORS``, and makes
-the account, its address or number verified.
+when the username is taken, or an account proved the address or the
+number, word that it is. An account that holds the address or the
+number but never proved it does not stop a signup: the signup whose
+code proves it takes it from that account (ADR 0133).
+``POST /signup/code`` (anyone) takes the address or the number, the code,
+and a password, checked by ``AUTH.PASSWORD_VALIDATORS``, and makes the
+account, its address or number verified.
 
 Whoever reads the mail chooses the password, so whoever asked with
 someone else's address gains nothing: the account made is the address
@@ -60,6 +63,7 @@ from .models import (
     AbstractUser,
     PasswordHash,
     normalize_mobile_number,
+    same_email,
 )
 from .recovery import (
     IDENTIFIER_MAX_LENGTH,
@@ -239,9 +243,13 @@ async def confirm_signup_code(body: SignupCodeIn, request: Request) -> None:
             validate_password(body.password, account)  # Raises: nothing is spent.
             password = PasswordHash(await amake_password(body.password))
             await uow.signups.remove(pending.id)  # The code works once.
-            if await _taken(uow, pending):
+            holders = await _unproved_holders(uow, pending)
+            if holders is None:
                 await uow.commit()
                 raise SignupTaken
+            for holder in holders:  # The code proved what they never did.
+                await _release(uow, holder, pending)
+            await uow.session.flush()  # A released number is free to insert.
             await _make_account(uow, pending, password)
             await uow.commit()
             return
@@ -261,7 +269,9 @@ async def send_signup_code(signup_id: UUID) -> None:
     """Send the address, or the number, a code that makes the account.
 
     The ``domainkit.auth.send_signup_code`` task. An address or a number
-    already taken is told so instead, and the pending signup is deleted:
+    an account proved, or a username taken, is told so instead, and the
+    pending signup is deleted (an account that never proved the address
+    or the number does not hold it against a signup: ADR 0133):
     a text goes with that commit, and a mail before it, so a retry after a
     failed delivery still tells. One gone or expired is left alone.
     """
@@ -272,7 +282,8 @@ async def send_signup_code(signup_id: UUID) -> None:
         if pending is None or pending.expired():
             return
         number = None if pending.email else pending.mobile_number
-        if await _taken(uow, pending):
+        holders = await _unproved_holders(uow, pending)
+        if holders is None:
             if number is None:
                 context: dict[str, object] = {"email": pending.email}
                 to = [cast(str, pending.email)]
@@ -290,7 +301,10 @@ async def send_signup_code(signup_id: UUID) -> None:
             await text_code(number, code, "finish signing up", uow)
         await uow.commit()
     if number is None:
-        mail = render_mail("auth/signup_code", code_context(code), to=[contact])
+        # An account holds the address unproved: the reader learns what
+        # using the code does to it (ADR 0133).
+        template = "auth/signup_code_held" if holders else "auth/signup_code"
+        mail = render_mail(template, code_context(code), to=[contact])
         await deliver([mail])
 
 
@@ -322,17 +336,61 @@ def _enabled() -> AuthSettings:
     return config
 
 
-async def _taken(uow: AuthUnitOfWork, pending: PendingSignup) -> bool:
-    """Whether an account has the signup's username, address, or number.
+async def _unproved_holders(
+    uow: AuthUnitOfWork, pending: PendingSignup
+) -> list[AbstractBaseUser] | None:
+    """The accounts that hold the signup's address or number, unproved.
 
-    The username in any case; the address in any case of its ASCII letters.
+    None when the signup cannot be made: an account has its username (in
+    any case), or proved its address (in any case of its ASCII letters)
+    or its number. An account that holds the address or the number but
+    never proved it does not stop a signup whose code proves it: the
+    signup takes it (ADR 0133). A user model with no such proof counts as
+    having proved it.
     """
     if pending.username and await uow.users.username_taken(pending.username):
-        return True
-    if pending.email and await uow.users.find_by_email(pending.email):
-        return True
-    number = pending.mobile_number
-    return number is not None and await uow.users.mobile_number_taken(number)
+        return None
+    holders: list[AbstractBaseUser] = []
+    if pending.email:
+        for user in await uow.users.find_by_email(pending.email):
+            if getattr(user, "email_verified", True):
+                return None
+            holders.append(user)
+    if pending.mobile_number:
+        texted = await uow.users.find_by_mobile_number(pending.mobile_number)
+        if texted is not None:
+            if getattr(texted, "mobile_number_verified", True):
+                return None
+            if texted not in holders:
+                holders.append(texted)
+    return holders
+
+
+async def _release(
+    uow: AuthUnitOfWork, holder: AbstractBaseUser, pending: PendingSignup
+) -> None:
+    """Take the signup's address and number from ``holder``, who never proved them.
+
+    Their codes sent there stop working. A holder left with nothing that
+    logs it in (``AUTH.IDENTIFIERS``) is ended, as an erased account is:
+    deactivated, its password unusable, its tokens and second factor
+    deleted. Its data stays, for staff.
+    """
+    user = cast(AbstractUser, holder)
+    targets: list[str] = []
+    if pending.email and same_email(user.email, pending.email):
+        user.release_email()
+        targets.append(target_of(pending.email))
+    if pending.mobile_number and user.mobile_number == pending.mobile_number:
+        user.release_mobile_number()
+        targets.append(target_of(pending.mobile_number))
+    if any(getattr(user, name, None) for name in identifier_fields(type(user))):
+        await uow.verification_codes.forget(user.id, targets)
+        return
+    user.set_active(False)
+    if user.has_usable_password():
+        user.set_unusable_password()
+    await uow.users.forget_credentials(user.id)
 
 
 def _account(

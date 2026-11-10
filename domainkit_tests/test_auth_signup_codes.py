@@ -2,12 +2,14 @@
 
 from datetime import timedelta
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, User
+from domainkit.contrib.auth.codes import EMAIL_VERIFICATION, target_of
+from domainkit.contrib.auth.models import UserId
 from domainkit.contrib.auth.signup import send_signup_code
 from domainkit.contrib.notifications.backends import sms_outbox
 from domainkit.management.base import run_async
@@ -79,6 +81,8 @@ def test_a_mailed_code_makes_the_account(identity: Api) -> None:
         ("Nina@example.com",),
     )
     code = code_in(message.body)
+    assert "never proved" not in message.body
+    assert "\n\n\n" not in message.body
 
     assert finish(client, "nina@example.com", other(code)) == WRONG
     assert finish(client, "nina@example.com", code, "short") == (
@@ -141,8 +145,14 @@ def test_a_signup_needs_somewhere_to_send_the_code(identity: Api) -> None:
 
 
 def test_a_taken_address_or_number_is_told_so(texting: App) -> None:
-    """Nothing is made; the owner learns that someone tried."""
-    create_user("quinn", email="quinn@example.com", mobile_number=NUMBER)
+    """Proved by their account: nothing is made; the owner learns of the try."""
+    create_user(
+        "quinn",
+        email="quinn@example.com",
+        mobile_number=NUMBER,
+        email_verified=True,
+        mobile_number_verified=True,
+    )
     client = texting(**BY_TEXT)
 
     ask(client, email="QUINN@example.com")
@@ -157,12 +167,12 @@ def test_a_taken_address_or_number_is_told_so(texting: App) -> None:
 
 
 def test_an_address_taken_before_the_code_is_used_answers_409(identity: Api) -> None:
-    """The account came first: the code is spent, and nothing is made."""
+    """An account proved it first: the code is spent, and nothing is made."""
     client = identity(**BY_MAIL)
     ask(client, email="rue@example.com")
     run_worker()
     code = code_in(mail.outbox[0].body)
-    create_user("rue", email="rue@example.com")
+    create_user("rue", email="rue@example.com", email_verified=True)
 
     assert finish(client, "rue@example.com", code) == (409, "signup_taken")
     assert finish(client, "rue@example.com", code) == WRONG
@@ -180,3 +190,126 @@ def test_a_username_may_come_with_the_address(identity: Api) -> None:
     )
     assert stored("sam").email == "sam@example.com"
     assert logs_in(client, "sam", PASSWORD)
+
+
+# An account that never proved its address or number (ADR 0133).
+
+
+def test_an_address_held_unproved_moves_to_the_signup_that_proves_it(
+    identity: Api,
+) -> None:
+    """The holder keeps its username, loses the address and its codes."""
+    client = identity(SIGNUP_ENABLED=True, IDENTIFIERS=("username", "email"))
+    holder = create_user("ivy", email="Ivy@example.com")
+    held_code = run_async(_code_for(holder, "ivy@example.com"))
+
+    ask(client, email="ivy@example.com")
+    run_worker()
+    (message,) = mail.outbox
+    assert "An account already uses this address, but has never proved it" in (
+        message.body
+    )
+    assert "\n\n\n" not in message.body
+    assert finish(client, "ivy@example.com", code_in(message.body)) == (204, None)
+
+    signed_up = stored("ivy@example.com")
+    assert (signed_up.id != holder, signed_up.email_verified) == (True, True)
+    kept = _user(holder)
+    assert (kept.email, kept.is_active, kept.username) == ("", True, "ivy")
+    assert logs_in(client, "ivy", PASSWORD)
+    assert logs_in(client, "ivy@example.com", PASSWORD)  # The new account.
+    assert not run_async(_still_works(holder, "ivy@example.com", held_code))
+    (released,) = audited("auth.email_released")
+    assert released["details"]["user_id"] == str(holder)
+
+
+def test_a_holder_left_with_nothing_to_log_in_by_is_ended(identity: Api) -> None:
+    """Addresses alone log in: the holder is deactivated, its logins end."""
+    client = identity(**BY_MAIL)
+    holder = create_user(None, email="jo@example.com")
+    assert logs_in(client, "jo@example.com", PASSWORD)
+
+    ask(client, email="jo@example.com")
+    run_worker()
+    assert finish(client, "jo@example.com", code_in(mail.outbox[0].body)) == (
+        204,
+        None,
+    )
+
+    ended = _user(holder)
+    assert (ended.email, ended.is_active, ended.has_usable_password()) == (
+        "",
+        False,
+        False,
+    )
+    assert stored("jo@example.com").id != holder
+
+
+def test_a_number_held_unproved_moves_too(texting: App) -> None:
+    """The number is unique: it moves to the new account, verified."""
+    client = texting(**BY_TEXT)
+    holder = create_user(None, email="kai@example.com", mobile_number=NUMBER)
+
+    ask(client, mobile_number=NUMBER)
+    drain()
+    (text,) = sms_outbox
+    assert finish(client, NUMBER, code_in(text.body)) == (204, None)
+
+    assert stored(NUMBER).mobile_number_verified is True
+    kept = _user(holder)
+    assert (kept.mobile_number, kept.is_active, kept.email) == (
+        None,
+        True,
+        "kai@example.com",
+    )
+    assert len(audited("auth.mobile_number_released")) == 1
+
+
+def test_a_holder_that_proves_it_first_keeps_it(identity: Api) -> None:
+    """Proved between the mail and the code: the signup answers 409."""
+    client = identity(**BY_MAIL)
+    holder = create_user(None, email="lu@example.com")
+    ask(client, email="lu@example.com")
+    run_worker()
+    code = code_in(mail.outbox[0].body)
+    run_async(_verify(holder))
+
+    assert finish(client, "lu@example.com", code) == (409, "signup_taken")
+    assert _user(holder).email == "lu@example.com"
+
+
+async def _code_for(user_id: UUID, address: str) -> str:
+    """An email verification code for ``user_id``, sent to ``address``."""
+    async with AuthUnitOfWork() as uow:
+        code = await uow.verification_codes.issue(
+            EMAIL_VERIFICATION, target_of(address), user_id=user_id
+        )
+        await uow.commit()
+    return code
+
+
+async def _still_works(user_id: UUID, address: str, code: str) -> bool:
+    """Whether ``code`` still proves ``address`` for ``user_id``."""
+    async with AuthUnitOfWork() as uow:
+        proven = await uow.verification_codes.check(
+            EMAIL_VERIFICATION, target_of(address), code
+        )
+    return proven is not None and proven.user_id == user_id
+
+
+async def _verify(user_id: UUID) -> None:
+    """Mark ``user_id``'s address proved."""
+    async with AuthUnitOfWork() as uow:
+        user = cast(User, await uow.users.get(UserId(user_id)))
+        user.verify_email()
+        await uow.commit()
+
+
+def _user(user_id: UUID) -> User:
+    """The user ``user_id``, as stored."""
+
+    async def read() -> User:
+        async with AuthUnitOfWork() as uow:
+            return cast(User, await uow.users.get(UserId(user_id)))
+
+    return run_async(read())
