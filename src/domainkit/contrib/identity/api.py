@@ -29,12 +29,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.integration import (
+    MANAGES_LOGINS,
     PASSWORD_MAX_LENGTH,
     LoginMethod,
     MfaChallengeOut,
     TokenOut,
     challenge,
-    check_manage_logins,
     issue_login,
     pass_login_gates,
     reauthenticate,
@@ -124,7 +124,7 @@ class LinkIn(BaseModel):
     )
 
 
-@router.post("/identity/{name}/link")
+@router.post("/identity/{name}/link", dependencies=[MANAGES_LOGINS])
 async def start_link(
     name: str,
     request: Request,
@@ -135,11 +135,11 @@ async def start_link(
 
     A linked identity is a way into the account: the password, or a step-up
     in the last ten minutes, as for a passkey; never while staff act as the
-    user. Checked by auth's ``on_manage_logins`` first: in the phone modes,
-    one of the user's devices signs the request (ADR 0134).
+    user. Checked by auth's ``on_manage_logins`` first (``MANAGES_LOGINS``):
+    in the phone modes, one of the user's devices signs the request
+    (ADR 0134).
     """
     password = None if body is None else body.password
-    await check_manage_logins(request, user)
     await reauthenticate(request, user, password, "link_identity")
     return _started(await begin(name, LINK, user.id))
 
@@ -208,15 +208,16 @@ async def linked(user: Annotated[AbstractBaseUser, SIGNED_IN]) -> list[IdentityO
     ]
 
 
-@router.delete("/identity/linked/{name}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove(
-    name: str, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
-) -> None:
+@router.delete(
+    "/identity/linked/{name}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[MANAGES_LOGINS],
+)
+async def remove(name: str, user: Annotated[AbstractBaseUser, SIGNED_IN]) -> None:
     """Unlink the user's identity at ``name``.
 
     Checked by auth's ``on_manage_logins`` first, as linking one is.
     """
-    await check_manage_logins(request, user)
     await unlink(user, name)
 
 

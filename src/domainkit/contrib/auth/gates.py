@@ -33,20 +33,24 @@ from contextvars import ContextVar
 from typing import Any, Final
 from uuid import UUID
 
+from fastapi import Depends
 from starlette.requests import Request
 
 from domainkit.apps.hooks import HookPoint
 from domainkit.exceptions import DomainkitError
+from domainkit.http.access import NotAuthenticated
 
 from .models import AbstractBaseUser
 
 __all__ = [
+    "MANAGES_LOGINS",
     "LoginGate",
     "LoginNotGated",
     "LoginsCheck",
     "check_gates_passed",
     "check_manage_logins",
     "gates_passed",
+    "manages_logins",
     "on_login_gate",
     "on_manage_logins",
     "pass_login_gates",
@@ -119,6 +123,32 @@ async def check_manage_logins(request: Request, user: AbstractBaseUser) -> None:
     """
     for hook in on_manage_logins:
         await hook.call(request, user)
+
+
+async def manages_logins(request: Request) -> None:
+    """A route's dependency: the request may manage its user's logins.
+
+    Declare it on a route that adds or removes a way into the account (a
+    device, a factor, a token, a linked identity), next to the rule that
+    asks for the user::
+
+        @router.post("/keys", dependencies=[MANAGES_LOGINS])
+
+    It runs the ``on_manage_logins`` checks before the body is read, so
+    the route answers their refusal whatever was sent (ADR 0136).
+
+    Raises:
+        NotAuthenticated: The request has no user.
+        Exception: Whatever the first refusing check raises.
+    """
+    credentials = request.scope.get("auth")
+    if credentials is None:
+        raise NotAuthenticated
+    await check_manage_logins(request, credentials.user)
+
+
+MANAGES_LOGINS: Final = Depends(manages_logins)
+"""``dependencies=[MANAGES_LOGINS]``: the route passes ``on_manage_logins``."""
 
 
 def check_gates_passed(user: AbstractBaseUser) -> None:

@@ -22,6 +22,7 @@ from .codes import target_of
 from .cookies import CsrfOut, check_origin, start_browser_session
 from .events import SteppedUp, UserDeleted, UserLoggedOut, UserSignedUp
 from .gates import (
+    MANAGES_LOGINS,
     check_manage_logins,
     gates_passed,
     on_login_gate,
@@ -51,6 +52,7 @@ from .throttling import account_key, address_key, attempt, audit_refusal
 from .tokens import LoginMethod, note_login_device, utc_now
 
 __all__ = [
+    "MANAGES_LOGINS",
     "PASSWORD_MAX_LENGTH",
     "REAUTH_AGE",
     "CsrfOut",

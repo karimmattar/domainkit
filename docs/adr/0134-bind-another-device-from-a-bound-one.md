@@ -94,6 +94,6 @@ the device and ends its logins in one. `attach_login_device` and
   device, signs those requests.
 - **A user who lost every phone** recovers through support
   (`unbinddevices`), as before.
-- **The guard is still added route by route.** Declaring it per route,
-  with a startup check that refuses a route that declares nothing, is
-  planned for 2.3.
+- **The guard was still added route by route.**
+  [ADR 0136](0136-declare-the-login-check-on-the-route.md) declares it on
+  each route, with a test that refuses a route that declares nothing.

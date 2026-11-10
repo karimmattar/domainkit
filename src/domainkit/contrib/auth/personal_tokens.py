@@ -52,7 +52,7 @@ from .api import PASSWORD_MAX_LENGTH, _credentials, _errors, _no_store
 from .authentication import AuthenticationFailed, Credentials
 from .backends import get_all_permissions
 from .events import TokenCreated, TokenRevoked
-from .gates import check_manage_logins
+from .gates import MANAGES_LOGINS, check_manage_logins
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
 from .stepup import check_password_again
@@ -153,7 +153,11 @@ class TokenPage(BaseModel):
     next_cursor: str | None
 
 
-@router.get("/tokens", responses=_errors(status.HTTP_401_UNAUTHORIZED))
+@router.get(
+    "/tokens",
+    dependencies=[MANAGES_LOGINS],
+    responses=_errors(status.HTTP_401_UNAUTHORIZED),
+)
 async def list_tokens(
     request: Request,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = PAGE_SIZE,
@@ -166,7 +170,6 @@ async def list_tokens(
     Checked by ``on_manage_logins`` first (ADR 0130).
     """
     credentials = _credentials(request)
-    await check_manage_logins(request, credentials.user)
     before = None
     if cursor is not None:
         created, token_id = decode_cursor(cursor, 2)
@@ -185,6 +188,7 @@ async def list_tokens(
 @router.post(
     "/tokens",
     status_code=status.HTTP_201_CREATED,
+    dependencies=[MANAGES_LOGINS],
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -214,7 +218,6 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
             f"A token cannot have permissions you lack: {', '.join(missing)}.",
             code="scope_not_held",
         )
-    await check_manage_logins(request, user)  # The phone modes: the phone's to make.
     await reauthenticate(request, user, body.password)
     limit = auth_settings().MAX_LIVE_TOKENS
     async with AuthUnitOfWork() as uow:
