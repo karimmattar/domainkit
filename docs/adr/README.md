@@ -148,6 +148,7 @@ statuses, and the amendments they name.
 | [0135](0135-keep-each-signed-request-not-the-last-time.md) | Keep each signed request, not the last time | Accepted |
 | [0136](0136-declare-the-login-check-on-the-route.md) | Declare the login check on the route | Accepted |
 | [0137](0137-a-new-phone-asks-and-the-bound-one-approves.md) | A new phone asks, and the bound one approves | Accepted |
+| [0138](0138-mount-an-accounts-routes-with-one-call.md) | Mount an account's routes with one call | Accepted |
 
 ### Decisions still without a record
 

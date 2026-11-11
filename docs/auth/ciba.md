@@ -53,6 +53,15 @@ router.include_router(devices_router, prefix="/auth")
 router.include_router(sign_in_router, prefix="/auth")
 ```
 
+Or mount every account route of the installed apps with one call (since
+2.4, [ADR 0138](../adr/0138-mount-an-accounts-routes-with-one-call.md)):
+
+```python
+from domainkit.contrib.auth.routing import account_router
+
+router.include_router(account_router(), prefix="/auth")
+```
+
 The app has bound the phone (`POST /auth/devices`) and registered its
 push token (`POST /auth/devices/push-tokens`), as
 [Passkeys and bound devices](devices.md) shows. The web page starts a
@@ -247,6 +256,18 @@ only:
 - from that device, which signs the login request (`/login`, `/session`,
   `/mfa/login`, the passkey login, an identity provider's login);
 - or once approved from it, through `/app-sign-in`.
+
+`phone_identity()` gives the settings of the three apps that go together
+for this (since 2.4): the mode, enrollment and login by the device's key,
+and a credential change that keeps the phone logged in. Your own keys win:
+
+```python
+from domainkit.contrib.presets import phone_identity
+
+AUTH, DEVICES, CIBA = phone_identity(auth={"IDENTIFIERS": ("email",)})
+```
+
+`phone_identity(strict=True)` sets [the strict mode](#strict-mode-every-login-from-the-phone).
 
 Any other login of that user is `403 phone_approval_required` ("Approve
 this sign-in from your mobile app."). A user with no bound device logs in

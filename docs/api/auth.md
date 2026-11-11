@@ -757,3 +757,19 @@ The devices app's tasks: the signed requests' purge, and the bound-device notice
 - `register_notice`: Register the notice's task, and send it for every `DeviceBound`.
 - `register_purge`: Run the purge every hour (needs messaging).
 - `send_bound_notice`: Mail the user that the device `device_id` was bound to their account.
+
+## `domainkit.contrib.auth.routing`
+
+One router for an account's routes: auth's, and those of the apps built on it.
+
+- `AccountRoutes`: Routes an app adds to an account's router: their name, and where they are.
+- `account_router`: A router of the account routes of every installed app (see the module).
+- `account_routes`: Every app's account routes, by name, in the order the apps are installed.
+- `on_account_routes`: Register a function that names an app's account routes, in `ready()`.
+
+## `domainkit.contrib.presets`
+
+Settings of several apps that go together, for a project's settings file.
+
+- `PhoneIdentity`: `AUTH`, `DEVICES` and `CIBA` for the phone as identity.
+- `phone_identity`: The settings that make a user's bound phone their identity.

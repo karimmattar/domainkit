@@ -22,6 +22,16 @@ and a status.
   is bound to their account, from the template `devices/device_bound`.
   It needs `domainkit.contrib.messaging` and `domainkit.contrib.mail`
   ([The user is told](docs/auth/devices.md#the-user-is-told), ADR 0137).
+- `account_router()` (`domainkit.contrib.auth.routing`): one router of
+  the account routes of every installed app, where a project mounted up
+  to eight by hand. `include` adds what is off by default (`signup`,
+  `saml`), `exclude` leaves routes out, and an app adds its own with
+  `on_account_routes` ([Sign-in approvals](docs/auth/ciba.md#a-first-example),
+  ADR 0138).
+- `phone_identity()` (`domainkit.contrib.presets`): the `AUTH`, `DEVICES`
+  and `CIBA` settings that make a user's bound phone their identity, for
+  a settings file ([The mobile app as identity](docs/auth/ciba.md#the-mobile-app-as-identity),
+  ADR 0138).
 - `mail_user` (`auth.integration`): mail a user at their address from a
   template. `proves_key`, `bind_key` and `mark_signed_by`
   (`devices.binding`): what an app needs to bind a key a request proved.

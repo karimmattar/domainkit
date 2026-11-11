@@ -45,6 +45,9 @@ class DevicesConfig(DomainConfig):
 
         _check_signature_store(registry.settings(DevicesSettings).SIGNATURE_STORE)
 
+        from domainkit.contrib.auth.routing import AccountRoutes, on_account_routes
+
+        on_account_routes(lambda: [AccountRoutes("devices", f"{self.name}.api.router")])
         event_bus.subscribe(UserDeleted, forget_devices)
         on_erase_subject(self.erase_person, domain=self.label)
         on_export_subject(self.export_person, domain=self.label)
