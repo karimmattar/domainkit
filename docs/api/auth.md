@@ -464,6 +464,7 @@ Passkeys, their challenges, and bound devices.
 - `devices`: Each user's bound devices: a key the device holds, and its last signed time.
 - `passkeys`: Each user's passkeys: a WebAuthn credential's public key and counter.
 - `push_tokens`: The tokens push services gave each user's apps, one row per token.
+- `signatures`: Each signed request a device sent, while its time is within the window: once.
 
 ## `domainkit.contrib.devices.push`
 
@@ -739,3 +740,10 @@ CIBA clients, sign-in requests, and the client assertions already used.
 - `assertions`: The `jti` of each `private_key_jwt` assertion, until it expires: once.
 - `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba add`, `list`).
 - `sign_in_requests`: Each sign-in, step-up, or transaction a phone is asked to approve, until purged.
+
+## `domainkit.contrib.devices.tasks`
+
+Hourly purge of the signed requests no longer within the window.
+
+- `purge_signatures`: Forget the signed requests too old to be sent again; how many.
+- `register_purge`: Run the purge every hour (needs messaging).

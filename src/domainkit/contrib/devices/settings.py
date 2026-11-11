@@ -1,6 +1,7 @@
 """Settings of ``domainkit.contrib.devices``: ``DEVICES = {...}``."""
 
 from datetime import timedelta
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -32,6 +33,12 @@ class DevicesSettings(BaseModel):
         default=timedelta(minutes=2), gt=timedelta(0), le=timedelta(minutes=10)
     )
     """How far a signed request's time may be from the server's."""
+    SIGNATURE_STORE: Literal["database", "cache"] = "database"
+    """Where the signed requests seen within the window are kept, so that
+    none works twice. ``"database"``: a row per request, in the devices'
+    database. ``"cache"``: a key per request in the default cache, which
+    every process must share (Redis); a signed request then writes to no
+    database, and none is accepted while the cache is down."""
     ENROLLMENT: bool = False
     """Let a user with no bound device bind the first one with a code, the
     password, and the new key's signature (``POST /devices/enroll``), with
