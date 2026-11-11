@@ -17,7 +17,7 @@ route:
 | 2.2.0, ADR 0130 | listing tokens, ending another login, `everywhere`, `others` |
 | 2.2.0, ADR 0131 | unbinding a device |
 | 2.2.0, ADR 0132 | the authenticator app, recovery codes, passkeys |
-| 2.2.2, ADR 0134 | binding a device, push tokens, personal tokens, linked identities |
+| 2.3.0, ADR 0134 | binding a device, push tokens, personal tokens, linked identities |
 
 Each round found routes the one before missed, the last one from an
 audit. Nothing told the author of a new route to think of it. The

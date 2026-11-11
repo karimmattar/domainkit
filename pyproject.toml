@@ -1,6 +1,6 @@
 [project]
 name = "domainkit"
-version = "2.2.1"
+version = "2.3.0"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
 license = "MIT"

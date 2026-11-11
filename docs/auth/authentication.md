@@ -195,7 +195,7 @@ Rules of `POST /tokens`:
 
 In the [phone modes](ciba.md#managing-logins-from-the-phone), a user
 with a bound device makes a personal token only by a request the device
-signs (`403 phone_required` otherwise, since 2.2.2).
+signs (`403 phone_required` otherwise, since 2.3).
 
 A personal token is not a login. `IDLE_TIMEOUT` and `MAX_LOGINS` do not
 end it, and neither does logging out of the session that made it

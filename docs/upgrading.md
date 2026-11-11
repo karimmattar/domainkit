@@ -38,6 +38,35 @@ never published), with each section below.
 
 ## 2.2 to 2.3
 
+2.3 closes a hole in the phone modes: a stolen web session could bind a
+phone of its thief's ([ADR 0134](adr/0134-bind-another-device-from-a-bound-one.md)).
+It also lets a device's signed requests arrive in any order
+([ADR 0135](adr/0135-keep-each-signed-request-not-the-last-time.md)).
+
+### In the phone modes, more requests are signed
+
+A security fix ([ADR 0134](adr/0134-bind-another-device-from-a-bound-one.md)).
+With `CIBA.APPROVE_LOGINS` set, for a user who has a bound device, these
+need a request one of their devices signs (`403 phone_required`
+otherwise):
+
+- `POST /auth/devices`: a second phone is bound from the first, which
+  sends the new phone's public key ([Binding another device](auth/devices.md#binding-another-device));
+- `POST /auth/devices/push-tokens` and `DELETE /auth/devices/push-tokens/{id}`:
+  an app that registers its push token after binding its key signs that
+  request, or registers the token before it binds;
+- `POST /auth/tokens`: personal tokens are made from the app;
+- `POST /auth/identity/{name}/link` and `DELETE /auth/identity/linked/{name}`.
+
+Users with no bound device, and projects outside the phone modes, are not
+affected. A refused request is answered before its body is read
+(`403 phone_required` where a body that did not validate got `422`,
+[ADR 0136](adr/0136-declare-the-login-check-on-the-route.md)).
+
+`check` now warns (`ciba.W001`) while
+`AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS` is `"end"` in the phone modes: set
+`"keep"` or `"ask"`, or silence it.
+
 ### Make and apply the devices' migration
 
 Signed requests are kept in a new table, `domainkit_device_signatures`
@@ -106,26 +135,6 @@ bound device are not affected.
 reset, and turning the second factor on, do to the phone's login. It keeps
 2.1's behaviour by default (`"end"`). With the phone as identity, set
 `"keep"`, or `"ask"` to let the user choose ([Credential changes and the phone](auth/logging-in.md#credential-changes-and-the-phone)).
-
-### 2.2.2: in the phone modes, more requests are signed
-
-A security fix ([ADR 0134](adr/0134-bind-another-device-from-a-bound-one.md)).
-With `CIBA.APPROVE_LOGINS` set, for a user who has a bound device, these
-need a request one of their devices signs (`403 phone_required`
-otherwise):
-
-- `POST /auth/devices`: a second phone is bound from the first, which
-  sends the new phone's public key ([Binding another device](auth/devices.md#binding-another-device));
-- `POST /auth/devices/push-tokens` and `DELETE /auth/devices/push-tokens/{id}`:
-  an app that registers its push token after binding its key signs that
-  request, or registers the token before it binds;
-- `POST /auth/tokens`: personal tokens are made from the app;
-- `POST /auth/identity/{name}/link` and `DELETE /auth/identity/linked/{name}`.
-
-Users with no bound device, and projects outside the phone modes, are not
-affected. `check` now warns (`ciba.W001`) while
-`AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS` is `"end"` in the phone modes: set
-`"keep"` or `"ask"`, or silence it.
 
 ## 2.0 to 2.1
 

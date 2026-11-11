@@ -276,7 +276,7 @@ can keep it ([Credential changes and the phone](logging-in.md#credential-changes
 ### Binding another device
 
 In the [phone modes](ciba.md#managing-logins-from-the-phone), a user who
-bound a device binds another only from it (since 2.2.2,
+bound a device binds another only from it (since 2.3,
 [ADR 0134](../adr/0134-bind-another-device-from-a-bound-one.md)): the
 password alone would let a stolen web session bind a phone of its thief's.
 
@@ -350,7 +350,7 @@ signed by the device it bound: `CIBA.APPROVE_LOGINS` lets it through.
 
 In the phone modes, a web session could otherwise register a token of
 its own and read the user's sign-in pushes, or remove the phone's so that
-none arrive (`403 phone_required`, since 2.2.2).
+none arrive (`403 phone_required`, since 2.3).
 
 An app registers the token its push service gave it. A token moves to
 whoever registers it last (a phone that changed hands). Past

@@ -9,6 +9,20 @@ and a status.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-11
+
+2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of
+2.2.1. A web session whose thief knew the password could bind a device of
+its own, which then counted as the user's phone and signed the real one
+out: a user who bound a device now binds another, keeps or removes a push
+token, makes a personal token, and links an identity only by a request
+one of their devices signs (ADR 0134). That check is now declared on each
+route, and a test refuses a route that declares nothing (ADR 0136). A
+device's signed requests pass in whatever order they arrive, each once
+(ADR 0135). Make and apply the devices' migration; see
+[upgrading.md](docs/upgrading.md#22-to-23) for what an app that sends
+those requests unsigned changes.
+
 ### Security
 
 - In the phone modes (`CIBA.APPROVE_LOGINS`), a web session whose thief
@@ -23,7 +37,7 @@ and a status.
   push tokens, making a personal token, and linking or unlinking an
   identity provider's account: a stolen web session could read or stop
   the sign-in pushes, or keep a way in that outlasts the phone ending
-  the other logins. See [upgrading.md](docs/upgrading.md#222-in-the-phone-modes-more-requests-are-signed)
+  the other logins. See [upgrading.md](docs/upgrading.md#in-the-phone-modes-more-requests-are-signed)
   if your app sends those unsigned.
 
 ### Added
@@ -6498,7 +6512,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.2.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/karimmattar/domainkit/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/karimmattar/domainkit/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/karimmattar/domainkit/compare/v2.1.2...v2.2.0
 [2.1.2]: https://github.com/karimmattar/domainkit/compare/v2.1.1...v2.1.2
