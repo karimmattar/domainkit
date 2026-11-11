@@ -8,6 +8,7 @@ database.
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -477,7 +478,22 @@ def test_the_whole_check_runs_on_rungs_with_no_database(
     assert "| `bare` |" in (tmp_path / "summary.md").read_text()
 
 
-def test_the_pool_asked_for_is_the_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def application_log() -> Iterator[logging.Logger]:
+    """The application's logger, back at its level when the test ends.
+
+    A server quiets it for its process (``serve``); a test that runs one
+    here would leave it quiet for every test after it.
+    """
+    logger = logging.getLogger("domainkit.http.application")
+    level = logger.level
+    yield logger
+    logger.setLevel(level)
+
+
+def test_the_pool_asked_for_is_the_servers(
+    monkeypatch: pytest.MonkeyPatch, application_log: logging.Logger
+) -> None:
     """``--pool-size`` and ``--max-overflow`` reach the database's settings."""
     import uvicorn
 
@@ -505,6 +521,7 @@ def test_the_pool_asked_for_is_the_servers(monkeypatch: pytest.MonkeyPatch) -> N
         pool = ["--pool-size", "32", "--max-overflow", "0"]
         assert loading.main([*arguments, *handed, *pool]) == 0
 
+        assert application_log.level == logging.ERROR  # Its known problems, unsaid.
         assert seen == {
             "URL": URL,
             "CONNECT_ARGS": {"server_settings": {"search_path": "domainkit_bench_x"}},
