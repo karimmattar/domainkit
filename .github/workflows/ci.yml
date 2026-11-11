@@ -1176,7 +1176,7 @@ jobs:
               domainkit.contrib.auth.authentication.* domainkit.contrib.auth.cookies.*
               domainkit.contrib.auth.metrics.* domainkit.contrib.auth.permissions.*
               domainkit.contrib.auth.signup.* domainkit.contrib.auth.tokens.*
-              domainkit.contrib.auth.captcha.* domainkit.contrib.auth.integration.*
+              domainkit.contrib.auth.captcha.*
           - name: auth-2
             mutants: >-
               domainkit.contrib.auth.devices.*
@@ -1200,6 +1200,7 @@ jobs:
               domainkit.contrib.auth.codes.* domainkit.contrib.auth.erasure.* domainkit.contrib.auth.exceptions.*
               domainkit.contrib.auth.mfa.* domainkit.contrib.auth.models.*
               domainkit.contrib.auth.recovery.* domainkit.contrib.auth.tables.*
+              domainkit.contrib.auth._http.*
               domainkit.contrib.auth.testing.*
               domainkit.contrib.auth.throttling.* domainkit.contrib.auth.validators.*
           - name: http-1

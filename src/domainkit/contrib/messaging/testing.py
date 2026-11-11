@@ -47,7 +47,7 @@ from domainkit.management.base import run_async
 from .outbox import watchers
 from .registry import Chain, Task, TaskSpec, dump_arguments, qualified_name, spec_for
 from .tables import PENDING, messages
-from .worker import Claimed, Worker, _without_input
+from .worker import Claimed, Worker, without_input
 
 __all__ = [
     "CapturedEvents",
@@ -191,7 +191,7 @@ class _Worker(Worker):
     ) -> str:
         """Note the failure, then retry or dead-letter as a worker does."""
         outcome = await super()._failed(message, exc, permanent=permanent, spec=spec)
-        error = _without_input(exc)
+        error = without_input(exc)
         self.failures.append(
             f"{message.kind} {message.target} ({outcome}): "
             f"{type(error).__name__}: {error}"

@@ -9,6 +9,16 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- No module imports another module's underscore names. Auth's route
+  modules took nine helpers from `auth.api` (`_errors`, `_no_store`,
+  `_credentials`, `_throttle` and others): they are now in one internal
+  module, `auth._http`, and 12 more such names across the apps got
+  public names in the modules that own them. A test fails on any new
+  import of that kind. Nothing a project imports changed (audit finding
+  A1).
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of

@@ -7,11 +7,9 @@ auth through these names, which keep their meaning across releases as
 the rest of the public API does.
 """
 
-from starlette.requests import HTTPConnection
-
-from .access import _impersonated, proof_of
+from ._http import PASSWORD_MAX_LENGTH
+from .access import impersonated, proof_of
 from .api import (
-    PASSWORD_MAX_LENGTH,
     MfaChallengeOut,
     TokenOut,
     attach_login_device,
@@ -98,8 +96,3 @@ __all__ = [
     "target_of",
     "utc_now",
 ]
-
-
-def impersonated(connection: HTTPConnection) -> bool:
-    """Whether staff act as the user on ``connection`` (an impersonation)."""
-    return _impersonated(connection)

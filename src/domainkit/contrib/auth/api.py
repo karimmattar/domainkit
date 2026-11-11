@@ -17,9 +17,8 @@ are not counted), and refusals go to the audit trail when
 ``domainkit.contrib.audit`` is installed.
 """
 
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
-from dataclasses import replace
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated, Literal, Self
 from uuid import UUID
@@ -27,12 +26,22 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, Request, Response, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from domainkit.context import bind_request, current_request
 from domainkit.ddd import PermissionDenied
 from domainkit.http.access import AllowScoped, IsUnscoped, Public, Require
 from domainkit.http.errors import APIError, error_responses
 from domainkit.utils.rates import PERIODS, parse_rate
 
+from ._http import (
+    DAILY,
+    LOGIN_THROTTLED,
+    PASSWORD_MAX_LENGTH,
+    acting_as,
+    credentials_of,
+    daily_window,
+    made_by,
+    no_store,
+    password_throttle,
+)
 from .access import AuthenticatedUser
 from .authentication import (
     AuthenticationFailed,
@@ -55,7 +64,6 @@ from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
 from .throttling import (
-    Attempt,
     Limit,
     Window,
     account_key,
@@ -63,7 +71,7 @@ from .throttling import (
     attempt,
     audit_refusal,
 )
-from .tokens import LoginMethod, logging_in
+from .tokens import LoginMethod
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
@@ -72,18 +80,12 @@ __all__ = [
     "router",
 ]
 
-LOGIN_THROTTLED = "Too many login attempts; try again later."
 CREDENTIALS_CHANGED = (
     "Your password or second factor changed while you logged in; log in again."
 )
 """Why a login whose check no longer holds is refused (``held_login``)."""
-"""The detail of a throttled login."""
-PASSWORD_MAX_LENGTH = 4096
-"""Longer passwords are refused before hashing, which they would slow down."""
 PERIOD_NAMES = {seconds: unit for unit, seconds in PERIODS.items()}
 """``86400``: ``day``, to write a rate back."""
-DAILY = "login-daily"
-"""The account's count of wrong passwords against ``ACCOUNT_LOGIN_RATE``."""
 PROVEN_DAILY = "proven-daily"
 """The account's ceiling of proven attempts over the day: ``PROVEN_CEILING``
 devices' worth of ``ACCOUNT_LOGIN_RATE``."""
@@ -177,10 +179,6 @@ class UserOut(BaseModel):
     permissions: list[str]
 
 
-_errors = error_responses
-"""OpenAPI entries for the error statuses an endpoint returns."""
-
-
 class MfaChallengeOut(BaseModel):
     """The password holds; send this token and a code to ``/mfa/login``."""
 
@@ -197,14 +195,16 @@ class MfaChallengeOut(BaseModel):
     response_model_exclude_none=True,
     responses={
         status.HTTP_202_ACCEPTED: {"model": MfaChallengeOut},
-        **_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_429_TOO_MANY_REQUESTS),
+        **error_responses(
+            status.HTTP_401_UNAUTHORIZED, status.HTTP_429_TOO_MANY_REQUESTS
+        ),
     },
 )
 async def login(
     body: LoginIn, request: Request, response: Response
 ) -> TokenOut | MfaChallengeOut:
     """Check an identifier and password; return tokens, or a second-factor challenge."""
-    _no_store(response)
+    no_store(response)
     user = await check_password(request, body)
     await pass_login_gates(request, user)
     from .mfa import challenge  # Imports this module.
@@ -214,7 +214,7 @@ async def login(
         return pending  # The device proof waits for the second factor.
     issued = await issue_login(user, factor_proven=False, method=LoginMethod.PASSWORD)
     await hand_out(request, response, user)
-    return _token_out(issued)
+    return token_out(issued)
 
 
 async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
@@ -247,11 +247,11 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
         )
     await counted.succeeded()
     if auth_settings().PASSWORD_CHANGE_ON_FIRST_USE:
-        return await _changed_on_first_use(user, body.new_password)
+        return await changed_on_first_use(user, body.new_password)
     return user
 
 
-async def _changed_on_first_use(
+async def changed_on_first_use(
     user: AbstractBaseUser, new_password: str | None, *, factor_proven: bool = False
 ) -> AbstractBaseUser:
     """``user``, whose password staff set replaced: it works for this change alone.
@@ -305,7 +305,7 @@ async def issue_login(
     ``LoginNotGated``. ``method`` (a ``LoginMethod``) and ``device_id``
     say how it signed in, shown with it in ``GET /tokens`` (ADR 0130).
     """
-    with _acting_as(user), _origin(method, device_id):
+    with acting_as(user), made_by(method, device_id):
         async with audited_changes(), AuthUnitOfWork() as uow:
             stored = await held_login(uow, user, factor_proven=factor_proven)
             await uow.tokens.end_oldest_logins(
@@ -368,22 +368,24 @@ async def audited_changes() -> AsyncIterator[None]:
     "/refresh",
     dependencies=[Public],
     response_model_exclude_none=True,
-    responses=_errors(status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED),
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
 )
 async def refresh(body: RefreshIn, response: Response) -> TokenOut:
     """Exchange a refresh token, once, for new tokens."""
-    _no_store(response)
+    no_store(response)
     async with AuthUnitOfWork() as uow:
         tokens = await get_authenticators()[0].refresh(uow, body.refresh_token)
         await uow.commit()
-    return _token_out(tokens)
+    return token_out(tokens)
 
 
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(Require(AllowScoped()))],
-    responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+    responses=error_responses(status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
 )
 async def logout(
     request: Request,
@@ -397,7 +399,7 @@ async def logout(
     """
     everywhere = body is not None and body.everywhere
     others = body is not None and body.others
-    credentials = _credentials(request)
+    credentials = credentials_of(request)
     if (everywhere or others) and credentials.scopes is not None:
         raise PermissionDenied("Credentials limited to scopes end only themselves.")
     if everywhere or others:
@@ -423,7 +425,7 @@ async def logout(
 @router.get(
     "/me",
     dependencies=[Depends(Require(AllowScoped()))],
-    responses=_errors(status.HTTP_401_UNAUTHORIZED),
+    responses=error_responses(status.HTTP_401_UNAUTHORIZED),
 )
 async def me(request: Request, user: AuthenticatedUser) -> UserOut:
     """The user who sent the request, and what these credentials may do.
@@ -434,7 +436,7 @@ async def me(request: Request, user: AuthenticatedUser) -> UserOut:
     field = user.EMAIL_FIELD
     email = getattr(user, field, None) if field else None
     permissions = await get_all_permissions(user)
-    scopes = _credentials(request).scopes
+    scopes = credentials_of(request).scopes
     return UserOut(
         id=user.id,
         username=user.get_username(),
@@ -452,7 +454,7 @@ async def me(request: Request, user: AuthenticatedUser) -> UserOut:
     "/password",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(Require(IsUnscoped()))],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
@@ -469,7 +471,7 @@ async def change_password(
     ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` says (ADR 0131).
     """
     keep_devices = device_logins_kept(body.keep_device_logins)
-    counted = await _throttle(request, user)
+    counted = await password_throttle(request, user)
     if not await password_holds(user, body.old_password, priority=True):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
@@ -480,7 +482,7 @@ async def change_password(
     validate_password(body.new_password, user)
     if body.keep_device_logins is False:
         await check_manage_logins(request, user)
-    credentials = _credentials(request)
+    credentials = credentials_of(request)
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         await uow.users.set_password(stored, body.new_password, priority=True)
@@ -528,7 +530,7 @@ async def attach_login_device(
     part of that unit of work, which its caller commits: the device and
     its login are written together, or not at all (ADR 0134).
     """
-    credentials = _credentials(request)
+    credentials = credentials_of(request)
     if uow is not None:
         await _attach(uow, credentials, device_id)
         return
@@ -581,48 +583,6 @@ async def password_holds(
     )
 
 
-async def _throttle(request: Request, user: AbstractBaseUser) -> Attempt:
-    """Refuse a signed-in user's password check past ``AUTH.LOGIN_RATE``.
-
-    Counted per user, at ``LOGIN_RATE`` and over each day at
-    ``ACCOUNT_LOGIN_RATE`` (SEC-16a-4): a session holds no more guesses at
-    the password than a stranger does. With
-    ``AUTH.PASSWORD_CHECKS_COUNT_AS_LOGINS`` (the PCI preset's), against the
-    account's count of wrong logins too, so the rate bounds every guess at
-    the password, from wherever it comes. The
-    first refusal of each key in a period is audited, not every one, so a
-    flood of attempts writes no rows to the append-only trail. Give the
-    result ``succeeded()`` once the password holds: only wrong ones count.
-    """
-    config = auth_settings()
-    daily = _daily(config.ACCOUNT_LOGIN_RATE)
-    limits: list[Limit] = [
-        (f"password:user:{user.id}", config.LOGIN_RATE),
-        (f"password-daily:user:{user.id}", daily),
-    ]
-    if config.PASSWORD_CHECKS_COUNT_AS_LOGINS:
-        username = user.get_username()
-        limits += [
-            (account_key("login", username), config.LOGIN_RATE),
-            (account_key(DAILY, username), daily),
-        ]
-    return await attempt(
-        request,
-        limits,
-        action="auth.login",
-        detail=LOGIN_THROTTLED,
-    )
-
-
-def _no_store(response: Response) -> None:
-    """Keep tokens out of every cache, as OAuth 2 asks (RFC 6749, 5.1).
-
-    ``IdempotencyMiddleware`` does not store such responses either.
-    """
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Pragma"] = "no-cache"
-
-
 def _login_limits(request: Request, username: str, device: str | None) -> list[Limit]:
     """The counts a login is checked against: its address's and its account's.
 
@@ -635,7 +595,7 @@ def _login_limits(request: Request, username: str, device: str | None) -> list[L
     (SEC-16a-7).
     """
     config = auth_settings()
-    rate, daily = config.LOGIN_RATE, _daily(config.ACCOUNT_LOGIN_RATE)
+    rate, daily = config.LOGIN_RATE, daily_window(config.ACCOUNT_LOGIN_RATE)
     if device is not None:
         return [
             *proven_limits(device, username, rate),
@@ -647,11 +607,6 @@ def _login_limits(request: Request, username: str, device: str | None) -> list[L
         (account_key("login", username), rate),
         (account_key(DAILY, username), daily),
     ]
-
-
-def _daily(rate: str | None) -> Window | None:
-    """``ACCOUNT_LOGIN_RATE`` as a window, which no day passes (SEC-16a-2)."""
-    return None if rate is None else Window(rate)
 
 
 def _ceiling(rate: str | None) -> Window | None:
@@ -667,34 +622,7 @@ async def _audit_refusal(reason: str) -> None:
     await audit_refusal("auth.login", reason)
 
 
-@contextmanager
-def _origin(method: str | None, device_id: UUID | None) -> Iterator[None]:
-    """Record the logins issued inside as made by ``method``, if one is given."""
-    if method is None:
-        yield
-        return
-    with logging_in(method, device_id):
-        yield
-
-
-@contextmanager
-def _acting_as(user: AbstractBaseUser) -> Iterator[None]:
-    """Attribute what follows (the login's events) to ``user``."""
-    context = current_request()
-    if context is None:
-        yield
-        return
-    with bind_request(replace(context, actor=str(user.id))):
-        yield
-
-
-def _credentials(request: Request) -> Credentials:
-    """The credentials of an authenticated request."""
-    credentials: Credentials = request.scope["auth"]
-    return credentials
-
-
-def _token_out(tokens: IssuedTokens) -> TokenOut:
+def token_out(tokens: IssuedTokens) -> TokenOut:
     """The response body for issued tokens."""
     return TokenOut(
         access_token=tokens.access_token,

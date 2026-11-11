@@ -602,13 +602,13 @@ async def may_impersonate(staff_id: UUID, user_id: UUID) -> bool:
     not when ``AUTH.IMPERSONATION_TTL`` runs out: what the admin API asked
     of them when it was issued (``staff_rules``), asked again. So does a
     grant to the user that the staff member lacks: staff only act as users
-    whose every permission they hold (the admin API's ``_may_change``).
+    whose every permission they hold (the admin API's ``may_change``).
     """
     # Here, not at the top: resources, users, and admin import this module.
     from domainkit.ddd import DomainError
     from domainkit.resources.access import content_type_of
 
-    from .admin import _may_change
+    from .admin import may_change
     from .models import UserId
     from .users import get_user_model
 
@@ -628,7 +628,7 @@ async def may_impersonate(staff_id: UUID, user_id: UUID) -> bool:
         if user is None:
             return False
         try:
-            await _may_change(staff, user)
+            await may_change(staff, user)
         except DomainError:  # It holds more than the staff member now.
             return False
     return True

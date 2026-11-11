@@ -10,7 +10,7 @@ password of any holder of such grants and logs in as them: AUTH-14
 exactly, for every project whose object permissions are not
 ``contrib.objectpermissions``. Nothing warns: no check compares a
 backend that answers ``has_perm(user, perm, obj)`` with one that answers
-``object_grants``. For inactive users and other backends ``_may_change``
+``object_grants``. For inactive users and other backends ``may_change``
 fails closed ("only superusers"); here it fails open.
 
 The backend below keeps mandates (user, permission, object) in a table,

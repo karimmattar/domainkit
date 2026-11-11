@@ -64,7 +64,7 @@ from domainkit.money import Money
 
 from .models import ACCOUNT, ACTOR, HOLDER, SUBJECT, Direction, Movement, Window, fits
 from .tables import kept, subjects, usage
-from .usage import SubjectKey, _ensure, consume, release
+from .usage import SubjectKey, consume, ensure_rows, release
 
 if TYPE_CHECKING:
     from domainkit.db import SqlAlchemyUnitOfWork
@@ -360,7 +360,7 @@ async def _count(
     ids: dict[str, UUID] = {}
     counted: set[tuple[UUID, str | None]] = set()
     for chunk in _chunks(keys):
-        await _ensure(session, list(chunk))
+        await ensure_rows(session, list(chunk))
         found = await session.execute(
             select(subjects.c.id, subjects.c.subject).where(
                 subjects.c.kind == limit.kind,
