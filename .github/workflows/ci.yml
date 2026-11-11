@@ -1186,7 +1186,7 @@ jobs:
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*
               domainkit.contrib.auth.totp.* domainkit.contrib.auth.uow.*
               domainkit.contrib.identity.* domainkit.contrib.devices.*
-              domainkit.contrib.phones.*
+              domainkit.contrib.phones.* domainkit.contrib.presets.*
           - name: auth-3
             mutants: >-
               domainkit.contrib.auth.api.* domainkit.contrib.auth.backends.*
@@ -1200,6 +1200,7 @@ jobs:
               domainkit.contrib.auth.codes.* domainkit.contrib.auth.erasure.* domainkit.contrib.auth.exceptions.*
               domainkit.contrib.auth.mfa.* domainkit.contrib.auth.models.*
               domainkit.contrib.auth.recovery.* domainkit.contrib.auth.tables.*
+              domainkit.contrib.auth.routing.*
               domainkit.contrib.auth.testing.*
               domainkit.contrib.auth.throttling.* domainkit.contrib.auth.validators.*
           - name: http-1

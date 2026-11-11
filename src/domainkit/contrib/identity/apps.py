@@ -66,7 +66,8 @@ class IdentityConfig(DomainConfig):
                 AccountRoutes("identity", f"{self.name}.api.router"),
                 # SAML's routes need its extra: a project includes them.
                 AccountRoutes("saml", f"{self.name}.saml.router", default=False),
-            ]
+            ],
+            domain=self.label,
         )
 
         event_bus.subscribe(UserDeleted, forget_identities)

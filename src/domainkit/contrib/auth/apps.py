@@ -131,7 +131,7 @@ class AuthConfig(DomainConfig):
         on_export_subject(_export_logins, domain=self.label)
         on_check_application(self.application_problems)
         on_deployment_warnings(self.weak_settings)
-        on_account_routes(self.account_routes)
+        on_account_routes(self.account_routes, domain=self.label)
 
     def account_routes(self) -> list[AccountRoutes]:
         """Auth's routes for ``account_router`` (``routing``).

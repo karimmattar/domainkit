@@ -56,7 +56,10 @@ class CibaConfig(DomainConfig):
 
         from .gate import approved_from_the_phone, managed_from_the_phone
 
-        on_account_routes(lambda: [AccountRoutes("sign-in", f"{self.name}.api.router")])
+        on_account_routes(
+            lambda: [AccountRoutes("sign-in", f"{self.name}.api.router")],
+            domain=self.label,
+        )
         on_login_gate(approved_from_the_phone)
         on_manage_logins(managed_from_the_phone)
         event_bus.subscribe(UserDeleted, forget_requests)

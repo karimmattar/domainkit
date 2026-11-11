@@ -37,7 +37,10 @@ class PhonesConfig(DomainConfig):
         from domainkit.contrib.auth.integration import UserDeleted
         from domainkit.contrib.auth.routing import AccountRoutes, on_account_routes
 
-        on_account_routes(lambda: [AccountRoutes("phones", f"{self.name}.api.router")])
+        on_account_routes(
+            lambda: [AccountRoutes("phones", f"{self.name}.api.router")],
+            domain=self.label,
+        )
 
         event_bus.subscribe(UserDeleted, forget_phones)
         on_erase_subject(self.erase_person, domain=self.label)
