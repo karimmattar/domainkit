@@ -9,6 +9,13 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- `domainkit.contrib.auth.repositories` is a package: its 1,852 lines
+  are five modules, by what is stored (accounts, tokens, principals,
+  factors, signups). Every name is still imported from
+  `auth.repositories`, and no code changed (audit findings A1, A4).
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of

@@ -29,8 +29,13 @@ ALLOWED: Final = frozenset(
         # Auth hangs its permissions off content types (it requires them).
         ("domainkit.contrib.auth.apps", "domainkit.contrib.contenttypes.sync"),
         ("domainkit.contrib.auth.principals", "domainkit.contrib.contenttypes.tables"),
+        # One import of 0.9.2's repositories module, in the two it became.
         (
-            "domainkit.contrib.auth.repositories",
+            "domainkit.contrib.auth.repositories.accounts",
+            "domainkit.contrib.contenttypes.tables",
+        ),
+        (
+            "domainkit.contrib.auth.repositories.principalstore",
             "domainkit.contrib.contenttypes.tables",
         ),
         ("domainkit.contrib.auth.tables", "domainkit.contrib.contenttypes.tables"),
