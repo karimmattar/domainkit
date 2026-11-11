@@ -28,6 +28,12 @@ and a status.
 
 ### Added
 
+- `MANAGES_LOGINS` (`auth.gates`, `auth.integration`): a route dependency
+  that runs the `on_manage_logins` checks before the body is read. The
+  auth apps' routes that add or remove a way into an account declare it,
+  and a test refuses a new one that declares nothing; declare it on your
+  own such routes ([Who manages logins](docs/auth/logging-in.md#who-manages-logins),
+  ADR 0136).
 - `check` warns (`ciba.W001`) when `CIBA.APPROVE_LOGINS` is on and
   `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS` is `"end"`: a password change or
   reset would sign the phone out.

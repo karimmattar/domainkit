@@ -53,6 +53,7 @@ from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
 from domainkit.contrib.auth.authentication import Credentials, Proof
 from domainkit.contrib.auth.captcha import captcha
 from domainkit.contrib.auth.integration import (
+    MANAGES_LOGINS,
     PASSWORD_MAX_LENGTH,
     LoginMethod,
     StepUpOut,
@@ -62,7 +63,6 @@ from domainkit.contrib.auth.integration import (
     attempt,
     audit_refusal,
     auth_settings,
-    check_manage_logins,
     end_device_logins,
     issue_login,
     pass_login_gates,
@@ -239,7 +239,7 @@ class DeviceOut(BaseModel):
     last_used_at: datetime | None
 
 
-@router.post("/passkeys/register/options")
+@router.post("/passkeys/register/options", dependencies=[MANAGES_LOGINS])
 async def start_registration(
     body: ReauthIn, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> dict[str, Any]:
@@ -248,19 +248,21 @@ async def start_registration(
     Checked by auth's ``on_manage_logins`` first: in the phone modes, the
     phone signs it (ADR 0132).
     """
-    await check_manage_logins(request, user)
     await reauthenticate(request, user, body.password, ADD_PASSKEY)
     return await creation_options(user)
 
 
-@router.post("/passkeys/register", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/passkeys/register",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[MANAGES_LOGINS],
+)
 async def finish_registration(
     body: RegistrationIn,
     request: Request,
     user: Annotated[AbstractBaseUser, SIGNED_IN],
 ) -> PasskeyOut:
     """Store the passkey the browser made; checked as its options are."""
-    await check_manage_logins(request, user)
     passkey = await register(
         user,
         client_data_json=body.credential.response.clientDataJSON,
@@ -321,12 +323,15 @@ async def list_passkeys(
         return [_passkey_out(each) for each in await uow.passkeys.of_user(user.id)]
 
 
-@router.delete("/passkeys/{passkey_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/passkeys/{passkey_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[MANAGES_LOGINS],
+)
 async def remove_passkey(
     passkey_id: UUID, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> None:
     """Remove one of the user's passkeys; checked by ``on_manage_logins``."""
-    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         if not await uow.passkeys.remove(user.id, passkey_id):
             raise PasskeyNotFound("You have no passkey with that id.")
@@ -490,7 +495,9 @@ async def enroll_device(
     )
 
 
-@router.post("/devices", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/devices", status_code=status.HTTP_201_CREATED, dependencies=[MANAGES_LOGINS]
+)
 async def bind_device(
     body: DeviceIn, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> DeviceOut:
@@ -502,7 +509,6 @@ async def bind_device(
     bound it, are written together.
     """
     algorithm, key = device_key(body.public_key)
-    await check_manage_logins(request, user)
     await reauthenticate(request, user, body.password, BIND_DEVICE)
     signer = await signing_device(request, user)
     limit = _settings().MAX_DEVICES
@@ -534,7 +540,11 @@ async def list_devices(user: Annotated[AbstractBaseUser, SIGNED_IN]) -> list[Dev
     ]
 
 
-@router.delete("/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/devices/{device_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[MANAGES_LOGINS],
+)
 async def unbind_device(
     device_id: UUID, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> None:
@@ -544,7 +554,6 @@ async def unbind_device(
     of the user's devices signs the request. The device and its logins go
     together (ADR 0134).
     """
-    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         if not await uow.devices.remove(user.id, device_id):
             raise DeviceNotFound("You have no device with that id.")
@@ -554,16 +563,19 @@ async def unbind_device(
         await uow.commit()
 
 
-@router.post("/devices/push-tokens", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/devices/push-tokens",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[MANAGES_LOGINS],
+)
 async def register_push_token(
-    body: PushTokenIn, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    body: PushTokenIn, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> PushTokenOut:
     """Keep the token the user's app was given: notifications go there.
 
     Checked by auth's ``on_manage_logins`` first: in the phone modes, one
     of the user's devices signs the request (ADR 0134).
     """
-    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         token = await uow.push_tokens.register(
             user.id, body.token, body.platform, keep=_settings().MAX_PUSH_TOKENS
@@ -582,16 +594,17 @@ async def list_push_tokens(
 
 
 @router.delete(
-    "/devices/push-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT
+    "/devices/push-tokens/{token_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[MANAGES_LOGINS],
 )
 async def remove_push_token(
-    token_id: UUID, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    token_id: UUID, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> None:
     """Remove one of the user's push tokens (the app logged out).
 
     Checked by auth's ``on_manage_logins`` first, as registering one is.
     """
-    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         if not await uow.push_tokens.remove(user.id, token_id):
             raise DeviceNotFound("You have no push token with that id.")

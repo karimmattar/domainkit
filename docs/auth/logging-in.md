@@ -318,6 +318,27 @@ its checks before:
   token, a personal token, a second factor, a passkey, a linked identity
   ([ADR 0134](../adr/0134-bind-another-device-from-a-bound-one.md)).
 
+A route declares the check as a dependency (since 2.3,
+[ADR 0136](../adr/0136-declare-the-login-check-on-the-route.md)), and so
+does a route of your own that adds a way into an account:
+
+```python
+from fastapi import APIRouter
+
+from domainkit.contrib.auth.integration import MANAGES_LOGINS
+
+router = APIRouter()
+
+
+@router.post("/api-keys", dependencies=[MANAGES_LOGINS])
+async def add_api_key() -> dict[str, str]:
+    return {"key": "..."}
+```
+
+The check then runs before the body is read. A route where only some
+requests manage logins calls `check_manage_logins(request, user)` in its
+body instead.
+
 A check takes the request and the user, and refuses by raising. With
 none registered, any login of the user manages the others. Logging out
 of the request's own login is never checked: a user can always sign out

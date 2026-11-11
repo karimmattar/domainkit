@@ -68,7 +68,7 @@ from .api import (
 )
 from .devices import hand_out
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
-from .gates import check_manage_logins, pass_login_gates
+from .gates import MANAGES_LOGINS, pass_login_gates
 from .models import AbstractBaseUser, UserId
 from .onetime import TOKEN_MAX_LENGTH, UserTokenGenerator
 from .repositories import TotpDevice
@@ -424,7 +424,7 @@ async def mfa_status(user: AuthenticatedUser) -> MfaStatusOut:
 
 @router.post(
     "/mfa/totp",
-    dependencies=UNSCOPED,
+    dependencies=[*UNSCOPED, MANAGES_LOGINS],
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -441,7 +441,6 @@ async def start_enrolment(
     signs it (ADR 0132).
     """
     _no_store(response)
-    await check_manage_logins(request, user)
     await _reauthenticate(request, user, body.password)
     secret = totp.new_secret()
     sealed = secret_box().encrypt(secret, associated=user.id.bytes)
@@ -466,7 +465,7 @@ async def start_enrolment(
 
 @router.post(
     "/mfa/totp/confirm",
-    dependencies=UNSCOPED,
+    dependencies=[*UNSCOPED, MANAGES_LOGINS],
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -486,7 +485,6 @@ async def confirm_enrolment(
     """
     _no_store(response)
     keep_devices = device_logins_kept(body.keep_device_logins)
-    await check_manage_logins(request, user)
     counted = await _limit_user(request, user)
     codes = new_recovery_codes(auth_settings().MFA.RECOVERY_CODES)
     async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
@@ -526,7 +524,7 @@ async def confirm_enrolment(
 @router.post(
     "/mfa/totp/disable",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=UNSCOPED,
+    dependencies=[*UNSCOPED, MANAGES_LOGINS],
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -540,7 +538,6 @@ async def disable(
 
     Checked by ``on_manage_logins`` first (ADR 0132).
     """
-    await check_manage_logins(request, user)
     await _reauthenticate(request, user, body.password, body.code)
     async with AuthUnitOfWork() as uow:
         await uow.mfa.remove(user.id)
@@ -551,7 +548,7 @@ async def disable(
 
 @router.post(
     "/mfa/recovery-codes",
-    dependencies=UNSCOPED,
+    dependencies=[*UNSCOPED, MANAGES_LOGINS],
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -569,7 +566,6 @@ async def regenerate_recovery_codes(
     Checked by ``on_manage_logins`` first (ADR 0132).
     """
     _no_store(response)
-    await check_manage_logins(request, user)
     await _reauthenticate(request, user, body.password, body.code)
     codes = new_recovery_codes(auth_settings().MFA.RECOVERY_CODES)
     async with AuthUnitOfWork() as uow:
