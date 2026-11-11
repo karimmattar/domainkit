@@ -520,11 +520,21 @@ jobs:
       - run: >-
           poetry run python -m benchmarks --strict --json ladder.json
           ${{ github.event_name == 'pull_request' && '--baseline base/src' || '' }}
+      # Under load (ADR 0139): the rungs served by uvicorn, 32 connections
+      # each. A runner's times are noise, so no time is gated: a rung's
+      # requests a second and 99th percentile are held, loosely, against
+      # plain FastAPI's in the same run (benchmarks/load.toml), and every
+      # answer must be the rung's. The figures go to the job summary.
+      - run: >-
+          poetry run python -m benchmarks.load --strict --json load.json
+          --rungs fastapi,template,me,read,write
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-ladder
-          path: ladder.json
+          path: |
+            ladder.json
+            load.json
           retention-days: 30
 
   # Every line must run in some job: a few only run on SQLite, others only

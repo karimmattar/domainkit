@@ -1,0 +1,28 @@
+# How far a rung may fall behind plain FastAPI under load, measured in the
+# same run (python -m benchmarks.load, docs/performance.md, ADR 0139).
+# p99_ratio: the rung's 99th percentile over the baseline's, at most.
+# throughput_ratio: the rung's requests a second over the baseline's, at least.
+# Loose on purpose, about four times what was measured: a gross regression
+# fails, a shared machine's noise does not. An answer that is not the
+# rung's fails whatever is here.
+
+baseline = "fastapi"
+
+# Measured: 0.38 to 0.56 of the requests a second, a tail 1.5 to 2.6 times.
+[rungs.template]
+p99_ratio = 10
+throughput_ratio = 0.1
+
+# Measured: 0.27 to 0.31, a tail 2.3 to 5.4 times.
+[rungs.me]
+p99_ratio = 20
+throughput_ratio = 0.07
+
+# The database rungs: their tail depends on the pool and the server more
+# than on the code, so only their requests a second are held.
+# Measured: 0.04 to 0.07.
+[rungs.read]
+throughput_ratio = 0.01
+
+[rungs.write]
+throughput_ratio = 0.01
