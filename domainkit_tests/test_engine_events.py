@@ -18,7 +18,7 @@ from sqlalchemy import exc, text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from domainkit_tests import conftest, engine_events
-from domainkit_tests.engine_events import CHECKED_OUT_AT, leak_log, leaks
+from domainkit_tests.engine_events import CHECKED_OUT_AT, OPENED, leak_log, leaks
 
 pytestmark = pytest.mark.anyio
 
@@ -113,6 +113,80 @@ async def test_a_connection_given_back_is_not_named(
         await engine.dispose()
 
     assert [each for each in caplog.records if each.name == leak_log.name] == []
+
+
+@pytest.mark.usefixtures("database_access")
+async def test_an_open_connection_is_kept_until_its_pool_closes_it(
+    tmp_path: Path,
+) -> None:
+    """Given back and still open, it is known by its address; disposed, forgotten."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'kept.sqlite3'}")
+    async with engine.connect() as connection:
+        raw = await connection.get_raw_connection()
+        address = id(raw.dbapi_connection._connection)  # type: ignore[union-attr]
+
+    where = OPENED[address]
+    await engine.dispose()
+
+    test = "test_an_open_connection_is_kept_until_its_pool_closes_it[asyncio] (call)"
+    assert where.splitlines()[0].endswith(test)
+    assert f"{__file__}:" in where
+    assert f"{engine_events.__file__}:" not in where  # Not the listeners' own.
+    assert address not in OPENED
+
+
+def test_a_failure_that_quotes_an_unclosed_connection_names_who_opened_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The warning's address is looked up once; other failures list nothing."""
+    monkeypatch.setattr(engine_events, "leaks", [])
+    monkeypatch.setitem(OPENED, 0x7FCDE7F0E350, "test_a (call)\n  a.py:1 in make")
+    failure = (
+        "ResourceWarning: <aiosqlite.core.Connection object at 0x7fcde7f0e350> "
+        "was deleted before being closed. Please use 'async with' or '.close()'\n"
+        "Exception ignored in: <function Connection.__del__ at 0x7fce01ea5080>\n"
+        "<aiosqlite.core.Connection object at 0x7fcde7f0e350> was deleted"
+    )
+
+    engine_events.name_the_opener("AssertionError: 1 != 2", "test_b")
+    engine_events.name_the_opener(failure, "test_b")
+    engine_events.name_the_opener(failure, "test_c")  # Named once: it is gone.
+
+    assert engine_events.leaks == [
+        (
+            "opened during test_a (call)\n  a.py:1 in make\n"
+            "never closed; the collector deleted it during test_b"
+        )
+    ]
+    assert 0x7FCDE7F0E350 not in OPENED
+
+
+@pytest.mark.usefixtures("database_access")
+async def test_an_engine_dropped_with_its_connection_open_is_named(
+    tmp_path: Path,
+) -> None:
+    """The real thing: aiosqlite's warning, from a connection no pool closed."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'drop.sqlite3'}")
+    async with engine.connect() as connection:
+        raw = await connection.get_raw_connection()
+        served: aiosqlite.Connection = raw.dbapi_connection._connection  # type: ignore[union-attr]
+    del connection, raw, engine  # Never disposed: the pool goes with its engine.
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        # What the collector calls when nothing holds the connection.
+        served.__del__()  # type: ignore[no-untyped-call]
+    # It stopped aiosqlite's thread, which answers on this loop: let it end.
+    await anyio.to_thread.run_sync(served._thread.join, 10)
+    [warning] = [each for each in caught if "deleted before" in str(each.message)]
+    engine_events.name_the_opener(str(warning.message), "the test it failed")
+
+    listed = leaks.pop()  # This one was made on purpose: the summary stays clean.
+    assert listed.splitlines()[0].startswith("opened during domainkit_tests/")
+    assert "test_an_engine_dropped_with_its_connection_open_is_named" in listed
+    assert listed.endswith(
+        "never closed; the collector deleted it during the test it failed"
+    )
 
 
 class Reporter:

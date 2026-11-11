@@ -18,10 +18,18 @@ collector closes such a connection in whichever test runs then, which fails
 logged when the collector closes one (``_name_the_leak``), and listed at
 the end of the run (``leaks``, which ``conftest`` prints): the collector
 often runs in a test that passes, whose log pytest drops.
+
+A connection that was given back and never closed, because its engine was
+dropped without ``dispose()``, is not such a leak, and fails a later test
+all the same: aiosqlite warns that it "was deleted before being closed".
+Each connection a pool opens is kept by its address until the pool closes
+it (``OPENED``), and a failure that quotes that warning is listed with the
+test that opened the connection (``name_the_opener``).
 """
 
 import logging
 import os
+import re
 import sys
 import threading
 from collections.abc import Callable, Iterator
@@ -100,6 +108,26 @@ leaks: Final[list[str]] = []
 """Each leak this process saw, as it was logged: the run's summary lists them."""
 
 
+OPENED: Final[dict[int, str]] = {}
+"""Where each driver connection a pool opened and has not closed was opened,
+by the driver connection's address (what its warning prints)."""
+_UNCLOSED: Final = re.compile(r"aiosqlite\.core\.Connection object at (0x[0-9a-f]+)")
+"""The connection aiosqlite's "was deleted before being closed" names."""
+
+
+def _here() -> tuple[str, list[str]]:
+    """The test that is running, and the frames of domainkit and its tests."""
+    return (
+        os.environ.get("PYTEST_CURRENT_TEST", "?"),
+        [
+            f"{frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}"
+            for frame in _callers()
+            if frame.f_code.co_filename.startswith(_OURS)
+            and frame.f_code.co_filename != __file__  # Not the listeners' own.
+        ],
+    )
+
+
 def _remember_checkout(
     _dbapi: object, record: ConnectionPoolEntry, _proxy: object
 ) -> None:
@@ -110,14 +138,43 @@ def _remember_checkout(
     test fails, though another one leaked it. The frames kept here name the
     one that did (``_name_the_leak``).
     """
-    record.info[CHECKED_OUT_AT] = (
-        os.environ.get("PYTEST_CURRENT_TEST", "?"),
-        [
-            f"{frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}"
-            for frame in _callers()
-            if frame.f_code.co_filename.startswith(_OURS)
-        ],
-    )
+    record.info[CHECKED_OUT_AT] = _here()
+
+
+def _driver(dbapi_connection: object) -> object:
+    """The driver's own connection: SQLAlchemy wraps an async driver's."""
+    return getattr(dbapi_connection, "_connection", dbapi_connection)
+
+
+def _remember_open(dbapi_connection: object, _record: object) -> None:
+    """Keep where a pool opened a connection, until the pool closes it."""
+    test, frames = _here()
+    where = "\n  ".join(frames) or "(no frame of domainkit or its tests)"
+    OPENED[id(_driver(dbapi_connection))] = f"{test}\n  {where}"
+
+
+def _forget_closed(dbapi_connection: object, _record: object = None) -> None:
+    """A connection its pool closed is no one's to name."""
+    OPENED.pop(id(_driver(dbapi_connection)), None)
+
+
+def name_the_opener(failure: str, test: str) -> None:
+    """List where the connection a failure says was never closed was opened.
+
+    ``failure`` is a failed test's report. aiosqlite's warning in it gives
+    the connection's address, which ``OPENED`` still holds when no pool
+    closed it: its engine was dropped without ``dispose()``. An address is
+    reused once its object is gone, so a connection opened since at the
+    same one would be named in its place: the test listed is the likely
+    one, and the frames say where to look.
+    """
+    for address in dict.fromkeys(_UNCLOSED.findall(failure)):
+        where = OPENED.pop(int(address, 16), None)
+        if where is not None:
+            leaks.append(
+                f"opened during {where}\n"
+                f"never closed; the collector deleted it during {test}"
+            )
 
 
 def _callers() -> list[FrameType]:
@@ -173,3 +230,6 @@ def _name_the_leak(dbapi_connection: object) -> None:
 
 event.listen(Pool, "checkout", _remember_checkout)
 event.listen(Pool, "close_detached", _name_the_leak)
+event.listen(Pool, "connect", _remember_open)
+event.listen(Pool, "close", _forget_closed)
+event.listen(Pool, "close_detached", _forget_closed)
