@@ -15,7 +15,9 @@ reads, and takes it off again::
 It also names the test that leaks a pooled connection. The garbage
 collector closes such a connection in whichever test runs then, which fails
 (SQLAlchemy warns); each checkout keeps where it was made, and that is
-logged when the collector closes one (``_name_the_leak``).
+logged when the collector closes one (``_name_the_leak``), and listed at
+the end of the run (``leaks``, which ``conftest`` prints): the collector
+often runs in a test that passes, whose log pytest drops.
 """
 
 import logging
@@ -94,6 +96,8 @@ _OURS: Final = (
 )
 """The frames worth keeping: domainkit's and its tests', not the libraries'."""
 leak_log: Final = logging.getLogger("domainkit_tests.leaked_connections")
+leaks: Final[list[str]] = []
+"""Each leak this process saw, as it was logged: the run's summary lists them."""
 
 
 def _remember_checkout(
@@ -154,11 +158,16 @@ def _name_the_leak(dbapi_connection: object) -> None:
     test, frames = (
         record.info.get(CHECKED_OUT_AT, ("?", [])) if record is not None else ("?", [])
     )
+    where = "\n  ".join(frames) or "(no frame of domainkit or its tests)"
+    leaks.append(
+        f"taken during {test}\n  {where}\n"
+        f"closed during {os.environ.get('PYTEST_CURRENT_TEST', '?')}"
+    )
     leak_log.error(
         "The connection %r was never given back; it was taken during %s, at:\n  %s",
         dbapi_connection,
         test,
-        "\n  ".join(frames) or "(no frame of domainkit or its tests)",
+        where,
     )
 
 

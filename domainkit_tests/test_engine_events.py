@@ -17,7 +17,8 @@ import pytest
 from sqlalchemy import exc, text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
-from domainkit_tests.engine_events import CHECKED_OUT_AT, leak_log
+from domainkit_tests import conftest, engine_events
+from domainkit_tests.engine_events import CHECKED_OUT_AT, leak_log, leaks
 
 pytestmark = pytest.mark.anyio
 
@@ -89,6 +90,13 @@ async def test_the_collectors_close_names_where_it_was_taken(
     assert "was never given back" in message
     assert "test_the_collectors_close_names_where_it_was_taken" in message
     assert in_take(message.splitlines())
+    listed = leaks.pop()  # This one was made on purpose: the summary stays clean.
+    assert listed.startswith(
+        "taken during domainkit_tests/test_engine_events.py::"
+        "test_the_collectors_close_names_where_it_was_taken"
+    )
+    assert in_take(listed.splitlines())
+    assert "closed during domainkit_tests/test_engine_events.py::" in listed
 
 
 async def test_a_connection_given_back_is_not_named(
@@ -105,3 +113,58 @@ async def test_a_connection_given_back_is_not_named(
         await engine.dispose()
 
     assert [each for each in caplog.records if each.name == leak_log.name] == []
+
+
+class Reporter:
+    """What the summary writes to, in place of pytest's terminal."""
+
+    def __init__(self) -> None:
+        """Nothing written yet."""
+        self.written: list[str] = []
+
+    def section(self, title: str, **markup: object) -> None:
+        """A heading."""
+        self.written.append(f"== {title}")
+
+    def line(self, text: str) -> None:
+        """A line."""
+        self.written.append(text)
+
+
+def test_the_runs_summary_lists_the_leaks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI reads the summary: the test that leaked is named there, or nothing is."""
+    reporter = Reporter()
+    monkeypatch.setattr(engine_events, "leaks", [])
+    conftest.pytest_terminal_summary(reporter)  # type: ignore[arg-type]
+    assert reporter.written == []
+
+    engine_events.leaks.append("taken during test_a\n  a.py:1 in take")
+    conftest.pytest_terminal_summary(reporter)  # type: ignore[arg-type]
+
+    assert reporter.written == [
+        "== leaked database connections",
+        "taken during test_a\n  a.py:1 in take",
+        "",
+    ]
+
+
+def test_workers_hand_their_leaks_to_the_process_that_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With pytest-xdist the tests run in workers, and one process reports."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(engine_events, "leaks", ["taken during test_b"])
+    worker = SimpleNamespace(config=SimpleNamespace(workeroutput={}))
+    alone = SimpleNamespace(config=SimpleNamespace())
+
+    conftest.pytest_sessionfinish(worker)  # type: ignore[arg-type]
+    conftest.pytest_sessionfinish(alone)  # type: ignore[arg-type]
+    monkeypatch.setattr(engine_events, "leaks", [])
+    conftest.pytest_testnodedown(
+        SimpleNamespace(workeroutput=worker.config.workeroutput)
+    )
+    conftest.pytest_testnodedown(SimpleNamespace())  # A worker that crashed.
+
+    assert worker.config.workeroutput == {conftest.LEAKS: ["taken during test_b"]}
+    assert engine_events.leaks == ["taken during test_b"]
