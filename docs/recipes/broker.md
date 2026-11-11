@@ -218,6 +218,7 @@ async def test_each_message_reaches_one_handler_and_is_forgotten(
     """Two messages; the first is requeued once, then both are acknowledged."""
     broker = broker_in(tmp_path / "queue.sqlite3")
     seen: list[str] = []
+    acknowledged: set[str] = set()
     done = asyncio.Event()
 
     async def handle(delivery: Delivery) -> None:
@@ -226,7 +227,8 @@ async def test_each_message_reaches_one_handler_and_is_forgotten(
             await delivery.requeue()
             return
         await delivery.ack()
-        if {"a", "b"} <= set(seen) and seen.count("a") == 2:
+        acknowledged.add(delivery.message_id)
+        if acknowledged == {"a", "b"}:  # Both are gone, not only handed over.
             done.set()
 
     await broker.publish("emails", b'{"to": "ann"}', message_id="a")
