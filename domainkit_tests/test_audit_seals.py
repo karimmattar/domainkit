@@ -1070,6 +1070,9 @@ def two_trails(
     """Four rows on ``default``'s trail, ``reports``'s empty; the rows' ids."""
     shared = MemoryLedger()  # Commands close their ledgers; this one stays.
     monkeypatch.setattr(ledgers, "_factories", {"memory": lambda config: shared})
+    # A ledger an earlier test left cached for the alias would take the
+    # anchor: the command closes it, and the next one reads ``shared``, empty.
+    ledgers.reset()
     reports = f"sqlite+aiosqlite:///{tmp_path / 'reports.sqlite3'}"
     databases = {**settings.DATABASES, "reports": {"URL": reports}}
 
