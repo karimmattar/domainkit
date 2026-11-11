@@ -13,9 +13,11 @@ import hashlib
 import tempfile
 import tracemalloc
 from collections.abc import Iterator
+from pathlib import Path
 from typing import IO, Any
 
 import pytest
+import sqlalchemy
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.conf import override_settings
@@ -34,6 +36,8 @@ SPOOLED = {
     "SPOOL_BYTES": MIB,
 }
 """Keep responses up to 64 MiB; hold 1 MiB of each body in memory."""
+SQLALCHEMY = str(Path(sqlalchemy.__file__).parent)
+"""Where SQLAlchemy's modules are: what they allocate is not the middleware's."""
 
 
 @pytest.fixture
@@ -90,8 +94,8 @@ def keyed(
 ) -> tuple[int, str, int]:
     """POST ``size`` bytes in 64 KiB parts with a key: status, digest, peak bytes.
 
-    The peak is tracemalloc's while the request ran: what the middleware,
-    and the store, held at once.
+    The peak is tracemalloc's while the request ran, less what SQLAlchemy
+    holds at its end (``not_ours``): what the middleware held at once.
     """
     parts = max(1, size // PART)
 
@@ -121,13 +125,34 @@ def keyed(
         tracemalloc.start()
         try:
             await idempotency.IdempotencyMiddleware(app)(scope, receive, send)
-            peak = tracemalloc.get_traced_memory()[1]
+            peak = tracemalloc.get_traced_memory()[1] - not_ours()
         finally:
             tracemalloc.stop()
             await connections.close_all()
         return statuses[0], digest.hexdigest(), peak
 
     return asyncio.run(scenario())
+
+
+def not_ours() -> int:
+    """The bytes tracemalloc traces to SQLAlchemy's lines, not the middleware's.
+
+    tracemalloc counts the whole process. SQLAlchemy runs each statement
+    in a greenlet of its own, whose first frame is SQLAlchemy's. Under
+    coverage, the C tracer keeps a slot for every greenlet it has met in
+    one array, never shrinks it, and reallocates it as it grows: in that
+    frame, in about one measurement in four. The array is as long as the
+    worker's run: 160 to 490 KB in runs here, and about 550 KB when CI
+    read 9.006 MiB against a limit of 9. Without it, ten measurements in
+    one run of the suite were within 5 KB of each other. What the driver
+    allocates for itself is counted here too, and was never the
+    middleware's.
+    """
+    return sum(
+        trace.size
+        for trace in tracemalloc.take_snapshot().traces
+        if trace.traceback[-1].filename.startswith(SQLALCHEMY)
+    )
 
 
 def test_a_large_keyed_body_is_held_once_and_spooled(
@@ -149,13 +174,15 @@ def test_a_large_kept_response_is_held_once_and_replayed_byte_for_byte(
 
     Measured as the response goes to the store: the driver's own copies of
     the value (asyncpg encodes it into a buffer of its own) are not the
-    middleware's.
+    middleware's, and neither is what SQLAlchemy held by then (``not_ours``).
     """
     held: list[tuple[int, int]] = []
     settle = idempotency._settle
 
     async def measured(*args: Any) -> None:  # noqa: ANN401 - passed on as given.
-        held.append(tracemalloc.get_traced_memory())
+        current, peak = tracemalloc.get_traced_memory()
+        apart = not_ours()
+        held.append((current - apart, peak - apart))
         await settle(*args)
 
     monkeypatch.setattr(idempotency, "_settle", measured)
