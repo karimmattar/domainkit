@@ -47,11 +47,13 @@ __all__ = [
     "LoginGate",
     "LoginNotGated",
     "LoginsCheck",
+    "SuperuserCheck",
     "check_gates_passed",
     "check_manage_logins",
     "gates_passed",
     "manages_logins",
     "on_login_gate",
+    "on_make_superuser",
     "on_manage_logins",
     "pass_login_gates",
 ]
@@ -79,6 +81,19 @@ end the devices' logins, and before the requests that change the factors
 logins rest on: the authenticator app's, the recovery codes, passkeys,
 unbinding a device. Logging out of the request's own login is never
 checked.
+"""
+
+type SuperuserCheck = Callable[[], None]
+"""A check before the admin API makes a user a superuser: raise to refuse."""
+
+on_make_superuser: Final[HookPoint[SuperuserCheck]] = HookPoint(
+    "make superuser", arguments=0, awaited=False
+)
+"""Register a check of making a superuser in the admin API.
+
+It runs before the admin API creates a superuser or makes a user one.
+``domainkit.contrib.approvals`` registers its guard: where it holds the
+grant for approval, no one makes a superuser here.
 """
 
 _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)

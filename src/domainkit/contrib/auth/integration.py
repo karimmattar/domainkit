@@ -48,7 +48,14 @@ from .stepup import (
     step_up_answer,
     stepping_credentials,
 )
-from .throttling import account_key, address_key, attempt, audit_refusal
+from .throttling import (
+    RefusalHook,
+    account_key,
+    address_key,
+    attempt,
+    audit_refusal,
+    on_refusal,
+)
 from .tokens import LoginMethod, note_login_device, utc_now
 
 __all__ = [
@@ -59,6 +66,7 @@ __all__ = [
     "LoginMethod",
     "MfaChallengeOut",
     "ReauthenticationRequired",
+    "RefusalHook",
     "StepUpOut",
     "SteppedUp",
     "TokenOut",
@@ -85,6 +93,7 @@ __all__ = [
     "note_login_device",
     "on_login_gate",
     "on_manage_logins",
+    "on_refusal",
     "pass_login_gates",
     "proof_of",
     "reauthenticate",

@@ -9,6 +9,15 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `auth.integration.on_refusal` and `auth.gates.on_make_superuser`: hook
+  points for what auth asked two apps by importing them. Audit registers
+  the first, to record refused attempts; approvals the second, to hold a
+  superuser for approval. Auth and those apps no longer import each
+  other, a test keeps any two apps from it, and nothing changes for a
+  project (ADR 0140, audit finding A2).
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of

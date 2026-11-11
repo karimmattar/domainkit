@@ -39,7 +39,6 @@ from pydantic import (
     JsonValue,
 )
 
-from domainkit.apps import registry
 from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import F
@@ -68,6 +67,7 @@ from .exceptions import (
     UnknownUserField,
     UserNotFound,
 )
+from .gates import on_make_superuser
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
@@ -81,7 +81,6 @@ __all__ = [
 ]
 
 PAGE_SIZE: Final = 50
-APPROVALS: Final = "domainkit.contrib.approvals"
 MAX_PAGE_SIZE: Final = 200
 HIDDEN_FIELDS: Final = frozenset(
     {"id", "version", "password", "groups", "user_permissions", "last_login"}
@@ -679,14 +678,12 @@ async def _group(uow: AuthUnitOfWork, group_id: UUID) -> Group:
 
 
 def _approval_needed() -> None:
-    """Refuse making a superuser here where ``contrib.approvals`` guards it.
+    """Refuse making a superuser here where an app holds it (``on_make_superuser``).
 
     With ``APPROVALS.SUPERUSER_APPROVALS``, an approved request makes them.
     """
-    if registry.is_installed(APPROVALS):
-        from domainkit.contrib.approvals import GRANT_SUPERUSER, refuse_if_guarded
-
-        refuse_if_guarded(GRANT_SUPERUSER)
+    for hook in on_make_superuser:
+        hook.call()
 
 
 def _superusers_only(actor: AnyUser, message: str) -> None:

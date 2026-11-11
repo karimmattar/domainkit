@@ -476,7 +476,11 @@ createsuperuser` stays the operator's way to make the first one.
 
 `refuse_if_guarded(action)` raises `ApprovalRequired` when a guard is
 registered for `action`. Use it on a path that does a guarded action
-without its service, as the auth admin API does.
+without its service. The auth admin API is such a path: before it makes
+a superuser it runs the checks of auth's `on_make_superuser` hook, and
+approvals registers one that asks `refuse_if_guarded`. Auth imports no
+other app for it
+([ADR 0140](../adr/0140-auth-asks-other-apps-through-hooks.md)).
 
 ## Who may approve: step-up
 

@@ -319,6 +319,17 @@ def guard_superusers(config: ApprovalsSettings) -> None:
     )
 
 
+def refuse_ungoverned_superusers() -> None:
+    """Refuse making a superuser outside approvals, where a guard holds it.
+
+    Auth's admin API asks before it makes one (``auth.gates.on_make_superuser``).
+
+    Raises:
+        ApprovalRequired: A guard is registered as ``GRANT_SUPERUSER``.
+    """
+    refuse_if_guarded(GRANT_SUPERUSER)
+
+
 def refuse_if_guarded(action: str) -> None:
     """Refuse ``action`` done outside approvals, if a guard is registered for it.
 

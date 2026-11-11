@@ -149,11 +149,13 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `LoginGate`: A check of a login: return to let it through, raise to refuse it.
 - `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
 - `LoginsCheck`: A check of a request that manages the user's other logins: raise to refuse.
+- `SuperuserCheck`: A check before the admin API makes a user a superuser: raise to refuse.
 - `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `on_make_superuser`: Register a check of making a superuser in the admin API.
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 
@@ -485,6 +487,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `LoginMethod`: How a login signed in (ADR 0130): shown with it, to tell logins apart.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
+- `RefusalHook`: Told of a refused attempt: its action (`auth.login`) and the reason's code.
 - `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
 - `SteppedUp`: A user authenticated again, for acts that ask for it (`StepUp`).
 - `TokenOut`: Tokens (OAuth 2's token response): send `Authorization: Bearer ...`.
@@ -511,6 +514,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `note_login_device`: Say that the user's bound device `device_id` signed this request.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
+- `on_refusal`: Register what records refused attempts (`on_refusal(record)` in `ready()`).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
