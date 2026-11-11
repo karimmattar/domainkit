@@ -191,7 +191,9 @@ NAMES = st.sampled_from(
 )
 
 
-@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow]
+)
 @given(
     st.lists(
         st.tuples(
