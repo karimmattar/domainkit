@@ -35,7 +35,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 789
+modules = 797
 memory = 90
 
 [rungs.nested]
@@ -44,7 +44,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 789
+modules = 797
 memory = 90
 
 [rungs.default]
@@ -53,7 +53,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 790
+modules = 798
 memory = 91
 
 [rungs.default-json]
@@ -62,7 +62,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 790
+modules = 798
 memory = 91
 
 [rungs.template]
@@ -71,7 +71,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 792
+modules = 800
 memory = 91
 
 [rungs.template-json]
@@ -80,7 +80,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 792
+modules = 800
 memory = 91
 
 [rungs.me]
@@ -89,7 +89,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 822
+modules = 829
 memory = 94
 
 [rungs.read]
@@ -98,7 +98,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 822
+modules = 829
 memory = 94
 
 [rungs.resource-list]
@@ -107,7 +107,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 822
+modules = 829
 memory = 94
 
 [rungs.write]
@@ -116,7 +116,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 822
+modules = 829
 memory = 94
 
 [rungs.resource-read]
@@ -125,7 +125,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 822
+modules = 829
 memory = 94
 
 [rungs.resource-command]
@@ -134,7 +134,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 822
+modules = 829
 memory = 94
 
 [rungs.keyed-write]
@@ -143,7 +143,7 @@ statements = 4
 transactions = 3
 checkouts = 3
 pings = 0
-modules = 823
+modules = 830
 memory = 94
 
 [rungs.money-write]
@@ -152,7 +152,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 891
+modules = 898
 memory = 109
 
 [rungs.posting]
@@ -161,7 +161,7 @@ statements = 14
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 891
+modules = 898
 memory = 110
 
 [rungs.encrypted-read]
@@ -170,7 +170,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 891
+modules = 898
 memory = 109
 
 [rungs.step-up]
@@ -179,7 +179,7 @@ statements = 1
 transactions = 1
 checkouts = 1
 pings = 0
-modules = 891
+modules = 898
 memory = 109
 
 # The 429 is a problem+json body by default since 1.0 (ADR 0125): +20.
@@ -189,5 +189,5 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 822
+modules = 829
 memory = 94
