@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from domainkit.apps import DomainConfig
 from domainkit.apps.hooks import (
     on_check_application,
+    on_deployment_warnings,
     on_erase_subject,
     on_export_subject,
 )
@@ -60,7 +61,39 @@ class CibaConfig(DomainConfig):
         on_erase_subject(self.erase_person, domain=self.label)
         on_export_subject(self.export_person, domain=self.label)
         on_check_application(self.application_problems)
+        on_deployment_warnings(self.weak_settings)
         import_module(f"{self.name}.tasks")
+
+    def weak_settings(self) -> list[str]:
+        """``ciba.W001``: the phone is the identity, yet a password change ends it.
+
+        With ``APPROVE_LOGINS`` on and
+        ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "end"`` (the default),
+        whoever knows the password, or reads the user's mail, signs the
+        phone out by changing or resetting it: the one place the user sees
+        and ends logins (ADR 0131). In every environment.
+        """
+        from domainkit.apps import registry
+        from domainkit.contrib.auth.integration import auth_settings
+
+        if (
+            not registry.settings(CibaSettings).APPROVE_LOGINS
+            or auth_settings().CREDENTIAL_CHANGE_DEVICE_LOGINS != "end"
+        ):
+            return []
+        return [
+            CheckMessage(
+                "ciba.W001",
+                "CIBA.APPROVE_LOGINS makes the phone the user's identity, but "
+                'AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS is "end": a password '
+                "change or reset, or turning the second factor on, signs the "
+                "phone out too, so whoever knows the password or reads the "
+                "user's mail can.",
+                hint='Set AUTH = {"CREDENTIAL_CHANGE_DEVICE_LOGINS": "keep"}, or '
+                '"ask" to let the phone choose; list ciba.W001 in '
+                'SILENCED_CHECKS to keep "end".',
+            )
+        ]
 
     def application_problems(self, app: "FastAPI") -> list[str]:
         """What the routes served need and lack.

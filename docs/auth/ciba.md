@@ -347,16 +347,25 @@ session or anything else, are `403 phone_required` ("Manage your logins
 from your mobile app."). A stolen web session cannot list the logins or
 end the phone's, and the phone sees it and ends it. A web page can still
 log itself out (`POST /auth/logout` without a body, or `DELETE` of its
-own token), and create personal tokens. A user with no bound device
-manages their logins as before.
+own token). A user with no bound device manages their logins as before.
 
 The check is auth's `on_manage_logins` hook
 ([Who manages logins](logging-in.md#who-manages-logins)); the app
 registers it when it starts.
 
-The same check guards unbinding a device (`DELETE /auth/devices/{id}`):
-only one of the user's devices unbinds one, and the device's logins end
-with it. It guards the second factors too: turning the authenticator app
+The same check guards every way into the account, and every way to reach
+the phone (since 2.2.2,
+[ADR 0134](../adr/0134-bind-another-device-from-a-bound-one.md)):
+
+| Request | Why it is the phone's |
+| --- | --- |
+| `POST /auth/devices` | A second device counts as the user's phone ([Binding another device](devices.md#binding-another-device)). |
+| `DELETE /auth/devices/{id}` | It ends the device's logins with it. |
+| `POST /auth/devices/push-tokens`, `DELETE /auth/devices/push-tokens/{id}` | Sign-in pushes go to those tokens. |
+| `POST /auth/tokens` | A personal token outlasts `others`. |
+| `POST /auth/identity/{name}/link`, `DELETE /auth/identity/linked/{name}` | A linked identity logs the user in. |
+
+It guards the second factors too: turning the authenticator app
 on or off, new recovery codes, and adding or removing a passkey are the
 phone's to do, so a stolen web session cannot add a factor of its own and
 step up without the phone. And choose what a password change does to the phone's login:

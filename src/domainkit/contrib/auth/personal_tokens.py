@@ -198,7 +198,9 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
     """Make a personal token, limited to ``scopes`` if given; it is shown once.
 
     The user authenticates again first (``reauthenticate``), and the token
-    works ``AUTH.PERSONAL_TOKEN_MAX_AGE`` at most.
+    works ``AUTH.PERSONAL_TOKEN_MAX_AGE`` at most. Checked by
+    ``on_manage_logins``: a token is a way into the account that outlasts
+    ``others`` (ADR 0134).
     """
     _no_store(response)
     user = _credentials(request).user
@@ -212,6 +214,7 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
             f"A token cannot have permissions you lack: {', '.join(missing)}.",
             code="scope_not_held",
         )
+    await check_manage_logins(request, user)  # The phone modes: the phone's to make.
     await reauthenticate(request, user, body.password)
     limit = auth_settings().MAX_LIVE_TOKENS
     async with AuthUnitOfWork() as uow:

@@ -16,9 +16,9 @@ The code and the password are two factors; the signature proves the caller
 holds the key it binds. A user who turned a second factor on sends a code
 of it too (``otp``), and one whose password staff set chooses a new one
 (``new_password``), as a login would have them. A user with a bound device
-enrolls no other: the new phone is approved from the old one
-(``domainkit.contrib.ciba``), and one who lost every phone goes to support
-(``unbinddevices``).
+enrolls no other: the old phone binds the new one's key (``POST
+/devices``, signed, ADR 0134), and one who lost every phone goes to
+support (``unbinddevices``).
 """
 
 from typing import Final, NoReturn, cast
