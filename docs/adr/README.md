@@ -149,6 +149,7 @@ statuses, and the amendments they name.
 | [0136](0136-declare-the-login-check-on-the-route.md) | Declare the login check on the route | Accepted |
 | [0137](0137-a-new-phone-asks-and-the-bound-one-approves.md) | A new phone asks, and the bound one approves | Accepted |
 | [0138](0138-mount-an-accounts-routes-with-one-call.md) | Mount an account's routes with one call | Accepted |
+| [0139](0139-hold-a-rung-under-load-against-plain-fastapi-in-the-same-run.md) | Hold a rung under load against plain FastAPI in the same run | Accepted |
 
 ### Decisions still without a record
 
