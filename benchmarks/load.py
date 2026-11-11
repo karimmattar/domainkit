@@ -39,7 +39,7 @@ import time
 import tomllib
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -294,6 +294,8 @@ async def connection(
         tally.refuse(f"unreadable: {unread}")
     finally:
         writer.close()
+        with suppress(OSError):  # Reset by the server: closed all the same.
+            await writer.wait_closed()
 
 
 async def load(
