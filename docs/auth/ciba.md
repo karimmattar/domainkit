@@ -354,7 +354,7 @@ The check is auth's `on_manage_logins` hook
 registers it when it starts.
 
 The same check guards every way into the account, and every way to reach
-the phone (since 2.2.2,
+the phone (since 2.3,
 [ADR 0134](../adr/0134-bind-another-device-from-a-bound-one.md)):
 
 | Request | Why it is the phone's |
