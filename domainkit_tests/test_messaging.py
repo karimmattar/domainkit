@@ -2120,9 +2120,45 @@ SLOW: Final = {"TASK_TIMEOUT": 30, "VISIBILITY_TIMEOUT": 60}
 
 
 async def stopped(running: asyncio.Task[None], within: float = 5) -> None:
-    """Wait up to ``within`` seconds for ``running`` to end; fail, never hang."""
+    """Wait up to ``within`` seconds for ``running`` to end; fail, never hang.
+
+    A failure says where each task still waits: a stop that hung on CI once
+    left only "the task is not done" behind.
+    """
     await asyncio.wait({running}, timeout=within)
-    assert running.done()
+    assert running.done(), still_waiting()
+
+
+def still_waiting() -> str:
+    """Each unfinished task of the loop, and the frames it waits in."""
+    lines = [f"Not stopped; {len(asyncio.all_tasks())} tasks:"]
+    for waiting in sorted(asyncio.all_tasks(), key=lambda each: each.get_name()):
+        if waiting.done():
+            continue
+        frames = [
+            f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno} "
+            f"in {frame.f_code.co_name}"
+            for frame in waiting.get_stack(limit=4)
+        ]
+        lines.append(f"  {waiting.get_name()}: {' < '.join(reversed(frames)) or '?'}")
+    return "\n".join(lines)
+
+
+async def test_a_stop_that_hangs_says_where_each_task_waits() -> None:
+    """What ``stopped`` reports: the task's name, and the line it waits at."""
+
+    async def never() -> None:
+        await asyncio.Event().wait()
+
+    hung = asyncio.create_task(never(), name="hung-worker")
+    await asyncio.sleep(0)
+    with pytest.raises(AssertionError) as failure:
+        await stopped(hung, within=0.01)
+    hung.cancel()
+
+    assert "hung-worker: " in str(failure.value)
+    assert "test_messaging.py" in str(failure.value)
+    assert "in never" in str(failure.value)
 
 
 def interrupted() -> tuple[float, float]:
