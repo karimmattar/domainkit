@@ -9,7 +9,7 @@ import pytest
 from domainkit.contrib.auth.captcha import VERIFY, CaptchaUnavailable
 from domainkit.http.client import stub
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import PASSWORD, create_user
+from domainkit_tests.support.auth import PASSWORD, create_user
 
 TURNSTILE = {"PROVIDER": "turnstile", "SECRET": "site-secret"}
 

@@ -10,9 +10,9 @@ from fastapi.testclient import TestClient
 from domainkit.contrib.auth import StepUp
 from domainkit.contrib.auth.authentication import Credentials
 from domainkit_tests.conftest import Api
+from domainkit_tests.support.auth import audited, bearer, create_user
 from domainkit_tests.test_auth_access import request, user
 from domainkit_tests.test_auth_admin import details, error, staff, token_for
-from domainkit_tests.test_auth_http import audited, bearer, create_user
 from domainkit_tests.test_auth_login_origins import origins
 
 ON = {"IMPERSONATION_TTL": timedelta(minutes=30)}

@@ -13,7 +13,7 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 from domainkit.conf import override_settings, settings
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_auth_mfa import clock, code_at, secret_of
 from domainkit_tests.test_auth_reset_codes import NEW_PASSWORD, ask_reset, drain

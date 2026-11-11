@@ -33,7 +33,7 @@ import pytest
 
 from domainkit.contrib.auth import personal_tokens
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_mfa import clock as clock
 from domainkit_tests.test_auth_mfa import code_at, secret_of
 

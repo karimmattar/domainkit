@@ -38,7 +38,7 @@ from domainkit_tests.conftest import (
     MEMORY_MAIL,
     MIDDLEWARE,
 )
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user
 from domainkit_tests.test_auth_mfa import NOW, code_at, secret_of
 
 SITE: Final = "https://testserver"

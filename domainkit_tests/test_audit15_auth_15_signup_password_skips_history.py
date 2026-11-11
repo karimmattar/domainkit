@@ -9,7 +9,7 @@ once: the history holds P2 alone, and the current password is P2.
 """
 
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import bearer, login
+from domainkit_tests.support.auth import bearer, login
 from domainkit_tests.test_auth_recovery import run_worker
 from domainkit_tests.test_auth_signup import code_to, confirm, signup
 

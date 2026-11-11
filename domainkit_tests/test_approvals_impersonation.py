@@ -17,6 +17,7 @@ from domainkit.contrib.auth import AbstractUser, AuthUnitOfWork
 from domainkit.http import get_asgi_application
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Migrated, Shape
+from domainkit_tests.support.auth import bearer
 from domainkit_tests.test_accounting_api import open_books, sale
 from domainkit_tests.test_approvals_api import (
     APPROVALS_API,
@@ -26,7 +27,6 @@ from domainkit_tests.test_approvals_api import (
     submit,
     user,
 )
-from domainkit_tests.test_auth_http import bearer
 
 IMPERSONATING: Final = Shape(
     "approvals_impersonation",

@@ -4,11 +4,11 @@ from fastapi.testclient import TestClient
 
 from domainkit.contrib.approvals.services import _check_maker
 from domainkit.management.base import run_async
+from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_approvals_api import (  # noqa: F401 - the fixture.
     _id,
     client,
 )
-from domainkit_tests.test_auth_http import create_user
 from domainkit_tests.test_sec16b_7_maker_rule_not_checked_at_run import STAFF_ONLY
 
 

@@ -30,7 +30,7 @@ from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
 from domainkit_tests.conftest import Api, UseAuth
 from domainkit_tests.fake_smtp import certificate
-from domainkit_tests.test_auth_http import create_user, stored_tokens
+from domainkit_tests.support.auth import create_user, stored_tokens
 
 AUTHENTICATION = "domainkit.contrib.auth"
 CLASSES = [

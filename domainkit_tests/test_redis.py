@@ -503,7 +503,7 @@ def test_wrong_passwords_are_counted_once_for_every_process(
     In memory, each would allow it on its own (AUTH-09): the deployment
     checks refuse that in staging and production.
     """
-    from domainkit_tests.test_auth_http import create_user
+    from domainkit_tests.support.auth import create_user
 
     create_user("alice")
     wrong = {"username": "alice", "password": "wrong"}

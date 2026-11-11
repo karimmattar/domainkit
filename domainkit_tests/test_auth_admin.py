@@ -47,8 +47,7 @@ from domainkit_tests.conftest import (
     domain_warnings,
 )
 from domainkit_tests.engine_events import watching
-from domainkit_tests.test_auth_access import request, user
-from domainkit_tests.test_auth_http import (
+from domainkit_tests.support.auth import (
     PASSWORD,
     audited,
     bearer,
@@ -57,6 +56,7 @@ from domainkit_tests.test_auth_http import (
     login,
     stored_tokens,
 )
+from domainkit_tests.test_auth_access import request, user
 
 ADMIN = "/admin/auth"
 NEW_PASSWORD = "Zq8!wL-d4#Kp7v"

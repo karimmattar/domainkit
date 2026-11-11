@@ -17,7 +17,7 @@ from domainkit.contrib.auth.authentication import AuthenticationFailed, Credenti
 from domainkit.contrib.auth.repositories import TokenStore
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import (
+from domainkit_tests.support.auth import (
     JWT,
     PASSWORD,
     audited,

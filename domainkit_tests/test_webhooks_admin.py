@@ -48,8 +48,8 @@ from domainkit_tests.conftest import (
     MIDDLEWARE,
     SHOP,
 )
+from domainkit_tests.support.auth import create_user, grant
 from domainkit_tests.test_auth_admin import staff
-from domainkit_tests.test_auth_http import create_user, grant
 from domainkit_tests.test_messaging import FAST
 
 ADMIN = "/admin/webhooks"

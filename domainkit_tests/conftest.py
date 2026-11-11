@@ -52,6 +52,9 @@ from domainkit.testing import DatabaseBlocker
 from domainkit_tests import engine_events  # Imported early: its listeners first.
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
+# Helpers in support/ are not test files: their asserts are rewritten on request.
+pytest.register_assert_rewrite("domainkit_tests.support")
+
 type MakePackage = Callable[[str, dict[str, str]], Path]
 
 POSTGRES_VARIABLE: Final = "DOMAINKIT_TEST_POSTGRES_URL"

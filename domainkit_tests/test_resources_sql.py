@@ -31,8 +31,8 @@ from domainkit_tests.gadgets import (
     make_gadget,
     metadata,
 )
+from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_auth_admin import ADMIN, staff
-from domainkit_tests.test_auth_http import create_user
 
 pytestmark = pytest.mark.anyio
 

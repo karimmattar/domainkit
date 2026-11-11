@@ -32,7 +32,7 @@ from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.client import stub
 from domainkit.management.base import run_async
-from domainkit_tests.test_auth_http import create_user
+from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_identity_ldap import LDAP, App
 from domainkit_tests.test_identity_providers import ISSUER, KEY, OIDC, app  # noqa: F401
 from domainkit_tests.test_identity_saml import (

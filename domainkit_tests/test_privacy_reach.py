@@ -16,7 +16,7 @@ from domainkit.contrib.auth.integration import utc_now
 from domainkit.db import connections, metadata
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import IDENTITY, IDENTITY_DOMAINS, Migrated, Shape
-from domainkit_tests.test_auth_http import create_user
+from domainkit_tests.support.auth import create_user
 
 KEEPERS: Final = Shape(
     "privacy_reach",

@@ -27,7 +27,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
 from domainkit_tests.sample_domains.accounts.models import Account
-from domainkit_tests.test_auth_http import audited, bearer, create_user, login
+from domainkit_tests.support.auth import audited, bearer, create_user, login
 from domainkit_tests.test_auth_recovery import (
     from_address,
     outbox_payloads,

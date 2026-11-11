@@ -48,7 +48,7 @@ from domainkit.tasks import owned
 from domainkit_tests.conftest import Api
 from domainkit_tests.conftest import identity as identity
 from domainkit_tests.fake_smtp import certificate
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, grant, login
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, grant, login
 from domainkit_tests.test_auth_principals import (
     CERTIFICATES,
     STAMPED,

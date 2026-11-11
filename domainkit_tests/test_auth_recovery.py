@@ -36,12 +36,7 @@ from domainkit.http.application import application_problems
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import IDENTITY_DOMAINS, Api
 from domainkit_tests.sample_domains.members.models import Member
-from domainkit_tests.test_auth_http import (
-    audited,
-    bearer,
-    create_user,
-    login,
-)
+from domainkit_tests.support.auth import audited, bearer, create_user, login
 
 NEW_PASSWORD = "an0ther-Strong-pass!"
 MAIL_APP = "domainkit.contrib.mail"

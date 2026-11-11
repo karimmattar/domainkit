@@ -21,8 +21,8 @@ from datetime import timedelta
 
 from domainkit.clock import now
 from domainkit_tests.conftest import Api
+from domainkit_tests.support.auth import PASSWORD, create_user
 from domainkit_tests.test_auth_cookies import TRUSTED, browser, start
-from domainkit_tests.test_auth_http import PASSWORD, create_user
 
 
 def test_a_browser_session_cannot_mint_a_lasting_token_unasked(

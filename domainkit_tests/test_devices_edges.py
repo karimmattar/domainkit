@@ -42,7 +42,7 @@ from domainkit.contrib.devices.webauthn import (
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management.base import run_async
-from domainkit_tests.test_auth_http import PASSWORD
+from domainkit_tests.support.auth import PASSWORD
 from domainkit_tests.test_devices import (
     ORIGIN,
     RP_ID,

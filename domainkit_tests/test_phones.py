@@ -39,7 +39,7 @@ from domainkit_tests.conftest import (
     Migrated,
     Shape,
 )
-from domainkit_tests.test_auth_http import bearer, create_user, login
+from domainkit_tests.support.auth import bearer, create_user, login
 
 PHONES = Shape(
     "phones",

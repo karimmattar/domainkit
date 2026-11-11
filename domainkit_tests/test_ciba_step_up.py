@@ -23,7 +23,7 @@ from domainkit.contrib.ciba.api import _session_of
 from domainkit.db import connections
 from domainkit.management.base import run_async
 from domainkit.money import Money
-from domainkit_tests.test_auth_http import bearer, create_user, login
+from domainkit_tests.support.auth import bearer, create_user, login
 from domainkit_tests.test_ciba import PHONE, App, Phone, app
 from domainkit_tests.test_devices_edges import http
 

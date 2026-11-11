@@ -23,13 +23,7 @@ from domainkit.http import access
 from domainkit.http.access import SCOPES_UNBOUNDED
 from domainkit.log import SECURITY_LOGGER
 from domainkit_tests.conftest import AUTH, Api
-from domainkit_tests.test_auth_http import (
-    audited,
-    bearer,
-    create_user,
-    grant,
-    login,
-)
+from domainkit_tests.support.auth import audited, bearer, create_user, grant, login
 from domainkit_tests.test_auth_personal_tokens import VIEW, make, user_session
 
 

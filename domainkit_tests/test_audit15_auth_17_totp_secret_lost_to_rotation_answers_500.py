@@ -15,7 +15,7 @@ from typing import Any
 
 from domainkit.conf import override_settings
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import bearer, create_user, login
+from domainkit_tests.support.auth import bearer, create_user, login
 from domainkit_tests.test_auth_mfa import (
     NEW_KEY,
     OLD_KEY,

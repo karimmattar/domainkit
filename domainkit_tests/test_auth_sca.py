@@ -30,7 +30,7 @@ from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit.money import Money, register_currency
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import PASSWORD, audited, bearer, create_user, login
+from domainkit_tests.support.auth import PASSWORD, audited, bearer, create_user, login
 from domainkit_tests.test_auth_mfa import code_at
 from domainkit_tests.test_auth_stepup import enrol, hourly_purge, now_code
 

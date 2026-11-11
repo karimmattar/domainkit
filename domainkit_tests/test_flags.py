@@ -47,8 +47,8 @@ from domainkit_tests.conftest import (
     SHOP,
     MakeDatabase,
 )
+from domainkit_tests.support.auth import audited
 from domainkit_tests.test_auth_admin import staff
-from domainkit_tests.test_auth_http import audited
 
 FLAGS = "domainkit.contrib.flags"
 MIDDLEWARE = [

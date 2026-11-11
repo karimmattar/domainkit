@@ -15,7 +15,7 @@ import pytest
 from domainkit.checks import CheckFailed
 from domainkit.clock import freeze_time
 from domainkit_tests.conftest import Api, UseAuth
-from domainkit_tests.test_auth_http import JWT, bearer, create_user, login
+from domainkit_tests.support.auth import JWT, bearer, create_user, login
 
 PCI = {"PRESET": "pci-dss-4"}
 LONG_JWT: dict[str, Any] = {

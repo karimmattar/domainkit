@@ -82,8 +82,7 @@ from domainkit_tests.conftest import (
 from domainkit_tests.engine_events import watching
 from domainkit_tests.fake_smtp import certificate
 from domainkit_tests.gadgets import FakeGadgetsUnitOfWork, InMemoryGadgets
-from domainkit_tests.test_auth import accounts as accounts
-from domainkit_tests.test_auth_http import (
+from domainkit_tests.support.auth import (
     JWT,
     PASSWORD,
     bearer,
@@ -91,6 +90,7 @@ from domainkit_tests.test_auth_http import (
     grant,
     login,
 )
+from domainkit_tests.test_auth import accounts as accounts
 from domainkit_tests.test_redis import FakeRedis
 
 AUTHENTICATION = "domainkit.contrib.auth"

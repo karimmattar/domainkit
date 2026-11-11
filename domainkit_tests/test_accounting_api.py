@@ -26,8 +26,8 @@ from domainkit_tests.conftest import (
     Migrated,
     Shape,
 )
+from domainkit_tests.support.auth import create_user, grant
 from domainkit_tests.test_auth_admin import token_for
-from domainkit_tests.test_auth_http import create_user, grant
 
 ACCOUNTING_API: Final = Shape(
     "accounting_api",
