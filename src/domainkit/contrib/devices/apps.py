@@ -50,10 +50,12 @@ class DevicesConfig(DomainConfig):
         on_export_subject(self.export_person, domain=self.label)
         if messaging:
             from .enrollment import register_tasks
-            from .tasks import register_purge
+            from .tasks import register_notice, register_purge
 
             register_tasks()
             register_purge()
+            if registry.is_installed("domainkit.contrib.mail"):
+                register_notice()
         if registry.is_installed("domainkit.contrib.notifications"):
             from domainkit.contrib.notifications.events import PushTokenExpired
 

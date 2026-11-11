@@ -1,0 +1,10 @@
+Hello {{ username }},
+
+A device was bound to your account: {{ device }}.
+
+It can now sign in as you, and approve sign-ins and payments.
+
+If you did this, there is nothing to do.
+
+If you did not, unbind the device from your app, change your password,
+and tell us.

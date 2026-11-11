@@ -9,6 +9,23 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- A new phone asks to be bound, and the user's bound phone approves:
+  `POST /app-sign-in/device` and `POST /app-sign-in/device/token`, each
+  signed by the new phone's key. The old phone sees the request with the
+  new one's name and approves it as it approves a sign-in; only the key
+  that asked redeems it, and is then bound and logged in
+  ([A new phone asks](docs/auth/ciba.md#a-new-phone-asks-to-be-bound),
+  ADR 0137).
+- `DEVICES.BOUND_NOTICE` (on by default): a user is mailed when a device
+  is bound to their account, from the template `devices/device_bound`.
+  It needs `domainkit.contrib.messaging` and `domainkit.contrib.mail`
+  ([The user is told](docs/auth/devices.md#the-user-is-told), ADR 0137).
+- `mail_user` (`auth.integration`): mail a user at their address from a
+  template. `proves_key`, `bind_key` and `mark_signed_by`
+  (`devices.binding`): what an app needs to bind a key a request proved.
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of

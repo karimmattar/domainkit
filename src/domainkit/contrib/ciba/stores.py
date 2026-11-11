@@ -24,6 +24,8 @@ QR = "qr"
 SIGN_IN = "sign_in"
 STEP_UP = "step_up"
 TRANSACTION = "transaction"
+DEVICE = "device"
+"""A request to bind the asking phone's key (ADR 0137)."""
 
 
 @dataclass(frozen=True, slots=True, repr=False)

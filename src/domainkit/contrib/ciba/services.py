@@ -185,12 +185,16 @@ async def start_push(
     scope: str = "",
     binding_message: str | None = None,
     match: bool = False,
+    kind: str = SIGN_IN,
+    credential_digest: str | None = None,
 ) -> Started:
     """Ask ``user``'s phone to approve a sign-in; queue the push to their apps.
 
     ``user`` is None when the initiator named nobody known: the request is
     a decoy, as for a user who cannot be asked now. With ``match``, the
     phone must type the two digits the page shows (``NUMBER_MATCHING``).
+    ``kind`` is ``sign_in``, or ``device`` for a phone that asks to be
+    bound: only what ``credential_digest`` names (its key) redeems it.
     The push leaves with ``uow``'s commit.
     """
     config = ciba_settings()
@@ -211,6 +215,8 @@ async def start_push(
             user_id=None if asked is None else asked.id,
             decoy=asked is None,
             match_code=match_code,
+            kind=kind,
+            credential_digest=credential_digest,
         )
     )
     if asked is not None:

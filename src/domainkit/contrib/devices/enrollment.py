@@ -41,11 +41,10 @@ from domainkit.contrib.auth.integration import (
 )
 from domainkit.contrib.auth.models import UserId
 
-from .binding import SIGNING_DEVICE, read_signature
+from .binding import mark_signed_by, proves_key
 from .events import DeviceBound
 from .exceptions import DeviceAlreadyBound, EnrollmentRefused, SecondFactorRequired
 from .stores import BoundDevice, DevicesUnitOfWork
-from .webauthn import verify_signature
 
 __all__ = [
     "ENROLLMENT",
@@ -85,15 +84,6 @@ def register_tasks() -> None:
     from domainkit.contrib.messaging import task
 
     task(name=ENROLL_CODE_TASK)(send_enrollment_code)
-
-
-async def _proves_key(request: Request, algorithm: int, key: bytes) -> bool:
-    """Whether the request is signed by ``key``, now (``DEVICES.SIGNATURE_WINDOW``)."""
-    signed = await read_signature(request)
-    if signed is None:
-        return False
-    _, signature, message = signed
-    return verify_signature(algorithm, key, signature, message)
 
 
 async def enroll(
@@ -141,7 +131,7 @@ async def enroll(
         action="devices.enroll",
         detail=THROTTLED,
     )
-    signed = await _proves_key(request, algorithm, public_key)
+    signed = await proves_key(request, algorithm, public_key)
     user = await authenticate(
         identifier=identifier, username=identifier, password=password
     )
@@ -163,7 +153,7 @@ async def enroll(
     await counted.succeeded()
     user = await first_use_after_code(user, new_password)
     device = await _bind_first(user, name, algorithm, public_key)
-    request.scope[SIGNING_DEVICE] = device
+    mark_signed_by(request, device)
     return user, device
 
 

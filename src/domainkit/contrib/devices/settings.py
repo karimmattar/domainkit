@@ -43,6 +43,11 @@ class DevicesSettings(BaseModel):
     """Let a user with no bound device bind the first one with a code, the
     password, and the new key's signature (``POST /devices/enroll``), with
     no login first (ADR 0129). Needs ``domainkit.contrib.messaging``."""
+    BOUND_NOTICE: bool = True
+    """Mail the user when a device is bound to their account, so that one
+    they did not bind does not go unseen. Needs
+    ``domainkit.contrib.messaging`` and ``domainkit.contrib.mail``; without
+    them, or for a user with no address, nothing is sent."""
     DEVICE_LOGIN: bool = False
     """Let a bound device log its user in by its signature alone
     (``POST /devices/login``): the app keeps the key behind the phone's

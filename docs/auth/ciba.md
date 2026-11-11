@@ -377,6 +377,32 @@ CIBA = {"APPROVE_LOGINS": True}
 AUTH = {**AUTH, "CREDENTIAL_CHANGE_DEVICE_LOGINS": "keep"}
 ```
 
+### A new phone asks to be bound
+
+A user who has a bound phone binds another only from it. The new phone
+asks, and the old one approves (since 2.4,
+[ADR 0137](../adr/0137-a-new-phone-asks-and-the-bound-one-approves.md)):
+
+| Endpoint | Who | Answer |
+| --- | --- | --- |
+| `POST /app-sign-in/device` | anyone, signed by the new key | `{"identifier", "name", "public_key"}`: `200` with `request`, `expires_in`, `interval`, and `match_code` with `NUMBER_MATCHING`. The same answer whoever is named. |
+| `POST /app-sign-in/device/token` | anyone, signed by the new key | `{"request", "public_key"}`: `201` with the tokens of a login and the `device`, once approved; until then `400 authorization_pending`. |
+
+1. The new phone makes its key and asks. Both requests carry
+   `X-Device-Time` and `X-Device-Signature`, made with the new key, and
+   no device id yet.
+2. The old phone lists the request (`GET /app-sign-in/requests`): its
+   `kind` is `device`, and `binding_message` is the name the new phone
+   gave. It approves it, typing the two digits the new phone shows.
+3. The new phone polls `/app-sign-in/device/token` every `interval`
+   seconds. Once approved, its key is bound and it is logged in.
+
+Only the key that asked redeems the request: the handle alone binds
+nothing. `401 device_signature_refused` means the key did not sign the
+request; `409 too_many_keys` that the user holds `DEVICES.MAX_DEVICES`.
+A user with no bound phone gets a request nobody can approve: a first
+phone enrolls ([Enrolling a first device](devices.md#enrolling-a-first-device)).
+
 ### Login gates
 
 The setting works through auth's login gates
