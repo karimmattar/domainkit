@@ -401,28 +401,50 @@ AUTH = {**AUTH, "CREDENTIAL_CHANGE_DEVICE_LOGINS": "keep"}
 ### A new phone asks to be bound
 
 A user who has a bound phone binds another only from it. The new phone
-asks, and the old one approves (since 2.4,
-[ADR 0137](../adr/0137-a-new-phone-asks-and-the-bound-one-approves.md)):
+shows a QR code, and the old one scans it and approves (since 2.4,
+[ADR 0137](../adr/0137-a-new-phone-asks-and-the-bound-one-approves.md)).
+Nothing reaches the user's phone unless they scan a code themselves: this
+is how Signal and WhatsApp link a device
+([Signal](https://signal.org/blog/a-synchronized-start-for-linked-devices/),
+[WhatsApp](https://www.techadvisor.com/article/743525/how-to-use-whatsapp-on-two-phones.html)).
 
 | Endpoint | Who | Answer |
 | --- | --- | --- |
-| `POST /app-sign-in/device` | anyone, signed by the new key | `{"identifier", "name", "public_key"}`: `200` with `request`, `expires_in`, `interval`, and `match_code` with `NUMBER_MATCHING`. The same answer whoever is named. |
+| `POST /app-sign-in/device` | anyone, signed by the new key | `{"name", "public_key"}`: `200` with `request`, `expires_in`, `interval`, `qr` and `qr_expires_in`. |
+| `POST /app-sign-in/requests/claim` | the old phone (`DeviceSigned`) | `{"code"}`: the request, now its user's, as `GET /app-sign-in/requests` lists one. |
 | `POST /app-sign-in/device/token` | anyone, signed by the new key | `{"request", "public_key"}`: `201` with the tokens of a login and the `device`, once approved; until then `400 authorization_pending`. |
 
-1. The new phone makes its key and asks. Both requests carry
-   `X-Device-Time` and `X-Device-Signature`, made with the new key, and
-   no device id yet.
-2. The old phone lists the request (`GET /app-sign-in/requests`): its
-   `kind` is `device`, and `binding_message` is the name the new phone
-   gave. It approves it, typing the two digits the new phone shows.
-3. The new phone polls `/app-sign-in/device/token` every `interval`
-   seconds. Once approved, its key is bound and it is logged in.
+1. The new phone makes its key and asks for a code. Both of its requests
+   carry `X-Device-Time` and `X-Device-Signature`, made with the new key,
+   and no device id yet. It names no account.
+2. It shows `qr` as a QR code. The user opens the app on their bound
+   phone and scans it, within `qr_expires_in` seconds.
+3. The old phone is shown the request: its `kind` is `device`,
+   `binding_message` is the name the new phone gave, `address` where it
+   asked from, and `same_network` whether the two phones share one. Show
+   them all, and warn when `same_network` is false: a code a stranger
+   shows the user, from far away, binds the stranger's phone. The old
+   phone approves or denies it, with no number to type.
+4. The new phone polls `/app-sign-in/device/token` every `interval`
+   seconds. Once approved, its key is bound and it is logged in, and the
+   user is mailed ([The user is told](devices.md#the-user-is-told)).
 
 Only the key that asked redeems the request: the handle alone binds
 nothing. `401 device_signature_refused` means the key did not sign the
-request; `409 too_many_keys` that the user holds `DEVICES.MAX_DEVICES`.
-A user with no bound phone gets a request nobody can approve: a first
-phone enrolls ([Enrolling a first device](devices.md#enrolling-a-first-device)).
+request; `422 qr_code_expired` that the code was scanned already, or too
+late; `403 different_network` that `QR_SAME_NETWORK = "require"` refused a
+phone on another network; `409 too_many_keys` that the user holds
+`DEVICES.MAX_DEVICES`. A user with no bound phone enrolls instead
+([Enrolling a first device](devices.md#enrolling-a-first-device)).
+
+The new phone does not name the account, and no push is sent: a request
+a stranger could aim at a user's phone is how WhatsApp accounts were
+taken over in the *GhostPairing* campaign
+([Gen Digital](https://www.gendigital.com/blog/insights/research/ghostpairing-whatsapp-attack)),
+and unasked-for pushes get approved
+([number matching alone is not enough](https://authsignal.com/blog/articles/push-authentication-best-practices-and-why-number-matching-alone-is-not-enough)).
+[ADR 0137](../adr/0137-a-new-phone-asks-and-the-bound-one-approves.md#references)
+lists the sources.
 
 ### Login gates
 
@@ -657,7 +679,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | Function | What it does |
 | --- | --- |
 | `start_push(uow, user, *, requester, client_id=None, scope="", binding_message=None, match=False)` | A push request; a decoy when `user` is None or cannot be asked. Returns `Started` (`handle`, `request_id`, `expires_in`, `interval`, `match_code`). |
-| `start_qr(uow, *, requester, client_id=None, scope="", binding_message=None)` | A QR request; `Started.qr` holds the code. |
+| `start_qr(uow, *, requester, client_id=None, scope="", binding_message=None, kind="sign_in", credential_digest=None)` | A QR request; `Started.qr` holds the code. `kind="device"`, with the SHA-256 of a key as `credential_digest`, is a new phone's request to be bound: only that key redeems it. |
 | `claim(uow, user_id, code, *, address)` | The QR request, now the user's. Raises `QrCodeExpired` or `DifferentNetwork`. |
 | `approve(uow, user_id, request_id, device_id, *, match_code=None)` | The approved request, or `None` for a wrong number (commit, then raise `WrongMatchCode`). Raises `SignInNotFound`. |
 | `deny(uow, user_id, request_id, *, report=False)` | Denies, and with `report` every other waiting request. Raises `SignInNotFound`. |

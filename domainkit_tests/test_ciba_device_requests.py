@@ -1,7 +1,8 @@
-"""A new phone asks to be bound, and the user's bound phone approves (ADR 0137).
+"""A new phone shows a QR code, and a phone the user bound scans it (ADR 0137).
 
 The request is made for one key, and signed by it: only that key redeems
-it, and only a request a bound device signs approves it.
+it. It names no account and reaches nobody: the phone that scans it, a
+bound one, makes it its user's, and approves it.
 """
 
 import json
@@ -13,9 +14,9 @@ from fastapi.testclient import TestClient
 
 from domainkit import clock
 from domainkit.conf import override_settings
-from domainkit_tests.test_auth_http import bearer, create_user
+from domainkit_tests.test_auth_http import bearer
 from domainkit_tests.test_auth_login_origins import origins
-from domainkit_tests.test_ciba import PHONE, App, Phone, app
+from domainkit_tests.test_ciba import PHONE, App, Phone, app, sign_in_pushes
 from domainkit_tests.test_devices import Device
 
 __all__ = ["app"]  # The fixture the tests take.
@@ -23,31 +24,38 @@ __all__ = ["app"]  # The fixture the tests take.
 NEW = ("192.0.2.44", 50002)
 ASK = "/auth/app-sign-in/device"
 REDEEM = "/auth/app-sign-in/device/token"
+CLAIM = "/auth/app-sign-in/requests/claim"
 
 
 def signed(
     client: TestClient, device: Device, path: str, payload: dict[str, Any]
 ) -> Any:  # noqa: ANN401
-    """``POST path`` with ``payload``, signed by ``device``'s key: the response."""
+    """``POST path`` with ``payload``, signed by ``device``'s key: the response.
+
+    Signed at the clock's time, which a test may freeze.
+    """
     body = json.dumps(payload).encode()
+    moment = int(clock.now().timestamp() * 1000)
     return client.post(
         path,
         content=body,
         headers={
             "Content-Type": "application/json",
-            **device.headers("POST", path, body),
+            **device.headers("POST", path, body, when=moment),
         },
     )
 
 
-def ask(client: TestClient, device: Device, identifier: str = "alice") -> Any:  # noqa: ANN401
-    """The new phone asks to be bound: the response."""
+def ask(client: TestClient, device: Device) -> Any:  # noqa: ANN401
+    """The new phone asks for a code to show: the response."""
     return signed(
-        client,
-        device,
-        ASK,
-        {"identifier": identifier, "name": "New phone", "public_key": device.public()},
+        client, device, ASK, {"name": "New phone", "public_key": device.public()}
     )
+
+
+def scan(phone: Phone, started: dict[str, Any]) -> Any:  # noqa: ANN401
+    """``phone`` scans the new phone's QR code: the response."""
+    return phone.send("POST", CLAIM, {"code": started["qr"]})
 
 
 def redeem(client: TestClient, device: Device, handle: str) -> Any:  # noqa: ANN401
@@ -68,26 +76,39 @@ def devices_of(phone: Phone) -> int:
     return len(phone.client.get("/auth/devices", headers=phone.headers).json())
 
 
-def test_the_bound_phone_approves_a_new_one_which_is_bound_and_logged_in(
+def test_the_bound_phone_scans_a_new_one_which_is_bound_and_logged_in(
     app: App,
 ) -> None:
-    """Asked with its key, shown by name, approved with the number, bound."""
+    """Shown by its code, scanned, seen by name and address, approved, bound."""
     phone = Phone(app(PHONE, APPROVE_LOGINS=True))
     client, new = app(NEW), Device()
 
     started = ask(client, new)
     assert started.status_code == 200, started.json()
     assert started.headers["Cache-Control"] == "no-store"
-    [waiting] = phone.waiting()
-    assert (waiting["kind"], waiting["binding_message"]) == ("device", "New phone")
-    assert (waiting["address"], waiting["match_required"]) == (NEW[0], True)
+    assert set(started.json()) == {
+        "request",
+        "expires_in",
+        "interval",
+        "qr",
+        "qr_expires_in",
+    }
+    assert phone.waiting() == []  # Nothing reaches the phone before it scans.
+    assert sign_in_pushes() == []
     early = signed(
         client,
         new,
         REDEEM,
         {"request": started.json()["request"], "public_key": new.public()},
     )
-    approved = phone.approve(waiting["id"], match_code=started.json()["match_code"])
+    scanned = scan(phone, started.json())
+    assert scanned.status_code == 200, scanned.json()
+    shown = scanned.json()
+    assert (shown["kind"], shown["channel"]) == ("device", "qr")
+    assert shown["binding_message"] == "New phone"
+    assert (shown["address"], shown["same_network"]) == (NEW[0], False)
+    assert shown["match_required"] is False  # Scanning the code is the proof.
+    approved = phone.approve(shown["id"])
     bound = redeem(client, new, started.json()["request"])
 
     assert answer(early) == (400, "authorization_pending")
@@ -110,12 +131,76 @@ def test_the_bound_phone_approves_a_new_one_which_is_bound_and_logged_in(
     assert devices_of(phone) == 2
 
 
+def test_the_request_names_no_account(app: App) -> None:
+    """An identifier is refused: a stranger cannot aim a request at anyone."""
+    Phone(app(PHONE, APPROVE_LOGINS=True))
+    client, new = app(NEW), Device()
+
+    named = signed(
+        client,
+        new,
+        ASK,
+        {"identifier": "alice", "name": "New phone", "public_key": new.public()},
+    )
+
+    assert named.status_code == 422
+
+
+def test_the_key_binds_to_the_account_of_the_phone_that_scanned(app: App) -> None:
+    """Whose the new phone becomes is the scanner's to say, not the asker's."""
+    alice = Phone(app(PHONE, APPROVE_LOGINS=True))
+    bob = Phone(app(("198.51.100.10", 50003)), "bob")
+    client, new = app(NEW), Device()
+    started = ask(client, new).json()
+
+    shown = scan(bob, started).json()
+    assert bob.approve(shown["id"]).status_code == 204
+    bound = redeem(client, new, started["request"])
+
+    assert bound.status_code == 201, bound.json()
+    assert (devices_of(bob), devices_of(alice)) == (2, 1)
+
+
+def test_a_code_is_scanned_once_and_only_in_time(app: App) -> None:
+    """A second scan, or a scan past ``QR_TTL``, claims nothing."""
+    alice = Phone(app(PHONE, APPROVE_LOGINS=True))
+    bob = Phone(app(("198.51.100.10", 50003)), "bob")
+    client = app(NEW)
+
+    with clock.freeze_time("2026-11-11T10:00:00Z") as frozen:
+        first = ask(client, Device()).json()
+        assert scan(alice, first).status_code == 200
+        frozen.tick(1)
+        assert answer(scan(bob, first)) == (422, "qr_code_expired")
+        late_key = Device()
+        late = ask(client, late_key).json()
+        frozen.tick(61)
+        assert answer(scan(alice, late)) == (422, "qr_code_expired")
+        assert answer(redeem(client, late_key, late["request"])) == (
+            400,
+            "expired_token",
+        )
+
+
+def test_on_another_network_the_scan_can_be_refused(app: App) -> None:
+    """``QR_SAME_NETWORK = "require"``: a code shown elsewhere cannot be claimed."""
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True, QR_SAME_NETWORK="require"))
+    client, new = app(NEW), Device()
+    started = ask(client, new).json()
+
+    refused = scan(phone, started)
+
+    assert answer(refused) == (403, "different_network")
+    assert phone.waiting() == []
+    assert devices_of(phone) == 1
+
+
 def test_only_the_key_that_asked_redeems(app: App) -> None:
     """A thief who learned the handle binds no key of their own."""
-    phone = Phone(app(PHONE, APPROVE_LOGINS=True, NUMBER_MATCHING=False))
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
     client, new, thief = app(NEW), Device(), Device()
     started = ask(client, new).json()
-    phone.approve(phone.waiting()[0]["id"])
+    phone.approve(scan(phone, started).json()["id"])
 
     stolen = redeem(client, thief, started["request"])
     unsigned = client.post(
@@ -136,11 +221,10 @@ def test_only_the_key_that_asked_redeems(app: App) -> None:
     assert devices_of(phone) == 2
 
 
-def test_a_request_the_key_did_not_sign_asks_nobody(app: App) -> None:
-    """Unsigned, or signed by another key: 401, and the phone is shown nothing."""
-    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
-    client, new, other = app(NEW), Device(), Device()
-    payload = {"identifier": "alice", "name": "New phone", "public_key": new.public()}
+def test_a_request_the_key_did_not_sign_is_refused(app: App) -> None:
+    """Unsigned, or signed by another key: 401, and no code is made."""
+    client, new, other = app(NEW, APPROVE_LOGINS=True), Device(), Device()
+    payload = {"name": "New phone", "public_key": new.public()}
 
     unsigned = client.post(ASK, json=payload)
     forged = signed(client, other, ASK, payload)
@@ -149,46 +233,26 @@ def test_a_request_the_key_did_not_sign_asks_nobody(app: App) -> None:
     assert answer(unsigned) == (401, "device_signature_refused")
     assert answer(forged) == (401, "device_signature_refused")
     assert answer(garbage) == (422, "unsupported_device_key")
-    assert phone.waiting() == []
 
 
-def test_whoever_is_named_the_answer_is_the_same(app: App) -> None:
-    """Unknown, or with no bound phone: a request nobody can approve."""
+def test_a_denied_request_binds_nothing(app: App) -> None:
+    """The user scans, sees a phone they do not know, and says no."""
     phone = Phone(app(PHONE, APPROVE_LOGINS=True))
-    create_user("bob")
-    client = app(NEW)
+    client, new = app(NEW), Device()
+    started = ask(client, new).json()
 
-    answers = [ask(client, Device(), who) for who in ("alice", "bob", "nobody")]
+    assert phone.deny(scan(phone, started).json()["id"]).status_code == 204
 
-    assert [each.status_code for each in answers] == [200, 200, 200]
-    assert len({frozenset(each.json()) for each in answers}) == 1
-    assert len(phone.waiting()) == 1
-    decoy, key = answers[2].json()["request"], Device()
-    assert answer(redeem(client, key, decoy))[0] == 400
-
-
-def test_a_denied_or_misnumbered_request_binds_nothing(app: App) -> None:
-    """The user says no, or types another number: the key stays out."""
-    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
-    client, first, second = app(NEW), Device(), Device()
-
-    denied = ask(client, first).json()
-    phone.deny(phone.waiting()[0]["id"])
-    wrong = ask(client, second).json()
-    other = "00" if wrong["match_code"] != "00" else "01"
-    phone.approve(phone.waiting()[0]["id"], match_code=other)
-
-    assert answer(redeem(client, first, denied["request"])) == (400, "access_denied")
-    assert answer(redeem(client, second, wrong["request"])) == (400, "access_denied")
+    assert answer(redeem(client, new, started["request"])) == (400, "access_denied")
     assert devices_of(phone) == 1
 
 
 def test_past_max_devices_the_approved_key_is_refused(app: App) -> None:
     """``DEVICES.MAX_DEVICES`` holds on this way in too."""
-    phone = Phone(app(PHONE, APPROVE_LOGINS=True, NUMBER_MATCHING=False))
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
     client, new = app(NEW), Device()
     started = ask(client, new).json()
-    phone.approve(phone.waiting()[0]["id"])
+    phone.approve(scan(phone, started).json()["id"])
 
     with override_settings(DEVICES={"MAX_DEVICES": 1}):
         full = redeem(client, new, started["request"])
@@ -203,10 +267,10 @@ def test_a_user_turned_off_after_the_approval_gets_no_device(app: App) -> None:
     from domainkit.contrib.auth.models import UserId
     from domainkit.management.base import run_async
 
-    phone = Phone(app(PHONE, APPROVE_LOGINS=True, NUMBER_MATCHING=False))
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
     client, new = app(NEW), Device()
     started = ask(client, new).json()
-    phone.approve(phone.waiting()[0]["id"])
+    phone.approve(scan(phone, started).json()["id"])
 
     async def turn_off() -> None:
         async with AuthUnitOfWork() as uow:

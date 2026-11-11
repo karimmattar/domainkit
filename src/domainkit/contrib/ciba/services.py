@@ -185,16 +185,12 @@ async def start_push(
     scope: str = "",
     binding_message: str | None = None,
     match: bool = False,
-    kind: str = SIGN_IN,
-    credential_digest: str | None = None,
 ) -> Started:
     """Ask ``user``'s phone to approve a sign-in; queue the push to their apps.
 
     ``user`` is None when the initiator named nobody known: the request is
     a decoy, as for a user who cannot be asked now. With ``match``, the
     phone must type the two digits the page shows (``NUMBER_MATCHING``).
-    ``kind`` is ``sign_in``, or ``device`` for a phone that asks to be
-    bound: only what ``credential_digest`` names (its key) redeems it.
     The push leaves with ``uow``'s commit.
     """
     config = ciba_settings()
@@ -215,8 +211,6 @@ async def start_push(
             user_id=None if asked is None else asked.id,
             decoy=asked is None,
             match_code=match_code,
-            kind=kind,
-            credential_digest=credential_digest,
         )
     )
     if asked is not None:
@@ -321,11 +315,15 @@ async def start_qr(
     client_id: str | None = None,
     scope: str = "",
     binding_message: str | None = None,
+    kind: str = SIGN_IN,
+    credential_digest: str | None = None,
 ) -> Started:
     """A request for whichever phone scans its QR code, within ``QR_TTL``.
 
     The code can be scanned for ``QR_TTL``; the phone that scans it then has
-    ``REQUEST_TTL`` to answer, as for a push.
+    ``REQUEST_TTL`` to answer, as for a push. ``kind`` is ``sign_in``, or
+    ``device`` for a new phone that shows the code to be bound (ADR 0137):
+    only what ``credential_digest`` names (its key) redeems it.
     """
     config = ciba_settings()
     now = utc_now()
@@ -342,6 +340,8 @@ async def start_qr(
             binding_message=binding_message,
             qr_digest=secret_digest(code),
             ttl=config.QR_TTL + config.REQUEST_TTL,
+            kind=kind,
+            credential_digest=credential_digest,
         )
     )
     return Started(

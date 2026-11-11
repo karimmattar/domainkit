@@ -41,11 +41,13 @@ one of their bound devices, ``DeviceSigned``):
 - ``POST /app-sign-in/requests/{id}/approve`` ``{"match_code"?}``.
 - ``POST /app-sign-in/requests/{id}/deny`` ``{"report"?}``.
 
-A new phone of a user who has a bound one asks to be bound (ADR 0137):
+A new phone is bound from one the user bound before, which scans it
+(ADR 0137):
 
-- ``POST /app-sign-in/device`` ``{"identifier", "name", "public_key"}``,
-  signed by the new key: the user's bound phone is asked, and shown the
-  name. The answer is the same whoever the identifier names.
+- ``POST /app-sign-in/device`` ``{"name", "public_key"}``, signed by the
+  new key: a QR code for the new phone to show. Nothing reaches the user's
+  phone until it scans the code (``/app-sign-in/requests/claim``), and
+  approves.
 - ``POST /app-sign-in/device/token`` ``{"request", "public_key"}``, signed
   by the new key: once approved, the key is bound, and the phone logged in.
 """
@@ -145,8 +147,13 @@ class IdentifierIn(BaseModel):
     identifier: str = Field(min_length=1, max_length=255)
 
 
-class DeviceRequestIn(IdentifierIn):
-    """The phone that asks to be bound: a name for it, and the key it holds."""
+class DeviceRequestIn(BaseModel):
+    """The phone that asks to be bound: a name for it, and the key it holds.
+
+    It names no account: the phone that scans its code decides whose it is.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=MESSAGE_LENGTH)
     """What the user's bound phone is shown: "Omar's new phone"."""
@@ -384,11 +391,13 @@ def _key_digest(key: bytes) -> str:
 async def ask_to_bind_device(
     body: DeviceRequestIn, request: Request, response: Response
 ) -> StartedOut:
-    """Ask the user's bound phone to let this phone's key be bound.
+    """A QR code for this phone to show, for a phone the user bound to scan.
 
-    The request is signed by the key it asks to bind. Whoever the
-    identifier names, or not, the answer is the same; a user with no bound
-    phone enrolls instead (``/devices/enroll``).
+    The request is signed by the key it asks to bind. It names no account
+    and pushes nothing: the user opens the app on a phone they bound,
+    scans the code (``/app-sign-in/requests/claim``), is shown the name and
+    where the request comes from, and approves. A user with no bound phone
+    enrolls instead (``/devices/enroll``).
 
     Raises:
         DeviceSignatureRefused: The key did not sign the request.
@@ -399,13 +408,10 @@ async def ask_to_bind_device(
     if not await proves_key(request, algorithm, key):
         raise DeviceSignatureRefused()
     async with CibaUnitOfWork() as uow:
-        user = await uow.users.find_by_identifier(body.identifier)
-        started = await start_push(
+        started = await start_qr(
             uow,
-            user,
             requester=_requester(request),
             binding_message=body.name,
-            match=ciba_settings().NUMBER_MATCHING,
             kind=DEVICE,
             credential_digest=_key_digest(key),
         )

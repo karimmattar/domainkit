@@ -11,13 +11,15 @@ and a status.
 
 ### Added
 
-- A new phone asks to be bound, and the user's bound phone approves:
-  `POST /app-sign-in/device` and `POST /app-sign-in/device/token`, each
-  signed by the new phone's key. The old phone sees the request with the
-  new one's name and approves it as it approves a sign-in; only the key
-  that asked redeems it, and is then bound and logged in
+- A new phone shows a QR code, and the user's bound phone scans it and
+  approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
+  each signed by the new phone's key. The new phone names no account and
+  nothing is pushed: the old phone claims the code
+  (`/app-sign-in/requests/claim`), sees the new one's name, address and
+  network, and approves it as it approves a sign-in. Only the key that
+  asked redeems it, and is then bound and logged in
   ([A new phone asks](docs/auth/ciba.md#a-new-phone-asks-to-be-bound),
-  ADR 0137).
+  ADR 0137, which lists how others link a device).
 - `DEVICES.BOUND_NOTICE` (on by default): a user is mailed when a device
   is bound to their account, from the template `devices/device_bound`.
   It needs `domainkit.contrib.messaging` and `domainkit.contrib.mail`

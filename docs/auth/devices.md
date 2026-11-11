@@ -293,8 +293,8 @@ The old phone's login stays its own. Unsigned, the request is
 `403 phone_required`. A user who lost every phone goes to support
 (`unbinddevices`), then enrolls again.
 
-With `domainkit.contrib.ciba`, the new phone can ask instead, and the old
-one approves, with no key moved between them
+With `domainkit.contrib.ciba`, the new phone can show a QR code instead,
+and the old one scans it and approves, with no key moved between them
 ([A new phone asks](ciba.md#a-new-phone-asks-to-be-bound)).
 
 ### The user is told
@@ -302,6 +302,9 @@ one approves, with no key moved between them
 When a device is bound, by any of these ways, its user gets a mail: the
 device's name, and what to do if they did not bind it (since 2.4,
 [ADR 0137](../adr/0137-a-new-phone-asks-and-the-bound-one-approves.md)).
+NIST SP 800-63B-4 asks for it: a subscriber is told of an authenticator
+bound to their account, by another channel than the one that bound it
+([authenticator events](https://pages.nist.gov/800-63-4/sp800-63b/events)).
 It needs `domainkit.contrib.messaging` and `domainkit.contrib.mail`, and
 an address on the account. The template is `devices/device_bound`;
 `BOUND_NOTICE = False` turns it off.
