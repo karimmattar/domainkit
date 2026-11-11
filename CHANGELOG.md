@@ -9,6 +9,17 @@ and a status.
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-11
+
+A security fix for the phone modes (`CIBA.APPROVE_LOGINS`). A web session
+whose thief knew the password could bind a device of its own, which then
+counted as the user's phone and signed the real one out. A user who bound
+a device now binds another, keeps or removes a push token, makes a
+personal token, and links an identity provider's account only by a
+request one of their devices signs (ADR 0134). Nothing to migrate; see
+[upgrading.md](docs/upgrading.md#222-in-the-phone-modes-more-requests-are-signed)
+if your app sends those requests unsigned.
+
 ### Security
 
 - In the phone modes (`CIBA.APPROVE_LOGINS`), a web session whose thief
@@ -6471,7 +6482,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.2.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.2.2...HEAD
+[2.2.2]: https://github.com/karimmattar/domainkit/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/karimmattar/domainkit/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/karimmattar/domainkit/compare/v2.1.2...v2.2.0
 [2.1.2]: https://github.com/karimmattar/domainkit/compare/v2.1.1...v2.1.2
