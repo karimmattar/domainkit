@@ -1,12 +1,15 @@
 """Property-based tests: invariants that must hold for any input."""
 
+import ast
 import asyncio
 import ipaddress
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 import pytest
-from hypothesis import example, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -248,3 +251,33 @@ def test_ci_prints_how_to_replay_a_failing_example() -> None:
 
     assert profile.print_blob is True
     assert profile.max_examples == settings.get_profile("default").max_examples
+
+
+def test_ci_judges_no_property_test_by_its_speed() -> None:
+    """No deadline, and slow input generation fails nothing, in CI and the fuzz run."""
+    for name in ("ci", "fuzz"):
+        profile = settings.get_profile(name)
+
+        assert profile.deadline is None
+        assert HealthCheck.too_slow in profile.suppress_health_check
+    assert settings.get_profile("fuzz").max_examples == 5000
+
+
+def test_a_tests_own_health_checks_name_the_profiles_too() -> None:
+    """A test's ``suppress_health_check`` replaces the profile's list.
+
+    So each test that sets one names ``too_slow`` in it as well.
+    """
+    own: dict[str, Any] = {
+        "suppress_health_check": [HealthCheck.function_scoped_fixture]
+    }
+    replaced = settings(settings.get_profile("ci"), **own)
+    assert HealthCheck.too_slow not in replaced.suppress_health_check
+
+    found = 0
+    for path in sorted(Path(__file__).parent.glob("test_*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.keyword) and node.arg == "suppress_health_check":
+                found += 1
+                assert "too_slow" in ast.unparse(node.value), path.name
+    assert found >= 2  # test_fuzz.py and test_query_properties.py set one.

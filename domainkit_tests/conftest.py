@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import textwrap
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -18,8 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
+from hypothesis import HealthCheck
 from hypothesis import settings as hypothesis_settings
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -41,6 +44,7 @@ from domainkit.conf.env import (
 )
 from domainkit.contrib.auth.principals import invalidate_all
 from domainkit.contrib.messaging import tasks_kept
+from domainkit.db import connections
 from domainkit.ddd import event_bus
 from domainkit.http import get_asgi_application
 from domainkit.http.metrics import refreshers_kept
@@ -49,6 +53,7 @@ from domainkit.management import call_command
 from domainkit.money import currencies_kept
 from domainkit.reporting import flush_reports
 from domainkit.testing import DatabaseBlocker
+from domainkit.testing import TestClient as DomainkitTestClient
 from domainkit_tests import engine_events  # Imported early: its listeners first.
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -92,7 +97,14 @@ def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) 
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Add what failed, when it fails in mutmut's own run."""
+    """Add what failed, when it fails in mutmut's own run.
+
+    And name the test that opened a connection the failure says was never
+    closed (``engine_events.name_the_opener``): the one that fails is only
+    the one the collector ran in.
+    """
+    if report.failed:
+        engine_events.name_the_opener(report.longreprtext, report.nodeid)
     if report.failed and _mutmut_checks_the_suite():
         with MUTMUT_FAILURES.open("a", encoding="utf-8") as noted:
             noted.write(
@@ -122,7 +134,8 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
 
     The collector closes a leaked connection in whichever test runs then:
     that one fails, or a later one, and its output never names the test
-    that took the connection (``engine_events``).
+    that took the connection, or opened it and dropped its engine
+    (``engine_events``).
     """
     if not engine_events.leaks:
         return
@@ -408,6 +421,78 @@ def local_zone() -> Iterator[Callable[[str], None]]:
         else:
             os.environ["TZ"] = previous
         time.tzset()
+
+
+class SharedLoop:
+    """The event loop a test's clients run on, unless they were entered.
+
+    Starlette's ``TestClient`` runs each request of a client that was never
+    entered (``with TestClient(app) as client``) on an event loop of its
+    own. domainkit keeps a loop's engines for that loop, so each such
+    request opened a pool and a connection, and nothing disposed them: the
+    loop was gone. They went with it when the collector got to them, in
+    whichever test ran then, which failed on aiosqlite's "was deleted
+    before being closed".
+
+    Set as ``TestClient.portal``, this hands every client that has no loop
+    of its own the same one, started on first use. ``close`` disposes the
+    engines that loop opened, then ends it. A client that is entered sets
+    its own ``portal``, which is found before this one. domainkit's own
+    ``TestClient`` is left as it is: it tells an entered client by its
+    ``portal``, and ``another`` shares that one's loop already.
+    """
+
+    def __init__(self) -> None:
+        """No loop yet: most tests need none."""
+        self._lock = threading.Lock()
+        self._portal: anyio.from_thread.BlockingPortal | None = None
+        self._exit: Callable[..., object] = lambda *exc: None
+
+    def __get__(
+        self, client: TestClient | None, owner: type[TestClient] | None = None
+    ) -> "anyio.from_thread.BlockingPortal | SharedLoop | None":
+        """The shared loop's portal, started now if this is its first use."""
+        if client is None:
+            return self
+        if isinstance(client, DomainkitTestClient):
+            return None
+        with self._lock:
+            if self._portal is None:
+                started = anyio.from_thread.start_blocking_portal(
+                    **client.async_backend
+                )
+                self._portal = started.__enter__()
+                self._exit = started.__exit__
+            return self._portal
+
+    def close(self) -> None:
+        """Dispose the engines the loop opened, and end it."""
+        with self._lock:
+            portal, self._portal = self._portal, None
+        if portal is None:
+            return
+        try:
+            portal.call(connections.close_all)
+        finally:
+            self._exit(None, None, None)
+
+
+@pytest.fixture(autouse=True)
+def one_loop_for_clients_never_entered() -> Iterator[None]:
+    """Run a test's clients that were never entered on one loop (``SharedLoop``).
+
+    Set and taken off by hand: asking for ``monkeypatch`` here would make
+    it outlive every other fixture of the test, which undo their own
+    changes before it does.
+    """
+    loop = SharedLoop()
+    vars_of: Any = TestClient  # Starlette declares ``portal`` a portal or None.
+    vars_of.portal = loop
+    try:
+        yield
+    finally:
+        vars_of.portal = None
+        loop.close()
 
 
 @pytest.fixture(autouse=True)
@@ -744,8 +829,17 @@ def identity(migrated: Migrated) -> Iterator[Api]:
 # @reproduce_failure blob that replays it, since a runner keeps no example
 # database between runs; the seed alone needs the same code to replay.
 # No deadline: a loaded runner made the 200 ms default fail examples that
-# pass alone (TEST-20); slowness is the benchmarks' to judge.
-hypothesis_settings.register_profile("ci", print_blob=True, deadline=None)
+# pass alone (TEST-20); slowness is the benchmarks' to judge. Nor is the
+# time inputs take to generate checked: under load that check failed a
+# test whose code had not changed ("Input generation is slow"). A test
+# that suppresses health checks of its own names too_slow as well: its
+# list replaces this one (test_properties.py checks it).
+hypothesis_settings.register_profile(
+    "ci",
+    print_blob=True,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
 if os.environ.get("CI"):
     hypothesis_settings.load_profile("ci")
 # The weekly fuzz run (pytest --hypothesis-profile fuzz): the property tests,
