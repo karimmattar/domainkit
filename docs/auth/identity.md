@@ -136,11 +136,11 @@ IDENTITY = {
 | --- | --- | --- |
 | `GET /identity/providers` | anyone | `{"providers": [...], "saml": [...]}`: the names. |
 | `POST /identity/{name}/login` | anyone | `{"authorization_url", "binding"}`: send the browser there, and keep the binding for the callback. |
-| `POST /identity/{name}/link` | a user, unscoped | `{"password"}`, or a step-up in the last 10 minutes: the same answer, to link an identity to the user. |
+| `POST /identity/{name}/link` | a user, unscoped | `{"password"}`, or a step-up in the last 10 minutes: the same answer, to link an identity to the user. In the [phone modes](ciba.md#managing-logins-from-the-phone), signed by the user's device (`403 phone_required`). |
 | `POST /identity/{name}/callback` | anyone | `{"code", "state", "binding"}`: `200` with tokens, `202` with the second factor's challenge, or `{"linked": "<name>"}` for a link. |
 | `POST /identity/ticket` | anyone | `{"ticket"}` that a SAML response gave, from the browser that started the login (its cookie): tokens or a challenge, once. |
 | `GET /identity/linked` | a user, unscoped | The user's identities: `provider`, `email`, `created_at`. |
-| `DELETE /identity/linked/{name}` | a user, unscoped | `204`: unlinked, unless it is the last way in. |
+| `DELETE /identity/linked/{name}` | a user, unscoped | `204`: unlinked, unless it is the last way in. Signed in the phone modes, as linking is. |
 
 Answers that hold tokens are marked `Cache-Control: no-store`.
 

@@ -144,6 +144,7 @@ statuses, and the amendments they name.
 | [0131](0131-choose-what-a-password-change-does-to-the-devices-logins.md) | Choose what a password change does to the devices' logins | Accepted |
 | [0132](0132-manage-the-second-factors-from-the-phone.md) | Manage the second factors from the phone | Accepted |
 | [0133](0133-a-signup-takes-an-address-its-holder-never-proved.md) | A signup takes an address its holder never proved | Accepted |
+| [0134](0134-bind-another-device-from-a-bound-one.md) | Bind another device from a bound one | Accepted |
 | [0135](0135-keep-each-signed-request-not-the-last-time.md) | Keep each signed request, not the last time | Accepted |
 
 ### Decisions still without a record

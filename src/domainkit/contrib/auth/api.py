@@ -518,31 +518,51 @@ def device_logins_kept(asked: bool | None) -> bool:
     return decided == "keep"
 
 
-async def attach_login_device(request: Request, device_id: UUID) -> None:
+async def attach_login_device(
+    request: Request, device_id: UUID, *, uow: AuthUnitOfWork | None = None
+) -> None:
     """Mark the login that sent ``request`` as the bound device ``device_id``'s.
 
     The devices app calls it once the request bound the device: the app
-    logged in, then bound its key (ADR 0131).
+    logged in, then bound its key (ADR 0131). With ``uow``, the mark is
+    part of that unit of work, which its caller commits: the device and
+    its login are written together, or not at all (ADR 0134).
     """
     credentials = _credentials(request)
-    async with AuthUnitOfWork() as uow:
-        await uow.tokens.attach_device(
-            credentials.user.id,
-            device_id,
-            token=credentials.token_id,
-            family=credentials.login,
-        )
-        await uow.commit()
+    if uow is not None:
+        await _attach(uow, credentials, device_id)
+        return
+    async with AuthUnitOfWork() as own:
+        await _attach(own, credentials, device_id)
+        await own.commit()
 
 
-async def end_device_logins(user_id: UUID, device_id: UUID) -> int:
+async def _attach(
+    uow: AuthUnitOfWork, credentials: Credentials, device_id: UUID
+) -> None:
+    """Mark the login of ``credentials`` as ``device_id``'s, in ``uow``."""
+    await uow.tokens.attach_device(
+        credentials.user.id,
+        device_id,
+        token=credentials.token_id,
+        family=credentials.login,
+    )
+
+
+async def end_device_logins(
+    user_id: UUID, device_id: UUID, *, uow: AuthUnitOfWork | None = None
+) -> int:
     """End the logins marked as the bound device ``device_id``'s: how many.
 
-    The devices app calls it once it unbinds the device (ADR 0131).
+    The devices app calls it as it unbinds the device (ADR 0131). With
+    ``uow``, they end in that unit of work, which its caller commits: the
+    device goes with its logins, or neither does (ADR 0134).
     """
-    async with AuthUnitOfWork() as uow:
-        ended = await uow.tokens.end_device_logins(user_id, device_id)
-        await uow.commit()
+    if uow is not None:
+        return await uow.tokens.end_device_logins(user_id, device_id)
+    async with AuthUnitOfWork() as own:
+        ended = await own.tokens.end_device_logins(user_id, device_id)
+        await own.commit()
     return ended
 
 

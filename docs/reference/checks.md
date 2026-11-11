@@ -180,6 +180,7 @@ everywhere.
 | `auth.W004` | with `AUTH.REQUIRE_SHARED_THROTTLES = False` only: attempt throttles counted in a `RATE_LIMIT_BACKEND` that each process keeps alone (`MemoryBackend`). With several processes, each one allows the rates on its own; this is what `auth.E105` refuses ([auth.md](../auth/logging-in.md#logging-in-and-out)) |
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix, where the prefix could hold ([auth.md](../auth/authentication.md#browser-sessions-in-cookies)) |
 | `auth.W006` | `AUTH.ACCOUNT_LOGIN_RATE` set to `None`, or to more than 100 wrong passwords a day at one account: past NIST SP 800-63B 5.2.2 ([auth.md](../auth/logging-in.md#wrong-passwords-and-device-proofs)) |
+| `ciba.W001` | in every environment: `CIBA.APPROVE_LOGINS` on with `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "end"`, so a password change or reset signs the phone out too ([Credential changes and the phone](../auth/logging-in.md#credential-changes-and-the-phone)) |
 | `auth.W007` | in every environment: a backend of `AUTH.BACKENDS` other than `ModelBackend` that does not answer `object_grants`. Only superusers then change users and groups through the admin API ([auth.md](../auth/routes.md#the-admin-api)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |

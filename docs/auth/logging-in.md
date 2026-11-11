@@ -313,7 +313,10 @@ its checks before:
 
 - listing the user's tokens (`GET /auth/tokens`);
 - ending a token that is not the request's own login;
-- logging out `everywhere` or `others`.
+- logging out `everywhere` or `others`;
+- adding or removing a way into the account: a bound device, a push
+  token, a personal token, a second factor, a passkey, a linked identity
+  ([ADR 0134](../adr/0134-bind-another-device-from-a-bound-one.md)).
 
 A check takes the request and the user, and refuses by raising. With
 none registered, any login of the user manages the others. Logging out

@@ -9,8 +9,30 @@ and a status.
 
 ## [Unreleased]
 
+### Security
+
+- In the phone modes (`CIBA.APPROVE_LOGINS`), a web session whose thief
+  knew the password could bind a device of its own (`POST /devices`).
+  That device counted as the user's phone: it listed the logins, ended
+  them, and signed the real phone out. A user who bound a device now
+  binds another only by a request one of their devices signs
+  (`403 phone_required` otherwise): the old phone sends the new one's
+  public key ([Binding another device](docs/auth/devices.md#binding-another-device),
+  ADR 0134).
+- In the phone modes, the same check now guards registering and removing
+  push tokens, making a personal token, and linking or unlinking an
+  identity provider's account: a stolen web session could read or stop
+  the sign-in pushes, or keep a way in that outlasts the phone ending
+  the other logins. See [upgrading.md](docs/upgrading.md#222-in-the-phone-modes-more-requests-are-signed)
+  if your app sends those unsigned.
+
 ### Added
 
+- `check` warns (`ciba.W001`) when `CIBA.APPROVE_LOGINS` is on and
+  `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS` is `"end"`: a password change or
+  reset would sign the phone out.
+- `attach_login_device` and `end_device_logins` (`auth.integration`) take
+  `uow=`, to write in the caller's unit of work.
 - `DEVICES.SIGNATURE_STORE`: `"database"` (the default) keeps each signed
   request in a table; `"cache"` keeps it in the default cache, so a
   signed request writes to no database. The cache must be shared by
@@ -32,6 +54,17 @@ and a status.
 ### Removed
 
 - `DeviceStore.advance`: `use` and `touch` replace it.
+
+### Fixed
+
+- Unbinding a device removed it and ended its logins in two transactions,
+  and binding one wrote the device and the mark on its login in two. A
+  failure between them left a login for a device that was gone. Each is
+  one transaction now.
+- Two devices bound at once could both pass `DEVICES.MAX_DEVICES`: binds
+  now take the user's lock.
+- A bind that another device signed marked the signer's login as the new
+  device's, where that login had no device yet.
 
 ## [2.2.1] - 2026-11-10
 

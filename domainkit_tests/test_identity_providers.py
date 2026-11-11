@@ -249,6 +249,44 @@ def test_a_user_links_an_identity_then_logs_in_with_it(app: App, idp: FakeIdP) -
     assert len(audited("identity.identity_unlinked")) == 1
 
 
+def test_linking_and_unlinking_are_checked_as_managing_logins(
+    app: App, idp: FakeIdP
+) -> None:
+    """A linked identity is a way in: ``on_manage_logins`` judges it (ADR 0134).
+
+    In the phone modes that check asks for the phone's signature, so a
+    stolen web session links no identity of its thief's.
+    """
+    from fastapi import status as http_status
+    from starlette.requests import Request
+
+    from domainkit.contrib.auth import AbstractBaseUser
+    from domainkit.contrib.auth.gates import on_manage_logins
+    from domainkit.http.errors import APIError
+
+    client = app(PROVIDERS={"idp": OIDC})
+    create_user("bob")
+    headers = bearer(login(client, "bob")["access_token"])
+    started = client.post(
+        "/auth/identity/idp/link", json={"password": PASSWORD}, headers=headers
+    )
+    code, state = idp.authorize(started.json()["authorization_url"])
+    client.post("/auth/identity/idp/callback", json=back(code, state))
+
+    async def phone_only(request: Request, user: AbstractBaseUser) -> None:
+        raise APIError(http_status.HTTP_403_FORBIDDEN, "No.", code="phone_required")
+
+    on_manage_logins(phone_only, domain="auth")
+    linking = client.post(
+        "/auth/identity/idp/link", json={"password": PASSWORD}, headers=headers
+    )
+    unlinking = client.delete("/auth/identity/linked/idp", headers=headers)
+
+    assert (linking.status_code, linking.json()["code"]) == (403, "phone_required")
+    assert (unlinking.status_code, unlinking.json()["code"]) == (403, "phone_required")
+    assert log_in_at(client, idp).status_code == 200  # Still linked.
+
+
 def test_an_identity_linked_elsewhere_and_the_last_way_in(
     app: App, idp: FakeIdP
 ) -> None:

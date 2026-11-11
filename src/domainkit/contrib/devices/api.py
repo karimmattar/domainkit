@@ -21,7 +21,8 @@ Passkeys (``RP_ID`` set):
 Devices:
 
 - ``POST /devices`` (a user, with ``{"password"}`` or a recent step-up):
-  bind a device's public key.
+  bind a device's public key. In the phone modes, a user who has a bound
+  device sends it signed by one (ADR 0134).
 - ``GET /devices``, ``DELETE /devices/{id}`` (a user).
 - ``POST /devices/step-up`` (a user, signed by one of their devices): a
   step-up proving ``hwk``.
@@ -36,6 +37,8 @@ Push tokens:
 - ``POST /devices/push-tokens`` (a user): the token an app's push service
   gave it, and the ``platform``.
 - ``GET /devices/push-tokens``, ``DELETE /devices/push-tokens/{id}``.
+
+Registering and removing one are checked as binding a device is.
 """
 
 from datetime import datetime
@@ -491,18 +494,28 @@ async def enroll_device(
 async def bind_device(
     body: DeviceIn, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> DeviceOut:
-    """Bind a device's key, once the user authenticated again."""
+    """Bind a device's key, once the user authenticated again.
+
+    Checked by auth's ``on_manage_logins`` first: in the phone modes, a
+    user who bound a device binds another only by a request one of their
+    devices signs (ADR 0134). The device, and the mark on the login that
+    bound it, are written together.
+    """
     algorithm, key = device_key(body.public_key)
+    await check_manage_logins(request, user)
     await reauthenticate(request, user, body.password, BIND_DEVICE)
+    signer = await signing_device(request, user)
     limit = _settings().MAX_DEVICES
     async with DevicesUnitOfWork() as uow:
+        await uow.tokens.lock_user(user.id)  # Two binds at once count each other.
         if await uow.devices.count(user.id) >= limit:
             raise TooManyKeys("Unbind a device before binding another.")
         device = await uow.devices.add(user.id, body.name, algorithm, key)
         stored = await uow.users.get(UserId(user.id))
         stored.record(DeviceBound(user_id=user.id, device_id=device.id))
+        if signer is None:  # The app's login: the device's. A signer's stays its own.
+            await attach_login_device(request, device.id, uow=uow)
         await uow.commit()
-    await attach_login_device(request, device.id)  # The app's login: the device's.
     return DeviceOut(
         id=device.id, name=device.name, created_at=device.created_at, last_used_at=None
     )
@@ -528,7 +541,8 @@ async def unbind_device(
     """Unbind one of the user's devices; its logins end (ADR 0131).
 
     Checked by auth's ``on_manage_logins`` first: in the phone modes, one
-    of the user's devices signs the request.
+    of the user's devices signs the request. The device and its logins go
+    together (ADR 0134).
     """
     await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
@@ -536,15 +550,20 @@ async def unbind_device(
             raise DeviceNotFound("You have no device with that id.")
         stored = await uow.users.get(UserId(user.id))
         stored.record(DeviceUnbound(user_id=user.id, device_id=device_id))
+        await end_device_logins(user.id, device_id, uow=uow)
         await uow.commit()
-    await end_device_logins(user.id, device_id)
 
 
 @router.post("/devices/push-tokens", status_code=status.HTTP_201_CREATED)
 async def register_push_token(
-    body: PushTokenIn, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    body: PushTokenIn, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> PushTokenOut:
-    """Keep the token the user's app was given: notifications go there."""
+    """Keep the token the user's app was given: notifications go there.
+
+    Checked by auth's ``on_manage_logins`` first: in the phone modes, one
+    of the user's devices signs the request (ADR 0134).
+    """
+    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         token = await uow.push_tokens.register(
             user.id, body.token, body.platform, keep=_settings().MAX_PUSH_TOKENS
@@ -566,9 +585,13 @@ async def list_push_tokens(
     "/devices/push-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT
 )
 async def remove_push_token(
-    token_id: UUID, user: Annotated[AbstractBaseUser, SIGNED_IN]
+    token_id: UUID, request: Request, user: Annotated[AbstractBaseUser, SIGNED_IN]
 ) -> None:
-    """Remove one of the user's push tokens (the app logged out)."""
+    """Remove one of the user's push tokens (the app logged out).
+
+    Checked by auth's ``on_manage_logins`` first, as registering one is.
+    """
+    await check_manage_logins(request, user)
     async with DevicesUnitOfWork() as uow:
         if not await uow.push_tokens.remove(user.id, token_id):
             raise DeviceNotFound("You have no push token with that id.")
