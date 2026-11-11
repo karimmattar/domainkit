@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from domainkit_tests.conftest import Api, SharedLoop
 from domainkit_tests.engine_events import OPENED
-from domainkit_tests.test_auth_http import PASSWORD, create_user
+from domainkit_tests.support.auth import PASSWORD, create_user
 
 
 def looping() -> tuple[FastAPI, list[asyncio.AbstractEventLoop]]:
