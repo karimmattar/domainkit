@@ -9,6 +9,18 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- CI serves the framework under load. `python -m benchmarks.load` serves
+  rungs of the benchmark ladder with uvicorn and sends them requests
+  over 32 connections. The `bench` job fails on an answer that is not
+  the rung's, and on a rung whose requests a second or 99th percentile
+  fall too far behind plain FastAPI's in the same run
+  (`benchmarks/load.toml`). No time is gated. Its first runs measured
+  what a pool costs past its size:
+  [performance.md](docs/performance.md#what-the-pool-does-past-its-size)
+  (ADR 0139, audit finding P5).
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of
