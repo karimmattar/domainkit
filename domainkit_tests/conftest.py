@@ -22,6 +22,7 @@ from typing import Any, Final
 import anyio
 import pytest
 from fastapi.testclient import TestClient
+from hypothesis import HealthCheck
 from hypothesis import settings as hypothesis_settings
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -825,8 +826,17 @@ def identity(migrated: Migrated) -> Iterator[Api]:
 # @reproduce_failure blob that replays it, since a runner keeps no example
 # database between runs; the seed alone needs the same code to replay.
 # No deadline: a loaded runner made the 200 ms default fail examples that
-# pass alone (TEST-20); slowness is the benchmarks' to judge.
-hypothesis_settings.register_profile("ci", print_blob=True, deadline=None)
+# pass alone (TEST-20); slowness is the benchmarks' to judge. Nor is the
+# time inputs take to generate checked: under load that check failed a
+# test whose code had not changed ("Input generation is slow"). A test
+# that suppresses health checks of its own names too_slow as well: its
+# list replaces this one (test_properties.py checks it).
+hypothesis_settings.register_profile(
+    "ci",
+    print_blob=True,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
 if os.environ.get("CI"):
     hypothesis_settings.load_profile("ci")
 # The weekly fuzz run (pytest --hypothesis-profile fuzz): the property tests,
