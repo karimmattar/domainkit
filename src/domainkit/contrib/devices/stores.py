@@ -8,12 +8,13 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.contrib.auth.integration import utc_now
 
-from .tables import challenges, devices, passkeys, push_tokens
+from .tables import challenges, devices, passkeys, push_tokens, signatures
 from .webauthn import b64encode
 
 __all__ = ["BoundDevice", "Challenge", "DevicesUnitOfWork", "Passkey", "PushToken"]
@@ -259,14 +260,54 @@ class DeviceStore:
         await self.session.execute(insert(devices).values(**_fields(device)))
         return device
 
-    async def advance(self, device_id: UUID, time: int) -> bool:
-        """Record a signed request of ``time``, unless one as late was recorded."""
-        result = await self.session.execute(
-            update(devices)
-            .where(devices.c.id == device_id, devices.c.last_time < time)
-            .values(last_time=time, last_used_at=utc_now())
+    async def use(self, device_id: UUID, digest: str, time: int) -> bool:
+        """Keep that the device sent the request ``digest``; False if it did before.
+
+        ``digest`` is the signed message's SHA-256, which covers its time,
+        method, target, and body: the same request sent twice is a replay,
+        whatever its signature's bytes. Requests that arrive in another
+        order than they were signed in are each kept (ADR 0135).
+        """
+        dialect = self.session.get_bind().dialect.name
+        statement = (postgresql if dialect == "postgresql" else sqlite).insert(
+            signatures
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        result = await self.session.execute(
+            statement.values(device_id=device_id, digest=digest, time=time)
+            .on_conflict_do_nothing(index_elements=["device_id", "digest"])
+            .returning(signatures.c.digest)
+        )
+        return result.first() is not None
+
+    async def touch(self, device_id: UUID, time: int, before: int) -> None:
+        """Note that the device was used, and forget its requests from ``before``.
+
+        ``time`` and ``before`` are milliseconds. A request signed before
+        ``before`` is outside the window, and refused for that: nothing
+        needs to remember it.
+        """
+        await self.session.execute(
+            update(devices)
+            .where(devices.c.id == device_id)
+            .values(
+                last_used_at=utc_now(),
+                last_time=func.max(devices.c.last_time, time)
+                if self.session.get_bind().dialect.name == "sqlite"
+                else func.greatest(devices.c.last_time, time),
+            )
+        )
+        await self.session.execute(
+            delete(signatures).where(
+                signatures.c.device_id == device_id, signatures.c.time < before
+            )
+        )
+
+    async def purge_signatures(self, before: int) -> int:
+        """Forget every device's requests signed before ``before``; how many."""
+        result = await self.session.execute(
+            delete(signatures).where(signatures.c.time < before)
+        )
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def remove(self, user_id: UUID, device_id: UUID) -> bool:
         """Unbind the user's device; whether there was one."""
@@ -275,10 +316,19 @@ class DeviceStore:
                 devices.c.user_id == user_id, devices.c.id == device_id
             )
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        if not result.rowcount:  # type: ignore[attr-defined]
+            return False
+        await self.session.execute(
+            delete(signatures).where(signatures.c.device_id == device_id)
+        )
+        return True
 
     async def forget_user(self, user_id: UUID) -> None:
         """Unbind every device of a user who is gone."""
+        theirs = select(devices.c.id).where(devices.c.user_id == user_id)
+        await self.session.execute(
+            delete(signatures).where(signatures.c.device_id.in_(theirs))
+        )
         await self.session.execute(delete(devices).where(devices.c.user_id == user_id))
 
 

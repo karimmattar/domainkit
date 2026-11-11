@@ -24,7 +24,9 @@ class DevicesConfig(DomainConfig):
 
         Raises:
             ImproperlyConfigured: ``devices`` is routed elsewhere than ``auth``,
-                or ``ENROLLMENT`` is on without ``domainkit.contrib.messaging``.
+                ``ENROLLMENT`` is on without ``domainkit.contrib.messaging``,
+                or ``SIGNATURE_STORE`` is a cache that remembers nothing, or
+                that each process keeps alone where deployed.
         """
         if router.target_for(self.label) != router.target_for("auth"):
             raise ImproperlyConfigured(
@@ -41,13 +43,17 @@ class DevicesConfig(DomainConfig):
                 "INSTALLED_DOMAINS: its worker sends the codes."
             )
 
+        _check_signature_store(registry.settings(DevicesSettings).SIGNATURE_STORE)
+
         event_bus.subscribe(UserDeleted, forget_devices)
         on_erase_subject(self.erase_person, domain=self.label)
         on_export_subject(self.export_person, domain=self.label)
         if messaging:
             from .enrollment import register_tasks
+            from .tasks import register_purge
 
             register_tasks()
+            register_purge()
         if registry.is_installed("domainkit.contrib.notifications"):
             from domainkit.contrib.notifications.events import PushTokenExpired
 
@@ -64,6 +70,33 @@ class DevicesConfig(DomainConfig):
         from .personal import export_subject
 
         return await export_subject(subject)
+
+
+def _check_signature_store(store: str) -> None:
+    """Refuse a cache that could let a signed request work twice.
+
+    Raises:
+        ImproperlyConfigured: ``SIGNATURE_STORE`` is ``"cache"``, and the
+            default cache keeps nothing (``dummy://``), or is a process's
+            own memory in staging or production: another process would
+            accept the same request again.
+    """
+    if store != "cache":
+        return
+    from domainkit.cache import caches
+    from domainkit.conf import settings
+    from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
+
+    config = caches.config()
+    if config.BACKEND is not None or config.scheme in REDIS_SCHEMES:
+        return
+    if config.scheme == "dummy" or settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+        raise ImproperlyConfigured(
+            'DEVICES.SIGNATURE_STORE is "cache", but CACHES["default"] '
+            f"({config.scheme}://) is not shared by every process: a signed "
+            "request could work twice. Use a Redis cache, or "
+            'SIGNATURE_STORE = "database".'
+        )
 
 
 async def forget_devices(event: object) -> None:

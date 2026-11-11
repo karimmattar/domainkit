@@ -39,6 +39,27 @@ and a status.
   reset would sign the phone out.
 - `attach_login_device` and `end_device_logins` (`auth.integration`) take
   `uow=`, to write in the caller's unit of work.
+- `DEVICES.SIGNATURE_STORE`: `"database"` (the default) keeps each signed
+  request in a table; `"cache"` keeps it in the default cache, so a
+  signed request writes to no database. The cache must be shared by
+  every process, and signed requests are refused while it is down
+  ([Bound devices](docs/auth/devices.md#bound-devices), ADR 0135).
+
+### Changed
+
+- Signed requests of a bound device pass in whatever order they arrive.
+  Each had to be later than the device's last, so the earlier of two
+  requests an app sent together was refused
+  (`401 device_signature_refused`). Each request is now kept while its
+  time is within `DEVICES.SIGNATURE_WINDOW`, and works once. The devices
+  app gains a table: run `makemigrations`, then `migrate`
+  ([upgrading.md](docs/upgrading.md#22-to-23), ADR 0135).
+- A device's `last_used_at` is written at most once a minute, not with
+  every signed request.
+
+### Removed
+
+- `DeviceStore.advance`: `use` and `touch` replace it.
 
 ### Fixed
 

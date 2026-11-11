@@ -101,6 +101,7 @@ a user (`UserDeleted`) removes their passkeys, devices, and push tokens.
 | `MAX_DEVICES` | 10 (1 to 100) | Bound devices a user holds at once (`409 too_many_keys` past it). |
 | `MAX_PUSH_TOKENS` | 20 (1 to 100) | Push tokens a user holds; a new one past it ends the oldest. |
 | `SIGNATURE_WINDOW` | 2 minutes (at most 10) | How far a signed request's time may be from the server's. |
+| `SIGNATURE_STORE` | `"database"` | Where the signed requests seen within the window are kept: `"database"`, or `"cache"` (the default cache, shared by every process) ([Bound devices](#bound-devices)). |
 | `DEVICE_LOGIN` | `False` | `POST /devices/login`: a bound device logs its user in by its signature alone ([Sign-in approvals](ciba.md#the-mobile-app-as-identity)). |
 | `ENROLLMENT` | `False` | `POST /devices/enroll/code` and `POST /devices/enroll`: a user with no bound device binds the first one with no login first ([Enrolling a first device](#enrolling-a-first-device)). Needs `domainkit.contrib.messaging`. |
 
@@ -234,12 +235,25 @@ signature = key.sign(signed_message("POST", "/payments", moment, b""))
 
 - a device of the request's user signed it;
 - its time is within `SIGNATURE_WINDOW` of the server's;
-- its time is later than any request the device signed before. Each
-  device's last time is kept, so a signature works once, whichever
-  process reads it. A device that sends requests at once gives each its
-  own millisecond.
+- the same request was not sent before. Each request is kept while its
+  time is within the window, by the SHA-256 of what it signed, so it
+  works once, whichever process reads it.
 
-Otherwise the answer is `401 device_signature_refused`. `DeviceSigned`
+Otherwise the answer is `401 device_signature_refused`. Requests that an
+app sends together pass in whatever order they arrive (since 2.3,
+[ADR 0135](../adr/0135-keep-each-signed-request-not-the-last-time.md));
+two that are the same in every part, the time included, are one request
+sent twice.
+
+By default the requests are kept in a table of the devices' database.
+With `SIGNATURE_STORE = "cache"` they are kept in the default cache, and
+a signed request writes to no database:
+
+- the cache must be shared by every process (Redis). `setup()` refuses
+  `dummy://`, and `memory://` in staging and production;
+- while the cache is down, signed requests are refused.
+
+A device's `last_used_at` is written at most once a minute. `DeviceSigned`
 is a rule like any other: combine it with `&`, `|`, and `~`, and give it
 to a `ResourceRouter`'s `rule=`.
 
@@ -407,8 +421,8 @@ async with DevicesUnitOfWork() as uow:
   relying party's domain.
 - **Signing the path without its query.** The device signs the path with
   its query, as sent.
-- **Sending two signed requests in the same millisecond.** The second is
-  refused; give each its own time.
+- **Sending the same signed request twice.** A retry is a new request:
+  sign it again, with the time of the retry.
 - **Enrolling with an identifier that does not log in.** The code goes
   only to an account that `identifier` logs in as (`AUTH.IDENTIFIERS`):
   with logins by username only, send the username.

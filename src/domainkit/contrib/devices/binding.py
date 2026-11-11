@@ -19,8 +19,9 @@ The signature is of this message, in UTF-8::
 (the lines joined by ``\\n``): the method, the path with its query as
 sent, the time, and the body. ``DeviceSigned`` lets a request through
 only when a device of the request's user signed it, within
-``DEVICES.SIGNATURE_WINDOW`` of the server's time, later than any request
-it signed before: a signature works once, whichever process reads it.
+``DEVICES.SIGNATURE_WINDOW`` of the server's time, and it was not sent
+before: a signed request works once, whichever process reads it, and
+requests sent at once pass in whatever order they arrive (ADR 0135).
 Keys are P-256 (ES256, the signature DER as both platforms make it) or
 Ed25519, sent as SubjectPublicKeyInfo or, for P-256, the raw point the
 Secure Enclave exports.
@@ -28,6 +29,8 @@ Secure Enclave exports.
 
 import base64
 import hashlib
+import logging
+from datetime import timedelta
 from typing import Any, Final
 from uuid import UUID
 
@@ -37,6 +40,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from starlette.requests import HTTPConnection, Request
 
 from domainkit.apps import registry
+from domainkit.cache import CacheError, caches
 from domainkit.contrib.auth.integration import note_login_device, utc_now
 from domainkit.http.access import BasePermission
 
@@ -55,6 +59,9 @@ SIGNING_DEVICE: Final = "domainkit.signing_device"
 """Where a request keeps the device that signed it, checked once."""
 MAX_SIGNATURE: Final = 200
 """Base64url characters a signature may have (ES256's DER is at most 72 bytes)."""
+TOUCH_EVERY: Final = timedelta(minutes=1)
+"""How often a device's last use is written: not with every request."""
+logger: Final = logging.getLogger(__name__)
 
 
 def signed_message(method: str, target: str, time: int, body: bytes) -> bytes:
@@ -181,6 +188,10 @@ async def _check(connection: HTTPConnection, user: Any) -> BoundDevice | None:  
     if signed is None:
         return None
     time, signature, message = signed
+    config = registry.settings(DevicesSettings)
+    digest = hashlib.sha256(message).hexdigest()
+    cached = config.SIGNATURE_STORE == "cache"
+    now = utc_now()
     async with DevicesUnitOfWork() as uow:
         device = await uow.devices.get(device_id)
         if (
@@ -189,8 +200,38 @@ async def _check(connection: HTTPConnection, user: Any) -> BoundDevice | None:  
             or not verify_signature(
                 device.algorithm, device.public_key, signature, message
             )
-            or not await uow.devices.advance(device.id, time)
         ):
             return None
-        await uow.commit()
+        if cached:
+            if not await _first_in_cache(device.id, digest, config.SIGNATURE_WINDOW):
+                return None
+        elif not await uow.devices.use(device.id, digest, time):
+            return None
+        stale = device.last_used_at is None or now - device.last_used_at > TOUCH_EVERY
+        if stale:
+            window = int(config.SIGNATURE_WINDOW.total_seconds() * 1000)
+            await uow.devices.touch(
+                device.id, time, int(now.timestamp() * 1000) - window
+            )
+        if stale or not cached:
+            await uow.commit()
     return device
+
+
+async def _first_in_cache(device_id: UUID, digest: str, window: timedelta) -> bool:
+    """Whether the request ``digest`` is new to the default cache, which keeps it.
+
+    Kept twice the window: a request signed at the window's far edge is
+    refused for its time after that. False while the cache is down: a
+    request nothing can remember is not let through.
+    """
+    try:
+        return await caches["default"].add(
+            f"domainkit.devices.signature:{device_id}:{digest}", 1, ttl=window * 2
+        )
+    except CacheError:
+        logger.exception(
+            "DEVICES.SIGNATURE_STORE is the cache, which is down: a signed "
+            "request was refused."
+        )
+        return False
