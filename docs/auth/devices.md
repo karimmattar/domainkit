@@ -102,6 +102,7 @@ a user (`UserDeleted`) removes their passkeys, devices, and push tokens.
 | `MAX_PUSH_TOKENS` | 20 (1 to 100) | Push tokens a user holds; a new one past it ends the oldest. |
 | `SIGNATURE_WINDOW` | 2 minutes (at most 10) | How far a signed request's time may be from the server's. |
 | `SIGNATURE_STORE` | `"database"` | Where the signed requests seen within the window are kept: `"database"`, or `"cache"` (the default cache, shared by every process) ([Bound devices](#bound-devices)). |
+| `BOUND_NOTICE` | `True` | Mail the user when a device is bound to their account ([The user is told](#the-user-is-told)). |
 | `DEVICE_LOGIN` | `False` | `POST /devices/login`: a bound device logs its user in by its signature alone ([Sign-in approvals](ciba.md#the-mobile-app-as-identity)). |
 | `ENROLLMENT` | `False` | `POST /devices/enroll/code` and `POST /devices/enroll`: a user with no bound device binds the first one with no login first ([Enrolling a first device](#enrolling-a-first-device)). Needs `domainkit.contrib.messaging`. |
 
@@ -291,6 +292,22 @@ password alone would let a stolen web session bind a phone of its thief's.
 The old phone's login stays its own. Unsigned, the request is
 `403 phone_required`. A user who lost every phone goes to support
 (`unbinddevices`), then enrolls again.
+
+With `domainkit.contrib.ciba`, the new phone can show a QR code instead,
+and the old one scans it and approves, with no key moved between them
+([A new phone asks](ciba.md#a-new-phone-asks-to-be-bound)).
+
+### The user is told
+
+When a device is bound, by any of these ways, its user gets a mail: the
+device's name, and what to do if they did not bind it (since 2.4,
+[ADR 0137](../adr/0137-a-new-phone-asks-and-the-bound-one-approves.md)).
+NIST SP 800-63B-4 asks for it: a subscriber is told of an authenticator
+bound to their account, by another channel than the one that bound it
+([authenticator events](https://pages.nist.gov/800-63-4/sp800-63b/events)).
+It needs `domainkit.contrib.messaging` and `domainkit.contrib.mail`, and
+an address on the account. The template is `devices/device_bound`;
+`BOUND_NOTICE = False` turns it off.
 
 ## Enrolling a first device
 

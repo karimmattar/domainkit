@@ -35,7 +35,7 @@ from .mfa import (
     needs_second_factor,
     second_factor_holds,
 )
-from .recovery import send_code
+from .recovery import mail_user, send_code
 from .sca import confirm_transaction_with, sca_transaction
 from .settings import auth_settings
 from .stepup import (
@@ -81,6 +81,7 @@ __all__ = [
     "gates_passed",
     "impersonated",
     "issue_login",
+    "mail_user",
     "needs_second_factor",
     "note_login_device",
     "on_login_gate",

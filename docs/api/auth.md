@@ -392,7 +392,10 @@ The routes of passkeys and bound devices.
 Requests signed by a bound device's key.
 
 - `DeviceSigned`: Requests a bound device of the user signed, now, once.
+- `bind_key`: Bind `key` to the user in `uow`, which its caller commits.
 - `device_key`: A device key's algorithm, and the key as SubjectPublicKeyInfo.
+- `mark_signed_by`: Count `request` as signed by `device`, which it just bound.
+- `proves_key`: Whether `request` is signed by `key`, now (`DEVICES.SIGNATURE_WINDOW`).
 - `signed_message`: What a device signs for a request.
 - `signing_device`: The device of `user` that signed the request, checked once a request.
 
@@ -507,6 +510,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `mail_user`: Mail `user` at their address from `template`; False where none can go.
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
 - `note_login_device`: Say that the user's bound device `device_id` signed this request.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
@@ -746,7 +750,26 @@ CIBA clients, sign-in requests, and the client assertions already used.
 
 ## `domainkit.contrib.devices.tasks`
 
-Hourly purge of the signed requests no longer within the window.
+The devices app's tasks: the signed requests' purge, and the bound-device notice.
 
+- `notice_device_bound`: Queue the notice of a `DeviceBound`, once its transaction committed.
 - `purge_signatures`: Forget the signed requests too old to be sent again; how many.
+- `register_notice`: Register the notice's task, and send it for every `DeviceBound`.
 - `register_purge`: Run the purge every hour (needs messaging).
+- `send_bound_notice`: Mail the user that the device `device_id` was bound to their account.
+
+## `domainkit.contrib.auth.routing`
+
+One router for an account's routes: auth's, and those of the apps built on it.
+
+- `AccountRoutes`: Routes an app adds to an account's router: their name, and where they are.
+- `account_router`: A router of the account routes of every installed app (see the module).
+- `account_routes`: Every app's account routes, by name, in the order the apps are installed.
+- `on_account_routes`: Register a function that names an app's account routes, in `ready()`.
+
+## `domainkit.contrib.presets`
+
+Settings of several apps that go together, for a project's settings file.
+
+- `PhoneIdentity`: `AUTH`, `DEVICES` and `CIBA` for the phone as identity.
+- `phone_identity`: The settings that make a user's bound phone their identity.

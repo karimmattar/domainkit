@@ -455,3 +455,28 @@ def test_without_notifications_no_token_is_listened_for(
 
     token = PushToken(uuid4(), uuid4(), "d", "secret-token", "fcm", NOW, NOW)
     assert "secret-token" not in repr(token)
+
+
+def test_without_mail_no_notice_is_registered(
+    app: App,  # noqa: F811 - the fixture.
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Messaging without mail: the worker's tasks, and no notice to send."""
+    from domainkit.apps import registry
+    from domainkit.contrib.devices import tasks
+
+    app()
+    config = registry.get_domain_config("devices")
+    registered: list[str] = []
+    installed = registry.is_installed
+    monkeypatch.setattr(
+        registry,
+        "is_installed",
+        lambda name: name != "domainkit.contrib.mail" and installed(name),
+    )
+    monkeypatch.setattr(tasks, "register_notice", lambda: registered.append("notice"))
+    monkeypatch.setattr(tasks, "register_purge", lambda: registered.append("purge"))
+
+    config.ready()
+
+    assert registered == ["purge"]

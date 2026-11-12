@@ -34,6 +34,7 @@ resets, and verifications go to the audit trail.
 
 import logging
 import math
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Annotated, Final, cast
 from uuid import UUID
@@ -489,6 +490,26 @@ async def text_code(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -
         "Never give it to anyone."
     )
     await send_sms(number, body, uow=uow)
+
+
+async def mail_user(
+    user: AbstractBaseUser, template: str, context: Mapping[str, object] | None = None
+) -> bool:
+    """Mail ``user`` at their address from ``template``; False where none can go.
+
+    The template is given ``user``, ``username``, and ``context``. For a
+    notice an app built on auth sends, from a task (``integration``): a
+    device was bound, say. Nothing is mailed to a user with no address, or
+    with one that cannot take mail.
+    """
+    from domainkit.contrib.mail import deliver, render_mail
+
+    address = email_of(user)
+    if address is None or not _mailable(user, address):
+        return False
+    filled = {"user": user, "username": user.get_username(), **(context or {})}
+    await deliver([render_mail(template, filled, to=[address])])
+    return True
 
 
 async def _mail_code(

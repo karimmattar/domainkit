@@ -45,15 +45,23 @@ class DevicesConfig(DomainConfig):
 
         _check_signature_store(registry.settings(DevicesSettings).SIGNATURE_STORE)
 
+        from domainkit.contrib.auth.routing import AccountRoutes, on_account_routes
+
+        on_account_routes(
+            lambda: [AccountRoutes("devices", f"{self.name}.api.router")],
+            domain=self.label,
+        )
         event_bus.subscribe(UserDeleted, forget_devices)
         on_erase_subject(self.erase_person, domain=self.label)
         on_export_subject(self.export_person, domain=self.label)
         if messaging:
             from .enrollment import register_tasks
-            from .tasks import register_purge
+            from .tasks import register_notice, register_purge
 
             register_tasks()
             register_purge()
+            if registry.is_installed("domainkit.contrib.mail"):
+                register_notice()
         if registry.is_installed("domainkit.contrib.notifications"):
             from domainkit.contrib.notifications.events import PushTokenExpired
 
