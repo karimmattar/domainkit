@@ -18,7 +18,7 @@ from signxml.signer import XMLSigner
 
 from domainkit.conf import override_settings
 from domainkit_tests.conftest import ExitStackClients, Migrated
-from domainkit_tests.test_auth_http import bearer, create_user
+from domainkit_tests.support.auth import bearer, create_user
 from domainkit_tests.test_identity_providers import PROVIDERS
 
 type App = Callable[..., TestClient]

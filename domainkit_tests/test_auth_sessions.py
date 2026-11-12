@@ -29,6 +29,7 @@ from domainkit.contrib.auth.tokens import (
 )
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api, UseAuth
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_cookies import (
     SESSION,
     SITE,
@@ -36,7 +37,6 @@ from domainkit_tests.test_auth_cookies import (
     browser,
     start,
 )
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_personal_tokens import make, user_session
 from domainkit_tests.test_auth_principals import issue, stored_last_used
 

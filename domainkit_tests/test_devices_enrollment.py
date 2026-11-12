@@ -15,13 +15,7 @@ from domainkit.conf import override_settings
 from domainkit.contrib import mail
 from domainkit.contrib.notifications.backends import sms_outbox
 from domainkit_tests.conftest import IDENTITY
-from domainkit_tests.test_auth_http import (
-    PASSWORD,
-    audited,
-    bearer,
-    create_user,
-    login,
-)
+from domainkit_tests.support.auth import PASSWORD, audited, bearer, create_user, login
 from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_auth_mfa import clock, code_at, enrol
 from domainkit_tests.test_auth_recovery import run_worker

@@ -19,7 +19,7 @@ from domainkit.contrib.identity.settings import LdapSettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import IDENTITY, ExitStackClients, Migrated
-from domainkit_tests.test_auth_http import bearer, create_user
+from domainkit_tests.support.auth import bearer, create_user
 from domainkit_tests.test_identity_providers import PROVIDERS
 
 type App = Callable[..., TestClient]

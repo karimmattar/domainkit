@@ -18,7 +18,7 @@ from domainkit.contrib.auth.tables import auth_codes
 from domainkit.db import connections
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import audited, bearer, create_user, login
+from domainkit_tests.support.auth import audited, bearer, create_user, login
 from domainkit_tests.test_auth_recovery import run_worker
 
 CODE = re.compile(r"\b[0-9]{6}\b")

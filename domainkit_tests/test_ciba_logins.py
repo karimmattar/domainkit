@@ -10,7 +10,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from domainkit import clock
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user
 from domainkit_tests.test_ciba import (
     LAPTOP,
     PHONE,

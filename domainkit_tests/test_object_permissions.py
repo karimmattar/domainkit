@@ -56,8 +56,8 @@ from domainkit_tests.conftest import (
     UseAuth,
 )
 from domainkit_tests.sample_domains.shop.models import Product, ProductId
+from domainkit_tests.support.auth import create_user, grant
 from domainkit_tests.test_auth_admin import join, make_group
-from domainkit_tests.test_auth_http import create_user, grant
 
 OBJECTPERMISSIONS: Final = "domainkit.contrib.objectpermissions"
 BACKENDS: Final = [

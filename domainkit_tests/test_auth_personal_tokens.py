@@ -20,7 +20,7 @@ from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
 from domainkit.testing import TestClient as ClockedClient
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import (
+from domainkit_tests.support.auth import (
     PASSWORD,
     audited,
     bearer,

@@ -20,15 +20,15 @@ from domainkit.db import connections
 from domainkit.http.errors import APIError
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import (
+from domainkit_tests.support.auth import (
     JWT,
     audited,
     bearer,
     create_user,
     login,
-    refresh,
     stored_tokens,
 )
+from domainkit_tests.test_auth_http import refresh
 from domainkit_tests.test_auth_personal_tokens import make
 
 ADDRESS = ("203.0.113.7", 50000)

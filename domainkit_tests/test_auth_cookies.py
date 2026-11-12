@@ -15,7 +15,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.application import application_problems
 from domainkit_tests.conftest import Api, UseAuth, domain_warnings
-from domainkit_tests.test_auth_http import (
+from domainkit_tests.support.auth import (
     PASSWORD,
     audited,
     bearer,

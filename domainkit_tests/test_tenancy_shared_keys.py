@@ -23,8 +23,8 @@ from domainkit.http import get_asgi_application
 from domainkit.management.base import run_async
 from domainkit_tests import sample_tenant_payouts
 from domainkit_tests.conftest import API, MIDDLEWARE, Api, Migrated, Shape
+from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_auth_admin import token_for
-from domainkit_tests.test_auth_http import create_user
 from domainkit_tests.test_auth_principal_changes import outcome
 from domainkit_tests.test_auth_principals import STAMPED, issue
 from domainkit_tests.test_auth_principals import (

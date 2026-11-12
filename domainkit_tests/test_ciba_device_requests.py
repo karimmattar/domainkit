@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from domainkit import clock
 from domainkit.conf import override_settings
-from domainkit_tests.test_auth_http import bearer
+from domainkit_tests.support.auth import bearer
 from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_ciba import PHONE, App, Phone, app, sign_in_pushes
 from domainkit_tests.test_devices import Device

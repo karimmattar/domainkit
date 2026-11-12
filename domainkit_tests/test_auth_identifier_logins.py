@@ -17,8 +17,8 @@ from domainkit.contrib.auth.settings import auth_settings
 from domainkit.contrib.auth.throttling import account_digest
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
+from domainkit_tests.support.auth import PASSWORD, create_user
 from domainkit_tests.test_auth_admin import ACCOUNTS, swapped
-from domainkit_tests.test_auth_http import PASSWORD, create_user
 
 __all__ = ["swapped"]
 

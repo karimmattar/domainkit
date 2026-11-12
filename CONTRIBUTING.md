@@ -45,7 +45,10 @@ to `.ci/`. `make services-down` stops them and drops their data.
   error, in random order. Async tests use `@pytest.mark.anyio`. Never wait
   on the wall clock: use `domainkit.clock.freeze_time`, events, or fakes
   that block until released. New code is covered 100%, branches included,
-  by the runs with and without servers together.
+  by the runs with and without servers together. A helper
+  more than one test file needs goes in `domainkit_tests/support/`, by
+  area, not in the test file that used it first (`test_support.py`
+  checks the ones that are there).
 - **Mutation testing.** For the functions you changed:
   `make mutants MUTANTS="domainkit.http.middleware*"`. Kill the survivors
   that point at a missing test, and say why each one left stays. A new

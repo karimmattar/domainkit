@@ -576,7 +576,7 @@ def test_a_rotation_keeps_logged_in_clients_working(api: Api) -> None:
 
     The refresh token is opaque and stored: a rotation never touches it.
     """
-    from domainkit_tests.test_auth_http import bearer, create_user, login
+    from domainkit_tests.support.auth import bearer, create_user, login
 
     create_user("alice")
     with freeze_time(START, tick=True) as clock:

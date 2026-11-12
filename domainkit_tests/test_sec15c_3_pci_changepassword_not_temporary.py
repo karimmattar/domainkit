@@ -15,7 +15,7 @@ import pytest
 from domainkit.contrib.auth.management.commands import changepassword
 from domainkit.management import call_command
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import create_user
+from domainkit_tests.support.auth import create_user
 
 PCI = {"PRESET": "pci-dss-4"}
 OWN = "Kq7-zv93-Lmw2"

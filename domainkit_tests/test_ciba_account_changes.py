@@ -17,7 +17,7 @@ from domainkit.contrib.auth.repositories import TokenStore
 from domainkit.contrib.auth.tables import tokens
 from domainkit.db import connections
 from domainkit.management.base import run_async
-from domainkit_tests.test_auth_http import PASSWORD, bearer
+from domainkit_tests.support.auth import PASSWORD, bearer
 from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_ciba import PHONE, App, Phone, app
 from domainkit_tests.test_ciba_logins import refused, web_login

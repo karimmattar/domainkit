@@ -14,7 +14,7 @@ it the key is taken (``idempotency_key_reused``).
 from typing import Any, Final
 
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, grant, login
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, grant, login
 
 VIEW: Final = "shop.view_product"
 KEY: Final = {"Idempotency-Key": "note-2026-11-02"}

@@ -19,8 +19,8 @@ from datetime import timedelta
 
 from domainkit.clock import freeze_time
 from domainkit_tests.conftest import Api
+from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_auth_devices import guess
-from domainkit_tests.test_auth_http import create_user
 
 DAY = timedelta(days=1)
 

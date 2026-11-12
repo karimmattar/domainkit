@@ -21,8 +21,8 @@ from datetime import timedelta
 
 from domainkit.clock import freeze_time
 from domainkit_tests.conftest import Api
+from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_auth_devices import RIGHT, browser
-from domainkit_tests.test_auth_http import create_user
 
 
 def test_a_copied_proof_leaves_the_owners_other_browsers_in(api: Api) -> None:

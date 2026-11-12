@@ -28,8 +28,8 @@ from domainkit.ddd import events as ddd_events
 from domainkit.http.ratelimit import MemoryBackend
 from domainkit.testing import TestClient
 from domainkit_tests.conftest import Api, MakePackage, UseAuth
+from domainkit_tests.support.auth import JWT, audited, bearer, create_user, login
 from domainkit_tests.test_auth_authentication import jwt_auth
-from domainkit_tests.test_auth_http import JWT, audited, bearer, create_user, login
 
 NEW_YEAR = datetime(2030, 1, 1, 9, tzinfo=UTC)
 

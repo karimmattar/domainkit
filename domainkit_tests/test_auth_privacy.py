@@ -45,7 +45,7 @@ from domainkit_tests.conftest import (
     Api,
     ExitStackClients,
 )
-from domainkit_tests.test_auth_http import (
+from domainkit_tests.support.auth import (
     PASSWORD,
     audited,
     bearer,

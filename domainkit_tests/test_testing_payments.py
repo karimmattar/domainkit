@@ -43,7 +43,7 @@ from domainkit.testing import _read_only as read_only
 from domainkit.testing.databases import application_role, grant_application_roles
 from domainkit.testing.kms import SECRETS, FakeKms, FakeVault
 from domainkit_tests.conftest import Api, UseAuth
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_sca import _user_id as user_id
 
 START = "2027-01-04T10:00:00Z"

@@ -34,10 +34,10 @@ from domainkit_tests.conftest import (
     Shape,
 )
 from domainkit_tests.sample_approval_routes import Never, OnlyPending
+from domainkit_tests.support.auth import bearer, create_user, grant
 from domainkit_tests.test_accounting_api import open_books, sale
 from domainkit_tests.test_approvals import FAST, acting_guarded
 from domainkit_tests.test_auth_admin import join, make_group, token_for
-from domainkit_tests.test_auth_http import bearer, create_user, grant
 from domainkit_tests.test_auth_stepup import enrol, now_code
 
 ROUTES: Final = "domainkit_tests.sample_approval_routes"

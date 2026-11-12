@@ -8,8 +8,8 @@ from pydantic import ValidationError
 
 from domainkit.conf import override_settings
 from domainkit.contrib.ciba.settings import CibaSettings
+from domainkit_tests.support.auth import PASSWORD, create_user
 from domainkit_tests.test_auth_cookies import TRUSTED
-from domainkit_tests.test_auth_http import PASSWORD, create_user
 from domainkit_tests.test_ciba import (
     PHONE,
     App,

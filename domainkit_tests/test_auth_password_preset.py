@@ -40,14 +40,14 @@ from domainkit.db import connections
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api, UseAuth
-from domainkit_tests.test_auth_admin import ADMIN, ADMIN_PERMISSIONS, staff
-from domainkit_tests.test_auth_http import (
+from domainkit_tests.support.auth import (
     AUTHENTICATION,
     PASSWORD,
     audited,
     bearer,
     create_user,
 )
+from domainkit_tests.test_auth_admin import ADMIN, ADMIN_PERMISSIONS, staff
 from domainkit_tests.test_auth_stepup import enrol, now_code
 
 VALIDATORS = "domainkit.contrib.auth.validators"

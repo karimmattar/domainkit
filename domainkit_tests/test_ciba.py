@@ -23,8 +23,8 @@ from domainkit_tests.conftest import (
     Migrated,
     Shape,
 )
+from domainkit_tests.support.auth import PASSWORD, audited, bearer, create_user
 from domainkit_tests.test_auth_cookies import TRUSTED
-from domainkit_tests.test_auth_http import PASSWORD, audited, bearer, create_user
 from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_devices import Device, bind, queued_pushes
 

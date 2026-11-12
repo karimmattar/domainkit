@@ -12,8 +12,8 @@ from domainkit.contrib.auth.integration import audit_refusal, on_refusal
 from domainkit.ddd import PermissionDenied
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
+from domainkit_tests.support.auth import audited, create_user
 from domainkit_tests.test_auth_admin import ADMIN, error, staff, usernames
-from domainkit_tests.test_auth_http import audited, create_user
 
 
 def test_a_refusal_reaches_every_hook_without_what_was_tried(api: Api) -> None:

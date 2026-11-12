@@ -75,7 +75,7 @@ def test_each_process_counts_attempts_on_its_own_in_memory(api: Api) -> None:
     Every process of a deployment is such an application, so with N
     processes a guesser gets N times the rate. Hence the refusal below.
     """
-    from domainkit_tests.test_auth_http import create_user
+    from domainkit_tests.support.auth import create_user
 
     create_user("alice")
     wrong = {"username": "alice", "password": "wrong"}

@@ -32,7 +32,7 @@ from domainkit_tests.conftest import (
     Migrated,
     Shape,
 )
-from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_login_origins import origins
 
 DEVICES = Shape(

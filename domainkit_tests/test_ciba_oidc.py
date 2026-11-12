@@ -24,7 +24,7 @@ from domainkit.db import connections
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
 from domainkit_tests.conftest import IDENTITY, Migrated
-from domainkit_tests.test_auth_http import grant
+from domainkit_tests.support.auth import grant
 from domainkit_tests.test_auth_jwt_keys import pem
 from domainkit_tests.test_ciba import (
     CIBA,
