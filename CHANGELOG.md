@@ -55,6 +55,10 @@ and a status.
 
 ### Changed
 
+- `domainkit.contrib.auth.repositories` is a package: its 1,852 lines
+  are five modules, by what is stored (accounts, tokens, principals,
+  factors, signups). Every name is still imported from
+  `auth.repositories`, and no code changed (audit findings A1, A4).
 - No module imports another module's underscore names. Auth's route
   modules took nine helpers from `auth.api` (`_errors`, `_no_store`,
   `_credentials`, `_throttle` and others): they are now in one internal
