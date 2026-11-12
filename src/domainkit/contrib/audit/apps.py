@@ -28,7 +28,13 @@ from .recorder import Outcome, event_rows, record, write
 from .settings import AuditSettings
 from .tables import audit_log
 
+AUTH: Final = "domainkit.contrib.auth"
 MESSAGING: Final = "domainkit.contrib.messaging"
+
+
+async def record_refusal(action: str, reason: str) -> None:
+    """Record an attempt auth refused, as denied (``auth.integration.on_refusal``)."""
+    await record(action, Outcome.DENIED, reason=reason)
 
 
 class AuditConfig(DomainConfig):
@@ -67,6 +73,10 @@ class AuditConfig(DomainConfig):
         configured_public_key()  # Refuse a key that cannot verify, now.
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+        if registry.is_installed(AUTH):
+            from domainkit.contrib.auth.integration import on_refusal
+
+            on_refusal(record_refusal, domain=self.label)
         on_check_application(self.application_problems)
         on_deployment_warnings(self.weak_settings)
         on_startup(self.start)

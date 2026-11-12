@@ -46,6 +46,12 @@ and a status.
   what a pool costs past its size:
   [performance.md](docs/performance.md#what-the-pool-does-past-its-size)
   (ADR 0139, audit finding P5).
+- `auth.integration.on_refusal` and `auth.gates.on_make_superuser`: hook
+  points for what auth asked two apps by importing them. Audit registers
+  the first, to record refused attempts; approvals the second, to hold a
+  superuser for approval. Auth and those apps no longer import each
+  other, a test keeps any two apps from it, and nothing changes for a
+  project (ADR 0140, audit finding A2).
 
 ### Changed
 
