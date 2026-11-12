@@ -15,7 +15,7 @@ from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.contrib.auth.models import UserId
 from domainkit.contrib.devices.tasks import send_bound_notice
 from domainkit.management.base import run_async
-from domainkit_tests.test_auth_http import create_user
+from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_auth_recovery import run_worker
 from domainkit_tests.test_ciba import PHONE, App, Phone, app
 
