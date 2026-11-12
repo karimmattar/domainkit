@@ -246,7 +246,7 @@ statement made once keeps its cache key, which SQLAlchemy walks a new one
 for on each execution."""
 
 
-async def _rules(session: AsyncSession, keys: Iterable[SubjectKey]) -> list[Rule]:
+async def rules_of(session: AsyncSession, keys: Iterable[SubjectKey]) -> list[Rule]:
     """The stored limits and the defaults of the subjects of ``keys``, any currency.
 
     Every currency's, so a kind bounded in one is known to be bounded
@@ -489,7 +489,7 @@ async def _lock(session: AsyncSession, key: SubjectKey) -> tuple[UUID, datetime]
     return row.id, row.touched_at
 
 
-async def _ensure(session: AsyncSession, keys: list[SubjectKey]) -> None:
+async def ensure_rows(session: AsyncSession, keys: list[SubjectKey]) -> None:
     """Make the rows of the subjects of ``keys`` (at least one) that have none.
 
     One statement, locking none: a row that is there stays as it is.
@@ -598,7 +598,7 @@ async def consume(
     tallies = _tally(movements)
     if session.get_bind().dialect.name != "postgresql":
         await uow.lock(LOCK)
-    rules = await _rules(session, tallies)
+    rules = await rules_of(session, tallies)
     _unnamed(tallies, rules)
     _transactions(tallies, rules)
     bounded: dict[SubjectKey, list[Decimal]] = {}
@@ -626,7 +626,7 @@ async def check_movements(uow: SqlAlchemyUnitOfWork, *movements: Movement) -> No
     """
     session = _session(uow, writes=False)
     tallies = _tally(movements)
-    rules = await _rules(session, tallies)
+    rules = await rules_of(session, tallies)
     _unnamed(tallies, rules)
     _transactions(tallies, rules)
     for subject_key, amounts in tallies.items():

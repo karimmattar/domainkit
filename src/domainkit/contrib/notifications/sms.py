@@ -136,7 +136,7 @@ async def reached(provider: str) -> AsyncIterator[None]:
         ) from None
 
 
-def _json(response: "httpx2.Response") -> Any:  # noqa: ANN401 - any JSON.
+def json_of(response: "httpx2.Response") -> Any:  # noqa: ANN401 - any JSON.
     """The answer's JSON, or None."""
     try:
         return response.json()
@@ -196,7 +196,7 @@ class TwilioSmsBackend(ProviderSmsBackend):
             },
         )
         if response.status_code not in (200, 201):
-            body = _json(response) or {}
+            body = json_of(response) or {}
             raise self.refused(f"error {body.get('code', response.status_code)}")
 
 
@@ -231,7 +231,7 @@ class VonageSmsBackend(ProviderSmsBackend):
                 "client-ref": str(message.message_id or ""),
             },
         )
-        parts = (_json(response) or {}).get("messages") or [{}]
+        parts = (json_of(response) or {}).get("messages") or [{}]
         failed = [part.get("status") for part in parts if part.get("status") != "0"]
         if response.status_code != 200 or failed:
             raise self.refused(
@@ -345,7 +345,7 @@ class UnifonicSmsBackend(ProviderSmsBackend):
                 "CorrelationID": str(message.message_id or ""),
             },
         )
-        body = _json(response) or {}
+        body = json_of(response) or {}
         if response.status_code != 200 or str(body.get("success")).lower() != "true":
             raise self.refused(body.get("errorCode") or response.status_code)
 
@@ -391,7 +391,7 @@ class HuaweiSmsBackend(ProviderSmsBackend):
                 "X-WSSE": wsse(options.APP_KEY, options.APP_SECRET.get_secret_value()),
             },
         )
-        body = _json(response) or {}
+        body = json_of(response) or {}
         if response.status_code != 200 or body.get("code") != "000000":
             raise self.refused(body.get("code") or response.status_code)
 

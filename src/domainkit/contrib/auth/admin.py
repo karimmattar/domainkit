@@ -50,7 +50,7 @@ from domainkit.resources import ModelActions, ResourceRouter
 from domainkit.resources.access import ModelLike
 from domainkit.utils.decimals import jsonable
 
-from .access import IsAdminUser, IsSuperuser, _impersonated
+from .access import IsAdminUser, IsSuperuser, impersonated
 from .authentication import IMPERSONATION
 from .backends import (
     ModelBackend,
@@ -393,7 +393,7 @@ async def update_user(
     """Change a user's status flags and fields."""
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-        await _may_change(actor, user)
+        await may_change(actor, user)
         was_active = user.is_active
         if body.is_superuser is not None and body.is_superuser != user.is_superuser:
             _superusers_only(actor, "Only superusers may make or unmake superusers.")
@@ -415,7 +415,7 @@ async def update_user(
         if body.is_superuser is not None:
             user.set_superuser(body.is_superuser)
         user.update(**_checked(type(user), body.fields))
-        await _may_change(actor, user)  # Not into someone who holds more either.
+        await may_change(actor, user)  # Not into someone who holds more either.
         if was_active and not user.is_active:  # Their sessions end with them.
             await uow.tokens.revoke_user(user.id)
         await uow.commit()
@@ -431,7 +431,7 @@ async def delete_user(
     """Delete a user, every token of theirs, and their second factor."""
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-        await _may_change(actor, user)
+        await may_change(actor, user)
         if user.is_superuser and user.is_active:
             await _not_the_last_superuser(uow)
         user.delete()
@@ -454,7 +454,7 @@ async def set_password(
     """
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-        await _may_change(actor, user)
+        await may_change(actor, user)
         if body.password is not None:
             validate_password(body.password, user)
         await uow.users.set_password(
@@ -475,7 +475,7 @@ async def log_out_user(
     """End every session of a user."""
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-        await _may_change(actor, user)
+        await may_change(actor, user)
         await uow.tokens.revoke_user(user.id)
         user.record(UserLoggedOut(user_id=user.id, everywhere=True))
         await uow.commit()
@@ -509,7 +509,7 @@ async def impersonate(
     ttl = auth_settings().IMPERSONATION_TTL
     if ttl is None:
         raise PermissionDenied("Impersonation is off (AUTH.IMPERSONATION_TTL).")
-    if _impersonated(request):  # Its token would name the impersonated staff.
+    if impersonated(request):  # Its token would name the impersonated staff.
         raise PermissionDenied("An impersonation cannot impersonate.")
     staff_id = cast("UUID", actor.id)  # Staff: always a user with an id.
     if user_id == staff_id:
@@ -518,7 +518,7 @@ async def impersonate(
         user = await _user(uow, user_id)
         if not user.is_active:
             raise PermissionDenied("Only active users can be impersonated.")
-        await _may_change(actor, user)
+        await may_change(actor, user)
         with logging_in(LoginMethod.IMPERSONATION):
             raw = await uow.tokens.issue(
                 user.id, ttl=ttl, name=IMPERSONATION, family=staff_id
@@ -539,7 +539,7 @@ async def set_user_groups(
     """Make the user a member of exactly ``groups``."""
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-        await _may_change(actor, user)
+        await may_change(actor, user)
         wanted = await uow.groups.get_many_by_name(body.groups)
         added = [group for group in wanted if group not in user.groups]
         await _may_grant(actor, _keys(*added))
@@ -559,7 +559,7 @@ async def set_user_permissions(
     """Grant the user exactly ``permissions`` directly (groups add theirs)."""
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-        await _may_change(actor, user)
+        await may_change(actor, user)
         wanted = await uow.permissions.get_many(body.permissions)
         added = [
             permission
@@ -692,7 +692,7 @@ def _superusers_only(actor: AnyUser, message: str) -> None:
         raise PermissionDenied(message)
 
 
-async def _may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
+async def may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
     """Refuse to change a user who holds more than ``actor``.
 
     Changing a password or logging a user out is as good as becoming them,

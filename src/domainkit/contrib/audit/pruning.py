@@ -57,8 +57,8 @@ from .protection import trigger_names
 from .recorder import Outcome, audit_row, write
 from .seals import (
     Report,
-    _head,
-    _history,
+    anchor_history,
+    chain_head,
     first_anchored,
     pruned_key,
     pruned_record,
@@ -137,9 +137,9 @@ async def prune(
             "latest. Nothing was pruned."
         )
     name = label(database)
-    history = [] if ledger is None else await _history(database, ledger)
+    history = [] if ledger is None else await anchor_history(database, ledger)
     async with connect(database) as connection:
-        head = await _head(connection)
+        head = await chain_head(connection)
         cut = await connection.scalar(
             select(func.max(audit_seals.c.seq)).where(
                 audit_seals.c.sealed_at < before,

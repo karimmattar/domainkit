@@ -450,12 +450,12 @@ def test_only_validation_errors_are_rewritten() -> None:
     with pytest.raises(ValidationError) as whole:
         TypeAdapter(int).validate_python("three")
 
-    assert worker_module._without_input(other) is other
-    assert str(worker_module._without_input(caught.value)) == (
+    assert worker_module.without_input(other) is other
+    assert str(worker_module.without_input(caught.value)) == (
         "Order: lines.1: Input should be a valid integer, unable to parse string "
         "as an integer; note: Field required"
     )
-    assert str(worker_module._without_input(whole.value)) == (
+    assert str(worker_module.without_input(whole.value)) == (
         "int: (value): Input should be a valid integer, unable to parse string "
         "as an integer"
     )

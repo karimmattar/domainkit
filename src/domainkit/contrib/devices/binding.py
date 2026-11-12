@@ -42,14 +42,24 @@ from starlette.requests import HTTPConnection, Request
 from domainkit.apps import registry
 from domainkit.cache import CacheError, caches
 from domainkit.contrib.auth.integration import note_login_device, utc_now
+from domainkit.contrib.auth.models import UserId
 from domainkit.http.access import BasePermission
 
-from .exceptions import DeviceSignatureRefused, UnsupportedKey
+from .events import DeviceBound
+from .exceptions import DeviceSignatureRefused, TooManyKeys, UnsupportedKey
 from .settings import DevicesSettings
 from .stores import BoundDevice, DevicesUnitOfWork
 from .webauthn import EDDSA, ES256, WebAuthnError, b64decode, verify_signature
 
-__all__ = ["DeviceSigned", "device_key", "signed_message", "signing_device"]
+__all__ = [
+    "DeviceSigned",
+    "bind_key",
+    "device_key",
+    "mark_signed_by",
+    "proves_key",
+    "signed_message",
+    "signing_device",
+]
 
 DEVICE_ID: Final = "x-device-id"
 DEVICE_TIME: Final = "x-device-time"
@@ -144,6 +154,15 @@ async def signing_device(connection: HTTPConnection, user: Any) -> BoundDevice |
     return device
 
 
+def mark_signed_by(request: Request, device: BoundDevice) -> None:
+    """Count ``request`` as signed by ``device``, which it just bound.
+
+    The request proved the key before it had an id (``proves_key``): the
+    login it goes on to issue passes the login gates as the device's own.
+    """
+    request.scope[SIGNING_DEVICE] = device
+
+
 async def read_signature(request: Request) -> tuple[int, bytes, bytes] | None:
     """The time, the signature, and the message signed, if they are well formed.
 
@@ -172,6 +191,40 @@ async def read_signature(request: Request) -> tuple[int, bytes, bytes] | None:
         signature,
         signed_message(request.method, target, time, await request.body()),
     )
+
+
+async def proves_key(request: Request, algorithm: int, key: bytes) -> bool:
+    """Whether ``request`` is signed by ``key``, now (``DEVICES.SIGNATURE_WINDOW``).
+
+    For a key that is not bound yet: the caller holds what it asks to
+    bind. The request carries ``X-Device-Time`` and ``X-Device-Signature``,
+    and no device id.
+    """
+    signed = await read_signature(request)
+    if signed is None:
+        return False
+    _, signature, message = signed
+    return verify_signature(algorithm, key, signature, message)
+
+
+async def bind_key(
+    uow: DevicesUnitOfWork, user_id: UUID, name: str, algorithm: int, key: bytes
+) -> BoundDevice:
+    """Bind ``key`` to the user in ``uow``, which its caller commits.
+
+    Under the user's lock, so two binds at once count each other.
+
+    Raises:
+        TooManyKeys: The user holds ``DEVICES.MAX_DEVICES`` already.
+    """
+    await uow.tokens.lock_user(user_id)
+    limit = registry.settings(DevicesSettings).MAX_DEVICES
+    if await uow.devices.count(user_id) >= limit:
+        raise TooManyKeys("Unbind a device before binding another.")
+    device = await uow.devices.add(user_id, name, algorithm, key)
+    stored = await uow.users.get(UserId(user_id))
+    stored.record(DeviceBound(user_id=user_id, device_id=device.id))
+    return device
 
 
 async def _check(connection: HTTPConnection, user: Any) -> BoundDevice | None:  # noqa: ANN401
