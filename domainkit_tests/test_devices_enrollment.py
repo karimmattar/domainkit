@@ -128,7 +128,11 @@ def test_a_first_device_enrolls_and_logs_in(app: App) -> None:
         assert again.status_code == 401  # The code worked once.
         assert ask_code(client, "alice@example.com").status_code == 202
         run_worker()
-        assert len(mail.outbox) == 1  # Bound: no code for another device.
+        assert [each.subject for each in mail.outbox] == [
+            "Your code to enroll your phone",
+            "A device was bound to your account",  # And no code for another.
+        ]
+        assert "bound to your account: Phone." in mail.outbox[-1].body
 
 
 def test_an_enrolled_phone_passes_the_strictest_gate(app: App) -> None:

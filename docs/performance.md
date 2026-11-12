@@ -14,6 +14,7 @@ On this page you learn how to:
 - read what a request costs on each rung of the benchmark ladder;
 - run the ladder, compare two commits, and profile one rung;
 - read and update the budgets that CI gates on;
+- measure rungs under load, and read what CI holds there;
 - work out how many cores a load needs;
 - make your own requests cheaper.
 
@@ -280,7 +281,7 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 824
+modules = 825
 memory = 94
 ```
 
@@ -309,7 +310,9 @@ trips are exact. `modules` is a count, either way. `memory` is in MiB.
   ASGI process holds 26 MiB, plain FastAPI 46, a domainkit application
   90 to 94, and one with money's ledger, limits, and keys 110.
 - **Time is never gated** (ADR 0064): a shared runner's timings are too
-  noisy. CI's job summary shows the CPU time per rung, beside the base
+  noisy. Under load, CI holds ratios to plain FastAPI in the same run,
+  not times ([Under load](#under-load)). CI's job summary shows the CPU
+  time per rung, beside the base
   branch's on pull requests. It also shows the time each rung's process
   took to start, from its first line to the application's lifespan:
   about a second for a domainkit application. Modules, which are gated,
@@ -341,6 +344,159 @@ python -m benchmarks --write-budgets
 Then review the diff of `budgets.toml`: every raised number is a cost
 the change adds. For the two JSON-log rungs, keep the highest of a few
 runs.
+
+## Under load
+
+The ladder sends one request at a time. It cannot see what only happens
+with requests in flight together: a lock every request waits on, a pool
+that runs dry, a call that blocks the event loop. `python -m
+benchmarks.load` serves rungs with uvicorn, each in a process of its
+own, and sends them requests over connections kept open
+([ADR 0139](adr/0139-hold-a-rung-under-load-against-plain-fastapi-in-the-same-run.md)):
+
+```bash
+python -m benchmarks.load                                  # fastapi and template
+python -m benchmarks.load --rungs fastapi,template,me,read,write --strict
+python -m benchmarks.load --rungs fastapi,read --pool-size 32 --max-overflow 0
+```
+
+Each round warms a rung up for a second, then measures it for four, on
+32 connections, a request at a time on each. The rungs take turns, three
+rounds each, and a rung's result is its median round. Database rungs
+need `DOMAINKIT_BENCH_POSTGRES_URL`, and get a schema of their own, as
+on the ladder.
+
+This is a run on a quiet 4-core machine (Python 3.14.6, uvicorn 0.54 on
+uvloop 0.23, FastAPI 0.143.1, PostgreSQL 16 on the same machine, 11
+November 2026):
+
+```text
+rung                  req/s   p50 ms   p99 ms  req/s ratio  p99 ratio  unexpected
+fastapi                9826     2.99     6.74         1.00       1.00           0
+template               4269     6.70    17.44         0.43       2.59           0
+me                     2985     9.03    23.36         0.30       3.47           0
+read                    474    41.76   364.78         0.05      54.14           0
+write                   441    42.29   349.40         0.04      51.85           0
+```
+
+- **`req/s`** is the requests one process answered a second.
+- **`p50 ms`** and **`p99 ms`** are the time half of the requests, and 99
+  in 100, were answered within, as the client saw it.
+- **The ratios** divide the rung's figure by plain FastAPI's in the same
+  run.
+- **`unexpected`** counts answers of another status than the rung's, and
+  connections the server dropped.
+
+The client is the harness itself, on one event loop, on the same machine
+as the servers. So the figures compare rungs and runs. They do not size
+a deployment: [Cores for 500 million requests a
+day](#cores-for-500-million-requests-a-day) does that from CPU per
+request, and `benchmarks/compare` drives whole frameworks with `oha`.
+
+### What CI holds
+
+A runner's milliseconds are noise, so none is gated. What slows the
+machine slows plain FastAPI too, so CI holds each rung's ratios to it.
+With a test suite keeping all four cores of that machine busy, `fastapi`
+fell from 9,826 requests a second to about 6,500 and its 99th percentile
+doubled, and `template` stayed at 0.43 to 0.52 of it, with a tail 1.8 to
+2.4 times as long. The budgets are in `benchmarks/load.toml`:
+
+```toml
+baseline = "fastapi"
+
+[rungs.template]
+p99_ratio = 10
+throughput_ratio = 0.1
+
+[rungs.me]
+p99_ratio = 20
+throughput_ratio = 0.07
+
+[rungs.read]
+throughput_ratio = 0.01
+
+[rungs.write]
+throughput_ratio = 0.01
+```
+
+- **`p99_ratio`**: the rung's 99th percentile is at most this many times
+  the baseline's.
+- **`throughput_ratio`**: the rung answers at least this share of the
+  baseline's requests a second.
+- **Any unexpected answer fails**, on any rung, whatever the ratios. The
+  message says what came back.
+
+The budgets sit about four times away from what was measured. They fail
+a rung that got several times slower under load. They do not fail one
+that lost 10%: calls and round trips, which are exact, catch that. The
+database rungs are held on requests a second only, because their tail is
+the pool's (below).
+
+With `--strict`, a run over budget exits with status 1:
+
+```text
+OVER BUDGET: template: the 99th percentile is 12.4 times fastapi's; the budget is 10
+```
+
+The `bench` job runs the check after the ladder, on `fastapi`,
+`template`, `me`, `read` and `write`. Its summary shows the table, and
+`load.json` in the job's artifact keeps the figures. If a run fails on a
+ratio and a rerun passes, widen that budget and say why in the pull
+request. `make bench` runs the check on the rungs without a database.
+
+The options of `python -m benchmarks.load`:
+
+| Option | What it does |
+| --- | --- |
+| `--rungs A,B` | The rungs to serve (default: `fastapi,template`). |
+| `--connections N` | Connections kept open on each rung (default: 32). |
+| `--seconds S`, `--warm-up S` | How long a round measures (4), and warms up first (1). |
+| `--rounds N` | Rounds per rung; the result is the median (default: 3). |
+| `--pool-size N`, `--max-overflow N` | The database's `POOL_SIZE` and `MAX_OVERFLOW` on the servers. |
+| `--strict` | Exit with status 1 over budget. |
+| `--json PATH` | Keep the figures. |
+| `--summary PATH` | Write the Markdown table CI shows. |
+
+### What the pool does past its size
+
+The first runs showed what the ladder could not. The `read` rung's
+median answer took 42 ms on 32 connections, and its 99th percentile
+365 ms. The same rung at three loads, on the default pool (`POOL_SIZE`
+5, `MAX_OVERFLOW` 10):
+
+| Connections | Requests/s | p50 ms | p99 ms |
+| ---: | ---: | ---: | ---: |
+| 4 | 621 | 6.0 | 10.6 |
+| 16 | 544 | 26.0 | 63.4 |
+| 32 | 481 | 37.9 | 338.3 |
+
+And at 32 connections, with other pools (each row here and above is
+one round of four seconds):
+
+| `POOL_SIZE` | `MAX_OVERFLOW` | Requests/s | p50 ms | p99 ms |
+| ---: | ---: | ---: | ---: | ---: |
+| 5 (default) | 10 (default) | 481 | 37.9 | 338.3 |
+| 5 | 0 | 658 | 47.2 | 184.5 |
+| 32 | 0 | 605 | 49.1 | 149.3 |
+
+SQLAlchemy keeps `POOL_SIZE` connections. It opens up to `MAX_OVERFLOW`
+more when all are in use, and closes each of those when it comes back.
+A process that stays busier than its `POOL_SIZE` therefore connects to
+PostgreSQL again and again, and a new connection costs more than the
+query. Here the overflow cost a quarter of the requests a second, and
+doubled the tail.
+
+So size the pool for the requests a process serves at once:
+
+- Set `POOL_SIZE` to the connections the process may hold while busy,
+  and `MAX_OVERFLOW` to 0, or to a few for a rare burst.
+- Keep processes × replicas × (`POOL_SIZE` + `MAX_OVERFLOW`) below the
+  server's `max_connections` ([operations.md](operations.md) has the
+  sums, and PgBouncer for more processes than connections).
+- A request that waits for a connection waits `POOL_TIMEOUT` at most,
+  then fails. A small pool with no overflow queues requests; it does
+  not refuse them while they are served within that time.
 
 ## Cores for 500 million requests a day
 
@@ -397,6 +553,9 @@ by it, and leave room for the server, the database, and peaks.
   ([JSON responses and logs](#json-responses-and-logs)).
 - **Declare response models** on routes that return large bodies:
   FastAPI then encodes them with pydantic directly.
+- **Size the pool for the requests a process serves at once**:
+  `POOL_SIZE` for the busy process, `MAX_OVERFLOW` 0 or a few
+  ([What the pool does past its size](#what-the-pool-does-past-its-size)).
 - **Count round trips in tests**: `assert_num_queries` and
   `assert_max_queries` ([testing.md](testing.md#counting-queries)) keep a
   path's statements from growing.
@@ -417,6 +576,12 @@ by it, and leave room for the server, the database, and peaks.
   the locked dependencies.
 - **Raising a budget without a reason.** Every raised number is a cost
   the change adds. Say why in the pull request.
+- **Reading the load check's requests a second as capacity.** Its client
+  shares the machine with the servers. The figures compare rungs and
+  runs ([Under load](#under-load)).
+- **Leaving the pool at its defaults on a busy process.** Past
+  `POOL_SIZE`, every request opens a connection and closes it
+  ([What the pool does past its size](#what-the-pool-does-past-its-size)).
 
 ## What the performance branch changed
 
