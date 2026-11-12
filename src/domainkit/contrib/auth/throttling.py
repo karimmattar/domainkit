@@ -33,14 +33,14 @@ import math
 import threading
 import unicodedata
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Final
 
 from fastapi import Request, status
 
 from domainkit import clock
-from domainkit.apps import registry
+from domainkit.apps.hooks import HookPoint
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.ddd.tenancy import shared_keys
@@ -53,7 +53,18 @@ from .models import as_mobile_number
 from .settings import auth_settings
 from .users import get_user_model
 
-AUDIT = "domainkit.contrib.audit"
+type RefusalHook = Callable[[str, str], Awaitable[None]]
+"""Told of a refused attempt: its action (``auth.login``) and the reason's code."""
+
+on_refusal: Final[HookPoint[RefusalHook]] = HookPoint(
+    "auth refusal", arguments=2, awaited=True
+)
+"""Register what records refused attempts (``on_refusal(record)`` in ``ready()``).
+
+A hook gets the action and the reason's code, never what was tried: it
+may be a secret. ``domainkit.contrib.audit`` registers its trail; auth
+imports no app to tell it.
+"""
 MAX_REFUSALS = 10_000
 """Throttled keys remembered, to audit each once per period."""
 
@@ -342,11 +353,13 @@ def counter(request: Request) -> Backend:
 
 
 async def audit_refusal(action: str, reason: str) -> None:
-    """Record a refused attempt, without what was tried: it may be a secret."""
-    if registry.is_installed(AUDIT):
-        from domainkit.contrib.audit import Outcome, record
+    """Tell the ``on_refusal`` hooks of a refused attempt, without what was tried.
 
-        await record(action, Outcome.DENIED, reason=reason)
+    What was tried may be a secret. With ``domainkit.contrib.audit``
+    installed, the refusal goes to the trail, as denied.
+    """
+    for hook in on_refusal:
+        await hook.call(action, reason)
 
 
 def _digest(text: str) -> str:

@@ -33,7 +33,11 @@ class ApprovalsConfig(DomainConfig):
         The guards of large postings and of making superusers are
         registered when their apps are installed and their settings ask.
         """
-        from .builtin import guard_entries, guard_superusers
+        from .builtin import (
+            guard_entries,
+            guard_superusers,
+            refuse_ungoverned_superusers,
+        )
         from .rules import configured_rule
         from .tables import start_mappers
         from .tasks import register
@@ -48,8 +52,12 @@ class ApprovalsConfig(DomainConfig):
         on_export_subject(self.export_person)
         if config.ENTRY_THRESHOLDS and registry.is_installed(ACCOUNTING):
             guard_entries(config)
-        if config.SUPERUSER_APPROVALS and registry.is_installed(AUTH):
-            guard_superusers(config)
+        if registry.is_installed(AUTH):
+            from domainkit.contrib.auth.gates import on_make_superuser
+
+            on_make_superuser(refuse_ungoverned_superusers, domain=self.label)
+            if config.SUPERUSER_APPROVALS:
+                guard_superusers(config)
 
     async def erase_person(self, subject: str, reason: str) -> Mapping[str, int]:
         """Unlink ``subject`` from the requests they made and decided."""

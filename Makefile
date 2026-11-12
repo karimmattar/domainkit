@@ -71,6 +71,7 @@ cov: ## Combine the runs with and without servers; CI requires 100%.
 
 bench: ## The benchmark ladder against its budgets (docs/performance.md).
 	$(RUN) python -m benchmarks --strict
+	$(RUN) python -m benchmarks.load --strict
 
 docs: ## Build the documentation site, links and API names checked, into site/.
 	NO_MKDOCS_2_WARNING=1 $(RUN) mkdocs build --strict --site-dir site

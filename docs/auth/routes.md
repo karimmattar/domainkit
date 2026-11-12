@@ -374,7 +374,10 @@ what.
 - **With `domainkit.contrib.approvals` guarding it**
   (`APPROVALS.SUPERUSER_APPROVALS`), no one makes a superuser here
   (`approval_required`): an approved `auth.grant_superuser` request does
-  ([approvals.md](../contrib/approvals.md#making-superusers)).
+  ([approvals.md](../contrib/approvals.md#making-superusers)). An app
+  of your own can hold superusers back the same way: register a check
+  with `on_make_superuser` (`domainkit.contrib.auth.gates`) in its
+  `ready()`, and raise to refuse.
 - **Other staff cannot grant a permission they lack**, directly or
   through a group (`403`).
 - **Nor can they change a user or a group that holds such a

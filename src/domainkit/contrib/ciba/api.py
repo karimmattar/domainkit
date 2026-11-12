@@ -40,8 +40,19 @@ one of their bound devices, ``DeviceSigned``):
 - ``POST /app-sign-in/requests/claim`` ``{"code"}``: the QR request scanned.
 - ``POST /app-sign-in/requests/{id}/approve`` ``{"match_code"?}``.
 - ``POST /app-sign-in/requests/{id}/deny`` ``{"report"?}``.
+
+A new phone is bound from one the user bound before, which scans it
+(ADR 0137):
+
+- ``POST /app-sign-in/device`` ``{"name", "public_key"}``, signed by the
+  new key: a QR code for the new phone to show. Nothing reaches the user's
+  phone until it scans the code (``/app-sign-in/requests/claim``), and
+  approves.
+- ``POST /app-sign-in/device/token`` ``{"request", "public_key"}``, signed
+  by the new key: once approved, the key is bound, and the phone logged in.
 """
 
+import hashlib
 from datetime import datetime
 from typing import Annotated, Final
 from uuid import UUID
@@ -73,8 +84,18 @@ from domainkit.contrib.auth.integration import (
     stepping_credentials,
 )
 from domainkit.contrib.auth.models import UserId
-from domainkit.contrib.devices import DeviceSigned, DevicesUnitOfWork
-from domainkit.contrib.devices.binding import signing_device
+from domainkit.contrib.devices import (
+    DeviceSignatureRefused,
+    DeviceSigned,
+    DevicesUnitOfWork,
+)
+from domainkit.contrib.devices.binding import (
+    bind_key,
+    device_key,
+    mark_signed_by,
+    proves_key,
+    signing_device,
+)
 from domainkit.ddd import NotFound
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import error_responses
@@ -100,7 +121,7 @@ from .services import (
     start_push,
     start_qr,
 )
-from .stores import QR, STEP_UP, TRANSACTION, CibaUnitOfWork, SignInRequest
+from .stores import DEVICE, QR, STEP_UP, TRANSACTION, CibaUnitOfWork, SignInRequest
 
 __all__ = ["router"]
 
@@ -126,6 +147,19 @@ class IdentifierIn(BaseModel):
     identifier: str = Field(min_length=1, max_length=255)
 
 
+class DeviceRequestIn(BaseModel):
+    """The phone that asks to be bound: a name for it, and the key it holds.
+
+    It names no account: the phone that scans its code decides whose it is.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=MESSAGE_LENGTH)
+    """What the user's bound phone is shown: "Omar's new phone"."""
+    public_key: str = Field(min_length=1, max_length=1000)
+
+
 class StartedOut(BaseModel):
     """A sign-in waiting for the phone: poll with ``request`` every ``interval`` s."""
 
@@ -148,6 +182,26 @@ class PollIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request: str = Field(min_length=1, max_length=HANDLE_LENGTH, repr=False)
+
+
+class DeviceRedeemIn(PollIn):
+    """The poll handle, and the key the request was made for."""
+
+    public_key: str = Field(min_length=1, max_length=1000)
+
+
+class BoundDeviceOut(BaseModel):
+    """The device bound: its id signs the phone's requests from now on."""
+
+    id: UUID
+    name: str
+    created_at: datetime
+
+
+class DeviceBoundOut(TokenOut):
+    """The device bound, and the tokens of the login it made."""
+
+    device: BoundDeviceOut
 
 
 class ClaimIn(BaseModel):
@@ -212,8 +266,9 @@ class SignInOut(BaseModel):
 
     id: UUID
     kind: str
-    """``sign_in``, ``step_up`` (``binding_message`` says what for), or
-    ``transaction`` (``transaction`` says what)."""
+    """``sign_in``, ``step_up`` (``binding_message`` says what for),
+    ``transaction`` (``transaction`` says what), or ``device``: a phone
+    asks to be bound, and ``binding_message`` is the name it gave."""
     channel: str
     """``push`` or ``qr``."""
     client: str | None
@@ -318,6 +373,109 @@ async def start_qr_sign_in(request: Request, response: Response) -> StartedOut:
         started = await start_qr(uow, requester=_requester(request))
         await uow.commit()
     return _started(started)
+
+
+def _key_digest(key: bytes) -> str:
+    """What a device request keeps of the key it is for: its SHA-256, in hex."""
+    return hashlib.sha256(key).hexdigest()
+
+
+@router.post(
+    "/app-sign-in/device",
+    dependencies=[Public, captcha("login")],
+    response_model_exclude_none=True,
+    responses=error_responses(
+        status.HTTP_401_UNAUTHORIZED, status.HTTP_429_TOO_MANY_REQUESTS
+    ),
+)
+async def ask_to_bind_device(
+    body: DeviceRequestIn, request: Request, response: Response
+) -> StartedOut:
+    """A QR code for this phone to show, for a phone the user bound to scan.
+
+    The request is signed by the key it asks to bind. It names no account
+    and pushes nothing: the user opens the app on a phone they bound,
+    scans the code (``/app-sign-in/requests/claim``), is shown the name and
+    where the request comes from, and approves. A user with no bound phone
+    enrolls instead (``/devices/enroll``).
+
+    Raises:
+        DeviceSignatureRefused: The key did not sign the request.
+    """
+    _no_store(response)
+    await _count_start(request)
+    algorithm, key = device_key(body.public_key)
+    if not await proves_key(request, algorithm, key):
+        raise DeviceSignatureRefused()
+    async with CibaUnitOfWork() as uow:
+        started = await start_qr(
+            uow,
+            requester=_requester(request),
+            binding_message=body.name,
+            kind=DEVICE,
+            credential_digest=_key_digest(key),
+        )
+        await uow.commit()
+    return _started(started)
+
+
+@router.post(
+    "/app-sign-in/device/token",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Public],
+    response_model_exclude_none=True,
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_409_CONFLICT,
+    ),
+)
+async def bind_approved_device(
+    body: DeviceRedeemIn, request: Request, response: Response
+) -> DeviceBoundOut:
+    """Bind the key, once the user's phone approved, and log this phone in.
+
+    Signed by the key again: only its holder redeems the request made for
+    it. The login is the new device's own, and runs every login gate.
+
+    Raises:
+        DeviceSignatureRefused: The key did not sign the request.
+        PollRefused: Not approved (yet), or not this key's to redeem.
+        TooManyKeys: The user holds ``DEVICES.MAX_DEVICES`` already.
+    """
+    _no_store(response)
+    algorithm, key = device_key(body.public_key)
+    if not await proves_key(request, algorithm, key):
+        raise DeviceSignatureRefused()
+    approved = await poll(
+        body.request, client_id=None, kind=DEVICE, credential_digest=_key_digest(key)
+    )
+    async with CibaUnitOfWork() as uow:
+        user = (
+            None
+            if approved.user_id is None
+            else await uow.users.find(UserId(approved.user_id))
+        )
+        if user is None or not user.is_active:
+            raise SignInUnknown()
+        device = await bind_key(
+            uow, user.id, approved.binding_message or "", algorithm, key
+        )
+        await uow.commit()
+    mark_signed_by(request, device)  # The login that follows is its own.
+    mark_approved(request, user)
+    await pass_login_gates(request, user)
+    issued = await issue_login(
+        user, factor_proven=True, method=LoginMethod.DEVICE, device_id=device.id
+    )
+    return DeviceBoundOut(
+        access_token=issued.access_token,
+        expires_in=issued.expires_in,
+        refresh_token=issued.refresh_token,
+        device=BoundDeviceOut(
+            id=device.id, name=device.name, created_at=device.created_at
+        ),
+    )
 
 
 async def _approved_user(body: PollIn) -> tuple[AbstractBaseUser, str]:

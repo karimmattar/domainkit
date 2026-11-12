@@ -334,7 +334,7 @@ async def anchor(
     """
     now = now or clock.now()
     async with connect(database) as connection:
-        head = await _head(connection)
+        head = await chain_head(connection)
     if head is None:
         return None
     key = anchor_key(label(database), registry.settings(AuditSettings).NAMESPACE)
@@ -403,7 +403,7 @@ async def verify(
     """
     now = now or clock.now()
     report = Report(label(database))
-    history = await _history(database, ledger) if ledger is not None else []
+    history = await anchor_history(database, ledger) if ledger is not None else []
     anchored = _by_seq(history)
     report.anchors = len(anchored)
     newest_anchored = max(anchored, default=0)
@@ -533,7 +533,7 @@ async def _seal_batch(
     (``after``), since every unsealed row before it was sealed by then. A
     ``late`` pass looks below the horizon only, and flags its seals.
     """
-    head = await _head(connection)
+    head = await chain_head(connection)
     unsealed = _unsealed_rows().limit(batch)
     if after is not None:
         occurred_at, entry_id = after
@@ -631,7 +631,7 @@ async def _report_stalled(
         )
 
 
-async def _head(connection: AsyncConnection) -> Head | None:
+async def chain_head(connection: AsyncConnection) -> Head | None:
     """The chain's newest seal, if any."""
     found = (
         await connection.execute(
@@ -791,7 +791,7 @@ async def _recorded(database: str, ledger: Ledger) -> set[bytes]:
     return found
 
 
-async def _history(database: str, ledger: Ledger) -> list[Anchor]:
+async def anchor_history(database: str, ledger: Ledger) -> list[Anchor]:
     """Every anchored head of ``database``, in ledger order.
 
     Read from every key in ``anchor_keys``, merged by transaction.

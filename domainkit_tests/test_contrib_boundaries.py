@@ -138,6 +138,32 @@ class Layout:
                     if target := self.crossing(importer, module, name):
                         yield importer, target
 
+    def mutual(self) -> set[tuple[str, str]]:
+        """Each pair of apps that import each other, in alphabetical order.
+
+        At any depth, inside functions too: an import a function makes
+        when it is called ties two apps as one at the top of a module does.
+        """
+        uses: set[tuple[str, str]] = set()
+        for importer, path in self.files.items():
+            app = self.app(importer)
+            if app is None:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    base = _resolve(importer, path, node.level, node.module)
+                    modules = [base, *(f"{base}.{alias.name}" for alias in node.names)]
+                else:
+                    continue
+                for module in modules:
+                    other = self.app(module)
+                    if other is not None and other != app:
+                        uses.add((app, other))
+        return {(one, two) for one, two in uses if one < two and (two, one) in uses}
+
 
 def _resolve(importer: str, path: Path, level: int, target: str | None) -> str:
     """The absolute module a ``from`` import of ``importer`` names."""
@@ -156,6 +182,45 @@ def test_no_new_imports_of_another_apps_internals() -> None:
 
     assert sorted(found - ALLOWED) == [], "Import the app's public names instead."
     assert sorted(ALLOWED - found) == [], "No longer imported: remove from ALLOWED."
+
+
+def test_no_two_apps_import_each_other() -> None:
+    """An app asks the apps built on it through hooks, not imports (ADR 0140)."""
+    assert Layout(SRC, "domainkit").mutual() == set()
+
+
+def test_the_check_finds_apps_that_import_each_other(
+    make_package: MakePackage, tmp_path: Path
+) -> None:
+    """One way is a dependency; both ways, even inside a function, is a cycle."""
+    make_package(
+        "fakekit.contrib.base",
+        {
+            "__init__.py": "",
+            "rules.py": """
+                def ask():
+                    from fakekit.contrib.trail import record
+                    from ..money import ledger
+            """,
+        },
+    )
+    make_package(
+        "fakekit.contrib.trail",
+        {"__init__.py": "record = 1\n", "api.py": "from fakekit.contrib import base\n"},
+    )
+    make_package(
+        "fakekit.contrib.money",
+        {"__init__.py": "", "ledger.py": "import fakekit.contrib.base.rules\n"},
+    )
+    make_package(
+        "fakekit.contrib.alone",
+        {"__init__.py": "", "uses.py": "from ..base import rules\nimport json\n"},
+    )
+
+    assert Layout(tmp_path, "fakekit").mutual() == {
+        ("base", "money"),
+        ("base", "trail"),
+    }
 
 
 def test_the_check_finds_private_imports_and_lets_public_ones_pass(

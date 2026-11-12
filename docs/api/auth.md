@@ -149,11 +149,13 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `LoginGate`: A check of a login: return to let it through, raise to refuse it.
 - `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
 - `LoginsCheck`: A check of a request that manages the user's other logins: raise to refuse.
+- `SuperuserCheck`: A check before the admin API makes a user a superuser: raise to refuse.
 - `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
+- `on_make_superuser`: Register a check of making a superuser in the admin API.
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 
@@ -392,7 +394,10 @@ The routes of passkeys and bound devices.
 Requests signed by a bound device's key.
 
 - `DeviceSigned`: Requests a bound device of the user signed, now, once.
+- `bind_key`: Bind `key` to the user in `uow`, which its caller commits.
 - `device_key`: A device key's algorithm, and the key as SubjectPublicKeyInfo.
+- `mark_signed_by`: Count `request` as signed by `device`, which it just bound.
+- `proves_key`: Whether `request` is signed by `key`, now (`DEVICES.SIGNATURE_WINDOW`).
 - `signed_message`: What a device signs for a request.
 - `signing_device`: The device of `user` that signed the request, checked once a request.
 
@@ -485,6 +490,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `LoginMethod`: How a login signed in (ADR 0130): shown with it, to tell logins apart.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
+- `RefusalHook`: Told of a refused attempt: its action (`auth.login`) and the reason's code.
 - `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).
 - `SteppedUp`: A user authenticated again, for acts that ask for it (`StepUp`).
 - `TokenOut`: Tokens (OAuth 2's token response): send `Authorization: Bearer ...`.
@@ -507,10 +513,12 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `mail_user`: Mail `user` at their address from `template`; False where none can go.
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
 - `note_login_device`: Say that the user's bound device `device_id` signed this request.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
+- `on_refusal`: Register what records refused attempts (`on_refusal(record)` in `ready()`).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
@@ -746,7 +754,26 @@ CIBA clients, sign-in requests, and the client assertions already used.
 
 ## `domainkit.contrib.devices.tasks`
 
-Hourly purge of the signed requests no longer within the window.
+The devices app's tasks: the signed requests' purge, and the bound-device notice.
 
+- `notice_device_bound`: Queue the notice of a `DeviceBound`, once its transaction committed.
 - `purge_signatures`: Forget the signed requests too old to be sent again; how many.
+- `register_notice`: Register the notice's task, and send it for every `DeviceBound`.
 - `register_purge`: Run the purge every hour (needs messaging).
+- `send_bound_notice`: Mail the user that the device `device_id` was bound to their account.
+
+## `domainkit.contrib.auth.routing`
+
+One router for an account's routes: auth's, and those of the apps built on it.
+
+- `AccountRoutes`: Routes an app adds to an account's router: their name, and where they are.
+- `account_router`: A router of the account routes of every installed app (see the module).
+- `account_routes`: Every app's account routes, by name, in the order the apps are installed.
+- `on_account_routes`: Register a function that names an app's account routes, in `ready()`.
+
+## `domainkit.contrib.presets`
+
+Settings of several apps that go together, for a project's settings file.
+
+- `PhoneIdentity`: `AUTH`, `DEVICES` and `CIBA` for the phone as identity.
+- `phone_identity`: The settings that make a user's bound phone their identity.

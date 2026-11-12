@@ -47,24 +47,20 @@ from domainkit import clock
 from domainkit.conf import settings
 from domainkit.encryption import DecryptionFailed, SecretBox
 from domainkit.http.access import IsUnscoped, Public, Require
-from domainkit.http.errors import APIError
+from domainkit.http.errors import APIError, error_responses
 from domainkit.log import SECURITY_LOGGER
 
 from . import totp
+from ._http import PASSWORD_MAX_LENGTH, credentials_of, no_store, password_throttle
 from .access import AuthenticatedUser
 from .api import (
-    PASSWORD_MAX_LENGTH,
     MfaChallengeOut,
     TokenOut,
-    _changed_on_first_use,
-    _credentials,
-    _errors,
-    _no_store,
-    _throttle,
-    _token_out,
+    changed_on_first_use,
     device_logins_kept,
     issue_login,
     password_holds,
+    token_out,
 )
 from .devices import hand_out
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
@@ -333,7 +329,7 @@ async def second_factor_holds(
         SecondFactorUnreadable: No key held opens the user's secret.
         APIError: 429 past ``AUTH.MFA.RATE``.
     """
-    counted = await _limit_user(request, user)
+    counted = await limit_user(request, user)
     async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         method = await spend_code(uow, stored, code)
@@ -355,7 +351,7 @@ async def first_use_after_code(
     """
     if not auth_settings().PASSWORD_CHANGE_ON_FIRST_USE:
         return user
-    return await _changed_on_first_use(user, new_password, factor_proven=True)
+    return await changed_on_first_use(user, new_password, factor_proven=True)
 
 
 async def spend_code(
@@ -411,7 +407,9 @@ def secret_box() -> SecretBox:
 
 
 @router.get(
-    "/mfa", dependencies=UNSCOPED, responses=_errors(status.HTTP_401_UNAUTHORIZED)
+    "/mfa",
+    dependencies=UNSCOPED,
+    responses=error_responses(status.HTTP_401_UNAUTHORIZED),
 )
 async def mfa_status(user: AuthenticatedUser) -> MfaStatusOut:
     """Whether the user's logins need a second factor."""
@@ -425,7 +423,7 @@ async def mfa_status(user: AuthenticatedUser) -> MfaStatusOut:
 @router.post(
     "/mfa/totp",
     dependencies=[*UNSCOPED, MANAGES_LOGINS],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_409_CONFLICT,
@@ -440,7 +438,7 @@ async def start_enrolment(
     Checked by ``on_manage_logins`` first: in the phone modes, the phone
     signs it (ADR 0132).
     """
-    _no_store(response)
+    no_store(response)
     await _reauthenticate(request, user, body.password)
     secret = totp.new_secret()
     sealed = secret_box().encrypt(secret, associated=user.id.bytes)
@@ -466,7 +464,7 @@ async def start_enrolment(
 @router.post(
     "/mfa/totp/confirm",
     dependencies=[*UNSCOPED, MANAGES_LOGINS],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_429_TOO_MANY_REQUESTS,
@@ -483,9 +481,9 @@ async def confirm_enrolment(
     stay, as ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS`` says. Checked by
     ``on_manage_logins`` first (ADR 0132).
     """
-    _no_store(response)
+    no_store(response)
     keep_devices = device_logins_kept(body.keep_device_logins)
-    counted = await _limit_user(request, user)
+    counted = await limit_user(request, user)
     codes = new_recovery_codes(auth_settings().MFA.RECOVERY_CODES)
     async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
         device = await uow.mfa.device(user.id)
@@ -504,7 +502,7 @@ async def confirm_enrolment(
             await uow.mfa.replace_codes(
                 user.id, [recovery_digest(user.id, code) for code in codes]
             )
-            credentials = _credentials(request)
+            credentials = credentials_of(request)
             await uow.tokens.revoke_user(
                 user.id,
                 keep=credentials.token_id,
@@ -525,7 +523,7 @@ async def confirm_enrolment(
     "/mfa/totp/disable",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[*UNSCOPED, MANAGES_LOGINS],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_429_TOO_MANY_REQUESTS,
@@ -549,7 +547,7 @@ async def disable(
 @router.post(
     "/mfa/recovery-codes",
     dependencies=[*UNSCOPED, MANAGES_LOGINS],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_429_TOO_MANY_REQUESTS,
@@ -565,7 +563,7 @@ async def regenerate_recovery_codes(
 
     Checked by ``on_manage_logins`` first (ADR 0132).
     """
-    _no_store(response)
+    no_store(response)
     await _reauthenticate(request, user, body.password, body.code)
     codes = new_recovery_codes(auth_settings().MFA.RECOVERY_CODES)
     async with AuthUnitOfWork() as uow:
@@ -582,7 +580,7 @@ async def regenerate_recovery_codes(
     "/mfa/login",
     dependencies=[Public],
     response_model_exclude_none=True,
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_429_TOO_MANY_REQUESTS,
@@ -590,14 +588,14 @@ async def regenerate_recovery_codes(
 )
 async def mfa_login(body: MfaLoginIn, request: Request, response: Response) -> TokenOut:
     """Finish a login with the challenge and a code; return tokens."""
-    _no_store(response)
+    no_store(response)
     user = await first_use_after_code(
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
     )
     await pass_login_gates(request, user)
     issued = await issue_login(user, method=LoginMethod.PASSWORD)
     await hand_out(request, response, user)
-    return _token_out(issued)
+    return token_out(issued)
 
 
 async def _reauthenticate(
@@ -611,7 +609,7 @@ async def _reauthenticate(
         APIError: 400 ``wrong_password``; 429 past ``AUTH.LOGIN_RATE``.
         InvalidCode: The code is wrong, or was used.
     """
-    password_counted = await _throttle(request, user)
+    password_counted = await password_throttle(request, user)
     if not await password_holds(user, password):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
@@ -621,7 +619,7 @@ async def _reauthenticate(
     await password_counted.succeeded()
     if code is None:
         return
-    counted = await _limit_user(request, user)
+    counted = await limit_user(request, user)
     async with audited_unreadable("auth.mfa"), AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         method = await spend_code(uow, stored, code)
@@ -656,7 +654,7 @@ async def _limit(request: Request, limits: list[Limit]) -> Attempt:
     return await attempt(request, limits, action="auth.mfa", detail=TOO_MANY)
 
 
-async def _limit_user(request: Request, user: AbstractBaseUser) -> Attempt:
+async def limit_user(request: Request, user: AbstractBaseUser) -> Attempt:
     """Count a code check of ``user`` against ``AUTH.MFA.RATE``."""
     return await _limit(request, [(_user_key(user), auth_settings().MFA.RATE)])
 

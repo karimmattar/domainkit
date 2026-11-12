@@ -69,6 +69,21 @@ router.include_router(auth_router, prefix="/auth")
 router.include_router(admin_router, prefix="/admin/auth")
 ```
 
+`auth_router` logs users in and out. Each other part of auth, and each
+app built on it, has a router of its own: sessions, the second factor,
+tokens, recovery, devices. `account_router()` mounts those of every
+installed app at once (since 2.4), in place of `auth_router`:
+
+```python
+from domainkit.contrib.auth.routing import account_router
+
+router.include_router(account_router(), prefix="/auth")
+```
+
+Public signup is off unless you include it
+(`account_router(include=["signup"])`), and `exclude=[...]` leaves routes
+out. [`domainkit.contrib.auth.routing`](../api/auth.md) lists the names.
+
 Then make the tables, and a user who may do everything:
 
 ```bash

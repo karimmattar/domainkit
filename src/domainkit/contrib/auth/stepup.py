@@ -34,10 +34,10 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.http.access import IsUnscoped, Require
-from domainkit.http.errors import APIError
+from domainkit.http.errors import APIError, error_responses
 
-from .access import AuthenticatedUser, _impersonated, proof_of
-from .api import PASSWORD_MAX_LENGTH, _credentials, _errors, _no_store, _throttle
+from ._http import PASSWORD_MAX_LENGTH, credentials_of, no_store, password_throttle
+from .access import AuthenticatedUser, impersonated, proof_of
 from .api import password_holds as _password_holds
 from .authentication import (
     JWT_SCHEME,
@@ -48,7 +48,7 @@ from .authentication import (
     get_authenticators,
 )
 from .events import SteppedUp
-from .mfa import InvalidCode, _limit_user, audited_unreadable, spend_code
+from .mfa import InvalidCode, audited_unreadable, limit_user, spend_code
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
 from .throttling import audit_refusal
@@ -133,7 +133,7 @@ async def verify_factors[T](
             raise NoSecondFactor
     if "pwd" in methods:
         await check_password_again(request, user, password, action)
-    counted = await _limit_user(request, user)
+    counted = await limit_user(request, user)
     async with audited_unreadable(action), AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         spent = await spend_code(uow, stored, code, recovery=False)
@@ -151,7 +151,7 @@ async def verify_factors[T](
     "/step-up",
     dependencies=[Depends(Require(IsUnscoped()))],
     response_model_exclude_none=True,
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
@@ -163,7 +163,7 @@ async def step_up(
     body: StepUpIn, request: Request, response: Response, user: AuthenticatedUser
 ) -> StepUpOut:
     """Authenticate again with a second factor, for routes that ask (``StepUp``)."""
-    _no_store(response)
+    no_store(response)
     credentials = stepping_credentials(request)
     methods = tuple(sorted(auth_settings().STEP_UP.METHODS))
     proof = Proof(utc_now(), frozenset(methods))
@@ -189,7 +189,7 @@ def stepping_credentials(request: Request) -> Credentials:
     Raises:
         APIError: 400 ``step_up_unsupported``: they cannot.
     """
-    credentials = _credentials(request)
+    credentials = credentials_of(request)
     if credentials.scheme != JWT_SCHEME and (
         credentials.scheme not in STEPPING_SCHEMES or credentials.token_id is None
     ):
@@ -255,7 +255,7 @@ async def check_password_again(
             "Enter your password as well.",
             code="password_required",
         )
-    counted = await _throttle(request, user)
+    counted = await password_throttle(request, user)
     if not await _password_holds(user, password):
         await audit_refusal(action, "wrong_password")
         raise APIError(
@@ -295,7 +295,7 @@ async def reauthenticate(
         ReauthenticationRequired: Neither, or an impersonation.
         APIError: The password is wrong, or its checks are throttled.
     """
-    if _impersonated(request):
+    if impersonated(request):
         raise ReauthenticationRequired
     if password is not None:
         await check_password_again(request, user, password, action)

@@ -66,7 +66,7 @@ sign_in_requests = Table(
     Column("denied_at", UTCDateTime, nullable=True),
     Column("reported", Boolean, nullable=False),
     Column("redeemed_at", UTCDateTime, nullable=True),
-    # sign_in, step_up, or transaction: a handle redeems as its kind only.
+    # sign_in, step_up, transaction, or device: a handle redeems as its kind only.
     Column("kind", String(16), nullable=False, server_default="sign_in"),
     # The SHA-256 of the credentials of the session a step-up, or a
     # transaction, was asked from: only that session redeems it.
