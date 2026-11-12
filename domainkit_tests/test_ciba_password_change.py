@@ -16,7 +16,12 @@ from domainkit.conf import override_settings, settings
 from domainkit_tests.support.auth import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_auth_mfa import clock, code_at, secret_of
-from domainkit_tests.test_auth_reset_codes import NEW_PASSWORD, ask_reset, drain
+from domainkit_tests.test_auth_reset_codes import (
+    CODE,
+    NEW_PASSWORD,
+    ask_reset,
+    drain,
+)
 from domainkit_tests.test_auth_reset_codes import code_in as code_of
 from domainkit_tests.test_ciba import PHONE, App, Phone, app
 from domainkit_tests.test_ciba_logins import web_login
@@ -49,13 +54,24 @@ def alive(phone: Phone) -> bool:
     return bool(phone.send("GET", "/auth/me").status_code == 200)
 
 
-def mailed_reset_code(client: TestClient) -> str:
-    """Ask a reset for ``EMAIL``; the code mailed."""
+def last_code() -> str:
+    """The code of the latest mail that carries one.
+
+    The notice of a bound device carries none, and the worker may send it
+    after the reset's mail.
+    """
     from domainkit.contrib import mail
 
+    return next(
+        code_of(sent.body) for sent in reversed(mail.outbox) if CODE.search(sent.body)
+    )
+
+
+def mailed_reset_code(client: TestClient) -> str:
+    """Ask a reset for ``EMAIL``; the code mailed."""
     ask_reset(client, identifier=EMAIL)
     drain()
-    return code_of(mail.outbox[-1].body)
+    return last_code()
 
 
 def test_the_phones_login_is_marked_when_it_binds_or_signs(app: App) -> None:
@@ -229,8 +245,6 @@ def test_a_reset_may_end_the_phones_login_too(app: App) -> None:
     for mode, extra in (("end", {}), ("ask", {"keep_device_logins": False})):
         phone = Phone(app(PHONE), username=f"alice-{mode}", email=f"{mode}@x.example")
         web = app()
-        from domainkit.contrib import mail
-
         ask_reset(web, identifier=f"{mode}@x.example")
         drain()
         with device_logins(mode):
@@ -238,7 +252,7 @@ def test_a_reset_may_end_the_phones_login_too(app: App) -> None:
                 "/auth/password-reset/code",
                 json={
                     "identifier": f"{mode}@x.example",
-                    "code": code_of(mail.outbox[-1].body),
+                    "code": last_code(),
                     "new_password": NEW_PASSWORD,
                     **extra,
                 },

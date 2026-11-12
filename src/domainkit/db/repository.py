@@ -184,7 +184,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
             async with self.session.begin_nested():
                 return list(await self.session.scalars(statement, parameters))
         except DBAPIError as exc:
-            if _sqlstate(exc) == LOCK_NOT_AVAILABLE:
+            if sqlstate_of(exc) == LOCK_NOT_AVAILABLE:
                 raise LockNotAvailable(
                     "The data is being changed by another request; try again."
                 ) from exc
@@ -455,7 +455,7 @@ async def reload_expired(session: AsyncSession) -> None:
             await session.refresh(instance)
 
 
-def _sqlstate(exc: DBAPIError) -> str | None:
+def sqlstate_of(exc: DBAPIError) -> str | None:
     """The SQLSTATE of a driver's error, from asyncpg or psycopg."""
     state = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
     return state if isinstance(state, str) else None

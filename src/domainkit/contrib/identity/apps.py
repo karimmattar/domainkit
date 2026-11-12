@@ -59,6 +59,16 @@ class IdentityConfig(DomainConfig):
                 ],
             )
         from domainkit.contrib.auth.integration import UserDeleted
+        from domainkit.contrib.auth.routing import AccountRoutes, on_account_routes
+
+        on_account_routes(
+            lambda: [
+                AccountRoutes("identity", f"{self.name}.api.router"),
+                # SAML's routes need its extra: a project includes them.
+                AccountRoutes("saml", f"{self.name}.saml.router", default=False),
+            ],
+            domain=self.label,
+        )
 
         event_bus.subscribe(UserDeleted, forget_identities)
         on_erase_subject(self.erase_person, domain=self.label)

@@ -50,12 +50,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.ddd import BusinessRuleViolation, NotFound, PermissionDenied
 from domainkit.http.access import IsUnscoped, Require
-from domainkit.http.errors import APIError
+from domainkit.http.errors import APIError, error_responses
 from domainkit.money import Money
 from domainkit.signing import derive_keys
 
+from ._http import PASSWORD_MAX_LENGTH, no_store
 from .access import AuthenticatedUser
-from .api import PASSWORD_MAX_LENGTH, _errors, _no_store
 from .events import TransactionAuthorizationUsed, TransactionAuthorized
 from .models import UserId
 from .repositories import ScaChallenge
@@ -254,7 +254,7 @@ class AuthorizationOut(BaseModel):
 @router.get(
     "/sca/{challenge_id}",
     dependencies=UNSCOPED,
-    responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_404_NOT_FOUND),
+    responses=error_responses(status.HTTP_401_UNAUTHORIZED, status.HTTP_404_NOT_FOUND),
 )
 async def show_transaction(
     challenge_id: UUID, user: AuthenticatedUser
@@ -274,7 +274,7 @@ async def show_transaction(
 @router.post(
     "/sca/{challenge_id}/confirm",
     dependencies=UNSCOPED,
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_404_NOT_FOUND,
@@ -290,7 +290,7 @@ async def confirm_transaction(
     user: AuthenticatedUser,
 ) -> AuthorizationOut:
     """Confirm a transaction with a second factor; return its authorization."""
-    _no_store(response)
+    no_store(response)
     challenge = await _own(challenge_id, user.id)
     _unconfirmed(challenge)
     methods = tuple(sorted(auth_settings().SCA.METHODS))

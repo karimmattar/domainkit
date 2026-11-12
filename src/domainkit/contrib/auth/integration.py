@@ -7,11 +7,9 @@ auth through these names, which keep their meaning across releases as
 the rest of the public API does.
 """
 
-from starlette.requests import HTTPConnection
-
-from .access import _impersonated, proof_of
+from ._http import PASSWORD_MAX_LENGTH
+from .access import impersonated, proof_of
 from .api import (
-    PASSWORD_MAX_LENGTH,
     MfaChallengeOut,
     TokenOut,
     attach_login_device,
@@ -35,7 +33,7 @@ from .mfa import (
     needs_second_factor,
     second_factor_holds,
 )
-from .recovery import send_code
+from .recovery import mail_user, send_code
 from .sca import confirm_transaction_with, sca_transaction
 from .settings import auth_settings
 from .stepup import (
@@ -48,7 +46,14 @@ from .stepup import (
     step_up_answer,
     stepping_credentials,
 )
-from .throttling import account_key, address_key, attempt, audit_refusal
+from .throttling import (
+    RefusalHook,
+    account_key,
+    address_key,
+    attempt,
+    audit_refusal,
+    on_refusal,
+)
 from .tokens import LoginMethod, note_login_device, utc_now
 
 __all__ = [
@@ -59,6 +64,7 @@ __all__ = [
     "LoginMethod",
     "MfaChallengeOut",
     "ReauthenticationRequired",
+    "RefusalHook",
     "StepUpOut",
     "SteppedUp",
     "TokenOut",
@@ -81,10 +87,12 @@ __all__ = [
     "gates_passed",
     "impersonated",
     "issue_login",
+    "mail_user",
     "needs_second_factor",
     "note_login_device",
     "on_login_gate",
     "on_manage_logins",
+    "on_refusal",
     "pass_login_gates",
     "proof_of",
     "reauthenticate",
@@ -98,8 +106,3 @@ __all__ = [
     "target_of",
     "utc_now",
 ]
-
-
-def impersonated(connection: HTTPConnection) -> bool:
-    """Whether staff act as the user on ``connection`` (an impersonation)."""
-    return _impersonated(connection)

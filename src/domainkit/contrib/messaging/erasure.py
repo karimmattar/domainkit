@@ -24,7 +24,7 @@ from .admin import blanked
 from .outbox import outbox_targets
 from .registry import get_task
 from .tables import BLANKED, DEAD, HELD, PENDING, messages
-from .worker import _event_classes
+from .worker import event_classes
 
 KEPT: Final = (PENDING, HELD, DEAD)
 """The statuses whose messages keep their arguments."""
@@ -55,7 +55,7 @@ def _holder(row: Row[Any], events: Mapping[str, type[Any]]) -> Any:  # noqa: ANN
 
 async def _about(connection: AsyncConnection, subject: str) -> list[Row[Any]]:
     """The messages still holding arguments about ``subject``, oldest first."""
-    events = _event_classes()
+    events = event_classes()
     found = await connection.stream(
         select(messages)
         .where(messages.c.status.in_(KEPT), not_(blanked()))
@@ -89,7 +89,7 @@ async def export_subject(subject: str) -> list[dict[str, Any]]:
     be about others (SEC-10b-4).
     """
     found = []
-    events = _event_classes()
+    events = event_classes()
     for alias in outboxes():
         async with connections.engine(alias).connect() as connection:
             rows = await _about(connection, subject)

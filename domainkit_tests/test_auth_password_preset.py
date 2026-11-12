@@ -20,9 +20,9 @@ from domainkit.contrib.auth import (
     UserId,
     acheck_password,
     amake_password,
-    repositories,
 )
 from domainkit.contrib.auth.management.commands import changepassword
+from domainkit.contrib.auth.repositories import accounts
 from domainkit.contrib.auth.settings import (
     AuthSettings,
     ScaSettings,
@@ -490,7 +490,7 @@ def test_the_change_ends_the_users_other_logins(
         made: str = await making(password, **options)
         return made
 
-    monkeypatch.setattr(repositories, "amake_password", spy)
+    monkeypatch.setattr(accounts, "amake_password", spy)
 
     asked_for = log_in(client, STRONG[0])
     similar = log_in(client, STRONG[0], new_password="alice-x91")
@@ -524,8 +524,8 @@ def test_hashing_for_a_change_keeps_its_priority(
         made: str = await making(password, **options)
         return made
 
-    monkeypatch.setattr(repositories, "acheck_password", check)
-    monkeypatch.setattr(repositories, "amake_password", make)
+    monkeypatch.setattr(accounts, "acheck_password", check)
+    monkeypatch.setattr(accounts, "amake_password", make)
 
     async def change_to(password: str, **options: bool) -> None:
         async with AuthUnitOfWork() as uow:

@@ -49,9 +49,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.messaging import task
 from domainkit.http.access import Public
-from domainkit.http.errors import APIError
+from domainkit.http.errors import APIError, error_responses
 
-from .api import PASSWORD_MAX_LENGTH, _errors
+from ._http import PASSWORD_MAX_LENGTH
 from .captcha import captcha
 from .codes import SIGNUP, target_of
 from .events import UserSignedUp
@@ -143,7 +143,7 @@ class SignupTaken(APIError):
     "/signup",
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Public, captcha("signup")],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_404_NOT_FOUND,
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         status.HTTP_429_TOO_MANY_REQUESTS,
@@ -216,7 +216,7 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
     "/signup/code",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Public],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_404_NOT_FOUND,
         status.HTTP_409_CONFLICT,

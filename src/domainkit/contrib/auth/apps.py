@@ -47,6 +47,7 @@ from .hashers import insecure_hashers
 from .models import PROTECTED_FLOOR, AbstractBaseUser, AbstractUser, User
 from .permissions import declared_permissions, sync_permissions
 from .principals import invalidate_all, stamp_committed, stamp_pending, watch
+from .routing import AccountRoutes, on_account_routes
 from .settings import PRINCIPAL_TTL, AuthSettings, auth_settings
 from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
 from .validators import get_password_validators, preset_contradictions
@@ -130,6 +131,26 @@ class AuthConfig(DomainConfig):
         on_export_subject(_export_logins, domain=self.label)
         on_check_application(self.application_problems)
         on_deployment_warnings(self.weak_settings)
+        on_account_routes(self.account_routes, domain=self.label)
+
+    def account_routes(self) -> list[AccountRoutes]:
+        """Auth's routes for ``account_router`` (``routing``).
+
+        Sessions are on with ``CookieAuthentication``, recovery with the
+        apps that send its mail, and signup only when a project includes it.
+        """
+        cookies = COOKIE_AUTHENTICATION in auth_settings().AUTHENTICATION_CLASSES
+        mails = registry.is_installed(MESSAGING) and registry.is_installed(MAIL)
+        return [
+            AccountRoutes("login", f"{self.name}.api.router"),
+            AccountRoutes("sessions", f"{self.name}.cookies.router", default=cookies),
+            AccountRoutes("mfa", f"{self.name}.mfa.router"),
+            AccountRoutes("tokens", f"{self.name}.personal_tokens.router"),
+            AccountRoutes("step-up", f"{self.name}.stepup.router"),
+            AccountRoutes("sca", f"{self.name}.sca.router"),
+            AccountRoutes("recovery", f"{self.name}.recovery.router", default=mails),
+            AccountRoutes("signup", f"{self.name}.signup.router", default=False),
+        ]
 
     async def stamp_changes(
         self,

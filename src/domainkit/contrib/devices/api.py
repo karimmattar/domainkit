@@ -74,15 +74,14 @@ from domainkit.contrib.auth.integration import (
 from domainkit.contrib.auth.models import UserId
 from domainkit.http.access import IsUnscoped, Public, Require
 
-from .binding import DEVICE_ID, DeviceSigned, device_key, signing_device
-from .events import DeviceBound, DeviceUnbound, PasskeyRemoved
+from .binding import DEVICE_ID, DeviceSigned, bind_key, device_key, signing_device
+from .events import DeviceUnbound, PasskeyRemoved
 from .exceptions import (
     DeviceLoginOff,
     DeviceNotFound,
     DeviceSignatureRefused,
     EnrollmentOff,
     PasskeyNotFound,
-    TooManyKeys,
 )
 from .passkeys import (
     LOGIN,
@@ -511,14 +510,8 @@ async def bind_device(
     algorithm, key = device_key(body.public_key)
     await reauthenticate(request, user, body.password, BIND_DEVICE)
     signer = await signing_device(request, user)
-    limit = _settings().MAX_DEVICES
     async with DevicesUnitOfWork() as uow:
-        await uow.tokens.lock_user(user.id)  # Two binds at once count each other.
-        if await uow.devices.count(user.id) >= limit:
-            raise TooManyKeys("Unbind a device before binding another.")
-        device = await uow.devices.add(user.id, body.name, algorithm, key)
-        stored = await uow.users.get(UserId(user.id))
-        stored.record(DeviceBound(user_id=user.id, device_id=device.id))
+        device = await bind_key(uow, user.id, body.name, algorithm, key)
         if signer is None:  # The app's login: the device's. A signer's stays its own.
             await attach_login_device(request, device.id, uow=uow)
         await uow.commit()

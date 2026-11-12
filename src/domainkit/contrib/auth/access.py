@@ -197,7 +197,7 @@ class StepUp(access.BasePermission):
         Never while staff act as the user (an impersonation): the acts a
         step-up guards are the user's own.
         """
-        if not user.is_authenticated or _impersonated(request):
+        if not user.is_authenticated or impersonated(request):
             return False
         proof = await proof_of(request)
         return (
@@ -231,8 +231,8 @@ def proven(methods: frozenset[str]) -> frozenset[str]:
     return methods.union(*(STANDS_FOR.get(method, ()) for method in methods))
 
 
-def _impersonated(connection: HTTPConnection) -> bool:
-    """Whether the connection's credentials are staff's, acting as the user."""
+def impersonated(connection: HTTPConnection) -> bool:
+    """Whether staff act as the user on ``connection`` (an impersonation)."""
     credentials = connection.scope.get("auth")
     return isinstance(credentials, Credentials) and credentials.impersonator is not None
 

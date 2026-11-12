@@ -53,7 +53,7 @@ from domainkit.db.connections import INTERNAL, Reads, connections
 from domainkit.db.errors import duplicate_value
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.orm import mapper_registry, metadata
-from domainkit.db.repository import SqlAlchemyRepository, _sqlstate, reload_expired
+from domainkit.db.repository import SqlAlchemyRepository, reload_expired, sqlstate_of
 from domainkit.db.routing import ShardKey, router
 from domainkit.ddd import (
     ConcurrentUpdate,
@@ -377,7 +377,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
 
     def _conflicted(self, exc: BaseException) -> bool:
         """Whether PostgreSQL refused the transaction: serialization or deadlock."""
-        return isinstance(exc, DBAPIError) and _sqlstate(exc) in CONFLICTS
+        return isinstance(exc, DBAPIError) and sqlstate_of(exc) in CONFLICTS
 
     async def _begin_savepoint(self) -> Savepoint:
         """``SAVEPOINT`` in the session's transaction (flushing first)."""

@@ -40,7 +40,7 @@ from domainkit.cloud import TokenSource, oauth_token
 from .backends import NotificationFailed, PushBackend, PushTokenGone
 from .messages import PushMessage
 from .settings import NotificationsSettings
-from .sms import TIMEOUT, _json, reached, shared_client
+from .sms import TIMEOUT, json_of, reached, shared_client
 
 __all__ = ["ApnsPushBackend", "FcmPushBackend", "HuaweiPushBackend"]
 
@@ -145,7 +145,7 @@ class FcmPushBackend(ProviderPushBackend):
         )
         if response.status_code == 200:
             return
-        error = (_json(response) or {}).get("error") or {}
+        error = (json_of(response) or {}).get("error") or {}
         codes = {
             detail.get("errorCode")
             for detail in error.get("details") or []
@@ -223,7 +223,7 @@ class ApnsPushBackend(ProviderPushBackend):
         )
         if response.status_code == 200:
             return
-        reason = (_json(response) or {}).get("reason")
+        reason = (json_of(response) or {}).get("reason")
         if response.status_code == 410 or reason in APNS_GONE:
             raise PushTokenGone(message.token, self.title)
         raise self.refused(reason or response.status_code)
@@ -306,7 +306,7 @@ class HuaweiPushBackend(ProviderPushBackend):
             json={"validate_only": False, "message": payload},
             headers={"Authorization": f"Bearer {await app.token('push')}"},
         )
-        code = (_json(response) or {}).get("code")
+        code = (json_of(response) or {}).get("code")
         if response.status_code == 200 and code == "80000000":
             return
         if code == HUAWEI_GONE:

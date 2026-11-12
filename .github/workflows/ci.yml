@@ -276,9 +276,10 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
-    # The suite takes about 6 minutes on the runner's 4
-    # cores; a slower runner must not fail it.
-    timeout-minutes: 30
+    # The suite takes 10 to 20 minutes on the runner's 4 cores, with
+    # every service and coverage; a slow runner took over 27. Hung tests
+    # are caught sooner, by pytest-timeout's two minutes a test.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
@@ -520,11 +521,21 @@ jobs:
       - run: >-
           poetry run python -m benchmarks --strict --json ladder.json
           ${{ github.event_name == 'pull_request' && '--baseline base/src' || '' }}
+      # Under load (ADR 0139): the rungs served by uvicorn, 32 connections
+      # each. A runner's times are noise, so no time is gated: a rung's
+      # requests a second and 99th percentile are held, loosely, against
+      # plain FastAPI's in the same run (benchmarks/load.toml), and every
+      # answer must be the rung's. The figures go to the job summary.
+      - run: >-
+          poetry run python -m benchmarks.load --strict --json load.json
+          --rungs fastapi,template,me,read,write
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-ladder
-          path: ladder.json
+          path: |
+            ladder.json
+            load.json
           retention-days: 30
 
   # Every line must run in some job: a few only run on SQLite, others only
@@ -1176,7 +1187,7 @@ jobs:
               domainkit.contrib.auth.authentication.* domainkit.contrib.auth.cookies.*
               domainkit.contrib.auth.metrics.* domainkit.contrib.auth.permissions.*
               domainkit.contrib.auth.signup.* domainkit.contrib.auth.tokens.*
-              domainkit.contrib.auth.captcha.* domainkit.contrib.auth.integration.*
+              domainkit.contrib.auth.captcha.*
           - name: auth-2
             mutants: >-
               domainkit.contrib.auth.devices.*
@@ -1186,7 +1197,7 @@ jobs:
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*
               domainkit.contrib.auth.totp.* domainkit.contrib.auth.uow.*
               domainkit.contrib.identity.* domainkit.contrib.devices.*
-              domainkit.contrib.phones.*
+              domainkit.contrib.phones.* domainkit.contrib.presets.*
           - name: auth-3
             mutants: >-
               domainkit.contrib.auth.api.* domainkit.contrib.auth.backends.*
@@ -1200,6 +1211,8 @@ jobs:
               domainkit.contrib.auth.codes.* domainkit.contrib.auth.erasure.* domainkit.contrib.auth.exceptions.*
               domainkit.contrib.auth.mfa.* domainkit.contrib.auth.models.*
               domainkit.contrib.auth.recovery.* domainkit.contrib.auth.tables.*
+              domainkit.contrib.auth._http.*
+              domainkit.contrib.auth.routing.*
               domainkit.contrib.auth.testing.*
               domainkit.contrib.auth.throttling.* domainkit.contrib.auth.validators.*
           - name: http-1

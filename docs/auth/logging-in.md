@@ -76,6 +76,11 @@ without the username, which may be a password typed in the wrong field.
 Throttled logins are audited once per count and period, so a flood adds
 no rows.
 
+Refusals reach the trail through a hook, `on_refusal`
+(`domainkit.contrib.auth.integration`). An app of your own that feeds
+another sink registers one in its `ready()`: it gets the action and the
+reason's code, never what was typed.
+
 ### Logging in with an email address or a mobile number
 
 `AUTH.IDENTIFIERS` names the user fields that identify a user, in the

@@ -53,22 +53,12 @@ from starlette.requests import HTTPConnection
 
 from domainkit.conf import settings
 from domainkit.http.access import SAFE_METHODS, Public
-from domainkit.http.errors import APIError
+from domainkit.http.errors import APIError, error_responses
 from domainkit.http.middleware import host_allowed
 from domainkit.signing import BadSignature, Signer, constant_time_compare
 
-from .api import (
-    LoginIn,
-    MfaChallengeOut,
-    _acting_as,
-    _credentials,
-    _errors,
-    _no_store,
-    _origin,
-    audited_changes,
-    check_password,
-    held_login,
-)
+from ._http import acting_as, credentials_of, made_by, no_store
+from .api import LoginIn, MfaChallengeOut, audited_changes, check_password, held_login
 from .authentication import (
     AuthenticationFailed,
     BaseAuthentication,
@@ -266,7 +256,7 @@ class CsrfOut(BaseModel):
 @router.post(
     "/session",
     dependencies=[Public, captcha("login")],  # The same captcha as /login.
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
@@ -281,7 +271,7 @@ async def log_in(
     A user with a second factor gets 202 and a challenge for
     ``/session/mfa`` instead.
     """
-    _no_store(response)
+    no_store(response)
     check_origin(request)
     user = await check_password(request, body)
     await pass_login_gates(request, user)
@@ -302,7 +292,7 @@ async def log_in(
 @router.post(
     "/session/mfa",
     dependencies=[Public],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
@@ -313,7 +303,7 @@ async def log_in_with_code(
     body: MfaLoginIn, request: Request, response: Response
 ) -> CsrfOut:
     """Finish a login with a second factor; start the browser session."""
-    _no_store(response)
+    no_store(response)
     check_origin(request)
     user = await first_use_after_code(
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
@@ -327,11 +317,13 @@ async def log_in_with_code(
 
 
 @router.get(
-    "/session", dependencies=[Public], responses=_errors(status.HTTP_400_BAD_REQUEST)
+    "/session",
+    dependencies=[Public],
+    responses=error_responses(status.HTTP_400_BAD_REQUEST),
 )
 async def session_token(request: Request, response: Response) -> CsrfOut:
     """A new CSRF token for this browser session (also set in its cookie)."""
-    _no_store(response)
+    no_store(response)
     credentials = request.scope.get("auth")
     if not isinstance(credentials, Credentials) or credentials.scheme != SCHEME:
         raise APIError(
@@ -348,13 +340,13 @@ async def session_token(request: Request, response: Response) -> CsrfOut:
     "/session",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Public],
-    responses=_errors(status.HTTP_403_FORBIDDEN),
+    responses=error_responses(status.HTTP_403_FORBIDDEN),
 )
 async def log_out(request: Request, response: Response) -> None:
     """End this browser session, if it is live, and clear its cookies."""
     credentials = request.scope.get("auth")
     if isinstance(credentials, Credentials) and credentials.scheme == SCHEME:
-        credentials = _credentials(request)
+        credentials = credentials_of(request)
         async with AuthUnitOfWork() as uow:
             stored = await uow.users.get(UserId(credentials.user.id))
             await uow.tokens.revoke(str(credentials.token_id))
@@ -391,7 +383,7 @@ async def start_session(
     """
     configured = auth_settings()
     config = configured.COOKIE
-    with _acting_as(user), _origin(method, device_id):
+    with acting_as(user), made_by(method, device_id):
         async with audited_changes(), AuthUnitOfWork() as uow:
             stored = await held_login(uow, user, factor_proven=factor_proven)
             if previous is not None and config.END_PREVIOUS_SESSION:

@@ -347,8 +347,8 @@ def test_encrypted_identifiers_are_searched_by_whole_value_or_not_at_all(
     """
     from sqlalchemy import Column, MetaData, String, Table
 
-    from domainkit.contrib.auth import admin, repositories
-    from domainkit.contrib.auth.repositories import user_search
+    from domainkit.contrib.auth import admin
+    from domainkit.contrib.auth.repositories import accounts, user_search
     from domainkit.db.encrypted import EncryptedType
     from domainkit.ddd import F
 
@@ -361,7 +361,7 @@ def test_encrypted_identifiers_are_searched_by_whole_value_or_not_at_all(
         )
 
     def use(table: Table) -> None:
-        monkeypatch.setattr(repositories, "get_user_table", lambda: table)
+        monkeypatch.setattr(accounts, "get_user_table", lambda: table)
         monkeypatch.setattr(admin, "get_user_table", lambda: table)
 
     indexed = EncryptedType(subject="id", blind_index="email_index")
