@@ -38,7 +38,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from domainkit.http.access import IsAuthenticated, IsUnscoped, Require
-from domainkit.http.errors import APIError
+from domainkit.http.errors import APIError, error_responses
 from domainkit.http.pagination import (
     CURSOR_PATTERN,
     MAX_CURSOR_LENGTH,
@@ -47,8 +47,8 @@ from domainkit.http.pagination import (
     encode_cursor,
 )
 
+from ._http import PASSWORD_MAX_LENGTH, credentials_of, no_store
 from .access import StepUp
-from .api import PASSWORD_MAX_LENGTH, _credentials, _errors, _no_store
 from .authentication import AuthenticationFailed, Credentials
 from .backends import get_all_permissions
 from .events import TokenCreated, TokenRevoked
@@ -156,7 +156,7 @@ class TokenPage(BaseModel):
 @router.get(
     "/tokens",
     dependencies=[MANAGES_LOGINS],
-    responses=_errors(status.HTTP_401_UNAUTHORIZED),
+    responses=error_responses(status.HTTP_401_UNAUTHORIZED),
 )
 async def list_tokens(
     request: Request,
@@ -169,7 +169,7 @@ async def list_tokens(
 
     Checked by ``on_manage_logins`` first (ADR 0130).
     """
-    credentials = _credentials(request)
+    credentials = credentials_of(request)
     before = None
     if cursor is not None:
         created, token_id = decode_cursor(cursor, 2)
@@ -189,7 +189,7 @@ async def list_tokens(
     "/tokens",
     status_code=status.HTTP_201_CREATED,
     dependencies=[MANAGES_LOGINS],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
@@ -206,8 +206,8 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
     ``on_manage_logins``: a token is a way into the account that outlasts
     ``others`` (ADR 0134).
     """
-    _no_store(response)
-    user = _credentials(request).user
+    no_store(response)
+    user = credentials_of(request).user
     ttl = lifetime(body)
     scopes = None if body.scopes is None else frozenset(body.scopes)
     if scopes is not None and (
@@ -221,7 +221,7 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
     await reauthenticate(request, user, body.password)
     limit = auth_settings().MAX_LIVE_TOKENS
     async with AuthUnitOfWork() as uow:
-        await held_credentials(uow, _credentials(request))
+        await held_credentials(uow, credentials_of(request))
         stored = await uow.users.get(UserId(user.id))
         if await uow.tokens.live_count(user.id) >= limit:
             raise APIError(
@@ -246,7 +246,7 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
 @router.delete(
     "/tokens/{token_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_404_NOT_FOUND),
+    responses=error_responses(status.HTTP_401_UNAUTHORIZED, status.HTTP_404_NOT_FOUND),
 )
 async def revoke_token(
     token_id: Annotated[str, Path(pattern=DIGEST_PATTERN)], request: Request
@@ -256,7 +256,7 @@ async def revoke_token(
     Ending another login than the request's own is checked by
     ``on_manage_logins`` first (ADR 0130).
     """
-    credentials = _credentials(request)
+    credentials = credentials_of(request)
     user = credentials.user
     async with AuthUnitOfWork() as uow:
         token = await uow.tokens.find_digest(token_id)
@@ -362,7 +362,7 @@ def _info(token: AuthToken, request: Request) -> TokenInfo:
         created_at=token.created_at,
         expires_at=token.expires_at,
         last_used_at=token.last_used_at,
-        current=_own(token, _credentials(request)),
+        current=_own(token, credentials_of(request)),
         method=token.method,
         agent=token.agent,
         ip=token.ip,

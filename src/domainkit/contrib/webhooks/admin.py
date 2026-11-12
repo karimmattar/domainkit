@@ -203,13 +203,13 @@ async def _subscription(uow: WebhooksUnitOfWork, subscription_id: UUID) -> Subsc
     return await uow.subscriptions.get(SubscriptionId(subscription_id))
 
 
-def _no_store(response: Response) -> None:
+def no_store(response: Response) -> None:
     """Keep an answer holding a secret out of caches and idempotency replays."""
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
 
 
-def _checked(url: str) -> str:
+def checked_host(url: str) -> str:
     """The host of ``url``, once the guard accepts it (else 422)."""
     config = registry.settings(WebhooksSettings)
     parsed = checked_url(
@@ -244,8 +244,8 @@ async def create_subscription(
     ``WEBHOOKS.ALLOWED_PRIVATE_NETWORKS``); its host is checked again
     before every delivery.
     """
-    _no_store(response)
-    host = _checked(body.url)
+    no_store(response)
+    host = checked_host(body.url)
     subscription, secret = Subscription.create(
         body.url, host, body.event_types, body.description, active=body.active
     )
@@ -276,7 +276,7 @@ async def update_subscription(
 
     A new URL is audited with its host and the one before.
     """
-    host = None if body.url is None else _checked(body.url)
+    host = None if body.url is None else checked_host(body.url)
     async with WebhooksUnitOfWork() as uow:
         subscription = await _subscription(uow, subscription_id)
         subscription.change(
@@ -304,7 +304,7 @@ async def rotate_secret(
     so receivers can switch without missing any; unless no key decrypts it
     any more (``previous_valid_until`` is then null).
     """
-    _no_store(response)
+    no_store(response)
     overlap = timedelta(
         seconds=registry.settings(WebhooksSettings).SECRET_OVERLAP_SECONDS
     )

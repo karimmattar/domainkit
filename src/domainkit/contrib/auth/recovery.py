@@ -44,10 +44,11 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from domainkit.contrib.messaging import enqueue, task
 from domainkit.http.access import IsUnscoped, Public, Require
-from domainkit.http.errors import APIError
+from domainkit.http.errors import APIError, error_responses
 
+from ._http import PASSWORD_MAX_LENGTH
 from .access import AuthenticatedUser
-from .api import PASSWORD_MAX_LENGTH, _errors, device_logins_kept
+from .api import device_logins_kept
 from .captcha import captcha
 from .codes import EMAIL_VERIFICATION, MOBILE_VERIFICATION, PASSWORD_RESET, target_of
 from .events import PasswordReset, PasswordResetRequested
@@ -155,7 +156,7 @@ class InvalidCode(APIError):
     "/password-reset",
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Public, captcha("password_reset")],
-    responses=_errors(status.HTTP_429_TOO_MANY_REQUESTS),
+    responses=error_responses(status.HTTP_429_TOO_MANY_REQUESTS),
 )
 async def request_password_reset(
     body: PasswordResetIn, request: Request
@@ -185,7 +186,7 @@ async def request_password_reset(
     "/password-reset/code",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Public],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         status.HTTP_429_TOO_MANY_REQUESTS,
@@ -261,7 +262,7 @@ async def _proven_user(
     "/mobile-verification",
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(Require(IsUnscoped()))],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
         status.HTTP_429_TOO_MANY_REQUESTS,
@@ -282,7 +283,7 @@ async def request_mobile_verification(
     "/mobile-verification/code",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(Require(IsUnscoped()))],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
@@ -316,7 +317,7 @@ async def confirm_mobile_verification_code(
     "/email-verification",
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(Require(IsUnscoped()))],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,
         status.HTTP_429_TOO_MANY_REQUESTS,
@@ -340,7 +341,7 @@ async def request_email_verification(
     "/email-verification/code",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(Require(IsUnscoped()))],
-    responses=_errors(
+    responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,

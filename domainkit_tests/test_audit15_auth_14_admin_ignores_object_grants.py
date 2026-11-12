@@ -1,6 +1,6 @@
 """AUTH-14: the admin API bounds staff by model permissions only, not object grants.
 
-``admin._may_change`` and ``_may_grant`` compare what the actor holds with
+``admin.may_change`` and ``_may_grant`` compare what the actor holds with
 ``get_all_permissions(user)``, which asks every backend with ``obj=None``;
 ``ObjectPermissionBackend`` answers nothing then. So a staff member with
 ``auth.change_user`` alone:

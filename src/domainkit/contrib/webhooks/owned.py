@@ -45,8 +45,8 @@ from .admin import (
     SubscriptionIn,
     SubscriptionOut,
     SubscriptionPatch,
-    _checked,
-    _no_store,
+    checked_host,
+    no_store,
 )
 from .delivery import webhooks_alias
 from .models import MAX_OWNER, Subscription, SubscriptionId, SubscriptionNotFound
@@ -130,8 +130,8 @@ def owned_router(owner: OwnerOf = user_owner) -> APIRouter:
 
         The URL is checked as the admin API checks it.
         """
-        _no_store(response)
-        host = _checked(body.url)
+        no_store(response)
+        host = checked_host(body.url)
         limit = registry.settings(WebhooksSettings).MAX_SUBSCRIPTIONS_PER_OWNER
         subscription, secret = Subscription.create(
             body.url,
@@ -167,7 +167,7 @@ def owned_router(owner: OwnerOf = user_owner) -> APIRouter:
         subscription_id: UUID, body: SubscriptionPatch, me: Owner
     ) -> SubscriptionOut:
         """Change your subscription's URL, event types, description, or activity."""
-        host = None if body.url is None else _checked(body.url)
+        host = None if body.url is None else checked_host(body.url)
         async with WebhooksUnitOfWork() as uow:
             subscription = await mine(uow, subscription_id, me)
             subscription.change(
@@ -188,7 +188,7 @@ def owned_router(owner: OwnerOf = user_owner) -> APIRouter:
         subscription_id: UUID, response: Response, me: Owner
     ) -> SecretOut:
         """Give one of your subscriptions a new secret, shown once."""
-        _no_store(response)
+        no_store(response)
         overlap = timedelta(
             seconds=registry.settings(WebhooksSettings).SECRET_OVERLAP_SECONDS
         )

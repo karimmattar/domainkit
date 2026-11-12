@@ -30,7 +30,7 @@ from domainkit.broker import BrokerRefused, BrokerUnavailable, Delivery, brokers
 from domainkit.broker.rabbitmq import RabbitMQBroker, ssl_context
 from domainkit.conf import BrokerConfig, override_settings
 from domainkit.contrib.messaging import MessagingSettings, Worker, enqueue
-from domainkit.contrib.messaging.dispatch import BrokerWorkers
+from domainkit.contrib.messaging.dispatch import BrokerWorkers, close_publishers
 from domainkit.contrib.messaging.tables import DONE, inbox, messages, ordering_keys
 from domainkit.db import connections
 from domainkit_tests import test_messaging_ordering as ordering
@@ -374,6 +374,7 @@ async def test_brokered_messaging_end_to_end(brokered: Server) -> None:
     finally:
         stop.set()
         await running
+        await close_publishers()  # As shutdown drains them: before brokers close.
         await brokers.close_all()
         await connections.close_all()
 
@@ -425,6 +426,7 @@ async def test_work_in_flight_never_exceeds_the_budget(brokered: Server) -> None
             stop.set()
             async with asyncio.timeout(runtime.WAIT):
                 await running
+            await close_publishers()  # As shutdown drains them: before brokers close.
             await brokers.close_all()
 
     rows = await outbox()
@@ -475,6 +477,7 @@ async def test_a_redelivered_message_commits_its_work_once(brokered: Server) -> 
             stop.set()
             async with asyncio.timeout(runtime.WAIT):
                 await running
+            await close_publishers()  # As shutdown drains them: before brokers close.
             await brokers.close_all()
 
     (row,) = await outbox()
@@ -516,6 +519,7 @@ async def test_keyed_messages_run_in_order_through_rabbitmq(brokered: Server) ->
             stop.set()
             async with asyncio.timeout(runtime.WAIT):
                 await running
+            await close_publishers()  # As shutdown drains them: before brokers close.
             await brokers.close_all()
     await connections.close_all()
 

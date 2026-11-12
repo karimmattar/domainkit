@@ -53,7 +53,7 @@ from .models import (
     RequestId,
     RequestStatus,
 )
-from .rules import _instance
+from .rules import rule_instance
 from .settings import ApprovalsSettings
 from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias
 
@@ -380,7 +380,7 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     from domainkit.contrib.auth import get_user, has_perm
 
     user = await get_user(user_id)
-    rule = _instance(guard.maker_rule)
+    rule = rule_instance(guard.maker_rule)
     if (
         user is None
         or (guard.permission is not None and not await has_perm(user, guard.permission))

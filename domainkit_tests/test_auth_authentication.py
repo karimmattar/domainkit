@@ -339,7 +339,8 @@ def test_logins_from_unknown_addresses_are_throttled_together(
     from fastapi import FastAPI
     from starlette.requests import Request
 
-    from domainkit.contrib.auth.api import LOGIN_THROTTLED, _login_limits
+    from domainkit.contrib.auth._http import LOGIN_THROTTLED
+    from domainkit.contrib.auth.api import _login_limits
     from domainkit.contrib.auth.throttling import attempt
     from domainkit.http.errors import APIError
 

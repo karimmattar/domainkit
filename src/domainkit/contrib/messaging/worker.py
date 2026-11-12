@@ -236,7 +236,7 @@ class InvalidData(ValueError, DomainkitError):
     """Data failed validation; the message names fields and rules, not values."""
 
 
-def _without_input(exc: BaseException) -> BaseException:
+def without_input(exc: BaseException) -> BaseException:
     """``exc``, or for a pydantic ``ValidationError``, one without input values.
 
     A ``ValidationError``'s text quotes the data it refused, often a task's
@@ -524,12 +524,12 @@ async def finish(tasks: set[asyncio.Task[None]], grace: float) -> None:
     await asyncio.gather(*late, return_exceptions=True)
 
 
-def _event_classes(base: type[DomainEvent] = DomainEvent) -> dict[str, type[Any]]:
+def event_classes(base: type[DomainEvent] = DomainEvent) -> dict[str, type[Any]]:
     """Map every loaded event class to its qualified name."""
     found: dict[str, type[Any]] = {}
     for cls in base.__subclasses__():
         found[qualified_name(cls)] = cls
-        found.update(_event_classes(cls))
+        found.update(event_classes(cls))
     return found
 
 
@@ -1280,7 +1280,7 @@ class Worker:
         """The function ``message`` names, and a call of it with its arguments."""
         if message.kind == "event":
             handler = durable_handlers(self.bus).get(message.target)
-            event_type = _event_classes().get(message.headers.get("event_type", ""))
+            event_type = event_classes().get(message.headers.get("event_type", ""))
             if handler is None or event_type is None:
                 raise UnknownTarget(f"No durable handler {message.target!r}.")
             handled, function = handler
@@ -1314,7 +1314,7 @@ class Worker:
         those of a chain's step after one (``SENSITIVE``), with its error
         recorded, and its headers say so (``BLANKED``).
         """
-        exc = _without_input(exc)
+        exc = without_input(exc)
         error = f"{type(exc).__name__}: {exc}"[:_ERROR_LENGTH]
         if permanent or message.attempts >= message.max_attempts:
             blanked: dict[str, object] = {}
