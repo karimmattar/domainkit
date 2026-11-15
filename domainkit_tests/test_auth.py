@@ -5,6 +5,7 @@ import io
 import re
 import sys
 from collections.abc import Coroutine, Iterator
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -665,6 +666,53 @@ def test_deployments_report_every_auth_refusal_at_once(use_auth: UseAuth) -> Non
         "auth.E004",
         "auth.E005",
     ]
+
+
+def test_deployments_warn_of_codes_sent_after_they_expired(use_auth: UseAuth) -> None:
+    """Messaging that may send a code too late to be used is a warning there.
+
+    A code cut short is sent again after ``VISIBILITY_TIMEOUT`` (a broker's
+    lost one after ``REPUBLISH_AFTER``): more than half of ``CODE_TTL`` warns.
+    """
+    deployed = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "RATE_LIMIT_BACKEND": "domainkit.http.ratelimit.RedisBackend",
+        "INSTALLED_DOMAINS": [CONTENTTYPES, AUTH, "domainkit.contrib.messaging", ALPHA],
+        "BROKERS": {
+            "work": {"URL": "amqps://app@broker.example.com/", "PREFIX": "app"}
+        },
+    }
+    hashers = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
+
+    def late(code_ttl: timedelta, **messaging: object) -> list[str]:
+        use_auth(
+            settings={**deployed, "MESSAGING": messaging},
+            PASSWORD_HASHERS=hashers,
+            CODE_TTL=code_ttl,
+        )
+        return [each for each in domain_warnings("auth") if "CODE_TTL" in each]
+
+    five = timedelta(minutes=5)
+    defaults_at_five = late(five)
+    brokered = late(timedelta(minutes=10), BROKER="work")
+    tuned = late(
+        five,
+        BROKER="work",
+        TASK_TIMEOUT=90,
+        VISIBILITY_TIMEOUT=120,
+        REPUBLISH_AFTER=120,
+    )
+
+    assert defaults_at_five == [
+        (
+            "MESSAGING.VISIBILITY_TIMEOUT (300 s) is more than half of AUTH.CODE_TTL "
+            "(300 s): a code whose sending was cut short is sent again too late "
+            "to be used; set it to 150 s or less."
+        )
+    ]
+    assert [each.split(" (")[0] for each in brokered] == ["MESSAGING.REPUBLISH_AFTER"]
+    assert tuned == []
 
 
 def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:

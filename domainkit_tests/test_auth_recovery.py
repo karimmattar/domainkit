@@ -92,7 +92,7 @@ def code_in(message: mail.EmailMessage) -> str:
 
 def test_unknown_addresses_get_the_same_answer_and_no_mail(identity: Api) -> None:
     """Whether an account uses the address shows in neither status nor body."""
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     client = identity()
 
     known = client.post("/auth/password-reset", json={"email": "alice@example.com"})
@@ -126,7 +126,7 @@ def test_only_an_active_user_with_a_password_gets_a_code(identity: Api) -> None:
 
 def test_resets_and_codes_are_throttled(identity: Api) -> None:
     """Mail per client address and per recipient; wrong codes per address."""
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     client = identity(EMAIL_RATE="2/hour", LOGIN_RATE="2/minute")
     other = from_address(client, "198.51.100.7")
 
@@ -258,7 +258,7 @@ def test_models_without_the_mark_get_no_verification_code(
 
 def test_verification_requests_are_throttled_per_user(identity: Api) -> None:
     """``EMAIL_RATE`` counts the requests of each user."""
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     client = identity(EMAIL_RATE="1/hour")
     headers = bearer(login(client, "alice")["access_token"])
 
@@ -346,7 +346,7 @@ def test_unmounted_routers_need_nothing(api: Api) -> None:
 
 def test_reset_tasks_need_mail_installed(identity: Api) -> None:
     """A code the worker cannot mail fails the task, to be retried."""
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     identity()
     with (
         override_settings(MAIL={"BACKEND": "domainkit_tests.test_auth_recovery.Nope"}),
@@ -418,9 +418,9 @@ def test_look_alike_addresses_are_other_addresses(identity: Api) -> None:
     account was found for kelly's address, and its address, which no mail
     can take, stopped the task before kelly's mail went out.
     """
-    create_user("eve", email="eve@corp.example")
+    create_user("eve", email="eve@corp.example", proved=True)
     set_email("eve", "\u212aelly@corp.example")
-    create_user("kelly", email="kelly@corp.example")
+    create_user("kelly", email="kelly@corp.example", proved=True)
     client = identity()
 
     async def found() -> list[str]:
