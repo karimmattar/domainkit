@@ -1,8 +1,9 @@
 """``ERROR_FORMAT = "problem+json"``: errors as RFC 9457 problem details."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack
-from typing import Any
+from typing import Any, Final
+from uuid import UUID
 
 import pytest
 from fastapi import APIRouter
@@ -12,6 +13,8 @@ from starlette.exceptions import HTTPException
 
 from domainkit.conf import UNSET, override_settings
 from domainkit.context import RequestContext, bind_request
+from domainkit.contrib.approvals import ApprovalPending
+from domainkit.ddd import Conflict
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.errors import (
@@ -54,6 +57,40 @@ async def unchanged() -> None:
 async def checked() -> None:
     """Refuse with a validation error that names neither a place nor a type."""
     raise RequestValidationError([{"msg": "Pick one."}])
+
+
+class RoomBooked(Conflict):
+    """A room taken: it names the booking, and tries the body's own names."""
+
+    code = "room_booked"
+
+    def extensions(self) -> Mapping[str, object]:
+        """The booking, and names that a body's members already have."""
+        return {
+            "booking_id": 7,
+            "request_id": "mine",
+            "code": "taken",
+            "title": "Mine",
+            "errors": [],
+        }
+
+
+@router.post("/bookings")
+async def book() -> None:
+    """Refuse: the room is booked."""
+    raise RoomBooked("The room is booked.")
+
+
+SUBMITTED: Final = UUID("0192f0aa-5b7e-7c3d-9a41-3f6b1e2d4c5a")
+"""The approval request ``/payouts`` says it submitted."""
+
+
+@router.post("/payouts")
+async def pay_out() -> None:
+    """Submit the payout for approval instead of making it."""
+    raise ApprovalPending(
+        "This command needs approval: it was submitted for approval.", SUBMITTED
+    )
 
 
 PROBLEMS = {"ERROR_FORMAT": "problem+json"}
@@ -278,6 +315,49 @@ def test_wrong_methods_list_every_route_of_the_path(
     assert (refused.status_code, refused.json()["code"]) == (405, "method_not_allowed")
     assert refused.headers["Allow"] == "GET, POST"
     assert "Allow" not in served.headers
+
+
+@pytest.mark.parametrize("problems", [False, True])
+def test_an_errors_own_members_extend_the_body_and_replace_none_of_it(
+    make_client: MakeClient, problems: bool
+) -> None:
+    """``extensions()`` adds ``booking_id``; a body's own names stay the body's.
+
+    Names of either format are left out, so both formats carry the same
+    extension members (user report P3).
+    """
+    settings = PROBLEMS if problems else {}
+    client = make_client(ROOT_ROUTER=ROUTES, **settings)
+
+    response = client.post("/bookings")
+
+    body = response.json()
+    assert (response.status_code, body["code"]) == (409, "room_booked")
+    assert body["booking_id"] == 7
+    assert body["request_id"] == response.headers["X-Request-ID"]
+    assert "errors" not in body
+    assert body.get("title", "Conflict") == "Conflict"
+
+
+@pytest.mark.parametrize("problems", [False, True])
+def test_a_command_submitted_for_approval_names_the_approval_request(
+    make_client: MakeClient, problems: bool
+) -> None:
+    """``approval_request_id`` is the approval request's (user report P3).
+
+    ``request_id``, in every error, is the HTTP request's: the approval
+    request's id was not in the body at all.
+    """
+    settings = PROBLEMS if problems else {}
+    client = make_client(ROOT_ROUTER=ROUTES, **settings)
+
+    response = client.post("/payouts")
+
+    body = response.json()
+    assert (response.status_code, body["code"]) == (403, "approval_pending")
+    assert body["approval_request_id"] == str(SUBMITTED)
+    assert body["request_id"] == response.headers["X-Request-ID"]
+    assert body["request_id"] != body["approval_request_id"]
 
 
 def test_bodiless_statuses_keep_their_headers(make_client: MakeClient) -> None:

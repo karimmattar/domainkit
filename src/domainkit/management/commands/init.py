@@ -23,6 +23,12 @@ factors, step-up and transactions authorized per amount and payee, the
 audit trail and evidence, required idempotency keys, messaging, encrypted
 fields under a key service, the ledger, maker-checker approvals, and
 limits, with a sample transfer that goes through all of them and its tests.
+
+``--server granian`` writes an image that serves with Granian, not
+uvicorn, with the options of "Server limits" (``docs/reference/servers.md``)
+and ``LOGGING`` for Granian's own process, and depends on the ``granian``
+and ``uvloop`` extras. The notes the templates write link to the
+documentation of the release that wrote them (``docs_url``).
 """
 
 import re
@@ -38,6 +44,14 @@ from domainkit.management.commands.startdomain import TEMPLATE_SUFFIX, fill, ren
 TEMPLATE_DIR: Final = Path(__file__).resolve().parents[1] / "templates" / "project"
 PROFILES: Final = {"fintech": TEMPLATE_DIR.parent / "profiles" / "fintech"}
 """Each profile's files, written over the project template's (ADR 0124)."""
+SERVERS: Final = ("uvicorn", "granian")
+"""The servers a project's image can run; uvicorn is the template's own."""
+SERVER_TEMPLATES: Final = {"granian": TEMPLATE_DIR.parent / "servers" / "granian"}
+"""Each other server's files, written over the project's and its profile's."""
+SERVER_EXTRAS: Final = {"uvicorn": (), "granian": ("granian", "uvloop")}
+"""The extras each server adds: Granian, and the loop its image runs."""
+DOCS: Final = "https://github.com/karimmattar/domainkit/blob/{ref}/docs"
+"""Where a release's documentation is published: under its tag."""
 EXTRAS: Final = {
     None: ("postgres", "redis", "sqlite"),
     "fintech": ("audit", "immudb", "keys", "mfa", "postgres", "redis", "sqlite"),
@@ -69,6 +83,15 @@ def requirement(version: str, extras: tuple[str, ...] = EXTRAS[None]) -> str:
     major, minor = int(match[1]), int(match[2])
     upper = f"0.{minor + 1}" if major == 0 else f"{major + 1}"
     return f"{extras_named}>={version},<{upper}"
+
+
+def docs_url(version: str) -> str:
+    """The documentation of ``version``: its tag's, or ``main``'s from a checkout.
+
+    The package's own links name its release's tag, as these do.
+    """
+    ref = f"v{version}" if _RELEASE.fullmatch(version) else "main"
+    return DOCS.format(ref=ref)
 
 
 def namespace_for(name: str) -> str:
@@ -110,6 +133,13 @@ class Command(BaseCommand):
             help="a project with a sector's controls on and wired: fintech, "
             "a bank's first-review list (docs/fintech.md)",
         )
+        parser.add_argument(
+            "--server",
+            choices=SERVERS,
+            default="uvicorn",
+            help="the server the image runs (default: %(default)s; granian adds "
+            "its extra)",
+        )
 
     def handle(
         self,
@@ -117,6 +147,7 @@ class Command(BaseCommand):
         name: str,
         directory: Path | None,
         profile: str | None = None,
+        server: str = "uvicorn",
         **options: object,
     ) -> None:
         """Render the template, then print the next steps."""
@@ -134,15 +165,21 @@ class Command(BaseCommand):
         target = (directory or Path(name)).resolve()
         if target.exists() and not target.is_dir():
             raise CommandError(f"{target} is a file, not a directory.")
+        extras = tuple(sorted({*EXTRAS[profile], *SERVER_EXTRAS[server]}))
         context = {
             "project": name,
             # Docker refuses capitals in an image's name.
             "image": name.lower(),
             "prefix": prefix,
             "namespace": namespace_for(name),
-            "dependency": requirement(__version__, EXTRAS[profile]),
+            "dependency": requirement(__version__, extras),
+            "docs": docs_url(__version__),
         }
-        sources = [TEMPLATE_DIR, *([PROFILES[profile]] if profile else [])]
+        sources = [
+            TEMPLATE_DIR,
+            *([PROFILES[profile]] if profile else []),
+            *([SERVER_TEMPLATES[server]] if server in SERVER_TEMPLATES else []),
+        ]
         planned = {
             path for source in sources for path in _planned(source, target, context)
         }
@@ -164,7 +201,7 @@ class Command(BaseCommand):
         _remove_emptied(written, target)
         # Not formatted: init runs before the project's environment (and its
         # ruff) exists, so the templates are written as its ruff would.
-        self.write(_next_steps(name, target, profile))
+        self.write(_next_steps(name, target, profile, extras))
 
 
 def _planned(source: Path, target: Path, context: dict[str, str]) -> list[Path]:
@@ -209,15 +246,17 @@ def _dotted(path: Path, target: Path) -> Path:
     return target.joinpath(*parts)
 
 
-def _next_steps(name: str, target: Path, profile: str | None) -> str:
-    """Explain how to install and run the new project."""
-    extras = ",".join([*EXTRAS[profile], "testing"])
+def _next_steps(
+    name: str, target: Path, profile: str | None, extras: tuple[str, ...]
+) -> str:
+    """Explain how to install and run the new project, with its ``extras``."""
+    installed = ",".join([*extras, "testing"])
     first = "fintech" if profile == "fintech" else "auth"
     steps = [f"Created {name} in {target}.", "Next steps:"]
     if target != Path.cwd().resolve():
         steps.append(f"  cd {target.relative_to(Path.cwd(), walk_up=True)}")
     steps += [
-        f'  pip install "domainkit[{extras}]"   # or: uv sync, for both',
+        f'  pip install "domainkit[{installed}]"   # or: uv sync, for both',
         "  pip install --group dev   # ruff formats what the generators write",
         "  python manage.py check",
         f'  python manage.py makemigrations -m "{first}"',

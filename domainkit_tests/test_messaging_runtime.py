@@ -3347,3 +3347,50 @@ async def test_a_relays_listener_that_will_not_stop_is_cancelled(
     stop.set()
 
     await within(running)
+
+
+@pytest.mark.usefixtures("messaging")
+def test_runworker_runs_with_the_domains_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The domains' startup hooks run first, their shutdown hooks after.
+
+    Without them, a worker of a project whose data keys a key service holds
+    never unwrapped them: every message that read an ``Encrypted`` field
+    failed with ``KeysNotLoaded``.
+    """
+    from domainkit.apps.hooks import on_shutdown, on_startup
+
+    happened: list[str] = []
+
+    async def started() -> None:
+        happened.append("started")
+
+    async def stopped() -> None:
+        happened.append("stopped")
+
+    async def run_once(self: Worker) -> int:
+        happened.append("ran")
+        return 0
+
+    on_startup(started, domain="alpha")
+    on_shutdown(stopped, domain="alpha")
+    monkeypatch.setattr(Worker, "run_once", run_once)
+    call_command("runworker", "--once", stdout=io.StringIO())
+
+    assert happened == ["started", "ran", "stopped"]
+
+
+def test_a_command_that_starts_the_domains_has_an_async_handle() -> None:
+    """``needs_domains`` with a sync ``handle`` is refused: no loop to start them in."""
+    from domainkit.management import BaseCommand
+
+    class Sync(BaseCommand):
+        needs_domains = True
+        requires_setup = False
+
+        def handle(self, **options: object) -> None:
+            """Nothing."""
+
+    with pytest.raises(TypeError, match="needs an async handle"):
+        Sync().execute()

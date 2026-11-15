@@ -1,25 +1,29 @@
 """``@use_case``: one async function is the command, the service, and the route."""
 
 import dataclasses
+import logging
 from collections.abc import Callable
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 from domainkit.ddd import (
     Command,
     EventBus,
     InMemoryRepository,
+    InvalidField,
     MaxLength,
+    MinLength,
     Range,
     UnitOfWork,
     UseCase,
     use_case,
 )
 from domainkit.http.access import IsAuthenticated
-from domainkit.resources import ResourceRouter
+from domainkit.log import JsonFormatter
+from domainkit.resources import ResourceRouter, schema_for
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -350,3 +354,117 @@ def test_an_explicit_body_replaces_the_derived_one(
         ["body", "quantity"]
     ]
     assert store.items[gadget_id].stock == 50
+
+
+SECRET = "hunter2-long"
+
+
+@use_case
+async def lock_gadget(
+    uow: FakeGadgetsUnitOfWork,
+    gadget_id: UUID,
+    code: Annotated[str, MinLength(8), Field(repr=False)],
+    hint: Annotated[str, Field(repr=False)] | None = None,
+) -> Gadget:
+    """Lock a gadget behind a code."""
+    gadget = await uow.gadgets.get(GadgetId(gadget_id))
+    gadget.version += 1
+    return gadget
+
+
+def test_a_parameter_hinted_repr_false_stays_out_of_the_command_s_repr(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``Field(repr=False)`` makes a field with ``repr=False`` (user report D2).
+
+    The value never shows in ``repr`` or ``str``, so neither in a log line
+    of the command, plain or JSON; the command still carries and compares it.
+    """
+    gadget_id = UUID(int=7)
+    command = lock_gadget.command(gadget_id=gadget_id, code=SECRET, hint="pet's name")
+    logger = logging.getLogger("domainkit_tests.use_cases")
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        logger.info("ran %s", command)
+        logger.info("ran %r", command)
+    lines = [JsonFormatter().format(record) for record in caplog.records]
+
+    assert repr(command) == f"LockGadget(gadget_id={gadget_id!r})"
+    assert str(command) == f"{command}" == repr(command)
+    assert {each.name: each.repr for each in dataclasses.fields(command)} == {
+        "gadget_id": True,
+        "code": False,
+        "hint": False,
+    }
+    assert (command.code, command.hint) == (SECRET, "pet's name")
+    assert command != lock_gadget.command(gadget_id=gadget_id, code="other-code")
+    assert all(SECRET not in each and "pet" not in each for each in lines)
+    assert SECRET not in caplog.text
+    assert lock_gadget.command(gadget_id=gadget_id, code=SECRET).hint is None
+
+
+def test_every_other_command_shows_its_fields_as_before() -> None:
+    """Only a field hinted ``Field(repr=False)`` is left out (user report D2)."""
+    gadget_id = UUID(int=7)
+
+    assert repr(restock.command(gadget_id=gadget_id, quantity=2)) == (
+        f"Restock(gadget_id={gadget_id!r}, quantity=2, note='')"
+    )
+    assert [each.repr for each in dataclasses.fields(restock.command)] == [True] * 3
+
+
+@pytest.mark.anyio
+async def test_no_refusal_of_a_hidden_parameter_quotes_its_value(
+    store: InMemoryGadgets,
+) -> None:
+    """A value too short, a field set again, a wrong command: none says it (D2)."""
+    uow = FakeGadgetsUnitOfWork(store)
+    (gadget_id,) = store.items
+    command = lock_gadget.command(gadget_id=gadget_id, code=SECRET)
+    errors: list[BaseException] = []
+
+    for attempt in (
+        lambda: lock_gadget.command(gadget_id=gadget_id, code="hunter2"),
+        lambda: setattr(command, "code", "hunter2-other"),
+        lambda: lock_gadget.command(code=SECRET),
+    ):
+        with pytest.raises((InvalidField, AttributeError, TypeError)) as caught:
+            attempt()
+        errors.append(caught.value)
+    with pytest.raises(TypeError) as wrong:
+        await restock.run(command, uow)
+    errors.append(wrong.value)
+
+    assert isinstance(errors[0], InvalidField)
+    assert errors[0].field == "code"
+    assert all("hunter2" not in f"{each!s} {each!r}" for each in errors)
+
+
+def test_a_hidden_parameter_stays_out_of_the_request_too(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The derived body hides it, and no refusal quotes it (user report D2).
+
+    The body's ``repr`` leaves it out and its validation errors leave the
+    input out; the route's 422 never echoes it.
+    """
+    use_auth()
+    resource = gadgets(store)
+    resource.use_case(lock_gadget, path="/lock")
+    client = client_of(resource)
+    (gadget_id,) = store.items
+    body = schema_for(lock_gadget.command, write=True, include=["code", "hint"])
+
+    locked = client.post(
+        f"{LOCATION}{gadget_id}/lock", json={"code": SECRET}, headers=as_("changer")
+    )
+    short = client.post(
+        f"{LOCATION}{gadget_id}/lock", json={"code": "hunter2"}, headers=as_("changer")
+    )
+    with pytest.raises(ValidationError) as invalid:
+        body.model_validate({"code": "hunter2", "hint": 5})
+
+    assert locked.status_code == 200
+    assert short.status_code == 422
+    assert "hunter2" not in short.text
+    assert repr(body.model_validate({"code": SECRET})) == "LockGadgetIn()"
+    assert "hunter2" not in str(invalid.value)

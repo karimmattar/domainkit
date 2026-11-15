@@ -4,7 +4,10 @@
 
 - ``authenticate`` returns the first user a backend accepts;
 - ``has_perm`` is true when any backend grants the permission;
-- a backend that raises ``PermissionDenied`` ends either search with "no".
+- a backend that raises ``PermissionDenied`` ends either search with "no";
+- an active superuser has every permission, on every object, before any
+  backend is asked: ``has_perm`` says yes, and ``get_all_permissions``
+  lists every one.
 
 ``ModelBackend`` checks passwords against the user table and grants what
 users and their groups were given. Write a backend to check credentials
@@ -231,8 +234,16 @@ async def get_user(user_id: UUID) -> AbstractBaseUser | None:
 async def get_all_permissions(
     user: AnyUser, obj: object | None = None
 ) -> frozenset[str]:
-    """Keys of every permission any backend grants ``user`` (on ``obj``)."""
+    """Keys of every permission any backend grants ``user`` (on ``obj``).
+
+    For an active superuser they are every permission, on an object too,
+    as ``has_perm`` answers before any backend is asked, and whatever the
+    backends add (user report A11).
+    """
     granted: set[str] = set()
+    if user.is_active and user.is_superuser:
+        async with AuthUnitOfWork() as uow:
+            granted |= await uow.permissions.keys()
     for backend in get_backends():
         granted |= await backend.get_all_permissions(user, obj)
     return frozenset(granted)
@@ -267,7 +278,8 @@ async def object_grants(holder: AbstractBaseUser | Group) -> frozenset[ObjectGra
 async def has_perm(user: AnyUser, perm: str, obj: object | None = None) -> bool:
     """Whether ``user`` has ``perm`` (on ``obj``).
 
-    Inactive users have nothing; active superusers have everything.
+    Inactive users have nothing; active superusers have everything, on
+    every object, before any backend is asked: no backend narrows them.
     """
     if not user.is_active:
         return False

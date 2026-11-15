@@ -307,6 +307,7 @@ CREATE TABLE catalog_products (
 | `Reference[XId]` | The id's column, indexed |
 | `Money`, `Annotated[Money, Digits(p, s)]` | Two columns: `<name>` (`ExactDecimal(p, s)`, default 18 and 4) and `<name>_currency` ([money.md](money.md#in-tables)) |
 | `Currency` | `CurrencyCode`: the code |
+| `tuple[str, ...]`, and of `int`, `float`, `bool` | `JSONTuple(str)`: a JSON array, read back as a tuple |
 | `Point` | `PointType`: PostGIS geography, or JSON ([places](search.md#places)) |
 | An `Enum` | `EnumValue`: the members' values, text or integers |
 | A value object of one field | `ValueObjectType`: that field's column type |
@@ -329,6 +330,10 @@ CREATE TABLE catalog_products (
   Pass a `Column` for it, or register a column type.
 - Enums are stored by value, so `ORDER BY` follows the values, and you
   may rename a member. Changing a value needs a data migration.
+- A tuple of one kind of item (`tuple[str, ...]`, a `NewType` of `str`
+  included) is a JSON array. Filter it only with `isnull`: PostgreSQL's
+  `json` has no `=`. Other tuples, lists, and tuples of enums need a
+  column or a registered type.
 - Value objects come back through their constructor, so their rules run
   when they load.
 - The result is an ordinary `Table` on `metadata`. `makemigrations`
@@ -349,6 +354,7 @@ Use them in tables you write by hand too:
 | `EnumValue(Status)` | An `Enum` by its values: `String` as long as the longest text value, or an integer. |
 | `ValueObjectType(ProductName, String(100))` | A value object of one field, as that field. |
 | `CurrencyCode` | A `Currency` as its code (`"USD"`). |
+| `JSONTuple(str)` | A tuple of `str`, `int`, `float`, or `bool` items, as a JSON array (`json` on PostgreSQL). It comes back a tuple. An item of another class (a `bool` in `JSONTuple(int)`, an enum member) or a float that is not finite is refused. |
 | `MoneyColumns(name, precision, scale, *, nullable=False)` | The two columns of a money field ([money.md](money.md#in-tables)). |
 
 `register_column_type(cls, column_type)` stores every field of `cls`
@@ -1191,7 +1197,9 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
 - **Reads.** A read-only unit of work opens its session on a replica of
   the alias its routing gives (a shard's alias works too). With several
   replicas, units of work take turns. Without `REPLICAS`, it reads the
-  alias itself.
+  alias itself. `replica=False` (or `replica = False` on the class) keeps
+  a read-only one on the primary, for reads that must see the latest
+  commit, such as permission checks.
 - **Writes** always go to the primary. A read-only unit of work refuses
   to commit (`ReadOnlyError`). On PostgreSQL its transaction is
   `READ ONLY`, so a write that goes around the unit of work is refused as
@@ -1613,6 +1621,18 @@ Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: a
   still land afterwards. `create`, and `append(..., unchanged_since=...)`,
   make a retried or late write land at most once. Shutdown waits up to
   `TIMEOUT` for a busy client, which then closes when its call returns.
+- **An advisory that does not apply.** The `immudb` extra installs
+  `ecdsa` (python-ecdsa), which pip-audit reports as PYSEC-2026-1325
+  (CVE-2024-23342, GHSA-wj6h-64fc-37mp): a timing attack (Minerva) on
+  P-256 that leaks the nonce of a signature made with a private key,
+  and with it the key. Signing, key generation, and ECDH are affected;
+  verification is not, the advisory says, and no fix is planned. The
+  client only verifies: immudb's SDK reads `SERVER_SIGNING_KEY`, a
+  public key, with `ecdsa.VerifyingKey.from_pem`, and checks each state's
+  signature with `VerifyingKey.verify`. domainkit imports only ecdsa's
+  `BadSignatureError`. The private key stays with the immudb server,
+  which signs. Ignore the advisory by its id, as domainkit's CI does:
+  `pip-audit --ignore-vuln PYSEC-2026-1325`.
 - **Speed.** Calls run on one thread per ledger, in order. On a laptop
   (immudb in Docker, synced, with TLS and signed states) that was about
   70 verified writes and 900 verified reads per second per process.

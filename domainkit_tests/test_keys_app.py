@@ -33,6 +33,7 @@ from domainkit.contrib.keys.tables import subject_keys
 from domainkit.contrib.privacy import erase_subject, export_subject
 from domainkit.db import connections
 from domainkit.db.encrypted import Ciphertext
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.client import stub
 from domainkit.keys import LocalKeyProvider
 from domainkit.keys.aws import AwsKmsKeyProvider
@@ -125,10 +126,6 @@ def command(*arguments: str) -> str:
     [
         ({"PROVIDER": "aws-kms"}, "needs AWS_KMS"),
         ({"PROVIDER": "vault"}, "needs VAULT"),
-        (
-            {"PROVIDER": "aws-kms", "AWS_KMS": {"KEY_ID": "k", "REGION": "eu-west-1"}},
-            "needs DATA_KEYS",
-        ),
         ({"DATA_KEYS": {"a": "vault:v1:x"}}, "a were not wrapped by 'local'"),
         ({"DATA_KEYS": {"a": FIRST}, "CURRENT_KEY": "b"}, "'b' is not in DATA_KEYS"),
         ({"DATA_KEYS": {"a": FIRST, "b": SECOND}}, "must name one of the DATA_KEYS"),
@@ -298,8 +295,12 @@ def test_a_deployment_on_the_local_kek_must_opt_in(
         )
 
 
-def test_retired_keys_are_warned_about() -> None:
-    """``keys.W001`` names them, and says how to move what they seal."""
+def test_retired_keys_are_noted_during_a_rotation() -> None:
+    """``keys.I001`` names them, and says how to move what they seal.
+
+    An info, not a warning: a rotation keeps them until ``keys reencrypt``
+    is done, and ``check --deploy`` refused any warning (user report C4).
+    """
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[KEYS, ALPHA],
@@ -329,15 +330,15 @@ def test_retired_keys_are_warned_about() -> None:
         [two] = domain_warnings("keys")
     registry.clear()
     assert isinstance(warning, CheckMessage)
-    assert warning.id == "keys.W001"
+    assert warning.id == "keys.I001"
     assert warning == (
-        "KEYS.DATA_KEYS keeps retired keys (a): values and subjects' keys may "
-        "still be sealed under them."
+        "KEYS.DATA_KEYS keeps retired keys (a): a rotation is under way, and "
+        "values or subjects' keys may still be sealed under them."
     )
     assert str(two).startswith("KEYS.DATA_KEYS keeps retired keys (a, b): ")
     assert warning.hint == (
         "Run 'manage.py keys reencrypt', then 'manage.py keys status --check'; "
-        "remove the keys once nothing uses them (for dev, set "
+        "remove the keys once it passes (for dev, set "
         "KEYS.KEEP_DEVELOPMENT_KEY = False)."
     )
 
@@ -393,6 +394,32 @@ def test_generate_prints_a_wrapped_key_for_data_keys(
             r"2026-10\.$",
         ):
             command("generate", "--id", "no spaces")
+
+
+def test_a_key_service_makes_its_first_data_key(
+    database_url: str, tmp_path: Path
+) -> None:
+    """``keys generate`` runs; nothing seals; startup and check refuse (report C3).
+
+    Settings refused a key service with no ``DATA_KEYS``, with the hint to
+    run ``keys generate``, which could not start for that reason.
+    """
+    from domainkit.http.application import application_problems, build_application
+    from domainkit.keys.ring import keyring
+
+    rot = {"CLASS": "domainkit_tests.test_keys_services.Rot13Provider"}
+    with project(database_url, tmp_path, PROVIDER="custom", CUSTOM=rot):
+        printed = command("generate", "--id", "first")
+        with pytest.raises(ImproperlyConfigured, match="has no data key"):
+            keyring()
+        [keys_app] = [config for config in registry if config.label == "keys"]
+        with pytest.raises(ImproperlyConfigured, match="has no data key"):
+            run_async(keys_app.start())  # type: ignore[attr-defined]
+        problems = application_problems(build_application())
+
+    assert json.loads(printed.splitlines()[0]) == {"first": "rot:x"}
+    [problem] = [each for each in problems if getattr(each, "id", "") == "keys.E003"]
+    assert str(problem).startswith("KEYS.PROVIDER 'custom' has no data key")
 
 
 def test_rewrap_prints_the_same_keys_under_the_newest_kek(

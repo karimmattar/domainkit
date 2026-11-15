@@ -1,5 +1,6 @@
 """Column types that behave the same on every supported database."""
 
+import math
 import re
 from collections.abc import Collection, Mapping
 from datetime import UTC, datetime
@@ -7,6 +8,7 @@ from decimal import Decimal
 from typing import Any, Final, cast
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     Column,
     DateTime,
@@ -540,6 +542,90 @@ class CurrencyCode(TypeDecorator[Currency]):
     ) -> Currency | None:
         """The currency of the stored code."""
         return None if value is None else currency(value)
+
+
+JSON_SCALARS: Final = (str, int, float, bool)
+"""The items a ``JSONTuple`` holds: those JSON gives back as they went in."""
+
+
+class JSONTuple(TypeDecorator[tuple[Any, ...]]):
+    """A tuple of text, integers, floats, or booleans, stored as a JSON array.
+
+    ``JSONTuple(str)`` holds a ``tuple[str, ...]``; it comes back a tuple,
+    not the list JSON reads. Each item must be of the class given (an
+    integer is a float too, and comes back one; a ``bool`` is no integer),
+    and a float must be finite: anything else is refused, as JSON would
+    not give it back. None is SQL ``NULL``, not JSON's ``null``.
+    """
+
+    impl = JSON(none_as_null=True)
+    cache_ok = True
+
+    def __init__(self, item: type) -> None:
+        """Hold tuples of ``item``: ``str``, ``int``, ``float``, or ``bool``.
+
+        Raises:
+            TypeError: ``item`` is none of those.
+        """
+        if item not in JSON_SCALARS:
+            raise TypeError(
+                "JSONTuple holds str, int, float, or bool items, not "
+                f"{getattr(item, '__name__', item)}."
+            )
+        super().__init__()
+        self.item = item
+
+    @property
+    def python_type(self) -> type[tuple[Any, ...]]:
+        """``tuple``."""
+        return tuple
+
+    def process_bind_param(
+        self, value: tuple[Any, ...] | None, dialect: Dialect
+    ) -> list[Any] | None:
+        """The items, as the JSON array's.
+
+        Raises:
+            TypeError: ``value`` is not a tuple of the column's items; the
+                message names the classes, never the value.
+        """
+        if value is None:
+            return None
+        name = self.item.__name__
+        if not isinstance(value, tuple):
+            raise TypeError(
+                f"A JSONTuple({name}) column takes a tuple, not {type(value).__name__}."
+            )
+        for each in value:
+            if self._holds(each):
+                continue
+            if self.item is float and type(each) is float:
+                raise TypeError("A JSONTuple(float) column takes finite floats.")
+            raise TypeError(
+                f"A JSONTuple({name}) column takes {name} items, not "
+                f"{type(each).__name__}."
+            )
+        return list(value)
+
+    def process_result_value(
+        self, value: list[Any] | None, dialect: Dialect
+    ) -> tuple[Any, ...] | None:
+        """The stored array, as a tuple (of floats, for a float column)."""
+        if value is None:
+            return None
+        if self.item is float:
+            return tuple(float(each) for each in value)
+        return tuple(value)
+
+    def _holds(self, each: object) -> bool:
+        """Whether JSON gives ``each`` back as an item of the column's class."""
+        if self.item is float and type(each) in {int, float}:
+            return math.isfinite(each)  # type: ignore[arg-type]
+        return type(each) is self.item
+
+    def __repr__(self) -> str:
+        """``JSONTuple(str)``."""
+        return f"JSONTuple({self.item.__name__})"
 
 
 # SQL written around an amount, on SQLite ------------------------------------

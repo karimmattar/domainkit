@@ -104,6 +104,7 @@ name. These are the other parts of an action command:
 | `ActionCommand.default_action` | The action that runs when the command line names none. `None` (the default) makes the action required. |
 | `BaseCommand.operator_actions` | `True` makes every action, or the whole command, take `--operator` ([Operators](#operators)). |
 | `BaseCommand.requires_setup` | `True` (the default) loads the settings and the installed domains before `handle` runs. |
+| `BaseCommand.needs_domains` | `True` starts the installed domains around an async `handle`, as serving the application does: their `on_startup` hooks first (a key service's data keys unwrapped, the audit trail's protection checked), their `on_shutdown` hooks after. For commands that run the application's work; `runworker` sets it. |
 | `CommandError(message, returncode=1)` | Raise it to stop the command with a message and an exit status. |
 | `call_command(name, *args)` | Runs a command from Python, as a test does. |
 
@@ -128,6 +129,7 @@ test, a `Dockerfile`, and a CI workflow (`.github/workflows/ci.yml`).
 | `name` | The project's name, as in `[project].name`. It sets the prefix of environment variables: `billingAPI` gives `BILLING_API_`. |
 | `[directory]` | Where to write the project (default: `./<name>`); `.` is the current directory. The directory may already exist and hold other files, such as a fresh clone's `.git`, `README.md`, or `.github`: `init` adds its files next to them. It refuses, and writes nothing, when a file it would write is already there, and names those files. |
 | `--profile fintech` | Writes a bank's controls on and wired: a guarded sample transfer and its tests, which also pass `mypy --strict`, and production settings that pass `check --deploy` once their secrets are set ([fintech.md](../fintech.md), ADR 0124). |
+| `--server granian` | Writes a `Dockerfile` that serves with Granian, with the options of [Granian](servers.md#granian), and `LOGGING` written for its main process as it starts. The project depends on the `granian` and `uvloop` extras too. `uvicorn` (the default) writes one that serves with uvicorn. |
 
 What `init` writes passes the project's own `ruff check` and
 `ruff format --check`. Its development group installs ruff, which also
@@ -410,14 +412,34 @@ python manage.py runserver 0.0.0.0:8000 --server granian
 
 `runserver` starts a development server for `ASGI_APPLICATION`, on
 uvicorn or Granian (the `granian` extra). It restarts when your code
-changes. In production you run the server yourself
-([Server limits](servers.md)).
+changes. `RUNSERVER_SERVER = "granian"` in the development settings
+serves with Granian without `--server`. In production you run the
+server yourself ([Server limits](servers.md)).
 
 | Option | What it does |
 | --- | --- |
 | `[address]` | A port, or `address:port` (default: `127.0.0.1:8000`). |
 | `--noreload` | Does not restart when the code changes. |
-| `--server` | `uvicorn` (the default) or `granian`. |
+| `--server` | `uvicorn` or `granian`; unless given, `RUNSERVER_SERVER` (`uvicorn` unless set) chooses. |
+
+### `logconfig`: write `LOGGING` for the server
+
+```bash
+python manage.py logconfig --output /tmp/logging.json
+```
+
+`logconfig` prints `LOGGING` as JSON, each class or function named by its
+dotted path, or writes it to a file. Granian reads that file
+(`--log-config`), so its main process, which never imports the
+application, writes its lines as the application does
+([The server's own lines](../runtime.md#the-servers-own-lines)). It loads
+the settings only. A value JSON cannot hold, and no dotted path names (an
+object, a function defined inside another), stops it, with its place in
+`LOGGING`.
+
+| Option | What it does |
+| --- | --- |
+| `-o`, `--output` | Writes it to this file, readable by its owner only, and prints nothing. |
 
 ### `shell`: a Python console with the project loaded
 
@@ -735,7 +757,7 @@ python manage.py broker declare
 
 | Action | What it does |
 | --- | --- |
-| `check [ALIAS ...]` | Connects to brokers (default: all of them). |
+| `check [ALIAS ...]` | Connects to brokers (default: all of them), and waits for each one's answer: on RabbitMQ, a channel opened and closed. |
 | `declare` | Declares the exchange and every queue that the worker's tasks use on `MESSAGING.BROKER`. |
 
 ## Messaging
@@ -754,7 +776,11 @@ python manage.py runworker --once
 durable event handlers. It runs one worker per outbox, on every database
 that hosts domains. With `MESSAGING.BROKER`, it relays messages to the
 broker and runs what the broker delivers. Whatever it serves, the
-process runs at most `MESSAGING.CONCURRENCY` messages at once.
+process runs at most `MESSAGING.CONCURRENCY` messages at once. The
+installed domains start first, as when the application serves: a key
+service's data keys are unwrapped before any message reads an
+`Encrypted` field, and a domain that refuses to start stops the worker.
+Before 2.4 they did not start.
 
 | Option | What it does |
 | --- | --- |
@@ -764,6 +790,8 @@ process runs at most `MESSAGING.CONCURRENCY` messages at once.
 | `--database` | A target or an alias whose outboxes to run (default: every database that hosts domains). |
 | `--queue` | Runs only this queue's messages; repeat it for more (default: every queue). |
 | `--no-relay` | With a broker: only consumes, and never reads the outbox. |
+| `--heartbeat-file` | Rewrites this file while the worker's checks hold, from its own event loop: `/ready`'s checks and the broker's. A container's health check reads its age; it is removed when the worker stops ([The worker](../operations.md#the-worker)). |
+| `--heartbeat-interval` | Seconds between checks for `--heartbeat-file` (default: 15; more than 0, at most 3600). |
 
 ### `messages`: see and act on the outbox
 
@@ -787,10 +815,11 @@ cancelled 0
 | `list pending\|held\|locked\|dead` | Lists messages in a state. `pending` lists them in the order workers take them; `held`, those waiting for an earlier message of their ordering key; `locked`, those running or published. |
 | `list --queue Q`, `list --limit N` | Only one queue's messages; at most N (default: 20). |
 | `retry ID\|all` | Queues a dead message, or all of them, again. The dead letters of `sensitive` tasks are not retried, because their arguments were blanked. A message with an ordering key goes back in its place. |
+| `drop ID\|all` | Deletes a dead message, or all of them. With `--blanked`, only those whose arguments were blanked when they died (`sensitive` tasks), which `retry` cannot run. |
 | `cancel ID` | Cancels a message that no worker runs. |
 | `release` | Runs the next message of each ordering key that has held messages and none pending. |
 | `--database` | After any action: the outbox's alias (default: `MESSAGING.DATABASE`). |
-| `--operator` | After `retry`, `cancel`, and `release`, which are audited ([Operators](#operators)). |
+| `--operator` | After `retry`, `drop`, `cancel`, and `release`, which are audited ([Operators](#operators)). |
 
 ## Users and logins
 

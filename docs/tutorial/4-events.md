@@ -32,7 +32,7 @@ from domains.accounts.domain import AccountDeposited
 logger = logging.getLogger(__name__)
 
 
-@handles(AccountDeposited, durable=True)
+@handles(AccountDeposited, durable=True, name="accounts.log_deposit")
 async def log_deposit(event: AccountDeposited) -> None:
     """Log each deposit; the worker may run it twice, which is harmless."""
     logger.info("Deposited %s into account %s", event.amount, event.account_id)
@@ -43,7 +43,8 @@ database, written in the same transaction as the deposit. Without
 `durable=True`, the handler runs inside the request, after the commit.
 It is then lost if the process stops first. That is right for work you
 can lose, such as refreshing a cache. It is wrong for work that must
-happen.
+happen. `name=` is the key the reaction's messages carry: it stays when
+you rename or move the function.
 
 ## Step 2: deposit, then run the worker
 

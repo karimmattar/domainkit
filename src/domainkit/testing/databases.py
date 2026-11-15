@@ -10,7 +10,11 @@ test settings point at:
   run ends. Only names that start with ``test_`` are ever created or
   dropped; a database of that name left by an earlier run is replaced.
 - SQLite in memory (``sqlite+aiosqlite:///:memory:``): a file in the run's
-  temporary directory, so every connection sees the same tables.
+  temporary directory, so every connection sees the same tables. The file
+  is in write-ahead-log mode, where a reader holds no writer up, as on
+  PostgreSQL: a read-only unit of work holds SQLite's read lock until it
+  ends, and in SQLite's default journal, work that writes on another
+  connection meanwhile could not commit ("database is locked").
 - Any other URL is used as it is.
 
 Every database is then migrated up, down to base, and up again, which
@@ -38,6 +42,7 @@ while a test that requested ``db`` runs.
 import io
 import os
 import re
+import sqlite3
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -46,7 +51,12 @@ from collections.abc import (
     Iterator,
     Mapping,
 )
-from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
+from contextlib import (
+    AbstractContextManager,
+    asynccontextmanager,
+    closing,
+    contextmanager,
+)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -281,6 +291,7 @@ def migrated_database(
     """
     check_test_settings()
     databases, created = plan_databases(settings.DATABASES, scratch, worker)
+    write_ahead(databases, scratch)
     with override_settings(DATABASES=databases):
         try:
             run_async(_each(created, TestDatabase.create, keep=keepdb))
@@ -295,6 +306,24 @@ def migrated_database(
         finally:
             if not keepdb:
                 run_async(_each(created, TestDatabase.drop))
+
+
+def write_ahead(databases: Mapping[str, DatabaseConfig], scratch: Path) -> None:
+    """Put each SQLite file planned in ``scratch`` in write-ahead-log mode.
+
+    A read-only unit of work reads one snapshot, so on SQLite it holds the
+    read lock until it ends. In SQLite's default journal, work that writes
+    on another connection meanwhile (another domain's unit of work, opened
+    inside it) cannot commit, and fails with "database is locked" once its
+    busy timeout ends, where PostgreSQL commits it. In WAL mode a reader
+    holds no writer up. The mode is kept in the file; files of a project's
+    own are left as they are.
+    """
+    for config in databases.values():
+        path = make_url(config.URL.get_secret_value()).database
+        if path and Path(path).parent == scratch:
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
 
 
 def application_role(config: DatabaseConfig) -> tuple[str, str] | None:

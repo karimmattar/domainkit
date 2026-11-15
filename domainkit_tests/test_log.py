@@ -156,10 +156,12 @@ def test_logging_without_a_queue_writes_on_the_callers_thread(
 
 
 def test_server_and_library_loggers_are_routed_through_domainkit() -> None:
-    """Server logs go to the root handler, uvicorn's access lines nowhere.
+    """Server logs go to the root handler, the servers' access lines nowhere.
 
-    The background handler writes only what each handler's own level lets
-    through, as a handler on the caller's thread would.
+    uvicorn's loggers and Granian's (``_granian``, and ``granian.access``
+    for its access log; user report S2). The background handler writes
+    only what each handler's own level lets through, as a handler on the
+    caller's thread would.
     """
     config = build_logging_config(log_format="json", level="INFO")
 
@@ -167,6 +169,8 @@ def test_server_and_library_loggers_are_routed_through_domainkit() -> None:
         "uvicorn": {"handlers": [], "propagate": True},
         "uvicorn.error": {"handlers": [], "propagate": True},
         "uvicorn.access": {"handlers": [], "propagate": False},
+        "_granian": {"handlers": [], "propagate": True},
+        "granian.access": {"handlers": [], "propagate": False},
         "alembic.runtime.plugins": {"level": "WARNING"},
         "httpx2": {"level": "WARNING"},
         "httpcore2": {"level": "WARNING"},

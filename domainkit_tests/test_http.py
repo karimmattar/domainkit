@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from types import SimpleNamespace
 
 import pytest
+from fastapi import Response
 from fastapi.testclient import TestClient
 from starlette.datastructures import State
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -27,6 +28,7 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, health
 from domainkit.http import middleware as middleware_module
+from domainkit.http.access import Public
 from domainkit.http.middleware import (
     AllowedHostsMiddleware,
     RequestBodyLimitMiddleware,
@@ -267,6 +269,52 @@ def test_unhandled_errors_become_generic_500(
     assert response.json()["code"] == "internal_error"
     assert response.json()["request_id"] == response.headers["X-Request-ID"]
     assert "Unhandled error in GET /boom" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("setting", "own", "failed"),
+    [
+        (None, ["route/1"], []),
+        ("api", ["api"], ["api"]),
+        ("", [], []),
+    ],
+)
+def test_server_header_names_every_answer_unhandled_errors_too(
+    setting: str | None, own: list[str], failed: list[str]
+) -> None:
+    """``SERVER_HEADER`` replaces each answer's ``Server``; "" leaves none.
+
+    Unset, answers keep what they send. The 500 of an unhandled error,
+    which no middleware of ``MIDDLEWARE`` sees, gets it too: Granian
+    writes ``Server: granian`` only on an answer without one (user report
+    S3).
+    """
+    with override_settings(SERVER_HEADER=setting):
+        app = get_asgi_application()
+
+    @app.get("/served-by", dependencies=[Public])
+    async def served_by() -> Response:
+        return Response(headers={"Server": "route/1"})
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        answers = [client.get("/served-by"), client.get("/boom"), client.get("/ok")]
+
+    assert [answer.status_code for answer in answers] == [200, 500, 200]
+    assert answers[0].headers.get_list("server") == own
+    assert answers[1].headers.get_list("server") == failed
+    assert answers[2].headers.get_list("server") == failed
+
+
+@pytest.mark.parametrize("value", [" api", "api ", "a\nb", "é", "x" * 257])
+def test_a_server_header_is_one_line_of_printable_ascii(value: str) -> None:
+    """No space at either end, at most 256 characters (user report S3)."""
+    with (
+        pytest.raises(ImproperlyConfigured, match="SERVER_HEADER"),
+        override_settings(SERVER_HEADER=value),
+    ):
+        pass
+    with override_settings(SERVER_HEADER="api/2 (domainkit)"):
+        pass
 
 
 def test_debug_mode_and_started_responses_reraise(make_client: MakeClient) -> None:
