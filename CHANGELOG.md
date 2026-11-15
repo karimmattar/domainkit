@@ -90,10 +90,18 @@ and a status.
   granted on the object, so a "what may I do" route under-reported a
   superuser. Nothing else changed about what a superuser may do: no
   backend narrows one, as before; see
-  [Checking permissions](docs/auth/users.md#checking-permissions) (user report A11).
+  [Checking permissions](docs/auth/users.md#checking-permissions)
+  (user report A11).
 - `APPROVALS.SUPERUSER_APPROVERS=""`, what an unset variable gives in a
   compose file, is read as `None`: superusers approve. The permission's
   pattern refused it, so the project did not start (user report P3).
+- The approvals page says what a project with one superuser does:
+  `auth.grant_superuser` has no possible approver, and
+  `manage.py createsuperuser` is the way out. It also says that with
+  `SUPERUSER_APPROVERS` set, a superuser can give that permission to an
+  account they control, which then approves; see
+  [Making superusers](docs/contrib/approvals.md#making-superusers)
+  (user report P3).
 
 ## [2.3.0] - 2026-11-11
 

@@ -88,6 +88,27 @@ def client(migrated: Migrated) -> Iterator[TestClient]:
         yield test_client
 
 
+APPROVERS_API: Final = Shape(
+    "approvals_api_approvers",
+    "approvals",
+    {
+        **APPROVALS_API.settings,
+        "APPROVALS": {
+            **APPROVALS_API.settings["APPROVALS"],
+            "SUPERUSER_APPROVERS": "auth.change_user",
+        },
+    },
+)
+"""The same project, where holders of ``auth.change_user`` approve superusers."""
+
+
+@pytest.fixture
+def approvers_client(migrated: Migrated) -> Iterator[TestClient]:
+    """The API of ``APPROVERS_API``, migrated, behind token authentication."""
+    with migrated(APPROVERS_API), TestClient(get_asgi_application()) as test_client:
+        yield test_client
+
+
 def user(name: str, *permissions: str) -> Headers:
     """A user granted ``permissions``; headers that authenticate them."""
     create_user(name)
@@ -388,6 +409,49 @@ def test_making_a_superuser_takes_an_approved_request(client: TestClient) -> Non
     assert unmade.status_code == 200, unmade.json()
 
 
+def _is_superuser(user_id: UUID) -> bool:
+    """Whether the user ``user_id`` is a superuser now."""
+
+    async def read() -> bool:
+        async with AuthUnitOfWork() as uow:
+            return (await uow.users.get(user_id)).is_superuser  # type: ignore[arg-type]
+
+    return run_async(read())
+
+
+def test_a_lone_superusers_grant_waits_for_a_superuser_the_operator_makes(
+    client: TestClient,
+) -> None:
+    """With one superuser no one may approve; ``createsuperuser`` is the way out.
+
+    The maker never decides their own request, and a staff member who may
+    change users is no superuser. ``manage.py createsuperuser`` makes one
+    without approvals, who approves (user report P3).
+    """
+    import io
+
+    from domainkit.management import call_command
+
+    root = user("root")
+    run_async(_superuser("root"))
+    staff = user("staff", "auth.change_user", "approvals.view_approvalrequest")
+    target = create_user("target")
+    request = submit(
+        client, root, "auth.grant_superuser", {"user_id": str(target)}
+    ).json()
+
+    problem(decide(client, request, root), 403, "maker_cannot_decide")
+    problem(decide(client, request, staff), 403, "permission_denied")
+    call_command(
+        "createsuperuser", "--noinput", "--username", "ops", stdout=io.StringIO()
+    )
+    approved = decide(client, request, token_for("ops"))
+    run_async(drain())
+
+    assert approved.json()["status"] == "approved", approved.json()
+    assert _is_superuser(target)
+
+
 async def _superuser(username: str) -> None:
     """Make ``username`` a superuser, as a test may."""
     async with AuthUnitOfWork() as uow:
@@ -504,3 +568,34 @@ async def test_an_approval_refused_by_a_rule_passes_on_its_refusal() -> None:
 
     assert isinstance(refusal, LookupError)
     assert refusal.args == (request, principal)
+
+
+def test_with_superuser_approvers_a_superuser_may_give_their_own_account_the_say(
+    approvers_client: TestClient,
+) -> None:
+    """What the docs warn of: a second account of the maker approves (user report P3).
+
+    With ``SUPERUSER_APPROVERS`` set, whoever holds that permission
+    approves, and a superuser gives any permission: to an account they
+    control, too. The approval then proves two accounts, not two people.
+    """
+    client = approvers_client
+    root = user("root")
+    run_async(_superuser("root"))
+    target = create_user("target")
+    second = create_user("second")
+
+    given = client.put(
+        f"/admin/auth/users/{second}/permissions",
+        json={"permissions": ["auth.change_user", "approvals.view_approvalrequest"]},
+        headers=root,
+    )
+    request = submit(
+        client, root, "auth.grant_superuser", {"user_id": str(target)}
+    ).json()
+    approved = decide(client, request, token_for("second"))
+    run_async(drain())
+
+    assert given.status_code == 200, given.json()
+    assert approved.json()["status"] == "approved", approved.json()
+    assert _is_superuser(target)
