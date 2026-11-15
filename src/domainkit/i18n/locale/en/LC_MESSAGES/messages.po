@@ -1123,3 +1123,34 @@ msgstr ""
 
 msgid "Too many sign-ins were started; try again later."
 msgstr ""
+
+#. domainkit.contrib.auth and domainkit.contrib.ciba: action authorizations
+msgid "A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization."
+msgstr ""
+
+msgid "Authorize this act first: ask for an authorization of it, confirm it, and send it in the Action-Authorization header."
+msgstr ""
+
+msgid "No such authorization."
+msgstr ""
+
+msgid "Send the digest of the act you were shown to approve it."
+msgstr ""
+
+msgid "These credentials cannot ask for an authorization: log in, then ask."
+msgstr ""
+
+msgid "This act is not authorized: ask for an authorization of it, confirm it, then try again."
+msgstr ""
+
+msgid "This act is not the one you were shown."
+msgstr ""
+
+msgid "This act must be confirmed another way."
+msgstr ""
+
+msgid "This authorization can no longer be confirmed; ask for a new one."
+msgstr ""
+
+msgid "This authorization was confirmed already, or ended."
+msgstr ""

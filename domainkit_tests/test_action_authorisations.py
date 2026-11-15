@@ -735,7 +735,7 @@ def test_a_signed_confirmation_goes_into_the_evidence_ledger_too(
 
     facts = recorded.evidence.facts
     assert record_evidence.__name__ == "record_evidence"  # Registered at import.
-    assert processed == 1
+    assert processed >= 1  # The evidence's; handlers other tests import add theirs.
     assert recorded.evidence.kind == "auth.action_authorized"
     assert facts["authorization_id"] == str(authorization.id)
     assert (facts["purpose"], facts["digest"]) == ("accounts.close", "c" * 64)

@@ -1133,3 +1133,34 @@ msgstr "لا يوجد تسجيل دخول ينتظر بهذا المعرّف."
 
 msgid "Too many sign-ins were started; try again later."
 msgstr "بُدئت محاولات تسجيل دخول كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
+
+#. domainkit.contrib.auth and domainkit.contrib.ciba: action authorizations
+msgid "A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization."
+msgstr "قبلت قاعدةٌ تفويضًا لم تستهلكه أي خدمة: زيّن خدمة الإجراء بـ requires_authorization."
+
+msgid "Authorize this act first: ask for an authorization of it, confirm it, and send it in the Action-Authorization header."
+msgstr "صرِّح بهذا الإجراء أولًا: اطلب تفويضًا له، وأكّده، وأرسله في ترويسة Action-Authorization."
+
+msgid "No such authorization."
+msgstr "لا يوجد تفويض كهذا."
+
+msgid "Send the digest of the act you were shown to approve it."
+msgstr "أرسل بصمة الإجراء الذي عُرض عليك لتوافق عليه."
+
+msgid "These credentials cannot ask for an authorization: log in, then ask."
+msgstr "لا يمكن طلب تفويض ببيانات الاعتماد هذه: سجّل الدخول، ثم اطلب."
+
+msgid "This act is not authorized: ask for an authorization of it, confirm it, then try again."
+msgstr "هذا الإجراء غير مُصرَّح به: اطلب تفويضًا له، وأكّده، ثم أعد المحاولة."
+
+msgid "This act is not the one you were shown."
+msgstr "هذا الإجراء ليس الذي عُرض عليك."
+
+msgid "This act must be confirmed another way."
+msgstr "يجب تأكيد هذا الإجراء بطريقة أخرى."
+
+msgid "This authorization can no longer be confirmed; ask for a new one."
+msgstr "لم يعد ممكنًا تأكيد هذا التفويض؛ اطلب تفويضًا جديدًا."
+
+msgid "This authorization was confirmed already, or ended."
+msgstr "أُكِّد هذا التفويض من قبل، أو انتهى."
