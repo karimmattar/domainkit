@@ -736,7 +736,7 @@ python manage.py broker declare
 
 | Action | What it does |
 | --- | --- |
-| `check [ALIAS ...]` | Connects to brokers (default: all of them). |
+| `check [ALIAS ...]` | Connects to brokers (default: all of them), and waits for each one's answer: on RabbitMQ, a channel opened and closed. |
 | `declare` | Declares the exchange and every queue that the worker's tasks use on `MESSAGING.BROKER`. |
 
 ## Messaging

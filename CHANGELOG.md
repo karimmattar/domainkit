@@ -85,6 +85,10 @@ and a status.
 
 ### Changed
 
+- RabbitMQ's `check()` opens and closes a channel: a round trip. It only
+  reached for the publishing channel, which aio-pika keeps while it
+  reconnects, so `broker check`, and the worker's heartbeat, passed with
+  the broker down (user report W7).
 - `domainkit.contrib.auth.repositories` is a package: its 1,852 lines
   are five modules, by what is stored (accounts, tokens, principals,
   factors, signups). Every name is still imported from
