@@ -31,6 +31,14 @@ and a status.
   soon slowed it down. It never redeems, nor counts as a poll;
   `/app-sign-in/step-up/wait` and `/app-sign-in/transactions/wait` do the
   same for a session's asks (user report L2).
+- `check` lists infos (`<label>.I001`) a domain's `on_deployment_warnings`
+  returns, and never refuses them, `--deploy` included (user report C4).
+- `AUDIT.REQUIRE` names the parts of the tamper-evident baseline that
+  staging and production refuse to start without: `"ledger"`,
+  `"namespace"`, `"sealing"`, `"triggers"` (all, by default); the others
+  only warn. `REQUIRE_BASELINE = False` made every part a warning, so a
+  project without a ledger, a supported choice, stopped enforcing the
+  append-only triggers too (user report C2).
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and
@@ -146,6 +154,16 @@ and a status.
   reached for the publishing channel, which aio-pika keeps while it
   reconnects, so `broker check`, and the worker's heartbeat, passed with
   the broker down (user report W7).
+- A key rotation passes `check --deploy`: `KEYS.DATA_KEYS` keeping a
+  retired key is `keys.I001`, an info, while `keys reencrypt` moves what
+  it seals. It was `keys.W001`, a warning, which `check --deploy` refused
+  for the whole rotation. `keys status --check` still fails (`keys.W001`)
+  while anything is sealed under one (user report C4).
+- A key service with no `DATA_KEYS` loads, so `keys generate` makes the
+  first data key: the settings refused it, with the hint to run
+  `keys generate`, which could not start for that reason. Nothing can be
+  sealed or opened then, and startup and `check` refuse it (`keys.E003`)
+  (user report C3).
 - `domainkit.contrib.auth.repositories` is a package: its 1,852 lines
   are five modules, by what is stored (accounts, tokens, principals,
   factors, signups). Every name is still imported from

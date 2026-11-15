@@ -17,7 +17,7 @@ from domainkit.apps import registry
 from domainkit.apps.hooks import on_deployment_warnings, unregistered_methods
 from domainkit.architecture import check_domains
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
-from domainkit.checks import CheckMessage, describe, silence
+from domainkit.checks import CheckMessage, Level, describe, silence
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
@@ -83,6 +83,9 @@ class Command(BaseCommand):
         if problems:
             raise CommandError(_listed("System check found problems", problems))
         found = _warnings(app)
+        # Infos (``<label>.I001``) say what is under way: listed, never refused.
+        infos = [each for each in found if _is_info(each)]
+        found = [each for each in found if not _is_info(each)]
         warnings = silence(found, settings.SILENCED_CHECKS)
         if deploy and warnings:
             raise CommandError(
@@ -96,6 +99,8 @@ class Command(BaseCommand):
         self.write(f"System check identified no issues{counted}. Domains: {labels}.")
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             self.write(describe(https_statement(), label="Info: "))
+        for info in infos:  # Nothing to silence: they never fail.
+            self.write(describe(info, label="Info: "))
         for warning in warnings:
             self.write(describe(warning, label="Warning: "))
 
@@ -162,6 +167,11 @@ def https_statement() -> CheckMessage:
         "Redirect plain HTTP to HTTPS at the proxy, and keep SECURE_HSTS_SECONDS "
         "set (docs/security.md, 'The edge').",
     )
+
+
+def _is_info(message: str) -> bool:
+    """Whether ``message`` is an info (``<label>.I001``), which never fails a check."""
+    return isinstance(message, CheckMessage) and message.level is Level.INFO
 
 
 def _tagged(check_id: str, messages: Iterable[str]) -> list[str]:
