@@ -127,6 +127,10 @@ application logs them as a warning and starts.
 | `auth.E105` | in staging and production: password and code attempts counted in each process (a `MemoryBackend` as `RATE_LIMIT_BACKEND`), unless `AUTH.REQUIRE_SHARED_THROTTLES = False` |
 | `auth.E106` | a route whose `StepUp(methods=...)` asks for methods that `AUTH.STEP_UP.METHODS` never proves, so it refuses everyone |
 | `auth.E107` | auth's routes that send codes (resets, signups) to mobile numbers, where `mobile_number` is in `AUTH.IDENTIFIERS`, without `domainkit.contrib.notifications` in `INSTALLED_DOMAINS` ([Password reset](../auth/logging-in.md#password-reset)) |
+| `auth.E108` | an `Action` whose methods (or `AUTH.AUTHORIZATIONS.METHODS`) no installed way to confirm proves, such as `["phone"]` without the phone's app: nobody could confirm it ([Authorizing one act](../auth/actions.md#confirming-it)) |
+| `auth.E109` | a route that asks `StepUp(for_=...)` for a purpose no registered action has ([Authorizing one act](../auth/actions.md#the-route-asks-stepupfor_)) |
+| `auth.E110` | a route that asks for an action that no service decorated `requires_authorization` spends ([Authorizing one act](../auth/actions.md#the-act-spends-it)) |
+| `auth.E111` | `StepUp(for_=...)` on a WebSocket or an event stream, which is asked again and again and has no act to spend it on |
 | `ciba.E002` | the OpenID Provider's CIBA routes served, but `AUTH.JWT` has no `ISSUER` or signs with a shared secret, so clients could not verify ID tokens ([Sign-in approvals](../auth/ciba.md#oidc-clients)) |
 | `ciba.E003` | `CIBA.APPROVE_LOGINS` on, but the routes of `domainkit.contrib.ciba.api` or `domainkit.contrib.devices.api` not served, so users with a bound phone could not sign in on the web ([Sign-in approvals](../auth/ciba.md#the-mobile-app-as-identity)) |
 | `ciba.E004` | `/app-sign-in/session` served, but `AUTH.AUTHENTICATION_CLASSES` lacks `CookieAuthentication`, so the browser would get a cookie nothing reads |

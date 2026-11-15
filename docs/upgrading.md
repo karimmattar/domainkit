@@ -36,6 +36,26 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.3 to 2.4
+
+2.4 answers a report from a project that runs an identity service on
+domainkit.
+
+### Make and apply auth's migration for action authorizations
+
+Action authorizations ([Authorizing one act](auth/actions.md), ADR 0144)
+are kept in a new table of auth's, `domainkit_authorizations`. Run
+`python manage.py makemigrations`, review the revision, then `migrate`,
+before the new code serves requests: deleting or erasing a user, the
+hourly purge, and `cleartokens` delete its rows, and fail until it
+exists. A project that declares no `Action` changes nothing else.
+
+`auth.sca` is unchanged in 2.x: its table, its encoding, its routes, and
+its names. 3.0 folds it into action authorizations: one table, one
+encoding, and `request_authorization` a built-in action. A payment may be
+declared as an `Action` now, with its amount, currency, and payee in the
+command and in what is shown.
+
 ## 2.2 to 2.3
 
 2.3 closes a hole in the phone modes: a stolen web session could bind a

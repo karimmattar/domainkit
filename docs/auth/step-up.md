@@ -12,6 +12,11 @@ Both use the second factor of [Two-factor logins](logging-in.md#two-factor-login
   linking): the user confirms one transaction, and the authorization
   holds for that amount and that payee, once.
 
+A step-up opens every guarded act for a while, with any arguments. For an
+act whose arguments matter, ask for an authorization of that act instead:
+[Authorizing one act](actions.md) (`StepUp(for_=...)`, ADR 0144), which
+binds any command as transactions bind an amount and a payee.
+
 The design, and the proof of concept that chose it, are in
 [ADR 0122](../adr/0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md).
 
@@ -399,6 +404,8 @@ async def logged_in(user: AbstractBaseUser) -> TokenOut | MfaChallengeOut:
 
 ## See also
 
+- [Authorizing one act](actions.md): an approval worth one act, with its
+  arguments, once.
 - [Two-factor logins](logging-in.md#two-factor-logins): turning on the
   second factor.
 - [Passkeys and bound devices](devices.md): other ways to step up.

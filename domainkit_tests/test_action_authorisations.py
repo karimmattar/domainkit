@@ -7,6 +7,7 @@ authorization, confirms it with a code, and sends it with the act.
 """
 
 import asyncio
+import base64
 import os
 import threading
 from collections.abc import Callable, Iterator
@@ -22,10 +23,12 @@ from domainkit.clock import FrozenClock, freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import AuthUnitOfWork, UserId
 from domainkit.contrib.auth.actions import (
+    ActionAuthorization,
     ActionConfirmation,
     AuthorizationChanged,
     AuthorizationNeedsOtherFactors,
     AuthorizationNotFound,
+    Shown,
     confirm_action_with,
     link_action_authorization,
     on_action_confirmation,
@@ -33,12 +36,15 @@ from domainkit.contrib.auth.actions import (
 )
 from domainkit.contrib.auth.erasure import export_logins
 from domainkit.contrib.auth.tables import authorizations
+from domainkit.contrib.evidence import evidence_store
+from domainkit.contrib.evidence.tasks import record_evidence
+from domainkit.contrib.messaging import Worker
 from domainkit.db import connections
 from domainkit.ddd import ConcurrentUpdate
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests import sample_action_routes as acts
-from domainkit_tests.conftest import POSTGRES_VARIABLE, Api
+from domainkit_tests.conftest import IDENTITY, POSTGRES_VARIABLE, Api, Migrated, Shape
 from domainkit_tests.support.auth import (
     PASSWORD,
     audited,
@@ -50,6 +56,7 @@ from domainkit_tests.test_auth_stepup import enrol, hourly_purge, now_code
 
 START = "2027-01-04T10:00:00Z"
 ROUTES = "domainkit_tests.sample_action_routes.router"
+EVIDENCE = "domainkit.contrib.evidence"
 NOTE = UUID("00000000-0000-4000-8000-000000000042")
 ON_POSTGRES = bool(os.environ.get(POSTGRES_VARIABLE))
 
@@ -644,3 +651,84 @@ def test_privacy_export_lists_them_and_deleting_the_user_deletes_them(
     assert listed["confirmed_at"] is not None
     assert "Wilhelmina" not in repr(exported)
     assert rows() == []
+
+
+EVIDENCE_PROJECT = Shape(
+    "identity_evidence",
+    "identity evidence",
+    {
+        **IDENTITY.settings,
+        "INSTALLED_DOMAINS": [*IDENTITY.settings["INSTALLED_DOMAINS"], EVIDENCE],
+        "LEDGERS": {"evidence": {"URL": "memory://"}},
+    },
+)
+
+
+def test_a_signed_confirmation_goes_into_the_evidence_ledger_too(
+    migrated: Migrated, frozen: FrozenClock
+) -> None:
+    """With the ledger installed, the device's key and signature outlive the row.
+
+    The record names the authorization, its purpose, subject, and digest,
+    the methods, and the device's id, key, what it signed, its signature,
+    and when; never what was shown.
+    """
+    with migrated(EVIDENCE_PROJECT):
+        user_id = create_user("alice")
+        authorization = stored_authorization(user_id, frozen)
+        run_async(
+            confirm_action_with(
+                authorization.id,
+                {"hwk", "phone"},
+                user_id=user_id,
+                device_id=UUID(int=5),
+                algorithm=-8,
+                public_key=b"public key",
+                signature=b"signature",
+                signed=b"signed message",
+                signed_at=frozen.tick(0),
+            )
+        )
+
+        async def record() -> tuple[int, list[Any]]:
+            processed = await Worker().run_once()  # The ledger lives in one loop.
+            return processed, await evidence_store().for_subject(f"auth.user:{user_id}")
+
+        processed, [recorded] = run_async(record())
+
+    facts = recorded.evidence.facts
+    assert record_evidence.__name__ == "record_evidence"  # Registered at import.
+    assert processed == 1
+    assert recorded.evidence.kind == "auth.action_authorized"
+    assert facts["authorization_id"] == str(authorization.id)
+    assert (facts["purpose"], facts["digest"]) == ("accounts.close", "c" * 64)
+    assert facts["methods"] == ["hwk", "phone"]
+    assert (facts["device_id"], facts["algorithm"]) == (str(UUID(int=5)), -8)
+    assert base64.urlsafe_b64decode(facts["public_key"]) == b"public key"
+    assert base64.urlsafe_b64decode(facts["signature"]) == b"signature"
+    assert base64.urlsafe_b64decode(facts["signed"]) == b"signed message"
+    assert "Close an account" not in repr(recorded)
+
+
+def stored_authorization(user_id: UUID, clock: FrozenClock) -> ActionAuthorization:
+    """An unconfirmed authorization of ``user_id``'s, stored as asking stores one."""
+    now = clock.tick(0)
+    authorization = ActionAuthorization(
+        id=uuid4(),
+        user_id=user_id,
+        login="b" * 64,
+        purpose="accounts.close",
+        subject="accounts.account:7",
+        digest="c" * 64,
+        shown=Shown("Close an account", {"Reason": "moving"}),
+        created_at=now,
+        expires_at=now + timedelta(minutes=5),
+    )
+
+    async def store() -> None:
+        async with AuthUnitOfWork() as uow:
+            await uow.authorizations.add(authorization)
+            await uow.commit()
+
+    run_async(store())
+    return authorization

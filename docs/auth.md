@@ -77,6 +77,7 @@ deployed service from starting ([Deny by default](auth/routes.md#deny-by-default
 | [Logging in: sessions, two factors, and password reset](auth/logging-in.md) | Login routes, wrong passwords and device proofs, sessions, the second factor, resets, signup, and the captcha. |
 | [Protecting routes, and the admin API](auth/routes.md) | Rules, deny by default, another authentication, the admin API, and impersonation. |
 | [Stepping up, and transactions authorized for one amount and payee](auth/step-up.md) | `StepUp`, PSD2's dynamic linking, and `auth.integration`. |
+| [Authorizing one act, with its arguments](auth/actions.md) | `Action`, `StepUp(for_=...)`, and the act that spends its authorization, once. |
 | [PCI DSS v4.0's passwords](auth/pci-dss.md) | The preset, requirement by requirement. |
 | [Identity providers](auth/identity.md) | OpenID Connect, OAuth 2, SAML, and LDAP (`domainkit.contrib.identity`). |
 | [Passkeys and bound devices](auth/devices.md) | WebAuthn passkeys, signed requests, and push tokens (`domainkit.contrib.devices`). |
@@ -139,7 +140,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `MFA` | see below | Second factors (`auth.mfa`). |
 | `STEP_UP` | see below | Authenticating again for one act (`StepUp`, [Stepping up](auth/step-up.md)). |
 | `SCA` | see below | Transactions authorized for one amount and payee ([Stepping up](auth/step-up.md#transactions-authorized-for-one-amount-and-payee)). |
-| `AUTHORIZATIONS` | see below | Acts authorized one at a time, with their arguments (ADR 0144). |
+| `AUTHORIZATIONS` | see below | Acts authorized one at a time, with their arguments ([Authorizing one act](auth/actions.md)). |
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](auth/authentication.md#the-principal-cache)). |
 | `CAPTCHA` | `None` | A captcha on login, signup, and password reset: `{"PROVIDER": "turnstile" \| "recaptcha" \| "hcaptcha", "SECRET": ..., "ON": ["login", "signup", "password_reset"], "MIN_SCORE": 0.5}`. Each route that `ON` names asks for the widget's token in `X-Captcha-Token`, checked with the provider first: missing or refused, `400 captcha_failed`; the provider unreachable, `503 captcha_unavailable`. `MIN_SCORE` (0 to 1) is reCAPTCHA v3's lowest score let through. Only the token and the secret are sent, never the client's address ([Captcha](auth/logging-in.md#captcha)). |
@@ -244,6 +245,10 @@ application; a warning (`W`) is reported.
 | `auth.E104` | anywhere | Routes that send mail with a user model without `EMAIL_FIELD` and `email_verified`. |
 | `auth.E105` | staging, production | Attempts counted in each process, with `REQUIRE_SHARED_THROTTLES`. |
 | `auth.E106` | anywhere | A `StepUp` asks for methods that no step-up proves. |
+| `auth.E108` | anywhere | An action whose methods no installed way to confirm proves. |
+| `auth.E109` | anywhere | A route asks `StepUp(for_=...)` for a purpose no registered action has. |
+| `auth.E110` | anywhere | A route asks for an action that no decorated service spends. |
+| `auth.E111` | anywhere | `StepUp(for_=...)` on a WebSocket or an event stream. |
 | `auth.W001` | staging, production | `PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`. |
 | `auth.W002` | staging, production | `LOGIN_RATE = None`. |
 | `auth.W003` | staging, production | `MFA.RATE = None`. |
@@ -261,7 +266,7 @@ application; a warning (`W`) is reported.
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput`, `--temporary`/`--no-temporary` | Create a superuser (and staff), asking for what the options leave out. With `--noinput`, values come from `<PREFIX>SUPERUSER_<FIELD>` (or a `_FILE`), and the password from `<PREFIX>SUPERUSER_PASSWORD`, which must pass the validators; without one the password is unusable. With `PASSWORD_CHANGE_ON_FIRST_USE`, a password read with `--noinput` changes at the first login, unless `--no-temporary`. A refused password is kept on request only without `PRESET` and outside staging and production. |
 | `changepassword` | `[username]`, `--temporary`/`--no-temporary` | Ask twice for a new password that passes the validators and the history; three tries. The default user is your login name. Every token of the user ends. With `PASSWORD_CHANGE_ON_FIRST_USE`, the password of a user you name changes at the first login, unless `--no-temporary`. |
 | `createtoken` | `username`, `--name` (`cli`), `--days` (90), `--no-expiry`, `--scope` | Print a new opaque token for the user's scripts; it is shown once. Each `--scope KEY` limits it to that permission, which the user must have. `--name login` is refused. |
-| `cleartokens` | `--user` | Delete expired tokens, old step-ups, and expired transaction requests (hourly with `domainkit.contrib.messaging`), or every token of one user. |
+| `cleartokens` | `--user` | Delete expired tokens, old step-ups, and expired transaction requests and action authorizations (hourly with `domainkit.contrib.messaging`), or every token of one user. |
 | `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate (a PEM file) log in as the user, by its SHA-256; prints the fingerprint. |
 | `resetmfa` | `username` | Turn a user's second factor off and end their sessions, for a user who lost the app and the recovery codes. Check who is asking first. |
 | `resealmfa` | `--check`, `--batch-size` (500) | Encrypt every TOTP secret again under `SECRET_KEY`, so a key of `SECRET_KEY_FALLBACKS` can be dropped; `--check` changes nothing and fails while a secret is under a fallback or under no key ([Two-factor logins](auth/logging-in.md#two-factor-logins)). |

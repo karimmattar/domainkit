@@ -120,7 +120,7 @@ after you install another auth domain, such as
 | Domain | Tables |
 | --- | --- |
 | `domainkit.contrib.contenttypes` | `domainkit_content_types` |
-| `domainkit.contrib.auth` | `domainkit_users`, `domainkit_groups`, `domainkit_permissions`, `domainkit_group_permissions`, `domainkit_users_groups`, `domainkit_users_permissions`, `domainkit_tokens`, `domainkit_mfa_devices`, `domainkit_recovery_codes`, `domainkit_pending_signups`, `domainkit_step_ups`, `domainkit_sca_challenges`, `domainkit_password_history` |
+| `domainkit.contrib.auth` | `domainkit_users`, `domainkit_groups`, `domainkit_permissions`, `domainkit_group_permissions`, `domainkit_users_groups`, `domainkit_users_permissions`, `domainkit_tokens`, `domainkit_mfa_devices`, `domainkit_recovery_codes`, `domainkit_pending_signups`, `domainkit_step_ups`, `domainkit_sca_challenges`, `domainkit_authorizations`, `domainkit_password_history` |
 
 The tokens table holds every credential: login tokens, browser sessions,
 refresh tokens, personal tokens, client certificates, and device proofs.

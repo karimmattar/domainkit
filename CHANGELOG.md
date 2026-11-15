@@ -11,6 +11,35 @@ and a status.
 
 ### Added
 
+- Action authorizations (`domainkit.contrib.auth.actions`): an approval
+  worth one act, with its arguments, once. An `Action` declares the act
+  (its purpose, its command, what it is on, and what the user is shown);
+  `StepUp(for_=...)` on its route asks for an authorization of it (`401
+  authorization_required`, then `403 action_not_authorized`); the client
+  asks for one, the user confirms it with a code (`POST
+  /auth/authorizations/{id}/confirm`), and the service decorated
+  `requires_authorization` spends it: with the act's first commit on
+  auth's database, else just before the act. Other arguments void it, and
+  one no service spent fails the request in tests. A new table,
+  `domainkit_authorizations`, keeps each
+  ([Authorizing one act](docs/auth/actions.md), ADR 0144) (user report A6).
+- `AUTH.AUTHORIZATIONS`: `TTL` (5 minutes, 30 at most) and `METHODS`
+  (`["otp"]`), which may name `phone`, a confirmation on a bound device's
+  own screen that neither a code nor a passkey proves. `check` refuses an
+  act no installed way confirms (`auth.E108`), a purpose no action has
+  (`auth.E109`), an action no service spends (`auth.E110`), and
+  `StepUp(for_=...)` on a WebSocket or an event stream (`auth.E111`)
+  (user report A6).
+- `auth.integration`: `register_action`, `on_action_confirmation`,
+  `action_authorization`, `link_action_authorization`, and
+  `confirm_action_with`, for an app that confirms an act its own way (the
+  phone, a passkey). The confirming device's key and signature are kept
+  with the authorization, and on the evidence ledger where installed
+  (user report A6).
+- `domainkit.ddd.fingerprint`: approvals' fingerprint of an action and its
+  arguments, in the core, so that approvals and action authorizations
+  compute it one way; `domainkit.contrib.approvals.fingerprint` is the
+  same function (user report A6).
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and
