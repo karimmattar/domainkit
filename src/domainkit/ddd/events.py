@@ -10,7 +10,8 @@ not stop the others, and one that runs past its timeout (``EVENT_HANDLER_TIMEOUT
 or ``timeout=`` when subscribing) is cut off, logged, and reported, so it
 cannot hold the request that committed for ever. Subscribe with
 ``durable=True`` to run a handler from the outbox instead, in a worker, where
-it survives crashes and is retried.
+it survives crashes and is retried. A durable handler's messages carry its
+key: the ``name=`` it was subscribed with, or else ``module.QualName``.
 """
 
 import asyncio
@@ -20,7 +21,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 from uuid import UUID, uuid4
 
 from domainkit import clock
@@ -30,7 +31,7 @@ from domainkit.exceptions import DomainkitError
 logger = logging.getLogger(__name__)
 
 _MAX_DURABLE_NAME: Final = 255
-"""The longest name of a durable handler: the outbox's ``target`` column."""
+"""The longest key of a durable handler: the outbox's ``target`` column."""
 
 DEFAULT_HANDLER_TIMEOUT: Final = 10.0
 """Seconds an in-process handler may run, unless settings or ``subscribe`` say."""
@@ -62,8 +63,37 @@ def _handler_name(handler: Callable[..., object]) -> str:
     return f"{module}.{getattr(handler, '__qualname__', handler)}"
 
 
+def _checked_key(key: str, what: str) -> str:
+    """Return ``key`` if the outbox can store it as a message's target.
+
+    Raises:
+        ValueError: ``key`` is empty, or longer than the outbox stores.
+    """
+    if not key:
+        raise ValueError(f"{what} is the key of its messages: it cannot be empty.")
+    if len(key) > _MAX_DURABLE_NAME:
+        raise ValueError(
+            f"{what} is the key of its messages, of at most {_MAX_DURABLE_NAME} "
+            f"characters; {key[:60]!r}... has {len(key)}: define it in a shorter "
+            f"module or name."
+        )
+    return key
+
+
 class HandlerTimedOut(TimeoutError, DomainkitError):
     """An in-process handler ran past its timeout and was cut off."""
+
+
+class HandlerKey(NamedTuple):
+    """A key a worker runs messages of: the handler, and the event type it takes."""
+
+    key: str
+    event_type: type[DomainEvent]
+    handler: EventHandler[Any]
+    named: bool
+    """Subscribed with ``name=``: its key does not follow its module's path."""
+    current: bool
+    """Its key now, which new events queue messages under; not one of ``formerly``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +104,23 @@ class _Subscription:
     durable: bool
     timeout: float | None
     """Seconds it may run in-process; None means the bus's ``handler_timeout``."""
+    key: str | None = None
+    """A durable handler's key: its ``name=``, or ``module.QualName``."""
+    named: bool = False
+    formerly: tuple[str, ...] = ()
+    """Keys its messages were queued under before; a worker still runs them."""
+
+    @property
+    def answers_to(self) -> set[str]:
+        """Every key a worker runs its messages under: its own, and its former ones."""
+        return {*self.formerly, *([] if self.key is None else [self.key])}
+
+    def keys(self, event_type: type[DomainEvent]) -> Iterator[HandlerKey]:
+        """Its key, if durable, then its former ones."""
+        if self.key is not None:
+            yield HandlerKey(self.key, event_type, self.handler, self.named, True)
+        for key in self.formerly:
+            yield HandlerKey(key, event_type, self.handler, self.named, False)
 
 
 class EventBus:
@@ -111,6 +158,8 @@ class EventBus:
         *,
         durable: bool = False,
         timeout: float | None = None,
+        name: str | None = None,
+        formerly: Iterable[str] = (),
     ) -> None:
         """Call ``handler`` for every ``event_type`` event; repeats are ignored.
 
@@ -119,33 +168,75 @@ class EventBus:
         worker's task policies instead. Threads that subscribe the same
         handler at once subscribe it once.
 
-        A durable handler's name, ``module.QualName``, is the key of its
-        messages in the outbox, which stores at most
-        255 characters of it.
+        A durable handler's key is what its messages carry in the outbox, at
+        most 255 characters: ``name``, or else ``module.QualName``, which
+        moving or renaming the function changes. ``formerly`` lists keys its
+        messages were queued under before: an older name, its module path
+        before it moved or was named, or a durable handler's key now that it
+        runs in-process. A worker runs the messages still queued under them
+        with ``handler``; new events queue none under them.
 
         Raises:
             ValueError: ``timeout`` is not positive, or the handler is durable;
-                or a durable handler's name is longer than the outbox stores.
+                ``name`` for an in-process handler; a key the outbox cannot
+                store; a key another handler answers to, or this handler
+                durable under another key.
         """
         if timeout is not None and (durable or not 0 < timeout < float("inf")):
             raise ValueError(
                 "timeout is a positive number of seconds, for in-process handlers."
             )
+        if name is not None and not durable:
+            raise ValueError(
+                "name is the key of a durable handler's messages; an in-process "
+                "handler has none."
+            )
+        key = None
         if durable:
-            name = _handler_name(handler)
-            if len(name) > _MAX_DURABLE_NAME:
-                raise ValueError(
-                    f"A durable handler's name is the key of its messages, of at "
-                    f"most {_MAX_DURABLE_NAME} characters; {name[:60]!r}... "
-                    f"has {len(name)}: define it in a shorter module or name."
-                )
+            key = _checked_key(
+                _handler_name(handler) if name is None else name,
+                "A durable handler's name",
+            )
+        former = tuple(
+            _checked_key(each, "A former name")
+            for each in dict.fromkeys(formerly)
+            if each != key
+        )
+        entry = _Subscription(handler, durable, timeout, key, name is not None, former)
         with self._lock:
+            self._check_keys(entry)
             subscriptions = self._handlers.setdefault(event_type, [])
             if not any(
-                entry.handler == handler and entry.durable is durable
-                for entry in subscriptions
+                each.handler == handler and each.durable is durable
+                for each in subscriptions
             ):
-                subscriptions.append(_Subscription(handler, durable, timeout))
+                subscriptions.append(entry)
+
+    def _check_keys(self, entry: _Subscription) -> None:
+        """Refuse keys another handler answers to, or a second key for one handler.
+
+        Raises:
+            ValueError: ``entry`` answers to a key another handler answers
+                to, or is durable under a key other than the one its handler
+                already has.
+        """
+        keys = entry.answers_to
+        for subscriptions in self._handlers.values():
+            for each in subscriptions:
+                if each.handler == entry.handler:
+                    if entry.durable and each.durable and each.key != entry.key:
+                        raise ValueError(
+                            f"{_handler_name(entry.handler)} is a durable handler "
+                            f"named {each.key!r}; one handler has one name, for "
+                            f"every event it handles (formerly= keeps old ones)."
+                        )
+                    continue
+                if clash := keys & each.answers_to:
+                    raise ValueError(
+                        f"{sorted(clash)[0]!r} is a key of "
+                        f"{_handler_name(each.handler)} already; a worker could not "
+                        f"tell their messages apart."
+                    )
 
     def unsubscribe[E: DomainEvent](
         self, event_type: type[E], handler: EventHandler[E]
@@ -183,6 +274,45 @@ class EventBus:
     ) -> list[EventHandler[Any]]:
         """Return in-process (or durable) handlers, most specific first."""
         return [entry.handler for entry in self._subscriptions(event_type, durable)]
+
+    def durable_targets(
+        self, event_type: type[DomainEvent]
+    ) -> list[tuple[str, EventHandler[Any]]]:
+        """Return ``(key, handler)`` for each durable handler, most specific first.
+
+        What a commit of an ``event_type`` event queues: one message per
+        handler, under its key.
+        """
+        return [
+            (entry.key, entry.handler)
+            for entry in self._subscriptions(event_type, durable=True)
+            if entry.key is not None
+        ]
+
+    def handler_keys(self) -> list[HandlerKey]:
+        """Return every key a worker runs messages of, with its handler.
+
+        Each durable handler's key, for each event type it is subscribed
+        to, then each handler's ``formerly`` ones, durable or not.
+        """
+        with self._lock:
+            return [
+                key
+                for event_type, subscriptions in self._handlers.items()
+                for entry in subscriptions
+                for key in entry.keys(event_type)
+            ]
+
+    def handler_key(self, handler: EventHandler[Any]) -> str:
+        """Return the key durable ``handler``'s messages carry.
+
+        Its ``name=``, or ``module.QualName`` when it was given none or is
+        not subscribed.
+        """
+        for key in self.handler_keys():
+            if key.current and key.handler == handler:
+                return key.key
+        return _handler_name(handler)
 
     def durable_subscriptions(
         self,
@@ -268,6 +398,8 @@ class _Mark:
     event_type: type[DomainEvent]
     durable: bool
     timeout: float | None
+    name: str | None = None
+    formerly: tuple[str, ...] = ()
 
 
 def handles[H: Callable[..., Awaitable[None]]](
@@ -275,19 +407,23 @@ def handles[H: Callable[..., Awaitable[None]]](
     *,
     durable: bool = False,
     timeout: float | None = None,
+    name: str | None = None,
+    formerly: Iterable[str] = (),
 ) -> Callable[[H], H]:
     """Mark a handler for ``event_type`` events (Django's ``@receiver``).
 
     The mark subscribes nothing by itself: a four-file domain's
     ``controllers.py`` is read when the domain is ready, and its marked
     handlers are subscribed to ``event_bus`` then (``subscribe_marked``),
-    as ``subscribe(event_type, handler, durable=..., timeout=...)`` would.
-    A handler may handle several events.
+    as ``subscribe(event_type, handler, durable=..., timeout=...,
+    name=..., formerly=...)`` would. A handler may handle several events.
+    Give a durable one a ``name`` of its own, which its messages carry
+    whatever becomes of the function.
     """
 
     def mark(handler: H) -> H:
         marks: list[_Mark] = handler.__dict__.setdefault(_HANDLES, [])
-        marks.append(_Mark(event_type, durable, timeout))
+        marks.append(_Mark(event_type, durable, timeout, name, tuple(formerly)))
         return handler
 
     return mark
@@ -309,7 +445,12 @@ def subscribe_marked(module: Any, bus: EventBus | None = None) -> int:  # noqa: 
             continue
         for mark in getattr(value, _HANDLES, ()):
             target.subscribe(
-                mark.event_type, value, durable=mark.durable, timeout=mark.timeout
+                mark.event_type,
+                value,
+                durable=mark.durable,
+                timeout=mark.timeout,
+                name=mark.name,
+                formerly=mark.formerly,
             )
             made += 1
     return made

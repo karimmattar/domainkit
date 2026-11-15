@@ -480,18 +480,40 @@ NOTIFICATIONS = {
   `PUSH_BACKEND`.
 - **Provider tokens are kept**: Google's and Huawei's until 5 minutes
   before they expire, and Apple's provider token for 50 minutes.
-- **Tokens that are gone.** A device token that the service no longer
-  knows (FCM's `UNREGISTERED`, APNs' `410`, Push Kit's `80300007`) raises
-  `PushTokenGone`. The worker drops the notification, without trying
+- **Tokens that are gone.** A device token that the service does not
+  know raises `PushTokenGone`: FCM's `UNREGISTERED`, and its
+  `INVALID_ARGUMENT` for the token itself (its own error, with no field,
+  or `message.token` alone); APNs' `410` and its reasons for a lost token;
+  Push Kit's `80300007`. The worker drops the notification, without trying
   again, and publishes `PushTokenExpired` with the token's SHA-256 digest
   (`token_digest(token)`, in `domainkit.contrib.notifications.events`).
   `domainkit.contrib.devices` uses it to forget the token
-  ([push tokens](auth/devices.md#push-tokens)).
+  ([push tokens](auth/devices.md#push-tokens)). A `404` from FCM without
+  `UNREGISTERED` is no token gone: a wrong `PROJECT_ID` could answer so.
+- **Messages a service will refuse again.** A payload or field it cannot
+  take (FCM's `INVALID_ARGUMENT` naming fields, `SENDER_ID_MISMATCH`;
+  APNs' `400`, `404`, `405`, `413`; Push Kit's `80100003`, `80300008`)
+  raises `NotificationRefused`, which the worker does not try again: the
+  message is dead-lettered at once, and reported. Other refusals
+  (credentials, permissions, quotas, outages) are tried again, as an
+  operator may fix them meanwhile. Each error keeps the service's `code`
+  and the `fields` it named, never their values:
+
+  ```text
+  NotificationRefused: FCM refused the notification: INVALID_ARGUMENT (message.data[0].value).
+  ```
+
+- **Reading a refusal your own way.** Each push backend reads its
+  service's answer in `refusal(response)`, which returns a `Refusal`
+  (`code`, `gone`, `lasting`, `fields`). Override it for one case, and
+  call `super()` for the rest; `send` and its request stay the
+  backend's.
 
 **Your own adapter.** Subclass `SmsBackend` or `PushBackend`, implement
 `async send_messages(messages)`, return how many it sent, and raise
 `NotificationFailed` (with the provider's code, never a number or a
-token) for the worker to try again:
+token) for the worker to try again, or `NotificationRefused` for a
+message the provider will refuse again, which is dead-lettered at once:
 
 ```python
 from collections.abc import Sequence

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from domainkit import clock
 from domainkit.apps import registry
 from domainkit.contrib.keys import KeysSettings, key_status, reencrypt
-from domainkit.contrib.keys.operations import BATCH_SIZE
+from domainkit.contrib.keys.operations import BATCH_SIZE, provider_for
 from domainkit.contrib.keys.settings import KEY_ID_PATTERN
 from domainkit.keys import KeyProviderError
 from domainkit.keys.ring import keyring
@@ -84,12 +84,18 @@ class Command(ActionCommand):
             raise CommandError(
                 "A key's id is 1 to 32 letters, digits, '_' and '-', such as 2026-10."
             )
-        ring = keyring()
-        if key_id in ring.ids:
+        config = registry.settings(KeysSettings)
+        ids: tuple[str, ...] = ()
+        if config.missing_keys:  # The first key: there is no ring yet.
+            provider = provider_for(config)
+        else:
+            ring = keyring()
+            provider, ids = ring.provider, ring.ids
+        if key_id in ids:
             raise CommandError(
                 f"DATA_KEYS already holds {key_id!r}; choose another id."
             )
-        made = await ring.provider.generate_data_key()
+        made = await provider.generate_data_key()
         self.write(json.dumps({key_id: made.wrapped}))
         self.write(
             f"Add it to KEYS['DATA_KEYS'] in every process, then set "

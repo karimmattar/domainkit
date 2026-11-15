@@ -283,8 +283,18 @@ class RabbitMQBroker(Broker):
         )
 
     async def check(self) -> None:
-        """Connect and declare the exchange."""
+        """Connect, declare the exchange, then open and close a channel.
+
+        The publishing channel alone proves nothing: aio-pika keeps it, and
+        the connection, while it reconnects to a broker that went away, so
+        a check that only reached for it passed with the broker down (user
+        report W7). A fresh channel takes the broker's answers now, each
+        within ``CONNECT_TIMEOUT``.
+        """
         await self._publisher()
+        channel = await self._channel()
+        async with _translated(), asyncio.timeout(self.config.CONNECT_TIMEOUT):
+            await channel.close()
 
     async def close(self) -> None:
         """Close the connection and its channels, within ``CONNECT_TIMEOUT``."""

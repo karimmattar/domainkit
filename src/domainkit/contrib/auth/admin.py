@@ -67,7 +67,7 @@ from .exceptions import (
     UnknownUserField,
     UserNotFound,
 )
-from .gates import on_make_superuser
+from .gates import AdminChange, on_admin_change, on_make_superuser
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
@@ -77,6 +77,9 @@ from .users import FieldValue, get_user_model, get_user_table, typed_fields
 from .validators import validate_password
 
 __all__ = [
+    "may_change",
+    "may_grant",
+    "may_hold",
     "router",
 ]
 
@@ -363,6 +366,10 @@ async def create_user(
         _approval_needed()
     model = get_user_model()
     fields = _checked(model, body.fields)
+    flags_set = {name for name in ("is_staff", "is_superuser") if getattr(body, name)}
+    await _admin_change(
+        actor, None, AdminChange("create", frozenset({*fields, *flags_set}))
+    )
     flags: dict[str, bool] = {
         "is_active": body.is_active,
         "is_superuser": body.is_superuser,
@@ -394,6 +401,14 @@ async def update_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await may_change(actor, user)
+        flags = {
+            name
+            for name in ("is_staff", "is_active", "is_superuser")
+            if getattr(body, name) is not None
+        }
+        await _admin_change(
+            actor, user, AdminChange("update", frozenset({*body.fields, *flags}))
+        )
         was_active = user.is_active
         if body.is_superuser is not None and body.is_superuser != user.is_superuser:
             _superusers_only(actor, "Only superusers may make or unmake superusers.")
@@ -432,6 +447,7 @@ async def delete_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await may_change(actor, user)
+        await _admin_change(actor, user, AdminChange("delete"))
         if user.is_superuser and user.is_active:
             await _not_the_last_superuser(uow)
         user.delete()
@@ -455,6 +471,7 @@ async def set_password(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await may_change(actor, user)
+        await _admin_change(actor, user, AdminChange("password"))
         if body.password is not None:
             validate_password(body.password, user)
         await uow.users.set_password(
@@ -476,6 +493,7 @@ async def log_out_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await may_change(actor, user)
+        await _admin_change(actor, user, AdminChange("logout"))
         await uow.tokens.revoke_user(user.id)
         user.record(UserLoggedOut(user_id=user.id, everywhere=True))
         await uow.commit()
@@ -519,6 +537,7 @@ async def impersonate(
         if not user.is_active:
             raise PermissionDenied("Only active users can be impersonated.")
         await may_change(actor, user)
+        await _admin_change(actor, user, AdminChange("impersonate"))
         with logging_in(LoginMethod.IMPERSONATION):
             raw = await uow.tokens.issue(
                 user.id, ttl=ttl, name=IMPERSONATION, family=staff_id
@@ -542,8 +561,18 @@ async def set_user_groups(
         await may_change(actor, user)
         wanted = await uow.groups.get_many_by_name(body.groups)
         added = [group for group in wanted if group not in user.groups]
-        await _may_grant(actor, _keys(*added))
-        await _may_hold(actor, await _grants_of(*added))
+        removed = [group for group in user.groups if group not in wanted]
+        await _admin_change(
+            actor,
+            user,
+            AdminChange(
+                "groups",
+                added=frozenset(group.name for group in added),
+                removed=frozenset(group.name for group in removed),
+            ),
+        )
+        await may_grant(actor, _keys(*added))
+        await may_hold(actor, await _grants_of(*added))
         for group in [group for group in user.groups if group not in wanted]:
             user.leave(group)
         for group in added:
@@ -566,7 +595,17 @@ async def set_user_permissions(
             for permission in wanted
             if permission not in user.user_permissions
         ]
-        await _may_grant(actor, {permission.key for permission in added})
+        removed = [p for p in user.user_permissions if p not in wanted]
+        await _admin_change(
+            actor,
+            user,
+            AdminChange(
+                "permissions",
+                added=frozenset(permission.key for permission in added),
+                removed=frozenset(permission.key for permission in removed),
+            ),
+        )
+        await may_grant(actor, {permission.key for permission in added})
         user.revoke(*[p for p in user.user_permissions if p not in wanted])
         user.grant(*added)
         await uow.commit()
@@ -580,7 +619,7 @@ async def create_group(
     """Create a group with ``permissions``."""
     async with AuthUnitOfWork() as uow:
         permissions = await uow.permissions.get_many(body.permissions)
-        await _may_grant(actor, {permission.key for permission in permissions})
+        await may_grant(actor, {permission.key for permission in permissions})
         group = await uow.groups.create(body.name)
         group.grant(*permissions)
         await uow.commit()
@@ -612,7 +651,7 @@ async def set_group_permissions(
         added = [
             permission for permission in wanted if permission not in group.permissions
         ]
-        await _may_grant(actor, {permission.key for permission in added})
+        await may_grant(actor, {permission.key for permission in added})
         group.revoke(*[p for p in group.permissions if p not in wanted])
         group.grant(*added)
         await uow.commit()
@@ -677,6 +716,14 @@ async def _group(uow: AuthUnitOfWork, group_id: UUID) -> Group:
     return group
 
 
+async def _admin_change(
+    actor: AnyUser, user: AbstractBaseUser | None, change: AdminChange
+) -> None:
+    """Run the domains' ``on_admin_change`` checks; any may refuse ``change``."""
+    for hook in on_admin_change:
+        await hook.call(actor, user, change)
+
+
 def _approval_needed() -> None:
     """Refuse making a superuser here where an app holds it (``on_make_superuser``).
 
@@ -714,8 +761,8 @@ async def may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
             "grant permissions.",
         )
     refusal = "You can only change users whose permissions you have"
-    await _may_grant(actor, granted | _keys(*user.groups), refusal)
-    await _may_hold(actor, await object_grants(user), refusal)
+    await may_grant(actor, granted | _keys(*user.groups), refusal)
+    await may_hold(actor, await object_grants(user), refusal)
 
 
 async def _not_the_last_superuser(uow: AuthUnitOfWork) -> None:
@@ -729,11 +776,11 @@ async def _not_the_last_superuser(uow: AuthUnitOfWork) -> None:
 async def _may_change_group(actor: AnyUser, group: Group) -> None:
     """Refuse to change a group that grants what ``actor`` lacks, on objects too."""
     refusal = "You can only change groups whose permissions you have"
-    await _may_grant(actor, group.permission_keys(), refusal)
-    await _may_hold(actor, await object_grants(group), refusal)
+    await may_grant(actor, group.permission_keys(), refusal)
+    await may_hold(actor, await object_grants(group), refusal)
 
 
-async def _may_grant(
+async def may_grant(
     actor: AnyUser,
     keys: Iterable[str],
     refusal: str = "You can only grant permissions you have",
@@ -745,7 +792,7 @@ async def _may_grant(
         raise PermissionDenied(f"{refusal}; you lack {', '.join(missing)}.")
 
 
-async def _may_hold(
+async def may_hold(
     actor: AnyUser,
     grants: Iterable[ObjectGrant],
     refusal: str = "You can only grant permissions you have",
