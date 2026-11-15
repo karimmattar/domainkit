@@ -7,6 +7,9 @@ block ends. The ``live_server`` fixture serves the project's application
 on the test databases (``db``), with ``127.0.0.1`` added to
 ``ALLOWED_HOSTS``, for one test.
 
+uvicorn is imported when a server starts, not with the plugin: it
+becomes an extra in 3.0.
+
 The server's thread is a daemon, so an interrupted run (Ctrl-C) never
 waits for it, and stopping cancels requests still open after
 ``STOP_SECONDS``. It starts with the context of the code that starts it, as
@@ -19,10 +22,12 @@ import threading
 from contextlib import suppress
 from contextvars import copy_context
 from types import TracebackType
-from typing import Final, Self
+from typing import TYPE_CHECKING, Final, Self
 
-import uvicorn
 from starlette.types import ASGIApp
+
+if TYPE_CHECKING:
+    import uvicorn
 
 LIVE_HOST: Final = "127.0.0.1"
 """Where the live server listens: this machine only."""
@@ -71,6 +76,8 @@ class LiveServer:
         Raises:
             RuntimeError: The application's startup failed; uvicorn logged why.
         """
+        import uvicorn
+
         listening = socket.socket()
         listening.bind((self.host, 0))
         self.port = listening.getsockname()[1]
@@ -134,7 +141,7 @@ class LiveServer:
         listening.close()
 
 
-def _serve(server: uvicorn.Server, listening: socket.socket) -> None:
+def _serve(server: "uvicorn.Server", listening: socket.socket) -> None:
     """Serve until told to stop; a failed startup ends the thread quietly.
 
     uvicorn exits (``SystemExit``) when the application's startup fails,

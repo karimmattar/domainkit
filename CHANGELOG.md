@@ -74,6 +74,16 @@ and a status.
   public names in the modules that own them. A test fails on any new
   import of that kind. Nothing a project imports changed (audit finding
   A1).
+- `runserver` and the test plugin import uvicorn only when it serves:
+  `runserver --server granian` runs where uvicorn is not installed
+  (user report S3).
+
+### Deprecated
+
+- uvicorn as a dependency of every install. It stays one in 2.x; 3.0
+  moves it to an extra, `domainkit[uvicorn]`, which a project that serves
+  with uvicorn, runs `runserver` with it, or uses `live_server` then
+  installs ("Upgrading", 2.3 to 2.4) (user report S3).
 
 ## [2.3.0] - 2026-11-11
 

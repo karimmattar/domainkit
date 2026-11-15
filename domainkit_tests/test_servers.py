@@ -436,6 +436,51 @@ def test_runserver_refuses_an_unknown_server() -> None:
         call_command("runserver", server="granian")
 
 
+def test_runserver_serves_with_granian_where_uvicorn_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only serving with uvicorn imports it: Granian needs none.
+
+    uvicorn becomes an extra in 3.0 (user report S3).
+    """
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    served: list[str] = []
+
+    class Recorded:
+        def __init__(self, target: str, **options: Any) -> None:  # noqa: ANN401 - Granian's options.
+            served.append(target)
+
+        def serve(self) -> None:
+            served.append("served")
+
+    monkeypatch.setattr("granian.Granian", Recorded)
+    with override_settings(ASGI_APPLICATION="config.asgi:application"):
+        call_command("runserver", server="granian", reload=False)
+
+    assert served == ["config.asgi:application", "served"]
+
+
+LOADED_UVICORN: Final = (
+    "import sys, domainkit.management.commands.runserver, domainkit.testing; "
+    "print(sorted(name for name in sys.modules if name.startswith('uvicorn')))"
+)
+"""Load ``runserver`` and the test plugin, and print the uvicorn modules loaded."""
+
+
+def test_runserver_and_the_test_plugin_import_no_uvicorn() -> None:
+    """Loading them leaves uvicorn unloaded, until a server starts (user report S3)."""
+    loaded = subprocess.run(  # noqa: S603 - this interpreter, a fixed script.
+        [sys.executable, "-c", LOADED_UVICORN],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert loaded.stdout == "[]\n", loaded.stderr
+
+
 def test_runserver_gives_granian_a_copy_of_logging(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

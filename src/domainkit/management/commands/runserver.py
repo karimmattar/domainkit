@@ -1,10 +1,12 @@
-"""``runserver``: a development server for ``ASGI_APPLICATION``: uvicorn or Granian."""
+"""``runserver``: a development server for ``ASGI_APPLICATION``: uvicorn or Granian.
+
+Each is imported only when it serves: Granian serves without uvicorn,
+which becomes an extra in 3.0.
+"""
 
 import copy
 from argparse import ArgumentParser
 from typing import Final
-
-import uvicorn
 
 from domainkit.conf import settings
 from domainkit.management.base import BaseCommand, CommandError
@@ -64,6 +66,8 @@ class Command(BaseCommand):
         if server == "granian":
             serve_with_granian(settings.ASGI_APPLICATION, host, port, reload=reload)
             return
+        import uvicorn
+
         uvicorn.run(
             settings.ASGI_APPLICATION,
             host=host,

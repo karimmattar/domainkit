@@ -36,6 +36,25 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.3 to 2.4
+
+2.4 answers a report from a project that runs an identity service on
+domainkit.
+
+### uvicorn becomes an extra in 3.0
+
+Every install of 2.x brings uvicorn (`uvicorn[standard]`), even where
+Granian serves. In 3.0 it becomes an extra, `domainkit[uvicorn]`.
+`runserver` and the test plugin import it only when it serves, so
+`runserver --server granian` already runs without it. Nothing changes
+in 2.x, which has no such extra. On moving to 3.0, add it where the
+project uses uvicorn: its image runs it (the `Dockerfile` that `init`
+writes does), `runserver` serves with it, or a test uses `live_server`:
+
+```toml
+dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=3.0,<4"]
+```
+
 ## 2.2 to 2.3
 
 2.3 closes a hole in the phone modes: a stolen web session could bind a
