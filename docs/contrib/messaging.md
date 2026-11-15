@@ -770,6 +770,16 @@ aio-pika). Then `runworker` works like this:
 - **Losses** cost time, never messages. A worker that dies mid-message
   leaves it to come back after `VISIBILITY_TIMEOUT`; a message that
   RabbitMQ lost is published again after `REPUBLISH_AFTER`.
+- **While the broker is away, relaying workers run the outbox.** Each
+  relay has a breaker, as commits do (`BREAKER_FAILURES`,
+  `BREAKER_COOLDOWN`). While it is open, the worker claims the due
+  messages of its queues and runs them, as a worker without a broker
+  does, within the same `CONCURRENCY`. After the cooldown it checks the
+  broker, and publishes again once it answers. What committed during the
+  outage runs within a poll; what the broker held before waits
+  `REPUBLISH_AFTER`, then runs too, and its copies are skipped when the
+  broker delivers them. Consume-only workers (`--no-relay`) wait for the
+  broker ([ADR 0142](../adr/0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md)).
 - **Ordering keys** need nothing of RabbitMQ. The outbox holds a key's
   later messages back, so only its first is ever published, and the
   consumer that finishes it publishes the key's next at once. Any
