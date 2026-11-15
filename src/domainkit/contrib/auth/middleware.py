@@ -75,7 +75,7 @@ from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
 from .access import PROOF
-from .actions import keeping_authorizations
+from .actions import keeping_authorizations, register_action
 from .authentication import (
     RECHECK,
     AuthenticationFailed,
@@ -156,7 +156,8 @@ class AuthenticationMiddleware:
         if credentials is None:
             await self.app(scope, receive, send)
             return
-        if scope["type"] != "http":
+        if scope["type"] != "http" or not register_action.hooks():
+            # No action registered: no rule accepts one, nothing to settle.
             await self._serve(scope, receive, send, credentials)
             return
         # What the request's rules accept, its act spends: settled at the end.

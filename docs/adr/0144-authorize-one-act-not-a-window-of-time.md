@@ -207,7 +207,7 @@ authorization for the request's user and login, and builds each part
 itself:
 
 - **the subject**, from `action.subject(command)`;
-- **the digest**: the SHA-256 of `{"purpose": ..., "arguments": ...}` as
+- **the digest**: the SHA-256 of `{"action": <the purpose>, "arguments": ...}` as
   canonical JSON, the arguments being the command read back through
   pydantic, less `ignore`. It is approvals' `fingerprint` (ADR 0121),
   moved to the core so that both apps compute it one way;
