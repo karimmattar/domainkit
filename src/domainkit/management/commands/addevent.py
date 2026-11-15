@@ -7,16 +7,19 @@ writes:
   ``domain/events.py``; a method of the aggregate records it (``addcommand``
   writes one that records an event of its own);
 - ``on_product_restocked`` in ``application/handlers.py``, subscribed in
-  ``apps.py`` as a durable handler: stored with the commit, run by the
-  worker, at least once (``--no-handler`` leaves the reaction out);
+  ``apps.py`` as a durable handler named ``catalog.on_product_restocked``:
+  stored with the commit, run by the worker, at least once
+  (``--no-handler`` leaves the reaction out);
 - ``test_on_product_restocked.py``.
 
 In a four-file domain, the event goes in ``domain.py``, and the handler in
-``controllers.py``, marked ``@handles(ProductRestocked, durable=True)``:
-the domain subscribes it when it is ready.
+``controllers.py``, marked ``@handles(ProductRestocked, durable=True,
+name=...)``: the domain subscribes it when it is ready. The name is the
+key of its messages: it stays when the function moves or is renamed.
 """
 
 from argparse import ArgumentParser
+from typing import Final
 
 from domainkit.management.base import CommandError
 from domainkit.management.generators import (
@@ -31,6 +34,17 @@ from domainkit.management.generators import (
     words,
 )
 from domainkit.utils.text import snake_case
+
+_LINE: Final = 88
+"""The longest line the generated code has, as the project's formatter keeps it."""
+
+
+def _call(function: str, arguments: list[str], indent: int = 0) -> list[str]:
+    """``function(arguments)`` on one line if it fits, else one argument a line."""
+    line = f"{function}({', '.join(arguments)})"
+    if indent + len(line) <= _LINE:
+        return [line]
+    return [f"{function}(", *(f"    {each}," for each in arguments), ")"]
 
 
 class Command(AggregateGenerator):
@@ -151,7 +165,11 @@ async def {reaction}(event: {event}) -> None:
     apps.import_names(domain.module("domain.events"), event)
     apps.add_to_function(
         f"{config}.ready",
-        [f"event_bus.subscribe({event}, {reaction}, durable=True)"],
+        _call(
+            "event_bus.subscribe",
+            [event, reaction, "durable=True", f'name="{domain.name}.{reaction}"'],
+            indent=8,
+        ),
     )
 
 
@@ -242,10 +260,13 @@ def add_simple_event(
         controllers.insert_after_imports(["", "logger = logging.getLogger(__name__)"])
     controllers.import_names("domainkit.ddd", "handles")
     controllers.import_names(domain.module("domain"), event)
+    decorator = "\n".join(
+        _call("@handles", [event, "durable=True", f'name="{domain.name}.{reaction}"'])
+    )
     controllers.append(
         f'''
 
-@handles({event}, durable=True)
+{decorator}
 async def {reaction}(event: {event}) -> None:
     """React to {words(event)}: idempotently, as it may run more than once."""
     logger.info("{event} %s", event.{a}_id)

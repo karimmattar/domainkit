@@ -232,7 +232,11 @@ class BrokerWorkers:
                     if relayed:
                         polls.reset()
                     if relayed < batch and not stop.is_set():
-                        await pause(wake, polls.wait(wake.listening))
+                        # Commits that publish themselves leave the relay what
+                        # they could not, and what comes due: as a listener's
+                        # worker, it backs off to POLL_INTERVAL_IDLE.
+                        told = wake.listening or self.config.PUBLISH_ON_COMMIT
+                        await pause(wake, polls.wait(told))
                         if wake.is_set():
                             polls.reset()
                 await wind_down(helpers, HELPER_GRACE)

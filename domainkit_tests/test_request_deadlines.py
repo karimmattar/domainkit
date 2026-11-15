@@ -19,7 +19,7 @@ from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
-from domainkit.db.connections import INTERNAL
+from domainkit.db.connections import INTERNAL, SETTLE_TIMEOUT
 from domainkit.http import get_asgi_application
 from domainkit.http.deadlines import DeadlineMiddleware, RequestTimeout, lift
 from domainkit.testing import AsyncTestClient, assert_num_queries
@@ -319,14 +319,20 @@ async def test_cancellation_leaves_no_transaction_key_or_connection(
         assert await rows(idempotency_keys) == []
         assert connections.pool_stats()["default"]["checked_out"] == 0
         if ON_POSTGRES:
-            async with connections.engine().connect() as connection:
-                stuck = await connection.scalar(
-                    text(
-                        "SELECT count(*) FROM pg_stat_activity WHERE datname = "
-                        "current_database() AND pid <> pg_backend_pid() AND "
-                        "state <> 'idle'"
+            # The cut-off connection settles in the background, within
+            # SETTLE_TIMEOUT: until then its server process may still be busy.
+            for _ in range(int((SETTLE_TIMEOUT + 1) / 0.1)):
+                async with connections.engine().connect() as connection:
+                    stuck = await connection.scalar(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity WHERE datname = "
+                            "current_database() AND pid <> pg_backend_pid() AND "
+                            "state <> 'idle'"
+                        )
                     )
-                )
+                if stuck == 0:
+                    break
+                await asyncio.sleep(0.1)
             assert stuck == 0
 
         deadline_routes.hang_payments[:] = [False]

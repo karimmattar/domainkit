@@ -971,6 +971,13 @@ class Settings(BaseModel):
     """Reuse a readiness result this long, so probe floods cannot load the database."""
     READINESS_DETAILS: bool = False
     """Name failing components in ``/ready`` responses; they are always logged."""
+    READINESS_BROKERS: bool = False
+    """``/ready`` checks each broker of ``BROKERS`` too (``broker:<alias>``).
+
+    Off by default: a process serves while its broker is away, and commits
+    leave their messages to the outbox's relay. Turn it on where a process
+    cannot do its work without one.
+    """
     ACCESS_LOG_QUIET_PATHS: tuple[str, ...] = ("/health", "/ready")
     """Successful requests to these paths are logged at DEBUG, not INFO."""
     ACCESS_LOG_SAMPLE_RATE: float = Field(default=1.0, ge=0.0, le=1.0)

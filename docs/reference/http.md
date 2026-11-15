@@ -94,7 +94,8 @@ fails ([operations.md](../operations.md)).
 | --- | --- | --- |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take (at most 60). |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended. Probes that come while checks run wait for them, so probe floods cannot load the database. |
-| `READINESS_DETAILS` | `False` | Names failing components in `/ready` responses (they are always logged). A group of checks that raises instead of reporting is named as its group (`domains`, `databases`, `ledgers`, `caches`), logged, and kept like any failed round: a 503, never a 500. |
+| `READINESS_DETAILS` | `False` | Names failing components in `/ready` responses (they are always logged). A group of checks that raises instead of reporting is named as its group (`domains`, `databases`, `ledgers`, `caches`, `brokers`), logged, and kept like any failed round: a 503, never a 500. |
+| `READINESS_BROKERS` | `False` | `/ready` checks each broker of `BROKERS` too, as `broker:<alias>`; on RabbitMQ, a channel opened and closed. Off, a process serves while its broker is away, and commits leave their messages to the outbox's relay: turn it on where a process cannot work without one. |
 
 ### The access log
 

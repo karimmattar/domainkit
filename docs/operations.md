@@ -381,7 +381,26 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
   ([runtime.md](runtime.md#workers-and-the-outbox)).
 - **Metrics.** `runworker --metrics-port 9100` serves the worker's
   Prometheus metrics, on `127.0.0.1` unless `--metrics-address` says
-  otherwise.
+  otherwise. With `METRICS_TOKEN` set, a scrape needs `Authorization:
+  Bearer <METRICS_TOKEN>`, as the web's `/metrics` does.
+- **Connections.** Each running message holds a database connection,
+  besides the one the worker listens and claims with: give the workers'
+  pool at least `MESSAGING.CONCURRENCY + 1` connections (`POOL_SIZE` +
+  `MAX_OVERFLOW`). `check` warns about a smaller one where deployed
+  (`messaging.W003`).
+- **Health.** `runworker --heartbeat-file /tmp/worker-alive` checks,
+  from the worker's own event loop, what `/ready` checks (domains,
+  databases, ledgers, caches) and the broker it consumes from, every
+  `--heartbeat-interval` seconds (15). While all hold it rewrites the
+  file; a failing check, or a stuck loop, lets it age, and it goes when
+  the worker stops. A container's health check reads its age:
+
+  ```dockerfile
+  HEALTHCHECK --interval=30s CMD test $(( $(date +%s) - $(stat -c %Y /tmp/worker-alive) )) -lt 60
+  ```
+
+  `--metrics-port` is no health signal: it answers from a thread of its
+  own, however stuck the loop is.
 - **Without a long-running worker.** `runworker --once` runs what is due
   and exits, for cron. Messages then wait for the next run.
 - **RabbitMQ.** With `MESSAGING = {"BROKER": ...}`, commits publish to
@@ -396,13 +415,16 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
 python manage.py messages status            # counts by status, and each queue's lag
 python manage.py messages list pending      # also: held, locked, dead
 python manage.py messages retry 42          # or: retry all
+python manage.py messages drop 42           # or: drop all [--blanked]
 python manage.py messages cancel 42
 python manage.py messages release           # unblock keys with held messages and none pending
 ```
 
-`retry`, `cancel`, and `release` take `--operator`. With
+`retry`, `drop`, `cancel`, and `release` take `--operator`. With
 `domainkit.contrib.audit` installed, each one is recorded in the audit
-trail with the operator's name.
+trail with the operator's name. Dead letters stay until retried or
+dropped, unless `MESSAGING.DEAD_RETENTION_SECONDS` is set: then cleanup
+deletes those that died that long ago.
 
 ## Sealing the audit trail
 
