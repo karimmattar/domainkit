@@ -184,7 +184,9 @@ def schema_for(
     names them, DSGN-19); ``exclude`` drops some. ``write`` makes a request
     body, ``partial`` a ``PatchModel``. ``name`` defaults to ``<Model>Out``,
     ``<Model>In``, or ``<Model>Patch``. ``descriptions`` document fields in
-    OpenAPI.
+    OpenAPI. A field hinted ``Field(repr=False)`` (a ``@use_case``'s
+    password) stays out of the schema's ``repr``, and a write schema with
+    one keeps inputs out of its validation errors.
 
     Raises:
         TypeError: A field named is not one of the model's, its type has
@@ -230,6 +232,8 @@ def schema_for(
             options["description"] = REFERENCE_DESCRIPTION
         if descriptions and each in descriptions:
             options["description"] = descriptions[each]
+        if not info.shown:
+            options["repr"] = False
         if write and not partial:
             options.update(_default(defaults[each]))
         definitions[each] = (annotation, Field(**options))
@@ -237,7 +241,9 @@ def schema_for(
     if partial:
         return create_model(title, __base__=PatchModel, **definitions)
     if write:
-        return create_model(title, __config__=ConfigDict(extra="forbid"), **definitions)
+        hidden = any(not fields[each].shown for each in chosen)
+        config = ConfigDict(extra="forbid", hide_input_in_errors=hidden)
+        return create_model(title, __config__=config, **definitions)
     schema = create_model(title, __base__=DomainSchema, **definitions)
     schema.domain_class = model
     schema.domain_fields = tuple(presenters)

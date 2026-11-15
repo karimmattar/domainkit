@@ -58,6 +58,12 @@ and a status.
   tuple on SQLite and PostgreSQL. Such a field was a `TypeError`; a type
   a project registered for `tuple` still wins
   ([Tables from domain classes](docs/databases.md#tables-from-domain-classes)) (user report D2).
+- A `@use_case` parameter hinted `Annotated[str, Field(repr=False)]`
+  (pydantic's `Field`) is a command field with `repr=False`, so a
+  password can be a parameter: the command's `repr` and its log lines
+  leave it out, as the derived body's `repr` does, and the body's
+  validation errors leave the input out. Every other repr is unchanged
+  ([Use cases](docs/resources.md#use-cases)) (user report D2).
 
 ### Changed
 

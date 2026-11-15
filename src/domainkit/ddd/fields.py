@@ -58,6 +58,8 @@ from typing import (
 )
 from uuid import UUID
 
+from pydantic.fields import FieldInfo as PydanticField
+
 from domainkit.ddd.markers import MaxLength as MaxLength
 from domainkit.ddd.markers import MinLength as MinLength
 from domainkit.ddd.markers import Pattern as Pattern
@@ -249,6 +251,19 @@ class FieldInfo:
     def encrypted(self) -> bool:
         """Whether the field is stored encrypted (``Encrypted``)."""
         return self.marker(Encrypted) is not None
+
+    @property
+    def shown(self) -> bool:
+        """Whether its value shows in ``repr``: not with ``Field(repr=False)``.
+
+        ``Annotated[str, Field(repr=False)]`` (pydantic's ``Field``) hides a
+        password as a request model hides one; a ``@use_case`` parameter so
+        hinted is a command field with ``repr=False``.
+        """
+        return not any(
+            isinstance(item, PydanticField) and item.repr is False
+            for item in self.metadata
+        )
 
     @property
     def text(self) -> bool:
