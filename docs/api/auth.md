@@ -95,7 +95,9 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `action_authorization`: The user's authorization `authorization_id`, to show it, in any state.
 - `action_for`: The registered action of `purpose`, if there is one.
 - `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
+- `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
+- `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
 - `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
@@ -558,12 +560,14 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
 - `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
 - `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
+- `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
 - `end_device_logins`: End the logins marked as the bound device `device_id`'s: how many.
 - `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
+- `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `mail_user`: Mail `user` at their address from `template`; False where none can go.
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
@@ -677,6 +681,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
 - `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `DigestRequired`: Approving an act needs the digest the phone was shown (422).
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
 - `PhoneRequired`: Only the user's mobile app manages their logins (403).
@@ -735,6 +740,7 @@ What a sign-in request may be refused, and what a poll may answer.
 - `AccessDenied`: The phone denied the sign-in.
 - `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `DigestRequired`: Approving an act needs the digest the phone was shown (422).
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
@@ -804,7 +810,7 @@ CIBA clients, sign-in requests, and the client assertions already used.
 
 - `assertions`: The `jti` of each `private_key_jwt` assertion, until it expires: once.
 - `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba add`, `list`).
-- `sign_in_requests`: Each sign-in, step-up, or transaction a phone is asked to approve, until purged.
+- `sign_in_requests`: Each sign-in, step-up, transaction, or act a phone is asked about, until purged.
 
 ## `domainkit.contrib.devices.tasks`
 

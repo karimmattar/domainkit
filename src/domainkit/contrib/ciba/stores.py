@@ -24,6 +24,8 @@ QR = "qr"
 SIGN_IN = "sign_in"
 STEP_UP = "step_up"
 TRANSACTION = "transaction"
+AUTHORIZATION = "authorization"
+"""A request to confirm one act, its action authorization linked to it (ADR 0144)."""
 DEVICE = "device"
 """A request to bind the asking phone's key (ADR 0137)."""
 
@@ -81,9 +83,10 @@ class SignInRequest:
     reported: bool
     redeemed_at: datetime | None
     kind: str = SIGN_IN
-    """``sign_in``, ``step_up``, or ``transaction``."""
+    """``sign_in``, ``step_up``, ``transaction``, ``authorization``, or ``device``."""
     credential_digest: str | None = None
-    """A step-up's or a transaction's: the session that asked, which redeems it."""
+    """A step-up's, a transaction's, or an authorization's: the session that
+    asked, which redeems it (a device's: the key it binds)."""
     sca_challenge_id: UUID | None = None
     """A transaction's: the ``auth.sca`` transaction it confirms."""
 

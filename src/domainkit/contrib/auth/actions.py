@@ -125,7 +125,9 @@ __all__ = [
     "action_authorization",
     "action_for",
     "confirm_action_with",
+    "confirmed_action_authorization",
     "link_action_authorization",
+    "linked_action_authorization",
     "login_digest",
     "on_action_confirmation",
     "register_action",
@@ -1168,6 +1170,51 @@ async def action_authorization(
     ):
         raise AuthorizationNotFound("No such authorization.")
     return found
+
+
+async def linked_action_authorization(
+    sign_in_request_id: UUID, user_id: UUID, *, login: str | None = None
+) -> ActionAuthorization:
+    """The user's authorization the phone's request ``sign_in_request_id`` confirms.
+
+    The one ``link_action_authorization`` linked to it, in any state. With
+    ``login``, only that login's.
+
+    Raises:
+        AuthorizationNotFound: None of the user's (or the login's) is linked
+            to it.
+    """
+    async with AuthUnitOfWork() as uow:
+        found = await uow.authorizations.linked(user_id, sign_in_request_id)
+    if found is None or (login is not None and found.login != login):
+        raise AuthorizationNotFound("No such authorization.")
+    return found
+
+
+async def confirmed_action_authorization(
+    authorization_id: UUID, user_id: UUID, *, login: str | None = None
+) -> str:
+    """``<id>.<code>`` of the user's confirmed authorization, for the confirming app.
+
+    For an app that confirms in one request (``confirm_action_with``) and
+    hands the authorization over in another: the phone approves, then the
+    page that asked it redeems the answer. Only a confirmed authorization,
+    unspent and live, has one. With ``login``, only that login's.
+
+    Raises:
+        AuthorizationNotFound: None of the user's (or the login's) has that
+            id, or it is unconfirmed.
+        APIError: 409 ``authorization_confirmed``: spent, or ended; 409
+            ``authorization_expired``.
+    """
+    authorization = await action_authorization(authorization_id, user_id, login=login)
+    if authorization.confirmed_at is None:
+        raise AuthorizationNotFound("No such authorization.")
+    if authorization.consumed_at is not None:
+        raise _closed()
+    if authorization.expired():
+        raise _expired()
+    return _authorization(authorization)
 
 
 async def link_action_authorization(

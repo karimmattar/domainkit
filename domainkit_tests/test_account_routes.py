@@ -60,6 +60,8 @@ NO_WAY_IN: Final = {
     "POST /app-sign-in/step-up/token": "redeems what the phone approved",
     "POST /app-sign-in/transactions/{challenge_id}": "asks the phone",
     "POST /app-sign-in/transactions/token": "redeems what the phone confirmed",
+    "POST /app-sign-in/authorizations/{authorization_id}": "asks the phone",
+    "POST /app-sign-in/authorizations/token": "redeems what the phone confirmed",
     "POST /sca/{challenge_id}/confirm": "confirms one transaction, with factors",
     "POST /email-verification": "sends a code to the account's own address",
     "POST /email-verification/code": "proves the account's own address",

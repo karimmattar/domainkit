@@ -18,6 +18,7 @@ __all__ = [
     "AccessDenied",
     "AuthorizationPending",
     "DifferentNetwork",
+    "DigestRequired",
     "OAuthError",
     "PhoneApprovalRequired",
     "PhoneEnrollmentRequired",
@@ -173,6 +174,22 @@ class WrongMatchCode(APIError):
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "That is not the number on the sign-in page; the sign-in is denied.",
             code="wrong_match_code",
+        )
+
+
+class DigestRequired(APIError):
+    """Approving an act needs the digest the phone was shown (422).
+
+    A request of kind ``authorization`` is approved with ``{"digest"}``,
+    the act's digest as the phone listed it, which the device signs.
+    """
+
+    def __init__(self) -> None:
+        """Use status 422 and the code ``digest_required``."""
+        super().__init__(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Send the digest of the act you were shown to approve it.",
+            code="digest_required",
         )
 
 

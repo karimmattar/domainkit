@@ -202,6 +202,32 @@ Only the phone has a screen the session does not control. A code proves
 the user is there, and binds the confirmation to this authorization; what
 the user read was on the page.
 
+### On the phone
+
+With [sign-in approvals](ciba.md) installed, the user's phone confirms
+an authorization of the session's: the page asks it, the phone shows the
+act as the server keeps it and signs its digest, and the page redeems
+the authorization ([Confirming one act](ciba.md#confirming-one-act)):
+
+```http
+POST /auth/app-sign-in/authorizations/9f0c...            200 {"request": "kq3D1...", "expires_in": 120,
+                                                              "interval": 5, "match_code": "47"}
+POST /auth/app-sign-in/authorizations/token {"request"}  400 authorization_pending, then
+                                                         200 {"authorization": "9f0c....mYd3...", "expires_at": "..."}
+```
+
+- The request is counted and bounded as the phone's step-up is
+  (`START_RATE`, `MAX_PENDING`, `NUMBER_MATCHING`, `409
+  phone_unavailable`), and only the session that asked redeems it.
+- The phone lists it with an `authorization` object: the purpose, the
+  kept title and details, and the digest, read from the row.
+- It approves with the digest, in a request its device signs: another
+  digest denies it (`409 authorization_changed`). The row keeps the
+  device, its key, the bytes it signed, its signature, and when.
+- It proves `hwk` and `phone`, for every user with a bound device: an
+  act whose methods are `["phone"]` takes it, and asking needs no
+  authenticator app.
+
 ### The mobile app's own act, and a passkey
 
 With `domainkit.contrib.devices` installed, two more ways confirm an
@@ -311,7 +337,9 @@ An app that confirms its own way (the phone of
 | `on_action_confirmation(ActionConfirmation(name, methods, available))` | Registers a way to confirm, in `ready()`: what it proves (`frozenset({"hwk", "phone"})`), and `available(user_id)`, whether a user has it now. Asking needs one the user has; `check` refuses an act none proves (`auth.E108`). Auth registers the code. |
 | `action_authorization(authorization_id, user_id, *, login=None)` | The authorization, to show it: its purpose, `shown`, digest, expiry, user, and login's digest. `AuthorizationNotFound` (404) for none, another user's, or another login's. |
 | `link_action_authorization(authorization_id, *, user_id, sign_in_request_id=None, passkey_challenge=None)` | Links what will confirm it: the phone's request, a passkey's challenge. |
+| `linked_action_authorization(sign_in_request_id, user_id, *, login=None)` | The authorization a phone's request was linked to, as `action_authorization` answers it. |
 | `confirm_action_with(authorization_id, methods, *, user_id, login=None, digest=None, device_id=None, algorithm=None, public_key=None, signature=None, signed=None, signed_at=None)` | Confirms it with what the app proved, and returns `<id>.<code>`. `digest` must be the act's (`409 authorization_changed`); `methods` must prove what it asks (`409 authorization_needs_other_factors`). The device's key, what it signed, and its signature are kept on the row, and with `domainkit.contrib.evidence` installed, on the evidence ledger, which outlives the row. |
+| `confirmed_action_authorization(authorization_id, user_id, *, login=None)` | `<id>.<code>` of a confirmed authorization, unspent and live, for an app that confirms in one request and hands it over in another (the phone's token route). It is never stored: computed again from the row. |
 | `login_digest(credentials)` | The login's digest, as the row and the phone's requests keep it. |
 | `action_for(purpose)` | The registered `Action`; its `required()` is what confirming must prove. |
 | `register_action(action)` | Registers an `Action`, in `ready()`. |
@@ -336,8 +364,8 @@ An app that confirms its own way (the phone of
 | `400 step_up_unsupported` | Asking with credentials limited to scopes, or that cannot be told apart. |
 | `409 no_second_factor` | Asking, for a user with no way to confirm what the act asks. |
 | `409 authorization_confirmed`, `409 authorization_expired` | Confirming twice, or one ended; confirming too late. |
-| `409 authorization_needs_other_factors` | A code or a passkey where the act asks the phone. |
-| `409 authorization_changed` | Another app confirms a digest other than the act's: the app's own act, the phone. |
+| `409 authorization_needs_other_factors` | A code or a passkey where the act asks the phone; the phone asked for an act that asks the password. |
+| `409 authorization_changed` | The phone, or another app (the app's own act), confirms a digest other than the act's. |
 | `404 authorization_not_found` | Another user's or another login's authorization. |
 | `401 invalid_code`, `400 password_required`, `400 wrong_password`, `429` | As for a step-up. |
 | `500 authorization_unspent` | Under `DEBUG` and in tests: a rule accepted one, and no service spent it. |
