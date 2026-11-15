@@ -169,9 +169,10 @@ async def ask_to_end(
 Asking needs credentials without scopes, which can be told apart from the
 user's others: a login token, a browser session, or a JSON Web Token login
 (`400 step_up_unsupported` otherwise). It needs a user with a way to
-confirm what the act asks: a confirmed authenticator app for a code
-(`409 no_second_factor` otherwise). A login holds at most ten unconfirmed
-authorizations: asking for an eleventh ends the oldest.
+confirm what the act asks: a confirmed authenticator app for a code, or,
+with [devices](devices.md#confirming-one-act), a bound device or a
+passkey (`409 no_second_factor` otherwise). A login holds at most ten
+unconfirmed authorizations: asking for an eleventh ends the oldest.
 
 `check` refuses `StepUp(for_=...)` on a WebSocket or an event stream
 (`auth.E111`): a connection is asked again and again, and has no act to
@@ -200,6 +201,28 @@ authorization_needs_other_factors`.
 Only the phone has a screen the session does not control. A code proves
 the user is there, and binds the confirmation to this authorization; what
 the user read was on the page.
+
+### The mobile app's own act, and a passkey
+
+With `domainkit.contrib.devices` installed, two more ways confirm an
+authorization ([Confirming one act](devices.md#confirming-one-act)):
+
+- **The mobile app's own act**: `POST /auth/devices/authorizations/{id}`
+  `{"digest"}`, signed by one of the user's bound devices, for an act the
+  app makes itself and shows itself. The authorization must be the app's
+  own login's, the login that asked and spends it: another session's is
+  `404`, and goes to the phone. A digest other than the act's is `409
+  authorization_changed`. It proves `hwk` and `phone`, and the device's
+  key, what it signed, and its signature are kept on the row, as the
+  phone's approval is.
+- **A passkey**: `POST /auth/passkeys/authorizations/{id}/options`
+  answers a challenge made for this authorization, linked to its row, and
+  `POST /auth/passkeys/authorizations/{id}` takes the assertion. Only the
+  session that asked uses either; the challenge works once, for this
+  authorization alone. It proves `hwk` and `mfa`, never `phone`.
+
+Each answers `{"authorization": "<id>.<code>", "expires_at"}`, as a code
+does.
 
 ## The act spends it
 
@@ -313,8 +336,8 @@ An app that confirms its own way (the phone of
 | `400 step_up_unsupported` | Asking with credentials limited to scopes, or that cannot be told apart. |
 | `409 no_second_factor` | Asking, for a user with no way to confirm what the act asks. |
 | `409 authorization_confirmed`, `409 authorization_expired` | Confirming twice, or one ended; confirming too late. |
-| `409 authorization_needs_other_factors` | A code where the act asks the phone. |
-| `409 authorization_changed` | Another app confirms a digest other than the act's. |
+| `409 authorization_needs_other_factors` | A code or a passkey where the act asks the phone. |
+| `409 authorization_changed` | Another app confirms a digest other than the act's: the app's own act, the phone. |
 | `404 authorization_not_found` | Another user's or another login's authorization. |
 | `401 invalid_code`, `400 password_required`, `400 wrong_password`, `429` | As for a step-up. |
 | `500 authorization_unspent` | Under `DEBUG` and in tests: a rule accepted one, and no service spent it. |
@@ -323,7 +346,7 @@ An app that confirms its own way (the phone of
 
 | Id | What it refuses |
 | --- | --- |
-| `auth.E108` | An action whose methods no installed way to confirm proves (`["phone"]` without the phone's app). |
+| `auth.E108` | An action whose methods no installed way to confirm proves (`["phone"]` with neither the phone's app nor devices). |
 | `auth.E109` | A route that asks `StepUp(for_=...)` for a purpose no registered action has. |
 | `auth.E110` | A route whose action no service decorated `requires_authorization` spends. |
 | `auth.E111` | `StepUp(for_=...)` on a WebSocket or an event stream. |

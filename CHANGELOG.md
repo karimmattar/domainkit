@@ -91,6 +91,19 @@ and a status.
   nothing is unchanged. See
   [Authorizations for one act](docs/resources.md#authorizations-for-one-act)
   and ADR 0144 (user report A6).
+- Devices confirm an act's authorization two ways, registered with auth
+  when installed. The mobile app's own act: `POST
+  /devices/authorizations/{id}` with the act's digest, signed by one of
+  the user's bound devices, for an authorization its own login asked for;
+  it proves `hwk` and `phone`, and the device's key, what it signed, and
+  its signature are kept on the row (`device_proof`). A passkey: `POST
+  /passkeys/authorizations/{id}/options` makes a challenge for that
+  authorization alone, and `POST /passkeys/authorizations/{id}` takes the
+  assertion; it proves `hwk` and `mfa`, never `phone`, for the session
+  that asked only. A user with a bound device or a passkey can now ask
+  for an authorization, and an act may ask `["phone"]` with devices alone
+  ([Confirming one act](docs/auth/devices.md#confirming-one-act), ADR
+  0144) (user report A6).
 
 ### Changed
 
