@@ -112,13 +112,36 @@ request. Each committed event becomes a message:
 from domainkit.ddd import event_bus
 
 # In DomainConfig.ready():
-event_bus.subscribe(UserCreated, notify_crm, durable=True)
+event_bus.subscribe(UserCreated, notify_crm, durable=True, name="crm.notify")
 ```
 
 A durable handler runs only for the events it is subscribed to (or their
 subclasses). A message that pairs it with another event is
 dead-lettered. Durable handlers use the `MESSAGING` settings for their
 retries and timeouts.
+
+Each message carries its handler's key: `name=`, or else the function's
+`module.QualName`, which moving or renaming it changes. Give every
+durable handler a name, as you give every task one; `check` warns about
+those without one in staging and production (`messaging.W002`).
+`formerly=` lists keys a handler's messages were queued under before:
+its module path before you named it, an older name, or its key while it
+was durable, once it runs in-process. Workers still run the messages
+queued under them with it, and new events queue none under them. Keep
+it until those messages have run.
+
+```python
+@handles(
+    UserCreated,
+    durable=True,
+    name="crm.notify",
+    formerly=["domains.crm.controllers.notify_crm"],
+)
+async def notify_crm(event: UserCreated) -> None: ...
+```
+
+Two handlers never share a key, and one handler has one name, whatever
+events it handles: `subscribe` refuses both with `ValueError`.
 
 ## Delivery is at least once
 
@@ -174,9 +197,9 @@ and `messages retry` queues it again. So:
   module, or renaming it, renames the task, and messages queued under the
   old name wait, then die. `@task(name="billing.push_invoice")` keeps the
   name whatever the code does. `check` warns about tasks without one in
-  staging and production (`messaging.W001`). A durable handler's name is
-  always `module.QualName`: keep a moved handler's old one subscribed for
-  a release, or let its messages drain first.
+  staging and production (`messaging.W001`). So with durable handlers:
+  `name=`, and `formerly=` for the keys they had before
+  ([Durable event handlers](#durable-event-handlers), `messaging.W002`).
 
 The test plugin's `drain` dead-letters such a message at once and
 reports it: in a test's process, every task is there.
@@ -922,6 +945,7 @@ other settings.
 | Id or error | When | What to do |
 | --- | --- | --- |
 | `messaging.W001` | Staging or production: a task registered without `name=`. | Give every task a stable `name=`. |
+| `messaging.W002` | Staging or production: a durable handler subscribed without `name=`. | Give it one, with `formerly=` its old key for the messages queued under it. |
 | `ImproperlyConfigured` at startup | A task's `timeout` (or `TASK_TIMEOUT`) is not under `VISIBILITY_TIMEOUT`; a cron expression never runs; `@ordered` names an argument the task does not have. | Fix the task or the setting. |
 | Refused in staging and production | A broker without TLS or credentials, `guest`, or `memory://`. | Use `amqps://` (or the TLS scheme of your broker) and a user of its own. |
 | A commit that fails | A unit of work defers tasks or publishes events with durable handlers, and messaging is not installed. | Install messaging. |

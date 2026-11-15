@@ -66,6 +66,16 @@ and a status.
   arguments, so `retry` could not run them and `cancel` refused them:
   they stayed for ever, and an alert on the `dead` gauge never cleared.
   `admin.drop_dead` does the same for your own tools (user report W4).
+- Durable handlers take a name: `@handles(Event, durable=True,
+  name="billing.notify")`, or `subscribe(..., name=...)`. Their messages
+  carried `module.QualName`, so renaming or moving one, or making it
+  in-process, left its queued messages to die. `formerly=` lists the keys
+  a handler had before, whose messages workers still run with it.
+  `check` warns about durable handlers without a name in staging and
+  production (`messaging.W002`), `addevent` writes one, and webhooks'
+  handler is `domainkit.contrib.webhooks.fan_out`, formerly its path. Two
+  handlers under one key, or one handler under two, are refused
+  (user report W5).
 
 ### Changed
 

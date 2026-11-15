@@ -171,7 +171,7 @@ from domainkit.ddd import handles
 from domainkit.search import search_backend
 
 
-@handles(ProductRenamed, durable=True)
+@handles(ProductRenamed, durable=True, name="catalog.reindex")
 async def reindex(event: ProductRenamed) -> None:
     await search_backend().index(
         "products", [{"id": str(event.product_id), "name": event.name}]

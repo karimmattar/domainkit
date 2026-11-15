@@ -22,7 +22,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.routing import DatabaseRouter, router
-from domainkit.ddd import DeferredTask, DomainEvent
+from domainkit.ddd import DeferredTask, DomainEvent, event_bus
 from domainkit.lifecycle import Phase
 
 from . import runs
@@ -97,6 +97,7 @@ class MessagingConfig(DomainConfig):
         on_export_subject(self.export_copies)
         on_deployment_warnings(self.blocking_tasks)
         on_deployment_warnings(self.unnamed_tasks)
+        on_deployment_warnings(self.unnamed_handlers)
 
     async def stage_outbox(
         self,
@@ -164,6 +165,33 @@ class MessagingConfig(DomainConfig):
             )
             for spec in all_tasks()
             if not spec.named
+        ]
+
+    def unnamed_handlers(self) -> list[CheckMessage]:
+        """``messaging.W002``: durable handlers without ``name=``, where deployed.
+
+        A durable handler's key is the one its messages carry. Without
+        ``name=`` it is ``module.QualName``: moving or renaming the function,
+        or making it in-process, renames it, and the messages queued under
+        the old key find no handler (user report W5).
+        """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        unnamed = {
+            key.key for key in event_bus.handler_keys() if key.current and not key.named
+        }
+        return [
+            CheckMessage(
+                "messaging.W002",
+                f"The durable handler {key!r} is named after its module's path: "
+                "moving or renaming it, or making it in-process, renames its "
+                "messages, which then wait for a handler of the old name and are "
+                "dead-lettered after MESSAGING.UNKNOWN_TARGET_GRACE.",
+                hint=f"Give it a name of its own: @handles(..., durable=True, "
+                f"name=...), with formerly=[{key!r}] for the messages queued "
+                "under this one.",
+            )
+            for key in sorted(unnamed)
         ]
 
     async def erase_copies(self, subject: str, reason: str) -> Mapping[str, int]:

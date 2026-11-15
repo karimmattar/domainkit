@@ -36,6 +36,25 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.3 to 2.4
+
+2.4 answers a report from a project that runs an identity service on
+domainkit: codes counted per recipient, and staff commands that cannot be
+pointed at the wrong account.
+
+- **Name your durable handlers.** `check --deploy` warns about each one
+  subscribed without `name=` (`messaging.W002`), as it warns about
+  unnamed tasks. Give each a name, with its key until now in
+  `formerly=`, so the messages queued under it still run:
+  `@handles(Event, durable=True, name="billing.notify",
+  formerly=["domains.billing.controllers.notify"])`. `check` names the
+  key in its hint. Keep `formerly=` until those messages have run.
+- **Two durable handlers under one key are refused.** Two functions
+  with one `module.QualName` (closures made by one factory, methods of
+  two instances) shared a key, and workers ran the last one subscribed
+  for the messages of both. `subscribe` now raises `ValueError` at
+  startup: give each its own `name=`.
+
 ## 2.2 to 2.3
 
 2.3 closes a hole in the phone modes: a stolen web session could bind a
