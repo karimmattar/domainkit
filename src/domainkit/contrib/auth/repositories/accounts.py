@@ -5,7 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable
 from functools import reduce
 from operator import or_
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 from uuid import UUID
 
 from sqlalchemy import delete, exists, func, insert, select, update
@@ -69,6 +69,13 @@ MOBILE_NUMBER: Final = "mobile_number"
 """The field that holds a mobile number, where one identifies users."""
 
 
+class StaffMatch(NamedTuple):
+    """The user an operator named, and the field that matched (``match_for_staff``)."""
+
+    user: AbstractBaseUser
+    field: str
+
+
 class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
     """Users of the configured model (``AUTH.USER_MODEL``)."""
 
@@ -96,6 +103,11 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         only for other values. An address that two users share (rows
         written before 1.8, or outside the repository) identifies neither.
         """
+        found = await self._identify(value)
+        return None if found is None else found.user
+
+    async def _identify(self, value: str) -> StaffMatch | None:
+        """The user ``value`` identifies (``find_by_identifier``), and the field."""
         fields = identifier_fields(self.model)
         username_field, email_field = self.model.USERNAME_FIELD, self.model.EMAIL_FIELD
         number = as_mobile_number(value)
@@ -115,18 +127,35 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             else:
                 user = await self._find_by(name, value)
             if user is not None:
-                return user
+                return StaffMatch(user, name)
         return None
 
     async def find_for_staff(self, value: str) -> AbstractBaseUser | None:
-        """The user an operator names: by username, then as ``find_by_identifier``.
+        """The user an operator names (``match_for_staff``)."""
+        match = await self.match_for_staff(value)
+        return None if match is None else match.user
 
-        A username finds its user, as the commands did before 1.8, even
-        where ``AUTH.IDENTIFIERS`` leaves it out; an email address or a
-        mobile number finds one where it identifies users.
+    async def match_for_staff(self, value: str) -> StaffMatch | None:
+        """The user an operator names, and the field that matched.
+
+        The fields of ``AUTH.IDENTIFIERS`` first, as ``find_by_identifier``
+        tries them. Where they leave the username out, it still finds its
+        user, as the commands did before 1.8, but never for a value that
+        is an email address or a mobile number: a username anyone chose,
+        such as ``victim@example.com``, never stands for the account that
+        address or number belongs to.
         """
+        match = await self._identify(value)
+        username_field = self.model.USERNAME_FIELD
+        if (
+            match is not None
+            or username_field in identifier_fields(self.model)
+            or "@" in value
+            or as_mobile_number(value) is not None
+        ):
+            return match
         user = await self.get_by_natural_key(value)
-        return user if user is not None else await self.find_by_identifier(value)
+        return None if user is None else StaffMatch(user, username_field)
 
     async def _find_by(self, name: str, value: str) -> AbstractBaseUser | None:
         """The user whose field ``name`` is ``value``, exactly."""

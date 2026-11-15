@@ -56,16 +56,22 @@ class CibaConfig(DomainConfig):
             on_action_confirmation,
             on_login_gate,
             on_manage_logins,
+            on_password_login,
         )
         from domainkit.contrib.auth.routing import AccountRoutes, on_account_routes
 
-        from .gate import approved_from_the_phone, managed_from_the_phone
+        from .gate import (
+            approved_from_the_phone,
+            managed_from_the_phone,
+            signed_password_login,
+        )
         from .services import PHONE_CONFIRMS, bound_phone
 
         on_account_routes(
             lambda: [AccountRoutes("sign-in", f"{self.name}.api.router")],
             domain=self.label,
         )
+        on_password_login(signed_password_login)
         on_login_gate(approved_from_the_phone)
         on_manage_logins(managed_from_the_phone)
         on_action_confirmation(ActionConfirmation("phone", PHONE_CONFIRMS, bound_phone))

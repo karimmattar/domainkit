@@ -323,7 +323,7 @@ none, with no login first. This is how a user starts once
 
 | Endpoint | Who | Answer |
 | --- | --- | --- |
-| `POST /devices/enroll/code` | anyone | `{"identifier"}`: `202`, always. The worker sends a code to the account. |
+| `POST /devices/enroll/code` | anyone | `{"identifier"}`: `202`, always. The worker sends a code to the account, at an address or a number its user proved ([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)). |
 | `POST /devices/enroll` | anyone, signed by the new key | `{"identifier", "code", "password", "name", "public_key"}`: `201` with the tokens of a login and the `device`. |
 
 1. The app asks for a code. `identifier` is what the user logs in with
@@ -348,11 +348,16 @@ this order:
   code is spent: ask for another.
 - A password staff set (`AUTH.PASSWORD_CHANGE_ON_FIRST_USE`) needs
   `new_password`, as `/login` does: `403 password_change_required`
-  without it.
+  without it, and `422 invalid_password` for one a rule refuses. Both are
+  answered before the code is checked, so it is not spent: send again
+  with a new password.
 
 A refusal never says which proof failed. Refusals count against
-`AUTH.LOGIN_RATE`, for the client's address and for the account; asking
-for codes counts against it for the address.
+`AUTH.LOGIN_RATE`, for the client's address and for the account. Asking
+for a code counts against it for the address, and against
+`AUTH.EMAIL_RATE` for the identifier, as every request that sends a code
+does: callers from many addresses cannot text one number without end,
+and the ways of writing one number share its count.
 
 A user with a bound device enrolls no other: `409 device_already_bound`.
 A new phone is approved from the old one, then binds with `POST /devices`

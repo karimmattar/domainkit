@@ -129,8 +129,13 @@ async def _submit(
 
     Raises:
         ApprovalNotNeeded: No policy of the guard applies to it.
-        InvalidArguments: Its JSON is larger than ``MAX_ARGUMENTS_BYTES``.
+        InvalidArguments: Its JSON is larger than ``MAX_ARGUMENTS_BYTES``,
+            or a field of the guard's ``maker_fields`` names someone else.
     """
+    if not guard.names_its_maker(command, maker):
+        raise InvalidArguments(
+            "The command names someone other than its maker as the one who acts."
+        )
     policy = guard.policy_for(command)
     if policy is None:
         raise ApprovalNotNeeded("This command needs no approval: run it directly.")
@@ -171,8 +176,8 @@ async def submit_request(
     """
     maker = _person(command.maker, MAKER)
     guard = guard_for(command.action)
-    try:
-        made = guard.load(command.arguments)
+    try:  # Who acts is the maker, whatever the arguments say.
+        made = guard.load(guard.with_maker(command.arguments, maker))
     except ValidationError:
         raise InvalidArguments("The arguments do not make the command.") from None
     return await _submit(guard, made, maker, uow)
@@ -399,6 +404,10 @@ def _rebuild(guard: Guard, request: ApprovalRequest) -> object:
     if guard.dump(command) != request.arguments:
         raise InvalidArguments(
             "The command reads otherwise now than when it was approved."
+        )
+    if not guard.names_its_maker(command, request.maker):
+        raise InvalidArguments(
+            "The command names someone other than its maker as the one who acts."
         )
     if request.approvals_verified(guard.parties_of(command)) < request.required:
         raise FingerprintMismatch(
