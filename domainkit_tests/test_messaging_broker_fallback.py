@@ -17,11 +17,13 @@ import pytest
 
 from domainkit.apps import registry
 from domainkit.broker import BrokerUnavailable, MemoryBroker
+from domainkit.conf import override_settings
 from domainkit.contrib.messaging import MessagingSettings, Worker, enqueue
 from domainkit.contrib.messaging.dispatch import BrokerWorkers
 from domainkit.contrib.messaging.ordering import Promoted
 from domainkit.contrib.messaging.tables import DONE
 from domainkit_tests.test_messaging import (
+    BROKERED,
     broker_tables,
     brokered,
     outbox,
@@ -148,7 +150,10 @@ async def test_the_next_message_of_a_key_waits_for_the_relay_while_away(
     assert breaker.state == "open"
 
     breaker.succeeded()
-    await enqueue(send_email, to="ada@example.com")
+    # Only the relay publishes: on commit, the commit publisher would race it
+    # for the message's lease, and the relay find it taken.
+    with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
+        await enqueue(send_email, to="ada@example.com")
     (row,) = await outbox()
     await relay(Promoted(row["id"], "emails"))  # type: ignore[arg-type]
     assert str(row["id"]) in outage.published
