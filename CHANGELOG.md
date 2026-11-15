@@ -75,6 +75,11 @@ and a status.
   before the code is checked, and the user sends again with the same code
   instead of asking for a second message (`auth.integration.check_first_use`)
   (user report A10).
+- A sign-in or step-up the phone approved answers the page's next poll at
+  once, however soon it comes: an early poll (a second tab, a retry) got
+  `slow_down`, five seconds more, after the phone had already answered.
+  The interval still holds back polls of a request that waits (user
+  report L2).
 
 ### Security
 

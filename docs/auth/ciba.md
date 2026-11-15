@@ -137,7 +137,7 @@ handle it got (`request`, or CIBA's `auth_req_id`). The poll answers:
 | --- | --- |
 | tokens | Approved. The handle is spent: a second poll gets `sign_in_unknown`. |
 | `authorization_pending` | Not answered yet. Poll again after `interval`. |
-| `slow_down` | This poll came before `interval` was up. The interval grows by 5 seconds, from now on. |
+| `slow_down` | The phone has not answered, and this poll came before `interval` was up. The interval grows by 5 seconds, from now on. A request the phone approved or denied answers at once, however soon it is polled. |
 | `access_denied` | The phone denied it. |
 | `expired_token` | Its time is up: `REQUEST_TTL` (2 minutes) to answer a push or a scanned QR code, or `QR_TTL` for a QR code no phone scanned. |
 | `sign_in_unknown` | No request has the handle, or it was redeemed, or it is another initiator's. |
@@ -602,7 +602,7 @@ other, not `unknown_user_id`.
 | `APPROVE_LOGINS` | `False` | Make the mobile app the user's identity ([above](#the-mobile-app-as-identity)); `"always"` refuses users with no bound device too ([strict mode](#strict-mode-every-login-from-the-phone)). |
 | `REQUEST_TTL` | 2 minutes (at most 10) | How long a push request waits for the phone. |
 | `QR_TTL` | 60 seconds (at most 5 minutes) | How long a QR code can be scanned; once scanned, `REQUEST_TTL` to answer it. |
-| `INTERVAL` | 5 (1 to 60) | Seconds between polls; sooner gets `slow_down`. |
+| `INTERVAL` | 5 (1 to 60) | Seconds between polls; sooner gets `slow_down` while the phone has not answered. |
 | `MAX_PENDING` | 3 (1 to 20) | Push requests a user may have waiting; past it, no push is sent. |
 | `REPORT_COOLDOWN` | 15 minutes (at most 1 day) | How long no push reaches a user who reported a request. |
 | `NUMBER_MATCHING` | `True` | Web push sign-ins show two digits the phone must type. |
