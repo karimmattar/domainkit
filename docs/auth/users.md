@@ -126,7 +126,8 @@ are the methods you use most:
 | `uow.users.create_user(username, password=None, **fields)` | Hashes the password and adds the user. Without a password, the password is unusable. It does not run the validators: call `validate_password` first. |
 | `uow.users.create_superuser(username, password=None, **fields)` | The same, with `is_superuser`, and `is_staff` if the model has it. |
 | `uow.users.get(user_id)`, `get_by_natural_key(username)` | One user, by id or by username. |
-| `uow.users.find_for_staff(value)` | The user an operator names: by username, then by `find_by_identifier`. The commands use it. |
+| `uow.users.match_for_staff(value)` | The user an operator names, and the field that matched (`StaffMatch(user, field)`): by `find_by_identifier` first; then, where `AUTH.IDENTIFIERS` leaves usernames out, by username, for a value that is neither an email address nor a mobile number. The commands use it. |
+| `uow.users.find_for_staff(value)` | The user of `match_for_staff`, alone. |
 | `uow.users.find_by_email(email)` | Every user with that address, in any case of its ASCII letters. |
 | `uow.users.set_password(user, password)` | Hashes and stores a new password; `None` makes it unusable. Refuses a password of the user's history (`PASSWORD_HISTORY`). |
 | `uow.users.password_hash(user_id)` | The stored hash, read from the table. |

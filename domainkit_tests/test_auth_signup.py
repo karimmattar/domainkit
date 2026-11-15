@@ -165,6 +165,22 @@ def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None
     assert (used.status_code, used.json()["code"]) == (400, "invalid_verification_code")
 
 
+def test_a_username_is_refused_where_usernames_identify_no_one(identity: Api) -> None:
+    """Where ``AUTH.IDENTIFIERS`` leaves usernames out, nobody chooses one.
+
+    Nobody logs in with it there: a name such as someone else's address
+    would only stand for that person in an operator's command.
+    """
+    client = identity(SIGNUP_ENABLED=True, IDENTIFIERS=("email", "mobile_number"))
+
+    named = signup(client, username="victim@example.com", email="mallory@example.com")
+    plain = client.post("/auth/signup", json={"email": "mallory@example.com"})
+
+    assert (named.status_code, named.json()["code"]) == (422, "unknown_user_field")
+    assert plain.status_code == 202
+    assert [stored["username"] for stored in pending()] == [None]
+
+
 def test_signups_tell_nobody_else_whether_an_address_has_an_account(
     identity: Api,
 ) -> None:

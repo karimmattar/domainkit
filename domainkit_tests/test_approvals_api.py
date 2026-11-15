@@ -17,10 +17,17 @@ from starlette.requests import HTTPConnection
 
 from domainkit.clock import freeze_time
 from domainkit.contrib.accounting import AccountingUnitOfWork
-from domainkit.contrib.approvals import Policy, guard
+from domainkit.contrib.approvals import (
+    InvalidArguments,
+    Policy,
+    guard,
+    requires_approval,
+    submit_command,
+)
 from domainkit.contrib.approvals.rules import REFUSED_BY, MayApprove
 from domainkit.contrib.auth import AuthUnitOfWork, StepUp
 from domainkit.contrib.messaging.testing import drain
+from domainkit.ddd import Command
 from domainkit.http import get_asgi_application
 from domainkit.http.access import AnonymousPrincipal, BasePermission, open_routes
 from domainkit.management.base import run_async
@@ -599,3 +606,80 @@ def test_with_superuser_approvers_a_superuser_may_give_their_own_account_the_say
     assert given.status_code == 200, given.json()
     assert approved.json()["status"] == "approved", approved.json()
     assert _is_superuser(target)
+
+
+class Invite(Command):
+    """A sample command whose actor is one of its fields."""
+
+    email: str
+    invited_by: str
+
+
+async def _invite(command: Invite, uow: AccountingUnitOfWork) -> None:
+    """Nothing to do: the tests look at what was submitted."""
+
+
+invite = requires_approval("tests.invite")(_invite)
+invite_quietly = requires_approval("tests.invite_quietly")(_invite)
+
+
+def test_the_maker_is_who_acts_whatever_the_arguments_say(client: TestClient) -> None:
+    """``maker_fields`` are the maker's: a maker cannot name another actor.
+
+    ``http=False`` keeps a command off the submit route altogether, and a
+    command the project submits must name its maker there too.
+    """
+    for action, http in (("tests.invite", True), ("tests.invite_quietly", False)):
+        guard(
+            action,
+            invite if http else invite_quietly,
+            unit_of_work=AccountingUnitOfWork,
+            policies=[Policy("tests.invites", permission="accounting.add_account")],
+            maker_fields=["invited_by"],
+            http=http,
+            domain="alpha",
+        )
+    maker_id = str(create_user("maker"))
+    grant("maker", "approvals.add_approvalrequest", "approvals.view_approvalrequest")
+    maker = token_for("maker")
+    someone = str(uuid4())
+
+    made = submit(
+        client, maker, "tests.invite", {"email": "x@example.com", "invited_by": someone}
+    )
+    quiet = submit(
+        client,
+        maker,
+        "tests.invite_quietly",
+        {"email": "x@example.com", "invited_by": maker_id},
+    )
+
+    assert made.status_code == 201, made.json()
+    assert made.json()["arguments"] == {
+        "email": "x@example.com",
+        "invited_by": maker_id,
+    }
+    problem(quiet, 404, "unknown_action")
+    with pytest.raises(InvalidArguments, match="other than its maker"):
+        run_async(
+            submit_command(
+                "tests.invite",
+                Invite(email="x@example.com", invited_by=someone),
+                maker=maker_id,
+            )
+        )
+
+
+def test_maker_fields_must_be_fields_of_the_command() -> None:
+    """A typo in ``maker_fields`` is refused when the guard is made."""
+    from domainkit.exceptions import ImproperlyConfigured
+
+    with pytest.raises(ImproperlyConfigured, match="maker_fields names inviter"):
+        guard(
+            "tests.invite",
+            invite,
+            unit_of_work=AccountingUnitOfWork,
+            policies=[Policy("tests.invites", permission="accounting.add_account")],
+            maker_fields=["inviter"],
+            domain="alpha",
+        )

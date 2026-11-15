@@ -7,10 +7,11 @@ from collections.abc import Callable
 from domainkit.management.base import BaseCommand, CommandError, run_async
 
 from ...exceptions import InvalidPassword
-from ...models import AbstractBaseUser
+from ...models import AbstractBaseUser, UserId
 from ...settings import auth_settings
 from ...uow import AuthUnitOfWork
 from ...validators import validate_password
+from .. import user_for_staff
 
 
 class Command(BaseCommand):
@@ -59,8 +60,6 @@ class Command(BaseCommand):
             )
         username = username or getpass.getuser()
         user = run_async(self._find(username))
-        if user is None:
-            raise CommandError(f"User {username!r} does not exist.")
         self.write(f"Changing password for user {username!r}")
         try:
             for _ in range(self.attempts):
@@ -70,7 +69,7 @@ class Command(BaseCommand):
                     continue
                 try:
                     validate_password(password, user)
-                    run_async(self._save(username, password, temporary=temporary))
+                    run_async(self._save(user.id, password, temporary=temporary))
                 except InvalidPassword as exc:  # A rule, or the history.
                     self.stderr.write("\n".join(exc.errors) + "\n")
                     continue
@@ -83,17 +82,17 @@ class Command(BaseCommand):
             f"{self.attempts} attempts."
         )
 
-    async def _find(self, username: str) -> AbstractBaseUser | None:
-        """The user called ``username``."""
+    async def _find(self, username: str) -> AbstractBaseUser:
+        """The user ``username`` names (``user_for_staff``)."""
         async with AuthUnitOfWork() as uow:
-            return await uow.users.find_for_staff(username)
+            return await user_for_staff(uow.users, username, self.note)
 
-    async def _save(self, username: str, password: str, *, temporary: bool) -> None:
+    async def _save(self, user_id: UserId, password: str, *, temporary: bool) -> None:
         """Hash and store the password; the user's tokens stop working."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.find_for_staff(username)
+            user = await uow.users.find(user_id)
             if user is None:
-                raise CommandError(f"User {username!r} does not exist.")
+                raise CommandError("The user was deleted meanwhile.")
             await uow.users.set_password(user, password, temporary=temporary)
             await uow.tokens.revoke_user(user.id)
             await uow.commit()

@@ -2,8 +2,8 @@
 
 from argparse import ArgumentParser
 
-from domainkit.contrib.auth.integration import UserLoggedOut
-from domainkit.management.base import BaseCommand, CommandError, run_async
+from domainkit.contrib.auth.integration import UserLoggedOut, user_for_staff
+from domainkit.management.base import BaseCommand, run_async
 
 from ...events import DeviceUnbound
 from ...stores import DevicesUnitOfWork
@@ -39,9 +39,7 @@ class Command(BaseCommand):
     async def _unbind(self, username: str) -> int:
         """Unbind, forget the tokens, end the sessions; record each unbinding."""
         async with DevicesUnitOfWork() as uow:
-            user = await uow.users.find_for_staff(username)
-            if user is None:
-                raise CommandError(f"User {username!r} does not exist.")
+            user = await user_for_staff(uow.users, username, self.note)
             devices = await uow.devices.of_user(user.id)
             if not devices:
                 return 0
