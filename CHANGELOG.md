@@ -115,6 +115,13 @@ and a status.
   `CAPTCHA.HOSTNAMES` refuses a token solved on another site's page, with
   `auth.W008` where deployed while it is empty; `CAPTCHA.CHECK_ACTION`
   refuses one solved for another form (user report A11).
+- An approval request's maker can no longer name someone else as the one
+  who acts. `POST /approvals/requests` took every field of the command
+  from the client, so a command with an `invited_by` or `granted_by` ran
+  as if another person had made it. `guard(..., maker_fields=["invited_by"])`
+  sets those fields to the maker at submit and checks them at run;
+  `guard(..., http=False)` keeps a command off the submit route (user
+  report P2).
 
 ## [2.3.0] - 2026-11-11
 
