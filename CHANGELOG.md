@@ -57,7 +57,8 @@ and a status.
   `JSONTuple` column type (`domainkit.db`): a JSON array, read back as a
   tuple on SQLite and PostgreSQL. Such a field was a `TypeError`; a type
   a project registered for `tuple` still wins
-  ([Tables from domain classes](docs/databases.md#tables-from-domain-classes)) (user report D2).
+  ([Tables from domain classes](docs/databases.md#tables-from-domain-classes))
+  (user report D2).
 - A `@use_case` parameter hinted `Annotated[str, Field(repr=False)]`
   (pydantic's `Field`) is a command field with `repr=False`, so a
   password can be a parameter: the command's `repr` and its log lines
@@ -86,6 +87,14 @@ and a status.
   the client in `ARCHITECTURE.FORBIDDEN_LIBRARIES` still forbids it
   (`ALLOWED_MODULES`, [Layer rules](docs/reference/settings.md#layer-rules),
   ADR 0003) (user report D2).
+- The ledger docs say why PYSEC-2026-1325 (CVE-2024-23342, a timing
+  attack on python-ecdsa's signing, which the `immudb` extra installs)
+  does not apply: immudb's SDK only verifies the server's signed states
+  with its public key, which the advisory leaves unaffected. A project
+  ignores it with `pip-audit --ignore-vuln PYSEC-2026-1325`; a test keeps
+  every advisory CI ignores explained
+  ([Trust in the ledger](docs/databases.md#trust-in-the-ledger))
+  (user report D2).
 
 ## [2.3.0] - 2026-11-11
 

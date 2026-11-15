@@ -1619,6 +1619,18 @@ Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: a
   still land afterwards. `create`, and `append(..., unchanged_since=...)`,
   make a retried or late write land at most once. Shutdown waits up to
   `TIMEOUT` for a busy client, which then closes when its call returns.
+- **An advisory that does not apply.** The `immudb` extra installs
+  `ecdsa` (python-ecdsa), which pip-audit reports as PYSEC-2026-1325
+  (CVE-2024-23342, GHSA-wj6h-64fc-37mp): a timing attack (Minerva) on
+  P-256 that leaks the nonce of a signature made with a private key,
+  and with it the key. Signing, key generation, and ECDH are affected;
+  verification is not, the advisory says, and no fix is planned. The
+  client only verifies: immudb's SDK reads `SERVER_SIGNING_KEY`, a
+  public key, with `ecdsa.VerifyingKey.from_pem`, and checks each state's
+  signature with `VerifyingKey.verify`. domainkit imports only ecdsa's
+  `BadSignatureError`. The private key stays with the immudb server,
+  which signs. Ignore the advisory by its id, as domainkit's CI does:
+  `pip-audit --ignore-vuln PYSEC-2026-1325`.
 - **Speed.** Calls run on one thread per ledger, in order. On a laptop
   (immudb in Docker, synced, with TLS and signed states) that was about
   70 verified writes and 900 verified reads per second per process.
