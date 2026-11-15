@@ -1,6 +1,6 @@
 # 0014. Keep the outbox as the record; use the broker to dispatch
 
-- Status: Accepted
+- Status: Accepted; amended by [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md)
 - Date: 2026-10-14
 
 ## Context

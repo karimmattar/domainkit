@@ -8,7 +8,9 @@ finds which server runs, and its WebSocket limit, from its command line
 ``GRANIAN_*``, which both read, and ``GUNICORN_CMD_ARGS``);
 ``limit_warnings`` says what to change. ``check`` lists them in staging and
 production, from the environment, and a deployed application logs them
-when it starts.
+when it starts. ``check`` runs apart from the server, often in another
+container (``check --deploy`` in a deployment job): there it sees the
+variables set where it runs, never the server's arguments.
 
 uvicorn is found however it is started: ``uvicorn`` itself, gunicorn with
 its worker class (``-k uvicorn.workers.UvicornWorker``, or
@@ -21,9 +23,10 @@ are not recognised: nothing is said about them. A value that cannot be
 read is treated as unknown too, never as an error: warning code must not
 stop an application starting.
 
-The request line and headers have the server's own default limits (h11's
-16 KiB under uvicorn), already below any body limit, so they are not
-checked against it.
+The request line and headers have the server's own limits, not checked
+against the body limit: h11's 16 KiB under uvicorn, and Granian's
+``--http1-buffer-size``, over 500 KB unless set, which "Server limits"
+sets to 16 KiB.
 
 A server that listens on a unix socket (``uvicorn --uds``, ``granian
 --uds``, ``gunicorn --bind unix:...``, or their ``UVICORN_UDS``,

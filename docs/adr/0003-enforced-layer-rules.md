@@ -1,6 +1,6 @@
 # 0003. Layer rules enforced by `check`
 
-- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), and 2026-10-25 (at the end)
+- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), and 2026-10-25 and 2026-11-15 (at the end)
 - Date: 2026-10-14
 
 ## Context
@@ -42,3 +42,19 @@ packages are exempt from the cross-domain rule.
   and an unknown layer or a rule on the domain layer's allowlist is refused
   when the settings load. Before, a project could change the rules only by
   patching the module before `check` ran.
+
+## Amendment (2026-11-15, 2.4)
+
+- The infrastructure layer may import `domainkit.http.client`, the
+  outgoing HTTP client ([ADR 0050](0050-outgoing-http-client.md)).
+  "No web libraries" keeps the serving side out of adapters (FastAPI,
+  Starlette, and `domainkit.http`'s routing and errors). The rule forbids
+  `domainkit.http` by prefix, so it also forbade the client that ADR 0050
+  put in that package, though calling another service is what an adapter
+  is for. A project had added a layer of its own only to hold its HTTP
+  calls. Every other `domainkit.http` module stays forbidden in
+  infrastructure, and the whole package in the application layer.
+- The exception is `domainkit.architecture.ALLOWED_MODULES`. It lifts
+  only a forbidden entry less specific than itself, so a project that
+  names `domainkit.http.client` in `FORBIDDEN_LIBRARIES` still forbids
+  it. `ARCHITECTURE` adds no exceptions: a setting adds rules only.

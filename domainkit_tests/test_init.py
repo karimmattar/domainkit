@@ -25,7 +25,7 @@ from domainkit.management import (
     call_command,
     execute_from_command_line,
 )
-from domainkit.management.commands.init import TEMPLATE_DIR, requirement
+from domainkit.management.commands.init import TEMPLATE_DIR, docs_url, requirement
 from domainkit.utils import formatting
 from domainkit_tests.test_sec12c_2_image_bakes_env_file import ignored
 
@@ -606,9 +606,7 @@ def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> 
     ]
     assert all(stage.index(line) < user for line in stage if line.startswith("COPY "))
     assert "    BILLING_API_SETTINGS_MODULE=config.settings.production" in stage
-    cmd = json.loads(
-        " ".join(dockerfile.split("CMD ", 1)[1].split("\\\n")).replace("\n", " ")
-    )
+    cmd = image_command(dockerfile)
     assert cmd[:4] == ["uvicorn", "config.asgi:application", "--app-dir", "src"]
     assert cmd[4:8] == ["--host", "0.0.0.0", "--port", "8000"]  # noqa: S104
     # A lock, when the project keeps one, is installed by its hashes (A7-2).
@@ -640,6 +638,103 @@ def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> 
     assert [path for path in left_out if not ignored(patterns, path)] == []
     gitignored = (project / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert {".env", ".env.*", "*.env", "secrets/"} <= set(gitignored)
+
+
+def image_command(dockerfile: str) -> list[str]:
+    """The ``CMD`` of a ``Dockerfile``, its lines joined as Docker joins them."""
+    command: list[str] = json.loads(
+        " ".join(dockerfile.split("CMD ", 1)[1].split("\\\n")).replace("\n", " ")
+    )
+    return command
+
+
+def test_init_writes_an_image_that_serves_with_granian(tmp_path: Path) -> None:
+    """``--server granian``: the same project, its image served by Granian.
+
+    The image writes ``LOGGING`` for Granian's main process, then runs
+    Granian with the options of "Server limits", its notes linking to
+    this release's documentation. The project depends on Granian's extra,
+    and uvloop's for the loop it runs; all else is the uvicorn image's
+    (user report S1).
+    """
+    project, other = tmp_path / "billing", tmp_path / "uvicorn"
+
+    output = init("billingAPI", str(project), "--server", "granian")
+    init("billingAPI", str(other))
+
+    files = {
+        path.relative_to(project).as_posix()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    assert files == PROJECT_FILES
+    dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
+    uvicorn = (other / "Dockerfile").read_text(encoding="utf-8")
+    assert "{{" not in dockerfile
+    shell, run, command = image_command(dockerfile)
+    assert (shell, run) == ("sh", "-c")
+    written, served = command.split(" && ")
+    assert written == "python manage.py logconfig --output /tmp/logging.json"
+    granian = shlex.split(served)
+    assert granian[:5] == [
+        "exec",
+        "granian",
+        "--interface",
+        "asgi",
+        "config.asgi:application",
+    ]
+    assert granian[5:11] == [
+        "--working-dir",
+        "src",
+        "--host",
+        "0.0.0.0",  # noqa: S104 - in the container, behind the proxy.
+        "--port",
+        "8000",
+    ]
+    log_config = granian[granian.index("--log-config") + 1]
+    assert log_config == "/tmp/logging.json"  # noqa: S108 - the container's own.
+    header = dockerfile.split("FROM", 1)[0]
+    assert "with Granian" in header
+    assert "GRANIAN_WORKERS" in header
+    docs = docs_url(domainkit.__version__)
+    assert f"({docs}/reference/servers.md#granian)" in dockerfile
+    assert f"({docs}/reference/servers.md);" in uvicorn
+    assert "docs/reference/servers.md" not in dockerfile.replace(f"{docs}/", "")
+
+    def stages(text: str) -> str:
+        return text.split("\nFROM scratch AS wheels\n", 1)[1].split("\nEXPOSE 8000\n")[
+            0
+        ]
+
+    assert stages(dockerfile) == stages(uvicorn)
+    pyproject = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = ("granian", "postgres", "redis", "sqlite", "uvloop")
+    assert pyproject["project"]["dependencies"] == [
+        requirement(domainkit.__version__, extras)
+    ]
+    assert (
+        '  pip install "domainkit[granian,postgres,redis,sqlite,uvloop,testing]"'
+        in output
+    )
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("2.4.0", "https://github.com/karimmattar/domainkit/blob/v2.4.0/docs"),
+        ("0.0.0+unknown", "https://github.com/karimmattar/domainkit/blob/main/docs"),
+        ("2.4.0rc1", "https://github.com/karimmattar/domainkit/blob/main/docs"),
+    ],
+)
+def test_the_templates_link_to_their_releases_documentation(
+    version: str, expected: str
+) -> None:
+    """A release's tag, as the package's own links; ``main`` from a checkout.
+
+    The notes once named a path of the repository, which a project does
+    not have (user report S1).
+    """
+    assert docs_url(version) == expected
 
 
 def test_the_projects_workflow_passes_on_a_new_project(tmp_path: Path) -> None:

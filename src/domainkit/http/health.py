@@ -6,18 +6,20 @@ are always logged. Results are reused for ``READINESS_CACHE_SECONDS`` from
 when their round of checks ended, and probes that come during a round wait
 for it, so a flood of probes costs at most one round of checks per interval.
 
-A round checks domains, databases, ledgers, and caches at once, each check
-within ``READINESS_TIMEOUT``, so a round takes about that long at worst. It
-runs as a background task in a clean context (``domainkit.tasks.spawn``):
-it serves every waiting probe, so it carries none's request. A group of
-checks that raises instead of reporting (a bug in a domain's ``check``)
-counts as failing, under its group's name (``GROUPS``), and is logged:
-the round is still kept, so probes get a 503, never a 500 each.
+A round checks domains, databases, ledgers, and caches at once (and each
+broker, with ``READINESS_BROKERS``), each check within ``READINESS_TIMEOUT``,
+so a round takes about that long at worst. It runs as a background task in
+a clean context (``domainkit.tasks.spawn``): it serves every waiting probe,
+so it carries none's request. A group of checks that raises instead of
+reporting (a bug in a domain's ``check``) counts as failing, under its
+group's name (``GROUPS``), and is logged: the round is still kept, so
+probes get a 503, never a 500 each.
 """
 
 import asyncio
 import logging
 import time
+from collections.abc import Iterable
 from typing import Final
 
 from fastapi import APIRouter, Request, status
@@ -30,11 +32,11 @@ from domainkit.db.connections import connections
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.tasks import spawn
 
-__all__ = ["router"]
+__all__ = ["broker_failures", "readiness_failures", "router"]
 
 READINESS_TASK: Final = "domainkit.readiness"
 """The name of a round of readiness checks' task."""
-GROUPS: Final = ("domains", "databases", "ledgers", "caches")
+GROUPS: Final = ("domains", "databases", "ledgers", "caches", "brokers")
 """What a round checks, in order: how a group that raised is named as failing."""
 
 logger = logging.getLogger(__name__)
@@ -97,12 +99,27 @@ async def _check_ledgers(seconds: float) -> list[str]:
 
 async def _check(state: State) -> list[str]:
     """Run every check; keep the result, timed from when the round ended."""
-    seconds = settings.READINESS_TIMEOUT
+    failing = await readiness_failures()
+    state.readiness = (time.monotonic(), failing)
+    return failing
+
+
+async def readiness_failures(seconds: float | None = None) -> list[str]:
+    """What ``/ready`` finds failing: domains, databases, ledgers, caches, brokers.
+
+    Each check is bounded by ``seconds`` (``READINESS_TIMEOUT``), and all
+    run at once. A group that raises counts as failing under its name
+    (``GROUPS``), and is logged. For a process that serves no ``/ready``
+    of its own, such as the worker (``runworker --heartbeat-file``).
+    """
+    within = settings.READINESS_TIMEOUT if seconds is None else seconds
+    brokers = settings.BROKERS if settings.READINESS_BROKERS else {}
     groups = await asyncio.gather(  # Each bounded: wait for all, leave none running.
-        registry.check(seconds),
-        connections.check_all(seconds),
-        _check_ledgers(seconds),
-        caches.check_all(seconds),
+        registry.check(within),
+        connections.check_all(within),
+        _check_ledgers(within),
+        caches.check_all(within),
+        broker_failures(brokers, within),
         return_exceptions=True,
     )
     failing: list[str] = []
@@ -114,5 +131,30 @@ async def _check(state: State) -> list[str]:
             raise group
         else:
             failing.extend(group)
-    state.readiness = (time.monotonic(), failing)
     return failing
+
+
+async def broker_failures(aliases: Iterable[str], seconds: float) -> list[str]:
+    """Each broker of ``aliases`` that does not answer within ``seconds``.
+
+    Named ``broker:<alias>``, and logged. On RabbitMQ a check opens and
+    closes a channel: a round trip.
+    """
+    names = list(aliases)
+    if not names:  # The served application loads no broker (PERF-15).
+        return []
+    from domainkit.broker import BrokerError, brokers
+
+    async def check(alias: str) -> str | None:
+        try:
+            async with asyncio.timeout(seconds):
+                await brokers[alias].check()
+        except (BrokerError, TimeoutError, OSError) as exc:
+            logger.warning(
+                "Broker %r is not ready: %s", alias, exc or type(exc).__name__
+            )
+            return f"broker:{alias}"
+        return None
+
+    found = await asyncio.gather(*(check(alias) for alias in names))
+    return [each for each in found if each is not None]

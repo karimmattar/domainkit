@@ -50,7 +50,7 @@ import threading
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from weakref import WeakKeyDictionary, WeakSet
 
 from domainkit.exceptions import ImproperlyConfigured
@@ -73,6 +73,7 @@ __all__ = [
     "on_seed",
     "on_shutdown",
     "on_startup",
+    "unregistered_methods",
 ]
 
 
@@ -407,3 +408,38 @@ on_deployment_warnings: HookPoint[DeploymentCheck] = HookPoint(
 )
 """Warnings ``check`` lists: ``()``. Weak but valid settings where deployed,
 none elsewhere; code to change (a ``def`` the loop awaits), anywhere."""
+
+LIFECYCLE_METHODS: Final = ("start", "stop")
+"""What domainkit's own apps name the methods they register on ``on_startup``
+and ``on_shutdown`` (``on_startup(self.start)``)."""
+
+
+def unregistered_methods(registry: "DomainRegistry | None" = None) -> list[str]:
+    """``apps.W001``: each ``start`` or ``stop`` coroutine method no point holds.
+
+    Since 0.13 only the functions a domain registers run, and a method of
+    these names, written as domainkit's own apps write theirs, does nothing
+    until ``ready()`` registers it: a check it makes at startup never runs,
+    without a word (user report C1). In every environment.
+    """
+    from domainkit.checks import CheckMessage  # The checks import the domains.
+
+    registry = registry or _registry()
+    held = [hook.call for point in list(_points) for hook in point.hooks(registry)]
+    found: list[str] = []
+    for config in registry:
+        for name in LIFECYCLE_METHODS:
+            method = getattr(config, name, None)
+            if method is None or not _is_async(method) or method in held:
+                continue
+            found.append(
+                CheckMessage(
+                    "apps.W001",
+                    f"Domain {config.label!r}: {type(config).__qualname__}.{name} "
+                    "is a coroutine method that no hook point holds, so nothing "
+                    "calls it.",
+                    f"Register it in ready(): on_startup(self.{name}) or "
+                    f"on_shutdown(self.{name}); or name a helper otherwise.",
+                )
+            )
+    return found

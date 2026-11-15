@@ -204,6 +204,7 @@ domains' own models keep those keys as secrets.
 | `SCOPED_CREDENTIALS` | `"refuse"` | What happens to credentials limited to scopes, on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`). `"refuse"` answers 403. `"warn"` lets them through, as 0.10 did by default, with a security log line once per route for a while ([Scopes on every route](../auth/authentication.md#scopes-on-every-route)). |
 | `ASGI_APPLICATION` | `None` | The `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them). `auto`: uvloop when the `uvloop` extra is installed. `asyncio`: always asyncio's own. `uvloop`: uvloop, or a configuration error. |
+| `RUNSERVER_SERVER` | `"uvicorn"` | The server `runserver` starts when its `--server` names none: `uvicorn` or `granian` (the `granian` extra). Set it in the development settings to serve with Granian every time. |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](../runtime.md#logging-and-error-reports)). The settings `init` writes use it. |
 | `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages), on a reporting thread and in the caller's context. 100 reports may wait; more are dropped and counted. A reporter that raises is logged and skipped. |
 | `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run after a commit, up to 3600. A handler still running then is cancelled, logged, and reported (`HandlerTimedOut`), and the request goes on. `event_bus.subscribe(..., timeout=30)` sets one handler's limit. `durable=True` runs a handler from the outbox instead ([runtime.md](../runtime.md#event-handlers)). |
@@ -218,7 +219,9 @@ domains' own models keep those keys as secrets.
   domain`;
 - the domain layer imports only the standard library, `domainkit.ddd`,
   `domainkit.clock`, `domainkit.money`, and itself;
-- the application layer uses no web or database library;
+- the application layer uses no web or database library, and the
+  infrastructure layer no web library but the outgoing HTTP client
+  (`domainkit.http.client`), which adapters call other services with;
 - another domain is reached only through its `application` or
   `domain.events`.
 
