@@ -44,7 +44,7 @@ from domainkit.ddd.fields import (
     UnknownField,
 )
 from domainkit.ddd.markers import URL, Email, IPAddress, IPAddressFormat, Slug
-from domainkit.ddd.messages import UNSET, Command, Query, Unset
+from domainkit.ddd.messages import UNSET, Command, Query, Unset, fingerprint
 from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.personal import Counted, Personal, fields_about
@@ -144,6 +144,7 @@ __all__ = [
     "ValueObject",
     "event_bus",
     "fields_about",
+    "fingerprint",
     "handles",
     "in_memory",
     "use_case",
