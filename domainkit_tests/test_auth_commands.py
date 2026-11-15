@@ -6,6 +6,7 @@ import io
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -18,6 +19,7 @@ from domainkit.contrib.auth import (
     check_password,
 )
 from domainkit.contrib.auth.management.commands import changepassword, createsuperuser
+from domainkit.contrib.auth.models import UserId
 from domainkit.management import CommandError, call_command
 from domainkit.management.base import BaseCommand, run_async
 from domainkit_tests.conftest import FAST_HASHER
@@ -286,7 +288,9 @@ def test_changepassword(
     )
     assert asked == ["Password: ", "Password (again): "] * 3
     assert stdout.getvalue() == "Changing password for user 'alice'\n"
-    assert stderr.getvalue().splitlines() == [
+    found, *errors = stderr.getvalue().splitlines()
+    assert found.startswith("'alice' is user ")
+    assert errors == [
         "Passwords do not match. Please try again.",
         *WEAK_ERRORS,
         "The password is too similar to the username.",
@@ -338,8 +342,9 @@ def test_changepassword_finds_the_user(
     prompts(changepassword.Command, secret=[STRONG, STRONG])
     call_command("changepassword", stdout=io.StringIO())
 
-    with pytest.raises(CommandError, match="'ghost' does not exist"):
-        run_async(changepassword.Command()._save("ghost", STRONG, temporary=False))
+    gone = UserId(uuid4())  # Deleted between the prompts and the save.
+    with pytest.raises(CommandError, match="deleted meanwhile"):
+        run_async(changepassword.Command()._save(gone, STRONG, temporary=False))
 
 
 def test_createsuperuser_bypasses_nothing_where_deployed(
@@ -471,6 +476,50 @@ def test_operator_commands_find_a_user_by_email_or_number(
         "Password changed successfully for user 'Nina@Example.com'",
         "Deleted 1 token(s) of '+33612345678'.",
         "'nina@example.com' had no second factor.",
+        "'omar' had no second factor.",
+    ]
+
+
+def test_an_address_never_names_the_account_whose_username_it_is(
+    auth_project: str,
+) -> None:
+    """Commands look at the identifiers first, and say which field matched.
+
+    Mallory chose ``victim@example.com`` as her username, which signups
+    accepted before 2.4 where usernames identify no one. Support resetting
+    the victim's second factor acts on the victim's account, and an address
+    no account has finds nobody, rather than the username that spells it.
+    """
+
+    async def add() -> tuple[str, str]:
+        async with AuthUnitOfWork() as uow:
+            await uow.users.create_user(
+                "victim@example.com", STRONG, email="mallory@example.com"
+            )
+            await uow.users.create_user(
+                "ghost@example.com", STRONG, email="casper@example.com"
+            )
+            victim = await uow.users.create_user(
+                None, STRONG, email="victim@example.com"
+            )
+            omar = await uow.users.create_user("omar", STRONG, email="omar@example.com")
+            await uow.commit()
+        return str(victim.id), str(omar.id)
+
+    out, notes = io.StringIO(), io.StringIO()
+    with by_email_or_number():
+        victim, omar = run_async(add())
+        call_command("resetmfa", "victim@example.com", stdout=out, stderr=notes)
+        call_command("resetmfa", "omar", stdout=out, stderr=notes)
+        with pytest.raises(CommandError, match=r"'ghost@example\.com' does not exist"):
+            call_command("resetmfa", "ghost@example.com", stdout=out)
+
+    assert notes.getvalue().splitlines() == [
+        f"'victim@example.com' is user {victim}, by its email.",
+        f"'omar' is user {omar}, by its username.",
+    ]
+    assert out.getvalue().splitlines() == [
+        "'victim@example.com' had no second factor.",
         "'omar' had no second factor.",
     ]
 

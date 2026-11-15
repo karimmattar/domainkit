@@ -228,6 +228,13 @@ class Guard:
     a command, the people it is about (the user a grant promotes), who may
     not decide it. ``submit`` makes a direct call submit the command,
     rather than only refuse it.
+
+    ``maker_fields`` names the command's fields that hold who acts
+    (``invited_by``, ``granted_by``): the submit route sets them to the
+    maker, whatever the client sent, a command submitted otherwise must
+    name its maker there, and the run checks them again. ``http=False``
+    keeps the command off the submit route: only the project's own code
+    submits it (``submit_command``, or a direct call with ``submit``).
     """
 
     action: str
@@ -239,6 +246,8 @@ class Guard:
     submit: bool = False
     maker_rule: Rule | None = None
     parties: Callable[[Any], Iterable[str]] | None = None
+    maker_fields: tuple[str, ...] = ()
+    http: bool = True
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -253,6 +262,12 @@ class Guard:
         if not self.policies:
             raise ImproperlyConfigured(
                 f"Guard {self.action!r} needs at least one policy."
+            )
+        fields = set(get_type_hints(self.command))
+        if unknown := sorted(set(self.maker_fields) - fields):
+            raise ImproperlyConfigured(
+                f"Guard {self.action!r}: maker_fields names {', '.join(unknown)}, "
+                f"which {self.command.__name__} has not."
             )
         object.__setattr__(self, "adapter", TypeAdapter(self.command))
 
@@ -272,6 +287,16 @@ class Guard:
     def load(self, arguments: object) -> Any:  # noqa: ANN401 - the guard's command.
         """The command ``arguments`` make, validated (``pydantic.ValidationError``)."""
         return self.adapter.validate_python(arguments)
+
+    def with_maker(self, arguments: object, maker: str) -> object:
+        """``arguments`` with each of ``maker_fields`` set to ``maker``."""
+        if not self.maker_fields or not isinstance(arguments, Mapping):
+            return arguments
+        return {**arguments, **dict.fromkeys(self.maker_fields, maker)}
+
+    def names_its_maker(self, command: object, maker: str) -> bool:
+        """Whether each of ``maker_fields`` of ``command`` holds ``maker``."""
+        return all(str(getattr(command, name)) == maker for name in self.maker_fields)
 
     def parties_of(self, command: object) -> frozenset[str]:
         """The people ``command`` is about, who may not decide it."""
@@ -297,6 +322,8 @@ def guard(
     submit: bool = False,
     maker_rule: Rule | None = None,
     parties: Callable[[Any], Iterable[str]] | None = None,
+    maker_fields: Iterable[str] = (),
+    http: bool = True,
     domain: str | None = None,
 ) -> Guard:
     """Register the guard of a use case decorated ``requires_approval(action)``.
@@ -329,6 +356,8 @@ def guard(
         submit=submit,
         maker_rule=maker_rule,
         parties=parties,
+        maker_fields=tuple(maker_fields),
+        http=http,
     )
     on_guard(registered, domain=domain)
     return registered

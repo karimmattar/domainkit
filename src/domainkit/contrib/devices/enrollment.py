@@ -25,7 +25,7 @@ from typing import Final, NoReturn, cast
 
 from starlette.requests import Request
 
-from domainkit.contrib.auth import AbstractBaseUser
+from domainkit.contrib.auth import AbstractBaseUser, InvalidPassword
 from domainkit.contrib.auth.backends import authenticate
 from domainkit.contrib.auth.integration import (
     account_key,
@@ -33,6 +33,7 @@ from domainkit.contrib.auth.integration import (
     attempt,
     audit_refusal,
     auth_settings,
+    check_first_use,
     first_use_after_code,
     needs_second_factor,
     second_factor_holds,
@@ -40,6 +41,7 @@ from domainkit.contrib.auth.integration import (
     target_of,
 )
 from domainkit.contrib.auth.models import UserId
+from domainkit.http.errors import APIError
 
 from .binding import mark_signed_by, proves_key
 from .events import DeviceBound
@@ -103,9 +105,10 @@ async def enroll(
     The proofs are checked in this order, so that a refusal never spends
     what the caller still needs: the key's signature and the password; a
     user with a second factor then needs ``otp`` (a TOTP or recovery code)
-    before the code is checked; then the code (spent once it matches);
-    then ``otp``. A password staff set is changed to ``new_password``
-    (``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``), as at ``/mfa/login``.
+    before the code is checked; a password staff set needs a
+    ``new_password`` the rules accept (``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``);
+    then the code (spent once it matches); then ``otp``. The password is
+    changed to ``new_password`` once every proof held, as at ``/mfa/login``.
 
     Refused attempts count against ``AUTH.LOGIN_RATE`` for the client's
     address and for the account. On success the request counts as signed
@@ -118,8 +121,11 @@ async def enroll(
         SecondFactorRequired: The rest held so far, and the user has a
             second factor: send ``otp`` too.
         DeviceAlreadyBound: Every proof held, and the user has a bound device.
-        APIError: 403 ``password_change_required`` without ``new_password``;
-            429 past ``AUTH.LOGIN_RATE`` or ``AUTH.MFA.RATE``.
+        APIError: 403 ``password_change_required`` without ``new_password``
+            (the code is not spent); 429 past ``AUTH.LOGIN_RATE`` or
+            ``AUTH.MFA.RATE``.
+        InvalidPassword: ``new_password`` breaks a rule (the code is not
+            spent).
     """
     rate = auth_settings().LOGIN_RATE
     counted = await attempt(
@@ -141,6 +147,11 @@ async def enroll(
     if factor and otp is None:
         await counted.succeeded()  # The password held: as /login, ask for a code.
         raise SecondFactorRequired()
+    try:  # Before the code: a refusal here spends nothing.
+        await check_first_use(user, new_password)
+    except (APIError, InvalidPassword):
+        await counted.succeeded()  # The password held.
+        raise
     async with DevicesUnitOfWork() as uow:
         proven = await uow.verification_codes.check(
             ENROLLMENT, target_of(identifier), code

@@ -2,12 +2,13 @@
 
 from argparse import ArgumentParser
 
-from domainkit.management.base import BaseCommand, CommandError, run_async
+from domainkit.management.base import BaseCommand, run_async
 
 from ...events import UserLoggedOut
 from ...settings import MAX_STEP_UP_AGE
 from ...tokens import utc_now
 from ...uow import AuthUnitOfWork
+from .. import user_for_staff
 
 
 class Command(BaseCommand):
@@ -53,9 +54,7 @@ class Command(BaseCommand):
     async def _of_user(self, username: str) -> int:
         """Delete every token of ``username``; record ``UserLoggedOut``."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.find_for_staff(username)
-            if user is None:
-                raise CommandError(f"User {username!r} does not exist.")
+            user = await user_for_staff(uow.users, username, self.note)
             count = await uow.tokens.revoke_user(user.id)
             user.record(UserLoggedOut(user_id=user.id, everywhere=True))
             await uow.commit()

@@ -19,6 +19,12 @@ request and the user before issuing. These are ``/login``, ``/session``,
 identity providers' logins. Gates run in ``INSTALLED_DOMAINS`` order, and
 the first that raises refuses the login.
 
+A gate that needs no password registers with ``on_password_login``: it
+runs before ``/login`` and ``/session`` look at the password, given the
+request and the identifier, and refuses the same way whatever account the
+identifier names. A refusal there confirms no password, says nothing of
+the account, and spends none of its count of wrong passwords.
+
 Gates fail closed. While a gate is registered, ``held_login`` refuses a
 login whose user did not pass them in the current context
 (``LoginNotGated``), so a route that forgets the call cannot issue.
@@ -49,6 +55,7 @@ __all__ = [
     "LoginGate",
     "LoginNotGated",
     "LoginsCheck",
+    "PasswordGate",
     "SuperuserCheck",
     "check_gates_passed",
     "check_manage_logins",
@@ -58,7 +65,9 @@ __all__ = [
     "on_login_gate",
     "on_make_superuser",
     "on_manage_logins",
+    "on_password_login",
     "pass_login_gates",
+    "pass_password_gates",
 ]
 
 type LoginGate = Callable[[Request, AbstractBaseUser], Awaitable[None]]
@@ -68,6 +77,19 @@ on_login_gate: Final[HookPoint[LoginGate]] = HookPoint(
     "login gate", arguments=2, awaited=True
 )
 """Register a gate every login passes (``on_login_gate(gate)`` in ``ready()``)."""
+
+type PasswordGate = Callable[[Request, str], Awaitable[None]]
+"""A check of a password login before the password is looked at: raise to refuse."""
+
+on_password_login: Final[HookPoint[PasswordGate]] = HookPoint(
+    "password login", arguments=2, awaited=True
+)
+"""Register a gate of password logins that runs before the password does.
+
+It takes the request and the identifier, and must answer the same whatever
+account the identifier names, or none: ``CIBA.APPROVE_LOGINS = "always"``
+refuses every password login no bound device of that account signed.
+"""
 
 type LoginsCheck = Callable[[Request, AbstractBaseUser], Awaitable[None]]
 """A check of a request that manages the user's other logins: raise to refuse."""
@@ -145,6 +167,16 @@ _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)
 
 class LoginNotGated(RuntimeError, DomainkitError):
     """A login was issued without passing the gates: a route forgot them (500)."""
+
+
+async def pass_password_gates(request: Request, identifier: str) -> None:
+    """Run every gate of ``on_password_login`` before a password is checked.
+
+    Raises:
+        Exception: Whatever the first refusing gate raises.
+    """
+    for hook in on_password_login:
+        await hook.call(request, identifier)
 
 
 async def pass_login_gates(request: Request, user: AbstractBaseUser) -> None:

@@ -248,6 +248,29 @@ def test_a_poll_too_soon_slows_down_and_the_interval_grows(app: App) -> None:
         assert redeem(web, handle).json()["code"] == "expired_token"
 
 
+def test_a_decided_request_answers_however_soon_it_is_polled(app: App) -> None:
+    """The interval holds back polls of a waiting request, not its answer.
+
+    A page that polls once too early (a second tab, a retry) right after
+    the phone approved gets its login at once, not ``slow_down`` and five
+    seconds more.
+    """
+    web = app()
+    phone = Phone(app(PHONE))
+    with clock.freeze_time("2026-11-05T10:00:00Z") as frozen:
+        started = start_push(web)
+        assert redeem(web, started["request"]).json()["code"] == (
+            "authorization_pending"
+        )
+        [waiting] = phone.waiting()
+        phone.approve(waiting["id"], match_code=started["match_code"])
+        frozen.tick(1)  # Well within the interval.
+        answer = redeem(web, started["request"])
+
+    assert answer.status_code == 200, answer.json()
+    assert "access_token" in answer.json()
+
+
 def test_a_wrong_number_denies_the_sign_in(app: App) -> None:
     """One try: the request is denied, the page is told so."""
     web = app()

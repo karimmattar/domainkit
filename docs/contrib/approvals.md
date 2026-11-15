@@ -149,6 +149,8 @@ by action. Its arguments:
 | `submit` | `True`: a direct call submits the command for whoever is acting, then raises `ApprovalPending`. |
 | `maker_rule` | An access rule that a maker must pass to submit over HTTP, besides `permission` (`IsSuperuser()` for making superusers). It is asked again when the approved command runs. |
 | `parties` | A function that names, for a command, the people it is about (the payee of a payment, the user a grant promotes). They may not approve or reject it (`interested_party`, 403), and their approvals never count. |
+| `maker_fields` | The command's fields that hold who acts (`invited_by`, `granted_by`). The submit route sets them to the maker's id, whatever the client sent; a command your code submits (`submit_command`, a direct call with `submit`) must name its maker there (`invalid_arguments` otherwise); and the run checks them again. A name the command has not is refused when the guard is made. |
+| `http` | `True`: makers submit the command at `POST /requests`. `False` keeps it off that route (`404 unknown_action`): only your code submits it. |
 | `domain` | The installed domain that the guard belongs to, when you call `guard()` outside `ready()`. |
 
 ### What a direct call does

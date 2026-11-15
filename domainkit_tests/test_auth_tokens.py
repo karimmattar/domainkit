@@ -1,6 +1,7 @@
 """Opaque tokens: storage, lifetimes, revocation, and the token commands."""
 
 import io
+import re
 import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -209,6 +210,10 @@ def test_createtoken_prints_a_working_token(auth_project: str) -> None:
     assert default.expires_at - default.created_at == timedelta(days=90)
 
 
+MATCHED = re.compile(r"'alice' is user [0-9a-f-]{36}, by its username\.")
+"""The line that says whom a command found (``user_for_staff``)."""
+
+
 def test_createtoken_refuses_and_warns(auth_project: str) -> None:
     """Unknown users and lifetimes under a day; a note without the class."""
     user_id()
@@ -231,14 +236,17 @@ def test_createtoken_refuses_and_warns(auth_project: str) -> None:
         }
     ):
         call_command("createtoken", "alice", stdout=io.StringIO(), stderr=errors)
-    assert errors.getvalue() == (
+    note, found = errors.getvalue().splitlines()
+    assert note == (
         "Note: AUTH.AUTHENTICATION_CLASSES does not list "
         f"{AUTH}.authentication.TokenAuthentication; requests cannot use this "
-        "token yet.\n"
+        "token yet."
     )
+    assert MATCHED.fullmatch(found)  # Who the token is for, beside stdout.
     quiet = io.StringIO()
     call_command("createtoken", "alice", stdout=io.StringIO(), stderr=quiet)
-    assert quiet.getvalue() == ""
+    (found,) = quiet.getvalue().splitlines()  # No note: requests can use it.
+    assert MATCHED.fullmatch(found)
 
 
 def test_cleartokens(auth_project: str) -> None:

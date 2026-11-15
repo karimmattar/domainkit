@@ -33,6 +33,7 @@ from domainkit.http import Filter, FilterSet, Pagination, error_responses
 from domainkit.http.access import HasPermissions, Principal, Require
 from domainkit.resources import HasModelPermission, ResourceRouter
 
+from .exceptions import UnknownAction
 from .guards import guard_for
 from .models import MAX_REASON, ApprovalRequest, RequestStatus, Verdict
 from .rules import ActsForThemselves, RequestActions, rule_instance
@@ -226,9 +227,13 @@ async def submit(
     """Submit a guarded command; it runs once its policy's approvers approve it.
 
     The maker needs the permission the guard names for its makers too, and
-    to pass its ``maker_rule`` (a superuser, to make superusers).
+    to pass its ``maker_rule`` (a superuser, to make superusers). The
+    guard's ``maker_fields`` are set to the maker, whatever ``arguments``
+    says; a guard with ``http=False`` is not submitted here (404).
     """
     guard = guard_for(body.action)
+    if not guard.http:  # Submitted by the project's own code alone.
+        raise UnknownAction("No guarded command has that name.")
     rules = [
         ActsForThemselves(),
         HasPermissions(guard.permission) if guard.permission else None,
