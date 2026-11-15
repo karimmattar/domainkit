@@ -30,6 +30,7 @@ the run of an approved request (``running``) passes, and only for the
 command it approved.
 """
 
+import copy
 import functools
 import re
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
@@ -43,6 +44,7 @@ from typing import Any, Final, get_type_hints
 from pydantic import TypeAdapter
 
 from domainkit.apps.hooks import HookPoint
+from domainkit.ddd.usecases import UseCase
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import BasePermission, Rule
 from domainkit.money import Money, MoneyError
@@ -303,12 +305,18 @@ def guard(
     it belongs to, as ``HookPoint`` takes it). ``command`` defaults to the
     type of the service's first argument.
 
+    A ``@use_case`` decorated ``@requires_approval`` is a service too: its
+    command is the use case's, and the guard runs its guarded ``run``.
+
     Raises:
         ImproperlyConfigured: The service is not decorated for ``action``
             (calling it directly would skip approval), its command cannot be
             told, or a policy or the name is malformed.
     """
     _check_decorated(action, service)
+    if isinstance(service, UseCase):
+        command = command or service.command
+        service = service.run
     if command is None:
         command = _command_of(action, service)
     registered = Guard(
@@ -487,13 +495,18 @@ async def check(action: str, command: object) -> None:
 def requires_approval[F: Service](action: str) -> Callable[[F], F]:
     """Guard a use case: called directly, it needs no approval, or is refused.
 
-    The service is ``service(command, uow)``; register its policies with
+    The service is ``service(command, uow)``, or a ``@use_case`` (decorate
+    it above ``@use_case``): its call and its ``run``, which routes call,
+    are both guarded (user report P1). Register its policies with
     ``guard(action, service, ...)`` in ``ready()``. Without a guard
     registered, every call is refused (``ImproperlyConfigured``).
     """
     _checked_name(action, "A guarded action's name")
 
     def decorate(service: F) -> F:
+        if isinstance(service, UseCase):
+            return _guarded_use_case(action, service)
+
         @functools.wraps(service)
         async def guarded(command: object, uow: object) -> Any:  # noqa: ANN401 - what the service returns.
             await check(action, command)
@@ -503,3 +516,22 @@ def requires_approval[F: Service](action: str) -> Callable[[F], F]:
         return guarded  # type: ignore[return-value]
 
     return decorate
+
+
+def _guarded_use_case(action: str, use_case: UseCase[Any]) -> UseCase[Any]:
+    """A copy of ``use_case`` whose ``run`` checks approval first.
+
+    ``UseCase.__call__`` runs ``run``, and routes wire ``run``: guarding it
+    guards every way in. The original stays as it was.
+    """
+    unguarded = use_case.run
+
+    async def run(command: Any, uow: Any) -> Any:  # noqa: ANN401 - the use case's.
+        await check(action, command)
+        return await unguarded(command, uow)
+
+    guarded = copy.copy(use_case)
+    guarded.run = run  # type: ignore[method-assign]
+    for each in (run, guarded):
+        setattr(each, ACTION_MARK, action)
+    return guarded

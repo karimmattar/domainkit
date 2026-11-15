@@ -11,6 +11,12 @@ and a status.
 
 ### Added
 
+- `@requires_approval(action)` guards a `@use_case`: its call and its
+  `run`, which routes wire, are both refused until approved, and
+  `guard()` takes the use case, its command included. Applied to one, it
+  returned a plain function, and guarding `run` alone left the call open
+  (user report P1).
+
 - `SqlAlchemyUnitOfWork(readonly=True, replica=False)`, or `replica =
   False` on the class, keeps a read-only unit of work on the primary.
   `readonly=True` also meant "read from a replica", so a project that
