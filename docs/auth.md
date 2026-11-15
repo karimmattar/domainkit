@@ -247,6 +247,7 @@ application; a warning (`W`) is reported.
 | `auth.W006` | staging, production | `ACCOUNT_LOGIN_RATE` of `None`, or more than 100 a day. |
 | `auth.W007` | anywhere | A backend that does not list its grants on objects (`object_grants`). |
 | `auth.W008` | staging, production | `CAPTCHA` without `HOSTNAMES`: a token solved on another site passes. |
+| `auth.W009` | staging, production | `MESSAGING.VISIBILITY_TIMEOUT`, or `REPUBLISH_AFTER` with a broker, more than half of `CODE_TTL`: a code whose sending was cut short arrives expired. |
 | `security.E101` | staging, production | A route that declares no access rule. |
 | `security.E020` | staging, production | `IDENTITY.LDAP` over `ldap://` without `START_TLS`. |
 

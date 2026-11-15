@@ -127,6 +127,11 @@ and a status.
   sets those fields to the maker at submit and checks them at run;
   `guard(..., http=False)` keeps a command off the submit route (user
   report P2).
+- `check` warns, where deployed, when messaging may send auth's codes
+  after they expired: a code whose worker died mid-send runs again after
+  `MESSAGING.VISIBILITY_TIMEOUT` (300 s), and one a broker lost after
+  `REPUBLISH_AFTER` (an hour), while codes last `AUTH.CODE_TTL`. Either
+  more than half of it is `auth.W009` (user report W8).
 
 ## [2.3.0] - 2026-11-11
 
