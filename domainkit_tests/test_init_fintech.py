@@ -486,11 +486,14 @@ def test_the_fintech_tests_pass_on_postgresql_as_the_applications_role(
 
 
 def test_init_says_what_each_argument_is() -> None:
-    """Its ``--help``: the name, the directory, and the profiles it offers."""
+    """Its ``--help``: the name, the directory, the profiles and the servers."""
     from domainkit.management.commands.init import Command
 
     usage = " ".join(Command().create_parser("manage.py", "init").format_help().split())
-    assert usage.startswith("usage: manage.py init [-h] [--profile {fintech}] name ")
+    assert usage.startswith(
+        "usage: manage.py init [-h] [--profile {fintech}] "
+        "[--server {uvicorn,granian}] name "
+    )
     assert usage.endswith(
         " positional arguments: name project name, as in [project].name; it sets "
         "the environment variable prefix (billingAPI: BILLING_API_) directory where "
@@ -498,5 +501,6 @@ def test_init_says_what_each_argument_is() -> None:
         "other files, but none init writes options: -h, --help show "
         "this help message and exit --profile {fintech} a project with a sector's "
         "controls on and wired: fintech, a bank's first-review list "
-        "(docs/fintech.md)"
+        "(docs/fintech.md) --server {uvicorn,granian} the server the image runs "
+        "(default: uvicorn; granian adds its extra)"
     )

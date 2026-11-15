@@ -144,15 +144,18 @@ shows up before a rollout.
 Run uvicorn or Granian with one worker process per core, behind a
 reverse proxy or load balancer that limits header sizes and slow
 clients. The image that `init` writes runs uvicorn, and
-`WEB_CONCURRENCY` sets its worker processes (one unless set). The whole
-command, with each limit, is on [reference/servers.md](reference/servers.md).
-The two settings that matter most:
+`WEB_CONCURRENCY` sets its worker processes (one unless set); with
+`init --server granian` it runs Granian, and `GRANIAN_WORKERS` sets them.
+The whole command, with each limit, is on
+[reference/servers.md](reference/servers.md). The two settings that
+matter most:
 
 - **Shutdown.** The server's graceful timeout
   (`--timeout-graceful-shutdown`) plus `SHUTDOWN_TIMEOUT` (15 seconds)
   must fit in the orchestrator's grace period (30 seconds on
   Kubernetes). Otherwise a stop ends in `SIGKILL`
-  ([runtime.md](runtime.md#shutting-down-within-a-budget)).
+  ([runtime.md](runtime.md#shutting-down-within-a-budget)). Granian's
+  `--workers-kill-timeout` counts both, and kills a worker past it.
 - **Proxies.** Run uvicorn with `--no-proxy-headers`, and list the
   proxies in `TRUSTED_PROXIES`, so that domainkit, not uvicorn, decides
   each caller's address. Rate limits, audit records, and logs depend on

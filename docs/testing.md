@@ -179,7 +179,8 @@ each entry of `DATABASES`:
   an interrupted run is replaced.
 - **SQLite in memory** (`sqlite+aiosqlite:///:memory:`, the constant
   `IN_MEMORY`): a file in the run's temporary directory, so every
-  connection sees the same tables.
+  connection sees the same tables. The file is in write-ahead-log mode
+  ([Reads beside writes on SQLite](#reads-beside-writes-on-sqlite)).
 - **Anything else** is used as it is.
 
 Each database is then migrated up, down to base, and up again, which
@@ -244,6 +245,27 @@ ids.
 manager behind the `database` fixture. It makes, migrates, and later drops
 the test databases, and yields the default's URL. Call it yourself only
 when you run tests without the plugin.
+
+### Reads beside writes on SQLite
+
+A read-only unit of work (`readonly=True`, or `reads=`) reads one
+snapshot, so on SQLite it holds the database's read lock until it ends.
+In SQLite's default journal, no other connection can commit meanwhile.
+So a unit of work that writes, opened inside a read-only one of another
+domain, would wait out its busy timeout (5 seconds) and fail with
+`database is locked`, where PostgreSQL commits it. Inside a unit of work
+that writes, it would not: that one holds no lock until it writes.
+
+The plugin's SQLite files are in write-ahead-log mode (`PRAGMA
+journal_mode=WAL`), where a reader holds no writer up, as on PostgreSQL.
+The read-only unit of work still reads its snapshot: it does not see what
+the other committed. A SQLite database of your own (a file in the test
+settings, or in development) keeps the mode it has. Put it in WAL mode
+once, and the file keeps it:
+
+```bash
+sqlite3 db.sqlite3 "PRAGMA journal_mode=WAL"
+```
 
 ## Database access
 
@@ -498,6 +520,55 @@ def test_any_application() -> None:
 
 `AsyncTestClient(app, base_url=..., headers=..., client=..., lifespan=True)`
 takes `lifespan=False` to skip the application's startup and shutdown.
+
+### A caller's address
+
+Both clients send their requests from Starlette's address,
+`("testclient", 50000)`. That is no network address: no network of
+`TRUSTED_PROXIES` holds it, so the application never reads the
+`X-Forwarded-For` they send, and every client of a test shares one
+caller's rate limit and hold on refused credentials. A test of what goes
+by the caller's address gives the client one with `client=`: the
+caller's own, or a proxy's that `TRUSTED_PROXIES` holds, with each
+caller in `X-Forwarded-For`. `another()` keeps it, and so do the
+clients that `authenticated()` and the others make.
+
+`ProxyHeadersMiddleware` reads `TRUSTED_PROXIES` once, when the
+application is built, and the rate limit reads `RATE_LIMIT` then too. Set
+them in a fixture that comes before the client, and build the
+application in the test:
+
+```python
+import pytest
+
+from domainkit.http import get_asgi_application
+from domainkit.testing import AsyncTestClient, SettingsOverrides
+
+BALANCER = ("10.0.0.2", 50000)
+URL = "/api/v1/catalog/products"
+
+
+@pytest.fixture
+def behind_the_balancer(settings: SettingsOverrides) -> None:
+    settings.TRUSTED_PROXIES = ["10.0.0.0/8"]
+    settings.RATE_LIMIT = "2/minute"
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("db", "behind_the_balancer")
+async def test_each_caller_has_a_limit_of_its_own() -> None:
+    async with AsyncTestClient(get_asgi_application(), client=BALANCER) as balancer:
+        alice = balancer.another({"X-Forwarded-For": "203.0.113.7"})
+        bob = balancer.another({"X-Forwarded-For": "198.51.100.4"})
+        answers = [(await alice.get(URL)).status_code for _ in range(3)]
+        assert answers[2] == 429
+        assert (await bob.get(URL)).status_code != 429
+        await alice.aclose()
+        await bob.aclose()
+```
+
+Without `client=BALANCER`, Alice and Bob share one count: Bob's first
+request is refused.
 
 ## Users and groups
 
@@ -952,6 +1023,55 @@ def test_debug_pages(settings, client: TestClient) -> None:
 
 The fixture's type is `SettingsOverrides`.
 
+### One check as deployed
+
+`settings.ENVIRONMENT = "production"` validates the whole test settings
+as production's, and they fail its checks: the test key, the fast
+password hasher, attempts counted in each process. To run one check as a
+deployed application does, load the production settings themselves, with
+the variables they read:
+
+```python
+import sys
+
+import pytest
+
+from domainkit.conf import settings, use_settings
+
+PRODUCTION = {
+    "BILLING_API_ALLOWED_HOSTS": "api.example.com",
+    "BILLING_API_TRUSTED_PROXIES": "10.0.0.0/8",
+    "BILLING_API_SECRET_KEY": "s3cret-" * 8,
+    "BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing",
+    "BILLING_API_REDIS_URL": "rediss://:s3cret@cache.internal:6380/0",
+}
+
+
+@pytest.fixture
+def production(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in PRODUCTION.items():
+        monkeypatch.setenv(name, value)
+    # Imported again with these variables; put back after the test.
+    monkeypatch.delitem(sys.modules, "config.settings.production", raising=False)
+
+
+@pytest.mark.usefixtures("production")
+def test_published_documentation_is_warned_of(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BILLING_API_API_DOCS", "true")
+    with use_settings("config.settings.production"):
+        warnings = settings.deployment_warnings()
+    assert any(warning.startswith("API_DOCS publishes") for warning in warnings)
+```
+
+`use_settings` loads a settings module for the block, and puts the test
+settings back after it. The module reads the variables when it is
+imported, so the fixture has it imported again. The domains stay loaded
+as the test settings loaded them; a check that reads the settings when it
+runs (the framework's, a domain's `on_deployment_warnings` hook) reads
+production's. Nothing reaches the database or Redis the variables name.
+
 ## Counting queries
 
 `assert_num_queries(n)` fails unless the block runs exactly `n` SQL
@@ -1289,6 +1409,9 @@ use-case tests, and let `create` use the SQL unit of work in API tests.
 - **Changing a startup setting in the test body.** The client already
   built the application. Change it in a fixture that `client` comes
   after.
+- **Testing a limit per address with the default client.** Every request
+  comes from `testclient`, which no proxy network holds. Give the client
+  an address ([A caller's address](#a-callers-address)).
 - **Asserting on generated ids.** Sequences keep counting between tests.
   Assert on the fields you set.
 - **Comparing the database's `now()` with the frozen clock.** The

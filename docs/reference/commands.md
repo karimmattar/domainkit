@@ -129,6 +129,7 @@ test, a `Dockerfile`, and a CI workflow (`.github/workflows/ci.yml`).
 | `name` | The project's name, as in `[project].name`. It sets the prefix of environment variables: `billingAPI` gives `BILLING_API_`. |
 | `[directory]` | Where to write the project (default: `./<name>`); `.` is the current directory. The directory may already exist and hold other files, such as a fresh clone's `.git`, `README.md`, or `.github`: `init` adds its files next to them. It refuses, and writes nothing, when a file it would write is already there, and names those files. |
 | `--profile fintech` | Writes a bank's controls on and wired: a guarded sample transfer and its tests, which also pass `mypy --strict`, and production settings that pass `check --deploy` once their secrets are set ([fintech.md](../fintech.md), ADR 0124). |
+| `--server granian` | Writes a `Dockerfile` that serves with Granian, with the options of [Granian](servers.md#granian), and `LOGGING` written for its main process as it starts. The project depends on the `granian` and `uvloop` extras too. `uvicorn` (the default) writes one that serves with uvicorn. |
 
 What `init` writes passes the project's own `ruff check` and
 `ruff format --check`. Its development group installs ruff, which also
@@ -411,14 +412,34 @@ python manage.py runserver 0.0.0.0:8000 --server granian
 
 `runserver` starts a development server for `ASGI_APPLICATION`, on
 uvicorn or Granian (the `granian` extra). It restarts when your code
-changes. In production you run the server yourself
-([Server limits](servers.md)).
+changes. `RUNSERVER_SERVER = "granian"` in the development settings
+serves with Granian without `--server`. In production you run the
+server yourself ([Server limits](servers.md)).
 
 | Option | What it does |
 | --- | --- |
 | `[address]` | A port, or `address:port` (default: `127.0.0.1:8000`). |
 | `--noreload` | Does not restart when the code changes. |
-| `--server` | `uvicorn` (the default) or `granian`. |
+| `--server` | `uvicorn` or `granian`; unless given, `RUNSERVER_SERVER` (`uvicorn` unless set) chooses. |
+
+### `logconfig`: write `LOGGING` for the server
+
+```bash
+python manage.py logconfig --output /tmp/logging.json
+```
+
+`logconfig` prints `LOGGING` as JSON, each class or function named by its
+dotted path, or writes it to a file. Granian reads that file
+(`--log-config`), so its main process, which never imports the
+application, writes its lines as the application does
+([The server's own lines](../runtime.md#the-servers-own-lines)). It loads
+the settings only. A value JSON cannot hold, and no dotted path names (an
+object, a function defined inside another), stops it, with its place in
+`LOGGING`.
+
+| Option | What it does |
+| --- | --- |
+| `-o`, `--output` | Writes it to this file, readable by its owner only, and prints nothing. |
 
 ### `shell`: a Python console with the project loaded
 

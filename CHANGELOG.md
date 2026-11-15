@@ -189,6 +189,30 @@ and a status.
   leave it out, as the derived body's `repr` does, and the body's
   validation errors leave the input out. Every other repr is unchanged
   ([Use cases](docs/resources.md#use-cases)) (user report D2).
+- Granian's own lines go through `LOGGING`: `build_logging_config` routes
+  `_granian` to the root handler and turns `granian.access` off, as it
+  does uvicorn's. `manage.py logconfig` writes `LOGGING` as the JSON file
+  `granian --log-config` reads, for Granian's main process, which never
+  imports the application. `runserver --server granian` gives Granian a
+  copy of `LOGGING`, which it no longer changes
+  ([The server's own lines](docs/runtime.md#the-servers-own-lines))
+  (user report S2).
+- `RUNSERVER_SERVER` (`"uvicorn"` unless set): the server `runserver`
+  starts when `--server` names none, so the development settings can
+  choose Granian once (user report S3).
+- `SERVER_HEADER`: the `Server` header of every HTTP answer, the 500 of
+  an unhandled error included, which no middleware sees; `""` removes
+  it. Granian writes `Server: granian` on an answer without one, and has
+  no option against it
+  ([The server header](docs/reference/http.md#the-server-header)) (user
+  report S3).
+- `init --server granian`: a project whose image serves with Granian,
+  with the options of "Server limits" and `LOGGING` written for
+  Granian's main process as it starts; it depends on the `granian` and
+  `uvloop` extras. The notes the templates write link to the
+  documentation of the release that wrote them, where they named a path
+  of domainkit's repository
+  ([Granian](docs/reference/servers.md#granian)) (user report S1).
 
 ### Changed
 
@@ -248,6 +272,36 @@ and a status.
   every advisory CI ignores explained
   ([Trust in the ledger](docs/databases.md#trust-in-the-ledger))
   (user report D2).
+- `runserver` and the test plugin import uvicorn only when it serves:
+  `runserver --server granian` runs where uvicorn is not installed
+  (user report S3).
+- "Server limits" gives Granian a section of its own, which translates
+  uvicorn's options as checked with Granian 2.8.4. Its table said
+  otherwise: an idle connection lives `--http1-header-read-timeout`, at
+  most 60 seconds; `--backpressure` counts connections, idle ones
+  included, and the next one waits unanswered; `--workers-kill-timeout`
+  counts the application's shutdown too, which a killed worker skips.
+  Its Granian command now keeps the header block to 16 KiB, and the
+  connections open 60 seconds, as the proxy's idle timeout must be
+  shorter ([Granian](docs/reference/servers.md#granian)) (user report
+  S1).
+- "Server limits" says that `check --deploy`, in a container of its own,
+  sees the server's variables, never its arguments
+  ([WebSocket message size](docs/reference/servers.md#websocket-message-size))
+  (user report S3).
+- The testing guide shows how to run one check as a deployed
+  application, where `settings.ENVIRONMENT = "production"` validates the
+  whole test settings as production's: load the production settings
+  with `use_settings`, and the variables they read
+  ([One check as deployed](docs/testing.md#one-check-as-deployed)) (user
+  report T1).
+
+### Deprecated
+
+- uvicorn as a dependency of every install. It stays one in 2.x; 3.0
+  moves it to an extra, `domainkit[uvicorn]`, which a project that serves
+  with uvicorn, runs `runserver` with it, or uses `live_server` then
+  installs ("Upgrading", 2.3 to 2.4) (user report S3).
 
 ### Fixed
 
@@ -294,6 +348,20 @@ and a status.
   account they control, which then approves; see
   [Making superusers](docs/contrib/approvals.md#making-superusers)
   (user report P3).
+- On SQLite, a unit of work that writes, opened inside a read-only one of
+  another domain, failed with "database is locked" after 5 seconds: the
+  read-only one holds SQLite's read lock until it ends, and in SQLite's
+  default journal no other connection commits meanwhile. The test
+  plugin's SQLite databases are in write-ahead-log mode now, where it
+  commits, as on PostgreSQL
+  ([Reads beside writes on SQLite](docs/testing.md#reads-beside-writes-on-sqlite))
+  (user report T1).
+- The test clients' `another()`, and the clients `authenticated()` and
+  the others make through it, sent Starlette's `testclient` address,
+  whatever address the client was given (`client=`). They keep it now, so
+  a test of a limit per address can give one, a trusted proxy's say
+  ([A caller's address](docs/testing.md#a-callers-address)) (user report
+  T1).
 
 ### Security
 

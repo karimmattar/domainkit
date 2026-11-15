@@ -11,9 +11,10 @@ import asyncio
 import importlib
 import os
 import re
+import sqlite3
 import sys
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -22,7 +23,7 @@ import anyio
 import pytest
 from sqlalchemy import delete, func, insert, make_url, select, text, update
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -364,6 +365,46 @@ async def test_read_only_work_on_sqlite_begins_before_it_reads(
     async with GadgetsUnitOfWork() as uow:
         await uow.gadgets.filter()
         assert not await driver_in_transaction(uow)  # A writer begins to write.
+
+
+@pytest.mark.parametrize(("journal", "commits"), [("delete", False), ("wal", True)])
+async def test_work_that_writes_inside_read_only_work_commits_on_sqlite_in_wal_mode(
+    database_access: None, tmp_path: Path, journal: str, commits: bool
+) -> None:
+    """A read-only unit of work holds SQLite's read lock until it ends.
+
+    It reads one snapshot. In SQLite's default journal, work that writes
+    on another connection meanwhile, such as another domain's unit of
+    work opened inside it, cannot commit: "database is locked", once its
+    busy timeout (0.1 s here) ends. In WAL mode, which the plugin's test
+    databases use, it commits, as on PostgreSQL (user report T1).
+    """
+    path = tmp_path / "locks.sqlite3"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(f"PRAGMA journal_mode={journal}")
+    config = {"URL": f"sqlite+aiosqlite:///{path}", "CONNECT_ARGS": {"timeout": 0.1}}
+    with override_settings(DATABASES={"default": config}):
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(metadata.create_all)
+        await store("first")
+        try:
+            async with GadgetsUnitOfWork(readonly=True) as reading:
+                await reading.gadgets.filter()
+                async with GadgetsUnitOfWork() as writing:
+                    await writing.gadgets.add(make_gadget("second"))
+                    if commits:
+                        await writing.commit()
+                    else:
+                        with pytest.raises(OperationalError, match="is locked"):
+                            await writing.commit()
+                assert len(await reading.gadgets.filter()) == 1  # Its snapshot.
+        finally:
+            await connections.close_all()
+    with closing(sqlite3.connect(path)) as connection:
+        committed = connection.execute("SELECT name FROM framework_test_gadgets")
+        assert sorted(row[0] for row in committed) == (
+            ["first", "second"] if commits else ["first"]
+        )
 
 
 @pytest.mark.parametrize("reads", list(Reads))

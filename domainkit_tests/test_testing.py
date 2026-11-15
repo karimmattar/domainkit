@@ -3,12 +3,14 @@
 import asyncio
 import io
 import os
+import sqlite3
 import sys
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Final
 from uuid import uuid4
 
 import anyio
@@ -609,6 +611,36 @@ def test_the_sync_client_carries_the_callers_clock() -> None:
     assert client.get("/now").json()["now"] != NEW_YEAR.isoformat()
 
 
+CALLER: Final = ("203.0.113.7", 41000)
+"""A caller's address, for what goes by it: a network address, unlike Starlette's."""
+
+
+def test_a_clients_address_is_kept_by_the_clients_it_makes() -> None:
+    """``client=`` sets it; ``another`` (and so ``authenticated``) keeps it.
+
+    A test of a limit per address names the caller, or a trusted proxy
+    whose ``X-Forwarded-For`` names it: Starlette's ``testclient`` is no
+    address (user report T1).
+    """
+    with TestClient(clock_app([]), client=CALLER) as client:
+        own = client.get("/now").json()["client"]
+        other = client.another({"x-test": "1"}).get("/now").json()["client"]
+
+    assert own == other == "203.0.113.7:41000"
+    assert TestClient(clock_app([])).client_address == ("testclient", 50000)
+
+
+@pytest.mark.anyio
+async def test_an_async_clients_address_is_kept_by_the_clients_it_makes() -> None:
+    """As the sync client's (user report T1)."""
+    async with AsyncTestClient(clock_app([]), client=CALLER) as client:
+        own = (await client.get("/now")).json()["client"]
+        async with client.another({"x-test": "2"}) as other:
+            theirs = (await other.get("/now")).json()["client"]
+
+    assert own == theirs == "203.0.113.7:41000"
+
+
 def test_clients_share_only_an_entered_clients_loop() -> None:
     """Without a running loop to share, ``another`` and ``authenticated`` refuse."""
     client = TestClient(clock_app([]))
@@ -1049,6 +1081,38 @@ def test_errors_name_the_entry(tmp_path: Path) -> None:
 
     with pytest.raises(pytest.UsageError, match=r"^DATABASES\['reports'\]: refusing"):
         plan_databases({"reports": reports}, tmp_path, None)
+
+
+@pytest.mark.usefixtures("database_access")
+def test_sqlite_test_databases_let_writes_commit_beside_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-memory databases become files in write-ahead-log mode.
+
+    A read-only unit of work holds SQLite's read lock until it ends; in
+    the default journal, another domain's unit of work, opened inside it,
+    could not commit ("database is locked"), where PostgreSQL commits it
+    (user report T1). A file of the project's own is left as it is.
+    """
+    own = tmp_path / "own.sqlite3"
+    with closing(sqlite3.connect(own)) as connection:
+        connection.execute("CREATE TABLE kept (a int)")
+    monkeypatch.setattr(databases_module, "call_command", lambda *a, **k: None)
+    databases = {
+        "default": {"URL": IN_MEMORY},
+        "reports": {"URL": f"sqlite+aiosqlite:///{own}"},
+    }
+    scratch = tmp_path / "run"
+    scratch.mkdir()
+    with override_settings(DATABASES=databases), migrated_database(scratch):
+        pass
+
+    def journal(path: Path) -> str:
+        with closing(sqlite3.connect(path)) as connection:
+            return str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+
+    assert journal(scratch / "test.sqlite3") == "wal"
+    assert journal(own) == "delete"
 
 
 @pytest.mark.parametrize(

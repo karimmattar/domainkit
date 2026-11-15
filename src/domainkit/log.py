@@ -895,7 +895,9 @@ def build_logging_config(
 
     Records reach stdout from a thread, through a queue of ``queue_size``
     records (``BackgroundHandler``); with ``queue_size=None`` each caller
-    writes its own, waiting for stdout as it does.
+    writes its own, waiting for stdout as it does. uvicorn's and Granian's
+    own lines go the same way; their access logs, nowhere, as
+    ``domainkit.access`` writes one.
     """
     if log_format not in {"text", "json"}:
         raise ImproperlyConfigured(
@@ -944,6 +946,11 @@ def build_logging_config(
             "uvicorn.error": {"handlers": [], "propagate": True},
             # Replaced by domainkit.access, which omits query strings.
             "uvicorn.access": {"handlers": [], "propagate": False},
+            # Granian's own lines; its main process reads them with
+            # --log-config (manage.py logconfig), as it never imports the
+            # application. Its access log is replaced as uvicorn's is.
+            "_granian": {"handlers": [], "propagate": True},
+            "granian.access": {"handlers": [], "propagate": False},
             # Autogenerate announces each plugin it loads; keep migrations readable.
             "alembic.runtime.plugins": {"level": "WARNING"},
             # httpx2 logs each call's full URL, query string and all, at INFO;

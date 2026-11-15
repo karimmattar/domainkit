@@ -66,6 +66,10 @@ DEADLINE_MIDDLEWARE: Final = "domainkit.http.deadlines.DeadlineMiddleware"
 CONCURRENCY_MIDDLEWARE: Final = "domainkit.http.shedding.ConcurrencyLimitMiddleware"
 """Sheds requests past ``MAX_CONCURRENT_REQUESTS``."""
 HEADER_VALUE: Final = r"^[\x20-\x7e]{1,4096}$"
+SERVER_HEADER_VALUE: Final = (
+    r"^(?:[\x21-\x7e]|[\x21-\x7e][\x20-\x7e]{0,254}[\x21-\x7e])?$"
+)
+"""A ``Server`` header: printable ASCII, no space at either end, up to 256; or none."""
 _REFERRER: Final = (
     r"(?:no-referrer|no-referrer-when-downgrade|origin|origin-when-cross-origin|"
     r"same-origin|strict-origin|strict-origin-when-cross-origin|unsafe-url)"
@@ -908,6 +912,8 @@ class Settings(BaseModel):
     """``module:attribute`` that ``runserver`` serves."""
     EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"
     """Commands' and ``runserver``'s loop: uvloop when installed (``auto``), or not."""
+    RUNSERVER_SERVER: Literal["uvicorn", "granian"] = "uvicorn"
+    """The server ``runserver`` starts when ``--server`` names none."""
 
     DATABASES: dict[str, DatabaseConfig] = Field(default_factory=dict)
     """SQL databases by alias; if any are set, ``default`` is required."""
@@ -1080,6 +1086,8 @@ class Settings(BaseModel):
         Literal["same-origin", "same-origin-allow-popups", "unsafe-none"] | None
     ) = "same-origin"
     """``Cross-Origin-Opener-Policy`` of responses that set none; None omits it."""
+    SERVER_HEADER: str | None = Field(default=None, pattern=SERVER_HEADER_VALUE)
+    """The ``Server`` header of every HTTP answer, errors too; "" none; None as sent."""
 
     CORS_ALLOWED_ORIGINS: tuple[Annotated[str, Field(pattern=ORIGIN)], ...] = ()
     CORS_ALLOWED_METHODS: tuple[Annotated[str, Field(pattern=CORS_NAME)], ...] = (

@@ -355,10 +355,11 @@ command and the limits for each.
   passed through a proxy on the same host, would still set the scheme.
 - **Granian** is an HTTP server written in Rust. It runs the same ASGI
   application, lifespan included (`--interface asgi`). It parses HTTP/1
-  and HTTP/2 outside Python, bounds the requests in flight per worker
-  (`--backpressure`), times out slow headers, and restarts workers that
-  die (`--respawn-failed-workers`). It has no WebSocket message limit:
-  turn WebSockets off (`--no-ws`) when the API has none.
+  and HTTP/2 outside Python, bounds the connections per worker, idle
+  ones included (`--backpressure`), times out slow headers, and restarts
+  workers that die (`--respawn-failed-workers`). It has no WebSocket
+  message limit: turn WebSockets off (`--no-ws`) when the API has none.
+  [Granian](reference/servers.md#granian) translates uvicorn's options.
 
 Both run one event loop per worker process. Run one worker per core. The
 test suite serves the application with Granian in a subprocess, so a
@@ -972,6 +973,33 @@ LOGGING = {
 
 `ContextFilter` adds the request id and the trace ids to each record.
 `BackgroundListener` is the thread that writes.
+
+### The server's own lines
+
+`build_logging_config` sends the servers' own lines to the same handler
+and format: uvicorn's (`uvicorn`, `uvicorn.error`) and Granian's
+(`_granian`). Their access logs (`uvicorn.access`, `granian.access`)
+write nothing, as `domainkit.access` writes one line per request, without
+its query string.
+
+uvicorn applies `LOGGING` in each process, as each imports the
+application. Granian's main process, which starts and stops the workers,
+never imports it. Its lines (`Starting granian`, `Spawning worker-1`,
+`Unexpected exit from worker-1`) keep Granian's format, unless it reads
+`LOGGING` from a JSON file. `manage.py logconfig` writes that file:
+
+```bash
+python manage.py logconfig --output /tmp/logging.json
+granian --interface asgi config.asgi:application --log-config /tmp/logging.json
+```
+
+```text
+2026-11-15 15:58:46,805 INFO [_granian] [-] Starting granian (main PID: 26915)
+```
+
+Write it where the server starts, from the same settings and variables:
+`LOG_LEVEL` and the format are read then. [Server limits](reference/servers.md#granian)
+gives Granian's whole command.
 
 ### Error reports
 

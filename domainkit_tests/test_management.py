@@ -63,6 +63,7 @@ BUILTINS = {
     "init",
     "inspectdb",
     "loaddata",
+    "logconfig",
     "makemessages",
     "makemigrations",
     "migrate",

@@ -8,7 +8,7 @@ from typing import Any, Final
 
 from fastapi import APIRouter, FastAPI
 from fastapi.telemetry import TelemetryConfig
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import setup
 from domainkit.apps.hooks import on_check_application
@@ -69,6 +69,8 @@ REQUESTS: Final = frozenset({"http", "websocket"})
 """The scope types FastAPI measures."""
 BUILT_PROBLEMS: Final = "domainkit_problems"
 """``app.state`` key: the problems found when the application was built."""
+SERVER: Final = b"server"
+"""The ``Server`` header's name, as ASGI carries it."""
 
 
 class Application(FastAPI):
@@ -83,13 +85,39 @@ class Application(FastAPI):
     FastAPI application below skips its telemetry, whatever ``MIDDLEWARE``
     lists. A mark set by an application above, which measures the request
     itself, is kept.
+
+    It also gives every HTTP answer the ``Server`` header of
+    ``SERVER_HEADER``, once set (``server_header``): above every middleware,
+    and above the handler of unhandled errors, whose answers no middleware
+    of ``MIDDLEWARE`` sees.
     """
+
+    server_header: list[tuple[bytes, bytes]] | None = None
+    """The ``Server`` header each answer gets in place of its own (none if
+    empty); None leaves answers as they are."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Mark an HTTP or WebSocket request as measured, then serve it."""
         if scope["type"] in REQUESTS:
             scope.setdefault(MEASURED, None)
+            if self.server_header is not None:
+                send = _with_server_header(send, self.server_header)
         await super().__call__(scope, receive, send)
+
+
+def _with_server_header(send: Send, header: list[tuple[bytes, bytes]]) -> Send:
+    """``send``, with ``header`` in place of each answer's own ``Server`` header."""
+
+    async def sending(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            message["headers"] = [
+                (name, value)
+                for name, value in message.get("headers", ())
+                if name.lower() != SERVER
+            ] + header
+        await send(message)
+
+    return sending
 
 
 @asynccontextmanager
@@ -168,6 +196,8 @@ def build_application() -> FastAPI:
         # off for the FastAPI applications mounted below too.
         telemetry=FASTAPI_TELEMETRY,
     )
+    if (server := settings.SERVER_HEADER) is not None:
+        app.server_header = [(SERVER, server.encode())] if server else []
     install_exception_handlers(app)
     install_openapi(app)
     if docs:  # Where FastAPI puts its own: first, after /openapi.json.
