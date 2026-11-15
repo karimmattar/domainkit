@@ -97,6 +97,7 @@ from domainkit.contrib.devices.binding import (
     signing_device,
 )
 from domainkit.ddd import NotFound
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import error_responses
 from domainkit.money import Money
@@ -108,6 +109,7 @@ from .exceptions import (
     WrongMatchCode,
 )
 from .gate import mark_approved
+from .hooks import on_approve, on_start
 from .services import (
     Requester,
     Started,
@@ -123,7 +125,7 @@ from .services import (
 )
 from .stores import DEVICE, QR, STEP_UP, TRANSACTION, CibaUnitOfWork, SignInRequest
 
-__all__ = ["router"]
+__all__ = ["count_start", "router"]
 
 router = APIRouter(tags=["sign-in approvals"])
 DEVICE_SIGNED = Depends(Require(IsUnscoped(), DeviceSigned()))
@@ -305,8 +307,10 @@ def _requester(request: Request) -> Requester:
     return Requester(_address(request), request.headers.get("user-agent") or None)
 
 
-async def _count_start(request: Request) -> None:
+async def count_start(request: Request) -> None:
     """Count a start against ``START_RATE`` for the client's address.
+
+    For a project's own start routes too, so they share the routes' count.
 
     Raises:
         APIError: 429 past the rate.
@@ -317,6 +321,25 @@ async def _count_start(request: Request) -> None:
         action="ciba.start",
         detail=STARTS_THROTTLED,
     )
+
+
+async def _start_message(request: Request) -> str | None:
+    """The binding message the domains' ``on_start`` hooks give; they may refuse.
+
+    Raises:
+        ImproperlyConfigured: A hook gave a message the phone cannot show.
+    """
+    message: str | None = None
+    for hook in on_start:
+        given = await hook.call(request)
+        if given is not None and message is None:
+            if not given.isprintable() or not 0 < len(given.strip()) <= MESSAGE_LENGTH:
+                raise ImproperlyConfigured(
+                    f"{hook.domain}'s on_start hook gave a message the phone "
+                    f"cannot show: 1 to {MESSAGE_LENGTH} printable characters."
+                )
+            message = given
+    return message
 
 
 def _started(started: Started) -> StartedOut:
@@ -346,7 +369,8 @@ async def start_push_sign_in(
     page cannot tell a user who exists from one who does not.
     """
     _no_store(response)
-    await _count_start(request)
+    await count_start(request)
+    message = await _start_message(request)
     async with CibaUnitOfWork() as uow:
         user = await uow.users.find_by_identifier(body.identifier)
         started = await start_push(
@@ -354,6 +378,7 @@ async def start_push_sign_in(
             user,
             requester=_requester(request),
             match=ciba_settings().NUMBER_MATCHING,
+            binding_message=message,
         )
         await uow.commit()
     return _started(started)
@@ -368,9 +393,12 @@ async def start_push_sign_in(
 async def start_qr_sign_in(request: Request, response: Response) -> StartedOut:
     """A QR code for the phone to scan; ask for a new one when it expires."""
     _no_store(response)
-    await _count_start(request)
+    await count_start(request)
+    message = await _start_message(request)
     async with CibaUnitOfWork() as uow:
-        started = await start_qr(uow, requester=_requester(request))
+        started = await start_qr(
+            uow, requester=_requester(request), binding_message=message
+        )
         await uow.commit()
     return _started(started)
 
@@ -403,7 +431,7 @@ async def ask_to_bind_device(
         DeviceSignatureRefused: The key did not sign the request.
     """
     _no_store(response)
-    await _count_start(request)
+    await count_start(request)
     algorithm, key = device_key(body.public_key)
     if not await proves_key(request, algorithm, key):
         raise DeviceSignatureRefused()
@@ -644,6 +672,10 @@ async def approve_sign_in(
     """Approve the sign-in from this device; a wrong number denies it."""
     device_id = await _device_id(request, user)
     async with CibaUnitOfWork() as uow:
+        sign_in = await uow.requests.get(request_id)
+        if sign_in is not None and sign_in.user_id == user.id:
+            for hook in on_approve:  # Raising refuses it: nothing is approved.
+                await hook.call(request, user, sign_in)
         approved = await approve(
             uow, user.id, request_id, device_id, match_code=body.match_code
         )
@@ -691,7 +723,7 @@ async def _ask(
     sca_challenge_id: UUID | None = None,
 ) -> StartedOut:
     """Ask the user's phone, counted against ``START_RATE``."""
-    await _count_start(request)
+    await count_start(request)
     async with CibaUnitOfWork() as uow:
         started = await ask_signed_in(
             uow,

@@ -654,6 +654,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 
 The routes of sign-ins approved from the phone: the web's, and the phone's.
 
+- `count_start`: Count a start against `START_RATE` for the client's address.
 - `router`: The routes: the web's sign-ins, and the phone's answers.
 
 ## `domainkit.contrib.ciba.clients`
@@ -704,6 +705,13 @@ The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
 - `approved_from_the_phone`: Let the login of `user` through if the app is not their identity, or signs it.
 - `managed_from_the_phone`: Let `user`'s logins be managed only from their bound device (ADR 0130).
 - `mark_approved`: Say that `request` redeemed a sign-in `user`'s phone approved.
+
+## `domainkit.contrib.ciba.hooks`
+
+Hook points of the project's own sign-in pages (user report A8).
+
+- `on_approve`: A sign-in the user's phone approves: `(request, user, sign_in)`.
+- `on_start`: A sign-in the project's own page starts (push or QR): `(request)`.
 
 ## `domainkit.contrib.ciba.oidc`
 

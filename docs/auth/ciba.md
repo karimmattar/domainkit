@@ -198,6 +198,25 @@ The answer to `/push` is the same whoever the identifier names. The page
 cannot tell a user who exists from one who does not, or who cannot be
 asked now (see [What holds](#what-holds)).
 
+### Hooks of the web pages
+
+A domain can name what its pages start, refuse a start, or refuse an
+approval, without its own routes. It registers on two hook points of
+`domainkit.contrib.ciba.hooks` in `ready()`:
+
+- `on_start(hook)`: `async def hook(request) -> str | None`, when the
+  project's page starts a push or a QR sign-in. It returns a binding
+  message, shown on the page and on the phone ("Sign in to the
+  dashboard"; 1 to 64 printable characters), or None; it raises to
+  refuse the start, as any route's error. The first message given is
+  kept; every hook runs.
+- `on_approve(hook)`: `async def hook(request, user, sign_in) -> None`,
+  before a phone's approval of the user's own request is recorded; it
+  raises (`PermissionDenied`) to refuse it, and nothing is approved.
+
+`domainkit.contrib.ciba.api.count_start(request)` counts a start of a
+project's own route against `START_RATE`, with the built-in ones.
+
 ## Asking the phone from a signed-in session
 
 A web session that is signed in already can ask the user's phone to

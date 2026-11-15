@@ -11,6 +11,13 @@ and a status.
 
 ### Added
 
+- ciba's web pages have hooks: `on_start(request)` may refuse a push or
+  QR start, or name it with a binding message, shown on both devices (a
+  QR start took none); `on_approve(request, user, sign_in)` may refuse a
+  phone's approval before it is recorded. `count_start` is public. A
+  project re-implemented the start and the approval to name its
+  dashboard and check who may use it (user report A8).
+
 - `@requires_approval(action)` guards a `@use_case`: its call and its
   `run`, which routes wire, are both refused until approved, and
   `guard()` takes the use case, its command included. Applied to one, it
