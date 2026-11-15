@@ -77,6 +77,13 @@ and a status.
   could break the unique digest on PostgreSQL. A token that moves to
   another user gets a new id there, as
   [Push tokens](docs/auth/devices.md#push-tokens) says (user report A11).
+- `get_all_permissions(superuser, obj)` lists every permission, as
+  `has_perm(superuser, perm, obj)` answers before any backend is asked,
+  with whatever the backends add. It listed only what the backends
+  granted on the object, so a "what may I do" route under-reported a
+  superuser. Nothing else changed about what a superuser may do: no
+  backend narrows one, as before; see
+  [Checking permissions](docs/auth/users.md#checking-permissions) (user report A11).
 
 ## [2.3.0] - 2026-11-11
 

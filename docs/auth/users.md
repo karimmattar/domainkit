@@ -165,10 +165,21 @@ await get_all_permissions(user)  # frozenset of keys
 `user.has_perm(key)` answers from the user as it was loaded, without a
 query. `await has_perm(user, key, obj)` also asks every backend, which is
 how [object permissions](#grants-on-single-objects) work. Both say yes to
-an active superuser, and no to an inactive user. `user.has_perms(keys)`,
-`user.get_all_permissions()`, `user.get_user_permissions()`,
-`user.get_group_permissions()`, and `user.has_domain_perms("shop")` read
-the loaded user too. `has_domain_perms` is Django's `has_module_perms`.
+an active superuser, and no to an inactive user.
+
+An active superuser has every permission, on every object, before any
+backend is asked: no backend narrows a superuser, and a backend that
+raises `PermissionDenied` does not either. `get_all_permissions` agrees
+with `has_perm`: for an active superuser it lists every permission, on
+an object too, with whatever the backends add. Before 2.4,
+`get_all_permissions(superuser, obj)` listed only what the backends
+granted on the object, so a "what may I do" route under-reported a
+superuser. Nothing else changed about what a superuser may do.
+
+`user.has_perms(keys)`, `user.get_all_permissions()`,
+`user.get_user_permissions()`, `user.get_group_permissions()`, and
+`user.has_domain_perms("shop")` read the loaded user too.
+`has_domain_perms` is Django's `has_module_perms`.
 
 Two more functions read through the backends: `get_user(user_id)`
 returns the user from the first backend that has it, and
@@ -413,7 +424,9 @@ dumped user loads back as it was, its password hash included
 
 - `authenticate(**credentials)` returns the first user a backend accepts;
 - `has_perm` is true when any backend grants the permission;
-- a backend that raises `PermissionDenied` ends either search with "no".
+- a backend that raises `PermissionDenied` ends either search with "no";
+- an active superuser has every permission, on every object, before any
+  backend is asked ([Checking permissions](#checking-permissions)).
 
 `ModelBackend`, the default, checks passwords against the user table and
 grants what users and their groups were given. An unknown username costs

@@ -123,6 +123,16 @@ class ReaderBackend(BaseBackend):
         return frozenset({"shop.view_product"})
 
 
+class ExportBackend(BaseBackend):
+    """Everyone may export reports: a key no stored permission has."""
+
+    async def get_all_permissions(
+        self, user: AnyUser, obj: object | None = None
+    ) -> frozenset[str]:
+        """``reports.export``, always, on any object or none."""
+        return frozenset({"reports.export"})
+
+
 NoUsernameField = type("NoUsernameField", (AbstractBaseUser,), {})
 
 
@@ -322,6 +332,44 @@ def test_object_permissions_come_from_other_backends(auth_project: str) -> None:
         assert run(get_all_permissions(alice, own)) == {"shop.change_product"}
     root = run(create_user("root", is_superuser=True))
     assert run(ModelBackend().get_all_permissions(root, own)) == frozenset()
+
+
+def test_a_superusers_permissions_on_an_object_are_every_permission(
+    auth_project: str,
+) -> None:
+    """``get_all_permissions(root, obj)`` agrees with ``has_perm`` (user report A11).
+
+    It listed only what the backends granted on the object, while
+    ``has_perm`` says yes to every permission there. The backends' own
+    keys are kept, with or without ``ModelBackend``; a backend that
+    refuses still narrows no superuser; an inactive one has nothing.
+    """
+    root = run(create_user("root", is_superuser=True))
+    product = Product(id=ProductId(uuid4()), name="alice")
+    every = frozenset(run(permission_keys()))
+    backends = [
+        f"{AUTH}.backends.ModelBackend",
+        f"{HERE}.OwnerBackend",
+        f"{HERE}.ExportBackend",
+        f"{HERE}.DenyBackend",
+    ]
+    with override_settings(
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER], "BACKENDS": backends}
+    ):
+        assert run(get_all_permissions(root, product)) == every | {"reports.export"}
+        assert run(get_all_permissions(root)) == every | {"reports.export"}
+        assert run(has_perms(root, [*every, "reports.export"], product))
+    with override_settings(
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER], "BACKENDS": [f"{HERE}.ExportBackend"]}
+    ):
+        assert run(get_all_permissions(root, product)) == every | {"reports.export"}
+        assert run(get_all_permissions(root)) == every | {"reports.export"}
+
+    root.set_active(False)
+
+    assert run(get_all_permissions(root, product)) == frozenset()
+    assert run(get_all_permissions(root)) == frozenset()
+    assert not run(has_perm(root, "shop.change_product", product))
 
 
 def test_backends_add_up_permissions(auth_project: str) -> None:
