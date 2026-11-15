@@ -67,6 +67,17 @@ and a status.
   import of that kind. Nothing a project imports changed (audit finding
   A1).
 
+### Fixed
+
+- `POST /auth/devices/push-tokens`: a token the user registered before
+  keeps its `id` and `created_at`, and is seen again, so an app that
+  registers on every start keeps one id. It was deleted and inserted
+  with a new id each time. One upsert on the token's digest: two
+  registrations of one token at once each succeed, where the second
+  could break the unique digest on PostgreSQL. A token that moves to
+  another user gets a new id there, as
+  [Push tokens](docs/auth/devices.md#push-tokens) says (user report A11).
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of
