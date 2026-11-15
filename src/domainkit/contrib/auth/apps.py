@@ -708,8 +708,8 @@ def action_problems(app: FastAPI) -> list[CheckMessage]:
             f"Action {purpose!r} asks confirming it to prove "
             f"{', '.join(sorted(action.required()))}, which no installed way to "
             "confirm proves: nobody could confirm it. Install the app that "
-            "confirms it (the phone: domainkit.contrib.ciba), or change its "
-            "methods.",
+            "confirms it (the phone: domainkit.contrib.ciba or "
+            "domainkit.contrib.devices), or change its methods.",
         )
         for purpose, action in actions.items()
         if not provable(action.required())
