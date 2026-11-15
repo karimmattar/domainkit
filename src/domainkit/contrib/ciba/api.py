@@ -20,6 +20,11 @@ per address):
   ``slow_down``, ``expired_token``, ``access_denied`` or ``sign_in_unknown``.
 - ``POST /app-sign-in/session`` ``{"request"}``: the same, as a browser
   session in cookies (``/session``).
+- ``POST /app-sign-in/wait`` ``{"request"}``: holds until the phone
+  answers, at most ``WAIT_SECONDS``; ``{"status": "approved"}`` (redeem it
+  now) or ``"pending"`` (wait again). It never redeems, nor counts as a
+  poll. ``/app-sign-in/step-up/wait`` and
+  ``/app-sign-in/transactions/wait`` do the same for a session's asks.
 
 A signed-in web session (credentials without scopes) asks the user's
 phone for more (ADR 0129); only that session redeems the answer:
@@ -54,12 +59,13 @@ A new phone is bound from one the user bound before, which scans it
 
 import hashlib
 from datetime import datetime
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from domainkit import deadlines
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.authentication import Credentials, Proof
 from domainkit.contrib.auth.captcha import captcha
@@ -120,6 +126,7 @@ from .services import (
     secret_digest,
     start_push,
     start_qr,
+    wait,
 )
 from .stores import DEVICE, QR, STEP_UP, TRANSACTION, CibaUnitOfWork, SignInRequest
 
@@ -174,6 +181,24 @@ class StartedOut(BaseModel):
     qr_expires_in: int | None = None
     """Seconds the QR code can be scanned: then start a new one. Once
     scanned, keep polling: the phone has ``expires_in`` to answer."""
+
+
+class WaitOut(BaseModel):
+    """What a wait found: the phone approved, or has not answered yet."""
+
+    status: Literal["approved", "pending"]
+    """``approved``: redeem it now (``…/token``); ``pending``: wait again."""
+
+
+def _wait_seconds() -> float:
+    """``WAIT_SECONDS``, within the request's deadline less a second to answer."""
+    seconds = float(ciba_settings().WAIT_SECONDS)
+    return max(deadlines.remaining(at_most=seconds + 1.0) - 1.0, 0.0)
+
+
+def _waited(approved: bool) -> WaitOut:
+    """The answer of a wait."""
+    return WaitOut(status="approved" if approved else "pending")
 
 
 class PollIn(BaseModel):
@@ -526,6 +551,23 @@ async def redeem_sign_in(
 
 
 @router.post(
+    "/app-sign-in/wait",
+    dependencies=[Public],
+    responses=error_responses(status.HTTP_400_BAD_REQUEST),
+)
+async def wait_for_sign_in(body: PollIn, response: Response) -> WaitOut:
+    """Hold until the phone answers the page's sign-in, at most ``WAIT_SECONDS``.
+
+    Instead of polling (user report L2): ``approved`` comes as soon as the
+    phone approves; the page then redeems it (``/token``, ``/session``).
+    Denied, expired, or unknown answer as a poll does. It never redeems,
+    nor counts as a poll.
+    """
+    _no_store(response)
+    return _waited(await wait(body.request, seconds=_wait_seconds()))
+
+
+@router.post(
     "/app-sign-in/session",
     dependencies=[Public],
     responses=error_responses(status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN),
@@ -739,6 +781,51 @@ async def ask_phone_step_up(
     _no_store(response)
     _, digest = _session_of(request)
     return await _ask(request, user, digest, kind=STEP_UP, message=body.message)
+
+
+@router.post(
+    "/app-sign-in/step-up/wait",
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
+)
+async def wait_for_phone_step_up(
+    body: PollIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> WaitOut:
+    """Hold until the phone answers this session's step-up (``/wait``'s rules)."""
+    _no_store(response)
+    _, digest = _session_of(request)
+    approved = await wait(
+        body.request, seconds=_wait_seconds(), kind=STEP_UP, credential_digest=digest
+    )
+    return _waited(approved)
+
+
+@router.post(
+    "/app-sign-in/transactions/wait",
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
+)
+async def wait_for_phone_transaction(  # Before /{challenge_id}, which "wait" matches.
+    body: PollIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> WaitOut:
+    """Hold until the phone answers this session's transaction (``/wait``'s rules)."""
+    _no_store(response)
+    _, digest = _session_of(request)
+    approved = await wait(
+        body.request,
+        seconds=_wait_seconds(),
+        kind=TRANSACTION,
+        credential_digest=digest,
+    )
+    return _waited(approved)
 
 
 @router.post(

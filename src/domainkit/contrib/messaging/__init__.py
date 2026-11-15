@@ -35,7 +35,7 @@ from domainkit.utils.module_loading import lazy_names
 
 from .outbox import enqueue
 from .registry import Chain, chain, ordered, periodic, task, tasks_kept
-from .retry import Backoff
+from .retry import Backoff, RunLater
 from .runs import AlreadyHandled, LeaseLost, inbox
 from .settings import MessagingSettings
 
@@ -51,6 +51,7 @@ __all__ = [
     "Chain",
     "LeaseLost",
     "MessagingSettings",
+    "RunLater",
     "Worker",
     "chain",
     "current_attempt",

@@ -157,6 +157,7 @@ everywhere.
 
 | Id | Warned |
 | --- | --- |
+| `apps.W001` | in every environment: a `start` or `stop` coroutine method of a `DomainConfig` that no hook point holds. Only registered functions run, so nothing calls it: register it in `ready()` with `on_startup(self.start)` or `on_shutdown(self.stop)` ([Extension points](extension-points.md)) |
 | `security.W001` | `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json` |
 | `security.W002` | `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS |
 | `security.W003` | no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE` |
@@ -173,6 +174,7 @@ everywhere.
 | `servers.W001` | an application that serves WebSockets under a server that reads larger messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or `GUNICORN_CMD_ARGS`; a deployed application also logs it at start) ([live.md](../live.md#message-size)) |
 | `servers.W002` | a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no caller has an address ([Server limits](servers.md); a deployed application also logs it at start) |
 | `live.W001` | WebSockets served without `WebSocketLimitsMiddleware` ([live.md](../live.md#message-size)) |
+| `live.W003` | domains share live event types (`live_events.share`) and `LIVE_FANOUT` names no backend (in staging and production): a client sees only the events its own process committed, and none the worker did ([live.md](../live.md#every-processs-events)) |
 | `live.W002` | a route with an access rule that turns re-authorization off (`LiveLimits(reauth_interval=None)`): its open connections keep a revoked token |
 | `blocking.W001` | in every environment: a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](../runtime.md#finding-blocking-code)) |
 | `blocking.W002` | in every environment: an event handler (in-process or durable) or a messaging task written as `def`. It is awaited on the event loop itself, so its work holds every request and message of the process, and the keys of the messages waiting behind it; then it fails, because it returns nothing to await ([runtime.md](../runtime.md#finding-blocking-code)). `allow_sync` marks one that returns an awaitable on purpose |
@@ -187,6 +189,8 @@ everywhere.
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
 | `accounting.W003` | the ledger without `domainkit.contrib.messaging`: no worker releases expired holds, which keep counting against what is available. Silence it once `manage.py accounting expireholds` runs on the project's own schedule ([accounting.md](../contrib/accounting.md#holds)) |
 | `messaging.W001` | a task registered without `name=` (in staging and production): its name is its module's path. Moving or renaming the function renames its messages, which then wait for a task of the old name and are dead-lettered after `MESSAGING.UNKNOWN_TARGET_GRACE` ([messaging.md](../contrib/messaging.md)) |
+| `messaging.W002` | a durable handler subscribed without `name=` (in staging and production): its key is its module's path. Moving or renaming the function, or making it in-process, renames its messages, which then wait for a handler of the old name and are dead-lettered after `MESSAGING.UNKNOWN_TARGET_GRACE`. `formerly=` keeps running them under the new name ([messaging.md](../contrib/messaging.md#durable-event-handlers)) |
+| `messaging.W003` | a network database whose pool holds fewer connections than `MESSAGING.CONCURRENCY` + 1 (in staging and production): a worker's running messages each hold one, besides its listener's, and the rest wait up to `POOL_TIMEOUT`, then fail and are retried ([operations.md](../operations.md#the-worker)) |
 | `limits.W001` | limits without `domainkit.contrib.messaging`: no worker purges old usage, and its table grows with every movement. Silence it once `manage.py limits purge` runs on the project's own schedule ([limits.md](../contrib/limits.md#settings)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
 | `keys.W001` | from `manage.py keys status --check`, not `check`: values, blind indexes, or subjects' keys are still sealed under a retired key. `manage.py keys reencrypt` moves them; then remove the key ([keys.md](../contrib/keys.md#rotating)) |

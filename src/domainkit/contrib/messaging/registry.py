@@ -377,16 +377,19 @@ def _owner_installed(function: Task) -> bool:
 def durable_handlers(
     bus: EventBus,
 ) -> dict[str, tuple[tuple[type[DomainEvent], ...], Callable[[Any], Awaitable[None]]]]:
-    """Map each durable handler key to the event types it handles and its function.
+    """Map each key a worker runs messages of to the event types and the function.
 
-    One function may be subscribed to several types (or to a base class).
+    A durable handler's key (its ``name=``, or ``module.QualName``), and
+    every handler's ``formerly`` ones, which still run the messages queued
+    under them. One function may be subscribed to several types (or to a
+    base class).
     """
     handlers: dict[
         str, tuple[tuple[type[DomainEvent], ...], Callable[[Any], Awaitable[None]]]
     ] = {}
-    for event_type, handler in bus.durable_subscriptions():
-        handled, _ = handlers.get(qualified_name(handler), ((), handler))
-        handlers[qualified_name(handler)] = ((*handled, event_type), handler)
+    for key, event_type, handler, _, _ in bus.handler_keys():
+        handled, _ = handlers.get(key, ((), handler))
+        handlers[key] = ((*handled, event_type), handler)
     return handlers
 
 

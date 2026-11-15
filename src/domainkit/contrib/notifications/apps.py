@@ -6,6 +6,7 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.messaging import task
 
+from .backends import NotificationRefused
 from .delivery import (
     PUSH_TASK,
     SMS_TASK,
@@ -44,6 +45,7 @@ class NotificationsConfig(DomainConfig):
                 max_attempts=config.MAX_ATTEMPTS,
                 queue=config.QUEUE,
                 sensitive=True,
+                dont_retry_on=(NotificationRefused,),  # It would come again.
             )(function)
         backends = {
             "SMS_BACKEND": (config.SMS_BACKEND, get_sms_backend().deployable),

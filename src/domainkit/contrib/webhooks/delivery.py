@@ -100,6 +100,8 @@ DELIVER: Final = "domainkit.contrib.webhooks.deliver"
 """The task key of one delivery's attempts."""
 PURGE: Final = "domainkit.contrib.webhooks.purge"
 """The hourly task that deletes old finished deliveries."""
+FAN_OUT: Final = "domainkit.contrib.webhooks.fan_out"
+"""The durable handler that queues each exposed event's deliveries."""
 DATABASE_MARGIN: Final = 30.0
 """Seconds a delivery task may take beyond ``TIMEOUT``, for its database work."""
 NAMESPACE: Final = uuid.UUID("5d0a6c2e-6a43-4e58-9a59-5f1e3c3bd2a1")
@@ -160,7 +162,13 @@ def expose[E: DomainEvent](
             f"or '-', not {name!r}."
         )
     _exposed[event_type] = Exposure(name, payload, owner)
-    bus.subscribe(event_type, fan_out, durable=True)
+    bus.subscribe(
+        event_type,
+        fan_out,
+        durable=True,
+        name=FAN_OUT,
+        formerly=["domainkit.contrib.webhooks.delivery.fan_out"],  # Before 2.4.
+    )
 
 
 def exposure_for(event_type: type[DomainEvent]) -> Exposure | None:

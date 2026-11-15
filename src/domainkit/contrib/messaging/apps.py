@@ -22,7 +22,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.routing import DatabaseRouter, router
-from domainkit.ddd import DeferredTask, DomainEvent
+from domainkit.ddd import DeferredTask, DomainEvent, event_bus
 from domainkit.lifecycle import Phase
 
 from . import runs
@@ -97,6 +97,8 @@ class MessagingConfig(DomainConfig):
         on_export_subject(self.export_copies)
         on_deployment_warnings(self.blocking_tasks)
         on_deployment_warnings(self.unnamed_tasks)
+        on_deployment_warnings(self.unnamed_handlers)
+        on_deployment_warnings(self.small_pools)
 
     async def stage_outbox(
         self,
@@ -164,6 +166,70 @@ class MessagingConfig(DomainConfig):
             )
             for spec in all_tasks()
             if not spec.named
+        ]
+
+    def small_pools(self) -> list[CheckMessage]:
+        """``messaging.W003``: pools smaller than a worker's messages, where deployed.
+
+        A worker runs up to ``CONCURRENCY`` messages at once, each holding a
+        connection while its handler's work and its outcome are written,
+        besides the one it listens and claims with. A pool of fewer makes
+        them wait for one up to ``POOL_TIMEOUT``, then fail and be retried
+        (user report W9).
+        """
+        from domainkit.conf.global_settings import is_network_database
+        from domainkit.db.connections import pool_capacity
+
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        concurrency = registry.settings(MessagingSettings).CONCURRENCY
+        found = []
+        for alias, database in settings.DATABASES.items():
+            capacity = pool_capacity(database)
+            url = database.URL.get_secret_value()
+            if not is_network_database(url) or concurrency + 1 <= capacity:
+                continue
+            found.append(
+                CheckMessage(
+                    "messaging.W003",
+                    f"MESSAGING.CONCURRENCY ({concurrency}) runs more messages at "
+                    f"once than the pool of DATABASES[{alias!r}] serves: it holds "
+                    f"{capacity} connections per worker (POOL_SIZE + "
+                    "MAX_OVERFLOW), and each running message holds one, besides "
+                    "the one the worker listens and claims with. The others wait "
+                    "for one up to POOL_TIMEOUT, then fail and are retried.",
+                    hint=f"Lower CONCURRENCY to {max(capacity - 1, 1)}, or raise the "
+                    "pool for the workers (their settings may differ from the web "
+                    "processes').",
+                )
+            )
+        return found
+
+    def unnamed_handlers(self) -> list[CheckMessage]:
+        """``messaging.W002``: durable handlers without ``name=``, where deployed.
+
+        A durable handler's key is the one its messages carry. Without
+        ``name=`` it is ``module.QualName``: moving or renaming the function,
+        or making it in-process, renames it, and the messages queued under
+        the old key find no handler (user report W5).
+        """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        unnamed = {
+            key.key for key in event_bus.handler_keys() if key.current and not key.named
+        }
+        return [
+            CheckMessage(
+                "messaging.W002",
+                f"The durable handler {key!r} is named after its module's path: "
+                "moving or renaming it, or making it in-process, renames its "
+                "messages, which then wait for a handler of the old name and are "
+                "dead-lettered after MESSAGING.UNKNOWN_TARGET_GRACE.",
+                hint=f"Give it a name of its own: @handles(..., durable=True, "
+                f"name=...), with formerly=[{key!r}] for the messages queued "
+                "under this one.",
+            )
+            for key in sorted(unnamed)
         ]
 
     async def erase_copies(self, subject: str, reason: str) -> Mapping[str, int]:
