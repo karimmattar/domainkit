@@ -107,6 +107,12 @@ and a status.
   sees the server's variables, never its arguments
   ([WebSocket message size](docs/reference/servers.md#websocket-message-size))
   (user report S3).
+- The testing guide shows how to run one check as a deployed
+  application, where `settings.ENVIRONMENT = "production"` validates the
+  whole test settings as production's: load the production settings
+  with `use_settings`, and the variables they read
+  ([One check as deployed](docs/testing.md#one-check-as-deployed)) (user
+  report T1).
 
 ### Deprecated
 
@@ -114,6 +120,23 @@ and a status.
   moves it to an extra, `domainkit[uvicorn]`, which a project that serves
   with uvicorn, runs `runserver` with it, or uses `live_server` then
   installs ("Upgrading", 2.3 to 2.4) (user report S3).
+
+### Fixed
+
+- On SQLite, a unit of work that writes, opened inside a read-only one of
+  another domain, failed with "database is locked" after 5 seconds: the
+  read-only one holds SQLite's read lock until it ends, and in SQLite's
+  default journal no other connection commits meanwhile. The test
+  plugin's SQLite databases are in write-ahead-log mode now, where it
+  commits, as on PostgreSQL
+  ([Reads beside writes on SQLite](docs/testing.md#reads-beside-writes-on-sqlite))
+  (user report T1).
+- The test clients' `another()`, and the clients `authenticated()` and
+  the others make through it, sent Starlette's `testclient` address,
+  whatever address the client was given (`client=`). They keep it now, so
+  a test of a limit per address can give one, a trusted proxy's say
+  ([A caller's address](docs/testing.md#a-callers-address)) (user report
+  T1).
 
 ## [2.3.0] - 2026-11-11
 
