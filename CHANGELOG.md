@@ -11,6 +11,62 @@ and a status.
 
 ### Added
 
+- While the broker is away, relaying workers run the outbox themselves:
+  each relay has a breaker, as commits do, and while it is open the
+  worker claims and runs the due messages of its queues, as a worker
+  without a broker does, until the broker answers again. A RabbitMQ
+  outage stopped every code, notice, and job while the database that
+  holds them was fine, and the relay leased, unlocked, and warned about
+  each message every `POLL_INTERVAL` (ADR 0142, user report W3).
+- Live events reach every process: `live_events.share(OrderShipped)` in
+  a domain's `ready()`, and `LIVE_FANOUT = {"BACKEND": "postgres"}` (or
+  `"redis"`), carry the committed events of those types from whichever
+  process committed them, the worker included, to the subscribers of
+  every process. Without it, a client saw only its own replica's events,
+  and none the worker committed. `check` warns about shared types with
+  no backend where deployed (`live.W003`). ADR 0143 (user report L1).
+- `POST /auth/app-sign-in/wait` `{"request"}` holds until the phone
+  answers, at most `CIBA.WAIT_SECONDS` (20), instead of polling: an
+  approval reached the page up to `interval` seconds late, and a poll too
+  soon slowed it down. It never redeems, nor counts as a poll;
+  `/app-sign-in/step-up/wait` and `/app-sign-in/transactions/wait` do the
+  same for a session's asks (user report L2).
+- `check` lists infos (`<label>.I001`) a domain's `on_deployment_warnings`
+  returns, and never refuses them, `--deploy` included (user report C4).
+- `AUDIT.REQUIRE` names the parts of the tamper-evident baseline that
+  staging and production refuse to start without: `"ledger"`,
+  `"namespace"`, `"sealing"`, `"triggers"` (all, by default); the others
+  only warn. `REQUIRE_BASELINE = False` made every part a warning, so a
+  project without a ledger, a supported choice, stopped enforcing the
+  append-only triggers too (user report C2).
+- `on_admin_change(actor, target, change)` (`domainkit.contrib.auth.gates`)
+  checks every change the admin API makes to a user, before it is made:
+  an `AdminChange` says its kind (create, update, delete, password,
+  logout, impersonate, groups, permissions), the fields it sets, and the
+  groups or permissions it adds and removes; raise to refuse it.
+  `may_grant` and `may_hold`, the admin's ceilings, are public. Only
+  making a superuser had a hook, so "nobody edits their own account" or
+  "making staff needs another permission" took a dependency that read
+  the body (user report A9).
+
+- ciba's web pages have hooks: `on_start(request)` may refuse a push or
+  QR start, or name it with a binding message, shown on both devices (a
+  QR start took none); `on_approve(request, user, sign_in)` may refuse a
+  phone's approval before it is recorded. `count_start` is public. A
+  project re-implemented the start and the approval to name its
+  dashboard and check who may use it (user report A8).
+
+- `@requires_approval(action)` guards a `@use_case`: its call and its
+  `run`, which routes wire, are both refused until approved, and
+  `guard()` takes the use case, its command included. Applied to one, it
+  returned a plain function, and guarding `run` alone left the call open
+  (user report P1).
+
+- `SqlAlchemyUnitOfWork(readonly=True, replica=False)`, or `replica =
+  False` on the class, keeps a read-only unit of work on the primary.
+  `readonly=True` also meant "read from a replica", so a project that
+  marks its permission checks read-only could not add one: they would
+  read stale memberships (user report D1).
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and
@@ -52,6 +108,74 @@ and a status.
   superuser for approval. Auth and those apps no longer import each
   other, a test keeps any two apps from it, and nothing changes for a
   project (ADR 0140, audit finding A2).
+- `runworker --heartbeat-file PATH`: the worker's health signal. From its
+  own event loop, every `--heartbeat-interval` seconds (15), it runs what
+  `/ready` checks (domains, databases, ledgers, caches) and checks its
+  broker; while all hold it rewrites the file, which a container's health
+  check reads. `--metrics-port` answered from a thread however stuck the
+  loop was. `domainkit.http.health.readiness_failures` runs `/ready`'s
+  checks for any process (user report W2).
+- `messages drop ID|all [--blanked]` deletes dead letters, audited with
+  its operator, and `MESSAGING.DEAD_RETENTION_SECONDS` lets cleanup
+  delete those that died that long ago (default `None`: kept, as
+  before). The dead letters of mail, texts, and pushes keep no
+  arguments, so `retry` could not run them and `cancel` refused them:
+  they stayed for ever, and an alert on the `dead` gauge never cleared.
+  `admin.drop_dead` does the same for your own tools (user report W4).
+- Durable handlers take a name: `@handles(Event, durable=True,
+  name="billing.notify")`, or `subscribe(..., name=...)`. Their messages
+  carried `module.QualName`, so renaming or moving one, or making it
+  in-process, left its queued messages to die. `formerly=` lists the keys
+  a handler had before, whose messages workers still run with it.
+  `check` warns about durable handlers without a name in staging and
+  production (`messaging.W002`), `addevent` writes one, and webhooks'
+  handler is `domainkit.contrib.webhooks.fan_out`, formerly its path. Two
+  handlers under one key, or one handler under two, are refused
+  (user report W5).
+- `raise RunLater(after=timedelta(minutes=1))` from a task or durable
+  handler runs it again then, and is not a failure: no attempt spent,
+  one INFO line, no report, never a dead letter, counted as the outcome
+  `later`. A task polling a provider that had not decided raised an
+  error instead: a warning and a traceback per check, and a dead letter
+  past `max_attempts` (user report W6).
+- Push refusals are read as FCM's, Apple's, and Huawei's references
+  have them. FCM's `INVALID_ARGUMENT` for the token itself (its own
+  error, no field, or `message.token` alone) is a token gone, as
+  `UNREGISTERED` is: it was tried five times, dead-lettered, and kept. A
+  message a service will refuse again raises the new
+  `NotificationRefused`, which the text and push tasks dead-letter at
+  once instead of retrying. Errors keep the service's `code` and the
+  `fields` it named, never their values. Each push backend reads its
+  answer in `refusal(response)`, a `Refusal`, which a subclass can
+  override for one case without copying `send` (user reports N1, N2).
+- `check` warns, in every environment, about a `start` or `stop`
+  coroutine method of a `DomainConfig` that no hook point holds
+  (`apps.W001`): only registered functions run, so a startup check
+  written as domainkit's own apps write theirs, and never registered,
+  never ran (user report C1).
+- `check` warns, where deployed, about a network database whose pool
+  holds fewer connections than `MESSAGING.CONCURRENCY` + 1
+  (`messaging.W003`): the worker's running messages waited for one up to
+  `POOL_TIMEOUT`, then failed (user report W9).
+- `READINESS_BROKERS = True` makes `/ready` check each broker of
+  `BROKERS` too, as `broker:<alias>`; it is off by default, since a
+  process serves while its broker is away (user report W9).
+- `select_routes` and `route_names` (`domainkit.http.routers`): mount a
+  copy of a router with only some of its routes (`only`), without some
+  (`without`), and with dependencies of your own on the routes you name
+  (`dependencies={"POST /devices/enroll/code": [Depends(...)]}`), which
+  run after the route's own and show in OpenAPI. Routes are named
+  `METHOD /path`, as the router declares them; a name that matches no
+  route is refused, and the router copied is left as it is. See
+  [Rules on the framework's routes](docs/auth/routes.md#rules-on-the-frameworks-routes)
+  and ADR 0145 (user report A7).
+- `403 approval_pending` names the approval request it submitted, as
+  `approval_request_id`. Its body had only `request_id`, which is the
+  HTTP request's. A `DomainError` adds such members through
+  `extensions()`, in either error format, after the body's own, which
+  they never replace; see
+  [The fields of an error](docs/reference/responses.md#the-fields-of-an-error)
+  (user report P3).
 - `table_for` stores a tuple of one kind of JSON scalar
   (`tuple[str, ...]`, and of `int`, `float`, `bool`) in the new
   `JSONTuple` column type (`domainkit.db`): a JSON array, read back as a
@@ -68,6 +192,35 @@ and a status.
 
 ### Changed
 
+- `POLL_INTERVAL_IDLE` applies to the relay too while commits publish
+  themselves to the broker (`PUBLISH_ON_COMMIT`): it polled the outbox
+  every `POLL_INTERVAL` for what commits had already published (user
+  report W9).
+- `runworker --metrics-port` asks for `METRICS_TOKEN` when it is set, as
+  the web's `/metrics` does; it served anyone who reached the port
+  (user report W9).
+- Kafka: a publish that fails because the cluster cannot take it now (a
+  lost connection, a partition without a leader, too few replicas, a
+  timeout) is `BrokerUnavailable`, which opens the publishing breaker; it
+  was `BrokerRefused`, which kept it closed through an outage (user
+  report W9).
+- FCM's `404` without `UNREGISTERED` is no longer a token gone: a wrong
+  `PROJECT_ID` could answer so, and every token sent to would have been
+  forgotten. It is tried again (user report N2).
+- RabbitMQ's `check()` opens and closes a channel: a round trip. It only
+  reached for the publishing channel, which aio-pika keeps while it
+  reconnects, so `broker check`, and the worker's heartbeat, passed with
+  the broker down (user report W7).
+- A key rotation passes `check --deploy`: `KEYS.DATA_KEYS` keeping a
+  retired key is `keys.I001`, an info, while `keys reencrypt` moves what
+  it seals. It was `keys.W001`, a warning, which `check --deploy` refused
+  for the whole rotation. `keys status --check` still fails (`keys.W001`)
+  while anything is sealed under one (user report C4).
+- A key service with no `DATA_KEYS` loads, so `keys generate` makes the
+  first data key: the settings refused it, with the hint to run
+  `keys generate`, which could not start for that reason. Nothing can be
+  sealed or opened then, and startup and `check` refuse it (`keys.E003`)
+  (user report C3).
 - `domainkit.contrib.auth.repositories` is a package: its 1,852 lines
   are five modules, by what is stored (accounts, tokens, principals,
   factors, signups). Every name is still imported from
@@ -109,6 +262,38 @@ and a status.
   `slow_down`, five seconds more, after the phone had already answered.
   The interval still holds back polls of a request that waits (user
   report L2).
+- `runworker` starts the installed domains, as serving the application
+  does: their `on_startup` hooks run first and their `on_shutdown` hooks
+  after. It ran without them, so with a key service other than `local`
+  the worker never unwrapped the data keys, and every message that read
+  an `Encrypted` field failed with `KeysNotLoaded`. Commands of your own
+  opt in with `BaseCommand.needs_domains = True` (user report W1).
+- `POST /auth/devices/push-tokens`: a token the user registered before
+  keeps its `id` and `created_at`, and is seen again, so an app that
+  registers on every start keeps one id. It was deleted and inserted
+  with a new id each time. One upsert on the token's digest: two
+  registrations of one token at once each succeed, where the second
+  could break the unique digest on PostgreSQL. A token that moves to
+  another user gets a new id there, as
+  [Push tokens](docs/auth/devices.md#push-tokens) says (user report A11).
+- `get_all_permissions(superuser, obj)` lists every permission, as
+  `has_perm(superuser, perm, obj)` answers before any backend is asked,
+  with whatever the backends add. It listed only what the backends
+  granted on the object, so a "what may I do" route under-reported a
+  superuser. Nothing else changed about what a superuser may do: no
+  backend narrows one, as before; see
+  [Checking permissions](docs/auth/users.md#checking-permissions)
+  (user report A11).
+- `APPROVALS.SUPERUSER_APPROVERS=""`, what an unset variable gives in a
+  compose file, is read as `None`: superusers approve. The permission's
+  pattern refused it, so the project did not start (user report P3).
+- The approvals page says what a project with one superuser does:
+  `auth.grant_superuser` has no possible approver, and
+  `manage.py createsuperuser` is the way out. It also says that with
+  `SUPERUSER_APPROVERS` set, a superuser can give that permission to an
+  account they control, which then approves; see
+  [Making superusers](docs/contrib/approvals.md#making-superusers)
+  (user report P3).
 
 ### Security
 

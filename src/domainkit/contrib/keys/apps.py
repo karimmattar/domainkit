@@ -17,7 +17,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.routing import DatabaseRouter
 from domainkit.keys.ring import keyring, use_keyring
 
-from .operations import SettingsKeyring, shred_subject
+from .operations import SettingsKeyring, missing_keys_problem, shred_subject
 from .settings import KeysSettings
 
 
@@ -39,7 +39,8 @@ class KeysConfig(DomainConfig):
         destroys their keys.
         """
         rings = SettingsKeyring()
-        rings()  # Makes the ring now: a wrong KEYS fails setup().
+        if not registry.settings(KeysSettings).missing_keys:  # keys generate's.
+            rings()  # Makes the ring now: a wrong KEYS fails setup().
         use_keyring(rings)
         on_startup(self.start)
         on_check_application(self.application_problems)
@@ -59,9 +60,17 @@ class KeysConfig(DomainConfig):
         between them. ``keys.E002``: Vault over plain HTTP, which sends the
         token, and every data key it unwraps, in clear (SEC-15a-6).
         """
+        config = registry.settings(KeysSettings)
+        if config.missing_keys:  # In every environment: nothing could be sealed.
+            return [
+                CheckMessage(
+                    "keys.E003",
+                    missing_keys_problem(config.PROVIDER),
+                    hint="manage.py keys generate --id 2026-11",
+                )
+            ]
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return []
-        config = registry.settings(KeysSettings)
         problems: list[str] = []
         if config.PROVIDER == "local" and not config.ALLOW_LOCAL_KEK:
             problems.append(
@@ -93,22 +102,25 @@ class KeysConfig(DomainConfig):
         return problems
 
     def retired_keys(self) -> list[str]:
-        """Data keys kept only to open what they sealed (``keys.W001``).
+        """Data keys kept only to open what they sealed (``keys.I001``).
 
         Values sealed under a retired key read as long as it stays in
-        ``DATA_KEYS``; ``manage.py keys status`` counts them, and
-        ``manage.py keys reencrypt`` moves them to the current key.
+        ``DATA_KEYS``, as they must while a rotation is under way: an
+        info, which ``check --deploy`` lists and never refuses (user report
+        C4). ``manage.py keys status --check`` counts what they still seal,
+        and fails (``keys.W001``) until ``keys reencrypt`` moved it all.
         """
         retired = registry.settings(KeysSettings).retired
         if not retired:
             return []
         return [
             CheckMessage(
-                "keys.W001",
-                f"KEYS.DATA_KEYS keeps retired keys ({', '.join(retired)}): values "
-                "and subjects' keys may still be sealed under them.",
+                "keys.I001",
+                f"KEYS.DATA_KEYS keeps retired keys ({', '.join(retired)}): a "
+                "rotation is under way, and values or subjects' keys may still "
+                "be sealed under them.",
                 hint="Run 'manage.py keys reencrypt', then 'manage.py keys status "
-                "--check'; remove the keys once nothing uses them (for dev, set "
+                "--check'; remove the keys once it passes (for dev, set "
                 "KEYS.KEEP_DEVELOPMENT_KEY = False).",
             )
         ]

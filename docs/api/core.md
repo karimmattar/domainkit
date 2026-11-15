@@ -37,6 +37,7 @@ Typed hooks a domain registers for what it takes part in.
 - `on_seed`: Add the rows a fresh database needs (`manage.py seed`): `()`.
 - `on_shutdown`: Release what the domain's startup hooks opened: `()`.
 - `on_startup`: Open process resources, such as clients and pools: `()`.
+- `unregistered_methods`: `apps.W001`: each `start` or `stop` coroutine method no point holds.
 
 ## `domainkit.architecture`
 

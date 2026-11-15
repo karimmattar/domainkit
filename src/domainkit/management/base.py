@@ -48,6 +48,12 @@ class BaseCommand:
     its actions with ``self.recorded`` (``domainkit.management.operators``)."""
     operator: "Operator | None" = None
     """Who runs it, once ``execute`` starts, for commands with ``operator_actions``."""
+    needs_domains: bool = False
+    """Start the installed domains around ``handle``, as serving the
+    application does (``registry.lifespan``): their ``on_startup`` hooks
+    run first (a key service's data keys unwrapped, a trail's protection
+    checked) and their ``on_shutdown`` hooks after. For commands that run
+    the application's work, such as ``runworker``; ``handle`` must be async."""
 
     def __init__(
         self, stdout: TextIO | None = None, stderr: TextIO | None = None
@@ -87,8 +93,17 @@ class BaseCommand:
         """Set up the framework if needed, then run ``handle``.
 
         A command with ``operator_actions`` first finds its operator, and
-        runs as them.
+        runs as them; one with ``needs_domains`` runs inside the domains'
+        lifespan.
+
+        Raises:
+            TypeError: ``needs_domains`` with a ``handle`` that is not async.
         """
+        if self.needs_domains and not inspect.iscoroutinefunction(self.handle):
+            raise TypeError(
+                f"{type(self).__name__}.needs_domains needs an async handle: the "
+                "domains start and stop in its event loop."
+            )
         acting: AbstractContextManager[None] = nullcontext()
         if self.operator_actions:
             from domainkit.management.operators import acting_as, operator
@@ -102,7 +117,7 @@ class BaseCommand:
         with acting:
             result = self.handle(**options)
             if inspect.isawaitable(result):
-                run_async(result)
+                run_async(_started(result) if self.needs_domains else result)
 
     def label(self, options: dict[str, object]) -> str:
         """What the audit trail calls this run: the command's name."""
@@ -155,6 +170,16 @@ class BaseCommand:
         whose stdout is a token or a report keeps it clean.
         """
         self.stderr.write(f"{message}\n")
+
+
+async def _started[T](awaitable: Awaitable[T]) -> T:
+    """Await ``awaitable`` with the installed domains started, as serving does."""
+    from domainkit.apps import registry
+    from domainkit.lifecycle import PHASE_ENDS, Phase, shutdown_timeout
+
+    domains = shutdown_timeout() * PHASE_ENDS[Phase.DOMAINS]
+    async with registry.lifespan(stop_within=domains):
+        return await awaitable
 
 
 def run_async[T](awaitable: Awaitable[T]) -> T:

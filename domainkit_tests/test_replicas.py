@@ -134,6 +134,24 @@ def test_read_only_work_takes_turns_on_the_replicas(
     assert router.primary_of("default") is None
 
 
+def test_read_only_work_may_keep_to_the_primary(
+    replicated: tuple[str, str, str],
+) -> None:
+    """``replica=False``, or on the class: reads that must see the latest commit.
+
+    A project that marks its permission checks read-only could not add a
+    replica: they would read stale memberships (user report D1).
+    """
+
+    class Checks(GadgetsUnitOfWork):
+        replica = False
+
+    assert GadgetsUnitOfWork(readonly=True, replica=False).alias == "default"
+    assert Checks(readonly=True).alias == "default"
+    assert Checks(readonly=True, replica=True).alias in {"one", "two"}
+    assert GadgetsUnitOfWork(readonly=True).alias in {"one", "two"}
+
+
 def test_nothing_writes_to_a_replica(replicated: tuple[str, str, str]) -> None:
     """A unit of work, or migrations, refuse a replica named as a target."""
     with pytest.raises(

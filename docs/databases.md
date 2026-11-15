@@ -1197,7 +1197,9 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
 - **Reads.** A read-only unit of work opens its session on a replica of
   the alias its routing gives (a shard's alias works too). With several
   replicas, units of work take turns. Without `REPLICAS`, it reads the
-  alias itself.
+  alias itself. `replica=False` (or `replica = False` on the class) keeps
+  a read-only one on the primary, for reads that must see the latest
+  commit, such as permission checks.
 - **Writes** always go to the primary. A read-only unit of work refuses
   to commit (`ReadOnlyError`). On PostgreSQL its transaction is
   `READ ONLY`, so a write that goes around the unit of work is refused as

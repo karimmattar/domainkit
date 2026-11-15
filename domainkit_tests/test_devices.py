@@ -5,6 +5,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -772,6 +773,87 @@ def test_a_token_moves_to_whoever_registers_it_and_the_oldest_end(app: App) -> N
     assert client.get("/auth/devices/push-tokens", headers=bob).json() != []
     assert len(client.get("/auth/devices/push-tokens", headers=ann).json()) == 2
     assert register(ann, "has space").status_code == 422
+
+
+def test_an_app_that_registers_its_token_on_every_start_keeps_one_id(
+    app: App,
+) -> None:
+    """Registered again: the same id and ``created_at``, seen later (user report A11).
+
+    Each registration used to delete the token and insert it with a new
+    id. The platform is the one last given. A token that moves to another
+    user is a new registration there: a new id, which the first user's
+    list no longer shows.
+    """
+    client = app()
+    ann = signed_in(client)
+    bob = signed_in(client, "bob")
+
+    def register(headers: dict[str, str], platform: str = "fcm") -> Any:  # noqa: ANN401
+        answer = client.post(
+            "/auth/devices/push-tokens",
+            json={"token": "app-token", "platform": platform},
+            headers=headers,
+        )
+        assert answer.status_code == 201, answer.json()
+        return answer.json()
+
+    def when(moment: str) -> datetime:
+        return datetime.fromisoformat(moment)
+
+    first = register(ann)
+    time.sleep(0.01)
+    again = register(ann, "huawei")
+    listed = client.get("/auth/devices/push-tokens", headers=ann).json()
+    moved = register(bob)
+
+    assert again["id"] == first["id"]
+    assert again["created_at"] == first["created_at"]
+    assert when(again["last_seen_at"]) > when(first["last_seen_at"])
+    assert [(each["id"], each["platform"]) for each in listed] == [
+        (first["id"], "huawei")
+    ]
+    assert moved["id"] != first["id"]
+    assert when(moved["created_at"]) > when(first["created_at"])
+    assert client.get("/auth/devices/push-tokens", headers=ann).json() == []
+    assert [
+        each["id"]
+        for each in client.get("/auth/devices/push-tokens", headers=bob).json()
+    ] == [moved["id"]]
+
+
+def test_registrations_of_one_token_at_once_both_succeed(app: App) -> None:
+    """Two starts of one app at once: neither fails, one row stays (user report A11).
+
+    Deleting the token, then inserting it, let both deletes see nothing,
+    and the second insert broke the unique digest (PostgreSQL). One upsert
+    holds.
+    """
+    import asyncio
+
+    from domainkit.contrib.devices import DevicesUnitOfWork
+
+    client = app()
+    if not connections.config().URL.get_secret_value().startswith("postgresql"):
+        pytest.skip("concurrent writes need PostgreSQL: SQLite runs one at a time")
+    headers = signed_in(client)
+    user_id = UUID(client.get("/auth/me", headers=headers).json()["id"])
+
+    async def register() -> UUID:
+        async with DevicesUnitOfWork() as uow:
+            token = await uow.push_tokens.register(user_id, "app-token", "fcm", keep=5)
+            await asyncio.sleep(0.05)  # Both transactions are open at once.
+            await uow.commit()
+        return token.id
+
+    async def both() -> list[UUID]:
+        return list(await asyncio.gather(register(), register()))
+
+    ids = run_async(both())
+
+    assert len(set(ids)) == 1
+    listed = client.get("/auth/devices/push-tokens", headers=headers).json()
+    assert [UUID(each["id"]) for each in listed] == ids[:1]
 
 
 def test_tokens_are_removed_by_the_user_or_when_their_service_forgets(

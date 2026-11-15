@@ -266,6 +266,29 @@ def test_check_deploy_fails_on_warnings_a_project_has_not_silenced() -> None:
     assert len(checked.splitlines()) == 3
 
 
+def test_an_info_is_listed_and_never_fails_check_deploy() -> None:
+    """``<label>.I001`` says what is under way, as a key rotation (user report C4)."""
+    from domainkit import setup
+    from domainkit.apps.hooks import on_deployment_warnings
+
+    weak = ["security.W001", "security.W002", "security.W003", "deploy.W005"]
+    production = {
+        "ENVIRONMENT": "production",
+        "CACHES": {"default": {"COMPUTE_TIMEOUT": 30}},
+        "SILENCED_CHECKS": weak,
+    }
+    with override_settings(**production):
+        setup()
+        on_deployment_warnings(
+            lambda: [CheckMessage("alpha.I001", "A rotation is under way.")],
+            domain="alpha",
+        )
+        checked = run("check", "--deploy")
+
+    assert checked.startswith("System check identified no issues (4 silenced).")
+    assert "  Info: alpha.I001: A rotation is under way." in checked.splitlines()
+
+
 def test_check_reports_every_problem_at_once_where_deployed(
     make_package: MakePackage,
 ) -> None:

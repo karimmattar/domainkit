@@ -22,6 +22,7 @@ from domainkit.conf.global_settings import (
     DebugToolbarConfig,
     HttpClientConfig,
     LedgerConfig,
+    LiveFanoutConfig,
     Settings,
     ShardConfig,
     StorageConfig,
@@ -99,6 +100,7 @@ def documented(pages: str) -> set[str]:
         (StorageConfig, REFERENCE),
         (DebugToolbarConfig, REFERENCE),
         (HttpClientConfig, REFERENCE),
+        (LiveFanoutConfig, "live.md"),
         (ArchitectureConfig, REFERENCE),
         (MessagingSettings, "contrib/messaging.md"),
         (AuditSettings, "contrib/audit.md"),
@@ -420,6 +422,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (StorageConfig, REFERENCE, "STORAGES"),
     (BrokerConfig, REFERENCE, "BROKERS"),
     (HttpClientConfig, REFERENCE, "HTTP_CLIENT"),
+    (LiveFanoutConfig, "live.md", "LIVE_FANOUT"),
     (DebugToolbarConfig, REFERENCE, "DEBUG_TOOLBAR"),
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
     (WebhooksSettings, "contrib/webhooks.md", "WEBHOOKS"),
@@ -449,7 +452,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
 """Each settings model, the page of its table, and how the table is found."""
 PROSE_DEFAULTS = {
     "Settings": {"SETTINGS_MODULE", "BASE_DIR", "MIDDLEWARE", "LOGGING"}
-    | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE"},
+    | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE", "LIVE_FANOUT"},
     "DatabaseConfig": {"URL", "COMMAND_TIMEOUT", "POOL_SIZE", "MAX_OVERFLOW"}
     | {"POOL_TIMEOUT", "POOL_RECYCLE"},
     "LedgerConfig": {"URL"},
@@ -464,6 +467,7 @@ PROSE_DEFAULTS = {
     "AwsKmsSettings": {"KEY_ID", "REGION"},
     "VaultSettings": {"URL", "KEY", "TOKEN"},
     "MailSettings": {"SMTP"},
+    "AuditSettings": {"REQUIRE"},
 }
 """Defaults the tables state in words (computed, required, or "see below")."""
 _UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}

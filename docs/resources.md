@@ -263,7 +263,7 @@ worker.
 from domainkit.ddd import handles
 
 
-@handles(ProductRestocked, durable=True)
+@handles(ProductRestocked, durable=True, name="catalog.tell_the_warehouse")
 async def tell_the_warehouse(event: ProductRestocked) -> None: ...
 ```
 
