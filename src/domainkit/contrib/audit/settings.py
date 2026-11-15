@@ -1,9 +1,9 @@
 """Settings of ``domainkit.contrib.audit``: ``AUDIT = {...}``."""
 
 from datetime import timedelta
-from typing import Annotated, Final
+from typing import Annotated, Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from domainkit.conf import DEFAULT_DB_ALIAS
 
@@ -17,6 +17,13 @@ NAMESPACE_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,31}$"
 """Namespaces: a lower-case letter, then up to 31 letters, digits, ``_``, ``-``."""
 FIELD_PATTERN: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
 """A field of an audit row's ``details`` that names an aggregate."""
+
+
+type Baseline = Literal["ledger", "namespace", "sealing", "triggers"]
+"""A part of the tamper-evident baseline (``AUDIT.REQUIRE``)."""
+BASELINE: Final[frozenset[Baseline]] = frozenset(
+    {"ledger", "namespace", "sealing", "triggers"}
+)
 
 
 class AuditSettings(BaseModel):
@@ -56,7 +63,26 @@ class AuditSettings(BaseModel):
     REQUIRE_BASELINE: bool = True
     """Refuse to start in staging and production without a ledger, a
     namespace, a sealing schedule, and the ``protect()`` triggers (the
-    default since 0.10); False only warns, as 0.9 did."""
+    default since 0.10); False only warns, as 0.9 did. ``REQUIRE`` says it
+    part by part, and wins when both are set."""
+    REQUIRE: frozenset[Baseline] = BASELINE
+    """The parts of the baseline staging and production refuse to start
+    without; the others only warn. ``ledger`` (``LEDGER``), ``namespace``
+    (``NAMESPACE``), ``sealing`` (a worker, or ``SEALED_EXTERNALLY``), and
+    ``triggers`` (the ``protect()`` triggers, which need no ledger)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_from_baseline(cls, data: Any) -> Any:  # noqa: ANN401 - the input.
+        """``REQUIRE_BASELINE = False`` requires nothing, unless ``REQUIRE`` says."""
+        if (
+            isinstance(data, dict)
+            and data.get("REQUIRE_BASELINE") is False
+            and "REQUIRE" not in data
+        ):
+            return {**data, "REQUIRE": frozenset()}
+        return data
+
     SEAL_LATE_WINDOW: timedelta = Field(
         default=timedelta(minutes=15), gt=timedelta(0), le=timedelta(days=1)
     )

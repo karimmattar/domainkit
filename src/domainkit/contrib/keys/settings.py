@@ -197,10 +197,14 @@ class KeysSettings(BaseModel):
     def _consistent(self) -> Self:
         """Refuse a provider without its settings, and keys it did not wrap.
 
+        ``DATA_KEYS`` may be empty with a key service: ``keys generate``
+        makes the first one (user report C3). Nothing seals or opens then,
+        and startup and ``check`` refuse it (``keys.E003``).
+
         Raises:
             ValueError: ``AWS_KMS`` or ``VAULT`` is missing for its provider,
-                ``DATA_KEYS`` is empty for a key service, a data key is
-                wrapped by another provider, or ``CURRENT_KEY`` names none.
+                a data key is wrapped by another provider, or
+                ``CURRENT_KEY`` names none.
         """
         if self.PROVIDER == "aws-kms" and self.AWS_KMS is None:
             raise ValueError('PROVIDER "aws-kms" needs AWS_KMS (KEY_ID, REGION).')
@@ -209,11 +213,6 @@ class KeysSettings(BaseModel):
         setting = SETTING_OF.get(self.PROVIDER)
         if setting is not None and getattr(self, setting) is None:
             raise ValueError(f"PROVIDER {self.PROVIDER!r} needs {setting}.")
-        if self.PROVIDER != "local" and not self.DATA_KEYS:
-            raise ValueError(
-                f"PROVIDER {self.PROVIDER!r} needs DATA_KEYS: make one with "
-                "'manage.py keys generate'."
-            )
         prefix = PROVIDER_PREFIXES.get(self.PROVIDER, "")
         if wrong := sorted(
             key_id
@@ -238,10 +237,15 @@ class KeysSettings(BaseModel):
         return next(iter(self.DATA_KEYS), DEVELOPMENT_KEY)
 
     @property
+    def missing_keys(self) -> bool:
+        """Whether a key service has no data key yet: no ring can be made."""
+        return self.PROVIDER != "local" and not self.DATA_KEYS
+
+    @property
     def development_key(self) -> bool:
         """Whether the ring holds ``dev``: alone, or retired beside ``DATA_KEYS``."""
         if not self.DATA_KEYS:
-            return True
+            return self.PROVIDER == "local"
         if self.KEEP_DEVELOPMENT_KEY is None:
             return self.PROVIDER == "local"
         return self.KEEP_DEVELOPMENT_KEY

@@ -464,6 +464,7 @@ PROSE_DEFAULTS = {
     "AwsKmsSettings": {"KEY_ID", "REGION"},
     "VaultSettings": {"URL", "KEY", "TOKEN"},
     "MailSettings": {"SMTP"},
+    "AuditSettings": {"REQUIRE"},
 }
 """Defaults the tables state in words (computed, required, or "see below")."""
 _UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
