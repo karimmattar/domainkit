@@ -238,6 +238,7 @@ class Customer(AggregateRoot[CustomerId]):
 | `DatabaseDefault`, `Generated` | A column the database fills. | [Columns the database fills](databases.md#columns-the-database-fills) |
 | `Encrypted` | Stored sealed, never in clear. | [Encrypted fields](databases.md#encrypted-fields) |
 | `Sensitive` | A secret no schema shows or takes, such as a password hash. | [Schemas](#schemas-from-the-domain) |
+| `Field(repr=False)` (pydantic's) | A value no `repr` shows, such as a password a use case takes. | [Use cases](#use-cases) |
 | `Personal(of=...)`, `Counted` | Personal data about someone; a collection the audit trail counts, not lists. `fields_about(holder, values, subject)` picks what a copy holds about one person. | [Privacy](privacy.md), [Audit](contrib/audit.md) |
 | `Reference[XId]` | The id of another aggregate. | [Many-to-many](databases.md#many-to-many) |
 
@@ -325,6 +326,12 @@ products.use_case(restock, path="/restock")  # POST /products/{product_id}/resto
   product_id=..., quantity=3)`. `restock.command` is its `Command`
   (`Restock`). `restock.run(command, uow)` is the `service(command, uow)`
   that tasks and `command_route` take.
+- **Secrets.** A parameter hinted `Field(repr=False)` (pydantic's, as a
+  request model hides a password) is a command field with `repr=False`.
+  The command's `repr`, and so a log line of it, leaves it out, and so
+  does the body's. The body's validation errors leave the input out. A
+  `Command` written by hand does the same with
+  `dataclasses.field(repr=False)`.
 
 ```python
 print(restock)
@@ -334,6 +341,29 @@ print(restock.command(product_id=product.id, quantity=2))
 ```text
 <use case restock (Restock)>
 Restock(product_id=UUID('3374d5e3-6b53-40cc-9be7-fdf68c20a508'), quantity=2)
+```
+
+```python
+from pydantic import Field
+
+from domainkit.ddd import MinLength, use_case
+
+
+@use_case
+async def change_password(
+    uow: AccountsUnitOfWork,
+    user_id: UUID,
+    password: Annotated[str, MinLength(12), Field(repr=False)],
+) -> None:
+    """Set a user's password."""
+    ...
+
+
+print(change_password.command(user_id=user.id, password="correct horse"))
+```
+
+```text
+ChangePassword(user_id=UUID('0b5f1c64-2c0e-4a8e-9a43-1d2f7e3b9c10'))
 ```
 
 `@use_case(name="refill")` names the command (`Refill`) and the route

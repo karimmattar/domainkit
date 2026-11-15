@@ -43,6 +43,7 @@ Typed hooks a domain registers for what it takes part in.
 
 Enforce the dependency rules of a domain-driven package layout.
 
+- `ALLOWED_MODULES`: Modules a layer may import although a library it must not use holds them.
 - `FORBIDDEN_LAYERS`: Layers of the same domain that each layer must not import.
 - `FORBIDDEN_LIBRARIES`: Libraries each layer must not import.
 - `LAYER_MODULES`: The simple layout's modules, and the layer each one is.

@@ -58,6 +58,8 @@ from typing import (
 )
 from uuid import UUID
 
+from pydantic.fields import FieldInfo as PydanticField
+
 from domainkit.ddd.markers import MaxLength as MaxLength
 from domainkit.ddd.markers import MinLength as MinLength
 from domainkit.ddd.markers import Pattern as Pattern
@@ -230,6 +232,8 @@ class FieldInfo:
     """The ``Annotated`` metadata, such as ``MaxLength``."""
     many: bool = False
     """A collection of child entities (``list[OrderLine]``)."""
+    item: type | None = None
+    """The class of a tuple's items, if they are all of one (``tuple[str, ...]``)."""
 
     @property
     def entity(self) -> type[Entity[object]] | None:
@@ -247,6 +251,19 @@ class FieldInfo:
     def encrypted(self) -> bool:
         """Whether the field is stored encrypted (``Encrypted``)."""
         return self.marker(Encrypted) is not None
+
+    @property
+    def shown(self) -> bool:
+        """Whether its value shows in ``repr``: not with ``Field(repr=False)``.
+
+        ``Annotated[str, Field(repr=False)]`` (pydantic's ``Field``) hides a
+        password as a request model hides one; a ``@use_case`` parameter so
+        hinted is a command field with ``repr=False``.
+        """
+        return not any(
+            isinstance(item, PydanticField) and item.repr is False
+            for item in self.metadata
+        )
 
     @property
     def text(self) -> bool:
@@ -386,6 +403,7 @@ def describe(owner: type, name: str, hint: object) -> FieldInfo:
     nullable = NoneType in members
     kinds: list[type | None] = []
     many = False
+    item: type | None = None
     for member in members:
         if member is NoneType:
             continue
@@ -402,12 +420,22 @@ def describe(owner: type, name: str, hint: object) -> FieldInfo:
             kinds.append(entities[0])
         elif origin is not None:
             kinds.append(origin if isinstance(origin, type) else None)
+            item = _item(origin, get_args(member_type))
         elif member_type is Any or not isinstance(member_type, type):
             kinds.append(None)  # Any is a class since Python 3.11.
         else:
             kinds.append(member_type)
     kind = kinds[0] if len(kinds) == 1 else None
-    return FieldInfo(name, owner, kind, nullable, tuple(metadata), many)
+    item = item if kind is tuple else None
+    return FieldInfo(name, owner, kind, nullable, tuple(metadata), many, item)
+
+
+def _item(origin: object, arguments: tuple[object, ...]) -> type | None:
+    """The class of a ``tuple[X, ...]``'s items; None for any other hint."""
+    if origin is not tuple or len(arguments) != 2 or arguments[1] is not Ellipsis:
+        return None
+    item = _annotations(arguments[0])[1]
+    return item if isinstance(item, type) and item is not Any else None
 
 
 def _annotations(hint: object) -> tuple[tuple[object, ...], object]:

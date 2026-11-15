@@ -176,6 +176,19 @@ and a status.
   they never replace; see
   [The fields of an error](docs/reference/responses.md#the-fields-of-an-error)
   (user report P3).
+- `table_for` stores a tuple of one kind of JSON scalar
+  (`tuple[str, ...]`, and of `int`, `float`, `bool`) in the new
+  `JSONTuple` column type (`domainkit.db`): a JSON array, read back as a
+  tuple on SQLite and PostgreSQL. Such a field was a `TypeError`; a type
+  a project registered for `tuple` still wins
+  ([Tables from domain classes](docs/databases.md#tables-from-domain-classes))
+  (user report D2).
+- A `@use_case` parameter hinted `Annotated[str, Field(repr=False)]`
+  (pydantic's `Field`) is a command field with `repr=False`, so a
+  password can be a parameter: the command's `repr` and its log lines
+  leave it out, as the derived body's `repr` does, and the body's
+  validation errors leave the input out. Every other repr is unchanged
+  ([Use cases](docs/resources.md#use-cases)) (user report D2).
 
 ### Changed
 
@@ -219,6 +232,22 @@ and a status.
   public names in the modules that own them. A test fails on any new
   import of that kind. Nothing a project imports changed (audit finding
   A1).
+- The layer rules let the infrastructure layer import
+  `domainkit.http.client`, the outgoing HTTP client, as an adapter that
+  calls another service must; a project no longer needs a layer of its
+  own for it. Every other `domainkit.http` module stays forbidden there,
+  and the whole package in the application layer. A project that names
+  the client in `ARCHITECTURE.FORBIDDEN_LIBRARIES` still forbids it
+  (`ALLOWED_MODULES`, [Layer rules](docs/reference/settings.md#layer-rules),
+  ADR 0003) (user report D2).
+- The ledger docs say why PYSEC-2026-1325 (CVE-2024-23342, a timing
+  attack on python-ecdsa's signing, which the `immudb` extra installs)
+  does not apply: immudb's SDK only verifies the server's signed states
+  with its public key, which the advisory leaves unaffected. A project
+  ignores it with `pip-audit --ignore-vuln PYSEC-2026-1325`; a test keeps
+  every advisory CI ignores explained
+  ([Trust in the ledger](docs/databases.md#trust-in-the-ledger))
+  (user report D2).
 
 ### Fixed
 

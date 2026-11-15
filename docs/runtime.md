@@ -1474,7 +1474,10 @@ async def euro_rate() -> Decimal:
 ```
 
 Make one client per service, at module level. Nothing opens until the
-first call.
+first call. In a domain, call it from the infrastructure layer
+(`models.py`, or `infrastructure/`): the [layer rules](reference/settings.md#layer-rules)
+allow `domainkit.http.client` there, imported by that name, and keep it
+out of the application layer, which reaches the service through a port.
 
 - Each client keeps one pool of connections per process (per event
   loop), opened by its first call. The pool closes with the other
