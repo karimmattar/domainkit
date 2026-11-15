@@ -78,6 +78,14 @@ and a status.
   public names in the modules that own them. A test fails on any new
   import of that kind. Nothing a project imports changed (audit finding
   A1).
+- The layer rules let the infrastructure layer import
+  `domainkit.http.client`, the outgoing HTTP client, as an adapter that
+  calls another service must; a project no longer needs a layer of its
+  own for it. Every other `domainkit.http` module stays forbidden there,
+  and the whole package in the application layer. A project that names
+  the client in `ARCHITECTURE.FORBIDDEN_LIBRARIES` still forbids it
+  (`ALLOWED_MODULES`, [Layer rules](docs/reference/settings.md#layer-rules),
+  ADR 0003) (user report D2).
 
 ## [2.3.0] - 2026-11-11
 
