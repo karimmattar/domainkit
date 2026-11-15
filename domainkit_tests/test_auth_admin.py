@@ -1700,3 +1700,56 @@ def test_a_backend_that_lists_no_object_grants_leaves_users_to_superusers(
         )
         for backend in (silent, quiet)
     ]
+
+
+# Checks of the project's own (user report A9) ---------------------------------------
+
+
+def test_the_project_checks_every_admin_change(api: Api) -> None:
+    """``on_admin_change`` sees the actor, the user, and the change; it may refuse.
+
+    A project could not say "nobody edits their own account here" or
+    "making staff needs another permission" without reading the body.
+    """
+    from domainkit.contrib.auth.gates import AdminChange, on_admin_change
+
+    client = api()
+    headers = staff("admin", *ADMIN_PERMISSIONS, "shop.view_product")
+    bob = create_user("bob")
+    make_group("viewers", "shop.view_product")
+    seen: list[tuple[str | None, AdminChange]] = []
+
+    async def recorded(actor: Any, target: Any, change: AdminChange) -> None:  # noqa: ANN401
+        seen.append((None if target is None else target.username, change))
+
+    async def no_new_staff(actor: Any, target: Any, change: AdminChange) -> None:  # noqa: ANN401
+        if "is_staff" in change.fields:
+            raise PermissionDenied("Making staff needs an owner here.")
+
+    on_admin_change(recorded, domain="auth")
+    on_admin_change(no_new_staff, domain="auth")
+
+    made = client.patch(
+        f"{ADMIN}/users/{bob}", json={"is_staff": True}, headers=headers
+    )
+    assert error(made, 403) == (
+        "permission_denied",
+        "Making staff needs an owner here.",
+    )
+    changed = client.patch(
+        f"{ADMIN}/users/{bob}", json={"fields": {"last_name": "B"}}, headers=headers
+    )
+    assert changed.status_code == 200, changed.json()
+    joined = client.put(
+        f"{ADMIN}/users/{bob}/groups", json={"groups": ["viewers"]}, headers=headers
+    )
+    assert joined.status_code == 200, joined.json()
+    out = client.post(f"{ADMIN}/users/{bob}/logout", headers=headers)
+    assert out.status_code == 204
+
+    assert seen == [
+        ("bob", AdminChange("update", frozenset({"is_staff"}))),
+        ("bob", AdminChange("update", frozenset({"last_name"}))),
+        ("bob", AdminChange("groups", added=frozenset({"viewers"}))),
+        ("bob", AdminChange("logout")),
+    ]

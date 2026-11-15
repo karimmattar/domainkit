@@ -378,6 +378,16 @@ what.
   of your own can hold superusers back the same way: register a check
   with `on_make_superuser` (`domainkit.contrib.auth.gates`) in its
   `ready()`, and raise to refuse.
+- **Every change to a user passes the project's own checks**:
+  `on_admin_change(check)` (`domainkit.contrib.auth.gates`) is called
+  with the staff member, the user (None when creating one), and an
+  `AdminChange`, before the change: its `kind` (`create`, `update`,
+  `delete`, `password`, `logout`, `impersonate`, `groups`,
+  `permissions`), the `fields` and flags it sets, and the groups or
+  permissions it `added` and `removed`. Raise `PermissionDenied` to
+  refuse it ("nobody edits their own account here", "making staff needs
+  another permission"). `admin.may_grant` and `admin.may_hold`, the
+  ceilings below, are public for your own routes.
 - **Other staff cannot grant a permission they lack**, directly or
   through a group (`403`).
 - **Nor can they change a user or a group that holds such a

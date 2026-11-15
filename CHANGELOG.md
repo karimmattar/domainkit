@@ -11,6 +11,16 @@ and a status.
 
 ### Added
 
+- `on_admin_change(actor, target, change)` (`domainkit.contrib.auth.gates`)
+  checks every change the admin API makes to a user, before it is made:
+  an `AdminChange` says its kind (create, update, delete, password,
+  logout, impersonate, groups, permissions), the fields it sets, and the
+  groups or permissions it adds and removes; raise to refuse it.
+  `may_grant` and `may_hold`, the admin's ceilings, are public. Only
+  making a superuser had a hook, so "nobody edits their own account" or
+  "making staff needs another permission" took a dependency that read
+  the body (user report A9).
+
 - ciba's web pages have hooks: `on_start(request)` may refuse a push or
   QR start, or name it with a binding message, shown on both devices (a
   QR start took none); `on_approve(request, user, sign_in)` may refuse a

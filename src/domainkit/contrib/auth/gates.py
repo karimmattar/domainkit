@@ -30,7 +30,8 @@ sign-in approved from a phone and a test's session.
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Final
+from dataclasses import dataclass
+from typing import Any, Final, Literal
 from uuid import UUID
 
 from fastapi import Depends
@@ -44,6 +45,7 @@ from .models import AbstractBaseUser
 
 __all__ = [
     "MANAGES_LOGINS",
+    "AdminChange",
     "LoginGate",
     "LoginNotGated",
     "LoginsCheck",
@@ -52,6 +54,7 @@ __all__ = [
     "check_manage_logins",
     "gates_passed",
     "manages_logins",
+    "on_admin_change",
     "on_login_gate",
     "on_make_superuser",
     "on_manage_logins",
@@ -94,6 +97,46 @@ on_make_superuser: Final[HookPoint[SuperuserCheck]] = HookPoint(
 It runs before the admin API creates a superuser or makes a user one.
 ``domainkit.contrib.approvals`` registers its guard: where it holds the
 grant for approval, no one makes a superuser here.
+"""
+
+type AdminKind = Literal[
+    "create",
+    "update",
+    "delete",
+    "password",
+    "logout",
+    "impersonate",
+    "groups",
+    "permissions",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class AdminChange:
+    """What a staff member is about to do to a user through the admin API."""
+
+    kind: AdminKind
+    fields: frozenset[str] = frozenset()
+    """The fields and flags it sets (``create``, ``update``): ``is_staff``,
+    ``is_superuser``, ``is_active``, or the model's own fields."""
+    added: frozenset[str] = frozenset()
+    """The groups (``groups``), or permissions (``permissions``), it adds."""
+    removed: frozenset[str] = frozenset()
+    """Those it takes away."""
+
+
+type AdminCheck = Callable[[Any, AbstractBaseUser | None, AdminChange], Awaitable[None]]
+"""A check of a change the admin API makes: ``(actor, target, change)``."""
+
+on_admin_change: Final[HookPoint[AdminCheck]] = HookPoint(
+    "admin change", arguments=3, awaited=True
+)
+"""Register a check of every change the admin API makes to a user.
+
+It runs before the change, with the staff member, the user (None for
+``create``), and the ``AdminChange``; raise to refuse it, as
+``PermissionDenied`` ("nobody edits their own account here", "making
+staff needs another permission"). User report A9.
 """
 
 _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)
