@@ -12,18 +12,20 @@ the provider (Cloudflare Turnstile, Google reCAPTCHA, hCaptcha) before
 anything else: a missing or refused token is 400 ``captcha_failed``. A
 provider that cannot be reached refuses the request (503
 ``captcha_unavailable``): bots never pass while it is down. reCAPTCHA v3's
-score must reach ``MIN_SCORE``. Only the token and the secret are sent:
-never the client's address, which is personal data.
+score must reach ``MIN_SCORE``; with ``HOSTNAMES``, the token must have
+been solved on one of them, and with ``CHECK_ACTION``, for the route's
+action. Only the token and the secret are sent: never the client's
+address, which is personal data.
 """
 
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, get_args
 
 from fastapi import Depends, Request, status
 
-from domainkit.exceptions import UpstreamError
+from domainkit.exceptions import ImproperlyConfigured, UpstreamError
 from domainkit.http.errors import APIError
 
-from .settings import auth_settings
+from .settings import CaptchaAction, auth_settings
 
 __all__ = ["CaptchaUnavailable", "captcha"]
 
@@ -36,6 +38,8 @@ VERIFY: Final = {
     "hcaptcha": "https://api.hcaptcha.com/siteverify",
 }
 """Where each provider checks a token."""
+ACTIONS: Final = frozenset(get_args(CaptchaAction.__value__))
+"""The actions a captcha may guard: those ``AUTH.CAPTCHA.ON`` can name."""
 
 
 class CaptchaUnavailable(UpstreamError):
@@ -47,7 +51,18 @@ class CaptchaUnavailable(UpstreamError):
 
 
 def captcha(action: str) -> Any:  # noqa: ANN401 - FastAPI's Depends.
-    """A dependency that checks the captcha of ``action``, if it is ``ON``."""
+    """A dependency that checks the captcha of ``action``, if it is ``ON``.
+
+    Raises:
+        ImproperlyConfigured: ``action`` is none ``AUTH.CAPTCHA.ON`` could
+            name: the route would never ask for a token, whatever the
+            settings say.
+    """
+    if action not in ACTIONS:
+        raise ImproperlyConfigured(
+            f"captcha({action!r}) guards nothing: AUTH.CAPTCHA.ON names "
+            f"{', '.join(sorted(ACTIONS))}."
+        )
 
     async def check(request: Request) -> None:
         config = auth_settings().CAPTCHA
@@ -75,6 +90,10 @@ def captcha(action: str) -> Any:  # noqa: ANN401 - FastAPI's Depends.
         score = verdict.get("score")
         if isinstance(score, int | float) and score < config.MIN_SCORE:
             raise _failed()
+        if config.HOSTNAMES and verdict.get("hostname") not in config.HOSTNAMES:
+            raise _failed()  # Solved on a page of another site.
+        if config.CHECK_ACTION and verdict.get("action") != action:
+            raise _failed()  # Solved for another form.
 
     return Depends(check)
 

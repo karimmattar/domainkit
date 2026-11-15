@@ -384,8 +384,9 @@ class AuthConfig(DomainConfig):
         (with ``AUTH.REQUIRE_SHARED_THROTTLES = False``; refused otherwise),
         cookies without ``__Host-`` where it could hold, and principals
         kept longer than ``PRINCIPAL_TTL`` where nothing tells other
-        processes of changes. Anywhere, a backend that does not list its
-        grants on objects (``auth.W007``).
+        processes of changes, and a captcha without ``HOSTNAMES``
+        (``auth.W008``). Anywhere, a backend that does not list its grants
+        on objects (``auth.W007``).
         """
         unlisted: list[str] = [
             CheckMessage(
@@ -464,6 +465,15 @@ class AuthConfig(DomainConfig):
                     ("CSRF_NAME", cookie.CSRF_NAME),
                 )
                 if name is not None and not name.startswith("__Host-")
+            )
+        if config.CAPTCHA is not None and not config.CAPTCHA.HOSTNAMES:
+            warnings.append(
+                CheckMessage(
+                    "auth.W008",
+                    "AUTH.CAPTCHA.HOSTNAMES is empty, so a token solved on "
+                    "another site that shows your site key passes; name your "
+                    "hostnames, or restrict the key's domains at the provider.",
+                )
             )
         return warnings
 

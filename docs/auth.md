@@ -142,7 +142,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `SCA` | see below | Transactions authorized for one amount and payee ([Stepping up](auth/step-up.md#transactions-authorized-for-one-amount-and-payee)). |
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](auth/authentication.md#the-principal-cache)). |
-| `CAPTCHA` | `None` | A captcha on login, signup, and password reset: `{"PROVIDER": "turnstile" \| "recaptcha" \| "hcaptcha", "SECRET": ..., "ON": ["login", "signup", "password_reset"], "MIN_SCORE": 0.5}`. Each route that `ON` names asks for the widget's token in `X-Captcha-Token`, checked with the provider first: missing or refused, `400 captcha_failed`; the provider unreachable, `503 captcha_unavailable`. `MIN_SCORE` (0 to 1) is reCAPTCHA v3's lowest score let through. Only the token and the secret are sent, never the client's address ([Captcha](auth/logging-in.md#captcha)). |
+| `CAPTCHA` | `None` | A captcha on login, signup, and password reset: `{"PROVIDER": "turnstile" \| "recaptcha" \| "hcaptcha", "SECRET": ..., "ON": ["login", "signup", "password_reset"], "MIN_SCORE": 0.5}`. Each route that `ON` names asks for the widget's token in `X-Captcha-Token`, checked with the provider first: missing or refused, `400 captcha_failed`; the provider unreachable, `503 captcha_unavailable`. `MIN_SCORE` (0 to 1) is reCAPTCHA v3's lowest score let through. `HOSTNAMES` refuses a token solved on another site (empty: any, `auth.W008` where deployed), and `CHECK_ACTION` one solved for another action. Only the token and the secret are sent, never the client's address ([Captcha](auth/logging-in.md#captcha)). |
 | `IMPERSONATION_TTL` | `None` | How long a token that staff get to act as a user works, up to 8 hours; `None` turns impersonation off ([Impersonation](auth/routes.md#impersonation)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
@@ -246,6 +246,7 @@ application; a warning (`W`) is reported.
 | `auth.W005` | staging, production | A cookie name without `__Host-` where the prefix could hold. |
 | `auth.W006` | staging, production | `ACCOUNT_LOGIN_RATE` of `None`, or more than 100 a day. |
 | `auth.W007` | anywhere | A backend that does not list its grants on objects (`object_grants`). |
+| `auth.W008` | staging, production | `CAPTCHA` without `HOSTNAMES`: a token solved on another site passes. |
 | `security.E101` | staging, production | A route that declares no access rule. |
 | `security.E020` | staging, production | `IDENTITY.LDAP` over `ldap://` without `START_TLS`. |
 

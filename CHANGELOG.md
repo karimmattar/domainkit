@@ -109,6 +109,12 @@ and a status.
   no row, so a stolen session probing routes behind a step-up was
   invisible in the trail. Sampled as 403s are: once per actor and route a
   minute (`record_denial(..., code=)`) (user report A5).
+- The captcha compares what it was told with what it checks:
+  `captcha("signin")`, an action none of `AUTH.CAPTCHA.ON` could name, is
+  refused when the route is defined (it never asked for a token);
+  `CAPTCHA.HOSTNAMES` refuses a token solved on another site's page, with
+  `auth.W008` where deployed while it is empty; `CAPTCHA.CHECK_ACTION`
+  refuses one solved for another form (user report A11).
 
 ## [2.3.0] - 2026-11-11
 

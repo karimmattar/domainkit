@@ -332,6 +332,10 @@ class PrincipalCacheSettings(BaseModel):
     """
 
 
+type CaptchaAction = Literal["login", "signup", "password_reset"]
+"""What a captcha guards: the routes ``AUTH.CAPTCHA.ON`` may name."""
+
+
 class CaptchaSettings(BaseModel):
     """``AUTH["CAPTCHA"]``: the captcha the routes bots try ask for."""
 
@@ -341,12 +345,20 @@ class CaptchaSettings(BaseModel):
     """Cloudflare Turnstile, Google reCAPTCHA, or hCaptcha."""
     SECRET: SecretStr
     """The provider's secret key for the site."""
-    ON: frozenset[Literal["login", "signup", "password_reset"]] = frozenset(
-        {"login", "signup", "password_reset"}
-    )
+    ON: frozenset[CaptchaAction] = frozenset({"login", "signup", "password_reset"})
     """The routes that ask for a token."""
     MIN_SCORE: float = Field(default=0.5, ge=0, le=1)
     """reCAPTCHA v3's lowest score let through."""
+    HOSTNAMES: frozenset[str] = Field(default=frozenset(), max_length=32)
+    """The hostnames a token may have been solved on (the verdict's
+    ``hostname``), such as ``{"app.example.com"}``. Empty: any, so a token
+    solved on another site that shows your site key passes, unless the
+    provider restricts its domains (``auth.W008`` where deployed)."""
+    CHECK_ACTION: bool = False
+    """Refuse a token solved for another action than the route's
+    (``login``, ``signup``, ``password_reset``), as the verdict's
+    ``action`` says (Turnstile, reCAPTCHA v3). The page's widget must use
+    those names; a token from a form that asks less then opens no other."""
 
 
 class AuthSettings(BaseModel):

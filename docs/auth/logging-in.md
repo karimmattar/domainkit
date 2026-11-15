@@ -812,7 +812,11 @@ reCAPTCHA, or hCaptcha), and sends the token it gives in the
 - a provider that cannot be reached refuses the request with
   `503 captcha_unavailable` (`CaptchaUnavailable`), so bots never pass
   while it is down;
-- reCAPTCHA v3 scores each token: below `MIN_SCORE` (0.5) it is refused.
+- reCAPTCHA v3 scores each token: below `MIN_SCORE` (0.5) it is refused;
+- with `HOSTNAMES`, a token solved on another site's page that shows your
+  site key is refused, and with `CHECK_ACTION`, one solved for another
+  form (the verdict's `action`: Turnstile and reCAPTCHA v3). Your widget
+  then names the route's action: `login`, `signup`, or `password_reset`.
 
 Only the token and the secret are sent, never the client's address.
 
@@ -822,9 +826,12 @@ Only the token and the secret are sent, never the client's address.
 | `SECRET` | required | The provider's secret key for the site. |
 | `ON` | `{"login", "signup", "password_reset"}` | The routes that ask. `login` covers both ways to log in with a password: `POST /auth/login` and `POST /auth/session` (browser sessions). `signup` covers `POST /auth/signup`, and `password_reset` covers `POST /auth/password-reset`. |
 | `MIN_SCORE` | `0.5` | reCAPTCHA v3's lowest score let through (0 to 1). |
+| `HOSTNAMES` | empty | The hostnames a token may have been solved on, such as `["app.example.com"]`. Empty: any, so restrict your site key's domains at the provider; `check` warns where deployed (`auth.W008`). |
+| `CHECK_ACTION` | `False` | Refuse a token solved for another action than the route's. |
 
 To ask for a captcha on a route of your own, use the dependency
-`captcha(action)` with one of the three names:
+`captcha(action)` with one of the three names; any other is refused when
+the route is defined, since the route would never ask for a token:
 
 ```python
 from domainkit.contrib.auth.captcha import captcha
