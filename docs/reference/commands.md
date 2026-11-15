@@ -104,6 +104,7 @@ name. These are the other parts of an action command:
 | `ActionCommand.default_action` | The action that runs when the command line names none. `None` (the default) makes the action required. |
 | `BaseCommand.operator_actions` | `True` makes every action, or the whole command, take `--operator` ([Operators](#operators)). |
 | `BaseCommand.requires_setup` | `True` (the default) loads the settings and the installed domains before `handle` runs. |
+| `BaseCommand.needs_domains` | `True` starts the installed domains around an async `handle`, as serving the application does: their `on_startup` hooks first (a key service's data keys unwrapped, the audit trail's protection checked), their `on_shutdown` hooks after. For commands that run the application's work; `runworker` sets it. |
 | `CommandError(message, returncode=1)` | Raise it to stop the command with a message and an exit status. |
 | `call_command(name, *args)` | Runs a command from Python, as a test does. |
 
@@ -754,7 +755,11 @@ python manage.py runworker --once
 durable event handlers. It runs one worker per outbox, on every database
 that hosts domains. With `MESSAGING.BROKER`, it relays messages to the
 broker and runs what the broker delivers. Whatever it serves, the
-process runs at most `MESSAGING.CONCURRENCY` messages at once.
+process runs at most `MESSAGING.CONCURRENCY` messages at once. The
+installed domains start first, as when the application serves: a key
+service's data keys are unwrapped before any message reads an
+`Encrypted` field, and a domain that refuses to start stops the worker.
+Before 2.4 they did not start.
 
 | Option | What it does |
 | --- | --- |

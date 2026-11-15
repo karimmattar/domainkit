@@ -67,6 +67,15 @@ and a status.
   import of that kind. Nothing a project imports changed (audit finding
   A1).
 
+### Fixed
+
+- `runworker` starts the installed domains, as serving the application
+  does: their `on_startup` hooks run first and their `on_shutdown` hooks
+  after. It ran without them, so with a key service other than `local`
+  the worker never unwrapped the data keys, and every message that read
+  an `Encrypted` field failed with `KeysNotLoaded`. Commands of your own
+  opt in with `BaseCommand.needs_domains = True` (user report W1).
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of

@@ -27,10 +27,16 @@ class Command(BaseCommand):
     ``MESSAGING.BROKER``, they relay their outboxes to the broker and run
     what it delivers; ``--once`` always works from the outbox directly.
     Whatever the source, the process runs at most ``MESSAGING.CONCURRENCY``
-    messages at once: every outbox and queue draws from one ``Budget``.
+    messages at once: every outbox and queue draws from one ``Budget``. The
+    installed domains start first, as when the application serves
+    (``needs_domains``), and stop once the worker has.
     """
 
     help = "Run the messaging worker (durable event handlers, background tasks)."
+    needs_domains = True
+    """The work is the application's: its domains start as when it serves
+    (a key service's data keys unwrapped first, or ``Encrypted`` fields
+    cannot be read)."""
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept a single-pass switch."""
