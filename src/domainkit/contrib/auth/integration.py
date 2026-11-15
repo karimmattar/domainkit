@@ -26,6 +26,7 @@ from .gates import (
     gates_passed,
     on_login_gate,
     on_manage_logins,
+    on_password_login,
     pass_login_gates,
 )
 from .management import user_for_staff
@@ -95,6 +96,7 @@ __all__ = [
     "note_login_device",
     "on_login_gate",
     "on_manage_logins",
+    "on_password_login",
     "on_refusal",
     "pass_login_gates",
     "proof_of",

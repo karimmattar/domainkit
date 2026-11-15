@@ -114,6 +114,15 @@ and a status.
   no row, so a stolen session probing routes behind a step-up was
   invisible in the trail. Sampled as 403s are: once per actor and route a
   minute (`record_denial(..., code=)`) (user report A5).
+- With `CIBA.APPROVE_LOGINS = "always"`, a password login no bound device
+  signed is refused before the password is checked, with one answer for
+  every account (`403 phone_approval_required`). It could never log anyone
+  in, yet it confirmed a guessed password, told whether a phone was bound,
+  and let strangers spend the account's daily count. Gates of that kind
+  register with `auth.gates.on_password_login`. In every mode, a password
+  staff set is changed on first use only after the login gates passed: a
+  refused login replaced it, and ended every login, before (user report
+  A4).
 - The captcha compares what it was told with what it checks:
   `captcha("signin")`, an action none of `AUTH.CAPTCHA.ON` could name, is
   refused when the route is defined (it never asked for a token);

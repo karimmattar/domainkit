@@ -20,6 +20,7 @@ from domainkit_tests.test_ciba import (
 )
 from domainkit_tests.test_devices import Device
 from domainkit_tests.test_devices_enrollment import (
+    AUTH,
     ON,
     _identifiers,
     ask_code,
@@ -58,14 +59,45 @@ def test_the_whole_cycle_runs_from_the_phone(app: App) -> None:
         enrolled = enroll(phone_client, device, code=mailed_code())
 
         bound = log_in(web)
+    # One answer before the password, device or not: it says nothing of
+    # the account (since 2.4; it was phone_enrollment_required).
     assert (refused.status_code, refused.json()["code"]) == (
         403,
-        "phone_enrollment_required",
+        "phone_approval_required",
     )
-    assert session.json()["code"] == "phone_enrollment_required"
-    assert from_the_app.json()["code"] == "phone_enrollment_required"
+    assert session.json()["code"] == "phone_approval_required"
+    assert from_the_app.json()["code"] == "phone_approval_required"
     assert enrolled.status_code == 201, enrolled.json()
     assert bound.json()["code"] == "phone_approval_required"
+
+
+def test_a_password_login_no_device_signed_learns_nothing(app: App) -> None:
+    """``"always"``: refused before the password, the same for everyone.
+
+    A wrong password, an unknown account, and a right one get one answer,
+    no wrong password is counted, and none is audited as such: the route
+    could never log them in.
+    """
+    from domainkit_tests.support.auth import audited
+
+    web = app(APPROVE_LOGINS=ALWAYS)
+    create_user("alice", email="alice@example.com", proved=True)
+    auth = {**AUTH, "LOGIN_RATE": "2/minute"}
+    with override_settings(DEVICES=ON, AUTH=auth):
+        answers = [
+            web.post("/auth/login", json={"identifier": who, "password": password})
+            for who, password in (
+                ("alice", "wrong-password-1"),
+                ("nobody", PASSWORD),
+                ("alice", PASSWORD),
+                ("alice", "wrong-password-2"),
+            )
+        ]
+
+    assert {(a.status_code, a.json()["code"]) for a in answers} == {
+        (403, "phone_approval_required")
+    }
+    assert audited("auth.login") == []  # No wrong password was even checked.
 
 
 def test_bound_users_sign_in_as_with_true(app: App) -> None:
@@ -113,3 +145,43 @@ def test_always_without_enrollment_is_a_problem(app: App) -> None:
             assert problems() == []
     with override_settings(CIBA={"APPROVE_LOGINS": True}):
         assert problems() == []
+
+
+def test_a_refused_login_replaces_no_password_staff_set(app: App) -> None:
+    """The gates run before a password staff set is changed on first use.
+
+    A web login the phone did not approve, sending a new password, is
+    refused: the password stays the one staff set, and the phone's own
+    login still works (a change would have ended it).
+    """
+    from domainkit.contrib.auth import AuthUnitOfWork
+    from domainkit.contrib.auth.models import UserId
+    from domainkit.management.base import run_async
+
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
+    web = app()
+    staff_set, chosen = "Kq7-zv93-Lmw2", "Pw4-tt81-Xcv9"
+
+    async def set_by_staff() -> None:
+        async with AuthUnitOfWork() as uow:
+            stored = await uow.users.get(UserId(phone.user_id))
+            await uow.users.set_password(stored, staff_set, temporary=True)
+            await uow.commit()
+
+    first_use = {**AUTH, "PASSWORD_CHANGE_ON_FIRST_USE": True}
+    with override_settings(AUTH=first_use):
+        run_async(set_by_staff())
+        refused = web.post(
+            "/auth/login",
+            json={"identifier": "alice", "password": staff_set, "new_password": chosen},
+        )
+        with_chosen = web.post(
+            "/auth/login", json={"identifier": "alice", "password": chosen}
+        )
+
+    assert (refused.status_code, refused.json()["code"]) == (
+        403,
+        "phone_approval_required",
+    )
+    assert with_chosen.json()["code"] == "invalid_credentials"  # Not replaced.
+    assert phone.client.get("/auth/me", headers=phone.headers).status_code == 200

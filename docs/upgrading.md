@@ -63,6 +63,14 @@ pointed at the wrong account.
   or staff set a password (`changepassword`). To send as 2.3 did while
   they do, set `AUTH.CODES_TO_UNPROVED = True`. A project that overrides
   `auth/signup_code_held` drops its advice to reset the password.
+- **Strict mode refuses unsigned password logins before the password.**
+  With `CIBA.APPROVE_LOGINS = "always"`, `/login` and `/session` answer
+  `403 phone_approval_required` to every request no bound device of the
+  account signed, whatever the account or the password; a user with no
+  device got `phone_enrollment_required` there before. An app that read
+  that code to offer enrollment offers it on `phone_approval_required`
+  when it holds no key. In every mode, a password staff set is changed
+  on first use only once the login gates passed.
 - **`POST /devices/enroll/code` counts per recipient** against
   `AUTH.EMAIL_RATE`, as the other requests that send a code do. A client
   that asked for the same account's code more than five times an hour
