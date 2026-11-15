@@ -82,9 +82,22 @@ and a status.
   `later`. A task polling a provider that had not decided raised an
   error instead: a warning and a traceback per check, and a dead letter
   past `max_attempts` (user report W6).
+- Push refusals are read as FCM's, Apple's, and Huawei's references
+  have them. FCM's `INVALID_ARGUMENT` for the token itself (its own
+  error, no field, or `message.token` alone) is a token gone, as
+  `UNREGISTERED` is: it was tried five times, dead-lettered, and kept. A
+  message a service will refuse again raises the new
+  `NotificationRefused`, which the text and push tasks dead-letter at
+  once instead of retrying. Errors keep the service's `code` and the
+  `fields` it named, never their values. Each push backend reads its
+  answer in `refusal(response)`, a `Refusal`, which a subclass can
+  override for one case without copying `send` (user reports N1, N2).
 
 ### Changed
 
+- FCM's `404` without `UNREGISTERED` is no longer a token gone: a wrong
+  `PROJECT_ID` could answer so, and every token sent to would have been
+  forgotten. It is tried again (user report N2).
 - RabbitMQ's `check()` opens and closes a channel: a round trip. It only
   reached for the publishing channel, which aio-pika keeps while it
   reconnects, so `broker check`, and the worker's heartbeat, passed with

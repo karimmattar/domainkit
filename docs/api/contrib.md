@@ -532,6 +532,7 @@ Text messages and push notifications through the outbox.
 - `MemoryPushBackend`: Keeps notifications in `push_outbox`, for tests.
 - `MemorySmsBackend`: Keeps text messages in `sms_outbox`, for tests.
 - `NotificationFailed`: The provider did not take a message; the worker tries again later.
+- `NotificationRefused`: The provider will not take this message as it is: it is not tried again.
 - `NotificationsSettings`: Where text messages and push notifications go, and how often to retry.
 - `PushBackend`: Sends push notifications through a provider.
 - `PushMessage`: A push notification to one device, by the token its platform gave it.
@@ -555,6 +556,7 @@ Ports for text messages and push notifications, with development adapters.
 - `MemoryPushBackend`: Keeps notifications in `push_outbox`, for tests.
 - `MemorySmsBackend`: Keeps text messages in `sms_outbox`, for tests.
 - `NotificationFailed`: The provider did not take a message; the worker tries again later.
+- `NotificationRefused`: The provider will not take this message as it is: it is not tried again.
 - `PushBackend`: Sends push notifications through a provider.
 - `PushTokenGone`: The push service no longer knows the token: the app was removed.
 - `SmsBackend`: Sends text messages through a provider.
@@ -661,6 +663,7 @@ Push providers: Firebase Cloud Messaging, Apple's APNs, Huawei Push Kit.
 - `ApnsPushBackend`: Apple's push service (APNs), over HTTP/2, with a provider token.
 - `FcmPushBackend`: Firebase Cloud Messaging's HTTP v1 API (Android, iOS, the web).
 - `HuaweiPushBackend`: Huawei Push Kit's HTTP API, for devices without Google's services.
+- `Refusal`: How a push service refused a notification, read from its answer.
 
 ## `domainkit.contrib.mail.providers`
 
