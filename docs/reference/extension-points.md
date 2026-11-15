@@ -68,7 +68,10 @@ number of its arguments, and whether it is awaited. A mistake fails
 ## Lifecycle, readiness, and checks
 
 These hooks come from `domainkit.apps.hooks`, and are registered in
-`ready()`.
+`ready()`. A method is not a hook until it is registered: `async def
+start(self)` on a `DomainConfig` runs only after `on_startup(self.start)`,
+and `check` warns about a `start` or `stop` that no point holds
+(`apps.W001`).
 
 | To add | Implement | Register with |
 | --- | --- | --- |

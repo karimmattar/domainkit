@@ -92,6 +92,11 @@ and a status.
   `fields` it named, never their values. Each push backend reads its
   answer in `refusal(response)`, a `Refusal`, which a subclass can
   override for one case without copying `send` (user reports N1, N2).
+- `check` warns, in every environment, about a `start` or `stop`
+  coroutine method of a `DomainConfig` that no hook point holds
+  (`apps.W001`): only registered functions run, so a startup check
+  written as domainkit's own apps write theirs, and never registered,
+  never ran (user report C1).
 
 ### Changed
 
