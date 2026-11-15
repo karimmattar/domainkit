@@ -419,6 +419,25 @@ changes. In production you run the server yourself
 | `--noreload` | Does not restart when the code changes. |
 | `--server` | `uvicorn` (the default) or `granian`. |
 
+### `logconfig`: write `LOGGING` for the server
+
+```bash
+python manage.py logconfig --output /tmp/logging.json
+```
+
+`logconfig` prints `LOGGING` as JSON, each class or function named by its
+dotted path, or writes it to a file. Granian reads that file
+(`--log-config`), so its main process, which never imports the
+application, writes its lines as the application does
+([The server's own lines](../runtime.md#the-servers-own-lines)). It loads
+the settings only. A value JSON cannot hold, and no dotted path names (an
+object, a function defined inside another), stops it, with its place in
+`LOGGING`.
+
+| Option | What it does |
+| --- | --- |
+| `-o`, `--output` | Writes it to this file, readable by its owner only, and prints nothing. |
+
 ### `shell`: a Python console with the project loaded
 
 ```bash

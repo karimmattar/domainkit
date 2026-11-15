@@ -1276,6 +1276,7 @@ jobs:
               domainkit.management.commands.check.*
               domainkit.management.commands.diffsettings.*
               domainkit.management.commands.flush.* domainkit.management.commands.init.*
+              domainkit.management.commands.logconfig.*
               domainkit.management.commands.runserver.* domainkit.management.operators.*
               domainkit.utils.closing.* domainkit.utils.formatting.*
               domainkit.utils.module_loading.* domainkit.utils.delivery.*

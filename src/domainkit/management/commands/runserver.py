@@ -1,5 +1,6 @@
 """``runserver``: a development server for ``ASGI_APPLICATION``: uvicorn or Granian."""
 
+import copy
 from argparse import ArgumentParser
 from typing import Final
 
@@ -80,10 +81,11 @@ class Command(BaseCommand):
 def serve_with_granian(target: str, host: str, port: int, *, reload: bool) -> None:
     """Serve ``target`` (``module:attribute``) with Granian's ASGI interface.
 
-    Granian's own lines go through ``LOGGING``, as the application's do;
-    its access log stays off, since ``domainkit.access`` writes one. Its loop
-    is ``EVENT_LOOP``'s, resolved here: Granian's own ``auto`` would take
-    rloop before uvloop.
+    Granian's own lines go through ``LOGGING``, as the application's do. It
+    gets a copy, as it sets its logger's level in the mapping it is given.
+    Its access log stays off, since ``domainkit.access`` writes one. Its
+    loop is ``EVENT_LOOP``'s, resolved here: Granian's own ``auto`` would
+    take rloop before uvloop.
 
     Raises:
         CommandError: Granian is not installed.
@@ -104,6 +106,6 @@ def serve_with_granian(target: str, host: str, port: int, *, reload: bool) -> No
         interface=Interfaces.ASGI,
         loop=Loops.uvloop if uvloop else Loops.asyncio,
         reload=reload,
-        log_dictconfig=dict(settings.LOGGING),
+        log_dictconfig=copy.deepcopy(dict(settings.LOGGING)),
         log_access=False,
     ).serve()

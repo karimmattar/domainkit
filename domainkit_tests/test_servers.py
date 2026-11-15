@@ -3,11 +3,14 @@
 import asyncio
 import http.client
 import io
+import json
 import logging
+import logging.config
 import os
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,11 +18,11 @@ import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
-from domainkit.conf import override_settings
+from domainkit.conf import override_settings, settings
 from domainkit.conf.env import project_prefix
 from domainkit.http import get_asgi_application, websockets
 from domainkit.http.servers import (
@@ -31,6 +34,7 @@ from domainkit.http.servers import (
     server_limits,
     unix_socket_warnings,
 )
+from domainkit.log import TEXT_FORMAT, build_logging_config
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
 
@@ -430,6 +434,119 @@ def test_runserver_refuses_an_unknown_server() -> None:
         call_command("runserver", "--server", "hypercorn")
     with pytest.raises(CommandError, match="ASGI_APPLICATION"):
         call_command("runserver", server="granian")
+
+
+def test_runserver_gives_granian_a_copy_of_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Granian sets its logger's level in the mapping it gets: not in LOGGING.
+
+    Its own configuration does that to ``_granian``, which ``LOGGING``
+    names (user report S2).
+    """
+    from granian.log import LogLevels, configure_logging
+
+    given: list[dict[str, Any]] = []
+
+    class Recorded:
+        def __init__(self, target: str, **options: Any) -> None:  # noqa: ANN401 - Granian's options.
+            given.append(options["log_dictconfig"])
+
+        def serve(self) -> None:
+            # What Granian does with it, without applying it to this process.
+            monkeypatch.setattr(logging.config, "dictConfig", lambda config: None)
+            configure_logging(LogLevels.debug, given[0])
+
+    monkeypatch.setattr("granian.Granian", Recorded)
+    logging_config = build_logging_config(log_format="json", level="INFO")
+    with override_settings(
+        ASGI_APPLICATION="config.asgi:application", LOGGING=logging_config
+    ):
+        call_command("runserver", server="granian", reload=False)
+        kept = settings.LOGGING["loggers"]["_granian"]
+
+    assert given[0]["loggers"]["_granian"]["level"] == logging.DEBUG
+    assert kept == {"handlers": [], "propagate": True}
+
+
+GRANIAN_MAIN_PROCESS: Final = """
+import json, logging, sys
+from granian.log import LogLevels, configure_logging
+
+with open(sys.argv[1], encoding="utf-8") as file:
+    configure_logging(LogLevels.info, json.load(file))
+logging.getLogger("_granian").info("Starting granian (main PID: 1)")
+logging.getLogger("_granian.serve").info("Started worker-1")
+logging.getLogger("granian.access").info("GET / 200")
+"""
+"""What Granian's main process does with ``--log-config``, then its lines."""
+
+
+def test_logconfig_writes_logging_as_the_json_granian_reads(tmp_path: Path) -> None:
+    """Classes and functions by their dotted paths; Granian's lines then go through it.
+
+    Granian's main process never imports the application, so only
+    ``--log-config`` gives it ``LOGGING``: its lines then have the
+    application's format, its access lines go nowhere (user report S2).
+    The file is its owner's alone, and nothing is printed.
+    """
+    logging_config = build_logging_config(log_format="text", level="INFO")
+    path = tmp_path / "logging.json"
+    output = io.StringIO()
+    with override_settings(LOGGING=logging_config):
+        printed = json.loads(run_command("logconfig"))
+        call_command("logconfig", output=path, stdout=output)
+    granian = subprocess.run(  # noqa: S603 - this interpreter, a fixed script.
+        [sys.executable, "-c", GRANIAN_MAIN_PROCESS, str(path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert printed["filters"] == {"context": {"()": "domainkit.log.ContextFilter"}}
+    assert printed["formatters"] == {
+        "text": {"()": "domainkit.log.TextFormatter", "fmt": TEXT_FORMAT},
+        "json": {"()": "domainkit.log.JsonFormatter"},
+    }
+    for part in ("version", "handlers", "root", "loggers"):
+        assert printed[part] == logging_config[part], part
+    assert json.loads(path.read_text(encoding="utf-8")) == printed
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert output.getvalue() == ""
+    assert granian.returncode == 0, granian.stderr
+    lines = granian.stdout.splitlines()
+    assert [line.split(" ", 2)[2] for line in lines] == [
+        "INFO [_granian] [-] Starting granian (main PID: 1)",
+        "INFO [_granian.serve] [-] Started worker-1",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("value", "place"),
+    [
+        (lambda record: True, "LOGGING['filters']['quiet']['()']"),
+        (logging.Filter("x"), "LOGGING['filters']['quiet']['()']"),
+    ],
+)
+def test_logconfig_refuses_what_json_cannot_hold(value: object, place: str) -> None:
+    """An object, or a function no dotted path finds, is named by its place."""
+    logging_config = {"version": 1, "filters": {"quiet": {"()": value}}}
+
+    with (
+        override_settings(LOGGING=logging_config),
+        pytest.raises(CommandError) as refused,
+    ):
+        call_command("logconfig")
+
+    assert str(refused.value).startswith(f"{place} is {value!r}, which a JSON file")
+
+
+def run_command(*args: str) -> str:
+    """Run a command and return what it printed."""
+    output = io.StringIO()
+    call_command(*args, stdout=output)
+    return output.getvalue()
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):

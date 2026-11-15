@@ -52,6 +52,14 @@ and a status.
   superuser for approval. Auth and those apps no longer import each
   other, a test keeps any two apps from it, and nothing changes for a
   project (ADR 0140, audit finding A2).
+- Granian's own lines go through `LOGGING`: `build_logging_config` routes
+  `_granian` to the root handler and turns `granian.access` off, as it
+  does uvicorn's. `manage.py logconfig` writes `LOGGING` as the JSON file
+  `granian --log-config` reads, for Granian's main process, which never
+  imports the application. `runserver --server granian` gives Granian a
+  copy of `LOGGING`, which it no longer changes
+  ([The server's own lines](docs/runtime.md#the-servers-own-lines))
+  (user report S2).
 
 ### Changed
 
