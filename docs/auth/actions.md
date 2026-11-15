@@ -277,6 +277,29 @@ Around it:
   `cleartokens`. Deleting or erasing a user deletes theirs, and `privacy
   export` lists them: the purpose, the subject, and the times.
 
+## Approvals: authorizing each approval
+
+[Approvals](../contrib/approvals.md) asks its approvers for a step-up, if
+anything. With `APPROVALS["APPROVE_ACTION"]` on, approving a request asks
+for an authorization of approvals' own action, `approvals.approve`, in
+place of the step-up window:
+
+- its arguments are the decision (`ApproveRequest`): the request's id,
+  the approver, and the fingerprint they state. Its subject is
+  `approvals.request:<id>`;
+- what is shown is built from the stored request: "Approve a request",
+  the action, and the arguments by name, each cut to 64 characters, six
+  values in all at most;
+- the approve route's twin, `POST /requests/{id}/approve/authorization`,
+  asks for one, and refuses what approving would refuse: the maker, a
+  request no longer pending, a fingerprint that is not the request's;
+- `approve_request` spends it, with the approval's commit where the
+  requests share auth's database.
+
+The other approve rules still apply; one that holds a `StepUp` is
+refused by `check` (`approvals.E001`). See
+[Approving with an authorization](../contrib/approvals.md#approving-with-an-authorization).
+
 ## For other apps: confirming another way
 
 An app that confirms its own way (the phone of
@@ -343,4 +366,5 @@ An app that confirms its own way (the phone of
 - [Stepping up](step-up.md): the window, for acts whose arguments do not
   matter, and transactions authorized for one amount and payee.
 - [Sign-in approvals](ciba.md): the user's phone.
-- [Approvals](../contrib/approvals.md): someone else agrees, later.
+- [Approvals](../contrib/approvals.md): someone else agrees, later; with
+  `APPROVE_ACTION`, each approval is authorized as one act.

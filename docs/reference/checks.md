@@ -135,6 +135,7 @@ application logs them as a warning and starts.
 | `ciba.E003` | `CIBA.APPROVE_LOGINS` on, but the routes of `domainkit.contrib.ciba.api` or `domainkit.contrib.devices.api` not served, so users with a bound phone could not sign in on the web ([Sign-in approvals](../auth/ciba.md#the-mobile-app-as-identity)) |
 | `ciba.E004` | `/app-sign-in/session` served, but `AUTH.AUTHENTICATION_CLASSES` lacks `CookieAuthentication`, so the browser would get a cookie nothing reads |
 | `ciba.E005` | `CIBA.APPROVE_LOGINS = "always"`, but `DEVICES.ENROLLMENT` off, so no user could bind a first phone, nor log in ([Sign-in approvals](../auth/ciba.md#strict-mode-every-login-from-the-phone)) |
+| `approvals.E001` | `APPROVALS.APPROVE_ACTION` on, beside an `APPROVE_RULE` or a policy's `approve_rule` that holds a `StepUp`: the approver would be asked twice, for a window and for the act ([Approving with an authorization](../contrib/approvals.md#approving-with-an-authorization)) |
 | `idempotency.E001` | a keyed route whose own `RequestTimeout` reaches `IDEMPOTENCY.LEASE_SECONDS` or has none: a retry with the same `Idempotency-Key` could take the key while the request runs |
 | `idempotency.E002` | in staging and production: keyed requests without a deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`), unless `IDEMPOTENCY.REQUIRE_DEADLINE = False` |
 | `keys.E001` | in staging and production: `KEYS.PROVIDER = "local"` without `KEYS.ALLOW_LOCAL_KEK`, whose key-encryption key derives from `SECRET_KEY` ([keys.md](../contrib/keys.md#providers)) |

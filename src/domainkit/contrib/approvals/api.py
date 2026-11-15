@@ -14,7 +14,11 @@ Who may do what:
 - Approving and rejecting need to be one of the approvers the request's
   policy names (its permission, or its group), never its maker, once per
   person; approving also needs the policy's ``approve_rule``, or
-  ``APPROVALS.APPROVE_RULE``, such as a recent second factor.
+  ``APPROVALS.APPROVE_RULE``, such as a recent second factor. With
+  ``APPROVALS.APPROVE_ACTION`` on, it needs an authorization of that one
+  approval too (``Action-Authorization``), which the approver asks for at
+  ``POST /requests/{id}/approve/authorization``; off, that route answers
+  ``404``.
 - Cancelling needs ``approvals.add_approvalrequest`` and to be the maker.
 
 An approval states the ``fingerprint`` the approver was shown: a request

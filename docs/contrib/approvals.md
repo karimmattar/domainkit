@@ -16,7 +16,7 @@ On this page you learn how to:
 - write policies: who approves, how many, and when;
 - submit, approve, reject, and cancel requests, in code and over HTTP;
 - guard large ledger postings and the making of superusers;
-- ask approvers for a step-up;
+- ask approvers for a step-up, or to authorize each approval once;
 - know what maker-checker does not stop.
 
 Every step is a domain event, recorded in the [audit trail](audit.md)
@@ -531,6 +531,80 @@ this request now."), unless the rule names its own refusal, as `StepUp`
 does (`401 step_up_required`). Rejecting asks only that the person is an
 approver: stopping a request should never wait for a second factor.
 
+## Approving with an authorization
+
+A step-up opens a window: for 5 minutes, the approver's session may
+approve any request, as often as it likes, and so may a copy of the
+session. With `APPROVE_ACTION` on, each approval asks for an
+authorization of its own instead: one request, the fingerprint the
+approver was shown, once
+([Authorizing one act](../auth/actions.md), ADR 0144). It needs
+`domainkit.contrib.auth`, and its routes that confirm an authorization:
+
+```python
+# config/settings.py
+APPROVALS = {"APPROVE_ACTION": True}
+```
+
+```python
+# The routes, next to approvals' own.
+from domainkit.contrib.auth.actions import router as authorizations
+
+router.include_router(authorizations, prefix="/auth")
+```
+
+Approvals registers the action `approvals.approve` with auth when it
+starts. Its arguments are the decision, `ApproveRequest`: the request's
+id, the approver, and the fingerprint they state. Its subject is
+`approvals.request:<id>`. The approver's client goes round once per
+approval:
+
+```http
+POST /api/approvals/requests/6c0e.../approve {"fingerprint": "3f1b..."}                 401 authorization_required
+POST /api/approvals/requests/6c0e.../approve/authorization {"fingerprint": "3f1b..."}   201 {"id": "9f0c...", "shown": {...}}
+POST /auth/authorizations/9f0c.../confirm {"code": "123456"}                            200 {"authorization": "9f0c....mYd3..."}
+POST /api/approvals/requests/6c0e.../approve {"fingerprint": "3f1b..."}
+     Action-Authorization: 9f0c....mYd3...                                              200
+```
+
+**What the approver is shown** is built by the server from the stored
+request, never sent by a page: the title "Approve a request", the action,
+then the arguments by name, in the command's order. Each value is the
+argument as compact JSON (a string as itself), printable, cut to 64
+characters. A screen shows six values at most: with more than five
+arguments, four are shown, and the last line says how many more. The
+approver reads the whole request at `GET /requests/{id}`.
+
+**Asking is refused as approving would be**: a request that is no longer
+pending (`request_not_pending`), the maker (`maker_cannot_decide`), a
+party to the command (`interested_party`), someone who decided it already
+(`already_decided`), and a fingerprint that is not the request's
+(`fingerprint_mismatch`). The twin checks the approve route's rules too:
+only an approver who passes the approve rule may ask.
+
+**The approval spends it.** `approve_request` spends it as a service
+decorated `requires_authorization` does: where the requests share auth's
+database, with the approval's commit, so an approval refused on the way
+(the request expired meanwhile) spends nothing; elsewhere, just before
+the approval. Sent again, it
+is `403 action_not_authorized`. So is one sent with another fingerprint,
+which also voids it. With the setting on, `approve_request` called from
+code, with no request's authorization, is refused
+(`AuthorizationRequired`, 401): the approval is the approver's own.
+
+**How it combines with the approve rule.** The authorization takes the
+place of the step-up window, and the other rules still apply. A policy's
+`approve_rule`, or `APPROVE_RULE`, still asks, on the twin as on the
+approval: `IsUnscoped()`, a rule of your own. A rule that holds a
+`StepUp` would ask the approver twice, for a window and for the act:
+`check` refuses it (`approvals.E001`), inside `&`, `|`, or `~` too. Take
+the `StepUp` out when you turn the setting on.
+
+Off, the default, approving is as it was, and
+`POST /requests/{id}/approve/authorization` answers `404`, as a route
+that is not there: a caller the approve route refuses is refused there
+first.
+
 ## Over HTTP
 
 ```python
@@ -543,7 +617,8 @@ router.include_router(approvals, prefix="/api/approvals")
 | --- | --- | --- |
 | `GET /requests`, `/requests/{id}` | `approvals.view_approvalrequest` | Requests (`?status=pending`, `action`, `policy`, `maker`), with their command, fingerprint, and decisions. |
 | `POST /requests` | `approvals.add_approvalrequest`, and the guard's `permission` and `maker_rule` | Submit `{"action": ..., "arguments": {...}}`: 201, with `Location`. |
-| `POST /requests/{id}/approve` | an approver of its policy, and its approve rule | Approve, stating `{"fingerprint": ...}`. |
+| `POST /requests/{id}/approve` | an approver of its policy, and its approve rule | Approve, stating `{"fingerprint": ...}`; with `APPROVE_ACTION`, and an `Action-Authorization` of this approval. |
+| `POST /requests/{id}/approve/authorization` | as for approving | With `APPROVE_ACTION` on: ask for an authorization of approving, stating `{"fingerprint": ...}`: 201, `{"id", "purpose", "shown", "expires_at"}`. Off: 404. |
 | `POST /requests/{id}/reject` | an approver of its policy | Reject, with `{"reason": ...}`. |
 | `POST /requests/{id}/cancel` | `approvals.add_approvalrequest`, and being its maker | Withdraw it (`{"reason": ...}`, optional). |
 
@@ -625,6 +700,7 @@ other settings.
 | `EXPIRES_AFTER` | 3 days | How long a request waits for its approvals, unless its policy says (1 minute to 90 days). |
 | `EXPIRE_EVERY` | 5 minutes | How often the worker expires the requests whose time is up (at most 1 day). |
 | `APPROVE_RULE` | `None` | Import path of an access rule (an instance, or a class that takes no arguments) that whoever approves must pass as well, unless the policy names its own; a path that is not a rule fails `setup()`. |
+| `APPROVE_ACTION` | `False` | Each approval asks for an authorization of its own (`approvals.approve`), bound to the request and its fingerprint, in place of a step-up window ([Approving with an authorization](#approving-with-an-authorization)). It needs `domainkit.contrib.auth` (`setup()` fails without it); `check` refuses a `StepUp` in an approve rule beside it (`approvals.E001`). |
 | `MAX_ARGUMENTS_BYTES` | `65536` | The largest command a request holds, as JSON (1 KiB to 1 MiB). |
 | `ENTRY_THRESHOLDS` | `{}` | Per currency, the amount (text) over which `accounting.post_entry`, `capture_hold`, and `reverse_entry` need approval; empty: they are not guarded. A currency it does not name always needs approval, unless `"*"` gives an amount for every one (read in each currency's units). An amount not exact in its currency fails `setup()`. |
 | `ENTRY_APPROVALS` | `2` | Approvals a posting over its threshold needs (at most 10). |
@@ -659,6 +735,11 @@ exactly one completes it.
 | `UnknownAction` | No guard has that action. | 404, `unknown_action` |
 | `RequestNotFound` | No request has that id. | 404, `approval_request_not_found` |
 
+With `APPROVE_ACTION` on, approving answers auth's refusals too:
+`401 authorization_required` without an authorization, `403
+action_not_authorized` with one that does not hold, and those of asking
+for one ([Errors and refusals](../auth/actions.md#errors-and-refusals)).
+
 ## Common mistakes
 
 - **Decorating the service without registering the guard.** Every call
@@ -678,5 +759,7 @@ exactly one completes it.
 - [Accounting](accounting.md): the ledger whose postings can be guarded.
 - [Limits](limits.md): bound what moves in a window, against splitting.
 - [Stepping up](../auth/step-up.md): a fresh second factor.
+- [Authorizing one act](../auth/actions.md): what `APPROVE_ACTION` asks
+  for.
 - [Audit](audit.md): the events of every request.
 - [Privacy](../privacy.md): erasure and export.

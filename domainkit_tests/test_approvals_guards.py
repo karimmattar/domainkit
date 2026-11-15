@@ -493,7 +493,11 @@ def test_a_requests_life_records_its_events() -> None:
 
 
 def test_the_routes_rules_by_action() -> None:
-    """View and add by model permission; cancel by add; deciding by the policy."""
+    """View and add by model permission; cancel by add; deciding by the policy.
+
+    Approving asks ``ApproveAction`` last: with ``APPROVE_ACTION`` on, an
+    authorization of the approval (user report A6).
+    """
     from domainkit.contrib.approvals.models import ApprovalRequest
     from domainkit.contrib.approvals.rules import IsApprover, MayApprove, RequestActions
 
@@ -504,7 +508,12 @@ def test_the_routes_rules_by_action() -> None:
         ]
 
     own = ("ActsForThemselves", None)
-    assert described("approve") == [own, ("IsApprover", None), ("MayApprove", None)]
+    assert described("approve") == [
+        own,
+        ("IsApprover", None),
+        ("MayApprove", None),
+        ("ApproveAction", None),
+    ]
     assert described("reject") == [own, ("IsApprover", None)]
     assert described("cancel") == [own, ("HasModelPermission", "add")]
     assert described("view") == [("HasModelPermission", "view")]

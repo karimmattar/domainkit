@@ -317,10 +317,13 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         """Whether its time is up at ``now``."""
         return self.expires_at <= now
 
-    def _decide(
-        self, person: str, verdict: Verdict, digest: str, parties: Collection[str]
+    def check_decision(
+        self, person: str, digest: str, parties: Collection[str] = ()
     ) -> datetime:
-        """Add ``person``'s decision about ``digest``; when it was taken.
+        """Refuse a decision of ``person`` about ``digest`` that cannot be taken now.
+
+        What deciding checks, changing nothing; returns the time it checked
+        at.
 
         Raises:
             RequestTampered: Its seal does not hold.
@@ -346,6 +349,22 @@ class ApprovalRequest(AggregateRoot[RequestId]):
             raise FingerprintMismatch(
                 "The request holds another command than the one decided on."
             )
+        return now
+
+    def _decide(
+        self, person: str, verdict: Verdict, digest: str, parties: Collection[str]
+    ) -> datetime:
+        """Add ``person``'s decision about ``digest``; when it was taken.
+
+        Raises:
+            RequestTampered: As for ``check_decision``.
+            RequestNotPending: As for ``check_decision``.
+            MakerCannotDecide: As for ``check_decision``.
+            InterestedParty: As for ``check_decision``.
+            AlreadyDecided: As for ``check_decision``.
+            FingerprintMismatch: As for ``check_decision``.
+        """
+        now = self.check_decision(person, digest, parties)
         self.decisions.append(
             Decision(
                 id=DecisionId(uuid4()),
