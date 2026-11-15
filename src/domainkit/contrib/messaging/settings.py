@@ -27,7 +27,8 @@ class MessagingSettings(BaseModel):
     """Seconds a claimed message stays hidden; a crashed worker's work returns."""
     POLL_INTERVAL: float = Field(default=1.0, gt=0, le=3600)
     POLL_INTERVAL_IDLE: float | None = Field(default=None, gt=0, le=3600)
-    """While commits wake the worker (``LISTEN``): the longest wait between polls.
+    """While commits wake the worker (``LISTEN``), or publish themselves to the
+    broker (``PUBLISH_ON_COMMIT``): the longest wait between polls.
 
     Each poll that finds nothing doubles the wait, from ``POLL_INTERVAL`` up
     to this; a claim or a wake-up starts again from ``POLL_INTERVAL``. It

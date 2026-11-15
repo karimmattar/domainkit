@@ -64,6 +64,7 @@ from domainkit.contrib.messaging import (
     task,
 )
 from domainkit.contrib.messaging import apps as apps_module
+from domainkit.contrib.messaging import dispatch as dispatch_module
 from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import worker as worker_module
@@ -2035,6 +2036,46 @@ async def test_brokered_workers_run_retry_and_dead_letter(
     assert (fails_once_row["status"], fails_once_row["attempts"]) == (DONE, 2)
     assert ("email", "ada@example.com") in ran
     assert "k:ok" in ran
+
+
+@pytest.mark.parametrize(
+    ("on_commit", "waits"), [(True, [1, 2, 4, 8, 16, 30]), (False, [1] * 6)]
+)
+async def test_a_relay_backs_off_while_commits_publish_themselves(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    on_commit: bool,
+    waits: list[float],
+) -> None:
+    """POLL_INTERVAL_IDLE, as with a listener, under PUBLISH_ON_COMMIT (user report W9).
+
+    Commits reach the broker without it; the relay finds what they could
+    not publish, and what comes due, within POLL_INTERVAL_IDLE. Without
+    PUBLISH_ON_COMMIT it polls every POLL_INTERVAL, as before.
+    """
+    config = registry.settings(MessagingSettings).model_copy(
+        update={
+            "POLL_INTERVAL": 1.0,
+            "POLL_INTERVAL_IDLE": 30.0,
+            "PUBLISH_ON_COMMIT": on_commit,
+        }
+    )
+    worker = Worker(config)
+    runner = BrokerWorkers([worker], ["default"], config)
+    stop = asyncio.Event()
+    seen: list[float] = []
+
+    async def pause(wake: asyncio.Event, seconds: float) -> None:
+        seen.append(seconds)
+        if len(seen) == len(waits):
+            stop.set()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(dispatch_module, "pause", pause)
+    async with asyncio.timeout(5):
+        await runner._relay_until(worker, broker_tables, stop)
+
+    assert seen == waits
 
 
 async def test_deliveries_that_cannot_run_are_settled(

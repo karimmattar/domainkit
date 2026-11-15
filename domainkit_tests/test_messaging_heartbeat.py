@@ -13,8 +13,10 @@ import pytest
 
 from domainkit.apps import registry
 from domainkit.broker import BrokerUnavailable, brokers
+from domainkit.conf import override_settings
 from domainkit.contrib.messaging import heartbeat as heartbeats
 from domainkit.contrib.messaging.worker import Worker
+from domainkit.http.health import readiness_failures
 from domainkit.management import call_command
 from domainkit_tests.test_messaging import brokered, messaging
 
@@ -62,6 +64,23 @@ async def test_a_broker_that_does_not_answer_fails_the_beat(
     monkeypatch.setattr(brokers["work"], "check", down)
 
     assert await heartbeats.failures("work") == ["broker:work"]
+
+
+@pytest.mark.usefixtures("brokered")
+async def test_ready_checks_brokers_only_when_told(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``READINESS_BROKERS``: each broker too, once; off, one away is no failure."""
+
+    async def down() -> None:
+        raise BrokerUnavailable("no route")
+
+    monkeypatch.setattr(brokers["work"], "check", down)
+
+    assert await readiness_failures(1.0) == []
+    with override_settings(READINESS_BROKERS=True):
+        assert await readiness_failures(1.0) == ["broker:work"]
+        assert await heartbeats.failures("work") == ["broker:work"]  # Not twice.
 
 
 @pytest.mark.usefixtures("messaging")

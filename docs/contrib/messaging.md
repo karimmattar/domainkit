@@ -665,7 +665,10 @@ among them: the worker queues a periodic slot when it next polls, and a
 cron run is queued ahead, due later, so either can start up to
 `POLL_INTERVAL_IDLE` after its time. Workers that cannot listen (SQLite,
 PgBouncer, `NOTIFY = False`, a listening connection that dropped) poll
-every `POLL_INTERVAL`.
+every `POLL_INTERVAL`. With a broker that commits publish to
+(`PUBLISH_ON_COMMIT`), the relay backs off the same way: it finds only
+what commits could not publish, and what comes due, which waits up to
+`POLL_INTERVAL_IDLE`.
 
 **Watching PostgreSQL's notification queue.** PostgreSQL keeps sent
 notifications in one queue per server (8 GB by default) until every
@@ -811,7 +814,12 @@ skipped, but the queue grows. Add workers before a backlog gets that
 long. Quorum queues dead-letter or drop a message delivered more than
 their delivery limit (20 by default); for the worker that is harmless,
 because the relay publishes such a message again after
-`REPUBLISH_AFTER`.
+`REPUBLISH_AFTER`. A worker requeues a delivery every `POLL_INTERVAL`
+while its outbox is unreachable, so an outage longer than 20 of them
+leaves every message delivered meanwhile to wait `REPUBLISH_AFTER`. A
+policy raises the limit, or lifts it (`-1`, from RabbitMQ 4.0):
+`rabbitmqctl set_policy work '^shop\.' '{"delivery-limit": -1}'
+--apply-to quorum_queues`.
 
 ### Other brokers
 
@@ -951,7 +959,7 @@ other settings.
 | `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
 | `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must be more than `TASK_TIMEOUT` (at most 2 days). |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
-| `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message that no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
+| `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL), or publish themselves to the broker (`PUBLISH_ON_COMMIT`, for the relay): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message that no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | The most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `DRAIN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |

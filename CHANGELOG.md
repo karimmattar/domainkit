@@ -101,9 +101,16 @@ and a status.
   holds fewer connections than `MESSAGING.CONCURRENCY` + 1
   (`messaging.W003`): the worker's running messages waited for one up to
   `POOL_TIMEOUT`, then failed (user report W9).
+- `READINESS_BROKERS = True` makes `/ready` check each broker of
+  `BROKERS` too, as `broker:<alias>`; it is off by default, since a
+  process serves while its broker is away (user report W9).
 
 ### Changed
 
+- `POLL_INTERVAL_IDLE` applies to the relay too while commits publish
+  themselves to the broker (`PUBLISH_ON_COMMIT`): it polled the outbox
+  every `POLL_INTERVAL` for what commits had already published (user
+  report W9).
 - `runworker --metrics-port` asks for `METRICS_TOKEN` when it is set, as
   the web's `/metrics` does; it served anyone who reached the port
   (user report W9).

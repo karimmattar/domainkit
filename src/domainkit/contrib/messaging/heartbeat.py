@@ -20,7 +20,6 @@ from contextlib import suppress
 from pathlib import Path
 
 from domainkit import clock
-from domainkit.broker import BrokerError, brokers
 from domainkit.conf import settings
 
 __all__ = ["beat", "failures", "heartbeat"]
@@ -30,16 +29,12 @@ logger = logging.getLogger(__name__)
 
 async def failures(broker: str | None) -> list[str]:
     """What fails now: ``/ready``'s checks, and ``broker`` (``broker:<alias>``)."""
-    from domainkit.http.health import readiness_failures
+    from domainkit.http.health import broker_failures, readiness_failures
 
     seconds = settings.READINESS_TIMEOUT
     failing = await readiness_failures(seconds)
-    if broker is not None:
-        try:
-            async with asyncio.timeout(seconds):
-                await brokers[broker].check()
-        except (BrokerError, TimeoutError, OSError):
-            failing.append(f"broker:{broker}")
+    if broker is not None and not settings.READINESS_BROKERS:  # Else checked.
+        failing += await broker_failures([broker], seconds)
     return failing
 
 
