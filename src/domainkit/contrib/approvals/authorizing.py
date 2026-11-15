@@ -132,8 +132,8 @@ def register() -> None:
 async def ask(request: HTTPConnection, command: ApproveRequest) -> dict[str, Any]:
     """Store an authorization of approving as ``command`` says; what the client sees.
 
-    Raises:
-        See ``request_action_authorization``, and ``show``'s refusals.
+    It is refused as ``request_action_authorization`` refuses, and as
+    ``show`` does.
     """
     asked = await request_action_authorization(request, APPROVE, command)
     return ActionAuthorizationOut.of(asked).model_dump()

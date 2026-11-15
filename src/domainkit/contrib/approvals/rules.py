@@ -248,10 +248,11 @@ class ApproveAction(BasePermission):
     async def ask_authorization(self, request: Request, command: object) -> BaseModel:
         """Store an authorization of the approval ``command`` makes; the twin's body.
 
+        It is refused as ``request_action_authorization`` refuses, and as
+        ``approve_request`` would refuse the approval itself.
+
         Raises:
             APIError: 404 ``not_found``, while ``APPROVE_ACTION`` is off.
-            See ``request_action_authorization`` for the other refusals, and
-            ``approve_request`` for those of the approval itself.
         """
         if self._asking() is None:
             raise APIError(status.HTTP_404_NOT_FOUND, "Not Found", code="not_found")
