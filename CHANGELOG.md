@@ -75,6 +75,16 @@ and a status.
   have one number texted without end, at the service's cost (SMS
   pumping). The ways of writing one number share its count (user report
   A1).
+- Signups refuse a `username` where usernames identify no one
+  (`422 unknown_user_field`), and the commands that name a user try
+  `AUTH.IDENTIFIERS` first. Before, someone could sign up as
+  `{"email": "mallory@...", "username": "victim@example.com"}`: when
+  support then ran `unbinddevices victim@example.com` for the victim's
+  stolen phone, the command acted on Mallory's account, and said it had
+  succeeded. A value that is an address or a number now never finds a
+  user by username there, and each command says on stderr whom it found,
+  and by which field (`BaseCommand.note`; `uow.users.match_for_staff`)
+  (user report A3).
 
 ## [2.3.0] - 2026-11-11
 

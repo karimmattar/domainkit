@@ -36,6 +36,30 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.3 to 2.4
+
+2.4 answers a report from a project that runs an identity service on
+domainkit: codes counted per recipient, and staff commands that cannot be
+pointed at the wrong account.
+
+- **Signups refuse a `username` where usernames identify no one.** With
+  `AUTH.IDENTIFIERS` set to the email address or the mobile number, `POST
+  /signup` with a `username` answers `422 unknown_user_field`, as it does
+  for a number where numbers identify no one. Nobody logged in with it,
+  and a name someone chose, such as another person's address, stood for
+  them in operators' commands. A client that sent one drops it.
+- **Commands try the identifiers first.** `changepassword`, `createtoken`,
+  `cleartokens --user`, `resetmfa`, `addcertificate` and `unbinddevices`
+  look a value up by `AUTH.IDENTIFIERS` before the username, and a value
+  that is an email address or a mobile number never finds a user by
+  username where usernames identify no one. Each says on stderr whom it
+  found; stdout is unchanged. A user stored with such a username before
+  2.4 is named by their address or number instead.
+- **`POST /devices/enroll/code` counts per recipient** against
+  `AUTH.EMAIL_RATE`, as the other requests that send a code do. A client
+  that asked for the same account's code more than five times an hour
+  now gets `429 rate_limited`.
+
 ## 2.2 to 2.3
 
 2.3 closes a hole in the phone modes: a stolen web session could bind a

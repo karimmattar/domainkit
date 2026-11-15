@@ -27,6 +27,7 @@ from .gates import (
     on_manage_logins,
     pass_login_gates,
 )
+from .management import user_for_staff
 from .mfa import (
     challenge,
     first_use_after_code,
@@ -104,5 +105,6 @@ __all__ = [
     "step_up_answer",
     "stepping_credentials",
     "target_of",
+    "user_for_staff",
     "utc_now",
 ]

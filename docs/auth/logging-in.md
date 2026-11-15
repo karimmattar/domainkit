@@ -666,7 +666,7 @@ AUTH = {"SIGNUP_ENABLED": True}
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"email", "fields"}`, an optional `"username"`, or `"mobile_number"` where numbers identify users | `202`; `422` for fields that do not fit, or `missing_value` without an address (or number); `429 rate_limited`. |
+| `POST /signup` | anyone | `{"email", "fields"}`, a `"username"` where usernames identify users, or `"mobile_number"` where numbers do (`AUTH.IDENTIFIERS`) | `202`; `422` for fields that do not fit, `missing_value` without an address (or number), or `unknown_user_field` for a username or a number that identifies no one here; `429 rate_limited`. |
 | `POST /signup/code` | anyone | `{"identifier", "code", "password"}` | `204`: the account is made; `400 invalid_verification_code`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
 
 ```http
