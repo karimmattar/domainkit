@@ -1219,7 +1219,8 @@ jobs:
             mutants: >-
               domainkit.http.application.* domainkit.http.blocking.*
               domainkit.http.errors.* domainkit.http.filters.* domainkit.http.guard.*
-              domainkit.http.live_events.* domainkit.http.locale.*
+              domainkit.http.live_events.* domainkit.http.live_fanout.*
+              domainkit.http.locale.*
               domainkit.http.metrics.* domainkit.http.openapi.*
               domainkit.http.ratelimit.* domainkit.http.routing.*
               domainkit.http.shedding.* domainkit.http.compression.* domainkit.http.sse.* domainkit.http.versioning.*
@@ -1229,6 +1230,7 @@ jobs:
               domainkit.http.client.* domainkit.http.deadlines.* domainkit.http.health.*
               domainkit.http.live.* domainkit.http.middleware.*
               domainkit.http.pagination.* domainkit.http.responses.*
+              domainkit.http.routers.*
               domainkit.http.servers.* domainkit.http.uploads.*
               domainkit.http.websockets.* domainkit.http.apidocs.*
           - name: data-1

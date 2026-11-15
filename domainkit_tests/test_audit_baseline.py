@@ -13,6 +13,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.checks import CheckFailed
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import baseline
 from domainkit.contrib.audit.baseline import (
@@ -240,10 +241,48 @@ async def test_startup_refuses_with_require_baseline(
         await check_at_startup()
 
     assert str(refused.value).startswith(
-        "AUDIT.REQUIRE_BASELINE refuses to start in test without a "
+        "AUDIT.REQUIRE refuses to start in test without a "
         f"tamper-evident audit trail:\n  audit.E001: {NO_LEDGER}\n"
         f"  audit.E003: {NO_SCHEDULE}"
     )
+
+
+async def test_each_part_is_required_on_its_own(
+    tables: None, deployed: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No ledger, and the triggers still required (user report C2).
+
+    ``REQUIRE_BASELINE = False`` turned every part into a warning: running
+    without a ledger, a supported choice, stopped enforcing the triggers.
+    """
+    from domainkit.contrib.audit import AuditSettings
+
+    assert frozenset() == AuditSettings(REQUIRE_BASELINE=False).REQUIRE
+    assert {"triggers"} == AuditSettings(
+        REQUIRE_BASELINE=False, REQUIRE={"triggers"}
+    ).REQUIRE
+    refused: CheckFailed | None = None
+    with (
+        override_settings(AUDIT={"REQUIRE": ["triggers"]}),
+        caplog.at_level(logging.WARNING, logger=baseline.__name__),
+    ):
+        problems = settings_problems()
+        try:
+            await check_at_startup()
+        except CheckFailed as exc:
+            refused = exc
+        postgres = connections.engine().dialect.name == "postgresql"
+
+    assert [getattr(each, "id", "") for each in problems] == [
+        "audit.W001",
+        "audit.W003",
+    ]
+    assert "AUDIT.LEDGER is None" in caplog.text  # Warned, not refused.
+    if postgres:  # The tables here lack protect()'s triggers: those refuse.
+        assert refused is not None
+        assert {getattr(each, "id", "") for each in refused.messages} == {"audit.E005"}
+    else:  # SQLite has no triggers to check.
+        assert refused is None
 
 
 async def test_a_complete_baseline_starts_quietly(

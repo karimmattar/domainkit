@@ -20,29 +20,43 @@ settings in ``PUSH_OPTIONS`` under its ``name``::
 Each calls its service's HTTP API through ``domainkit.http.client`` (the
 ``push`` extra): FCM's HTTP v1 with a Google service account's token (or
 the metadata server's), APNs over HTTP/2 with a provider token (ES256)
-kept 50 minutes, Push Kit with its app's OAuth token. A token the
-service no longer knows raises ``PushTokenGone``: the worker drops the
-notification and publishes ``PushTokenExpired``. Any other refusal
-raises ``NotificationFailed`` with the service's reason, and the worker
-tries again.
+kept 50 minutes, Push Kit with its app's OAuth token.
+
+Each backend reads a refusal from its service's answer (``refusal``,
+which a subclass may read differently without copying ``send``). A token
+the service does not know raises ``PushTokenGone``: the worker drops the
+notification and publishes ``PushTokenExpired``. A message the service
+would refuse again, as it is, raises ``NotificationRefused``, which is
+not tried again. Any other refusal raises ``NotificationFailed`` with
+the service's code and the fields it named, and the worker tries again:
+credentials, permissions, quotas, and outages may change meanwhile.
 """
 
 import json
 import re
 import time
 from collections.abc import Sequence
-from typing import Any, ClassVar, Final
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from domainkit.cloud import TokenSource, oauth_token
 
-from .backends import NotificationFailed, PushBackend, PushTokenGone
+from .backends import (
+    NotificationFailed,
+    NotificationRefused,
+    PushBackend,
+    PushTokenGone,
+)
 from .messages import PushMessage
 from .settings import NotificationsSettings
 from .sms import TIMEOUT, json_of, reached, shared_client
 
-__all__ = ["ApnsPushBackend", "FcmPushBackend", "HuaweiPushBackend"]
+if TYPE_CHECKING:
+    import httpx2
+
+__all__ = ["ApnsPushBackend", "FcmPushBackend", "HuaweiPushBackend", "Refusal"]
 
 FCM_SCOPE: Final = "https://www.googleapis.com/auth/firebase.messaging"
 APNS_TOKEN_LIFETIME: Final = 50 * 60
@@ -50,9 +64,31 @@ APNS_TOKEN_LIFETIME: Final = 50 * 60
 APNS_GONE: Final = frozenset(
     {"BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic"}
 )
+APNS_LASTING: Final = frozenset({400, 404, 405, 413})
+"""APNs' statuses for a request it will refuse again: its headers, path, or size."""
+FCM_LASTING: Final = frozenset({"INVALID_ARGUMENT", "SENDER_ID_MISMATCH"})
+"""FCM's codes for a message it will refuse again (but a token it does not know)."""
+FCM_TOKEN_FIELD: Final = "message.token"  # noqa: S105 - a field's name.
+"""The field FCM names when the token it refuses is the only thing wrong."""
 HUAWEI_GONE: Final = "80300007"
 """Push Kit's code for tokens it does not know."""
+HUAWEI_LASTING: Final = frozenset({"80100003", "80300008"})
+"""Push Kit's codes for a message it cannot take: its structure, or its size."""
 _HEX_TOKEN: Final = re.compile(r"[0-9a-fA-F]{32,200}")
+
+
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    """How a push service refused a notification, read from its answer."""
+
+    code: str
+    """The service's error code (``UNREGISTERED``, ``BadDeviceToken``), or status."""
+    gone: bool = False
+    """It does not know the token: the notification is dropped, the token forgotten."""
+    lasting: bool = False
+    """It would refuse the message again, as it is: it is not tried again."""
+    fields: tuple[str, ...] = ()
+    """The fields of the message it named, never their values."""
 
 
 class _Options(BaseModel):
@@ -107,6 +143,29 @@ class ProviderPushBackend(PushBackend):
         """``NotificationFailed`` naming the service's reason."""
         return NotificationFailed(f"{self.title} refused the notification: {reason}.")
 
+    def refusal(self, response: "httpx2.Response") -> Refusal:
+        """Read the service's refusal from its answer to ``send``.
+
+        Each service reads its own; a subclass reads one case differently
+        by overriding this, and calling it for the others.
+        """
+        return Refusal(str(response.status_code))
+
+    def failure(self, message: PushMessage, refusal: Refusal) -> NotificationFailed:
+        """What ``send`` raises for ``refusal``.
+
+        ``PushTokenGone`` for a token the service does not know,
+        ``NotificationRefused`` for a lasting refusal, and otherwise
+        ``NotificationFailed``, which the worker tries again.
+        """
+        if refusal.gone:
+            return PushTokenGone(message.token, self.title)
+        text = f"{self.title} refused the notification: {refusal.code}"
+        if refusal.fields:
+            text += f" ({', '.join(refusal.fields)})"
+        kind = NotificationRefused if refusal.lasting else NotificationFailed
+        return kind(f"{text}.", code=refusal.code, fields=refusal.fields)
+
 
 class FcmOptions(_Options):
     """``PUSH_OPTIONS["fcm"]``: the Firebase project, and who calls it."""
@@ -129,7 +188,7 @@ class FcmPushBackend(ProviderPushBackend):
     options: FcmOptions
 
     async def send(self, message: PushMessage) -> None:
-        """POST the message to the project; a 404 or ``UNREGISTERED`` is gone."""
+        """POST the message to the project; a refusal raises (``refusal``)."""
         options = self.options
         token = await _google_account(options.CREDENTIALS_FILE).token(FCM_SCOPE)
         payload: dict[str, Any] = {
@@ -145,15 +204,41 @@ class FcmPushBackend(ProviderPushBackend):
         )
         if response.status_code == 200:
             return
+        raise self.failure(message, self.refusal(response))
+
+    def refusal(self, response: "httpx2.Response") -> Refusal:
+        """FCM's error code and the fields it named, and whether the token is gone.
+
+        As FCM's guidance has it: ``UNREGISTERED`` is a token gone, and so is
+        ``INVALID_ARGUMENT`` for the token itself, which FCM answers with
+        its own error (``FcmError``) and no field, or a field violation of
+        ``message.token`` alone. ``INVALID_ARGUMENT`` naming other fields is
+        a message it cannot take, and ``SENDER_ID_MISMATCH`` a token of
+        another sender: both lasting. A ``404`` without ``UNREGISTERED`` is
+        no token gone: a wrong ``PROJECT_ID`` would forget every token.
+        """
         error = (json_of(response) or {}).get("error") or {}
-        codes = {
-            detail.get("errorCode")
-            for detail in error.get("details") or []
-            if isinstance(detail, dict)
-        }
-        if response.status_code == 404 or "UNREGISTERED" in codes:
-            raise PushTokenGone(message.token, self.title)
-        raise self.refused(error.get("status") or response.status_code)
+        details = [
+            each for each in error.get("details") or [] if isinstance(each, dict)
+        ]
+        codes = sorted(
+            {str(each["errorCode"]) for each in details if each.get("errorCode")}
+        )
+        fields = tuple(
+            str(violation["field"])
+            for each in details
+            for violation in each.get("fieldViolations") or []
+            if isinstance(violation, dict) and violation.get("field")
+        )
+        code = (codes or [str(error.get("status") or response.status_code)])[0]
+        if "UNREGISTERED" in codes:
+            return Refusal("UNREGISTERED", gone=True)
+        if code == "INVALID_ARGUMENT" and (
+            fields == (FCM_TOKEN_FIELD,) or (not fields and codes)
+        ):
+            return Refusal(code, gone=True, fields=fields)
+        lasting = code in FCM_LASTING or response.status_code == 400
+        return Refusal(code, lasting=lasting, fields=fields)
 
 
 def _google_account(credentials_file: str | None) -> TokenSource:
@@ -223,10 +308,21 @@ class ApnsPushBackend(ProviderPushBackend):
         )
         if response.status_code == 200:
             return
-        reason = (json_of(response) or {}).get("reason")
-        if response.status_code == 410 or reason in APNS_GONE:
-            raise PushTokenGone(message.token, self.title)
-        raise self.refused(reason or response.status_code)
+        raise self.failure(message, self.refusal(response))
+
+    def refusal(self, response: "httpx2.Response") -> Refusal:
+        """Apple's reason; ``410`` and its reasons for a lost token are gone.
+
+        A request it will refuse again (``400``: a header or the payload;
+        ``404``: the path; ``405``; ``413``: too large) is lasting.
+        """
+        status = response.status_code
+        reason = str((json_of(response) or {}).get("reason") or status)
+        return Refusal(
+            reason,
+            gone=status == 410 or reason in APNS_GONE,
+            lasting=status in APNS_LASTING,
+        )
 
     def provider_token(self) -> str:
         """The team's provider token (ES256), made again every 50 minutes."""
@@ -309,6 +405,13 @@ class HuaweiPushBackend(ProviderPushBackend):
         code = (json_of(response) or {}).get("code")
         if response.status_code == 200 and code == "80000000":
             return
-        if code == HUAWEI_GONE:
-            raise PushTokenGone(message.token, self.title)
-        raise self.refused(code or response.status_code)
+        raise self.failure(message, self.refusal(response))
+
+    def refusal(self, response: "httpx2.Response") -> Refusal:
+        """Push Kit's code: ``80300007`` is gone; a message it cannot take, lasting."""
+        code = str((json_of(response) or {}).get("code") or response.status_code)
+        return Refusal(
+            code,
+            gone=code == HUAWEI_GONE,
+            lasting=code in HUAWEI_LASTING or response.status_code == 400,
+        )

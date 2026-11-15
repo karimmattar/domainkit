@@ -455,11 +455,46 @@ All three refuse a call with no event types, or a project without
 `AuthenticationMiddleware` (`ImproperlyConfigured`): events are filtered
 per user.
 
-Events reach the connections of the process that committed them. Behind
-several replicas, a client sees the events committed by its own replica.
-To give every client every event, a durable handler (`durable=True`) could
-publish each event to a fan-out exchange that each replica reads into its
-`live_events.publish`. domainkit does not do this yet (ADR 0057).
+### Every process's events
+
+By default, events reach the connections of the process that committed
+them: behind several replicas, a client sees the events committed by its
+own replica, and none the worker commits. To give every client every
+event, share the types its clients watch, and name a backend that carries
+them between processes
+([ADR 0143](adr/0143-fan-live-events-out-through-postgresql-or-redis.md)):
+
+```python
+# domains/shop/apps.py, in ShopConfig.ready():
+live_events.share(OrderShipped)
+
+# settings
+LIVE_FANOUT = {"BACKEND": "postgres"}  # or {"BACKEND": "redis", "ALIAS": "live"}
+```
+
+| `LIVE_FANOUT` key | Default | What it does |
+| --- | --- | --- |
+| `BACKEND` | `None` | `"postgres"`: `pg_notify` and `LISTEN` on a database (through asyncpg, not through PgBouncer). `"redis"`: `PUBLISH` and a subscription on a Redis cache (not a cluster). `None`: events stay in process. |
+| `ALIAS` | `"default"` | The alias in `DATABASES` (`postgres`) or `CACHES` (`redis`) that carries them. |
+| `CHANNEL` | `"domainkit_live"` | The channel; projects that share a database or a cache each need their own. |
+
+Every process loads the same domains, so each knows what it sends and
+what it reads back. After a commit, each shared event goes out from a
+background task, never holding the commit, and each process with
+subscribers listens on the channel and hands what the others sent to its
+own. The committing process's subscribers get it at once, and once.
+
+- **Personal fields travel.** Rules decide from the event's fields, so
+  the whole event goes between processes; clients still get `render`'s
+  fields, `Personal` ones left out.
+- **Best effort.** A listener that reconnects misses what was sent
+  meanwhile, as a client that reconnects does.
+- **PostgreSQL's notifications hold less than 8,000 bytes.** A larger
+  event is not sent, and logged: send large events through Redis.
+- **Only the named types.** A subclass is shared when it is named too.
+  A subscription to a type nobody shares, while `LIVE_FANOUT` is on, is
+  logged once; `check` warns, in staging and production, about shared
+  types with no backend (`live.W003`).
 
 A client that connects again misses what committed while it was away. A
 route that must not lose events replays them from its own records, after

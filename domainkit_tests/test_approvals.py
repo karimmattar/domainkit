@@ -67,7 +67,7 @@ from domainkit.contrib.approvals.tables import decisions, requests
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.messaging.testing import drain
 from domainkit.db import connections
-from domainkit.ddd import Command, DomainError
+from domainkit.ddd import Command, DomainError, UseCase, use_case
 from domainkit.i18n import gettext, override
 from domainkit.money import Money
 from domainkit_tests.conftest import (
@@ -732,6 +732,42 @@ async def test_a_command_that_no_longer_reads_as_approved_never_runs(
     assert await status_of(renamed) == (RequestStatus.FAILED, "invalid_arguments")
     async with AccountingUnitOfWork() as uow:
         assert await uow.accounts.filter() == []
+
+
+cases_run: list[str] = []
+
+
+@requires_approval("tests.case")
+@use_case
+async def open_case(uow: AccountingUnitOfWork, code: str) -> None:
+    """A ``@use_case`` behind approvals: the simple layout's (user report P1)."""
+    cases_run.append(code)
+
+
+async def test_a_use_case_is_guarded_however_it_is_called(project: str) -> None:
+    """Its call and its ``run`` are refused; approved, it runs once."""
+    cases_run.clear()
+    guard(
+        "tests.case",
+        open_case,
+        unit_of_work=AccountingUnitOfWork,
+        policies=[Policy("tests.cases", permission="accounting.add_account")],
+        domain="alpha",
+    )
+    assert isinstance(open_case, UseCase)
+    with refused(ApprovalRequired):
+        await open_case(AccountingUnitOfWork(), code="direct")
+    with refused(ApprovalRequired):
+        await open_case.run(open_case.command(code="run"), AccountingUnitOfWork())
+
+    request = await submit_command(
+        "tests.case", open_case.command(code="approved"), maker="maker"
+    )
+    assert (await approve(request, "ann")).status is RequestStatus.APPROVED
+    await drain()
+
+    assert await status_of(request) == (RequestStatus.EXECUTED, "")
+    assert cases_run == ["approved"]
 
 
 async def test_only_approved_requests_run(project: str) -> None:

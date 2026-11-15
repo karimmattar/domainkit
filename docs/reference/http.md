@@ -94,7 +94,8 @@ fails ([operations.md](../operations.md)).
 | --- | --- | --- |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take (at most 60). |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended. Probes that come while checks run wait for them, so probe floods cannot load the database. |
-| `READINESS_DETAILS` | `False` | Names failing components in `/ready` responses (they are always logged). A group of checks that raises instead of reporting is named as its group (`domains`, `databases`, `ledgers`, `caches`), logged, and kept like any failed round: a 503, never a 500. |
+| `READINESS_DETAILS` | `False` | Names failing components in `/ready` responses (they are always logged). A group of checks that raises instead of reporting is named as its group (`domains`, `databases`, `ledgers`, `caches`, `brokers`), logged, and kept like any failed round: a 503, never a 500. |
+| `READINESS_BROKERS` | `False` | `/ready` checks each broker of `BROKERS` too, as `broker:<alias>`; on RabbitMQ, a channel opened and closed. Off, a process serves while its broker is away, and commits leave their messages to the outbox's relay: turn it on where a process cannot work without one. |
 
 ### The access log
 
@@ -230,6 +231,7 @@ checked again while they stay open; see [live.md](../live.md).
 | `LIVE_SEND_QUEUE` | `64` | Messages or events that may wait for one client (1 to 10,000); a sender waits while they do. Live events count only those the client may see; 16 times as many may wait for its rule ([live.md](../live.md#live-committed-events)). |
 | `LIVE_SEND_TIMEOUT` | `10.0` | Seconds one message may take to reach the client. A slower client is closed (1013). |
 | `LIVE_REAUTH_INTERVAL` | `60.0` | Seconds between checks of an open connection's credentials and its route's rules (each one between three quarters of it and all of it; at most 3,600). The connection is closed with 1008 when they fail. `None` turns the checks off; `check` warns about that in staging and production. What the checks cannot do: [live.md](../live.md#what-re-checks-cannot-do). |
+| `LIVE_FANOUT` | see [live.md](../live.md#every-processs-events) | How committed live events reach every process: `{"BACKEND": "postgres" or "redis", "ALIAS": ..., "CHANNEL": "domainkit_live"}`, for the types domains share (`live_events.share`). `None`: in process. An `ALIAS` that `DATABASES` (or `CACHES`) lacks is refused when the settings load ([live.md](../live.md#every-processs-events)). |
 | `WEBSOCKET_IDLE_TIMEOUT` | `300.0` | Seconds without a message either way before a WebSocket is closed (1001). |
 | `WEBSOCKET_MAX_LIFETIME` | `3600.0` | Seconds a WebSocket may stay open (1001); at most 86,400. |
 | `WEBSOCKET_MESSAGE_RATE` | `"20/second"` | Messages a client may send per connection, counted in the process; one more closes it (1008). `None`: any number. |

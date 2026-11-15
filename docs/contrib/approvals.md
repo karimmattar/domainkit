@@ -94,6 +94,16 @@ from domainkit.contrib.approvals import requires_approval
 async def refund(command: Refund, uow: PaymentsUnitOfWork) -> Payment: ...
 ```
 
+A `@use_case` is guarded the same way, with `@requires_approval` above
+it: its call (`refund(uow, ...)`) and its `run`, which routes call, are
+both refused, and `guard()` takes the use case, its command included:
+
+```python
+@requires_approval("payments.refund")
+@use_case
+async def refund(uow: PaymentsUnitOfWork, payment_id: UUID, amount: Money) -> None: ...
+```
+
 Second, the domain registers the guard in `ready()`, with the policies
 that decide who approves the command and when. This is the same place
 where every hook is registered

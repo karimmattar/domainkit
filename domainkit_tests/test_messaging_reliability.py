@@ -14,7 +14,7 @@ from sqlalchemy import event, select, update
 
 from domainkit import clock as clock_module
 from domainkit.clock import freeze_time
-from domainkit.conf import settings
+from domainkit.conf import override_settings, settings
 from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
@@ -249,6 +249,34 @@ async def test_the_wait_is_logged_and_counted_as_its_own_outcome(
             "after 2026-11-01T10:00:00+00:00"
         )
     ]
+
+
+@pytest.mark.usefixtures("messaging")
+def test_pools_smaller_than_a_workers_messages_are_warned_about(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``messaging.W003``: CONCURRENCY and the listener against each network pool."""
+    config_ = MessagingConfig.__new__(MessagingConfig)
+    pools = {"default": ("app", 6), "big": ("big", 11)}
+    databases: dict[str, dict[str, object]] = {
+        alias: {
+            "URL": f"postgresql+asyncpg://app@db.example/{name}",
+            "POOL_SIZE": size,
+            "MAX_OVERFLOW": 0,
+        }
+        for alias, (name, size) in pools.items()
+    }
+    databases["local"] = {"URL": "sqlite+aiosqlite:///local.db", "POOL_SIZE": 1}
+    with override_settings(DATABASES=databases):
+        assert config_.small_pools() == []  # Not deployed.
+        monkeypatch.setattr(
+            apps_module, "DEPLOYED_ENVIRONMENTS", frozenset({settings.ENVIRONMENT})
+        )
+        found = config_.small_pools()
+
+    assert [each.id for each in found] == ["messaging.W003"]
+    assert "pool of DATABASES['default'] serves: it holds 6 connections" in found[0]
+    assert found[0].hint.startswith("Lower CONCURRENCY to 5,")
 
 
 @pytest.mark.usefixtures("messaging")

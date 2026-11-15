@@ -45,7 +45,7 @@ from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.management.base import run_async
 
 from .outbox import watchers
-from .registry import Chain, Task, TaskSpec, dump_arguments, qualified_name, spec_for
+from .registry import Chain, Task, TaskSpec, dump_arguments, spec_for
 from .tables import PENDING, messages
 from .worker import Claimed, Worker, without_input
 
@@ -154,7 +154,7 @@ def _target(task: Task | Chain | str) -> str:
     try:
         return spec_for(task).key
     except ImproperlyConfigured:  # A durable handler.
-        return qualified_name(task)
+        return event_bus.handler_key(task)
 
 
 @dataclass(slots=True)

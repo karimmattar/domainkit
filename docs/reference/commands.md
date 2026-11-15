@@ -104,6 +104,7 @@ name. These are the other parts of an action command:
 | `ActionCommand.default_action` | The action that runs when the command line names none. `None` (the default) makes the action required. |
 | `BaseCommand.operator_actions` | `True` makes every action, or the whole command, take `--operator` ([Operators](#operators)). |
 | `BaseCommand.requires_setup` | `True` (the default) loads the settings and the installed domains before `handle` runs. |
+| `BaseCommand.needs_domains` | `True` starts the installed domains around an async `handle`, as serving the application does: their `on_startup` hooks first (a key service's data keys unwrapped, the audit trail's protection checked), their `on_shutdown` hooks after. For commands that run the application's work; `runworker` sets it. |
 | `CommandError(message, returncode=1)` | Raise it to stop the command with a message and an exit status. |
 | `call_command(name, *args)` | Runs a command from Python, as a test does. |
 
@@ -735,7 +736,7 @@ python manage.py broker declare
 
 | Action | What it does |
 | --- | --- |
-| `check [ALIAS ...]` | Connects to brokers (default: all of them). |
+| `check [ALIAS ...]` | Connects to brokers (default: all of them), and waits for each one's answer: on RabbitMQ, a channel opened and closed. |
 | `declare` | Declares the exchange and every queue that the worker's tasks use on `MESSAGING.BROKER`. |
 
 ## Messaging
@@ -754,7 +755,11 @@ python manage.py runworker --once
 durable event handlers. It runs one worker per outbox, on every database
 that hosts domains. With `MESSAGING.BROKER`, it relays messages to the
 broker and runs what the broker delivers. Whatever it serves, the
-process runs at most `MESSAGING.CONCURRENCY` messages at once.
+process runs at most `MESSAGING.CONCURRENCY` messages at once. The
+installed domains start first, as when the application serves: a key
+service's data keys are unwrapped before any message reads an
+`Encrypted` field, and a domain that refuses to start stops the worker.
+Before 2.4 they did not start.
 
 | Option | What it does |
 | --- | --- |
@@ -764,6 +769,8 @@ process runs at most `MESSAGING.CONCURRENCY` messages at once.
 | `--database` | A target or an alias whose outboxes to run (default: every database that hosts domains). |
 | `--queue` | Runs only this queue's messages; repeat it for more (default: every queue). |
 | `--no-relay` | With a broker: only consumes, and never reads the outbox. |
+| `--heartbeat-file` | Rewrites this file while the worker's checks hold, from its own event loop: `/ready`'s checks and the broker's. A container's health check reads its age; it is removed when the worker stops ([The worker](../operations.md#the-worker)). |
+| `--heartbeat-interval` | Seconds between checks for `--heartbeat-file` (default: 15; more than 0, at most 3600). |
 
 ### `messages`: see and act on the outbox
 
@@ -787,10 +794,11 @@ cancelled 0
 | `list pending\|held\|locked\|dead` | Lists messages in a state. `pending` lists them in the order workers take them; `held`, those waiting for an earlier message of their ordering key; `locked`, those running or published. |
 | `list --queue Q`, `list --limit N` | Only one queue's messages; at most N (default: 20). |
 | `retry ID\|all` | Queues a dead message, or all of them, again. The dead letters of `sensitive` tasks are not retried, because their arguments were blanked. A message with an ordering key goes back in its place. |
+| `drop ID\|all` | Deletes a dead message, or all of them. With `--blanked`, only those whose arguments were blanked when they died (`sensitive` tasks), which `retry` cannot run. |
 | `cancel ID` | Cancels a message that no worker runs. |
 | `release` | Runs the next message of each ordering key that has held messages and none pending. |
 | `--database` | After any action: the outbox's alias (default: `MESSAGING.DATABASE`). |
-| `--operator` | After `retry`, `cancel`, and `release`, which are audited ([Operators](#operators)). |
+| `--operator` | After `retry`, `drop`, `cancel`, and `release`, which are audited ([Operators](#operators)). |
 
 ## Users and logins
 

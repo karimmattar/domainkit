@@ -154,14 +154,14 @@ def rows_for(
     rows = [
         message_row(
             kind="event",
-            target=qualified_name(handler),
+            target=key,
             payload=dump_event(event),
             headers=context_headers(event_type=qualified_name(type(event))),
             max_attempts=config.MAX_ATTEMPTS,
             ordering_key=event_key(handler, event),
         )
         for event in events
-        for handler in bus.handlers_for(type(event), durable=True)
+        for key, handler in bus.durable_targets(type(event))
     ]
     for deferred in tasks:
         function: object = deferred.function
