@@ -20,7 +20,7 @@ from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_auth_mfa import clock, code_at, enrol
 from domainkit_tests.test_auth_recovery import run_worker
 from domainkit_tests.test_auth_reset_codes import drain
-from domainkit_tests.test_ciba import PHONE, App, Phone, app
+from domainkit_tests.test_ciba import PHONE, SITE, App, Phone, app
 from domainkit_tests.test_devices import Device
 
 CODE = re.compile(r"\b[0-9]{6}\b")
@@ -313,6 +313,31 @@ def test_enrollment_attempts_are_throttled(app: App) -> None:
         assert ask_code(client, "alice@example.com").status_code == 202
         assert ask_code(client, "alice@example.com").status_code == 202
         assert ask_code(client, "alice@example.com").status_code == 429
+
+
+def test_enrollment_codes_are_counted_per_recipient(app: App) -> None:
+    """Callers from many addresses cannot text one number without end (A1).
+
+    The ways of writing one number share its count (``AUTH.EMAIL_RATE``);
+    another recipient still gets its code.
+    """
+    create_user("alice", email="alice@example.com", mobile_number=NUMBER)
+    project = app(PHONE).app
+    callers = [
+        TestClient(project, base_url=SITE, client=(f"198.51.100.{n}", 50000 + n))
+        for n in range(1, 4)
+    ]
+    auth = {**AUTH, "EMAIL_RATE": "2/hour"}
+    with override_settings(DEVICES=ON, AUTH=auth):
+        first = ask_code(callers[0], NUMBER)
+        second = ask_code(callers[1], "+33 6 12 34 56 78")
+        third = ask_code(callers[2], NUMBER)
+        other = ask_code(callers[2], "bob@example.com")
+
+    assert (first.status_code, second.status_code) == (202, 202)
+    assert third.status_code == 429
+    assert third.json()["code"] == "rate_limited"
+    assert other.status_code == 202
 
 
 def test_enrollment_needs_messaging(app: App, monkeypatch: pytest.MonkeyPatch) -> None:

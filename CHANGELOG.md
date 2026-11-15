@@ -67,6 +67,15 @@ and a status.
   import of that kind. Nothing a project imports changed (audit finding
   A1).
 
+### Security
+
+- `POST /devices/enroll/code` is counted per recipient too, against
+  `AUTH.EMAIL_RATE`, as every other request that sends a code is. It was
+  counted per client address only, so callers from many addresses could
+  have one number texted without end, at the service's cost (SMS
+  pumping). The ways of writing one number share its count (user report
+  A1).
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of

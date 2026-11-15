@@ -346,8 +346,11 @@ this order:
   without it.
 
 A refusal never says which proof failed. Refusals count against
-`AUTH.LOGIN_RATE`, for the client's address and for the account; asking
-for codes counts against it for the address.
+`AUTH.LOGIN_RATE`, for the client's address and for the account. Asking
+for a code counts against it for the address, and against
+`AUTH.EMAIL_RATE` for the identifier, as every request that sends a code
+does: callers from many addresses cannot text one number without end,
+and the ways of writing one number share its count.
 
 A user with a bound device enrolls no other: `409 device_already_bound`.
 A new phone is approved from the old one, then binds with `POST /devices`
