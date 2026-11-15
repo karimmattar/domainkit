@@ -381,7 +381,13 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
   ([runtime.md](runtime.md#workers-and-the-outbox)).
 - **Metrics.** `runworker --metrics-port 9100` serves the worker's
   Prometheus metrics, on `127.0.0.1` unless `--metrics-address` says
-  otherwise.
+  otherwise. With `METRICS_TOKEN` set, a scrape needs `Authorization:
+  Bearer <METRICS_TOKEN>`, as the web's `/metrics` does.
+- **Connections.** Each running message holds a database connection,
+  besides the one the worker listens and claims with: give the workers'
+  pool at least `MESSAGING.CONCURRENCY + 1` connections (`POOL_SIZE` +
+  `MAX_OVERFLOW`). `check` warns about a smaller one where deployed
+  (`messaging.W003`).
 - **Health.** `runworker --heartbeat-file /tmp/worker-alive` checks,
   from the worker's own event loop, what `/ready` checks (domains,
   databases, ledgers, caches) and the broker it consumes from, every

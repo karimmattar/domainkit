@@ -98,6 +98,7 @@ class MessagingConfig(DomainConfig):
         on_deployment_warnings(self.blocking_tasks)
         on_deployment_warnings(self.unnamed_tasks)
         on_deployment_warnings(self.unnamed_handlers)
+        on_deployment_warnings(self.small_pools)
 
     async def stage_outbox(
         self,
@@ -166,6 +167,43 @@ class MessagingConfig(DomainConfig):
             for spec in all_tasks()
             if not spec.named
         ]
+
+    def small_pools(self) -> list[CheckMessage]:
+        """``messaging.W003``: pools smaller than a worker's messages, where deployed.
+
+        A worker runs up to ``CONCURRENCY`` messages at once, each holding a
+        connection while its handler's work and its outcome are written,
+        besides the one it listens and claims with. A pool of fewer makes
+        them wait for one up to ``POOL_TIMEOUT``, then fail and be retried
+        (user report W9).
+        """
+        from domainkit.conf.global_settings import is_network_database
+        from domainkit.db.connections import pool_capacity
+
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        concurrency = registry.settings(MessagingSettings).CONCURRENCY
+        found = []
+        for alias, database in settings.DATABASES.items():
+            capacity = pool_capacity(database)
+            url = database.URL.get_secret_value()
+            if not is_network_database(url) or concurrency + 1 <= capacity:
+                continue
+            found.append(
+                CheckMessage(
+                    "messaging.W003",
+                    f"MESSAGING.CONCURRENCY ({concurrency}) runs more messages at "
+                    f"once than the pool of DATABASES[{alias!r}] serves: it holds "
+                    f"{capacity} connections per worker (POOL_SIZE + "
+                    "MAX_OVERFLOW), and each running message holds one, besides "
+                    "the one the worker listens and claims with. The others wait "
+                    "for one up to POOL_TIMEOUT, then fail and are retried.",
+                    hint=f"Lower CONCURRENCY to {max(capacity - 1, 1)}, or raise the "
+                    "pool for the workers (their settings may differ from the web "
+                    "processes').",
+                )
+            )
+        return found
 
     def unnamed_handlers(self) -> list[CheckMessage]:
         """``messaging.W002``: durable handlers without ``name=``, where deployed.

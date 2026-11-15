@@ -6,14 +6,20 @@ arrive while a count runs share it instead of starting their own.
 """
 
 import asyncio
-from typing import Final
+import hmac
+import socket
+import threading
+from collections.abc import Callable, Iterable
+from typing import Any, Final
 from weakref import WeakKeyDictionary
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from prometheus_client import Counter, Gauge, Histogram
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from domainkit import clock
 from domainkit.apps import registry
+from domainkit.conf import settings
 from domainkit.db import connections
 from domainkit.http.metrics import register_refresher
 from domainkit.tasks import spawn
@@ -149,3 +155,55 @@ async def refresh_outbox() -> None:
 
 
 register_refresher(refresh_outbox)
+
+
+type _Wsgi = Callable[[dict[str, Any], Callable[..., Any]], Iterable[bytes]]
+
+
+def serve(port: int, address: str) -> WSGIServer:
+    """Serve the worker's metrics on ``address:port``, from a thread of its own.
+
+    ``runworker --metrics-port``. With ``METRICS_TOKEN`` set, a scrape needs
+    ``Authorization: Bearer <METRICS_TOKEN>``, as the web's ``/metrics`` does;
+    another gets ``401``. Before 2.4 it served anyone who reached the port
+    (user report W9).
+    """
+    from prometheus_client import make_wsgi_app
+    from prometheus_client.exposition import ThreadingWSGIServer
+
+    family = socket.getaddrinfo(address, port, type=socket.SOCK_STREAM)[0][0]
+
+    class Server(ThreadingWSGIServer):
+        address_family = family
+
+    class Quiet(WSGIRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: ANN401
+            """Scrapes are not logged."""
+
+    token = settings.METRICS_TOKEN
+    app = make_wsgi_app()
+    if token is not None:
+        app = _guarded(app, f"Bearer {token.get_secret_value()}".encode())
+    server = make_server(address, port, app, Server, handler_class=Quiet)
+    threading.Thread(
+        target=server.serve_forever, name="domainkit.worker.metrics", daemon=True
+    ).start()
+    return server
+
+
+def _guarded(app: _Wsgi, expected: bytes) -> _Wsgi:
+    """``app``, for requests that carry ``expected`` as their ``Authorization``."""
+
+    def guarded(
+        environ: dict[str, Any], start_response: Callable[..., Any]
+    ) -> Iterable[bytes]:
+        supplied = environ.get("HTTP_AUTHORIZATION", "").encode()
+        if hmac.compare_digest(supplied, expected):
+            return app(environ, start_response)
+        start_response(
+            "401 Unauthorized",
+            [("Content-Type", "text/plain"), ("WWW-Authenticate", "Bearer")],
+        )
+        return [b"A valid metrics token is required.\n"]
+
+    return guarded

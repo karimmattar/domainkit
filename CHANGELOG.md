@@ -97,9 +97,21 @@ and a status.
   (`apps.W001`): only registered functions run, so a startup check
   written as domainkit's own apps write theirs, and never registered,
   never ran (user report C1).
+- `check` warns, where deployed, about a network database whose pool
+  holds fewer connections than `MESSAGING.CONCURRENCY` + 1
+  (`messaging.W003`): the worker's running messages waited for one up to
+  `POOL_TIMEOUT`, then failed (user report W9).
 
 ### Changed
 
+- `runworker --metrics-port` asks for `METRICS_TOKEN` when it is set, as
+  the web's `/metrics` does; it served anyone who reached the port
+  (user report W9).
+- Kafka: a publish that fails because the cluster cannot take it now (a
+  lost connection, a partition without a leader, too few replicas, a
+  timeout) is `BrokerUnavailable`, which opens the publishing breaker; it
+  was `BrokerRefused`, which kept it closed through an outage (user
+  report W9).
 - FCM's `404` without `UNREGISTERED` is no longer a token gone: a wrong
   `PROJECT_ID` could answer so, and every token sent to would have been
   forgotten. It is tried again (user report N2).

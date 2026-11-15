@@ -974,6 +974,7 @@ other settings.
 | --- | --- | --- |
 | `messaging.W001` | Staging or production: a task registered without `name=`. | Give every task a stable `name=`. |
 | `messaging.W002` | Staging or production: a durable handler subscribed without `name=`. | Give it one, with `formerly=` its old key for the messages queued under it. |
+| `messaging.W003` | Staging or production: a database pool smaller than `CONCURRENCY` + 1. | Lower `CONCURRENCY`, or raise the workers' pool. |
 | `ImproperlyConfigured` at startup | A task's `timeout` (or `TASK_TIMEOUT`) is not under `VISIBILITY_TIMEOUT`; a cron expression never runs; `@ordered` names an argument the task does not have. | Fix the task or the setting. |
 | Refused in staging and production | A broker without TLS or credentials, `guest`, or `memory://`. | Use `amqps://` (or the TLS scheme of your broker) and a user of its own. |
 | A commit that fails | A unit of work defers tasks or publishes events with durable handlers, and messaging is not installed. | Install messaging. |

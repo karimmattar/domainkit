@@ -109,10 +109,12 @@ class Command(BaseCommand):
         """Run until a signal arrives, or once."""
         if metrics_port is not None:
             try:
-                from prometheus_client import start_http_server
-            except ImportError as exc:  # pragma: no cover - needs the extra absent.
+                import prometheus_client  # noqa: F401 - the extra, first.
+
+                from domainkit.contrib.messaging.metrics import serve
+            except ImportError as exc:
                 raise CommandError("--metrics-port needs domainkit[metrics].") from exc
-            start_http_server(metrics_port, addr=metrics_address)
+            serve(metrics_port, metrics_address)
         targets = (database,) if database else outbox_targets()
         aliases = dict.fromkeys(
             alias for target in targets for alias in router.aliases_of(target)
