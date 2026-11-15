@@ -52,6 +52,15 @@ and a status.
   superuser for approval. Auth and those apps no longer import each
   other, a test keeps any two apps from it, and nothing changes for a
   project (ADR 0140, audit finding A2).
+- `select_routes` and `route_names` (`domainkit.http.routers`): mount a
+  copy of a router with only some of its routes (`only`), without some
+  (`without`), and with dependencies of your own on the routes you name
+  (`dependencies={"POST /devices/enroll/code": [Depends(...)]}`), which
+  run after the route's own and show in OpenAPI. Routes are named
+  `METHOD /path`, as the router declares them; a name that matches no
+  route is refused, and the router copied is left as it is. See
+  [Rules on the framework's routes](docs/auth/routes.md#rules-on-the-frameworks-routes)
+  and ADR 0145 (user report A7).
 
 ### Changed
 

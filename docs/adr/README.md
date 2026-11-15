@@ -151,6 +151,7 @@ statuses, and the amendments they name.
 | [0138](0138-mount-an-accounts-routes-with-one-call.md) | Mount an account's routes with one call | Accepted |
 | [0139](0139-hold-a-rung-under-load-against-plain-fastapi-in-the-same-run.md) | Hold a rung under load against plain FastAPI in the same run | Accepted |
 | [0140](0140-auth-asks-other-apps-through-hooks.md) | Auth asks other apps through hooks | Accepted |
+| [0145](0145-mount-part-of-a-router-as-a-copy.md) | Mount part of a router as a copy | Accepted |
 
 ### Decisions still without a record
 
