@@ -241,7 +241,11 @@ def test_a_second_factor_is_needed_too(app: App, clock: list[float]) -> None:
 
 
 def test_a_password_staff_set_is_changed_first(app: App) -> None:
-    """``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``: 403 until a new one comes along."""
+    """``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``: 403 until a new one comes along.
+
+    The code is not spent by the refusal, nor by a new password a rule
+    refuses: the user sends again with one, and needs no second message.
+    """
     from domainkit.contrib.auth import AuthUnitOfWork
     from domainkit.contrib.auth.models import UserId
     from domainkit.management.base import run_async
@@ -261,14 +265,12 @@ def test_a_password_staff_set_is_changed_first(app: App) -> None:
     with override_settings(DEVICES=ON, AUTH=first_use):
         run_async(set_by_staff())
         ask_code(client, "alice@example.com")
-        asked = enroll(client, Device(), code=mailed_code(), password=staff_set)
-        ask_code(client, "alice@example.com")
+        code = mailed_code()
+        phone = Device()
+        asked = enroll(client, phone, code=code, password=staff_set)
+        weak = enroll(client, phone, code=code, password=staff_set, new_password="1")
         changed = enroll(
-            client,
-            Device(),
-            code=mailed_code(),
-            password=staff_set,
-            new_password=chosen,
+            client, phone, code=code, password=staff_set, new_password=chosen
         )
         relogged = client.post(
             "/auth/login", json={"username": "alice", "password": chosen}
@@ -277,6 +279,8 @@ def test_a_password_staff_set_is_changed_first(app: App) -> None:
         403,
         "password_change_required",
     )
+    assert (weak.status_code, weak.json()["code"]) == (422, "invalid_password")
+    # Neither refusal spent the code: one message is enough.
     assert changed.status_code == 201, changed.json()
     assert relogged.status_code == 200, relogged.json()
 

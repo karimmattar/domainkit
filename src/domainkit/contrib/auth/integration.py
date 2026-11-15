@@ -13,6 +13,7 @@ from .api import (
     MfaChallengeOut,
     TokenOut,
     attach_login_device,
+    check_first_use,
     end_device_logins,
     issue_login,
 )
@@ -79,6 +80,7 @@ __all__ = [
     "audit_refusal",
     "auth_settings",
     "challenge",
+    "check_first_use",
     "check_manage_logins",
     "check_origin",
     "check_password_again",

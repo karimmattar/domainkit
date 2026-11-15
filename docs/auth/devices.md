@@ -343,7 +343,9 @@ this order:
   code is spent: ask for another.
 - A password staff set (`AUTH.PASSWORD_CHANGE_ON_FIRST_USE`) needs
   `new_password`, as `/login` does: `403 password_change_required`
-  without it.
+  without it, and `422 invalid_password` for one a rule refuses. Both are
+  answered before the code is checked, so it is not spent: send again
+  with a new password.
 
 A refusal never says which proof failed. Refusals count against
 `AUTH.LOGIN_RATE`, for the client's address and for the account. Asking

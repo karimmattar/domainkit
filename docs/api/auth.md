@@ -504,6 +504,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `audit_refusal`: Record a refused attempt, without what was tried: it may be a secret.
 - `auth_settings`: The validated `AUTH` settings.
 - `challenge`: A challenge, if `user` has a second factor; None if not.
+- `check_first_use`: Refuse now what a change on first use would refuse; change nothing.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.

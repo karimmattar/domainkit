@@ -67,6 +67,15 @@ and a status.
   import of that kind. Nothing a project imports changed (audit finding
   A1).
 
+### Fixed
+
+- Enrolling a first device with a password staff set no longer spends the
+  code before it asks for a new password: `403 password_change_required`,
+  and `422 invalid_password` for a new one a rule refuses, are answered
+  before the code is checked, and the user sends again with the same code
+  instead of asking for a second message (`auth.integration.check_first_use`)
+  (user report A10).
+
 ### Security
 
 - `POST /devices/enroll/code` is counted per recipient too, against

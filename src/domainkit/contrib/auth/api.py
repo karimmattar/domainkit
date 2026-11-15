@@ -276,17 +276,46 @@ async def changed_on_first_use(
             return user
         if new_password is None:
             await _audit_refusal("password_change_required")
-            raise APIError(
-                status.HTTP_403_FORBIDDEN,
-                "This password was set for you: choose a new one to log in.",
-                code="password_change_required",
-            )
+            raise _change_required()
         validate_password(new_password, user)
         stored = await uow.users.get(UserId(user.id))
         await uow.users.set_password(stored, new_password, priority=True)
         await uow.tokens.revoke_user(user.id)
         await uow.commit()
     return stored
+
+
+async def check_first_use(user: AbstractBaseUser, new_password: str | None) -> None:
+    """Refuse now what a change on first use would refuse; change nothing.
+
+    For a route that spends something, such as a code, before it changes a
+    password staff set (``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``): a caller
+    who sent no new password, or one a rule refuses, keeps what it would
+    have spent, and sends again with it.
+
+    Raises:
+        APIError: 403 ``password_change_required`` without ``new_password``.
+        InvalidPassword: The new password breaks a rule.
+    """
+    if not auth_settings().PASSWORD_CHANGE_ON_FIRST_USE:
+        return
+    async with AuthUnitOfWork() as uow:
+        must_change = await uow.passwords.must_change(user.id)
+    if not must_change:
+        return
+    if new_password is None:
+        await _audit_refusal("password_change_required")
+        raise _change_required()
+    validate_password(new_password, user)
+
+
+def _change_required() -> APIError:
+    """403 ``password_change_required``: a password staff set is changed first."""
+    return APIError(
+        status.HTTP_403_FORBIDDEN,
+        "This password was set for you: choose a new one to log in.",
+        code="password_change_required",
+    )
 
 
 async def issue_login(
