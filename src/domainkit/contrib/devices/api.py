@@ -16,6 +16,9 @@ Passkeys (``RP_ID`` set):
   tokens, with no second factor asked.
 - ``POST /passkeys/step-up/options``, ``POST /passkeys/step-up`` (a
   user): a step-up proving ``mfa``.
+- ``POST /passkeys/authorizations/{id}/options``, ``POST
+  /passkeys/authorizations/{id}`` (the session that asked): confirm an
+  act's authorization, proving ``hwk`` and ``mfa`` (ADR 0144).
 - ``GET /passkeys``, ``DELETE /passkeys/{id}`` (a user).
 
 Devices:
@@ -26,6 +29,10 @@ Devices:
 - ``GET /devices``, ``DELETE /devices/{id}`` (a user).
 - ``POST /devices/step-up`` (a user, signed by one of their devices): a
   step-up proving ``hwk``.
+- ``POST /devices/authorizations/{id}`` (the app's own login, signed by
+  one of the user's devices): confirm the authorization of an act the app
+  makes and shows itself, with its digest, proving ``hwk`` and ``phone``
+  (ADR 0144).
 - ``POST /devices/login`` (anyone, signed by a bound device;
   ``DEVICE_LOGIN``): tokens for the device's user, with no password.
 - ``POST /devices/enroll/code``, ``POST /devices/enroll`` (anyone;
@@ -73,7 +80,14 @@ from domainkit.contrib.auth.integration import (
 )
 from domainkit.contrib.auth.models import UserId
 from domainkit.http.access import IsUnscoped, Public, Require
+from domainkit.http.errors import error_responses
 
+from .authorizations import (
+    AuthorizationOut,
+    confirm_with_device,
+    confirm_with_passkey,
+    passkey_options,
+)
 from .binding import DEVICE_ID, DeviceSigned, bind_key, device_key, signing_device
 from .events import DeviceUnbound, PasskeyRemoved
 from .exceptions import (
@@ -311,6 +325,47 @@ async def finish_step_up(
     credentials = stepping_credentials(request)
     await authenticate(body.credential.assertion(), STEP_UP, user)
     return await _stepped_up(credentials, user, frozenset({"hwk", "mfa"}))
+
+
+@router.post(
+    "/passkeys/authorizations/{authorization_id}/options",
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+    ),
+)
+async def start_passkey_authorization(
+    authorization_id: UUID,
+    request: Request,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> dict[str, Any]:
+    """The options to confirm one of the session's authorizations with a passkey."""
+    return await passkey_options(request, user, authorization_id)
+
+
+@router.post(
+    "/passkeys/authorizations/{authorization_id}",
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+    ),
+)
+async def finish_passkey_authorization(
+    authorization_id: UUID,
+    body: AssertionIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> AuthorizationOut:
+    """Confirm one of the session's authorizations: the user's passkey answered."""
+    response.headers["Cache-Control"] = "no-store"
+    return await confirm_with_passkey(
+        request, user, authorization_id, body.credential.assertion()
+    )
 
 
 @router.get("/passkeys")
@@ -614,6 +669,37 @@ async def device_step_up(
     response.headers["Cache-Control"] = "no-store"
     credentials = stepping_credentials(request)
     return await _stepped_up(credentials, user, frozenset({"hwk"}))
+
+
+class DigestIn(BaseModel):
+    """The act's digest, as the app works it out from the act it shows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    """``fingerprint(purpose, arguments)``: 64 lower-case hex digits."""
+
+
+@router.post(
+    "/devices/authorizations/{authorization_id}",
+    dependencies=[DEVICE_SIGNED],
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+    ),
+)
+async def confirm_own_act(
+    authorization_id: UUID,
+    body: DigestIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> AuthorizationOut:
+    """Confirm the app's own authorization: its device signed the act's digest."""
+    response.headers["Cache-Control"] = "no-store"
+    return await confirm_with_device(request, user, authorization_id, body.digest)
 
 
 async def _stepped_up(

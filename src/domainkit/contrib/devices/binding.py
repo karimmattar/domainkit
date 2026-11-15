@@ -30,7 +30,8 @@ Secure Enclave exports.
 import base64
 import hashlib
 import logging
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
@@ -52,9 +53,11 @@ from .stores import BoundDevice, DevicesUnitOfWork
 from .webauthn import EDDSA, ES256, WebAuthnError, b64decode, verify_signature
 
 __all__ = [
+    "DeviceProof",
     "DeviceSigned",
     "bind_key",
     "device_key",
+    "device_proof",
     "mark_signed_by",
     "proves_key",
     "signed_message",
@@ -67,6 +70,8 @@ DEVICE_SIGNATURE: Final = "x-device-signature"
 VERSION: Final = b"domainkit-device-v1"
 SIGNING_DEVICE: Final = "domainkit.signing_device"
 """Where a request keeps the device that signed it, checked once."""
+SIGNING_PROOF: Final = "domainkit.signing_proof"
+"""Where a request keeps what its device signed, once checked."""
 MAX_SIGNATURE: Final = 200
 """Base64url characters a signature may have (ES256's DER is at most 72 bytes)."""
 TOUCH_EVERY: Final = timedelta(minutes=1)
@@ -109,6 +114,26 @@ def device_key(encoded: str) -> tuple[int, bytes]:
     )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class DeviceProof:
+    """What a bound device signed for a request: enough to check it again later.
+
+    The device (its id, its key's algorithm, and its public key), the
+    message it signed (``signed_message``), its signature, and the time it
+    signed at. With the key and the message, the signature can be checked
+    again once the device is unbound.
+    """
+
+    device: BoundDevice
+    signed: bytes
+    signature: bytes
+    signed_at: datetime
+
+    def __repr__(self) -> str:
+        """The device and the time: what it signed may name personal data."""
+        return f"DeviceProof(device={self.device.id!r}, signed_at={self.signed_at!r})"
+
+
 class DeviceSigned(BasePermission):
     """Requests a bound device of the user signed, now, once.
 
@@ -146,12 +171,25 @@ class DeviceSigned(BasePermission):
 async def signing_device(connection: HTTPConnection, user: Any) -> BoundDevice | None:  # noqa: ANN401
     """The device of ``user`` that signed the request, checked once a request."""
     if SIGNING_DEVICE not in connection.scope:
-        checked = await _check(connection, user)
-        connection.scope[SIGNING_DEVICE] = checked
-        if checked is not None:
-            note_login_device(connection, checked.id)  # Its login is the device's.
+        proof = await _check(connection, user)
+        connection.scope[SIGNING_PROOF] = proof
+        connection.scope[SIGNING_DEVICE] = None if proof is None else proof.device
+        if proof is not None:
+            note_login_device(connection, proof.device.id)  # Its login is the device's.
     device: BoundDevice | None = connection.scope[SIGNING_DEVICE]
     return device
+
+
+async def device_proof(connection: HTTPConnection, user: Any) -> DeviceProof | None:  # noqa: ANN401
+    """What the device of ``user`` that signed the request signed, and its key.
+
+    Checked as ``signing_device`` checks it, once a request. None when no
+    device of ``user`` signed it, or the request proved a key it binds
+    (``mark_signed_by``): that key had no id when it signed.
+    """
+    await signing_device(connection, user)
+    proof: DeviceProof | None = connection.scope.get(SIGNING_PROOF)
+    return proof
 
 
 def mark_signed_by(request: Request, device: BoundDevice) -> None:
@@ -227,8 +265,8 @@ async def bind_key(
     return device
 
 
-async def _check(connection: HTTPConnection, user: Any) -> BoundDevice | None:  # noqa: ANN401
-    """The device that signed, if every part holds; its time recorded."""
+async def _check(connection: HTTPConnection, user: Any) -> DeviceProof | None:  # noqa: ANN401
+    """What the device signed, if every part holds; its time recorded."""
     if not isinstance(connection, Request) or not getattr(
         user, "is_authenticated", False
     ):
@@ -268,7 +306,12 @@ async def _check(connection: HTTPConnection, user: Any) -> BoundDevice | None:  
             )
         if stale or not cached:
             await uow.commit()
-    return device
+    return DeviceProof(
+        device=device,
+        signed=message,
+        signature=signature,
+        signed_at=datetime.fromtimestamp(time / 1000, UTC),
+    )
 
 
 async def _first_in_cache(device_id: UUID, digest: str, window: timedelta) -> bool:

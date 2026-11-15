@@ -417,15 +417,28 @@ Passkeys (WebAuthn) and bound devices: keys a user's devices hold.
 
 The routes of passkeys and bound devices.
 
-- `router`: The routes: passkeys registered, logging in and stepping up; devices bound, listed, unbound, stepping up.
+- `router`: The routes: passkeys registered, logging in and stepping up; devices bound, listed, unbound, stepping up; acts' authorizations confirmed.
+
+## `domainkit.contrib.devices.authorizations`
+
+Confirming an act's authorization with a bound device or a passkey (ADR 0144).
+
+- `DEVICE_CONFIRMATION`: The app's own act, signed by a bound device: `hwk` and `phone`.
+- `PASSKEY_CONFIRMATION`: A passkey verified with its user: `hwk` and `mfa`, never `phone`.
+- `AuthorizationOut`: The authorization: send it with the act, in `Action-Authorization`, once.
+- `confirm_with_device`: Confirm the app's own authorization, whose act's digest its device signed.
+- `confirm_with_passkey`: Confirm one of the session's authorizations: the user's passkey answered.
+- `passkey_options`: The options to confirm one of the session's authorizations with a passkey.
 
 ## `domainkit.contrib.devices.binding`
 
 Requests signed by a bound device's key.
 
+- `DeviceProof`: What a bound device signed for a request: enough to check it again later.
 - `DeviceSigned`: Requests a bound device of the user signed, now, once.
 - `bind_key`: Bind `key` to the user in `uow`, which its caller commits.
 - `device_key`: A device key's algorithm, and the key as SubjectPublicKeyInfo.
+- `device_proof`: What the device of `user` that signed the request signed, and its key.
 - `mark_signed_by`: Count `request` as signed by `device`, which it just bound.
 - `proves_key`: Whether `request` is signed by `key`, now (`DEVICES.SIGNATURE_WINDOW`).
 - `signed_message`: What a device signs for a request.

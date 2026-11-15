@@ -1,8 +1,10 @@
 """Passkeys: registering one, and logging in or stepping up with it.
 
 Every ceremony starts with a challenge the server makes and keeps: 256
-random bits, for one purpose (``register``, ``login``, ``step_up``) and,
-but for a login, one user, used once within ``DEVICES.CHALLENGE_TTL``.
+random bits, for one purpose (``register``, ``login``, ``step_up``,
+``authorize``) and, but for a login, one user, used once within
+``DEVICES.CHALLENGE_TTL``; one that confirms an action authorization is
+made for that authorization alone.
 The browser's answer names its challenge in its client data, which finds
 the record; the record is deleted before anything else is checked, so a
 refused answer spends it too. Users are verified by the authenticator
@@ -60,6 +62,8 @@ logger = logging.getLogger(__name__)
 REGISTER: Final = "register"
 LOGIN: Final = "login"
 STEP_UP: Final = "step_up"
+AUTHORIZE: Final = "authorize"
+"""A challenge made for one action authorization (ADR 0144)."""
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -190,18 +194,24 @@ async def request_options(
 
 
 async def authenticate(
-    assertion: Assertion, purpose: str, user: AbstractBaseUser | None = None
+    assertion: Assertion,
+    purpose: str,
+    user: AbstractBaseUser | None = None,
+    *,
+    challenge: str | None = None,
 ) -> AbstractBaseUser:
     """The active user whose passkey answered a challenge of ``purpose``.
 
     With ``user`` (a step-up), it must be theirs, and the challenge too.
+    With ``challenge``, it must answer that one: the challenge made for an
+    action authorization, which no other answers.
 
     Raises:
         PasskeyRefused: It does not hold, or is not theirs.
     """
     config = passkey_settings()
     client_data = _decoded(assertion.client_data_json)
-    await _take(client_data, purpose, None if user is None else user.id)
+    await _take(client_data, purpose, None if user is None else user.id, challenge)
     try:
         credential_id = b64decode(assertion.credential_id)
     except WebAuthnError as exc:
@@ -240,12 +250,19 @@ async def authenticate(
     return found
 
 
-async def _take(client_data: bytes, purpose: str, user_id: UUID | None) -> None:
+async def _take(
+    client_data: bytes,
+    purpose: str,
+    user_id: UUID | None,
+    expected: str | None = None,
+) -> None:
     """Spend the challenge the client data names, if it is for ``purpose``.
+
+    With ``expected``, it must be that challenge; it is spent all the same.
 
     Raises:
         PasskeyRefused: It is unknown, used, expired, for another purpose,
-            or another user's.
+            another user's, or not the one expected.
     """
     try:
         challenge = client_challenge(client_data)
@@ -254,7 +271,12 @@ async def _take(client_data: bytes, purpose: str, user_id: UUID | None) -> None:
     async with DevicesUnitOfWork() as uow:
         taken = await uow.challenges.take(challenge)
         await uow.commit()
-    if taken is None or taken.purpose != purpose or taken.user_id != user_id:
+    if (
+        taken is None
+        or taken.purpose != purpose
+        or taken.user_id != user_id
+        or (expected is not None and taken.id != expected)
+    ):
         raise _refused("an unknown, used, or expired challenge")
 
 
