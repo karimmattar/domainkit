@@ -39,6 +39,34 @@ and a status.
   only warn. `REQUIRE_BASELINE = False` made every part a warning, so a
   project without a ledger, a supported choice, stopped enforcing the
   append-only triggers too (user report C2).
+- `on_admin_change(actor, target, change)` (`domainkit.contrib.auth.gates`)
+  checks every change the admin API makes to a user, before it is made:
+  an `AdminChange` says its kind (create, update, delete, password,
+  logout, impersonate, groups, permissions), the fields it sets, and the
+  groups or permissions it adds and removes; raise to refuse it.
+  `may_grant` and `may_hold`, the admin's ceilings, are public. Only
+  making a superuser had a hook, so "nobody edits their own account" or
+  "making staff needs another permission" took a dependency that read
+  the body (user report A9).
+
+- ciba's web pages have hooks: `on_start(request)` may refuse a push or
+  QR start, or name it with a binding message, shown on both devices (a
+  QR start took none); `on_approve(request, user, sign_in)` may refuse a
+  phone's approval before it is recorded. `count_start` is public. A
+  project re-implemented the start and the approval to name its
+  dashboard and check who may use it (user report A8).
+
+- `@requires_approval(action)` guards a `@use_case`: its call and its
+  `run`, which routes wire, are both refused until approved, and
+  `guard()` takes the use case, its command included. Applied to one, it
+  returned a plain function, and guarding `run` alone left the call open
+  (user report P1).
+
+- `SqlAlchemyUnitOfWork(readonly=True, replica=False)`, or `replica =
+  False` on the class, keeps a read-only unit of work on the primary.
+  `readonly=True` also meant "read from a replica", so a project that
+  marks its permission checks read-only could not add one: they would
+  read stale memberships (user report D1).
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and
