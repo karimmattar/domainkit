@@ -58,7 +58,14 @@ from domainkit.http.middleware import host_allowed
 from domainkit.signing import BadSignature, Signer, constant_time_compare
 
 from ._http import acting_as, credentials_of, made_by, no_store
-from .api import LoginIn, MfaChallengeOut, audited_changes, check_password, held_login
+from .api import (
+    LoginIn,
+    MfaChallengeOut,
+    audited_changes,
+    check_password,
+    first_use,
+    held_login,
+)
 from .authentication import (
     AuthenticationFailed,
     BaseAuthentication,
@@ -275,6 +282,7 @@ async def log_in(
     check_origin(request)
     user = await check_password(request, body)
     await pass_login_gates(request, user)
+    user = await first_use(user, body.new_password)
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
         return pending  # The device proof waits for the second factor.

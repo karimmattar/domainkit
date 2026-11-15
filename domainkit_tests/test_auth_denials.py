@@ -8,7 +8,8 @@ through with a log line, as 0.10 did by default.
 
 A refusal of a user (403) used to leave nothing in the audit trail; it now
 records ``auth.access``, denied, with the actor, the route's template, and
-the rule, once per actor and route a minute.
+the rule, once per actor and route a minute. So does a rule's own refusal,
+such as a step-up's 401, with its code (since 2.4).
 """
 
 import logging
@@ -135,6 +136,30 @@ def test_refusals_of_users_are_audited_once_per_actor_and_route(api: Api) -> Non
     ]
     assert all(row["target"] is None for row in rows)
     assert "Bearer" not in str(rows)
+
+
+def test_a_rule_s_own_refusal_is_audited_with_its_code(identity: Api) -> None:
+    """A step-up's 401 is recorded too, with its code, once a minute.
+
+    A stolen session probing routes behind a step-up, or a device
+    signature, used to leave no row: rules that name their refusal were
+    not recorded.
+    """
+    alice = create_user("alice")
+    client = identity()
+    headers = bearer(login(client, "alice")["access_token"])
+
+    for _ in range(3):
+        refused = client.post("/payees", headers=headers)
+        assert (refused.status_code, refused.json()["code"]) == (
+            401,
+            "step_up_required",
+        )
+
+    (row,) = audited("auth.access")
+    assert (row["actor"], row["outcome"]) == (str(alice), "denied")
+    assert row["details"]["route"] == "POST /payees"
+    assert row["details"]["code"] == "step_up_required"
 
 
 def test_a_refusal_stands_when_the_trail_cannot_record_it(
