@@ -13,6 +13,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.checks import CheckFailed
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import baseline
 from domainkit.contrib.audit.baseline import (
@@ -260,18 +261,28 @@ async def test_each_part_is_required_on_its_own(
     assert {"triggers"} == AuditSettings(
         REQUIRE_BASELINE=False, REQUIRE={"triggers"}
     ).REQUIRE
+    refused: CheckFailed | None = None
     with (
         override_settings(AUDIT={"REQUIRE": ["triggers"]}),
         caplog.at_level(logging.WARNING, logger=baseline.__name__),
     ):
         problems = settings_problems()
-        await check_at_startup()  # No PostgreSQL triggers here to miss.
+        try:
+            await check_at_startup()
+        except CheckFailed as exc:
+            refused = exc
+        postgres = connections.engine().dialect.name == "postgresql"
 
     assert [getattr(each, "id", "") for each in problems] == [
         "audit.W001",
         "audit.W003",
     ]
-    assert "AUDIT.LEDGER is None" in caplog.text  # Warned, and started.
+    assert "AUDIT.LEDGER is None" in caplog.text  # Warned, not refused.
+    if postgres:  # The tables here lack protect()'s triggers: those refuse.
+        assert refused is not None
+        assert {getattr(each, "id", "") for each in refused.messages} == {"audit.E005"}
+    else:  # SQLite has no triggers to check.
+        assert refused is None
 
 
 async def test_a_complete_baseline_starts_quietly(
