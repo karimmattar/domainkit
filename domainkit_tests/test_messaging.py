@@ -2058,6 +2058,7 @@ async def test_a_relay_backs_off_while_commits_publish_themselves(
             "POLL_INTERVAL": 1.0,
             "POLL_INTERVAL_IDLE": 30.0,
             "PUBLISH_ON_COMMIT": on_commit,
+            "NOTIFY": False,  # No listener on PostgreSQL: this setting alone.
         }
     )
     worker = Worker(config)
