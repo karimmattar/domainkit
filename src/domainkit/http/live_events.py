@@ -35,34 +35,48 @@ reconnects. Events it may not see never count against it, however many
 one commit publishes; they wait for the rule in a buffer of their own,
 ``INTAKE_FACTOR`` times as large, so memory stays bounded.
 
-Events reach the connections of this process only. Behind several
-replicas, a client sees the events committed by the replica it is
-connected to (ADR 0057).
+Events reach the connections of this process, unless ``LIVE_FANOUT``
+names a backend (ADR 0143): then the event types a domain shares in its
+``ready()`` (``live_events.share(OrderShipped)``) reach the connections
+of every process, whichever committed them, the worker included.
+Without it, a client behind several replicas sees the events committed
+by the replica it is connected to (ADR 0057).
 """
 
 import asyncio
+import json
+import logging
 import threading
+import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from functools import cache
 from typing import Any, Final, Protocol
+from weakref import WeakKeyDictionary
 
 import anyio
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
+from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, LiveFanoutConfig
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.ddd.personal import personal_fields
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import check_scopes_bounded, current_user
 from domainkit.http.live import TOO_SLOW, Closed, Closure, send_queue
+from domainkit.http.live_fanout import Sender, backend
 from domainkit.http.sse import EventSourceResponse, ServerSentEvent
+from domainkit.tasks import supervise
 
 __all__ = [
+    "fanout_warnings",
     "live_events",
 ]
+
+logger = logging.getLogger(__name__)
 
 INTAKE_FACTOR: Final = 16
 """Events of its types, allowed or not, that a connection may hold before
@@ -211,15 +225,58 @@ class _Subscriber:
         ) and await rule.has_object_permission(connection, user, event)
 
 
+def _key(event_type: type[DomainEvent]) -> str:
+    """How processes name a shared event type to each other: ``module.QualName``."""
+    return f"{event_type.__module__}.{event_type.__qualname__}"
+
+
 class LiveEvents:
     """Hands committed events to the connections subscribed to them."""
 
     def __init__(self, bus: EventBus | None = None) -> None:
         """Hear the events of ``bus`` (default: the global ``event_bus``)."""
         self.bus = event_bus if bus is None else bus
+        self.origin = uuid.uuid4().hex
+        """Marks what this process sends, so it never hears its own events twice."""
         self._subscribers: set[_Subscriber] = set()
         self._lock = threading.Lock()
         """Guards the subscribers: commits in other threads publish too."""
+        self._shared: dict[str, type[DomainEvent]] = {}
+        self._senders: WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[LiveFanoutConfig, Sender]
+        ] = WeakKeyDictionary()
+        self._listeners: WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[LiveFanoutConfig, asyncio.Task[None]]
+        ] = WeakKeyDictionary()
+        self._unshared_told: set[type[DomainEvent]] = set()
+
+    @property
+    def shared(self) -> tuple[type[DomainEvent], ...]:
+        """The event types that go to every process (``share``)."""
+        return tuple(self._shared.values())
+
+    def share(self, *types: type[DomainEvent]) -> None:
+        """Send these committed events to every process's subscribers (ADR 0143).
+
+        Call it in ``DomainConfig.ready()``: every process loads the same
+        domains, so each knows what it sends and what it reads back. Only
+        the types named go, not their subclasses. It does nothing more
+        until ``LIVE_FANOUT`` names a backend.
+
+        Raises:
+            ImproperlyConfigured: Two types of one ``module.QualName``.
+        """
+        for event_type in types:
+            key = _key(event_type)
+            known = self._shared.get(key)
+            if known is not None and known is not event_type:
+                raise ImproperlyConfigured(
+                    f"Two event types are named {key!r}: processes could not "
+                    "tell them apart."
+                )
+            self._shared[key] = event_type
+        # Heard again at each share: the bus may be cleared (tests restore it).
+        self.bus.subscribe(DomainEvent, self._send_out)
 
     async def publish(self, event: DomainEvent) -> None:
         """Offer a committed event to every subscriber; never waits, never fails.
@@ -227,12 +284,91 @@ class LiveEvents:
         It then yields to the event loop once, so subscribers in this loop
         take each event of a commit as it comes, not all of them at once.
         """
+        if self._offer(event):
+            await asyncio.sleep(0)
+
+    def _offer(
+        self, event: DomainEvent, loop: asyncio.AbstractEventLoop | None = None
+    ) -> bool:
+        """Offer ``event`` to the subscribers (of ``loop``); whether there were any."""
         with self._lock:
             subscribers = tuple(self._subscribers)
         for subscriber in subscribers:
-            subscriber.offer(event)
-        if subscribers:
-            await asyncio.sleep(0)
+            if loop is None or subscriber.loop is loop:
+                subscriber.offer(event)
+        return bool(subscribers)
+
+    async def _send_out(self, event: DomainEvent) -> None:
+        """Hand a committed shared event to the loop's sender (``LIVE_FANOUT``)."""
+        event_type = type(event)
+        key = _key(event_type)
+        if self._shared.get(key) is not event_type:
+            return
+        config = settings.LIVE_FANOUT
+        fanout = backend()
+        if fanout is None:
+            return
+        data = _adapter(event_type).dump_python(event, mode="json")
+        message = json.dumps(
+            {"o": self.origin, "t": key, "d": data}, separators=(",", ":")
+        )
+        senders = self._senders.setdefault(asyncio.get_running_loop(), {})
+        sender = senders.get(config)
+        if sender is None:
+            sender = senders[config] = Sender(fanout)
+        sender.put(message, event_type.__name__)
+
+    def _listen(self, types: tuple[type[DomainEvent], ...]) -> None:
+        """Hear the other processes' events in this loop, once (``LIVE_FANOUT``)."""
+        config = settings.LIVE_FANOUT
+        fanout = backend()
+        if fanout is None:
+            return
+        for event_type in types:
+            if event_type not in self._unshared_told and (
+                self._shared.get(_key(event_type)) is not event_type
+            ):
+                self._unshared_told.add(event_type)
+                logger.warning(
+                    "Live events of %s reach the commits of this process only: "
+                    "share them in a domain's ready() (live_events.share)",
+                    event_type.__qualname__,
+                )
+        loop = asyncio.get_running_loop()
+        listening = self._listeners.setdefault(loop, {})
+        task = listening.get(config)
+        if task is None or task.done():
+
+            def heard(message: str) -> None:
+                self._heard(message, loop)
+
+            listening[config] = supervise(
+                lambda: fanout.listen(heard), name="domainkit.live.listen"
+            )
+
+    def _heard(self, message: str, loop: asyncio.AbstractEventLoop) -> None:
+        """Offer an event another process sent to ``loop``'s subscribers."""
+        try:
+            sent = json.loads(message)
+            if sent.get("o") == self.origin:
+                return  # Its subscribers had it when it committed.
+            event_type = self._shared[sent["t"]]
+            event = _adapter(event_type).validate_python(sent["d"])
+        except (
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            ValidationError,
+        ) as exc:
+            logger.warning(
+                "Dropped a live event another process sent: this one cannot read "
+                "it (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            return
+        self._offer(event, loop)
 
     @asynccontextmanager
     async def subscribe(
@@ -261,6 +397,7 @@ class LiveEvents:
             # subscription, as a bus may be cleared (tests restore theirs).
             self.bus.subscribe(DomainEvent, self.publish)
             self._subscribers.add(subscriber)
+        self._listen(types)
         try:
             yield subscriber.events()
         finally:
@@ -390,3 +527,25 @@ async def _until_disconnect(websocket: WebSocket, scope: anyio.CancelScope) -> N
 
 live_events: Final = LiveEvents()
 """The process's live events, fed by the global ``event_bus``."""
+
+
+def fanout_warnings() -> list[str]:
+    """``live.W003``: shared event types with no ``LIVE_FANOUT``, where deployed.
+
+    Domains share them so that every process's clients see them; without a
+    backend, a client sees only those its own process committed, and none
+    the worker did.
+    """
+    if (
+        settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS
+        or settings.LIVE_FANOUT.BACKEND is not None
+        or not live_events.shared
+    ):
+        return []
+    names = ", ".join(sorted(each.__qualname__ for each in live_events.shared))
+    warning = (
+        f"Domains share live events ({names}), and LIVE_FANOUT names no backend: "
+        "a client sees only those its own process committed, and none the worker "
+        'did. Set LIVE_FANOUT = {"BACKEND": "postgres"} (or "redis").'
+    )
+    return [warning]

@@ -78,7 +78,7 @@ statuses, and the amendments they name.
 | [0054](0054-relationships-raise-instead-of-loading-lazily.md) | Make relationships raise instead of loading lazily | Accepted |
 | [0055](0055-bound-live-connections.md) | Bound every live connection: caps, a send queue, a message rate, and clocks | Accepted |
 | [0056](0056-reauthorize-open-connections.md) | Re-authorize open connections on a timer, and close them when that fails | Accepted; amended in place 2026-10-21; amended by [0058](0058-cache-principals-and-stamp-revocations.md) |
-| [0057](0057-live-committed-events-in-process.md) | Stream committed events to clients in process, filtered per event by an access rule | Accepted; amended in place 2026-10-21 |
+| [0057](0057-live-committed-events-in-process.md) | Stream committed events to clients in process, filtered per event by an access rule | Accepted; amended in place 2026-10-21; amended by [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) |
 | [0058](0058-cache-principals-and-stamp-revocations.md) | Keep principals in each process, and stamp revocations in a shared cache | Accepted; amended 2026-10-26 (at the end) |
 | [0059](0059-read-principals-in-two-queries-without-the-hash.md) | Read a principal in two queries, build each request's user, and deprecate its password hash | Accepted; amended 2026-10-26 (at the end) |
 | [0060](0060-flatten-included-routers.md) | Flatten included routers when the application is built | Accepted; amended 2026-10-26 (at the end) |
@@ -153,6 +153,7 @@ statuses, and the amendments they name.
 | [0140](0140-auth-asks-other-apps-through-hooks.md) | Auth asks other apps through hooks | Accepted |
 | [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) | Codes that open an account go only where it was proved | Accepted |
 | [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md) | While the broker is away, relaying workers run the outbox | Accepted |
+| [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted |
 
 ### Decisions still without a record
 

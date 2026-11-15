@@ -87,7 +87,12 @@ from domainkit.contrib.messaging.tables import (
     messages,
     ordering_keys,
 )
-from domainkit.contrib.messaging.worker import Claimed, backoff
+from domainkit.contrib.messaging.worker import (
+    HELPER_GRACE,
+    RELEASE_TIMEOUT,
+    Claimed,
+    backoff,
+)
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, EventBus, Retry, event_bus
 from domainkit.exceptions import ImproperlyConfigured
@@ -2170,8 +2175,17 @@ SLOW: Final = {"TASK_TIMEOUT": 30, "VISIBILITY_TIMEOUT": 60}
 """Long enough that only a shutdown stops a task waiting at its gate."""
 
 
-async def stopped(running: asyncio.Task[None], within: float = 5) -> None:
+async def stopped(
+    running: asyncio.Task[None], within: float = RELEASE_TIMEOUT + HELPER_GRACE
+) -> None:
     """Wait up to ``within`` seconds for ``running`` to end; fail, never hang.
+
+    By default, the longest a stop takes short of the drain: a lease cut off
+    goes back within ``RELEASE_TIMEOUT`` (on SQLite, under load, it may wait
+    for the database's lock that long), then the helpers get
+    ``HELPER_GRACE``. That is still well within ``DRAIN_TIMEOUT``'s 20
+    seconds, which a cancelled stop must not wait for. With 5 seconds, the
+    bound of the give-back alone, a stop on a loaded runner failed by a hair.
 
     A failure says where each task still waits: a stop that hung on CI once
     left only "the task is not done" behind.

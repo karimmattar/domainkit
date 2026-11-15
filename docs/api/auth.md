@@ -655,6 +655,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `poll`: The approved request `handle` polls for, redeemed now; it works once.
 - `start_push`: Ask `user`'s phone to approve a sign-in; queue the push to their apps.
 - `start_qr`: A request for whichever phone scans its QR code, within `QR_TTL`.
+- `wait`: Wait up to `seconds` for the phone to answer request `handle`; approved?
 
 ## `domainkit.contrib.ciba.api`
 
@@ -736,6 +737,7 @@ Start a sign-in request, let the phone answer it, and poll it (ADR 0128).
 - `poll`: The approved request `handle` polls for, redeemed now; it works once.
 - `start_push`: Ask `user`'s phone to approve a sign-in; queue the push to their apps.
 - `start_qr`: A request for whichever phone scans its QR code, within `QR_TTL`.
+- `wait`: Wait up to `seconds` for the phone to answer request `handle`; approved?
 
 ## `domainkit.contrib.ciba.settings`
 
