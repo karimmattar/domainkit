@@ -30,7 +30,7 @@ from domainkit.db.connections import connections
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.tasks import spawn
 
-__all__ = ["router"]
+__all__ = ["readiness_failures", "router"]
 
 READINESS_TASK: Final = "domainkit.readiness"
 """The name of a round of readiness checks' task."""
@@ -97,12 +97,25 @@ async def _check_ledgers(seconds: float) -> list[str]:
 
 async def _check(state: State) -> list[str]:
     """Run every check; keep the result, timed from when the round ended."""
-    seconds = settings.READINESS_TIMEOUT
+    failing = await readiness_failures()
+    state.readiness = (time.monotonic(), failing)
+    return failing
+
+
+async def readiness_failures(seconds: float | None = None) -> list[str]:
+    """What ``/ready`` finds failing: domains, databases, ledgers, caches.
+
+    Each check is bounded by ``seconds`` (``READINESS_TIMEOUT``), and all
+    run at once. A group that raises counts as failing under its name
+    (``GROUPS``), and is logged. For a process that serves no ``/ready``
+    of its own, such as the worker (``runworker --heartbeat-file``).
+    """
+    within = settings.READINESS_TIMEOUT if seconds is None else seconds
     groups = await asyncio.gather(  # Each bounded: wait for all, leave none running.
-        registry.check(seconds),
-        connections.check_all(seconds),
-        _check_ledgers(seconds),
-        caches.check_all(seconds),
+        registry.check(within),
+        connections.check_all(within),
+        _check_ledgers(within),
+        caches.check_all(within),
         return_exceptions=True,
     )
     failing: list[str] = []
@@ -114,5 +127,4 @@ async def _check(state: State) -> list[str]:
             raise group
         else:
             failing.extend(group)
-    state.readiness = (time.monotonic(), failing)
     return failing

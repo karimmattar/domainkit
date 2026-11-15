@@ -52,6 +52,13 @@ and a status.
   superuser for approval. Auth and those apps no longer import each
   other, a test keeps any two apps from it, and nothing changes for a
   project (ADR 0140, audit finding A2).
+- `runworker --heartbeat-file PATH`: the worker's health signal. From its
+  own event loop, every `--heartbeat-interval` seconds (15), it runs what
+  `/ready` checks (domains, databases, ledgers, caches) and checks its
+  broker; while all hold it rewrites the file, which a container's health
+  check reads. `--metrics-port` answered from a thread however stuck the
+  loop was. `domainkit.http.health.readiness_failures` runs `/ready`'s
+  checks for any process (user report W2).
 
 ### Changed
 

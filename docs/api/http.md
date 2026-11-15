@@ -116,6 +116,7 @@ Request deadlines over HTTP: `REQUEST_TIMEOUT`, and `RequestTimeout` per route.
 
 The liveness and readiness endpoints every generated project mounts.
 
+- `readiness_failures`: What `/ready` finds failing: domains, databases, ledgers, caches.
 - `router`: `GET /health` and `GET /ready`, which guard themselves; include it in the root router.
 
 ## `domainkit.http.live`

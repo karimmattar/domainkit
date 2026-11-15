@@ -501,6 +501,14 @@ Operator queries: queue depth, lag, listings, retries, and cancelling.
 - `release_stalled`: Make the next message of each stalled ordering key pending; how many.
 - `retry_dead`: Return dead messages (one, or all) to the queue with fresh attempts.
 
+## `domainkit.contrib.messaging.heartbeat`
+
+The worker's health signal: a file it touches while every check holds.
+
+- `beat`: Run the checks once; touch `path` if all hold. Whether they did.
+- `failures`: What fails now: `/ready`'s checks, and `broker` (`broker:<alias>`).
+- `heartbeat`: Beat every `interval` seconds until `stop`; then remove `path`.
+
 ## `domainkit.contrib.messaging.testing`
 
 pytest fixtures for code that publishes events and queues background work.

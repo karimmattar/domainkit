@@ -382,6 +382,19 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
 - **Metrics.** `runworker --metrics-port 9100` serves the worker's
   Prometheus metrics, on `127.0.0.1` unless `--metrics-address` says
   otherwise.
+- **Health.** `runworker --heartbeat-file /tmp/worker-alive` checks,
+  from the worker's own event loop, what `/ready` checks (domains,
+  databases, ledgers, caches) and the broker it consumes from, every
+  `--heartbeat-interval` seconds (15). While all hold it rewrites the
+  file; a failing check, or a stuck loop, lets it age, and it goes when
+  the worker stops. A container's health check reads its age:
+
+  ```dockerfile
+  HEALTHCHECK --interval=30s CMD test $(( $(date +%s) - $(stat -c %Y /tmp/worker-alive) )) -lt 60
+  ```
+
+  `--metrics-port` is no health signal: it answers from a thread of its
+  own, however stuck the loop is.
 - **Without a long-running worker.** `runworker --once` runs what is due
   and exits, for cron. Messages then wait for the next run.
 - **RabbitMQ.** With `MESSAGING = {"BROKER": ...}`, commits publish to

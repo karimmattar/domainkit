@@ -2,12 +2,15 @@
 
 import asyncio
 import signal
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentTypeError
+from contextlib import suppress
+from pathlib import Path
 
 from domainkit.apps import registry
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging.budget import Budget
 from domainkit.contrib.messaging.dispatch import BrokerWorkers
+from domainkit.contrib.messaging.heartbeat import heartbeat
 from domainkit.contrib.messaging.outbox import outbox_targets
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.messaging.worker import Worker
@@ -26,6 +29,8 @@ class Command(BaseCommand):
     all in this process unless ``--database`` picks one target. With
     ``MESSAGING.BROKER``, they relay their outboxes to the broker and run
     what it delivers; ``--once`` always works from the outbox directly.
+    ``--heartbeat-file`` rewrites a file while the worker's checks hold
+    (``domainkit.contrib.messaging.heartbeat``): a container's health check.
     Whatever the source, the process runs at most ``MESSAGING.CONCURRENCY``
     messages at once: every outbox and queue draws from one ``Budget``. The
     installed domains start first, as when the application serves
@@ -73,6 +78,20 @@ class Command(BaseCommand):
             action="store_false",
             help="with a broker: only consume, never poll the outbox",
         )
+        parser.add_argument(
+            "--heartbeat-file",
+            type=Path,
+            metavar="PATH",
+            help="rewrite this file while the worker's checks hold, from its own "
+            "event loop: what a container's health check reads (removed on stop)",
+        )
+        parser.add_argument(
+            "--heartbeat-interval",
+            type=_seconds,
+            default=15.0,
+            metavar="SECONDS",
+            help="seconds between checks for --heartbeat-file (default: %(default)s)",
+        )
 
     async def handle(
         self,
@@ -83,6 +102,8 @@ class Command(BaseCommand):
         database: str | None,
         queues: list[str] | None,
         relay: bool,
+        heartbeat_file: Path | None = None,
+        heartbeat_interval: float = 15.0,
         **options: object,
     ) -> None:
         """Run until a signal arrives, or once."""
@@ -128,6 +149,16 @@ class Command(BaseCommand):
         loop = asyncio.get_running_loop()
         for signal_number in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(signal_number, on_signal)
+        beating = (
+            None
+            if heartbeat_file is None
+            else asyncio.create_task(
+                heartbeat(
+                    heartbeat_file, heartbeat_interval, stop, broker=config.BROKER
+                ),
+                name="domainkit.worker.heartbeat",
+            )
+        )
         try:
             if config.BROKER is None:
                 self.write("Worker started; press Ctrl+C to stop.")
@@ -152,4 +183,20 @@ class Command(BaseCommand):
                 raise
             main.uncancel()
             self.write("Stopped running messages at once; they run again.")
+        finally:
+            if beating is not None:  # Its file goes: a stopped worker is no one's.
+                beating.cancel()
+                with suppress(asyncio.CancelledError):
+                    await beating
         self.write("Worker stopped.")
+
+
+def _seconds(value: str) -> float:
+    """A positive number of seconds, at most an hour (``--heartbeat-interval``)."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise ArgumentTypeError(f"{value!r} is not a number of seconds") from None
+    if not 0 < seconds <= 3600:
+        raise ArgumentTypeError("give more than 0 seconds, and at most 3600")
+    return seconds
