@@ -405,7 +405,8 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
   and exits, for cron. Messages then wait for the next run.
 - **RabbitMQ.** With `MESSAGING = {"BROKER": ...}`, commits publish to
   the broker and workers consume from it. The outbox stays the source of
-  truth, and relays publish what a commit could not.
+  truth, and relays publish what a commit could not. While the broker is
+  away, relaying workers run the outbox themselves.
   `runworker --no-relay` only consumes
   ([messaging.md](contrib/messaging.md#workers-on-rabbitmq)).
 

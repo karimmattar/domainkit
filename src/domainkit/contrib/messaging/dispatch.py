@@ -18,6 +18,15 @@ is requeued when its outbox cannot be reached, and acknowledged otherwise.
 A relay waits out database outages as the polling worker does. Deliveries
 run within the process's ``Budget``, however many queues it consumes.
 
+While the broker is away, a relaying worker runs the outbox itself (ADR
+0142): each relay has a breaker, as commits do, and while it is open the
+relay claims the due messages of its queues and runs them, as a worker
+without a broker does, within the same ``Budget``. Once the cooldown is
+over it checks the broker; if it answers, the relay publishes again. A
+message it ran that the broker still held is skipped when delivered: its
+row no longer carries the lock its delivery does. Consume-only workers
+never touch the outbox, so they wait for the broker.
+
 With ``PUBLISH_ON_COMMIT``, a commit hands its message ids to the loop's
 ``CommitPublisher``, which publishes them in the background: the commit
 never waits on the broker, and a broker that keeps failing trips its
@@ -109,8 +118,22 @@ class BrokerWorkers:
         self.alias = config.BROKER
         self.budget = budget or Budget(config.CONCURRENCY)
         self._outboxes = {worker.database: worker for worker in workers}
+        self._breakers: dict[str, Breaker] = {}
         for worker in self.workers:
             worker._relay_promoted = self._relayer(worker)
+
+    def breaker(self, database: str) -> Breaker:
+        """The breaker of the relay of ``database``'s outbox (ADR 0142)."""
+        if database not in self._breakers:
+            self._breakers[database] = Breaker(
+                self.alias,
+                self.config.BREAKER_FAILURES,
+                self.config.BREAKER_COOLDOWN,
+                meanwhile=f"the relay of {database!r} runs its due messages itself",
+                again=f"answers again; the relay of {database!r} publishes again",
+                observed=False,
+            )
+        return self._breakers[database]
 
     def outbox(self, database: str) -> Worker | None:
         """The worker of ``database``'s outbox, if it hosts domains."""
@@ -128,7 +151,13 @@ class BrokerWorkers:
         """
 
         async def relay(promoted: Promoted) -> None:
-            await worker._relay_ids(brokers[self.alias], [promoted.id])
+            breaker = self._breakers.get(worker.database)
+            if breaker is None:
+                await worker._relay_ids(brokers[self.alias], [promoted.id])
+            elif breaker.allows():  # Else the relay runs it from the outbox.
+                await worker._relay_ids(
+                    Watched(brokers[self.alias], breaker), [promoted.id]
+                )
 
         return relay
 
@@ -165,8 +194,13 @@ class BrokerWorkers:
                 # Cancelled itself, the group cancels the relays and cleanup.
                 grace = await self._stop_consuming(subscription)
                 consuming.ended.set()
+            loop = asyncio.get_running_loop()
+            drained_by = loop.time() + grace
             await finish(running, grace)
-            await wind_down(helpers, HELPER_GRACE)
+            # A relay running the outbox (the broker away) drains its own
+            # messages: it gets what is left of the drain, then the grace.
+            left = max(drained_by - loop.time(), 0.0)
+            await wind_down(helpers, left + HELPER_GRACE)
 
     async def _handle(
         self,
@@ -209,11 +243,18 @@ class BrokerWorkers:
     async def _relay_until(
         self, worker: Worker, broker: Broker, stop: asyncio.Event
     ) -> None:
-        """Schedule and relay until ``stop``; poll (or wait for a commit) when idle."""
-        batch = self.config.BATCH_SIZE
+        """Schedule and relay until ``stop``; poll (or wait for a commit) when idle.
+
+        While the relay's breaker is open, run the due messages instead
+        (``_run_due``); those still running at ``stop`` get
+        ``DRAIN_TIMEOUT``, as a polling worker's do.
+        """
         outage = worker.outage()
         wake = Wake()
         polls = IdlePolls(self.config)
+        breaker = self.breaker(worker.database)
+        watched = Watched(broker, breaker)
+        running: set[asyncio.Task[None]] = set()
         async with asyncio.TaskGroup() as group:
             helpers = [
                 group.create_task(set_when(stop, wake)),
@@ -224,25 +265,87 @@ class BrokerWorkers:
                     wake.clear()
                     await worker._schedule()
                     try:
-                        relayed = await worker._relay(broker, batch)
+                        done, full = await self._round(
+                            worker, watched, group, running, stop
+                        )
                     except Exception as exc:  # noqa: BLE001 - logged; it waits.
                         await outage.failed(exc, stop)
                         continue
                     outage.recovered()
-                    if relayed:
+                    if done:
                         polls.reset()
-                    if relayed < batch and not stop.is_set():
+                    if not full and not stop.is_set():
                         # Commits that publish themselves leave the relay what
                         # they could not, and what comes due: as a listener's
-                        # worker, it backs off to POLL_INTERVAL_IDLE.
-                        told = wake.listening or self.config.PUBLISH_ON_COMMIT
+                        # worker, it backs off to POLL_INTERVAL_IDLE. Not while
+                        # the broker is away: then commits publish nothing.
+                        told = wake.listening or (
+                            self.config.PUBLISH_ON_COMMIT and breaker.allows()
+                        )
                         await pause(wake, polls.wait(told))
                         if wake.is_set():
                             polls.reset()
+                if running:  # It ran the outbox while the broker was away.
+                    await finish(running, self.config.DRAIN_TIMEOUT)
                 await wind_down(helpers, HELPER_GRACE)
             finally:
                 for helper in helpers:
                     helper.cancel()  # Cancelled itself: they stop now.
+
+    async def _round(
+        self,
+        worker: Worker,
+        watched: Watched,
+        group: asyncio.TaskGroup,
+        running: set[asyncio.Task[None]],
+        stop: asyncio.Event,
+    ) -> tuple[int, bool]:
+        """Relay one round, or run one while the broker is away: (how many, full).
+
+        Once the breaker has cooled down, the broker is checked before any
+        row is leased; an answer closes it, and the round relays.
+        """
+        breaker = watched.breaker
+        if breaker.state == "probing":
+            try:
+                await watched.check()  # A failure opens it again.
+            except BrokerError:
+                pass
+            else:
+                breaker.succeeded()
+        if breaker.allows():
+            batch = self.config.BATCH_SIZE
+            relayed = await worker._relay(watched, batch)
+            if breaker.allows():
+                return relayed, relayed >= batch
+        return await self._run_due(worker, group, running, stop)
+
+    async def _run_due(
+        self,
+        worker: Worker,
+        group: asyncio.TaskGroup,
+        running: set[asyncio.Task[None]],
+        stop: asyncio.Event,
+    ) -> tuple[int, bool]:
+        """Claim due messages of the worker's queues and run them, as without a broker.
+
+        Within the process's budget, which deliveries share: (how many
+        were claimed, whether the budget's slots were all taken).
+        """
+        slots = await worker.budget.acquire(self.config.BATCH_SIZE, stop=stop)
+        if not slots:
+            return 0, False
+        try:
+            claimed = await worker._claim(slots)
+        except BaseException:
+            worker.budget.release(slots)
+            raise
+        worker.budget.release(slots - len(claimed))
+        for message in claimed:
+            task = group.create_task(worker._process_holding(message))
+            running.add(task)
+            task.add_done_callback(running.discard)
+        return len(claimed), len(claimed) == slots
 
     async def deliver(self, delivery: Delivery) -> None:
         """Run one delivered message, then answer it; every delivery is answered.

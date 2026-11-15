@@ -11,6 +11,13 @@ and a status.
 
 ### Added
 
+- While the broker is away, relaying workers run the outbox themselves:
+  each relay has a breaker, as commits do, and while it is open the
+  worker claims and runs the due messages of its queues, as a worker
+  without a broker does, until the broker answers again. A RabbitMQ
+  outage stopped every code, notice, and job while the database that
+  holds them was fine, and the relay leased, unlocked, and warned about
+  each message every `POLL_INTERVAL` (ADR 0142, user report W3).
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and

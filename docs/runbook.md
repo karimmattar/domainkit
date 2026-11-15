@@ -241,6 +241,10 @@ Two breakers protect the service from a dependency that fails:
   `BREAKER_COOLDOWN` seconds, and leave their messages to the relays.
   `messaging_publisher_breaker_open` is 1, and the opening and the
   closing are each logged once.
+- **Each relay's** (with a broker): after as many failed publications,
+  the relaying worker runs its outbox's due messages itself, until the
+  broker answers again: `the relay of 'default' runs its due messages
+  itself` in its log, then `the relay of 'default' publishes again`.
 - **The HTTP client's** (`domainkit.http.client`): after
   `HTTP_CLIENT.BREAKER_FAILURES` failures in a row from one host, calls
   to that host fail at once with `CircuitOpen` for `BREAKER_COOLDOWN`
@@ -251,7 +255,9 @@ the remote host's status. A breaker that opens and closes again and
 again means the dependency is unstable.
 
 **Do** nothing on the service while the dependency recovers. The
-publisher's messages wait in the outbox, and the relays send them. The
+publisher's messages wait in the outbox, and the relaying workers run
+them; give them `CONCURRENCY` enough for the whole load meanwhile, since
+consume-only workers wait for the broker. The
 client's callers get a fast failure instead of a timeout. Once the
 dependency answers, one trial closes each breaker. If the publisher's
 breaker stays open while RabbitMQ is healthy, check the broker's
