@@ -14,10 +14,10 @@ from typing import Any
 from fastapi import FastAPI
 
 from domainkit.apps import registry
-from domainkit.apps.hooks import on_deployment_warnings
+from domainkit.apps.hooks import on_deployment_warnings, unregistered_methods
 from domainkit.architecture import check_domains
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
-from domainkit.checks import CheckMessage, describe, silence
+from domainkit.checks import CheckMessage, Level, describe, silence
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
@@ -27,6 +27,7 @@ from domainkit.http import websockets
 from domainkit.http.application import application_problems, build_application
 from domainkit.http.blocking import awaited_sync, sync_calls
 from domainkit.http.live import unchecked_routes
+from domainkit.http.live_events import fanout_warnings
 from domainkit.http.servers import unix_socket_warnings
 from domainkit.management.base import BaseCommand, CommandError
 
@@ -82,6 +83,9 @@ class Command(BaseCommand):
         if problems:
             raise CommandError(_listed("System check found problems", problems))
         found = _warnings(app)
+        # Infos (``<label>.I001``) say what is under way: listed, never refused.
+        infos = [each for each in found if _is_info(each)]
+        found = [each for each in found if not _is_info(each)]
         warnings = silence(found, settings.SILENCED_CHECKS)
         if deploy and warnings:
             raise CommandError(
@@ -95,6 +99,8 @@ class Command(BaseCommand):
         self.write(f"System check identified no issues{counted}. Domains: {labels}.")
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             self.write(describe(https_statement(), label="Info: "))
+        for info in infos:  # Nothing to silence: they never fail.
+            self.write(describe(info, label="Info: "))
         for warning in warnings:
             self.write(describe(warning, label="Warning: "))
 
@@ -103,9 +109,11 @@ def _warnings(app: FastAPI) -> list[str]:
     """Every warning, the framework's first, then the domains', each with an id."""
     deployed = settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS
     warnings: list[str] = list(settings.deployment_warnings())
+    warnings += unregistered_methods()
     warnings += _tagged("caches.W001", cache_deployment_warnings())
     warnings += _tagged("deploy.W006", pool_sizing_warnings())
     warnings += _tagged("live.W001", websockets.deployment_warnings(app))
+    warnings += _tagged("live.W003", fanout_warnings())
     warnings += [found for hook in on_deployment_warnings for found in hook.call()]
     if deployed:
         warnings += _tagged("live.W002", unchecked_routes(app.routes))
@@ -159,6 +167,11 @@ def https_statement() -> CheckMessage:
         "Redirect plain HTTP to HTTPS at the proxy, and keep SECURE_HSTS_SECONDS "
         "set (docs/security.md, 'The edge').",
     )
+
+
+def _is_info(message: str) -> bool:
+    """Whether ``message`` is an info (``<label>.I001``), which never fails a check."""
+    return isinstance(message, CheckMessage) and message.level is Level.INFO
 
 
 def _tagged(check_id: str, messages: Iterable[str]) -> list[str]:

@@ -112,6 +112,18 @@ The page's next poll gets tokens, as `/login` gives them. `POST
 /auth/app-sign-in/session` gives a browser session in cookies instead, as
 `/session` does.
 
+Instead of polling, the page may wait: `POST /auth/app-sign-in/wait
+{"request"}` holds the response until the phone answers, at most
+`WAIT_SECONDS` (20), and answers `{"status": "approved"}` as soon as it
+does, or `{"status": "pending"}` at the end, to wait again. Denied,
+expired, and unknown answer as a poll does. A wait never redeems the
+request, nor counts as a poll, so a page that waits is never slowed
+down: it redeems an approved request with `/token` or `/session`. The
+wait reads the request every second, and at once when the approval
+commits in its own process. `/app-sign-in/step-up/wait` and
+`/app-sign-in/transactions/wait` do the same for a session's asks, from
+that session only.
+
 ## How a sign-in works
 
 A sign-in request starts on one of two channels:
@@ -189,6 +201,7 @@ address (`429 rate_limited`).
 | `POST /auth/app-sign-in/qr` | | `request`, `expires_in`, `interval`, `qr`. |
 | `POST /auth/app-sign-in/token` | `{"request"}` | Tokens, or a poll's answer. |
 | `POST /auth/app-sign-in/session` | `{"request"}` | A browser session (cookies and `csrf_token`), or a poll's answer. |
+| `POST /auth/app-sign-in/wait` | `{"request"}` | `{"status": "approved"}` once the phone approves, or `"pending"` after `WAIT_SECONDS`; never redeems. |
 
 Keep `request` in the page's memory: never in the QR code, a URL, or
 storage another page reads. Whoever holds it gets the login once the
@@ -228,8 +241,10 @@ answer: the request is bound to its credentials.
 | --- | --- | --- |
 | `POST /auth/app-sign-in/step-up` | `{"message"}` | `request`, `expires_in`, `interval`, `match_code`. |
 | `POST /auth/app-sign-in/step-up/token` | `{"request"}` | The step-up, `amr` `["hwk"]`, as `/auth/step-up` answers it; or a poll's answer. |
+| `POST /auth/app-sign-in/step-up/wait` | `{"request"}` | As `/app-sign-in/wait`, for this session's step-up. |
 | `POST /auth/app-sign-in/transactions/{challenge_id}` | | `request`, `expires_in`, `interval`, `match_code`. |
 | `POST /auth/app-sign-in/transactions/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/sca/{id}/confirm` answers; or a poll's answer. |
+| `POST /auth/app-sign-in/transactions/wait` | `{"request"}` | As `/app-sign-in/wait`, for this session's transaction. |
 
 The message of a step-up names the action in words the user recognizes,
 such as `"Add payee DE89 3704 0044"`: at most 64 printable characters.
@@ -637,6 +652,7 @@ other, not `unknown_user_id`.
 | `REQUEST_TTL` | 2 minutes (at most 10) | How long a push request waits for the phone. |
 | `QR_TTL` | 60 seconds (at most 5 minutes) | How long a QR code can be scanned; once scanned, `REQUEST_TTL` to answer it. |
 | `INTERVAL` | 5 (1 to 60) | Seconds between polls; sooner gets `slow_down` while the phone has not answered. |
+| `WAIT_SECONDS` | 20 (1 to 55) | Seconds a `…/wait` holds at most, within the request's deadline (`REQUEST_TIMEOUT`) less a second. |
 | `MAX_PENDING` | 3 (1 to 20) | Push requests a user may have waiting; past it, no push is sent. |
 | `REPORT_COOLDOWN` | 15 minutes (at most 1 day) | How long no push reaches a user who reported a request. |
 | `NUMBER_MATCHING` | `True` | Web push sign-ins show two digits the phone must type. |

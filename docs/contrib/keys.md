@@ -219,6 +219,11 @@ and prints it wrapped, as a `DATA_KEYS` entry. Its id is today's date by
 default. The wrapped key is safe to keep in configuration: only the KMS
 opens it.
 
+It makes the first key too: a key service with no `DATA_KEYS` yet loads,
+so `keys generate` runs, but nothing can be sealed or opened then, and
+the application, the worker, and `check` refuse to start without one
+(`keys.E003`).
+
 ```bash
 python manage.py keys generate --id 2026-10
 ```
@@ -237,8 +242,8 @@ Without `DATA_KEYS`, the local provider's ring has one development key,
 `dev`, derived from `SECRET_KEY`, and from each of
 `SECRET_KEY_FALLBACKS` to open what it sealed before a rotation. Once
 `DATA_KEYS` is set, `dev` stays in the ring as a retired key (with the
-local provider; `KEEP_DEVELOPMENT_KEY` says otherwise). So `keys.W001`
-warns, and `keys reencrypt` moves what it sealed. Then set
+local provider; `KEEP_DEVELOPMENT_KEY` says otherwise). So `check` says
+so (`keys.I001`), and `keys reencrypt` moves what it sealed. Then set
 `KEEP_DEVELOPMENT_KEY = False`.
 
 ### Providers
@@ -312,8 +317,8 @@ wrapped under an older version.
 
 1. `keys generate --id 2027-01`, and add the key to `DATA_KEYS` in every
    process.
-2. Make it `CURRENT_KEY`. `check` warns (`keys.W001`) while a retired
-   key stays in `DATA_KEYS`.
+2. Make it `CURRENT_KEY`. `check` says so (`keys.I001`, an info:
+   `check --deploy` passes) while a retired key stays in `DATA_KEYS`.
 3. `manage.py keys reencrypt` seals again every value under a retired
    key, makes again the blind indexes made under one, and wraps every
    subject's key again.
@@ -550,7 +555,9 @@ data keys and no `CURRENT_KEY`; and, for Azure, a `TENANT_ID` without a
 | --- | --- | --- |
 | `keys.E001` | Staging or production with the local KEK and no `ALLOW_LOCAL_KEK`. | Use a key service. |
 | `keys.E002` | Staging or production with `VAULT.URL` over plain `http://`. | Serve Vault over TLS and give an `https://` URL. |
-| `keys.W001` | `DATA_KEYS` keeps retired keys. | Run `keys reencrypt`, then `keys status --check`; remove the keys once nothing uses them. |
+| `keys.E003` | A key service (`PROVIDER` other than `local`) with no `DATA_KEYS`: nothing can be sealed or opened. | `keys generate`, then add the key to `DATA_KEYS`. |
+| `keys.I001` | `DATA_KEYS` keeps retired keys: a rotation is under way (an info). | Run `keys reencrypt`, then `keys status --check`; remove the keys once it passes. |
+| `keys.W001` | `keys status --check`: something is still sealed under a retired key. | Run `keys reencrypt`. |
 
 | Action | What it does |
 | --- | --- |

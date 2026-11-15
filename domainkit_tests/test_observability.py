@@ -432,13 +432,52 @@ def test_worker_metrics_server(database: None, monkeypatch: pytest.MonkeyPatch) 
     """``runworker --metrics-port`` serves metrics from the worker process."""
     started: list[tuple[int, str]] = []
     monkeypatch.setattr(
-        "prometheus_client.start_http_server",
-        lambda port, addr: started.append((port, addr)),
+        "domainkit.contrib.messaging.metrics.serve",
+        lambda port, address: started.append((port, address)),
     )
 
     call_command("runworker", "--once", "--metrics-port", "9101", stdout=io.StringIO())
 
     assert started == [(9101, "127.0.0.1")]
+
+
+def test_the_worker_metrics_server_asks_for_the_metrics_token() -> None:
+    """With ``METRICS_TOKEN``, a scrape without it gets 401 (user report W9)."""
+    import urllib.error
+    import urllib.request
+    from wsgiref.simple_server import WSGIServer
+
+    from domainkit.contrib.messaging.metrics import serve
+
+    def scrape(server: WSGIServer, token: str | None = None) -> tuple[int, bytes]:
+        port = server.server_address[1]
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/metrics")
+        if token is not None:
+            request.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(request, timeout=5) as answer:  # noqa: S310
+                return answer.status, answer.read()
+        except urllib.error.HTTPError as refused:
+            with refused:  # Python 3.14 warns about an HTTPError left open.
+                return refused.code, refused.read()
+
+    open_server = serve(0, "127.0.0.1")
+    try:
+        status, body = scrape(open_server)
+        assert status == 200
+        assert b"messaging_messages_total" in body
+    finally:
+        open_server.shutdown()
+        open_server.server_close()
+    with override_settings(METRICS_TOKEN="s3cret-token"):
+        guarded = serve(0, "127.0.0.1")
+    try:
+        assert scrape(guarded) == (401, b"A valid metrics token is required.\n")
+        assert scrape(guarded, "wrong")[0] == 401
+        assert scrape(guarded, "s3cret-token")[0] == 200
+    finally:
+        guarded.shutdown()
+        guarded.server_close()
 
 
 def test_metrics_wiring_edges(monkeypatch: pytest.MonkeyPatch) -> None:

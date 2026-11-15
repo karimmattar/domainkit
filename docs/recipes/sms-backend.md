@@ -183,7 +183,9 @@ pytest
    names.
 3. If the backend raises `NotificationFailed`, the worker retries the
    message later. After `MAX_ATTEMPTS`, it keeps the message as a dead
-   letter (`manage.py messages list dead`).
+   letter (`manage.py messages list dead`). `NotificationRefused`, for a
+   message the provider will refuse again (a number it says is not one),
+   is dead-lettered at once.
 
 Keep the text out of errors: a message holds codes and personal data. The
 backend's error above names the provider's status, never the text.

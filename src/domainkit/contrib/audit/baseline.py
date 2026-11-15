@@ -31,7 +31,7 @@ from domainkit.db.uow import tenant_schemas
 
 from .personal import audited_databases
 from .protection import ROW_TRIGGER, TRUNCATE_TRIGGER, function_body, trigger_names
-from .settings import AuditSettings
+from .settings import AuditSettings, Baseline
 from .tables import audit_log, audit_seals
 
 MESSAGING: Final = "domainkit.contrib.messaging"
@@ -101,15 +101,20 @@ PROTECTED: Final = _protected()
 logger = logging.getLogger(__name__)
 
 
-def required() -> bool:
-    """Whether the baseline refuses (``AUDIT.REQUIRE_BASELINE``), or only warns."""
-    return registry.settings(AuditSettings).REQUIRE_BASELINE
+def required(part: Baseline) -> bool:
+    """Whether ``AUDIT.REQUIRE`` refuses without ``part``, or only warns."""
+    return part in registry.settings(AuditSettings).REQUIRE
 
 
-def _problem(number: int, message: str) -> CheckMessage:
-    """Baseline problem ``number``: an error while required, else a warning."""
-    level = "E" if required() else "W"
+def _problem(number: int, part: Baseline, message: str) -> CheckMessage:
+    """Problem ``number``, of ``part``: an error if required, else a warning."""
+    level = "E" if required(part) else "W"
     return CheckMessage(f"audit.{level}{number:03}", message)
+
+
+def is_required(problem: str) -> bool:
+    """Whether ``problem`` is one ``AUDIT.REQUIRE`` refuses (``audit.E00N``)."""
+    return isinstance(problem, CheckMessage) and problem.id.startswith("audit.E")
 
 
 def settings_problems() -> list[str]:
@@ -122,6 +127,7 @@ def settings_problems() -> list[str]:
         problems.append(
             _problem(
                 1,
+                "ledger",
                 "AUDIT.LEDGER is None, so the audit trail's hash chain is "
                 "anchored nowhere and whoever can write its tables can rewrite "
                 "it unnoticed; set it to an immudb alias in LEDGERS.",
@@ -131,6 +137,7 @@ def settings_problems() -> list[str]:
         problems.append(
             _problem(
                 2,
+                "namespace",
                 "AUDIT.NAMESPACE is None, so audit anchors go under "
                 "domainkit/audit/<alias>, a key every project and environment on "
                 "the same ledger shares; set it, such as 'shop-production'.",
@@ -140,6 +147,7 @@ def settings_problems() -> list[str]:
         problems.append(
             _problem(
                 3,
+                "sealing",
                 f"Nothing seals the audit trail on a schedule: install {MESSAGING} "
                 "and run a worker, or run 'manage.py audit seal' from cron and set "
                 "AUDIT.SEALED_EXTERNALLY = True.",
@@ -241,6 +249,7 @@ async def protection_problems() -> list[str]:
             problems.append(
                 _problem(
                     4,
+                    "triggers",
                     f"Could not check the audit trail's triggers in {database!r} "
                     f"({type(exc).__name__}); run 'manage.py audit verify' once it "
                     "answers.",
@@ -250,6 +259,7 @@ async def protection_problems() -> list[str]:
         problems.extend(
             _problem(
                 5,
+                "triggers",
                 f"The audit trail in {trail!r} is not append-only: triggers "
                 f"{', '.join(lacking)} are missing, disabled, or changed. Run "
                 f"'manage.py {_migrate(trail)}', which makes them.",
@@ -271,22 +281,24 @@ def _migrate(trail: str) -> str:
 
 
 async def check_at_startup() -> None:
-    """Warn, or refuse with ``AUDIT.REQUIRE_BASELINE``, in staging and production.
+    """Refuse what ``AUDIT.REQUIRE`` requires, and warn of the rest, where deployed.
+
+    Each part of the baseline counts on its own (user report C2): a project
+    without a ledger may still require the append-only triggers.
 
     Raises:
-        CheckFailed: ``REQUIRE_BASELINE`` is set and something
-            is missing.
+        CheckFailed: A part ``AUDIT.REQUIRE`` names is missing.
     """
     if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
         return
     problems = settings_problems() + await protection_problems()
-    if not problems:
-        return
-    if required():
-        raise CheckFailed(
-            f"AUDIT.REQUIRE_BASELINE refuses to start in {settings.ENVIRONMENT} "
-            "without a tamper-evident audit trail",
-            problems,
-        )
+    refused = [problem for problem in problems if is_required(problem)]
     for problem in problems:
-        logger.warning("%s", problem)
+        if problem not in refused:
+            logger.warning("%s", problem)
+    if refused:
+        raise CheckFailed(
+            f"AUDIT.REQUIRE refuses to start in {settings.ENVIRONMENT} without a "
+            "tamper-evident audit trail",
+            refused,
+        )
