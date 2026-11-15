@@ -38,7 +38,13 @@ from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import InMemoryGadgets, make_gadget
 from domainkit_tests.test_auth_stepup import KNOWN, SteppedUpWhen, connection
 from domainkit_tests.test_ciba import PHONE, App, Phone, app, start_push
-from domainkit_tests.test_ciba_step_up import approve_last, ask, redeem, web_of
+from domainkit_tests.test_ciba_step_up import (
+    FREE_TEXT_STEP_UP,
+    approve_last,
+    ask,
+    redeem,
+    web_of,
+)
 from domainkit_tests.test_resources import (
     LOCATION,
     RenameGadget,
@@ -255,6 +261,7 @@ def test_a_rule_that_spends_loses_the_approval_to_a_later_rules_refusal(
 # Question 3: one approval of the page's words opens a window ----------------------
 
 
+@FREE_TEXT_STEP_UP  # Deprecated in 2.4 for what this test shows.
 def test_one_phone_approval_of_the_pages_words_opens_every_guarded_act(
     app: App,
 ) -> None:

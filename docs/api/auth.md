@@ -668,6 +668,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
 - `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `DigestRequired`: Approving an act needs the digest the phone was shown (422).
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
 - `PhoneRequired`: Only the user's mobile app manages their logins (403).
@@ -726,6 +727,7 @@ What a sign-in request may be refused, and what a poll may answer.
 - `AccessDenied`: The phone denied the sign-in.
 - `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `DigestRequired`: Approving an act needs the digest the phone was shown (422).
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
@@ -795,7 +797,7 @@ CIBA clients, sign-in requests, and the client assertions already used.
 
 - `assertions`: The `jti` of each `private_key_jwt` assertion, until it expires: once.
 - `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba add`, `list`).
-- `sign_in_requests`: Each sign-in, step-up, or transaction a phone is asked to approve, until purged.
+- `sign_in_requests`: Each sign-in, step-up, transaction, or act a phone is asked about, until purged.
 
 ## `domainkit.contrib.devices.tasks`
 

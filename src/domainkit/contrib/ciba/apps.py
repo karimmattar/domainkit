@@ -38,6 +38,9 @@ class CibaConfig(DomainConfig):
     def ready(self) -> None:
         """Check the tables share auth's database; gate logins; forget the deleted.
 
+        The phone is a way to confirm action authorizations (ADR 0144), for
+        users with a bound device: it proves ``hwk`` and ``phone``.
+
         Raises:
             ImproperlyConfigured: ``ciba`` is routed elsewhere than ``auth``.
         """
@@ -48,13 +51,16 @@ class CibaConfig(DomainConfig):
                 "one transaction."
             )
         from domainkit.contrib.auth.integration import (
+            ActionConfirmation,
             UserDeleted,
+            on_action_confirmation,
             on_login_gate,
             on_manage_logins,
         )
         from domainkit.contrib.auth.routing import AccountRoutes, on_account_routes
 
         from .gate import approved_from_the_phone, managed_from_the_phone
+        from .services import PHONE_CONFIRMS, bound_phone
 
         on_account_routes(
             lambda: [AccountRoutes("sign-in", f"{self.name}.api.router")],
@@ -62,6 +68,7 @@ class CibaConfig(DomainConfig):
         )
         on_login_gate(approved_from_the_phone)
         on_manage_logins(managed_from_the_phone)
+        on_action_confirmation(ActionConfirmation("phone", PHONE_CONFIRMS, bound_phone))
         event_bus.subscribe(UserDeleted, forget_requests)
         on_erase_subject(self.erase_person, domain=self.label)
         on_export_subject(self.export_person, domain=self.label)
