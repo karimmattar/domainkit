@@ -26,9 +26,21 @@ JWT: dict[str, Any] = {
 def create_user(
     username: str | None,
     password: str | None = PASSWORD,
+    *,
+    proved: bool = False,
     **fields: Any,  # noqa: ANN401 - user fields.
 ) -> UUID:
-    """Store a user; return the id."""
+    """Store a user; return the id.
+
+    ``proved``: the user proved the address and the number they are given
+    (``email_verified``, ``mobile_number_verified``), as an owner who reads
+    there has; codes that open an account go nowhere else (since 2.4).
+    """
+    if proved:
+        if fields.get("email"):
+            fields.setdefault("email_verified", True)
+        if fields.get("mobile_number"):
+            fields.setdefault("mobile_number_verified", True)
 
     async def create() -> UUID:
         async with AuthUnitOfWork() as uow:

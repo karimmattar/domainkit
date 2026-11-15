@@ -169,10 +169,15 @@ A refused user (`403`) is recorded in the audit trail when
 with the actor, the route's method and template (`GET /products/{owner}`,
 never its values), and the class of the rule that refused
 (`scopes_unbounded` for a scoped token refused by `SCOPED_CREDENTIALS`).
+A rule that answers with its own error (`StepUp`'s `401
+step_up_required`, `DeviceSigned`'s `401 device_signature_refused`, or a
+rule of yours with a coded `403`) is recorded the same way, with the
+error's `code` in the details, since 2.4: a stolen session probing routes
+behind a step-up or a device signature shows in the trail.
 
 - One actor's refusals on one route are recorded once a minute, so
   probing many object ids writes one row a minute per route.
-- `401`s for anonymous callers are not recorded.
+- `401`s for anonymous callers are not recorded; a known user's `401` from a rule's own refusal is.
 - Any installed domain whose config implements `DenialRecorder`
   (an async `record_denial(details)`) gets them, with `contrib.auth` or
   without it. A recorder that fails is logged; the refusal stands.

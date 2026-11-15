@@ -10,6 +10,7 @@ from .accounts import MOBILE_NUMBER as MOBILE_NUMBER
 from .accounts import GroupRepository as GroupRepository
 from .accounts import PasswordHistoryStore as PasswordHistoryStore
 from .accounts import PermissionStore as PermissionStore
+from .accounts import StaffMatch as StaffMatch
 from .accounts import UserRepository as UserRepository
 from .accounts import searched_fields as searched_fields
 from .accounts import user_search as user_search

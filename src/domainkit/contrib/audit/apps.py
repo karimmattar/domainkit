@@ -94,8 +94,9 @@ class AuditConfig(DomainConfig):
     async def record_denial(self, details: Mapping[str, object]) -> None:
         """Record ``auth.access`` denied: a principal refused (``http.access``).
 
-        The details are the route's method and template, and the rule's
-        class; the actor is the request's.
+        The details are the route's method and template, the rule's
+        class, and the code of a rule's own refusal (``step_up_required``);
+        the actor is the request's.
         """
         await record(
             "auth.access",
