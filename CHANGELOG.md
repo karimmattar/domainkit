@@ -103,6 +103,12 @@ and a status.
   reached an address then still proves it
   ([ADR 0141](docs/adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md),
   amending 0133; user report A2).
+- A rule's own refusal is audited, as a 403 is, with its code: `StepUp`'s
+  `401 step_up_required`, `DeviceSigned`'s `401 device_signature_refused`,
+  and a project rule's coded 403 (`identity_verification_required`) left
+  no row, so a stolen session probing routes behind a step-up was
+  invisible in the trail. Sampled as 403s are: once per actor and route a
+  minute (`record_denial(..., code=)`) (user report A5).
 
 ## [2.3.0] - 2026-11-11
 
