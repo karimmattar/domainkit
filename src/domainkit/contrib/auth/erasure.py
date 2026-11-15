@@ -1,7 +1,9 @@
 """Privacy for users: their logins exported, their credentials erased.
 
 ``privacy export`` lists a user's tokens: what kind, how and from where
-each login signed in, and when (ADR 0130); never a digest.
+each login signed in, and when (ADR 0130); never a digest. It lists the
+user's action authorizations too: the purpose, the subject, and the
+times (ADR 0144); never what was shown, nor the digests.
 
 With ``domainkit.contrib.privacy`` installed, ``privacy erase`` erases a
 user through ``AbstractUser.erase_personal_data``, which also deactivates
@@ -52,10 +54,11 @@ async def forget_credentials(event: "PersonalDataErased") -> None:
 
 
 async def export_logins(subject: str) -> Mapping[str, object]:
-    """The tokens of the user ``subject`` names by id, oldest first.
+    """The tokens and action authorizations of the user ``subject`` names by id.
 
-    Each with its kind, name, sign-in method, agent, address, device, and
-    dates; the token itself is a digest, and stays out.
+    Oldest first. Each token with its kind, name, sign-in method, agent,
+    address, device, and dates; the token itself is a digest, and stays
+    out. Each authorization with its purpose, subject, and times.
     """
     try:
         user_id = UUID(subject)
@@ -79,10 +82,10 @@ async def export_logins(subject: str) -> Mapping[str, object]:
                 .order_by(tokens.c.created_at, tokens.c.id)
             )
         ).all()
-    if not rows:
-        return {}
-    return {
-        "tokens": [
+        acts = await uow.authorizations.of_user(user_id)
+    exported: dict[str, object] = {}
+    if rows:
+        exported["tokens"] = [
             {
                 "kind": row.kind,
                 "name": row.name,
@@ -96,7 +99,19 @@ async def export_logins(subject: str) -> Mapping[str, object]:
             }
             for row in rows
         ]
-    }
+    if acts:
+        exported["authorizations"] = [
+            {
+                "purpose": act.purpose,
+                "subject": act.subject,
+                "created_at": _when(act.created_at),
+                "expires_at": _when(act.expires_at),
+                "confirmed_at": _when(act.confirmed_at),
+                "consumed_at": _when(act.consumed_at),
+            }
+            for act in acts
+        ]
+    return exported
 
 
 def _when(value: datetime | None) -> str | None:

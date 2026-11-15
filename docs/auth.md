@@ -139,6 +139,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `MFA` | see below | Second factors (`auth.mfa`). |
 | `STEP_UP` | see below | Authenticating again for one act (`StepUp`, [Stepping up](auth/step-up.md)). |
 | `SCA` | see below | Transactions authorized for one amount and payee ([Stepping up](auth/step-up.md#transactions-authorized-for-one-amount-and-payee)). |
+| `AUTHORIZATIONS` | see below | Acts authorized one at a time, with their arguments (ADR 0144). |
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](auth/authentication.md#the-principal-cache)). |
 | `CAPTCHA` | `None` | A captcha on login, signup, and password reset: `{"PROVIDER": "turnstile" \| "recaptcha" \| "hcaptcha", "SECRET": ..., "ON": ["login", "signup", "password_reset"], "MIN_SCORE": 0.5}`. Each route that `ON` names asks for the widget's token in `X-Captcha-Token`, checked with the provider first: missing or refused, `400 captcha_failed`; the provider unreachable, `503 captcha_unavailable`. `MIN_SCORE` (0 to 1) is reCAPTCHA v3's lowest score let through. Only the token and the secret are sent, never the client's address ([Captcha](auth/logging-in.md#captcha)). |
@@ -175,6 +176,11 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | --- | --- | --- |
 | `METHODS` | `["otp"]` | What confirming a transaction proves, as `STEP_UP.METHODS`. |
 | `TTL` | 5 minutes | How long a transaction's authorization request works, from when it is made, its confirmation and use included (30 minutes at most). |
+
+| `AUTH["AUTHORIZATIONS"]` key | Default | Meaning |
+| --- | --- | --- |
+| `TTL` | 5 minutes | How long an action authorization works, from when it is asked for, its confirmation and its use included (30 minutes at most). An `Action(ttl=...)` sets its own. |
+| `METHODS` | `["otp"]` | What confirming one must prove, unless its `Action(methods=...)` names others: `otp` (a code of the authenticator app, which a bound device's key and a passkey stand for), `pwd` (the password too), or `phone` (a bound device's own screen: the phone's approval, or the app's own act; neither a code nor a passkey proves it). It must hold `otp` or `phone`, each method once. |
 
 | `AUTH["CLIENT_CERT"]` key | Default | Meaning |
 | --- | --- | --- |

@@ -9,6 +9,7 @@ from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.ddd import DeferredTask, DomainEvent
 
 from .repositories import (
+    AuthorizationStore,
     GroupRepository,
     MfaStore,
     PasswordHistoryStore,
@@ -45,6 +46,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
     signups: SignupStore
     step_ups: StepUpStore
     sca: ScaStore
+    authorizations: AuthorizationStore
     passwords: PasswordHistoryStore
 
     def create_repositories(self, session: AsyncSession) -> None:
@@ -58,6 +60,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
         self.signups = SignupStore(session)
         self.step_ups = StepUpStore(session)
         self.sca = ScaStore(session)
+        self.authorizations = AuthorizationStore(session)
         self.passwords = PasswordHistoryStore(session)
 
     async def _stage(

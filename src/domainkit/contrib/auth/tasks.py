@@ -15,7 +15,8 @@ async def clear_expired_tokens() -> None:
 
     Pending signups whose link no longer works go too, with their hashes,
     and codes that no longer work; so do step-ups older than any
-    ``StepUp`` takes, and transactions whose authorization no longer works.
+    ``StepUp`` takes, and transactions and acts whose authorization no
+    longer works.
     """
     async with AuthUnitOfWork() as uow:
         await uow.tokens.clear_expired()
@@ -23,4 +24,5 @@ async def clear_expired_tokens() -> None:
         await uow.verification_codes.clear_expired()
         await uow.step_ups.clear_older(utc_now() - MAX_STEP_UP_AGE)
         await uow.sca.clear_expired()
+        await uow.authorizations.clear_expired()
         await uow.commit()
