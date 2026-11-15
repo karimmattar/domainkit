@@ -566,7 +566,12 @@ How a reset works:
    address names the one account that has it, even where addresses do
    not log in. A user whose stored address cannot take mail, from before
    addresses were checked, is skipped with a warning that names the
-   user's id, never the address.
+   user's id, never the address. So is an address or a number the user
+   never proved (`email_verified`, `mobile_number_verified`), since 2.4:
+   anyone could put someone else's number on their own account, and the
+   owner who typed the code set that account's password
+   ([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)).
+   `AUTH.CODES_TO_UNPROVED = True` sends there too, as 2.3 did.
 3. **Your app posts the same identifier, the code, and the new
    password:**
 
@@ -666,7 +671,7 @@ AUTH = {"SIGNUP_ENABLED": True}
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"email", "fields"}`, an optional `"username"`, or `"mobile_number"` where numbers identify users | `202`; `422` for fields that do not fit, or `missing_value` without an address (or number); `429 rate_limited`. |
+| `POST /signup` | anyone | `{"email", "fields"}`, a `"username"` where usernames identify users, or `"mobile_number"` where numbers do (`AUTH.IDENTIFIERS`) | `202`; `422` for fields that do not fit, `missing_value` without an address (or number), or `unknown_user_field` for a username or a number that identifies no one here; `429 rate_limited`. |
 | `POST /signup/code` | anyone | `{"identifier", "code", "password"}` | `204`: the account is made; `400 invalid_verification_code`; `409 signup_taken`; `422` for a password the validators refuse; `429 rate_limited`; `503 password_checks_busy`. |
 
 ```http
@@ -745,9 +750,11 @@ Why the password comes last:
   stop working. A number held unproved moves the same way
   (`auth.mobile_number_released`).
   - The code's mail warns the reader (`auth/signup_code_held`): an
-    account that is theirs keeps the address if they log in or reset
-    their password instead. A reset whose code was sent to the address
-    or the number proves it.
+    account that is theirs keeps the address if they log in and prove
+    it instead. Reset codes go only to proved addresses since 2.4
+    ([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md));
+    with `AUTH.CODES_TO_UNPROVED`, a reset whose code was sent to the
+    address or the number proves it.
   - A holder left with nothing it logs in by (`AUTH.IDENTIFIERS`) is
     ended as an erased account is: deactivated, its password unusable,
     its tokens and second factor deleted. Its data stays, for staff.
@@ -805,7 +812,11 @@ reCAPTCHA, or hCaptcha), and sends the token it gives in the
 - a provider that cannot be reached refuses the request with
   `503 captcha_unavailable` (`CaptchaUnavailable`), so bots never pass
   while it is down;
-- reCAPTCHA v3 scores each token: below `MIN_SCORE` (0.5) it is refused.
+- reCAPTCHA v3 scores each token: below `MIN_SCORE` (0.5) it is refused;
+- with `HOSTNAMES`, a token solved on another site's page that shows your
+  site key is refused, and with `CHECK_ACTION`, one solved for another
+  form (the verdict's `action`: Turnstile and reCAPTCHA v3). Your widget
+  then names the route's action: `login`, `signup`, or `password_reset`.
 
 Only the token and the secret are sent, never the client's address.
 
@@ -815,9 +826,12 @@ Only the token and the secret are sent, never the client's address.
 | `SECRET` | required | The provider's secret key for the site. |
 | `ON` | `{"login", "signup", "password_reset"}` | The routes that ask. `login` covers both ways to log in with a password: `POST /auth/login` and `POST /auth/session` (browser sessions). `signup` covers `POST /auth/signup`, and `password_reset` covers `POST /auth/password-reset`. |
 | `MIN_SCORE` | `0.5` | reCAPTCHA v3's lowest score let through (0 to 1). |
+| `HOSTNAMES` | empty | The hostnames a token may have been solved on, such as `["app.example.com"]`. Empty: any, so restrict your site key's domains at the provider; `check` warns where deployed (`auth.W008`). |
+| `CHECK_ACTION` | `False` | Refuse a token solved for another action than the route's. |
 
 To ask for a captcha on a route of your own, use the dependency
-`captcha(action)` with one of the three names:
+`captcha(action)` with one of the three names; any other is refused when
+the route is defined, since the route would never ask for a token:
 
 ```python
 from domainkit.contrib.auth.captcha import captcha

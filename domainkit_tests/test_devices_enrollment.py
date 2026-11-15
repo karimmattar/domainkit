@@ -20,7 +20,7 @@ from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_auth_mfa import clock, code_at, enrol
 from domainkit_tests.test_auth_recovery import run_worker
 from domainkit_tests.test_auth_reset_codes import drain
-from domainkit_tests.test_ciba import PHONE, App, Phone, app
+from domainkit_tests.test_ciba import PHONE, SITE, App, Phone, app
 from domainkit_tests.test_devices import Device
 
 CODE = re.compile(r"\b[0-9]{6}\b")
@@ -99,7 +99,7 @@ def _identifiers(app: App) -> Iterator[None]:
 def test_a_first_device_enrolls_and_logs_in(app: App) -> None:
     """Code by mail, password, signed by the key: bound, tokens, listed."""
     client = app(PHONE)
-    alice = create_user("alice", email="alice@example.com")
+    alice = create_user("alice", email="alice@example.com", proved=True)
     with override_settings(DEVICES=ON):
         answer = ask_code(client, "alice@example.com")
         assert answer.status_code == 202
@@ -132,7 +132,7 @@ def test_a_first_device_enrolls_and_logs_in(app: App) -> None:
 def test_an_enrolled_phone_passes_the_strictest_gate(app: App) -> None:
     """With APPROVE_LOGINS, the enrollment's own login is the device's."""
     client = app(PHONE, APPROVE_LOGINS=True)
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     with override_settings(DEVICES=ON):
         ask_code(client, "alice@example.com")
         enrolled = enroll(client, Device(), code=mailed_code())
@@ -142,7 +142,7 @@ def test_an_enrolled_phone_passes_the_strictest_gate(app: App) -> None:
 def test_codes_go_by_text_to_a_number(app: App) -> None:
     """A mobile number of the account gets the code by text message."""
     client = app(PHONE)
-    create_user("hal", mobile_number=NUMBER)
+    create_user("hal", mobile_number=NUMBER, proved=True)
     with override_settings(DEVICES=ON):
         ask_code(client, NUMBER)
         drain()
@@ -150,6 +150,21 @@ def test_codes_go_by_text_to_a_number(app: App) -> None:
     assert text.to == NUMBER
     assert "is your code to enroll your phone." in text.body
     assert mail.outbox == []
+
+
+def test_enrollment_codes_go_only_to_a_proved_number(app: App) -> None:
+    """A number its user never proved gets no enrollment code either."""
+    client = app(PHONE)
+    create_user(
+        "mallory",
+        email="mallory@example.com",
+        email_verified=True,
+        mobile_number=NUMBER,
+    )
+    with override_settings(DEVICES=ON):
+        ask_code(client, NUMBER)
+        drain()
+    assert sms_outbox == []
 
 
 @pytest.mark.parametrize("who", ["nobody", "inactive", "passwordless", "unmailable"])
@@ -172,7 +187,7 @@ def test_accounts_that_cannot_enroll_get_no_code(app: App, who: str) -> None:
 def test_enrollment_needs_the_code_the_password_and_the_key(app: App) -> None:
     """Each missing proof is one refusal: never which, and audited."""
     client = app(PHONE)
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     with override_settings(DEVICES=ON):
         ask_code(client, "alice@example.com")
         code = mailed_code()
@@ -209,7 +224,7 @@ def test_enrollment_needs_the_code_the_password_and_the_key(app: App) -> None:
 def test_a_second_factor_is_needed_too(app: App, clock: list[float]) -> None:
     """Asked for before the code is spent; a wrong one refuses, a right one binds."""
     client = app(PHONE)
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     secret, _ = enrol(client, bearer(login(client, "alice")["access_token"]), clock)
     with override_settings(DEVICES=ON):
         ask_code(client, "alice@example.com")
@@ -226,13 +241,17 @@ def test_a_second_factor_is_needed_too(app: App, clock: list[float]) -> None:
 
 
 def test_a_password_staff_set_is_changed_first(app: App) -> None:
-    """``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``: 403 until a new one comes along."""
+    """``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``: 403 until a new one comes along.
+
+    The code is not spent by the refusal, nor by a new password a rule
+    refuses: the user sends again with one, and needs no second message.
+    """
     from domainkit.contrib.auth import AuthUnitOfWork
     from domainkit.contrib.auth.models import UserId
     from domainkit.management.base import run_async
 
     client = app(PHONE)
-    alice = create_user("alice", email="alice@example.com")
+    alice = create_user("alice", email="alice@example.com", proved=True)
     staff_set = "Kq7-zv93-Lmw2"
     chosen = "Pw4-tt81-Xcv9"
 
@@ -246,14 +265,12 @@ def test_a_password_staff_set_is_changed_first(app: App) -> None:
     with override_settings(DEVICES=ON, AUTH=first_use):
         run_async(set_by_staff())
         ask_code(client, "alice@example.com")
-        asked = enroll(client, Device(), code=mailed_code(), password=staff_set)
-        ask_code(client, "alice@example.com")
+        code = mailed_code()
+        phone = Device()
+        asked = enroll(client, phone, code=code, password=staff_set)
+        weak = enroll(client, phone, code=code, password=staff_set, new_password="1")
         changed = enroll(
-            client,
-            Device(),
-            code=mailed_code(),
-            password=staff_set,
-            new_password=chosen,
+            client, phone, code=code, password=staff_set, new_password=chosen
         )
         relogged = client.post(
             "/auth/login", json={"username": "alice", "password": chosen}
@@ -262,6 +279,8 @@ def test_a_password_staff_set_is_changed_first(app: App) -> None:
         403,
         "password_change_required",
     )
+    assert (weak.status_code, weak.json()["code"]) == (422, "invalid_password")
+    # Neither refusal spent the code: one message is enough.
     assert changed.status_code == 201, changed.json()
     assert relogged.status_code == 200, relogged.json()
 
@@ -303,7 +322,7 @@ def test_enrollment_is_off_unless_turned_on(app: App) -> None:
 def test_enrollment_attempts_are_throttled(app: App) -> None:
     """Refused attempts count against AUTH.LOGIN_RATE: then 429."""
     client = app(PHONE)
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     auth = {**AUTH, "LOGIN_RATE": "2/minute"}
     with override_settings(DEVICES=ON, AUTH=auth):
         for _ in range(2):
@@ -313,6 +332,31 @@ def test_enrollment_attempts_are_throttled(app: App) -> None:
         assert ask_code(client, "alice@example.com").status_code == 202
         assert ask_code(client, "alice@example.com").status_code == 202
         assert ask_code(client, "alice@example.com").status_code == 429
+
+
+def test_enrollment_codes_are_counted_per_recipient(app: App) -> None:
+    """Callers from many addresses cannot text one number without end (A1).
+
+    The ways of writing one number share its count (``AUTH.EMAIL_RATE``);
+    another recipient still gets its code.
+    """
+    create_user("alice", email="alice@example.com", mobile_number=NUMBER, proved=True)
+    project = app(PHONE).app
+    callers = [
+        TestClient(project, base_url=SITE, client=(f"198.51.100.{n}", 50000 + n))
+        for n in range(1, 4)
+    ]
+    auth = {**AUTH, "EMAIL_RATE": "2/hour"}
+    with override_settings(DEVICES=ON, AUTH=auth):
+        first = ask_code(callers[0], NUMBER)
+        second = ask_code(callers[1], "+33 6 12 34 56 78")
+        third = ask_code(callers[2], NUMBER)
+        other = ask_code(callers[2], "bob@example.com")
+
+    assert (first.status_code, second.status_code) == (202, 202)
+    assert third.status_code == 429
+    assert third.json()["code"] == "rate_limited"
+    assert other.status_code == 202
 
 
 def test_enrollment_needs_messaging(app: App, monkeypatch: pytest.MonkeyPatch) -> None:

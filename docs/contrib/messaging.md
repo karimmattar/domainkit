@@ -957,7 +957,7 @@ other settings.
 | `RETRY_BASE_SECONDS` | `2.0` | The first retry's delay; it doubles per attempt (at most 365 days). |
 | `RETRY_MAX_SECONDS` | `3600.0` | The longest retry delay (at most 365 days). |
 | `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
-| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must be more than `TASK_TIMEOUT` (at most 2 days). |
+| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must be more than `TASK_TIMEOUT` (at most 2 days). A message whose worker died runs again after it: with auth's codes, keep it under half of `AUTH.CODE_TTL`, or a code cut short arrives expired (`auth.W009` where deployed). |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
 | `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL), or publish themselves to the broker (`PUBLISH_ON_COMMIT`, for the relay): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message that no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | The most messages claimed at once (1 to 10,000). |
@@ -969,7 +969,7 @@ other settings.
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | The most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox ([Workers on RabbitMQ](#workers-on-rabbitmq)). |
-| `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost (at most a week). |
+| `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost (at most a week). Under half of `AUTH.CODE_TTL` too, for the same reason (`auth.W009`). |
 | `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background at once, instead of leaving them to the relays' next poll. |
 | `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays (at most 10,000). |
 | `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again (at most an hour). |

@@ -155,8 +155,9 @@ More you can do with rules:
 - **Refusals are recorded.** With `contrib.audit` installed, a refusal by
   a rule of your own is recorded as any other denial is: as
   `auth.access`, with the outcome `denied`, the route, and the rule's
-  class, never the request's values. A rule that refuses more than it
-  should then shows in the audit trail.
+  class, never the request's values. A rule that answers with its own
+  error (`refusal()`) is recorded too, with the error's `code`. A rule
+  that refuses more than it should then shows in the audit trail.
 
 ## See also
 
