@@ -21,6 +21,7 @@ from domainkit.contrib.auth.actions import (
     Shown,
     request_action_authorization,
     requires_authorization,
+    spend_authorization,
 )
 from domainkit.contrib.auth.actions import router as actions_router
 from domainkit.contrib.auth.api import router as auth_router
@@ -158,6 +159,19 @@ async def change_name_joined(body: NameIn, user: AuthenticatedUser) -> dict[str,
     async with uow:
         await uow.users.get(UserId(user.id))  # What a scope's check reads.
         return {"first_name": await rename(command, Joined(uow))}
+
+
+@router.post("/me/name/in-code", dependencies=[Depends(Require(RENAMING))])
+async def change_name_in_code(body: NameIn, user: AuthenticatedUser) -> dict[str, str]:
+    """Rename oneself in code that spends the authorization itself."""
+    command = Rename(user_id=user.id, first_name=body.first_name)
+    async with AuthUnitOfWork() as uow:
+        await spend_authorization(uow, RENAME, command)
+        stored = await uow.users.get(UserId(user.id))
+        stored.first_name = command.first_name  # type: ignore[attr-defined]
+        await _hold()
+        await uow.commit()
+    return {"first_name": command.first_name}
 
 
 @router.post("/me/name/forgotten", dependencies=[Depends(Require(RENAMING))])

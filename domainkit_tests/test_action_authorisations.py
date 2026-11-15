@@ -336,6 +336,43 @@ def test_an_act_in_a_unit_of_work_the_route_opened_spends_it_with_its_commit(
     assert first_name() == "Al"
 
 
+def test_code_that_spends_it_itself_commits_the_spend_with_its_change(
+    web: Web,
+) -> None:
+    """``spend_authorization`` in an open unit of work: spent if it commits."""
+    authorization = web.authorized("Al")
+    headers = {**web.headers, "Action-Authorization": authorization}
+    acts.FAILURES.append(ConcurrentUpdate("Someone else changed it first."))
+
+    def in_code() -> Any:  # noqa: ANN401 - a response.
+        return web.client.post(
+            "/me/name/in-code", json={"first_name": "Al"}, headers=headers
+        )
+
+    lost, again, third = in_code(), in_code(), in_code()
+
+    assert code_of(lost) == (409, "concurrent_update")
+    assert again.status_code == 200, again.json()
+    assert code_of(third) == (403, "action_not_authorized")
+    assert len(audited("auth.action_authorization_used")) == 1
+
+
+def test_a_wrong_code_confirms_nothing_and_is_counted(web: Web) -> None:
+    """``401 invalid_code``, told to the trail as ``auth.authorization``."""
+    asked = web.ask("Al").json()
+
+    wrong = web.client.post(
+        f"/auth/authorizations/{asked['id']}/confirm",
+        json={"code": "000000"},
+        headers=web.headers,
+    )
+    right = web.confirm(asked["id"])
+
+    assert code_of(wrong) == (401, "invalid_code")
+    assert right.status_code == 200, right.json()
+    assert reasons() == ["invalid_code"]
+
+
 def test_a_row_changed_after_its_confirmation_fails_its_code(web: Web) -> None:
     """The code covers what was confirmed, not what is stored now."""
     authorization = web.authorized("Al")
