@@ -15,4 +15,9 @@ class ShopConfig(DomainConfig):
         start_mappers()
         # Durable: stored with the commit, run (and retried) by the worker.
         event_bus.subscribe(ProductCreated, log_product_created, durable=True)
-        event_bus.subscribe(ProductRestocked, on_product_restocked, durable=True)
+        event_bus.subscribe(
+            ProductRestocked,
+            on_product_restocked,
+            durable=True,
+            name="shop.on_product_restocked",
+        )

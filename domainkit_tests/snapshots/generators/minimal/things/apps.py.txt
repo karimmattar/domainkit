@@ -17,4 +17,9 @@ class ThingsConfig:
 
     def ready(self) -> None:
         """Ready."""
-        event_bus.subscribe(ThingShipped, on_thing_shipped, durable=True)
+        event_bus.subscribe(
+            ThingShipped,
+            on_thing_shipped,
+            durable=True,
+            name="things.on_thing_shipped",
+        )

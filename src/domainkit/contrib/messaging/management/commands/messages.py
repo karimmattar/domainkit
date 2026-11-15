@@ -1,9 +1,10 @@
-"""``messages``: inspect the outbox, retry dead letters, cancel waiting work.
+"""``messages``: inspect the outbox, retry or drop dead letters, cancel waiting work.
 
-``manage.py messages status | list STATE | retry ID|all | cancel ID | release``;
-``release`` repairs ordering keys left with held messages and none pending,
-as each worker's cleanup does. ``retry``, ``cancel``, and ``release`` change
-the outbox, and run as the operator who names themselves.
+``manage.py messages status | list STATE | retry ID|all | drop ID|all |
+cancel ID | release``; ``release`` repairs ordering keys left with held
+messages and none pending, as each worker's cleanup does. ``retry``,
+``drop``, ``cancel``, and ``release`` change the outbox, and run as the
+operator who names themselves.
 """
 
 import uuid
@@ -15,6 +16,7 @@ from domainkit.apps import registry
 from domainkit.contrib.messaging.admin import (
     State,
     blanked_dead_letters,
+    drop_dead,
     list_messages,
     queue_counts,
     queue_lag,
@@ -31,7 +33,7 @@ from domainkit.management import ActionCommand, CommandError, action, option
 
 
 class Command(ActionCommand):
-    """Show counts and lag, list messages, retry dead ones, cancel or release."""
+    """Show counts and lag, list messages, retry or drop dead ones, cancel, release."""
 
     help = "Inspect the messaging outbox, and act on it."
     common_options = (
@@ -87,6 +89,47 @@ class Command(ActionCommand):
         config = registry.settings(MessagingSettings)
         message_id = None if message == "all" else _message_id(message, "or 'all'")
         await self._retry(config, message_id, database)
+
+    @action(
+        help="delete a dead message, or all of them",
+        options=[
+            option("message", metavar="ID|all"),
+            option(
+                "--blanked",
+                action="store_true",
+                help="only those whose arguments were blanked when they died "
+                "(sensitive tasks): the ones retry cannot run",
+            ),
+        ],
+        operator=True,
+    )
+    async def drop(self, *, message: str, blanked: bool, database: str | None) -> None:
+        """Delete dead messages; say how many went, or why one did not.
+
+        The drop is recorded in the audit trail, with how many went.
+
+        Raises:
+            CommandError: the message named is not dead (with ``--blanked``:
+                not blanked), or not in this outbox.
+        """
+        config = registry.settings(MessagingSettings)
+        message_id = None if message == "all" else _message_id(message, "or 'all'")
+        async with self.recorded(
+            "messages.drop",
+            message="all" if message_id is None else str(message_id),
+            blanked=blanked,
+            database=database or config.DATABASE,
+        ) as record:
+            record["dropped"] = dropped = await drop_dead(
+                config, message_id, database, blanked_only=blanked
+            )
+        if message_id is not None and not dropped:
+            which = "dead with its arguments blanked" if blanked else "dead"
+            raise CommandError(
+                f"{message_id} was not dropped: it is not {which}, or not in this "
+                "outbox. A waiting message is cancelled: messages cancel ID."
+            )
+        self.write(f"Dropped {dropped} dead message(s).")
 
     @action(
         help="cancel a message no worker is running",

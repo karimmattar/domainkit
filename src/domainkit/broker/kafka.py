@@ -32,6 +32,21 @@ WAIT_MS: Final = 1000
 MESSAGE_ID: Final = "message_id"
 
 
+def _transient(exc: Exception) -> bool:
+    """Whether ``exc`` passes once the cluster does: unavailable, not a refusal.
+
+    aiokafka's retriable errors (a lost connection, a partition without a
+    leader, too few replicas in sync), its timeouts, and the network's.
+    Counted as refusals, they kept the publishing breaker closed through
+    an outage (user report W9).
+    """
+    from aiokafka.errors import KafkaTimeoutError
+
+    return bool(getattr(exc, "retriable", False)) or isinstance(
+        exc, OSError | KafkaTimeoutError
+    )
+
+
 class KafkaBroker(PullBroker):
     """Work queues on Kafka topics (see the module)."""
 
@@ -140,6 +155,10 @@ class KafkaBroker(PullBroker):
         except TimeoutError as exc:
             raise BrokerUnavailable("Kafka did not confirm in time (publish).") from exc
         except Exception as exc:
+            if _transient(exc):
+                raise BrokerUnavailable(
+                    f"Kafka could not take the message now ({type(exc).__name__})."
+                ) from exc
             raise BrokerRefused(
                 f"Kafka refused the message ({type(exc).__name__})."
             ) from exc

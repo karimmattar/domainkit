@@ -64,6 +64,7 @@ from domainkit.contrib.messaging import (
     task,
 )
 from domainkit.contrib.messaging import apps as apps_module
+from domainkit.contrib.messaging import dispatch as dispatch_module
 from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import worker as worker_module
@@ -1041,7 +1042,7 @@ def test_retrying_a_blanked_message_says_why_it_cannot(messaging: None) -> None:
 def test_retries_and_cancels_are_audited_with_their_operator(
     database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``messages retry`` and ``--cancel`` leave a row naming who ran them.
+    """``messages retry``, ``cancel``, and ``drop`` leave a row naming who ran them.
 
     At 0.9.0 re-running every dead handler (``--retry all``) left no trace.
     """
@@ -1087,6 +1088,7 @@ def test_retries_and_cancels_are_audited_with_their_operator(
         with pytest.raises(CommandError) as refused:
             run("messages", "cancel", str(waiting))
         assert run("messages", "release") == "Released 0 stalled key(s).\n"
+        run("messages", "drop", "all", "--blanked")
         run("messages", "list", "dead")  # Reading is not recorded.
         rows = [
             row
@@ -1105,8 +1107,16 @@ def test_retries_and_cancels_are_audited_with_their_operator(
         ("operator.messages.cancel", "operator:alice"),
         ("operator.messages.cancel", "operator:ops-1"),
         ("operator.messages.release", "operator:ops-1"),
+        ("operator.messages.drop", "operator:ops-1"),
     ]
-    one, every, cancelled, missed, released = (row["details"] for row in rows)
+    one, every, cancelled, missed, released, dropped = (row["details"] for row in rows)
+    assert dropped == {
+        "message": "all",
+        "blanked": True,
+        "database": "default",
+        "dropped": 0,
+        "operator_source": "environment",
+    }
     assert released == {
         "database": "default",
         "released": 0,
@@ -2026,6 +2036,47 @@ async def test_brokered_workers_run_retry_and_dead_letter(
     assert (fails_once_row["status"], fails_once_row["attempts"]) == (DONE, 2)
     assert ("email", "ada@example.com") in ran
     assert "k:ok" in ran
+
+
+@pytest.mark.parametrize(
+    ("on_commit", "waits"), [(True, [1, 2, 4, 8, 16, 30]), (False, [1] * 6)]
+)
+async def test_a_relay_backs_off_while_commits_publish_themselves(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    on_commit: bool,
+    waits: list[float],
+) -> None:
+    """POLL_INTERVAL_IDLE, as with a listener, under PUBLISH_ON_COMMIT (user report W9).
+
+    Commits reach the broker without it; the relay finds what they could
+    not publish, and what comes due, within POLL_INTERVAL_IDLE. Without
+    PUBLISH_ON_COMMIT it polls every POLL_INTERVAL, as before.
+    """
+    config = registry.settings(MessagingSettings).model_copy(
+        update={
+            "POLL_INTERVAL": 1.0,
+            "POLL_INTERVAL_IDLE": 30.0,
+            "PUBLISH_ON_COMMIT": on_commit,
+            "NOTIFY": False,  # No listener on PostgreSQL: this setting alone.
+        }
+    )
+    worker = Worker(config)
+    runner = BrokerWorkers([worker], ["default"], config)
+    stop = asyncio.Event()
+    seen: list[float] = []
+
+    async def pause(wake: asyncio.Event, seconds: float) -> None:
+        seen.append(seconds)
+        if len(seen) == len(waits):
+            stop.set()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(dispatch_module, "pause", pause)
+    async with asyncio.timeout(5):
+        await runner._relay_until(worker, broker_tables, stop)
+
+    assert seen == waits
 
 
 async def test_deliveries_that_cannot_run_are_settled(

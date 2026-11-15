@@ -11,6 +11,13 @@ and a status.
 
 ### Added
 
+- While the broker is away, relaying workers run the outbox themselves:
+  each relay has a breaker, as commits do, and while it is open the
+  worker claims and runs the due messages of its queues, as a worker
+  without a broker does, until the broker answers again. A RabbitMQ
+  outage stopped every code, notice, and job while the database that
+  holds them was fine, and the relay leased, unlocked, and warned about
+  each message every `POLL_INTERVAL` (ADR 0142, user report W3).
 - Live events reach every process: `live_events.share(OrderShipped)` in
   a domain's `ready()`, and `LIVE_FANOUT = {"BACKEND": "postgres"}` (or
   `"redis"`), carry the committed events of those types from whichever
@@ -65,9 +72,80 @@ and a status.
   superuser for approval. Auth and those apps no longer import each
   other, a test keeps any two apps from it, and nothing changes for a
   project (ADR 0140, audit finding A2).
+- `runworker --heartbeat-file PATH`: the worker's health signal. From its
+  own event loop, every `--heartbeat-interval` seconds (15), it runs what
+  `/ready` checks (domains, databases, ledgers, caches) and checks its
+  broker; while all hold it rewrites the file, which a container's health
+  check reads. `--metrics-port` answered from a thread however stuck the
+  loop was. `domainkit.http.health.readiness_failures` runs `/ready`'s
+  checks for any process (user report W2).
+- `messages drop ID|all [--blanked]` deletes dead letters, audited with
+  its operator, and `MESSAGING.DEAD_RETENTION_SECONDS` lets cleanup
+  delete those that died that long ago (default `None`: kept, as
+  before). The dead letters of mail, texts, and pushes keep no
+  arguments, so `retry` could not run them and `cancel` refused them:
+  they stayed for ever, and an alert on the `dead` gauge never cleared.
+  `admin.drop_dead` does the same for your own tools (user report W4).
+- Durable handlers take a name: `@handles(Event, durable=True,
+  name="billing.notify")`, or `subscribe(..., name=...)`. Their messages
+  carried `module.QualName`, so renaming or moving one, or making it
+  in-process, left its queued messages to die. `formerly=` lists the keys
+  a handler had before, whose messages workers still run with it.
+  `check` warns about durable handlers without a name in staging and
+  production (`messaging.W002`), `addevent` writes one, and webhooks'
+  handler is `domainkit.contrib.webhooks.fan_out`, formerly its path. Two
+  handlers under one key, or one handler under two, are refused
+  (user report W5).
+- `raise RunLater(after=timedelta(minutes=1))` from a task or durable
+  handler runs it again then, and is not a failure: no attempt spent,
+  one INFO line, no report, never a dead letter, counted as the outcome
+  `later`. A task polling a provider that had not decided raised an
+  error instead: a warning and a traceback per check, and a dead letter
+  past `max_attempts` (user report W6).
+- Push refusals are read as FCM's, Apple's, and Huawei's references
+  have them. FCM's `INVALID_ARGUMENT` for the token itself (its own
+  error, no field, or `message.token` alone) is a token gone, as
+  `UNREGISTERED` is: it was tried five times, dead-lettered, and kept. A
+  message a service will refuse again raises the new
+  `NotificationRefused`, which the text and push tasks dead-letter at
+  once instead of retrying. Errors keep the service's `code` and the
+  `fields` it named, never their values. Each push backend reads its
+  answer in `refusal(response)`, a `Refusal`, which a subclass can
+  override for one case without copying `send` (user reports N1, N2).
+- `check` warns, in every environment, about a `start` or `stop`
+  coroutine method of a `DomainConfig` that no hook point holds
+  (`apps.W001`): only registered functions run, so a startup check
+  written as domainkit's own apps write theirs, and never registered,
+  never ran (user report C1).
+- `check` warns, where deployed, about a network database whose pool
+  holds fewer connections than `MESSAGING.CONCURRENCY` + 1
+  (`messaging.W003`): the worker's running messages waited for one up to
+  `POOL_TIMEOUT`, then failed (user report W9).
+- `READINESS_BROKERS = True` makes `/ready` check each broker of
+  `BROKERS` too, as `broker:<alias>`; it is off by default, since a
+  process serves while its broker is away (user report W9).
 
 ### Changed
 
+- `POLL_INTERVAL_IDLE` applies to the relay too while commits publish
+  themselves to the broker (`PUBLISH_ON_COMMIT`): it polled the outbox
+  every `POLL_INTERVAL` for what commits had already published (user
+  report W9).
+- `runworker --metrics-port` asks for `METRICS_TOKEN` when it is set, as
+  the web's `/metrics` does; it served anyone who reached the port
+  (user report W9).
+- Kafka: a publish that fails because the cluster cannot take it now (a
+  lost connection, a partition without a leader, too few replicas, a
+  timeout) is `BrokerUnavailable`, which opens the publishing breaker; it
+  was `BrokerRefused`, which kept it closed through an outage (user
+  report W9).
+- FCM's `404` without `UNREGISTERED` is no longer a token gone: a wrong
+  `PROJECT_ID` could answer so, and every token sent to would have been
+  forgotten. It is tried again (user report N2).
+- RabbitMQ's `check()` opens and closes a channel: a round trip. It only
+  reached for the publishing channel, which aio-pika keeps while it
+  reconnects, so `broker check`, and the worker's heartbeat, passed with
+  the broker down (user report W7).
 - `domainkit.contrib.auth.repositories` is a package: its 1,852 lines
   are five modules, by what is stored (accounts, tokens, principals,
   factors, signups). Every name is still imported from
@@ -93,6 +171,12 @@ and a status.
   `slow_down`, five seconds more, after the phone had already answered.
   The interval still holds back polls of a request that waits (user
   report L2).
+- `runworker` starts the installed domains, as serving the application
+  does: their `on_startup` hooks run first and their `on_shutdown` hooks
+  after. It ran without them, so with a key service other than `local`
+  the worker never unwrapped the data keys, and every message that read
+  an `Encrypted` field failed with `KeysNotLoaded`. Commands of your own
+  opt in with `BaseCommand.needs_domains = True` (user report W1).
 
 ### Security
 

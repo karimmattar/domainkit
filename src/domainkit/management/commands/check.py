@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from domainkit.apps import registry
-from domainkit.apps.hooks import on_deployment_warnings
+from domainkit.apps.hooks import on_deployment_warnings, unregistered_methods
 from domainkit.architecture import check_domains
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
 from domainkit.checks import CheckMessage, describe, silence
@@ -104,6 +104,7 @@ def _warnings(app: FastAPI) -> list[str]:
     """Every warning, the framework's first, then the domains', each with an id."""
     deployed = settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS
     warnings: list[str] = list(settings.deployment_warnings())
+    warnings += unregistered_methods()
     warnings += _tagged("caches.W001", cache_deployment_warnings())
     warnings += _tagged("deploy.W006", pool_sizing_warnings())
     warnings += _tagged("live.W001", websockets.deployment_warnings(app))
