@@ -1,0 +1,206 @@
+"""A resource's act, authorized from start to end by the real core (user report A6).
+
+A ``ResourceRouter`` command route declared with
+``rule=StepUp(for_="shop.rename_product")``, in a migrated identity
+project, with no stand-in rule: its twin asks for an authorization, built
+and shown by the server; a code of the user's authenticator confirms it;
+the act passes with it once, and refuses it again, and refuses it for
+other arguments (ADR 0144).
+"""
+
+from collections.abc import Iterator
+from typing import Any, Final
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from domainkit.clock import FrozenClock, freeze_time
+from domainkit.conf import override_settings
+from domainkit.contrib.auth.actions import register_action
+from domainkit.contrib.auth.tables import authorizations
+from domainkit.db import connections
+from domainkit.management.base import run_async
+from domainkit_tests.conftest import Api
+from domainkit_tests.sample_action_resources import RENAME_PRODUCT, ShopUnitOfWork
+from domainkit_tests.sample_domains.shop.models import Product, ProductId
+from domainkit_tests.support.auth import audited, bearer, create_user, grant, login
+from domainkit_tests.test_auth_stepup import enrol, now_code
+
+ROUTES: Final = "domainkit_tests.sample_action_resources.router"
+START: Final = "2027-01-04T10:00:00Z"
+
+
+class Shopper:
+    """Alice, logged in, with an authenticator app, who may rename products."""
+
+    def __init__(self, client: TestClient, clock: FrozenClock) -> None:
+        """Log alice in and turn her second factor on."""
+        self.client = client
+        self.clock = clock
+        self.headers = bearer(login(client, "alice")["access_token"])
+        self.secret = enrol(client, self.headers, clock)
+
+    def rename(self, product: UUID, name: str, authorization: str | None = None) -> Any:  # noqa: ANN401 - a response.
+        """The act: rename ``product``, sending ``authorization`` if given."""
+        headers = dict(self.headers)
+        if authorization is not None:
+            headers["Action-Authorization"] = authorization
+        return self.client.post(
+            f"/products/{product}/rename", json={"name": name}, headers=headers
+        )
+
+    def ask(self, product: UUID, name: str) -> Any:  # noqa: ANN401 - a response.
+        """The twin: ask for an authorization of renaming ``product``."""
+        return self.client.post(
+            f"/products/{product}/rename/authorization",
+            json={"name": name},
+            headers=self.headers,
+        )
+
+    def confirm(self, authorization_id: str) -> Any:  # noqa: ANN401 - a response.
+        """Confirm the authorization with now's code."""
+        return self.client.post(
+            f"/auth/authorizations/{authorization_id}/confirm",
+            json={"code": now_code(self.secret, self.clock)},
+            headers=self.headers,
+        )
+
+    def authorized(self, product: UUID, name: str) -> str:
+        """``<id>.<code>``: a confirmed authorization of renaming ``product``."""
+        asked = self.ask(product, name)
+        assert asked.status_code == 201, asked.json()
+        confirmed = self.confirm(asked.json()["id"])
+        assert confirmed.status_code == 200, confirmed.json()
+        authorization: str = confirmed.json()["authorization"]
+        return authorization
+
+
+@pytest.fixture
+def frozen() -> Iterator[FrozenClock]:
+    """One clock for codes and expiries."""
+    with freeze_time(START) as clock:
+        yield clock
+
+
+@pytest.fixture
+def alice(identity: Api, frozen: FrozenClock) -> Iterator[Shopper]:
+    """Alice's session at the products, the action registered."""
+    with override_settings(ROOT_ROUTER=ROUTES):
+        register_action(RENAME_PRODUCT, domain="shop")
+        create_user("alice")
+        grant("alice", "shop.view_product", "shop.change_product")
+        yield Shopper(identity(), frozen)
+
+
+def stock(name: str) -> UUID:
+    """Store a product called ``name``; its id."""
+
+    async def add() -> UUID:
+        product = Product(id=ProductId(uuid4()), name=name)
+        async with ShopUnitOfWork() as uow:
+            await uow.products.add(product)
+            await uow.commit()
+        return product.id
+
+    return run_async(add())
+
+
+def name_of(product: UUID) -> str:
+    """The stored name of ``product``."""
+
+    async def read() -> str:
+        async with ShopUnitOfWork() as uow:
+            return (await uow.products.get(ProductId(product))).name
+
+    return run_async(read())
+
+
+def ended(authorization: str) -> bool:
+    """Whether the authorization ``<id>.<code>`` names is over: spent, or voided."""
+
+    async def read() -> bool:
+        async with connections.engine().connect() as connection:
+            found = await connection.execute(
+                select(authorizations.c.consumed_at).where(
+                    authorizations.c.id == UUID(authorization.partition(".")[0])
+                )
+            )
+            return found.scalar_one() is not None
+
+    return run_async(read())
+
+
+def code_of(response: Any) -> tuple[int, str]:  # noqa: ANN401 - a response.
+    """The status and the error code of ``response``."""
+    return response.status_code, response.json().get("code")
+
+
+def test_a_resources_act_is_asked_confirmed_and_spent_once(alice: Shopper) -> None:
+    """401 bare; 201 from the twin, in the server's words; ``<id>.<code>``; once.
+
+    The twin answers what the server built from the stored product, not
+    from the page; confirming with a code answers ``<id>.<code>``; the act
+    passes with it, and its commit spends it; sent again, it is refused.
+    """
+    lamp = stock("Lamp")
+
+    bare = alice.rename(lamp, "Desk lamp")
+    asked = alice.ask(lamp, "Desk lamp")
+    authorization_id = asked.json()["id"]
+    confirmed = alice.confirm(authorization_id)
+    authorization = confirmed.json()["authorization"]
+    renamed = alice.rename(lamp, "Desk lamp", authorization)
+    replayed = alice.rename(lamp, "Desk lamp", authorization)
+
+    assert code_of(bare) == (401, "authorization_required")
+    assert 'purpose="shop.rename_product"' in bare.headers["WWW-Authenticate"]
+    assert asked.status_code == 201, asked.json()
+    assert asked.headers["Cache-Control"] == "no-store"
+    assert set(asked.json()) == {"id", "purpose", "shown", "expires_at"}
+    assert asked.json()["purpose"] == "shop.rename_product"
+    assert asked.json()["shown"] == {
+        "title": "Rename a product",
+        "details": [
+            {"label": "Product", "value": "Lamp"},
+            {"label": "New name", "value": "Desk lamp"},
+        ],
+    }
+    assert confirmed.status_code == 200, confirmed.json()
+    head, dot, code = authorization.partition(".")
+    assert (head, dot) == (authorization_id, ".")
+    assert code
+    assert renamed.status_code == 200, renamed.json()
+    assert renamed.json()["name"] == "Desk lamp"
+    assert ended(authorization)
+    assert code_of(replayed) == (403, "action_not_authorized")
+    assert name_of(lamp) == "Desk lamp"
+    assert len(audited("auth.action_authorization_used")) == 1
+
+
+def test_a_resources_act_refuses_an_authorization_of_other_arguments(
+    alice: Shopper,
+) -> None:
+    """Asked for one name, sent with another: refused, and voided for both.
+
+    Another product is other arguments too: an authorization of one
+    product's rename does not rename another. Nothing is renamed, and
+    nothing is spent: each authorization is voided.
+    """
+    lamp = stock("Lamp")
+    chair = stock("Chair")
+
+    authorization = alice.authorized(lamp, "Floor lamp")
+    other_name = alice.rename(lamp, "Wall lamp", authorization)
+    asked_name = alice.rename(lamp, "Floor lamp", authorization)
+    elsewhere = alice.authorized(lamp, "Stool")
+    other_product = alice.rename(chair, "Stool", elsewhere)
+
+    assert code_of(other_name) == (403, "action_not_authorized")
+    assert code_of(asked_name) == (403, "action_not_authorized")
+    assert code_of(other_product) == (403, "action_not_authorized")
+    assert (name_of(lamp), name_of(chair)) == ("Lamp", "Chair")
+    assert ended(authorization)
+    assert ended(elsewhere)
+    assert audited("auth.action_authorization_used") == []

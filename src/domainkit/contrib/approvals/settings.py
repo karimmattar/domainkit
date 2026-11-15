@@ -31,6 +31,10 @@ class ApprovalsSettings(BaseModel):
     """Import path of an access rule (a class, or an instance) that whoever
     approves must pass as well, unless a request's policy names its own:
     a project's step-up rule, for one."""
+    APPROVE_ACTION: bool = False
+    """Approving asks for an authorization of its own (``approvals.approve``,
+    ADR 0144), bound to the request and its fingerprint, in place of a
+    step-up window; needs ``domainkit.contrib.auth``."""
     MAX_ARGUMENTS_BYTES: int = Field(default=65_536, ge=1024, le=1_048_576)
     """The largest command a request may hold, as JSON."""
     ENTRY_THRESHOLDS: dict[str, str] = Field(default_factory=dict)

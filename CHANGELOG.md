@@ -40,6 +40,18 @@ and a status.
   arguments, in the core, so that approvals and action authorizations
   compute it one way; `domainkit.contrib.approvals.fingerprint` is the
   same function (user report A6).
+- `APPROVALS.APPROVE_ACTION` (off by default): each approval asks for an
+  authorization of its own, the action `approvals.approve`, in place of
+  the approver's step-up window. It is bound to the request and the
+  fingerprint the approver states, and shows the request's action and
+  arguments as stored. The approver asks for it at
+  `POST /requests/{id}/approve/authorization` (`404` while the setting is
+  off), confirms it, and approves with it once; the approval's commit
+  spends it. Asking is refused as approving would be (the maker, another
+  fingerprint), the other approve rules still apply, and `check` refuses
+  a `StepUp` in one of them beside it (`approvals.E001`)
+  ([Approving with an authorization](docs/contrib/approvals.md#approving-with-an-authorization),
+  ADR 0144) (user report A6).
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and

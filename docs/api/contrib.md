@@ -205,6 +205,7 @@ Approval requests over HTTP: submit, list, read, approve, reject, cancel.
 
 Who may decide a request: its policy's approvers, and the rule approving asks.
 
+- `ApproveAction`: With `APPROVALS.APPROVE_ACTION` on: the approval holds its own authorization.
 - `IsApprover`: One of the people a request's policy lets decide it.
 - `MayApprove`: The rule approving a request asks for besides its approvers: a step-up, say.
 - `RequestActions`: The rules of each route of the requests (`ModelActions`' protocol).
