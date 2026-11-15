@@ -288,7 +288,7 @@ on_guard: HookPoint[Guard] = HookPoint("approvals.guard")
 
 def guard(
     action: str,
-    service: Service,
+    service: Service | UseCase[Any],
     *,
     unit_of_work: Callable[[], Any],
     policies: Sequence[Policy],
@@ -334,7 +334,7 @@ def guard(
     return registered
 
 
-def _check_decorated(action: str, service: Service) -> None:
+def _check_decorated(action: str, service: Service | UseCase[Any]) -> None:
     """Refuse a service not decorated ``@requires_approval(action)``.
 
     Raises:
@@ -492,7 +492,7 @@ async def check(action: str, command: object) -> None:
     raise ApprovalRequired("This command needs approval: submit it for approval.")
 
 
-def requires_approval[F: Service](action: str) -> Callable[[F], F]:
+def requires_approval[F: Service | UseCase[Any]](action: str) -> Callable[[F], F]:
     """Guard a use case: called directly, it needs no approval, or is refused.
 
     The service is ``service(command, uow)``, or a ``@use_case`` (decorate
@@ -505,7 +505,7 @@ def requires_approval[F: Service](action: str) -> Callable[[F], F]:
 
     def decorate(service: F) -> F:
         if isinstance(service, UseCase):
-            return _guarded_use_case(action, service)
+            return _guarded_use_case(action, service)  # type: ignore[return-value]
 
         @functools.wraps(service)
         async def guarded(command: object, uow: object) -> Any:  # noqa: ANN401 - what the service returns.
