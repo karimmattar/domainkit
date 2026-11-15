@@ -29,9 +29,11 @@ bound device, has ``MAX_PENDING`` requests waiting, or reported one within
 approve it, so its initiator learns nothing about the user.
 """
 
+import asyncio
 import hashlib
 import hmac
 import secrets
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
@@ -40,6 +42,7 @@ from uuid import UUID, uuid4
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.integration import utc_now
 from domainkit.contrib.auth.models import UserId
+from domainkit.ddd import event_bus
 
 from .events import SignInApproved, SignInDenied, SignInReported
 from .exceptions import (
@@ -68,12 +71,15 @@ __all__ = [
     "poll",
     "start_push",
     "start_qr",
+    "wait",
 ]
 
 SECRET_BYTES: Final = 32
 """Random bytes in a poll handle and a QR code: 256 bits, CIBA asks 128."""
 SLOW_DOWN_STEP: Final = 5
 """Seconds a poll that came too soon adds to the interval (CIBA 11)."""
+WAIT_STEP: Final = 1.0
+"""Seconds between the reads of a request a page waits for (``wait``)."""
 PUSH_KIND: Final = "domainkit.sign_in"
 """The ``type`` of a push's data: the app fetches the request it names."""
 AGENT_LENGTH: Final = 200
@@ -556,3 +562,76 @@ async def poll(
 def _seconds(span: timedelta) -> int:
     """Whole seconds in ``span``."""
     return int(span.total_seconds())
+
+
+async def wait(
+    handle: str,
+    *,
+    seconds: float,
+    client_id: str | None = None,
+    kind: str = SIGN_IN,
+    credential_digest: str | None = None,
+) -> bool:
+    """Wait up to ``seconds`` for the phone to answer request ``handle``; approved?
+
+    For the project's own pages (user report L2): they hold this instead of
+    polling. It reads the request every ``WAIT_STEP``, and at once when an
+    approval or a denial commits in this process; it never redeems the
+    request, nor counts as a poll, so a page that waits is never slowed
+    down. The page then redeems an approved request as after a poll. A
+    handle waits only as it polls: for its initiator, as its ``kind``,
+    and from the credentials that asked (``credential_digest``).
+
+    Raises:
+        SignInUnknown: No request of the initiator, of ``kind``, and of
+            these credentials has the handle, or it was redeemed.
+        AccessDenied: The phone denied it.
+        SignInExpired: Its time is up, or its QR code was not scanned in
+            ``QR_TTL``.
+    """
+    loop = asyncio.get_running_loop()
+    end = loop.time() + seconds
+    answered = asyncio.Event()
+    watched: list[UUID] = []
+
+    async def heard(event: SignInApproved | SignInDenied) -> None:
+        if event.request_id not in watched:
+            return
+        if asyncio.get_running_loop() is loop:
+            answered.set()
+        else:  # Committed by a request of another event loop.
+            with suppress(RuntimeError):  # The waiter's loop has closed.
+                loop.call_soon_threadsafe(answered.set)
+
+    event_bus.subscribe(SignInApproved, heard)
+    event_bus.subscribe(SignInDenied, heard)
+    try:
+        while True:
+            answered.clear()
+            now = utc_now()
+            async with CibaUnitOfWork() as uow:
+                request = await uow.requests.by_handle(secret_digest(handle))
+            if (
+                request is None
+                or request.client_id != client_id
+                or request.kind != kind
+                or request.credential_digest != credential_digest
+                or request.redeemed_at is not None
+            ):
+                raise SignInUnknown()
+            if request.denied_at is not None:
+                raise AccessDenied()
+            if request.approved_at is not None:
+                return True
+            if request.expired(now) or unscanned_too_long(request, now):
+                raise SignInExpired()
+            watched[:] = [request.id]
+            left = end - loop.time()
+            if left <= 0:
+                return False
+            with suppress(TimeoutError):
+                async with asyncio.timeout(min(WAIT_STEP, left)):
+                    await answered.wait()
+    finally:
+        event_bus.unsubscribe(SignInApproved, heard)
+        event_bus.unsubscribe(SignInDenied, heard)
