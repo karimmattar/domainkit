@@ -69,6 +69,13 @@ and a status.
   no option against it
   ([The server header](docs/reference/http.md#the-server-header)) (user
   report S3).
+- `init --server granian`: a project whose image serves with Granian,
+  with the options of "Server limits" and `LOGGING` written for
+  Granian's main process as it starts; it depends on the `granian` and
+  `uvloop` extras. The notes the templates write link to the
+  documentation of the release that wrote them, where they named a path
+  of domainkit's repository
+  ([Granian](docs/reference/servers.md#granian)) (user report S1).
 
 ### Changed
 
@@ -85,6 +92,20 @@ and a status.
   A1).
 - `runserver` and the test plugin import uvicorn only when it serves:
   `runserver --server granian` runs where uvicorn is not installed
+  (user report S3).
+- "Server limits" gives Granian a section of its own, which translates
+  uvicorn's options as checked with Granian 2.8.4. Its table said
+  otherwise: an idle connection lives `--http1-header-read-timeout`, at
+  most 60 seconds; `--backpressure` counts connections, idle ones
+  included, and the next one waits unanswered; `--workers-kill-timeout`
+  counts the application's shutdown too, which a killed worker skips.
+  Its Granian command now keeps the header block to 16 KiB, and the
+  connections open 60 seconds, as the proxy's idle timeout must be
+  shorter ([Granian](docs/reference/servers.md#granian)) (user report
+  S1).
+- "Server limits" says that `check --deploy`, in a container of its own,
+  sees the server's variables, never its arguments
+  ([WebSocket message size](docs/reference/servers.md#websocket-message-size))
   (user report S3).
 
 ### Deprecated

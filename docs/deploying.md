@@ -55,6 +55,14 @@ It is built in two stages:
    `WEB_CONCURRENCY` sets uvicorn's worker processes: one per core (one
    unless set).
 
+`init --server granian` writes the same image, run by Granian instead,
+with the options of [Granian](reference/servers.md#granian).
+`GRANIAN_WORKERS` sets its worker processes. As it starts, it writes
+`LOGGING` to `/tmp/logging.json` (`manage.py logconfig`) for Granian's
+main process: with a read-only root file system, mount a writable
+`/tmp`. Its notes, like the uvicorn image's, link to the documentation of
+the release that wrote them.
+
 `docker build --build-context wheels=<directory> .` offers the wheels in
 `<directory>` (a fork, a release candidate) ahead of the package index,
 for a build without a lock.
@@ -171,7 +179,8 @@ fails, and names the variable, when one is missing.
   database ([The worker](operations.md#the-worker)).
 - [ ] **The grace period** of the orchestrator is above uvicorn's
   graceful timeout (10 seconds in the image) plus `SHUTDOWN_TIMEOUT`
-  (15), and 45 seconds for workers
+  (15), or Granian's `--workers-kill-timeout` (25, both together, in
+  its image), and 45 seconds for workers
   ([Running the web processes](operations.md#running-the-web-processes)).
 - [ ] **Roll forward, not back.** To undo a schema change, write a new
   revision. A downgrade in staging and production needs

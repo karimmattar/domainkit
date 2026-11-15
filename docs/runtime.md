@@ -355,10 +355,11 @@ command and the limits for each.
   passed through a proxy on the same host, would still set the scheme.
 - **Granian** is an HTTP server written in Rust. It runs the same ASGI
   application, lifespan included (`--interface asgi`). It parses HTTP/1
-  and HTTP/2 outside Python, bounds the requests in flight per worker
-  (`--backpressure`), times out slow headers, and restarts workers that
-  die (`--respawn-failed-workers`). It has no WebSocket message limit:
-  turn WebSockets off (`--no-ws`) when the API has none.
+  and HTTP/2 outside Python, bounds the connections per worker, idle
+  ones included (`--backpressure`), times out slow headers, and restarts
+  workers that die (`--respawn-failed-workers`). It has no WebSocket
+  message limit: turn WebSockets off (`--no-ws`) when the API has none.
+  [Granian](reference/servers.md#granian) translates uvicorn's options.
 
 Both run one event loop per worker process. Run one worker per core. The
 test suite serves the application with Granian in a subprocess, so a
@@ -997,7 +998,7 @@ granian --interface asgi config.asgi:application --log-config /tmp/logging.json
 ```
 
 Write it where the server starts, from the same settings and variables:
-`LOG_LEVEL` and the format are read then. [Server limits](reference/servers.md)
+`LOG_LEVEL` and the format are read then. [Server limits](reference/servers.md#granian)
 gives Granian's whole command.
 
 ### Error reports
