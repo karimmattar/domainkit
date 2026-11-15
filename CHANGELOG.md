@@ -160,6 +160,15 @@ and a status.
 - `READINESS_BROKERS = True` makes `/ready` check each broker of
   `BROKERS` too, as `broker:<alias>`; it is off by default, since a
   process serves while its broker is away (user report W9).
+- `select_routes` and `route_names` (`domainkit.http.routers`): mount a
+  copy of a router with only some of its routes (`only`), without some
+  (`without`), and with dependencies of your own on the routes you name
+  (`dependencies={"POST /devices/enroll/code": [Depends(...)]}`), which
+  run after the route's own and show in OpenAPI. Routes are named
+  `METHOD /path`, as the router declares them; a name that matches no
+  route is refused, and the router copied is left as it is. See
+  [Rules on the framework's routes](docs/auth/routes.md#rules-on-the-frameworks-routes)
+  and ADR 0145 (user report A7).
 
 ### Changed
 

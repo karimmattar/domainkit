@@ -1230,6 +1230,7 @@ jobs:
               domainkit.http.client.* domainkit.http.deadlines.* domainkit.http.health.*
               domainkit.http.live.* domainkit.http.middleware.*
               domainkit.http.pagination.* domainkit.http.responses.*
+              domainkit.http.routers.*
               domainkit.http.servers.* domainkit.http.uploads.*
               domainkit.http.websockets.* domainkit.http.apidocs.*
           - name: data-1

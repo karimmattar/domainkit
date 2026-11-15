@@ -154,6 +154,7 @@ statuses, and the amendments they name.
 | [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) | Codes that open an account go only where it was proved | Accepted |
 | [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md) | While the broker is away, relaying workers run the outbox | Accepted |
 | [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted |
+| [0145](0145-mount-part-of-a-router-as-a-copy.md) | Mount part of a router as a copy | Accepted |
 
 ### Decisions still without a record
 

@@ -192,6 +192,13 @@ JSON responses encoded in Rust, byte for byte as Starlette encodes them.
 - `JSONResponse`: Starlette's `JSONResponse`, rendered by `encode_json`: the same bytes.
 - `json_native`: Whether `to_json` writes `content` as `json.dumps` does (see above).
 
+## `domainkit.http.routers`
+
+Mount part of a router, with dependencies of your own on some of its routes.
+
+- `route_names`: Each route's name, `METHOD /path`, as `select_routes` reads it, in order.
+- `select_routes`: A copy of `router` with some of its routes, and dependencies on some.
+
 ## `domainkit.http.shedding`
 
 Load shedding: a cap on the HTTP requests an event loop works on at once.
