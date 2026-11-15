@@ -95,7 +95,9 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `action_authorization`: The user's authorization `authorization_id`, to show it, in any state.
 - `action_for`: The registered action of `purpose`, if there is one.
 - `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
+- `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
+- `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
 - `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
@@ -545,12 +547,14 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
 - `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
 - `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
+- `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
 - `end_device_logins`: End the logins marked as the bound device `device_id`'s: how many.
 - `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
+- `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `mail_user`: Mail `user` at their address from `template`; False where none can go.
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.

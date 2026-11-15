@@ -9,8 +9,10 @@ the rest of the public API does.
 An app that confirms action authorizations its own way (the phone, a
 passkey: ADR 0144) registers an ``ActionConfirmation`` in ``ready()``
 (``on_action_confirmation``), reads what to show (``action_authorization``),
-links what confirms it (``link_action_authorization``), and confirms it
-with what it proved (``confirm_action_with``).
+links what confirms it (``link_action_authorization``, and finds it again
+by that link: ``linked_action_authorization``), confirms it with what it
+proved (``confirm_action_with``), and hands over what it confirmed in
+another request (``confirmed_action_authorization``).
 """
 
 from ._http import PASSWORD_MAX_LENGTH
@@ -23,7 +25,9 @@ from .actions import (
     action_authorization,
     action_for,
     confirm_action_with,
+    confirmed_action_authorization,
     link_action_authorization,
+    linked_action_authorization,
     login_digest,
     on_action_confirmation,
     register_action,
@@ -108,12 +112,14 @@ __all__ = [
     "check_password_again",
     "confirm_action_with",
     "confirm_transaction_with",
+    "confirmed_action_authorization",
     "end_device_logins",
     "first_use_after_code",
     "gates_passed",
     "impersonated",
     "issue_login",
     "link_action_authorization",
+    "linked_action_authorization",
     "login_digest",
     "mail_user",
     "needs_second_factor",

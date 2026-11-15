@@ -176,6 +176,22 @@ class AuthorizationStore:
         ).first()
         return None if row is None else _loaded(dict(row._mapping))
 
+    async def linked(
+        self, user_id: UUID, sign_in_request_id: UUID
+    ) -> ActionAuthorization | None:
+        """The user's authorization the phone's request confirms, linked to it."""
+        row = (
+            await self.session.execute(
+                select(authorizations)
+                .where(
+                    authorizations.c.user_id == user_id,
+                    authorizations.c.sign_in_request_id == sign_in_request_id,
+                )
+                .limit(1)
+            )
+        ).first()
+        return None if row is None else _loaded(dict(row._mapping))
+
     async def end_unconfirmed(self, login: str, *, keep: int, now: datetime) -> int:
         """End the login's live, unconfirmed authorizations but its ``keep`` newest.
 
