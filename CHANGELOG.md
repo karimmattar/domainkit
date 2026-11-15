@@ -52,6 +52,12 @@ and a status.
   superuser for approval. Auth and those apps no longer import each
   other, a test keeps any two apps from it, and nothing changes for a
   project (ADR 0140, audit finding A2).
+- `table_for` stores a tuple of one kind of JSON scalar
+  (`tuple[str, ...]`, and of `int`, `float`, `bool`) in the new
+  `JSONTuple` column type (`domainkit.db`): a JSON array, read back as a
+  tuple on SQLite and PostgreSQL. Such a field was a `TypeError`; a type
+  a project registered for `tuple` still wins
+  ([Tables from domain classes](docs/databases.md#tables-from-domain-classes)) (user report D2).
 
 ### Changed
 

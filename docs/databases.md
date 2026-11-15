@@ -307,6 +307,7 @@ CREATE TABLE catalog_products (
 | `Reference[XId]` | The id's column, indexed |
 | `Money`, `Annotated[Money, Digits(p, s)]` | Two columns: `<name>` (`ExactDecimal(p, s)`, default 18 and 4) and `<name>_currency` ([money.md](money.md#in-tables)) |
 | `Currency` | `CurrencyCode`: the code |
+| `tuple[str, ...]`, and of `int`, `float`, `bool` | `JSONTuple(str)`: a JSON array, read back as a tuple |
 | `Point` | `PointType`: PostGIS geography, or JSON ([places](search.md#places)) |
 | An `Enum` | `EnumValue`: the members' values, text or integers |
 | A value object of one field | `ValueObjectType`: that field's column type |
@@ -329,6 +330,10 @@ CREATE TABLE catalog_products (
   Pass a `Column` for it, or register a column type.
 - Enums are stored by value, so `ORDER BY` follows the values, and you
   may rename a member. Changing a value needs a data migration.
+- A tuple of one kind of item (`tuple[str, ...]`, a `NewType` of `str`
+  included) is a JSON array. Filter it only with `isnull`: PostgreSQL's
+  `json` has no `=`. Other tuples, lists, and tuples of enums need a
+  column or a registered type.
 - Value objects come back through their constructor, so their rules run
   when they load.
 - The result is an ordinary `Table` on `metadata`. `makemigrations`
@@ -349,6 +354,7 @@ Use them in tables you write by hand too:
 | `EnumValue(Status)` | An `Enum` by its values: `String` as long as the longest text value, or an integer. |
 | `ValueObjectType(ProductName, String(100))` | A value object of one field, as that field. |
 | `CurrencyCode` | A `Currency` as its code (`"USD"`). |
+| `JSONTuple(str)` | A tuple of `str`, `int`, `float`, or `bool` items, as a JSON array (`json` on PostgreSQL). It comes back a tuple. An item of another class (a `bool` in `JSONTuple(int)`, an enum member) or a float that is not finite is refused. |
 | `MoneyColumns(name, precision, scale, *, nullable=False)` | The two columns of a money field ([money.md](money.md#in-tables)). |
 
 `register_column_type(cls, column_type)` stores every field of `cls`
