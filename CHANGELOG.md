@@ -11,6 +11,12 @@ and a status.
 
 ### Added
 
+- `SqlAlchemyUnitOfWork(readonly=True, replica=False)`, or `replica =
+  False` on the class, keeps a read-only unit of work on the primary.
+  `readonly=True` also meant "read from a replica", so a project that
+  marks its permission checks read-only could not add one: they would
+  read stale memberships (user report D1).
+
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and

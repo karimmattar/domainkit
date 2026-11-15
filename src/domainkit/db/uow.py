@@ -148,7 +148,9 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         async with AccountsUnitOfWork(shard_key=tenant_id) as uow: ...
 
     ``readonly=True`` (or ``readonly = True`` on the subclass) reads from a
-    replica of that database, if it has one, and refuses to commit.
+    replica of that database, if it has one, and refuses to commit;
+    ``replica=False`` keeps it on the primary, for reads that must see the
+    latest commit, such as permission checks.
     ``reads`` picks how such a unit of work reads (``Reads``), and makes it
     read-only::
 
@@ -161,6 +163,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     """How a read-only unit of work reads. A subclass that sets another
     value is read-only; with ``STATEMENTS`` or ``SNAPSHOT`` its session also
     refuses to flush or to run a statement that writes."""
+    replica: bool = True
+    """Whether a read-only unit of work reads from a replica, if the database
+    has one. False keeps it on the primary: what must see the latest
+    commit, such as a permission check, reads there (user report D1)."""
     isolation: Isolation | None = None
     """The isolation level of its transactions (``Isolation``); None keeps
     the database's own (``READ COMMITTED`` on PostgreSQL). For units of
@@ -183,8 +189,12 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         readonly: bool | None = None,
         reads: Reads | str | None = None,
         isolation: Isolation | str | None = None,
+        replica: bool | None = None,
     ) -> None:
         """Resolve the database now, so a missing shard key fails before any work.
+
+        ``replica`` sets whether a read-only unit of work reads from a
+        replica, in place of the class's.
 
         ``reads`` makes the unit of work read-only, unless ``readonly=False``
         says otherwise, which only ``Reads.TRANSACTION`` allows.
@@ -226,7 +236,9 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             shard_key = current_tenant()  # The tenant's database (TENANCY).
         self.alias = router.alias_for(self.database, shard_key)
         self.schema = tenant_schema_of(self.alias)
-        if self.readonly:
+        if replica is not None:
+            self.replica = replica
+        if self.readonly and self.replica:
             self.alias = router.read_alias(self.alias)
         self.shard_key = shard_key
 
