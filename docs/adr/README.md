@@ -143,7 +143,7 @@ statuses, and the amendments they name.
 | [0130](0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md) | Show where each login came from, and manage logins from the phone | Accepted |
 | [0131](0131-choose-what-a-password-change-does-to-the-devices-logins.md) | Choose what a password change does to the devices' logins | Accepted |
 | [0132](0132-manage-the-second-factors-from-the-phone.md) | Manage the second factors from the phone | Accepted |
-| [0133](0133-a-signup-takes-an-address-its-holder-never-proved.md) | A signup takes an address its holder never proved | Accepted |
+| [0133](0133-a-signup-takes-an-address-its-holder-never-proved.md) | A signup takes an address its holder never proved | Accepted; amended by [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) |
 | [0134](0134-bind-another-device-from-a-bound-one.md) | Bind another device from a bound one | Accepted |
 | [0135](0135-keep-each-signed-request-not-the-last-time.md) | Keep each signed request, not the last time | Accepted |
 | [0136](0136-declare-the-login-check-on-the-route.md) | Declare the login check on the route | Accepted |
@@ -151,6 +151,7 @@ statuses, and the amendments they name.
 | [0138](0138-mount-an-accounts-routes-with-one-call.md) | Mount an account's routes with one call | Accepted |
 | [0139](0139-hold-a-rung-under-load-against-plain-fastapi-in-the-same-run.md) | Hold a rung under load against plain FastAPI in the same run | Accepted |
 | [0140](0140-auth-asks-other-apps-through-hooks.md) | Auth asks other apps through hooks | Accepted |
+| [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) | Codes that open an account go only where it was proved | Accepted |
 | [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted |
 
 ### Decisions still without a record

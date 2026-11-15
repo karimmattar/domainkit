@@ -519,7 +519,9 @@ async def poll(
     project's own pages; a handle polls only for its initiator, as its
     ``kind``, and for a step-up or a transaction only from the credentials
     that asked (``credential_digest``). Commits what the poll changed (its
-    time, the interval, the redemption) before it answers.
+    time, the interval, the redemption) before it answers. A request the
+    phone decided answers at once, however soon after the last poll: the
+    interval holds back polls of a request still waiting, not its answer.
 
     Raises:
         SignInUnknown: No request of the initiator, of ``kind``, and of
@@ -527,7 +529,8 @@ async def poll(
         AccessDenied: The phone denied it.
         SignInExpired: Its time is up, or its QR code was not scanned in
             ``QR_TTL``.
-        SlowDown: The poll came within the interval, which grows by 5 s.
+        SlowDown: The request still waits, and the poll came within the
+            interval, which grows by 5 s.
         AuthorizationPending: The phone has not answered yet.
     """
     now = utc_now()
@@ -545,16 +548,16 @@ async def poll(
             raise AccessDenied()
         if request.expired(now) or unscanned_too_long(request, now):
             raise SignInExpired()
-        if not await uow.requests.polled(request.id, now, request.interval):
-            await uow.requests.slow_down(request.id, now, SLOW_DOWN_STEP)
-            await uow.commit()
-            raise SlowDown()
-        if request.approved_at is not None:
+        if request.approved_at is not None:  # Decided: answered, however early.
             redeemed = await uow.requests.redeem(request.id, now)
             await uow.commit()
             if not redeemed:  # Another poll redeemed it first.
                 raise SignInUnknown()
             return request
+        if not await uow.requests.polled(request.id, now, request.interval):
+            await uow.requests.slow_down(request.id, now, SLOW_DOWN_STEP)
+            await uow.commit()
+            raise SlowDown()
         await uow.commit()
     raise AuthorizationPending()
 

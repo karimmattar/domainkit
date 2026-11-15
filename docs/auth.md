@@ -134,6 +134,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `IDENTIFIERS` | `None` | The user fields that identify a user (`None`: the user model's `USERNAME_FIELD` alone), in the order a login tries them, such as `("email", "mobile_number")`; at least one. Each must be a field of the user model, and named once (`auth.E011`) (ADR 0126). |
 | `CODE_TTL` | 10 minutes | How long a code works, from 1 minute to 1 hour. Signup, email and mobile verification, and password resets prove that someone reads an address or a number with a code of 6 digits; the links of 1.x, and their settings (`VERIFICATION`, `PASSWORD_RESET_URL`, `PASSWORD_RESET_TIMEOUT`, `EMAIL_VERIFICATION_URL`, `EMAIL_VERIFICATION_TIMEOUT`, `SIGNUP_URL`), were removed in 2.0: setting one is refused. |
 | `CODE_ATTEMPTS` | `5` | Wrong tries that spend a code, from 1 to 10. |
+| `CODES_TO_UNPROVED` | `False` | Send password-reset and enrollment codes to an address or a number its user never proved (`email_verified`, `mobile_number_verified`). Off since 2.4: anyone could put someone else's number on their own account, have the service text it, and the owner who used the code set that account's password. A user model without those fields counts them proved. `True` for accounts made before their identifiers could be proved; verification codes go either way. |
 | `SIGNUP_ENABLED` | `False` | Let anyone ask for an account at `/signup`. |
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
 | `MFA` | see below | Second factors (`auth.mfa`). |
@@ -141,7 +142,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `SCA` | see below | Transactions authorized for one amount and payee ([Stepping up](auth/step-up.md#transactions-authorized-for-one-amount-and-payee)). |
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](auth/authentication.md#the-principal-cache)). |
-| `CAPTCHA` | `None` | A captcha on login, signup, and password reset: `{"PROVIDER": "turnstile" \| "recaptcha" \| "hcaptcha", "SECRET": ..., "ON": ["login", "signup", "password_reset"], "MIN_SCORE": 0.5}`. Each route that `ON` names asks for the widget's token in `X-Captcha-Token`, checked with the provider first: missing or refused, `400 captcha_failed`; the provider unreachable, `503 captcha_unavailable`. `MIN_SCORE` (0 to 1) is reCAPTCHA v3's lowest score let through. Only the token and the secret are sent, never the client's address ([Captcha](auth/logging-in.md#captcha)). |
+| `CAPTCHA` | `None` | A captcha on login, signup, and password reset: `{"PROVIDER": "turnstile" \| "recaptcha" \| "hcaptcha", "SECRET": ..., "ON": ["login", "signup", "password_reset"], "MIN_SCORE": 0.5}`. Each route that `ON` names asks for the widget's token in `X-Captcha-Token`, checked with the provider first: missing or refused, `400 captcha_failed`; the provider unreachable, `503 captcha_unavailable`. `MIN_SCORE` (0 to 1) is reCAPTCHA v3's lowest score let through. `HOSTNAMES` refuses a token solved on another site (empty: any, `auth.W008` where deployed), and `CHECK_ACTION` one solved for another action. Only the token and the secret are sent, never the client's address ([Captcha](auth/logging-in.md#captcha)). |
 | `IMPERSONATION_TTL` | `None` | How long a token that staff get to act as a user works, up to 8 hours; `None` turns impersonation off ([Impersonation](auth/routes.md#impersonation)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
@@ -245,6 +246,8 @@ application; a warning (`W`) is reported.
 | `auth.W005` | staging, production | A cookie name without `__Host-` where the prefix could hold. |
 | `auth.W006` | staging, production | `ACCOUNT_LOGIN_RATE` of `None`, or more than 100 a day. |
 | `auth.W007` | anywhere | A backend that does not list its grants on objects (`object_grants`). |
+| `auth.W008` | staging, production | `CAPTCHA` without `HOSTNAMES`: a token solved on another site passes. |
+| `auth.W009` | staging, production | `MESSAGING.VISIBILITY_TIMEOUT`, or `REPUBLISH_AFTER` with a broker, more than half of `CODE_TTL`: a code whose sending was cut short arrives expired. |
 | `security.E101` | staging, production | A route that declares no access rule. |
 | `security.E020` | staging, production | `IDENTITY.LDAP` over `ldap://` without `START_TLS`. |
 

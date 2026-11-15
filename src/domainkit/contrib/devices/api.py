@@ -58,6 +58,7 @@ from domainkit.contrib.auth.integration import (
     LoginMethod,
     StepUpOut,
     TokenOut,
+    account_key,
     address_key,
     attach_login_device,
     attempt,
@@ -100,6 +101,8 @@ __all__ = ["router"]
 
 LOGIN_THROTTLED: Final = "Too many login attempts; try again later."
 """The detail of a throttled device login, as of a password login."""
+ENROLL_CODE_SCOPE: Final = "device-enroll-code"
+"""What the requests for an enrollment code are counted as."""
 
 router = APIRouter(tags=["devices"])
 SIGNED_IN = Depends(Require(IsUnscoped()))
@@ -432,8 +435,11 @@ class EnrolledOut(TokenOut):
 async def ask_for_enrollment_code(body: EnrollCodeIn, request: Request) -> None:
     """Send a code to enroll a first device; the answer is the same for anyone.
 
-    Counted against ``AUTH.LOGIN_RATE`` for the client's address: each
-    one is a message someone pays for.
+    Each is a message someone pays for: counted against ``AUTH.LOGIN_RATE``
+    for the client's address, and ``AUTH.EMAIL_RATE`` for the identifier,
+    as every request that sends a code is. The second holds callers from
+    many addresses who would text one number without end; the ways of
+    writing one number share its count.
     """
     from domainkit.contrib.messaging import enqueue
 
@@ -443,7 +449,13 @@ async def ask_for_enrollment_code(body: EnrollCodeIn, request: Request) -> None:
         raise EnrollmentOff("Devices do not enroll here.")
     await attempt(
         request,
-        [(address_key(request, "device-enroll-code"), auth_settings().LOGIN_RATE)],
+        [
+            (address_key(request, ENROLL_CODE_SCOPE), auth_settings().LOGIN_RATE),
+            (
+                account_key(ENROLL_CODE_SCOPE, body.identifier),
+                auth_settings().EMAIL_RATE,
+            ),
+        ],
         action="devices.enroll",
         detail=LOGIN_THROTTLED,
     )

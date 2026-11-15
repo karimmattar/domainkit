@@ -8,8 +8,8 @@ and mail, and mount the router::
     router.include_router(signup_router, prefix="/auth")
 
 ``POST /signup`` (anyone) takes an email address (or, where numbers
-identify users, a ``mobile_number`` alone), a username where the user
-model wants one, and no password; a user model's other
+identify users, a ``mobile_number`` alone), a username where usernames
+identify users (``AUTH.IDENTIFIERS``), and no password; a user model's other
 ``REQUIRED_FIELDS`` (``signup_fields()``) come under ``fields``, each
 checked by its type and markers as any change to a user is. The fields
 are checked at once: a refusal there says nothing about other accounts.
@@ -107,7 +107,9 @@ class SignupIn(BaseModel):
     username: str | None = Field(
         default=None, min_length=1, max_length=USERNAME_MAX_LENGTH
     )
-    """Where the user model wants one, or the project lets people choose."""
+    """Only where usernames identify users (``AUTH.IDENTIFIERS``): elsewhere
+    nobody logs in with it, and a name anyone chose (someone else's address)
+    would only stand in an operator's way."""
     email: EmailAddress | None = None
     mobile_number: str | None = Field(default=None, min_length=1, max_length=32)
     """Where ``mobile_number`` identifies users: the code goes to it when no
@@ -155,12 +157,14 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
     Raises:
         APIError: 422 ``missing_value`` without an address (or, where
             numbers identify users, a number).
-        UnknownUserField: A number, where numbers do not identify users.
+        UnknownUserField: A number, where numbers do not identify users,
+            or a username, where usernames do not.
         InvalidMobileNumber: The number is not in international form.
     """
     config = _enabled()
     model = get_user_model()
-    if body.mobile_number is not None and MOBILE_NUMBER not in identifier_fields(model):
+    identifiers = identifier_fields(model)
+    if body.mobile_number is not None and MOBILE_NUMBER not in identifiers:
         raise UnknownUserField(
             "A mobile number can be given only where it identifies users "
             "(AUTH.IDENTIFIERS)."
@@ -171,6 +175,13 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Give an email address.",
             code="missing_value",
+        )
+    if body.username is not None and model.USERNAME_FIELD not in identifiers:
+        # Nobody logs in with it there: a name anyone chose, such as
+        # someone else's address, would only stand in an operator's way.
+        raise UnknownUserField(
+            "A username can be chosen only where usernames identify users "
+            "(AUTH.IDENTIFIERS)."
         )
     number = (
         None
