@@ -67,6 +67,18 @@ and a status.
   import of that kind. Nothing a project imports changed (audit finding
   A1).
 
+### Fixed
+
+- On SQLite, a unit of work whose commit is refused as busy ("database
+  is locked": a reader's lock outlasted the busy timeout, in the default
+  journal) no longer leaves its transaction open on the pooled
+  connection. SQLite keeps it open so that the `COMMIT` may be tried
+  again, and SQLAlchemy sent no `ROLLBACK`: the next unit of work handed
+  that connection read the rows that failed to commit, or could not
+  begin, and its own commit wrote them. The pool now rolls back what is
+  left open as a connection comes back. PostgreSQL ends the transaction
+  itself and was not affected.
+
 ## [2.3.0] - 2026-11-11
 
 2.3 hardens the phone modes (`CIBA.APPROVE_LOGINS`), from an audit of

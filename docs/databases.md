@@ -951,6 +951,10 @@ its words.
   take the database's write lock first, and wait for each other (up to
   the driver's busy timeout, then "database is locked"). They never fail
   on each other's changes.
+- On SQLite, a commit refused as "database is locked" fails the unit of
+  work, and nothing of it stays: SQLite keeps such a transaction open,
+  to try the `COMMIT` again, and the pool rolls it back before another
+  unit of work gets the connection.
 - A read-only unit of work takes no level. It says how it reads with
   `reads=` (`Reads.SNAPSHOT` reads one snapshot). `isolation=` with
   `readonly=True` is a `ValueError`.
