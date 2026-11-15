@@ -91,6 +91,9 @@ and a status.
   superuser. Nothing else changed about what a superuser may do: no
   backend narrows one, as before; see
   [Checking permissions](docs/auth/users.md#checking-permissions) (user report A11).
+- `APPROVALS.SUPERUSER_APPROVERS=""`, what an unset variable gives in a
+  compose file, is read as `None`: superusers approve. The permission's
+  pattern refused it, so the project did not start (user report P3).
 
 ## [2.3.0] - 2026-11-11
 

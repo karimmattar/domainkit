@@ -637,7 +637,7 @@ other settings.
 | `ENTRY_APPROVALS` | `2` | Approvals a posting over its threshold needs (at most 10). |
 | `ENTRY_APPROVERS` | `"accounting.add_entry"` | The permission whoever approves a posting holds. |
 | `SUPERUSER_APPROVALS` | `0` | Approvals that making a superuser needs (at most 10); 0: it is not guarded. |
-| `SUPERUSER_APPROVERS` | `None` | The permission whoever approves making a superuser holds; `None`: superusers approve, and only they. |
+| `SUPERUSER_APPROVERS` | `None` | The permission whoever approves making a superuser holds; `None`: superusers approve, and only they. An empty text is `None` too (an unset variable in a compose file). |
 
 ## On PostgreSQL and SQLite
 
