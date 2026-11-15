@@ -1,6 +1,6 @@
 # 0144. Authorize one act, not a window of time
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-15
 
 ## Context
@@ -245,7 +245,10 @@ DELETE /organizations/7/memberships/42
 
 Confirming must prove the action's `methods`, or else
 `AUTH.AUTHORIZATIONS.METHODS` (`["otp"]` by default, which `hwk` and
-`mfa` stand for, as for a step-up).
+`mfa` stand for, as for a step-up). They may also name `phone`: confirmed
+on a bound device's own screen, the phone's approval or the app's own
+act, which neither a code nor a passkey proves. `["phone"]` takes those
+two only.
 
 - **The phone** (`domainkit.contrib.ciba`):
   `POST /app-sign-in/authorizations/{id}` asks it, as a request of kind
@@ -256,14 +259,18 @@ Confirming must prove the action's `methods`, or else
   `POST /app-sign-in/requests/{id}/approve` `{"match_code"?, "digest"}`
   (the digest for this kind only), signed by its device, so the signature
   covers the digest the phone was given. Another digest denies the
-  request (`409 authorization_changed`). The row keeps the device, the
-  time it signed, and its signature, so that the approval can be checked
-  again while the device's key is kept. Then
+  request (`409 authorization_changed`). The row keeps the device, its
+  public key, the time it signed, and its signature, so that the approval
+  can be checked again once the device is unbound; with the evidence
+  ledger installed ([ADR 0011](0011-immudb-ledger-for-evidence.md)), they go into it
+  too, which outlives the row. Then
   `POST /app-sign-in/authorizations/token` `{"request"}` answers
-  `<id>.<code>`, to the session that asked only. It proves `hwk`.
+  `<id>.<code>`, to the session that asked only. It proves `hwk` and
+  `phone`.
 - **The mobile app's own act**: `POST /devices/authorizations/{id}`
   `{"digest"}`, signed by a bound device, for an act the app makes itself
-  and shows itself. It proves `hwk`.
+  and shows itself. It proves `hwk` and `phone`, and is kept as the
+  phone's approval is.
 - **A code**: `POST /auth/authorizations/{id}/confirm` `{"code",
   "password"?}`, as a transaction is confirmed, counted against
   `AUTH.MFA.RATE` and `AUTH.LOGIN_RATE`. It proves `otp`, and `pwd` with
@@ -361,19 +368,27 @@ Around it:
   matter, and for projects that keep it. An authorization is not a
   step-up: confirming one records no step-up and opens no window, and a
   step-up passes no `StepUp(for_=...)`.
-- **The phone's free-text step-up** (`POST /app-sign-in/step-up`) stays
-  in 2.x. Its documentation says what it is: the page's words, and a
-  window.
+- **The phone's free-text step-up** (`POST /app-sign-in/step-up`) is
+  deprecated in 2.4 and removed in 3.0. Through 2.x it works as before,
+  answers with a `Deprecation` header (RFC 9745), and warns once a
+  process (`DeprecationWarning`); its documentation says what it is: the
+  page's words, and a window.
 - **`auth.sca` is unchanged in 2.x**: its table, its encoding, its routes,
   and its names. Action authorizations are its design for any act, and
   share its parts: the factor checks, the phone's confirmation, and the
   code. A payment may be declared as an action instead, with the amount,
   the currency, and the payee in the command and in what is shown. The
   code is then specific to both, any change voids it, and the user is
-  shown both, so PSD2's Article 5 holds as with `auth.sca`.
-- **Approvals is unchanged.** It answers another question, and the two
-  compose: a maker's submission or an approver's decision may be an act
-  that asks for an authorization.
+  shown both, so PSD2's Article 5 holds as with `auth.sca`. 3.0 folds
+  `auth.sca` into action authorizations: one table, one encoding, and
+  `request_authorization` a built-in action.
+- **Approvals answers another question**, and the two compose: a maker's
+  submission or an approver's decision may be an act that asks for an
+  authorization. With `APPROVALS["APPROVE_ACTION"]` (off by default),
+  approving a request asks for an authorization of approvals' own,
+  `approvals.approve`, bound to the request and its fingerprint and
+  showing the action and the request's arguments, in place of the
+  approver's step-up window. Otherwise approvals is unchanged.
 
 ## Consequences
 
@@ -400,7 +415,8 @@ Around it:
   table, deleting a user and the purge need it migrated.
 - **New names**: `AUTH.AUTHORIZATIONS` (`TTL`, `METHODS`), the module's
   names, `register_action` and `confirm_action_with` in
-  `auth.integration`, the routes above, two events, a check for
+  `auth.integration`, `APPROVALS["APPROVE_ACTION"]`, the method name
+  `phone`, the routes above, two events, a check for
   `StepUp(for_=...)`, and the canonical fingerprint in the core
   (approvals' `fingerprint` stays, as the same function).
 - **What projects change**, to use it: declare an `Action` per act and
@@ -413,30 +429,35 @@ Around it:
   needs to decide, `ignore` lists that unbind what matters, and services
   that commit twice (they spend with the first commit).
 
-## Open questions
+## Decided at review
 
-`domainkit_tests/test_action_authorisation_grounds.py` pins, on today's
-code, the facts questions 1, 3, 4, and 5 turn on.
+The ADR was proposed with seven open questions; the review of
+2026-11-15 answered each. `domainkit_tests/test_action_authorisation_grounds.py`
+pins, on the code before this decision, the facts questions 1, 3, 4, and
+5 turned on.
 
-1. The rule asks and the act spends, where the report has the rule spend.
-   Is that right, or should `Require` call a spending hook of a rule once
-   every other rule allowed (a change to the core's rules)?
-2. Should 3.0 fold `auth.sca` into action authorizations (one table, one
-   encoding, `request_authorization` a built-in action), or keep both?
-3. The phone's free-text step-up: deprecate it in 2.4 and remove it in
-   3.0, or keep it, with the phone saying that approving opens a window,
-   and for how long?
-4. May an action require the phone, the one screen the session does not
-   control, and refuse a code or a passkey? `methods` cannot say so
-   today: a passkey proves `hwk` too.
-5. Keep the device's signature of each phone approval on the row (and in
-   the evidence ledger, ADR 0011, where installed), at the cost of the
-   storage and of keeping a device's public key after it is unbound?
-6. Should a `ResourceRouter` mount the twin (`POST <path>/authorization`)
-   for every route that asks, or only when the route says so?
-7. Should approvals offer an action of its own (`approvals.approve`,
-   bound to the request and its fingerprint) for `approve_rule`, in place
-   of a window?
+1. **The rule asks, the act spends.** One request asks a rule more than
+   once (`StepUp` again for each object), a later rule may refuse after
+   it, and an act may fail after it: a rule that spent would burn the
+   authorization in each case. Spent with the act, a failed act may be
+   sent again. `Require` is unchanged.
+2. **3.0 folds `auth.sca` into action authorizations.** 2.x keeps both,
+   unchanged.
+3. **The free-text step-up is deprecated in 2.4 and removed in 3.0**, as
+   [above](#beside-the-window-transactions-and-approvals).
+4. **An action may require the phone**: `methods=["phone"]`, which a
+   code or a passkey does not prove. The default takes the phone, a code,
+   or a passkey.
+5. **The device's signature is kept**, with its public key, on the row
+   and in the evidence ledger where installed. The key is not a secret;
+   it is kept as long as the proof.
+6. **A `ResourceRouter` mounts the twin** (`POST <path>/authorization`)
+   for every command route that asks: such a route is of no use without
+   one, and `StepUp(for_=...)` already says it asks. The twin shows in
+   OpenAPI and in the routes `check` lists.
+7. **Approvals offers `approvals.approve`**, opt-in
+   (`APPROVALS["APPROVE_ACTION"]`); the step-up window stays the default
+   in 2.x.
 
 ## References
 

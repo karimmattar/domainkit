@@ -151,7 +151,7 @@ statuses, and the amendments they name.
 | [0138](0138-mount-an-accounts-routes-with-one-call.md) | Mount an account's routes with one call | Accepted |
 | [0139](0139-hold-a-rung-under-load-against-plain-fastapi-in-the-same-run.md) | Hold a rung under load against plain FastAPI in the same run | Accepted |
 | [0140](0140-auth-asks-other-apps-through-hooks.md) | Auth asks other apps through hooks | Accepted |
-| [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Proposed |
+| [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Accepted |
 
 ### Decisions still without a record
 
