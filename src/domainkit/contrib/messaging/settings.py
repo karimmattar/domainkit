@@ -59,7 +59,14 @@ class MessagingSettings(BaseModel):
     dead-letters it at once.
     """
     RETENTION_SECONDS: float = Field(default=7 * 24 * 3600.0, gt=0, le=MAX_DELAY)
-    """How long finished messages are kept; dead ones are kept until retried."""
+    """How long finished messages are kept; dead ones, ``DEAD_RETENTION_SECONDS``."""
+    DEAD_RETENTION_SECONDS: float | None = Field(default=None, gt=0, le=MAX_DELAY)
+    """How long dead messages are kept, from when they died; then cleanup deletes them.
+
+    ``None`` (the default) keeps them until an operator retries or drops
+    them (``messages retry``, ``messages drop``). A periodic task's dead
+    run is kept until its slot ends, as a finished one is.
+    """
     CLEANUP_INTERVAL: float = Field(default=3600.0, gt=0, le=24 * 3600)
     CLEANUP_BATCH_SIZE: int = Field(default=1000, ge=1, le=100_000)
     """Most finished messages one cleanup statement deletes."""

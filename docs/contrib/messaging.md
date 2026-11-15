@@ -151,8 +151,9 @@ A message keeps its last error, which is logged and reported too.
 Validation errors (arguments or an event that no longer fit) are kept as
 `InvalidData`, naming the fields and rules but not the values, which are
 often personal data. `python manage.py messages list dead` lists dead
-letters, and `messages retry ID` (or `all`) queues them again after a
-fix ([Inspecting and cancelling](#inspecting-and-cancelling)).
+letters, `messages retry ID` (or `all`) queues them again after a fix,
+and `messages drop ID` (or `all`) deletes them
+([Inspecting and cancelling](#inspecting-and-cancelling)).
 
 ### Unknown tasks and handlers, and deploys
 
@@ -447,7 +448,8 @@ async def push_invoice(invoice_id: UUID) -> None:
   statement that marks it done, and `cancel` when it cancels it. The row
   keeps the task's name, id, times, attempts, and error, for
   `RETENTION_SECONDS`. A dead message keeps its arguments, so `messages
-  retry` can run it again, for as long as it stays dead, unless its task
+  retry` can run it again, for as long as it stays dead (until dropped,
+  or `DEAD_RETENTION_SECONDS`), unless its task
   is `sensitive`. Then they are blanked with its error recorded, its
   headers say `payload_blanked`, and a retry refuses it. Mark a task
   sensitive when its arguments hold secrets or personal data; mail, text
@@ -796,6 +798,7 @@ takes `--database` (default: `MESSAGING.DATABASE`):
 | `messages status` | Count messages by status, and show each queue's lag: how long its oldest due message has waited for a worker. |
 | `messages list STATE [--queue Q] [--limit N]` | List messages, without their arguments: `pending` (in the order workers take them, `due` or `scheduled`), `held` (waiting for an earlier one of their key, by key and in order), `locked` (`running`, or `published` to the broker), or `dead`. `--limit` defaults to 20. |
 | `messages retry ID` or `all` | Queue dead letters again, with fresh attempts. |
+| `messages drop ID` or `all` | Delete dead letters. `--blanked`: only those whose arguments were blanked, which `retry` cannot run. |
 | `messages cancel ID` | Cancel a message that no worker is running. |
 | `messages release` | Make the next message of each stalled ordering key pending. |
 
@@ -813,6 +816,9 @@ Queued 1 message(s).
 
 `retry` skips the dead letters of `sensitive` tasks, whose arguments were
 blanked: `retry ID` refuses one, and `retry all` says how many it left.
+`drop all --blanked` deletes them, once they were sent again from where
+they came from; `drop ID` deletes any one dead letter. Nothing else
+deletes a dead letter, unless `DEAD_RETENTION_SECONDS` is set.
 `cancel` cancels a waiting or held message, or one on its way through the
 broker (its delivery is then skipped). A running message is refused:
 
@@ -822,13 +828,13 @@ CommandError: 00000000-0000-4000-8000-000000000001 was not cancelled: it is runn
 
 A cancelled message never runs, nor does the rest of its chain. It is
 kept as `cancelled`, without its arguments, and deleted after
-`RETENTION_SECONDS`. `retry`, `cancel`, and `release` take `--operator`,
-and are recorded in the audit trail with the operator who ran them
-([operators](../reference/commands.md#operators)).
+`RETENTION_SECONDS`. `retry`, `drop`, `cancel`, and `release` take
+`--operator`, and are recorded in the audit trail with the operator who
+ran them ([operators](../reference/commands.md#operators)).
 
 `domainkit.contrib.messaging.admin` has the same operations for your own
 tools, unrecorded: `list_messages`, `cancel`, `queue_counts`,
-`queue_lag`, `retry_dead`, `blanked_dead_letters`, and
+`queue_lag`, `retry_dead`, `drop_dead`, `blanked_dead_letters`, and
 `release_stalled`.
 
 With Prometheus, `messaging_outbox_lag_seconds` (per queue) is the same
@@ -899,7 +905,8 @@ other settings.
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `DRAIN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
 | `UNKNOWN_TARGET_GRACE` | `3600.0` | Seconds a message naming a task or handler that no worker knows waits for one, given back with a doubling delay, before it is dead-lettered ([Unknown tasks and handlers](#unknown-tasks-and-handlers-and-deploys)); 0 dead-letters it at once (at most 365 days). |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. A periodic task's run is kept until its slot ends, however long: it is what stops workers from queueing the slot again. |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried or dropped, or for `DEAD_RETENTION_SECONDS`. A periodic task's run is kept until its slot ends, however long: it is what stops workers from queueing the slot again. |
+| `DEAD_RETENTION_SECONDS` | `None` | Dead letters are deleted this long after they died (at most 365 days); `None` keeps them until `messages retry` or `messages drop`. A periodic task's dead run is kept until its slot ends, as a finished one is. |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | The most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox ([Workers on RabbitMQ](#workers-on-rabbitmq)). |

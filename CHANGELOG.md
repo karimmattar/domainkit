@@ -59,6 +59,13 @@ and a status.
   check reads. `--metrics-port` answered from a thread however stuck the
   loop was. `domainkit.http.health.readiness_failures` runs `/ready`'s
   checks for any process (user report W2).
+- `messages drop ID|all [--blanked]` deletes dead letters, audited with
+  its operator, and `MESSAGING.DEAD_RETENTION_SECONDS` lets cleanup
+  delete those that died that long ago (default `None`: kept, as
+  before). The dead letters of mail, texts, and pushes keep no
+  arguments, so `retry` could not run them and `cancel` refused them:
+  they stayed for ever, and an alert on the `dead` gauge never cleared.
+  `admin.drop_dead` does the same for your own tools (user report W4).
 
 ### Changed
 

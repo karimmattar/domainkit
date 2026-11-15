@@ -1,4 +1,4 @@
-"""Operator queries: queue depth, lag, listings, retries, and cancelling.
+"""Operator queries: queue depth, lag, listings, retries, cancelling, dropping.
 
 A pending message is *waiting* until a worker starts it, *running* while a
 worker holds it (``started_at`` and a live lock), and back to waiting if it
@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     and_,
     case,
+    delete,
     false,
     func,
     literal,
@@ -35,6 +36,7 @@ from .tables import BLANKED, CANCELLED, DEAD, HELD, PENDING, messages
 __all__ = [
     "blanked_dead_letters",
     "cancel",
+    "drop_dead",
     "list_messages",
     "queue_counts",
     "queue_lag",
@@ -254,6 +256,30 @@ async def blanked_dead_letters(
         statement = statement.where(messages.c.id == message_id)
     async with connections.engine(database or config.DATABASE).connect() as connection:
         return int(await connection.scalar(statement) or 0)
+
+
+async def drop_dead(
+    config: MessagingSettings,
+    message_id: uuid.UUID | None,
+    database: str | None = None,
+    *,
+    blanked_only: bool = False,
+) -> int:
+    """Delete dead messages (one, or all); return how many went.
+
+    A dead message holds nothing back: its ordering key went on when it
+    died, and the inbox forgets it at the next cleanup. ``blanked_only``
+    keeps the ones a retry could still run: only those whose arguments
+    were blanked when they died (``blanked``) go. One condition picks the
+    rows, so a message an operator retries meanwhile stays.
+    """
+    dead = messages.c.status == DEAD
+    if blanked_only:
+        dead = and_(dead, blanked())
+    if message_id is not None:
+        dead = and_(dead, messages.c.id == message_id)
+    async with connections.engine(database or config.DATABASE).begin() as connection:
+        return int((await connection.execute(delete(messages).where(dead))).rowcount)
 
 
 async def cancel(

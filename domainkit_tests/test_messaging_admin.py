@@ -304,6 +304,15 @@ def action_usage(action: str) -> str:
         ("list", "--queue QUEUE only this queue's messages"),
         ("retry", "ID|all"),
         ("retry", "--operator NAME"),
+        ("drop", "ID|all"),
+        (
+            "drop",
+            (
+                "--blanked only those whose arguments were blanked when they died "
+                "(sensitive tasks): the ones retry cannot run"
+            ),
+        ),
+        ("drop", "--operator NAME"),
         ("cancel", "ID"),
         (
             "release",

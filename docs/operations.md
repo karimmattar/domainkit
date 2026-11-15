@@ -409,13 +409,16 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
 python manage.py messages status            # counts by status, and each queue's lag
 python manage.py messages list pending      # also: held, locked, dead
 python manage.py messages retry 42          # or: retry all
+python manage.py messages drop 42           # or: drop all [--blanked]
 python manage.py messages cancel 42
 python manage.py messages release           # unblock keys with held messages and none pending
 ```
 
-`retry`, `cancel`, and `release` take `--operator`. With
+`retry`, `drop`, `cancel`, and `release` take `--operator`. With
 `domainkit.contrib.audit` installed, each one is recorded in the audit
-trail with the operator's name.
+trail with the operator's name. Dead letters stay until retried or
+dropped, unless `MESSAGING.DEAD_RETENTION_SECONDS` is set: then cleanup
+deletes those that died that long ago.
 
 ## Sealing the audit trail
 

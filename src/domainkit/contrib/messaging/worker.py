@@ -561,6 +561,7 @@ class Worker:
         self._next_runs: dict[str, datetime] = {}
         self._last_cleanup = float("-inf")
         self._cleanup_batch = self.config.CLEANUP_BATCH_SIZE
+        self._dead_batch = self.config.CLEANUP_BATCH_SIZE
         self._prune_batch = self.config.CLEANUP_BATCH_SIZE
         self._keys_batch = self.config.CLEANUP_BATCH_SIZE
         self._declared: WeakKeyDictionary[Broker, set[str]] = WeakKeyDictionary()
@@ -1474,17 +1475,24 @@ class Worker:
     async def cleanup(self) -> int:
         """Delete done and cancelled messages older than ``RETENTION_SECONDS``.
 
-        They go in batches of up to ``CLEANUP_BATCH_SIZE``, each in its own
-        short transaction, skipping rows other workers lock on PostgreSQL;
-        return how many were deleted. A batch that fails halves the next
-        one, down to a single row, so statement timeouts slow cleanup down
-        but never stop it; batches that go through grow back.
+        And dead ones that died ``DEAD_RETENTION_SECONDS`` ago, when that
+        is set. They go in batches of up to ``CLEANUP_BATCH_SIZE``, each in
+        its own short transaction, skipping rows other workers lock on
+        PostgreSQL; return how many were deleted. A batch that fails halves
+        the next one, down to a single row, so statement timeouts slow
+        cleanup down but never stop it; batches that go through grow back.
         """
-        return await self._clean(None)
+        return await self._clean(None) + await self._clean_dead(None)
 
     async def _clean(self, stop: asyncio.Event | None) -> int:
-        """Run ``cleanup``, stopping between batches once ``stop`` is set."""
+        """Delete finished messages, stopping between batches once ``stop`` is set."""
         return await self._in_batches(stop, self.cleanup_statement, "_cleanup_batch")
+
+    async def _clean_dead(self, stop: asyncio.Event | None) -> int:
+        """Delete dead messages past ``DEAD_RETENTION_SECONDS``, if it is set."""
+        if self.config.DEAD_RETENTION_SECONDS is None:
+            return 0
+        return await self._in_batches(stop, self.dead_statement, "_dead_batch")
 
     async def release_stalled(self) -> int:
         """Make the next message of each stalled key pending; return how many.
@@ -1640,7 +1648,28 @@ class Worker:
         statuses to the index's condition, nor estimate a bound cutoff or
         limit, and scans the whole outbox instead (PERF-02).
         """
-        retention = timedelta(seconds=-self.config.RETENTION_SECONDS)
+        return self._past(dialect, size, FINISHED, self.config.RETENTION_SECONDS)
+
+    def dead_statement(self, dialect: str, size: int) -> Delete:
+        """The ``DELETE`` of up to ``size`` messages dead ``DEAD_RETENTION_SECONDS``.
+
+        Found through the index of statuses (``ix_domainkit_messages_ready``),
+        with the status, the retention, and the size written into the SQL,
+        as ``cleanup_statement`` writes them (PERF-02). A periodic task's
+        dead run stays until its slot ends, as a finished one does.
+
+        Raises:
+            ImproperlyConfigured: ``DEAD_RETENTION_SECONDS`` is not set.
+        """
+        if (seconds := self.config.DEAD_RETENTION_SECONDS) is None:
+            raise ImproperlyConfigured("MESSAGING.DEAD_RETENTION_SECONDS is not set.")
+        return self._past(dialect, size, (DEAD,), seconds)
+
+    def _past(
+        self, dialect: str, size: int, statuses: Sequence[str], seconds: float
+    ) -> Delete:
+        """The ``DELETE`` of up to ``size`` ``statuses`` messages ``seconds`` old."""
+        retention = timedelta(seconds=-seconds)
         cutoff: dbclock.Moment
         if dbclock.uses_database(dialect):
             cutoff = func.statement_timestamp(type_=DateTime(timezone=True)) + literal(
@@ -1652,23 +1681,23 @@ class Worker:
             select(messages.c.id)
             .where(
                 messages.c.status.in_(
-                    [literal(status, literal_execute=True) for status in FINISHED]
+                    [literal(status, literal_execute=True) for status in statuses]
                 ),
                 messages.c.finished_at < cutoff,
             )
             .limit(literal(size, literal_execute=True))
             .with_for_update(skip_locked=True)
         )
-        if (slots := self._slots_kept(dialect)) is not None:
+        if (slots := self._slots_kept(dialect, seconds)) is not None:
             old = old.where(slots)
         return delete(messages).where(messages.c.id.in_(old.scalar_subquery()))
 
-    def _slots_kept(self, dialect: str) -> ColumnElement[bool] | None:
+    def _slots_kept(self, dialect: str, retention: float) -> ColumnElement[bool] | None:
         """Keep each periodic task's run until its slot ends, retention or not.
 
         Its row's ``dedupe_key`` is what stops every worker, a restarted one
         included, from queuing the slot again; a slot longer than
-        ``RETENTION_SECONDS`` would otherwise run again once cleanup deleted
+        ``retention`` seconds would otherwise run again once cleanup deleted
         it (CONC-13). Only tasks with such slots add a condition. None if
         none has one.
         """
@@ -1680,7 +1709,7 @@ class Worker:
                 messages.c.available_at > dbclock.at(dialect, -every.total_seconds()),
             )
             for spec, every in periodic_tasks()
-            if every.total_seconds() > self.config.RETENTION_SECONDS
+            if every.total_seconds() > retention
         ]
         if not kept:
             return None
@@ -1724,6 +1753,7 @@ class Worker:
         while not stop.is_set():
             try:
                 deleted = await self._clean(stop)
+                dead = await self._clean_dead(stop)
                 pruned = await self._prune(stop)
                 keys = await self._prune_keys(stop)
             except Exception as exc:  # noqa: BLE001 - logged; it runs again.
@@ -1734,6 +1764,13 @@ class Worker:
                 logger.info(
                     "Deleted %d finished message(s) from the outbox of %r",
                     deleted,
+                    self.database,
+                )
+            if dead:
+                logger.info(
+                    "Deleted %d dead message(s) past DEAD_RETENTION_SECONDS from "
+                    "the outbox of %r",
+                    dead,
                     self.database,
                 )
             if pruned:

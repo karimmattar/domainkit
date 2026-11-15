@@ -100,7 +100,7 @@ message has waited that long for a worker.
 - One handler failing: fix it and deploy. Retries go on by themselves,
   and the messages that ran out of attempts are
   [dead letters](#messages-are-dead-lettered).
-- `messages cancel ID` drops one message that no worker is running. With
+- `messages cancel ID` cancels one message that no worker is running. With
   the audit app, the audit trail records it with your name.
 
 Nothing is lost while the outbox backs up. Messages stay until a worker
@@ -115,8 +115,15 @@ the error in `ERROR_REPORTERS` and in the worker's log.
 attempts, and its last error.
 
 **Do** fix the cause, and deploy the fix. Then run `messages retry ID`,
-or `messages retry all`. A dead message is kept until it is retried or
-cancelled. It never runs again by itself.
+or `messages retry all`. A dead message never runs again by itself.
+
+The dead letters of `sensitive` tasks (mail, text messages, pushes)
+keep no arguments, so `retry` leaves them: send them again from where
+they came from, then drop them with `messages drop all --blanked`. Drop
+any other one you will not retry with `messages drop ID`. Both are
+recorded in the audit trail with your name. A dead message is kept
+until it is retried or dropped, or for
+`MESSAGING.DEAD_RETENTION_SECONDS` once that is set.
 
 ## A key's messages stall
 

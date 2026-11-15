@@ -794,10 +794,11 @@ cancelled 0
 | `list pending\|held\|locked\|dead` | Lists messages in a state. `pending` lists them in the order workers take them; `held`, those waiting for an earlier message of their ordering key; `locked`, those running or published. |
 | `list --queue Q`, `list --limit N` | Only one queue's messages; at most N (default: 20). |
 | `retry ID\|all` | Queues a dead message, or all of them, again. The dead letters of `sensitive` tasks are not retried, because their arguments were blanked. A message with an ordering key goes back in its place. |
+| `drop ID\|all` | Deletes a dead message, or all of them. With `--blanked`, only those whose arguments were blanked when they died (`sensitive` tasks), which `retry` cannot run. |
 | `cancel ID` | Cancels a message that no worker runs. |
 | `release` | Runs the next message of each ordering key that has held messages and none pending. |
 | `--database` | After any action: the outbox's alias (default: `MESSAGING.DATABASE`). |
-| `--operator` | After `retry`, `cancel`, and `release`, which are audited ([Operators](#operators)). |
+| `--operator` | After `retry`, `drop`, `cancel`, and `release`, which are audited ([Operators](#operators)). |
 
 ## Users and logins
 

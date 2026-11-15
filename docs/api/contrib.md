@@ -491,10 +491,11 @@ Transactional outbox, durable event handlers, and background tasks.
 
 ## `domainkit.contrib.messaging.admin`
 
-Operator queries: queue depth, lag, listings, retries, and cancelling.
+Operator queries: queue depth, lag, listings, retries, cancelling, dropping.
 
 - `blanked_dead_letters`: Count dead messages (one, or all) whose arguments were blanked.
 - `cancel`: Cancel a pending message that no worker is running; report whether it was.
+- `drop_dead`: Delete dead messages (one, or all); return how many went.
 - `list_messages`: List messages in `state`, most urgent (or, for dead ones, newest) first.
 - `queue_counts`: Count messages by status in alias `database` (default: the home outbox).
 - `queue_lag`: Seconds the oldest due message of each queue has waited to start.
