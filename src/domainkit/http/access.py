@@ -64,12 +64,21 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, Final, Protocol, cast, runtime_checkable
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Final,
+    Protocol,
+    cast,
+    runtime_checkable,
+)
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, APIWebSocketRoute, iter_route_contexts
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute, Host, Mount, Route, WebSocketRoute
 
@@ -91,6 +100,7 @@ __all__ = [
     "AllowScoped",
     "AnonymousPrincipal",
     "AnyOf",
+    "AsksAuthorization",
     "BasePermission",
     "CurrentUser",
     "DenialRecorder",
@@ -320,6 +330,25 @@ class BasePermission:
 
 type Rule = BasePermission | type[BasePermission]
 """A rule, or a rule class that takes no arguments."""
+
+
+@runtime_checkable
+class AsksAuthorization(Protocol):
+    """A rule that asks for an authorization of the act it guards (ADR 0144).
+
+    ``ResourceRouter`` gives each command route whose rules hold one (at
+    the top, or inside ``&``) a twin, ``POST <the route's path>/authorization``:
+    it builds the command as the route does, asks the route's other rules,
+    and answers ``201`` with what ``ask_authorization`` returns.
+    """
+
+    def authorization_model(self) -> type[BaseModel]:
+        """The model ``ask_authorization`` returns: the twin's ``201`` body."""
+        ...
+
+    async def ask_authorization(self, request: Request, command: object) -> BaseModel:
+        """Store an authorization of ``command`` for the request's caller: the body."""
+        ...
 
 
 class AllOf(BasePermission):
