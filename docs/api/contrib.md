@@ -479,6 +479,7 @@ Transactional outbox, durable event handlers, and background tasks.
 - `Chain`: Tasks that run one after another, each once the one before succeeds.
 - `LeaseLost`: Another worker took the message over; this run's commit is refused.
 - `MessagingSettings`: Delivery, retry, and worker options; every key is optional.
+- `RunLater`: Run this message again once `after` has passed: not a failure.
 - `Worker`: Run outbox messages of one database.
 - `chain`: Run `first`, then each task of `then` once the one before succeeds.
 - `current_attempt`: The run of the message being processed, or None outside the worker.

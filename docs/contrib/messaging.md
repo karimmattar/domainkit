@@ -166,6 +166,33 @@ task shop.flaky failed (attempt 1 of 2); retrying in 0.0s
 Dead-lettered task shop.flaky after 2 attempts
 ```
 
+A task or handler that finds the world not ready yet, such as a provider
+that has not decided, raises `RunLater`. That is not a failure: the
+worker gives the attempt back, logs one line at INFO, reports nothing,
+and runs the message again once `after` has passed. `retry_on` and
+`dont_retry_on` do not apply, and it is never dead-lettered for that,
+so give work that could wait for ever an end of its own:
+
+```python
+from domainkit.contrib.messaging import RunLater
+
+
+@task(name="kyc.recheck")
+async def recheck(session_id: str, give_up_at: datetime) -> None:
+    if (decision := await provider.decision(session_id)) is None:
+        if clock.now() >= give_up_at:
+            raise ProviderNeverDecided(session_id)  # A failure: retried, then dead.
+        raise RunLater(after=timedelta(minutes=1), reason="not decided yet")
+    await record(decision)
+```
+
+```text
+Task kyc.recheck runs again in 60s: not decided yet
+```
+
+It is counted as the outcome `later`. `domainkit.ddd.Retry` is another
+thing: how a unit of work runs again after losing a race.
+
 A handler or task that raises `CancelledError` while the worker is not
 stopping it (it awaited a task or future that was cancelled) has failed,
 as `HandlerCancelled`. It is retried and counted as any failure.

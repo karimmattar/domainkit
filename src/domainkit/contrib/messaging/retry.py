@@ -10,21 +10,57 @@
         dont_retry_on=(InvalidInvoice,),          # these dead-letter at once
     )
     async def push_invoice(invoice_id: UUID) -> None: ...
+
+A task or durable handler that finds the world not ready yet raises
+``RunLater``, which is not a failure.
 """
 
 import math
 import secrets
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Final, Self
 
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
 MAX_DELAY: Final = 365 * 24 * 3600.0
 """The longest retry delay, one year: longer ones would only overflow dates."""
 _random = secrets.SystemRandom()
 
 type Errors = tuple[type[Exception], ...]
+
+
+class RunLater(DomainkitError):
+    """Run this message again once ``after`` has passed: not a failure.
+
+    ``raise RunLater(after=timedelta(minutes=1))`` from a task or durable
+    handler that found the world not ready yet, such as a provider that
+    has not decided. The worker gives the attempt back, as it does to a
+    task its ``rate`` holds back, logs one line at INFO, reports nothing,
+    and runs the message again once ``after`` has passed; ``retry_on``
+    and ``dont_retry_on`` do not apply. It is never dead-lettered for
+    that, so work that could wait for ever needs an end of its own: a
+    deadline in its arguments, past which it gives up.
+    """
+
+    def __init__(self, after: timedelta | float, reason: str = "") -> None:
+        """Run again in ``after`` (a ``timedelta``, or seconds); ``reason`` is logged.
+
+        Raises:
+            ValueError: ``after`` is not more than 0 and at most a year.
+        """
+        seconds = (
+            after.total_seconds() if isinstance(after, timedelta) else float(after)
+        )
+        if not (math.isfinite(seconds) and 0 < seconds <= MAX_DELAY):
+            raise ValueError(
+                f"RunLater(after=...) is more than 0 and at most {MAX_DELAY:g} "
+                f"seconds, not {seconds!r}."
+            )
+        super().__init__(reason or f"Run again in {seconds:g}s.")
+        self.after = seconds
+        """Seconds until the message runs again."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -76,6 +76,12 @@ and a status.
   handler is `domainkit.contrib.webhooks.fan_out`, formerly its path. Two
   handlers under one key, or one handler under two, are refused
   (user report W5).
+- `raise RunLater(after=timedelta(minutes=1))` from a task or durable
+  handler runs it again then, and is not a failure: no attempt spent,
+  one INFO line, no report, never a dead letter, counted as the outcome
+  `later`. A task polling a provider that had not decided raised an
+  error instead: a warning and a traceback per check, and a dead letter
+  past `max_attempts` (user report W6).
 
 ### Changed
 

@@ -98,7 +98,7 @@ from .registry import (
     periodic_tasks,
     qualified_name,
 )
-from .retry import Backoff, retryable
+from .retry import Backoff, RunLater, retryable
 from .runs import (
     AlreadyHandled,
     Run,
@@ -168,6 +168,8 @@ second half of it, and none competes with the first claims for locks.
 _random = secrets.SystemRandom()
 THROTTLED: Final = "throttled"
 """The outcome of a task held back by its rate; it runs later."""
+LATER: Final = "later"
+"""The outcome of a run that raised ``RunLater``; it runs again then."""
 HANDLED: Final = "handled"
 """The outcome of a message the inbox shows a run committed before; it is done."""
 SUPERSEDED: Final = "superseded"
@@ -1050,6 +1052,8 @@ class Worker:
                     message.target,
                 )
                 return HANDLED
+            if isinstance(exc, RunLater):
+                return await self._later(message, exc)
             if isinstance(exc, UnknownTarget) and (since := self._unknown_for(message)):
                 return await self._wait_for_target(message, exc, since)
             permanent = isinstance(exc, UnknownTarget | AttemptsExhausted) or (
@@ -1066,6 +1070,28 @@ class Worker:
             (time.perf_counter() - started) * 1000,
         )
         return DONE
+
+    async def _later(self, message: Claimed, later: RunLater) -> str:
+        """Give ``message`` back, its attempt unspent, due once ``later.after`` passed.
+
+        Not a failure: logged at INFO, without a traceback, and not
+        reported. Its last error stays as it was.
+        """
+        await self._release(
+            message,
+            status=PENDING,
+            attempts=messages.c.attempts - 1,
+            available_at=dbclock.at(self.dialect, later.after),
+            started_at=None,
+        )
+        logger.info(
+            "%s %s runs again in %gs: %s",
+            message.kind.capitalize(),
+            message.target,
+            later.after,
+            later,
+        )
+        return LATER
 
     async def _throttle(self, spec: TaskSpec, rate: tuple[int, int]) -> float | None:
         """Count a run of ``spec``; None if its rate allows it, else seconds to wait.
