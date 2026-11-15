@@ -141,6 +141,9 @@ and a status.
   `MESSAGING.VISIBILITY_TIMEOUT` (300 s), and one a broker lost after
   `REPUBLISH_AFTER` (an hour), while codes last `AUTH.CODE_TTL`. Either
   more than half of it is `auth.W009` (user report W8).
+- The `tracing` extra's floor is opentelemetry-api 1.45.2, past
+  CVE-2026-126360, and the lock takes 1.45.2 (the dev group's
+  opentelemetry-sdk with it): `pip-audit` failed on 1.45.1.
 
 ## [2.3.0] - 2026-11-11
 
