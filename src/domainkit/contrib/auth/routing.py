@@ -11,18 +11,19 @@ phone-first project. ``account_router`` mounts what is installed::
 Each app names its routes (``AccountRoutes``) and says whether they are
 mounted by default. Auth's own:
 
-================  =============================  ==========================
-Name              Routes                         By default
-================  =============================  ==========================
-``login``         ``auth.api``                   yes
-``sessions``      ``auth.cookies``               with ``CookieAuthentication``
-``mfa``           ``auth.mfa``                   yes
-``tokens``        ``auth.personal_tokens``       yes
-``step-up``       ``auth.stepup``                yes
-``sca``           ``auth.sca``                   yes
-``recovery``      ``auth.recovery``              with messaging and mail
-``signup``        ``auth.signup``                no: anyone could sign up
-================  =============================  ==========================
+====================  =============================  ===========================
+Name                  Routes                         By default
+====================  =============================  ===========================
+``login``             ``auth.api``                   yes
+``sessions``          ``auth.cookies``               with ``CookieAuthentication``
+``mfa``               ``auth.mfa``                   yes
+``tokens``            ``auth.personal_tokens``       yes
+``step-up``           ``auth.stepup``                yes
+``sca``               ``auth.sca``                   yes
+``authorizations``    ``auth.actions``               yes
+``recovery``          ``auth.recovery``              with messaging and mail
+``signup``            ``auth.signup``                no: anyone could sign up
+====================  =============================  ===========================
 
 The devices, ciba, identity and phones apps add ``devices``, ``sign-in``,
 ``identity`` and ``phones`` when they are installed; ``saml``, identity's

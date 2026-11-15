@@ -75,6 +75,36 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `password_help_texts`: What each configured rule asks of a password, for API clients.
 - `validate_password`: Raise `InvalidPassword` listing every rule `password` breaks.
 
+## `domainkit.contrib.auth.actions`
+
+Authorize one act, with its arguments, once (ADR 0144).
+
+- `AUTHORIZATION_HEADER`: The header a request sends its act's authorization in: `<id>.<code>`.
+- `Action`: An act that asks for its own authorization: its purpose, command, and words.
+- `ActionAuthorization`: An act waiting for its user's authorization, or holding it (ADR 0144).
+- `ActionAuthorizationOut`: An authorization asked for: confirm it, then send it with the act.
+- `ActionAuthorizationUsed`: An act's authorization was spent on that act, once.
+- `ActionAuthorized`: A user confirmed one act, with its arguments (`auth.actions`).
+- `ActionConfirmation`: A way to confirm action authorizations: what it proves, and who has it.
+- `ActionNotAuthorized`: No authorization holds for this act: ask for one, then try again (403).
+- `AuthorizationChanged`: What the device was shown is not what the authorization holds (409).
+- `AuthorizationNeedsOtherFactors`: The act asks confirming it to prove what this way does not (409).
+- `AuthorizationNotFound`: No authorization of the user's, or of the login's, has that id (404).
+- `AuthorizationRequired`: The act needs an authorization of its own, and none came with it (401).
+- `Shown`: What the user is shown of an act: a title, and up to six labelled values.
+- `action_authorization`: The user's authorization `authorization_id`, to show it, in any state.
+- `action_for`: The registered action of `purpose`, if there is one.
+- `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
+- `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
+- `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
+- `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
+- `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
+- `registered_actions`: Every registered action, by purpose.
+- `request_action_authorization`: Store an authorization of `command` for the request's user and login.
+- `requires_authorization`: Spend the request's authorization of `action` on the service's command.
+- `router`: The routes: authorize one act, with its arguments, once (ADR 0144).
+- `spend_authorization`: Spend the request's authorization of `action` on `command`, in code.
+
 ## `domainkit.contrib.auth.admin`
 
 The admin API: users, groups, and permissions over REST (Django's admin).
@@ -486,6 +516,10 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `MANAGES_LOGINS`: `dependencies=[MANAGES_LOGINS]`: the route passes `on_manage_logins`.
 - `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
 - `REAUTH_AGE`: How recent a step-up must be to stand for the password (`reauthenticate`).
+- `ActionAuthorization`: An act waiting for its user's authorization, or holding it (ADR 0144).
+- `ActionConfirmation`: A way to confirm action authorizations: what it proves, and who has it.
+- `AuthorizationChanged`: What the device was shown is not what the authorization holds (409).
+- `AuthorizationNeedsOtherFactors`: The act asks confirming it to prove what this way does not (409).
 - `CsrfOut`: The token to send back in `X-CSRF-Token` with unsafe methods.
 - `LoginMethod`: How a login signed in (ADR 0130): shown with it, to tell logins apart.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
@@ -498,6 +532,8 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `UserLoggedOut`: A user logged out: of this session, or `everywhere`.
 - `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
 - `account_key`: The count of `scope` attempts at the account `username` names.
+- `action_authorization`: The user's authorization `authorization_id`, to show it, in any state.
+- `action_for`: The registered action of `purpose`, if there is one.
 - `address_key`: The count of `scope` attempts from the request's client address.
 - `attach_login_device`: Mark the login that sent `request` as the bound device `device_id`'s.
 - `attempt`: Count an attempt against each `(key, rate)`; refuse it past a rate.
@@ -507,15 +543,19 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
+- `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
 - `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
 - `end_device_logins`: End the logins marked as the bound device `device_id`'s: how many.
 - `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
+- `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `mail_user`: Mail `user` at their address from `template`; False where none can go.
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
 - `note_login_device`: Say that the user's bound device `device_id` signed this request.
+- `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `on_refusal`: Register what records refused attempts (`on_refusal(record)` in `ready()`).
@@ -523,6 +563,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
 - `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).
+- `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
 - `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
 - `second_factor_holds`: Whether `code` proves `user`'s second factor; a code that does is spent.
 - `send_code`: Issue a code for `purpose` and send it where `identifier` reaches `user`.

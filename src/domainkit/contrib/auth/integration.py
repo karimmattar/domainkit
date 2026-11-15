@@ -5,10 +5,29 @@
 phones, run and add the login gates, and step them up with keys; they reach
 auth through these names, which keep their meaning across releases as
 the rest of the public API does.
+
+An app that confirms action authorizations its own way (the phone, a
+passkey: ADR 0144) registers an ``ActionConfirmation`` in ``ready()``
+(``on_action_confirmation``), reads what to show (``action_authorization``),
+links what confirms it (``link_action_authorization``), and confirms it
+with what it proved (``confirm_action_with``).
 """
 
 from ._http import PASSWORD_MAX_LENGTH
 from .access import impersonated, proof_of
+from .actions import (
+    ActionAuthorization,
+    ActionConfirmation,
+    AuthorizationChanged,
+    AuthorizationNeedsOtherFactors,
+    action_authorization,
+    action_for,
+    confirm_action_with,
+    link_action_authorization,
+    login_digest,
+    on_action_confirmation,
+    register_action,
+)
 from .api import (
     MfaChallengeOut,
     TokenOut,
@@ -60,6 +79,10 @@ __all__ = [
     "MANAGES_LOGINS",
     "PASSWORD_MAX_LENGTH",
     "REAUTH_AGE",
+    "ActionAuthorization",
+    "ActionConfirmation",
+    "AuthorizationChanged",
+    "AuthorizationNeedsOtherFactors",
     "CsrfOut",
     "LoginMethod",
     "MfaChallengeOut",
@@ -72,6 +95,8 @@ __all__ = [
     "UserLoggedOut",
     "UserSignedUp",
     "account_key",
+    "action_authorization",
+    "action_for",
     "address_key",
     "attach_login_device",
     "attempt",
@@ -81,15 +106,19 @@ __all__ = [
     "check_manage_logins",
     "check_origin",
     "check_password_again",
+    "confirm_action_with",
     "confirm_transaction_with",
     "end_device_logins",
     "first_use_after_code",
     "gates_passed",
     "impersonated",
     "issue_login",
+    "link_action_authorization",
+    "login_digest",
     "mail_user",
     "needs_second_factor",
     "note_login_device",
+    "on_action_confirmation",
     "on_login_gate",
     "on_manage_logins",
     "on_refusal",
@@ -97,6 +126,7 @@ __all__ = [
     "proof_of",
     "reauthenticate",
     "record_step_up",
+    "register_action",
     "sca_transaction",
     "second_factor_holds",
     "send_code",

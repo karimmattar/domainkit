@@ -4,7 +4,7 @@ import dataclasses
 from collections.abc import Iterator, Mapping, Sequence
 from http.cookies import SimpleCookie
 from importlib import import_module
-from typing import Any, Final
+from typing import Any, Final, get_type_hints
 from uuid import uuid4
 
 from fastapi import FastAPI, Response
@@ -129,6 +129,9 @@ class AuthConfig(DomainConfig):
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
         on_export_subject(_export_logins, domain=self.label)
+        from .actions import CODE_CONFIRMATION, on_action_confirmation
+
+        on_action_confirmation(CODE_CONFIRMATION, domain=self.label)
         on_check_application(self.application_problems)
         on_deployment_warnings(self.weak_settings)
         on_account_routes(self.account_routes, domain=self.label)
@@ -148,6 +151,7 @@ class AuthConfig(DomainConfig):
             AccountRoutes("tokens", f"{self.name}.personal_tokens.router"),
             AccountRoutes("step-up", f"{self.name}.stepup.router"),
             AccountRoutes("sca", f"{self.name}.sca.router"),
+            AccountRoutes("authorizations", f"{self.name}.actions.router"),
             AccountRoutes("recovery", f"{self.name}.recovery.router", default=mails),
             AccountRoutes("signup", f"{self.name}.signup.router", default=False),
         ]
@@ -276,6 +280,7 @@ class AuthConfig(DomainConfig):
             )
             for route, missing in unprovable_step_ups(app)
         )
+        problems.extend(action_problems(app))
         if (
             self._mounted(app, "cookies")
             and COOKIE_AUTHENTICATION not in auth_settings().AUTHENTICATION_CLASSES
@@ -644,6 +649,86 @@ def unprovable_step_ups(app: FastAPI) -> list[tuple[str, frozenset[str]]]:
         if missing:
             found.append((route, missing))
     return found
+
+
+def action_problems(app: FastAPI) -> list[CheckMessage]:
+    """What ``check`` refuses of action authorizations (``auth.E108`` to ``E111``).
+
+    An action no installed way to confirm proves (``E108``); a route that
+    asks for a purpose no registered action has (``E109``), or whose action
+    no decorated service spends (``E110``); and ``StepUp(for_=...)`` on a
+    WebSocket or an event stream (``E111``).
+    """
+    from .actions import provable, registered_actions
+
+    actions = registered_actions()
+    problems = [
+        CheckMessage(
+            "auth.E108",
+            f"Action {purpose!r} asks confirming it to prove "
+            f"{', '.join(sorted(action.required()))}, which no installed way to "
+            "confirm proves: nobody could confirm it. Install the app that "
+            "confirms it (the phone: domainkit.contrib.ciba), or change its "
+            "methods.",
+        )
+        for purpose, action in actions.items()
+        if not provable(action.required())
+    ]
+    for route, dependant in served_routes(app.routes):
+        for rule in _rules_of(dependant):
+            if isinstance(rule, StepUp) and rule.purpose is not None:
+                problems.extend(_asking_problems(route, dependant, rule.purpose))
+    return problems
+
+
+def _asking_problems(
+    route: str, dependant: Dependant | None, purpose: str
+) -> list[CheckMessage]:
+    """What is wrong with ``route`` asking for an authorization of ``purpose``."""
+    from .actions import registered_actions, spent_by_a_service
+
+    problems = []
+    if route.startswith("WEBSOCKET ") or _streams(dependant):
+        problems.append(
+            CheckMessage(
+                "auth.E111",
+                f"{route} asks StepUp(for_={purpose!r}), but it keeps a "
+                "connection open, which is asked again and again and has no act "
+                "to spend an authorization on. Use StepUp(max_age=...) there.",
+            )
+        )
+    if purpose not in registered_actions():
+        problems.append(
+            CheckMessage(
+                "auth.E109",
+                f"{route} asks for an authorization of {purpose!r}, which no "
+                "registered action has: register_action(...) it in ready().",
+            )
+        )
+    elif not spent_by_a_service(purpose):
+        problems.append(
+            CheckMessage(
+                "auth.E110",
+                f"{route} asks for an authorization of {purpose!r}, which no "
+                "service spends: decorate the act's service with "
+                "@requires_authorization(...).",
+            )
+        )
+    return problems
+
+
+def _streams(dependant: Dependant | None) -> bool:
+    """Whether the route's endpoint answers an ``EventSourceResponse``: a stream."""
+    from domainkit.http.sse import EventSourceResponse
+
+    call = None if dependant is None else dependant.call
+    if call is None:
+        return False
+    try:
+        returned = get_type_hints(call).get("return")
+    except (NameError, TypeError):
+        return False
+    return isinstance(returned, type) and issubclass(returned, EventSourceResponse)
 
 
 def _rules_of(dependant: Dependant | None) -> Iterator[BasePermission]:

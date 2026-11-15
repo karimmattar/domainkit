@@ -1193,6 +1193,7 @@ jobs:
               domainkit.contrib.auth.devices.*
               domainkit.contrib.auth.events.* domainkit.contrib.auth.onetime.*
               domainkit.contrib.auth.personal_tokens.* domainkit.contrib.auth.sca.*
+              domainkit.contrib.auth.actions.*
               domainkit.contrib.auth.stepup.*
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*
               domainkit.contrib.auth.totp.* domainkit.contrib.auth.uow.*
