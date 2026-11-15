@@ -56,6 +56,33 @@ encoding, and `request_authorization` a built-in action. A payment may be
 declared as an `Action` now, with its amount, currency, and payee in the
 command and in what is shown.
 
+### Move from the phone's free-text step-up to action authorizations
+
+`POST /app-sign-in/step-up` and `POST /app-sign-in/step-up/token` are
+deprecated, and 3.0 removes them. The phone showed the page's words, and
+its approval stepped the session up: a window for every guarded act,
+with any arguments. Through 2.x they work as before, answer with a
+`Deprecation` header (RFC 9745), and the asking route warns once a
+process; `pytest -W error::domainkit.deprecation.DomainkitDeprecationWarning`
+finds the tests that still ask it.
+
+For each act the phone approved that way:
+
+1. Declare it as an `Action`, register it, and decorate its service
+   ([Authorizing one act](auth/actions.md#a-first-example)).
+2. Put `StepUp(for_=...)` on its route in place of `StepUp(max_age=...)`.
+3. In the web client, ask for an authorization of the act (`POST <the
+   route's path>/authorization`), then the phone
+   (`POST /auth/app-sign-in/authorizations/{id}`), poll
+   `POST /auth/app-sign-in/authorizations/token`, and send what it
+   answers in `Action-Authorization`.
+4. In the mobile app, show a request of `kind` `authorization` from its
+   `authorization` object (the title and details), and approve it with
+   `{"match_code", "digest"}`, signed as before
+   ([Confirming one act](auth/ciba.md#confirming-one-act)).
+
+Its tables do not change: ciba's `kind` column takes `authorization`.
+
 ## 2.2 to 2.3
 
 2.3 closes a hole in the phone modes: a stolen web session could bind a

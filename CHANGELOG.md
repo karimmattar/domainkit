@@ -91,6 +91,23 @@ and a status.
   nothing is unchanged. See
   [Authorizations for one act](docs/resources.md#authorizations-for-one-act)
   and ADR 0144 (user report A6).
+- The user's phone confirms one act: `POST /app-sign-in/authorizations/{id}`
+  asks it to confirm one of the session's action authorizations, counted
+  and bounded as the phone's step-up is (`START_RATE`, `MAX_PENDING`,
+  `NUMBER_MATCHING`, `409 phone_unavailable`). The phone lists the
+  request with `kind` `authorization` and an `authorization` object (the
+  purpose, the kept title and details, and the digest, read from auth's
+  row), and approves it with `{"digest"}` in a request its device signs;
+  another digest denies it (`409 authorization_changed`). The row keeps
+  the device's key, the bytes it signed, and its signature.
+  `POST /app-sign-in/authorizations/token` answers `<id>.<code>` to the
+  session that asked. The phone is a way to confirm (`hwk`, `phone`) for
+  users with a bound device, so `methods=["phone"]` passes `auth.E108`
+  where ciba is installed. `linked_action_authorization` and
+  `confirmed_action_authorization` (`auth.integration`) find an
+  authorization by the phone's request, and hand over a confirmed one
+  ([Confirming one act](docs/auth/ciba.md#confirming-one-act), ADR 0144)
+  (user report A6).
 
 ### Changed
 
@@ -105,6 +122,18 @@ and a status.
   public names in the modules that own them. A test fails on any new
   import of that kind. Nothing a project imports changed (audit finding
   A1).
+
+### Deprecated
+
+- The phone's free-text step-up, `POST /app-sign-in/step-up` and its
+  token route: the phone shows the page's words, and its approval opens a
+  window for every guarded act. Both work through 2.x, answer with
+  `Deprecation` and `Link` headers (RFC 9745), and the asking route warns
+  once a process (`DomainkitDeprecationWarning`); 3.0 removes them.
+  Declare the act as an `Action` and have the phone confirm it
+  (`/app-sign-in/authorizations/{id}`): see
+  [upgrading.md](docs/upgrading.md#move-from-the-phones-free-text-step-up-to-action-authorizations)
+  (user report A6).
 
 ## [2.3.0] - 2026-11-11
 
