@@ -147,7 +147,14 @@ Called directly with a command that needs approval, the service raises
 `ApprovalRequired` (403, `approval_required`) and runs nothing: it fails
 closed. With `submit=True`, it submits the command and raises
 `ApprovalPending` (403, `approval_pending`), whose `request_id` names the
-request. A route may answer that with a 202.
+request. A route may answer that with a 202. Over HTTP, the error's body
+names it `approval_request_id` (since 2.4), beside the body's own
+`request_id`, which is the HTTP request's, as in every error
+([the fields of an error](../reference/responses.md#the-fields-of-an-error)):
+
+```text
+{"type":"about:blank","title":"Forbidden","status":403,"detail":"This command needs approval: it was submitted for approval.","instance":"/payouts","code":"approval_pending","request_id":"9d319f0bc63345f5fdcf152e7013bd03","approval_request_id":"0192f0aa-5b7e-7c3d-9a41-3f6b1e2d4c5a"}
+```
 
 The guard checks itself both ways. A decorated service with no guard
 registered refuses every call (`ImproperlyConfigured`). `guard()`
@@ -644,7 +651,7 @@ exactly one completes it.
 | Error | When | HTTP |
 | --- | --- | --- |
 | `ApprovalRequired` | A direct call of a command that needs approval. | 403, `approval_required` |
-| `ApprovalPending` | The same, with `submit=True`: the request was submitted. | 403, `approval_pending` |
+| `ApprovalPending` | The same, with `submit=True`: the request was submitted. | 403, `approval_pending`, with `approval_request_id` |
 | `MakerCannotDecide` | The maker tried to approve or reject. | 403, `maker_cannot_decide` |
 | `InterestedParty` | A party to the command tried to decide it. | 403, `interested_party` |
 | `NotTheMaker` | Someone else tried to cancel. | 403, `not_the_maker` |

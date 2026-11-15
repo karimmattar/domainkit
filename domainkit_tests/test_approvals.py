@@ -763,6 +763,8 @@ async def test_a_guard_that_submits_answers_with_the_request(project: str) -> No
     request = await stored(raised.value.request_id)
     assert (request.maker, request.status) == ("maker", RequestStatus.PENDING)
     assert request.arguments == {"kind": "direct"}
+    # Over HTTP, beside the HTTP request's own ``request_id`` (user report P3).
+    assert raised.value.extensions() == {"approval_request_id": str(request.id)}
     with acting(None), refused(ApprovalRequired) as anonymous:
         await acting_guarded(Act(kind="direct"), AccountingUnitOfWork())
     assert (

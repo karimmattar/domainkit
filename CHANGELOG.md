@@ -52,6 +52,13 @@ and a status.
   superuser for approval. Auth and those apps no longer import each
   other, a test keeps any two apps from it, and nothing changes for a
   project (ADR 0140, audit finding A2).
+- `403 approval_pending` names the approval request it submitted, as
+  `approval_request_id`. Its body had only `request_id`, which is the
+  HTTP request's. A `DomainError` adds such members through
+  `extensions()`, in either error format, after the body's own, which
+  they never replace; see
+  [The fields of an error](docs/reference/responses.md#the-fields-of-an-error)
+  (user report P3).
 
 ### Changed
 
