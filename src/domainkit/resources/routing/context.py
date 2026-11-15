@@ -128,6 +128,8 @@ class RouteSpec:
     """Command fields that FastAPI dependencies give, by field."""
     body_limit: int | None = None
     """Its body limit in bytes (``body_limit``); None: ``MAX_REQUEST_BODY_SIZE``."""
+    rules: tuple[Rule, ...] | None = None
+    """What it checks in place of the resource's rules and its own (a twin's)."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

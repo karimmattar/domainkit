@@ -67,7 +67,9 @@ MAX_HEADER: Final = 4096
 def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None:
     """Add the route ``spec`` describes to ``router``, answered by ``handle``."""
     name = f"{router.name_prefix}{spec.name}"
-    rules = rules_of(router, spec.action, spec.rule)
+    rules = spec.rules
+    if rules is None:
+        rules = rules_of(router, spec.action, spec.rule)
     endpoint = _endpoint(router, spec, handle, name)
     if spec.body_limit is not None:
         body_limit(spec.body_limit)(endpoint)

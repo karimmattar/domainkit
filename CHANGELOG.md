@@ -81,6 +81,16 @@ and a status.
   superuser for approval. Auth and those apps no longer import each
   other, a test keeps any two apps from it, and nothing changes for a
   project (ADR 0140, audit finding A2).
+- A command route whose rules ask for an authorization of the act
+  (`AsksAuthorization`, as `StepUp(for_=...)` does) gets a twin,
+  `POST <the route's path>/authorization`. It builds the command as the
+  route does, checks the route's other rules, the caller's reach, and the
+  rules on the aggregate, and answers `201` with what the rule stored; it
+  never runs the service. An asking rule inside `|` or `~`, or two on one
+  route, is refused when the route is declared. A route that asks for
+  nothing is unchanged. See
+  [Authorizations for one act](docs/resources.md#authorizations-for-one-act)
+  and ADR 0144 (user report A6).
 
 ### Changed
 

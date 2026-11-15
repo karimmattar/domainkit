@@ -4,7 +4,9 @@ A command with the resource's ``lookup`` field changes one aggregate: its
 route is ``/{lookup}<path>``, it is held to ``If-Match``, and the caller
 must reach the aggregate first. Others act on the collection. The command
 is built from the body, the ids in the path, and the ``provide``
-dependencies, and answered as ``returns`` says.
+dependencies, and answered as ``returns`` says. A route whose rules ask
+for an authorization of the act gets a twin that asks for one
+(``authorizing``).
 """
 
 import dataclasses
@@ -21,6 +23,7 @@ from domainkit.utils.text import snake_case
 from ..access import ADD, CHANGE, DELETE
 from ..schemas import PatchModel
 from . import presenting, reach
+from .authorizing import AuthorizationRoute
 from .context import COMMAND, DEFAULT, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
 from .values import changes, check_given, summary_of
@@ -99,19 +102,30 @@ class CommandRoute:
             provided=self.provided,
             body_limit=router.body_limit_of(COMMAND, body_limit),
         )
+        self.twin = AuthorizationRoute.of(self)
+        """``POST <path>/authorization``, if a rule asks for an authorization."""
 
     def declare(self) -> None:
-        """Add the route to the resource."""
+        """Add the route to the resource, and its twin if it has one."""
         add_route(self.router, self.spec, self.handle)
+        if self.twin is not None:
+            self.twin.declare()
 
-    async def handle(self, context: RouteContext) -> Response:
-        """Build the command, run it, and answer with what the service returned."""
+    async def build(self, context: RouteContext) -> Command:
+        """The command the request names: its body, ``provide``, and the path's ids.
+
+        The path wins over ``provide``, and ``provide`` over the body. A
+        ``PatchModel`` body gives the fields the request set, and the
+        resource's policy must let the caller change them.
+
+        Raises:
+            FieldNotEditable: The policy keeps the caller from changing a field.
+        """
         router = self.router
-        request = context.request
         given = changes(context.body)
         if self.partial and router.policy is not None:
-            await router.policy.check_changes(request, given)
-        built = self.command(
+            await router.policy.check_changes(context.request, given)
+        return self.command(
             **{
                 **given,
                 **context.provided,
@@ -121,6 +135,11 @@ class CommandRoute:
                 },
             }
         )
+
+    async def handle(self, context: RouteContext) -> Response:
+        """Build the command, run it, and answer with what the service returned."""
+        router = self.router
+        built = await self.build(context)
         if self.retry is not None:
             work = partial(self._run, built, context)
             result = await context.uow.run(work, retry=self.retry)
