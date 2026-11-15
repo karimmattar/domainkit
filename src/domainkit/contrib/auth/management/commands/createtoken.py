@@ -10,6 +10,7 @@ from ...events import TokenCreated
 from ...settings import AUTHENTICATION, auth_settings
 from ...tokens import LOGIN_NAME
 from ...uow import AuthUnitOfWork
+from .. import user_for_staff
 
 TOKEN_AUTHENTICATION = f"{AUTHENTICATION}.TokenAuthentication"
 NAME_MAX_LENGTH = 100
@@ -82,9 +83,7 @@ class Command(BaseCommand):
     ) -> str:
         """Issue the token; record ``TokenCreated``."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.find_for_staff(username)
-            if user is None:
-                raise CommandError(f"User {username!r} does not exist.")
+            user = await user_for_staff(uow.users, username, self.note)
             if scopes is not None and (
                 missing := sorted(scopes - await get_all_permissions(user))
             ):

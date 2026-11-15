@@ -384,7 +384,8 @@ async def send_password_reset_code(identifier: str) -> None:
     be active, with a usable password. An email address names the one
     account that has it, even where addresses do not log in. A mobile number gets a text
     message; an email address, or any other identifier, a mail to the
-    account's address. Nothing goes where nothing can be sent.
+    account's address. Nothing goes where nothing can be sent, nor to an
+    address or a number the user never proved (``reaches_proved``).
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find_by_identifier(identifier)
@@ -398,6 +399,8 @@ async def send_password_reset_code(identifier: str) -> None:
         texted = number is not None and getattr(user, "mobile_number", None) == number
         if not texted and (address is None or not _mailable(user, address)):
             return  # Texts can go: auth.E107 needs notifications for numbers.
+        if not reaches_proved(user, texted=texted):
+            return
         target = target_of(identifier)
         code = await uow.verification_codes.issue(
             PASSWORD_RESET, target, user_id=user.id
@@ -425,13 +428,16 @@ async def send_code(
     the user's address from ``template`` (given ``username``, ``code``,
     ``valid_for``). The code is kept for ``identifier``: check it with
     ``uow.verification_codes.check(purpose, target_of(identifier), code)``.
-    False, and nothing issued, where nothing can be sent. For apps built
-    on auth, from a task (``integration``).
+    False, and nothing issued, where nothing can be sent, or where the
+    address or number is one the user never proved (``reaches_proved``).
+    For apps built on auth, from a task (``integration``).
     """
     number = as_mobile_number(identifier)
     texted = number is not None and getattr(user, "mobile_number", None) == number
     address = None if texted else email_of(user)
     if not texted and (address is None or not _mailable(user, address)):
+        return False
+    if not reaches_proved(user, texted=texted):
         return False
     async with AuthUnitOfWork() as uow:
         code = await uow.verification_codes.issue(
@@ -556,6 +562,28 @@ def _mailable(user: AbstractBaseUser, address: str) -> bool:
         logger.warning("User %s has an address that cannot take mail.", user.id)
         return False
     return True
+
+
+def reaches_proved(user: AbstractBaseUser, *, texted: bool) -> bool:
+    """Whether a code may go to ``user``'s number (``texted``), or address.
+
+    Only where the user proved it, unless ``AUTH.CODES_TO_UNPROVED``: a
+    code that opens an account goes nowhere its owner never showed they
+    read. A user model without the ``*_verified`` field counts it proved,
+    as before 2.4. The user's id is logged, never the identifier.
+    """
+    if auth_settings().CODES_TO_UNPROVED:
+        return True
+    proved = bool(
+        getattr(user, "mobile_number_verified" if texted else "email_verified", True)
+    )
+    if not proved:
+        logger.info(
+            "Sent no code to user %s: their %s is not proved.",
+            user.id,
+            "number" if texted else "address",
+        )
+    return proved
 
 
 def register_tasks() -> None:
