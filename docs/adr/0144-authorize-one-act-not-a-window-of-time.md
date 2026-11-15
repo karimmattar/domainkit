@@ -415,6 +415,9 @@ Around it:
 
 ## Open questions
 
+`domainkit_tests/test_action_authorisation_grounds.py` pins, on today's
+code, the facts questions 1, 3, 4, and 5 turn on.
+
 1. The rule asks and the act spends, where the report has the rule spend.
    Is that right, or should `Require` call a spending hook of a rule once
    every other rule allowed (a change to the core's rules)?
