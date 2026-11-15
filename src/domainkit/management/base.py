@@ -163,6 +163,14 @@ class BaseCommand:
         """Print one line to the command's stdout."""
         self.stdout.write(f"{message}\n")
 
+    def note(self, message: str) -> None:
+        """Print one line to the command's stderr, beside what stdout carries.
+
+        For what an operator reads, not what a script takes: a command
+        whose stdout is a token or a report keeps it clean.
+        """
+        self.stderr.write(f"{message}\n")
+
 
 async def _started[T](awaitable: Awaitable[T]) -> T:
     """Await ``awaitable`` with the installed domains started, as serving does."""

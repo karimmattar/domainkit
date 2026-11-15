@@ -147,12 +147,87 @@ and a status.
 
 ### Fixed
 
+- Enrolling a first device with a password staff set no longer spends the
+  code before it asks for a new password: `403 password_change_required`,
+  and `422 invalid_password` for a new one a rule refuses, are answered
+  before the code is checked, and the user sends again with the same code
+  instead of asking for a second message (`auth.integration.check_first_use`)
+  (user report A10).
+- A sign-in or step-up the phone approved answers the page's next poll at
+  once, however soon it comes: an early poll (a second tab, a retry) got
+  `slow_down`, five seconds more, after the phone had already answered.
+  The interval still holds back polls of a request that waits (user
+  report L2).
 - `runworker` starts the installed domains, as serving the application
   does: their `on_startup` hooks run first and their `on_shutdown` hooks
   after. It ran without them, so with a key service other than `local`
   the worker never unwrapped the data keys, and every message that read
   an `Encrypted` field failed with `KeysNotLoaded`. Commands of your own
   opt in with `BaseCommand.needs_domains = True` (user report W1).
+
+### Security
+
+- `POST /devices/enroll/code` is counted per recipient too, against
+  `AUTH.EMAIL_RATE`, as every other request that sends a code is. It was
+  counted per client address only, so callers from many addresses could
+  have one number texted without end, at the service's cost (SMS
+  pumping). The ways of writing one number share its count (user report
+  A1).
+- Signups refuse a `username` where usernames identify no one
+  (`422 unknown_user_field`), and the commands that name a user try
+  `AUTH.IDENTIFIERS` first. Before, someone could sign up as
+  `{"email": "mallory@...", "username": "victim@example.com"}`: when
+  support then ran `unbinddevices victim@example.com` for the victim's
+  stolen phone, the command acted on Mallory's account, and said it had
+  succeeded. A value that is an address or a number now never finds a
+  user by username there, and each command says on stderr whom it found,
+  and by which field (`BaseCommand.note`; `uow.users.match_for_staff`)
+  (user report A3).
+- Password-reset and enrollment codes go only to an address or a number
+  its user proved (`email_verified`, `mobile_number_verified`). Someone
+  could put the victim's number on their own account, unproved, and have
+  the service text it on request; a victim who typed the code set the
+  password of that account, and proved their number on it.
+  `AUTH.CODES_TO_UNPROVED = True` sends as before, and a reset code that
+  reached an address then still proves it
+  ([ADR 0141](docs/adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md),
+  amending 0133; user report A2).
+- A rule's own refusal is audited, as a 403 is, with its code: `StepUp`'s
+  `401 step_up_required`, `DeviceSigned`'s `401 device_signature_refused`,
+  and a project rule's coded 403 (`identity_verification_required`) left
+  no row, so a stolen session probing routes behind a step-up was
+  invisible in the trail. Sampled as 403s are: once per actor and route a
+  minute (`record_denial(..., code=)`) (user report A5).
+- With `CIBA.APPROVE_LOGINS = "always"`, a password login no bound device
+  signed is refused before the password is checked, with one answer for
+  every account (`403 phone_approval_required`). It could never log anyone
+  in, yet it confirmed a guessed password, told whether a phone was bound,
+  and let strangers spend the account's daily count. Gates of that kind
+  register with `auth.gates.on_password_login`. In every mode, a password
+  staff set is changed on first use only after the login gates passed: a
+  refused login replaced it, and ended every login, before (user report
+  A4).
+- The captcha compares what it was told with what it checks:
+  `captcha("signin")`, an action none of `AUTH.CAPTCHA.ON` could name, is
+  refused when the route is defined (it never asked for a token);
+  `CAPTCHA.HOSTNAMES` refuses a token solved on another site's page, with
+  `auth.W008` where deployed while it is empty; `CAPTCHA.CHECK_ACTION`
+  refuses one solved for another form (user report A11).
+- An approval request's maker can no longer name someone else as the one
+  who acts. `POST /approvals/requests` took every field of the command
+  from the client, so a command with an `invited_by` or `granted_by` ran
+  as if another person had made it. `guard(..., maker_fields=["invited_by"])`
+  sets those fields to the maker at submit and checks them at run;
+  `guard(..., http=False)` keeps a command off the submit route (user
+  report P2).
+- `check` warns, where deployed, when messaging may send auth's codes
+  after they expired: a code whose worker died mid-send runs again after
+  `MESSAGING.VISIBILITY_TIMEOUT` (300 s), and one a broker lost after
+  `REPUBLISH_AFTER` (an hour), while codes last `AUTH.CODE_TTL`. Either
+  more than half of it is `auth.W009` (user report W8).
+- The `tracing` extra's floor is opentelemetry-api 1.45.2, past
+  CVE-2026-126360, and the lock takes 1.45.2 (the dev group's
+  opentelemetry-sdk with it): `pip-audit` failed on 1.45.1.
 
 ## [2.3.0] - 2026-11-11
 

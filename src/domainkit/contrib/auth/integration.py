@@ -13,6 +13,7 @@ from .api import (
     MfaChallengeOut,
     TokenOut,
     attach_login_device,
+    check_first_use,
     end_device_logins,
     issue_login,
 )
@@ -25,8 +26,10 @@ from .gates import (
     gates_passed,
     on_login_gate,
     on_manage_logins,
+    on_password_login,
     pass_login_gates,
 )
+from .management import user_for_staff
 from .mfa import (
     challenge,
     first_use_after_code,
@@ -78,6 +81,7 @@ __all__ = [
     "audit_refusal",
     "auth_settings",
     "challenge",
+    "check_first_use",
     "check_manage_logins",
     "check_origin",
     "check_password_again",
@@ -92,6 +96,7 @@ __all__ = [
     "note_login_device",
     "on_login_gate",
     "on_manage_logins",
+    "on_password_login",
     "on_refusal",
     "pass_login_gates",
     "proof_of",
@@ -104,5 +109,6 @@ __all__ = [
     "step_up_answer",
     "stepping_credentials",
     "target_of",
+    "user_for_staff",
     "utc_now",
 ]

@@ -2,10 +2,11 @@
 
 from argparse import ArgumentParser
 
-from domainkit.management.base import BaseCommand, CommandError, run_async
+from domainkit.management.base import BaseCommand, run_async
 
 from ...events import MfaDisabled, UserLoggedOut
 from ...uow import AuthUnitOfWork
+from .. import user_for_staff
 
 
 class Command(BaseCommand):
@@ -34,9 +35,7 @@ class Command(BaseCommand):
     async def _reset(self, username: str) -> bool:
         """Remove the factor and the sessions; record ``MfaDisabled``."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.find_for_staff(username)
-            if user is None:
-                raise CommandError(f"User {username!r} does not exist.")
+            user = await user_for_staff(uow.users, username, self.note)
             if not await uow.mfa.remove(user.id):
                 return False
             await uow.tokens.revoke_user(user.id)

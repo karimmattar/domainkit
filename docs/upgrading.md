@@ -39,9 +39,41 @@ never published), with each section below.
 ## 2.3 to 2.4
 
 2.4 answers a report from a project that runs an identity service on
-domainkit: codes counted per recipient, and staff commands that cannot be
-pointed at the wrong account.
+domainkit.
 
+- **Signups refuse a `username` where usernames identify no one.** With
+  `AUTH.IDENTIFIERS` set to the email address or the mobile number, `POST
+  /signup` with a `username` answers `422 unknown_user_field`, as it does
+  for a number where numbers identify no one. Nobody logged in with it,
+  and a name someone chose, such as another person's address, stood for
+  them in operators' commands. A client that sent one drops it.
+- **Commands try the identifiers first.** `changepassword`, `createtoken`,
+  `cleartokens --user`, `resetmfa`, `addcertificate` and `unbinddevices`
+  look a value up by `AUTH.IDENTIFIERS` before the username, and a value
+  that is an email address or a mobile number never finds a user by
+  username where usernames identify no one. Each says on stderr whom it
+  found; stdout is unchanged. A user stored with such a username before
+  2.4 is named by their address or number instead.
+- **Reset and enrollment codes go only to proved identifiers**
+  ([ADR 0141](adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)).
+  A user whose address or number was never proved (`email_verified`,
+  `mobile_number_verified` false) gets no code there: staff-made accounts,
+  and those from before 2.0, are the usual case. They log in and prove it,
+  or staff set a password (`changepassword`). To send as 2.3 did while
+  they do, set `AUTH.CODES_TO_UNPROVED = True`. A project that overrides
+  `auth/signup_code_held` drops its advice to reset the password.
+- **Strict mode refuses unsigned password logins before the password.**
+  With `CIBA.APPROVE_LOGINS = "always"`, `/login` and `/session` answer
+  `403 phone_approval_required` to every request no bound device of the
+  account signed, whatever the account or the password; a user with no
+  device got `phone_enrollment_required` there before. An app that read
+  that code to offer enrollment offers it on `phone_approval_required`
+  when it holds no key. In every mode, a password staff set is changed
+  on first use only once the login gates passed.
+- **`POST /devices/enroll/code` counts per recipient** against
+  `AUTH.EMAIL_RATE`, as the other requests that send a code do. A client
+  that asked for the same account's code more than five times an hour
+  now gets `429 rate_limited`.
 - **Name your durable handlers.** `check --deploy` warns about each one
   subscribed without `name=` (`messaging.W002`), as it warns about
   unnamed tasks. Give each a name, with its key until now in
