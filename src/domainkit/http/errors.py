@@ -135,6 +135,12 @@ class ProblemDetails(BaseModel):
     errors: list[FieldError] | None = None
 
 
+_BODY_MEMBERS: Final = frozenset(ErrorResponse.model_fields) | frozenset(
+    ProblemDetails.model_fields
+)
+"""The members of an error body, in either format: no extension replaces one."""
+
+
 class APIError(HTTPException, DomainkitError):
     """An HTTP error outside the domain (a bad cursor, an oversized body)."""
 
@@ -163,10 +169,14 @@ def error_response(
     *,
     code: str,
     errors: list[FieldError] | None = None,
+    extensions: Mapping[str, object] | None = None,
 ) -> JSONResponse:
     """Build an error body that carries the request id for support cases.
 
-    It is problem details when ``ERROR_FORMAT`` says so.
+    It is problem details when ``ERROR_FORMAT`` says so. ``extensions``
+    are members of the error's own (``DomainError.extensions``), added
+    after the body's; one named as a member of a body, in either format,
+    is left out.
     """
     request = current_request()
     detail = gettext(detail)
@@ -175,7 +185,7 @@ def error_response(
             status_code, detail, code=code, errors=errors, request=request
         )
         return BuiltJSONResponse(
-            problem.model_dump(exclude_none=True),
+            _extended(problem, extensions),
             status_code=status_code,
             media_type=PROBLEM_MEDIA_TYPE,
         )
@@ -185,9 +195,25 @@ def error_response(
         request_id=request.request_id if request else None,
         errors=errors,
     )
-    return BuiltJSONResponse(
-        body.model_dump(exclude_none=True), status_code=status_code
-    )
+    return BuiltJSONResponse(_extended(body, extensions), status_code=status_code)
+
+
+def _extended(
+    body: BaseModel, extensions: Mapping[str, object] | None
+) -> dict[str, object]:
+    """``body``'s members, then each extension not named as a member of a body.
+
+    The names of both formats are left out, so an error extends either
+    format with the same members.
+    """
+    members: dict[str, object] = body.model_dump(exclude_none=True)
+    if extensions:
+        members.update(
+            (name, value)
+            for name, value in extensions.items()
+            if name not in _BODY_MEMBERS
+        )
+    return members
 
 
 def problem_details(
@@ -254,7 +280,7 @@ def status_code_for(error: DomainError) -> int:
 
 
 async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
-    """Answer a ``DomainError`` with its status, message, and error code."""
+    """Answer a ``DomainError`` with its status, message, error code, and extensions."""
     errors = (
         duplicate_errors(exc)
         if isinstance(exc, DuplicateValue)
@@ -263,7 +289,11 @@ async def domain_error_handler(request: Request, exc: DomainError) -> JSONRespon
         else None
     )
     return error_response(
-        status_code_for(exc), exc.message, code=exc.code, errors=errors
+        status_code_for(exc),
+        exc.message,
+        code=exc.code,
+        errors=errors,
+        extensions=exc.extensions(),
     )
 
 

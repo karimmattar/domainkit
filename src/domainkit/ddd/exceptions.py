@@ -11,7 +11,7 @@ domainkit's own classes must (``FRAMEWORK``), and
 ``docs/reference/problems.md`` lists every one (DSGN-20).
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import ClassVar, Final
 
 from domainkit.exceptions import DomainkitError
@@ -47,6 +47,16 @@ class DomainError(DomainkitError):
         """Store the user-facing ``message``."""
         super().__init__(message)
         self.message = message
+
+    def extensions(self) -> Mapping[str, object]:
+        """What a client may read about the error besides its message: none.
+
+        A subclass returns JSON values by name (text, numbers, booleans),
+        and the HTTP layer adds each to the error's body, after the body's
+        own members, which they never replace. Name each so that it cannot
+        be taken for one of those: ``request_id`` is the HTTP request's.
+        """
+        return {}
 
 
 class NotFound(DomainError):

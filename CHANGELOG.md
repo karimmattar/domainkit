@@ -169,6 +169,13 @@ and a status.
   route is refused, and the router copied is left as it is. See
   [Rules on the framework's routes](docs/auth/routes.md#rules-on-the-frameworks-routes)
   and ADR 0145 (user report A7).
+- `403 approval_pending` names the approval request it submitted, as
+  `approval_request_id`. Its body had only `request_id`, which is the
+  HTTP request's. A `DomainError` adds such members through
+  `extensions()`, in either error format, after the body's own, which
+  they never replace; see
+  [The fields of an error](docs/reference/responses.md#the-fields-of-an-error)
+  (user report P3).
 
 ### Changed
 
@@ -232,6 +239,32 @@ and a status.
   the worker never unwrapped the data keys, and every message that read
   an `Encrypted` field failed with `KeysNotLoaded`. Commands of your own
   opt in with `BaseCommand.needs_domains = True` (user report W1).
+- `POST /auth/devices/push-tokens`: a token the user registered before
+  keeps its `id` and `created_at`, and is seen again, so an app that
+  registers on every start keeps one id. It was deleted and inserted
+  with a new id each time. One upsert on the token's digest: two
+  registrations of one token at once each succeed, where the second
+  could break the unique digest on PostgreSQL. A token that moves to
+  another user gets a new id there, as
+  [Push tokens](docs/auth/devices.md#push-tokens) says (user report A11).
+- `get_all_permissions(superuser, obj)` lists every permission, as
+  `has_perm(superuser, perm, obj)` answers before any backend is asked,
+  with whatever the backends add. It listed only what the backends
+  granted on the object, so a "what may I do" route under-reported a
+  superuser. Nothing else changed about what a superuser may do: no
+  backend narrows one, as before; see
+  [Checking permissions](docs/auth/users.md#checking-permissions)
+  (user report A11).
+- `APPROVALS.SUPERUSER_APPROVERS=""`, what an unset variable gives in a
+  compose file, is read as `None`: superusers approve. The permission's
+  pattern refused it, so the project did not start (user report P3).
+- The approvals page says what a project with one superuser does:
+  `auth.grant_superuser` has no possible approver, and
+  `manage.py createsuperuser` is the way out. It also says that with
+  `SUPERUSER_APPROVERS` set, a superuser can give that permission to an
+  account they control, which then approves; see
+  [Making superusers](docs/contrib/approvals.md#making-superusers)
+  (user report P3).
 
 ### Security
 

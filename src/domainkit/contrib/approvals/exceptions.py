@@ -3,6 +3,7 @@
 Messages are fixed sentences, so the HTTP boundary translates them.
 """
 
+from collections.abc import Mapping
 from uuid import UUID
 
 from domainkit.ddd import (
@@ -24,6 +25,8 @@ class ApprovalPending(ApprovalRequired):
     """A guarded command called directly was submitted for approval instead (403).
 
     ``request_id`` names the request; the command runs once it is approved.
+    Over HTTP, the error's body carries it as ``approval_request_id``: the
+    body's ``request_id`` is the HTTP request's (user report P3).
     """
 
     code = "approval_pending"
@@ -32,6 +35,10 @@ class ApprovalPending(ApprovalRequired):
         """Keep the message and the id of the request submitted."""
         super().__init__(message)
         self.request_id = request_id
+
+    def extensions(self) -> Mapping[str, object]:
+        """``approval_request_id``: the approval request's id, as text."""
+        return {"approval_request_id": str(self.request_id)}
 
 
 class RequestNotFound(NotFound):

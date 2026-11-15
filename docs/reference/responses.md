@@ -68,6 +68,36 @@ switch on `code` in either format. Submitted values are never echoed
 back. With `LocaleMiddleware`, `detail` and each `msg` are in the
 request's language; `code` and `type` never change ([i18n.md](../i18n.md)).
 
+A domain error may add members of its own: what `extensions()` returns,
+by name, as JSON values (none by default). The body carries each after
+its own members, in either format. A name that a body has in either
+format (`request_id`, `code`, `title`, `errors`, and the others above)
+is left out, so name each so that it cannot be taken for one of them
+(since 2.4):
+
+```python
+from domainkit.ddd import Conflict
+
+
+class OrderShipped(Conflict):
+    code = "order_shipped"
+
+    def __init__(self, message: str, shipment_id: str) -> None:
+        super().__init__(message)
+        self.shipment_id = shipment_id
+
+    def extensions(self) -> dict[str, object]:
+        return {"shipment_id": self.shipment_id}
+```
+
+```text
+{"type":"about:blank","title":"Conflict","status":409,"detail":"This order was shipped already.","instance":"/orders/7/cancel","code":"order_shipped","request_id":"5b0e9c6d2f7a4e1b8c3d9f0a1b2c3d4e","shipment_id":"sh_81"}
+```
+
+`ApprovalPending` (403 `approval_pending`) adds `approval_request_id`,
+the approval request it submitted: `request_id` is the HTTP request's
+([approvals](../contrib/approvals.md#what-a-direct-call-does)).
+
 With `ERROR_TYPE_BASE_URL` each code is a problem type of its own. Serve
 a page at that URL that describes each code:
 
