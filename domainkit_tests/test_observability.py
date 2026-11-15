@@ -458,7 +458,8 @@ def test_the_worker_metrics_server_asks_for_the_metrics_token() -> None:
             with urllib.request.urlopen(request, timeout=5) as answer:  # noqa: S310
                 return answer.status, answer.read()
         except urllib.error.HTTPError as refused:
-            return refused.code, refused.read()
+            with refused:  # Python 3.14 warns about an HTTPError left open.
+                return refused.code, refused.read()
 
     open_server = serve(0, "127.0.0.1")
     try:
