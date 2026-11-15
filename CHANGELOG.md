@@ -63,6 +63,12 @@ and a status.
 - `RUNSERVER_SERVER` (`"uvicorn"` unless set): the server `runserver`
   starts when `--server` names none, so the development settings can
   choose Granian once (user report S3).
+- `SERVER_HEADER`: the `Server` header of every HTTP answer, the 500 of
+  an unhandled error included, which no middleware sees; `""` removes
+  it. Granian writes `Server: granian` on an answer without one, and has
+  no option against it
+  ([The server header](docs/reference/http.md#the-server-header)) (user
+  report S3).
 
 ### Changed
 

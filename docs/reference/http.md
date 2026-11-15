@@ -156,6 +156,7 @@ A caller over the limit gets 429 `rate_limited`, with `Retry-After`.
 | `SECURE_CONTENT_SECURITY_POLICY` | `"default-src 'none'; frame-ancestors 'none'"` | The `Content-Security-Policy` of every response that sets none: nothing an answer holds may load, run, or be framed. Printable ASCII on one line, at most 4096 characters. `None` leaves it out. |
 | `SECURE_PERMISSIONS_POLICY` | `"accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"` | The `Permissions-Policy` of every response that sets none: those powerful browser features off. Bounded as above. `None` leaves it out. |
 | `SECURE_CROSS_ORIGIN_OPENER_POLICY` | `"same-origin"` | `Cross-Origin-Opener-Policy`; or `"same-origin-allow-popups"`, `"unsafe-none"`. `None` leaves it out. |
+| `SERVER_HEADER` | `None` | The `Server` header of every HTTP answer, in place of the answer's own, the 500 of an unhandled error included: `"api"`. Printable ASCII, no space at either end, at most 256 characters. `""` removes the one an answer has. `None` leaves answers as they are. The server adds its own to an answer without one: Granian always (`Server: granian`), uvicorn unless run with `--no-server-header`. So with Granian, a value hides the server ([The server header](#the-server-header)). |
 
 ### CORS
 
@@ -323,6 +324,25 @@ sets and the `blob:` worker its search runs in
 logo in ReDoc's footer, which ReDoc fetches from Redocly's CDN, is
 refused. The pages are on with `DEBUG`, and off in a deployment unless
 `API_DOCS = True` (ADR 0086).
+
+### The server header
+
+A middleware of `MIDDLEWARE` sees the answers of routes and of the error
+handlers, but not the 500 of an unhandled error: that one is written
+above every middleware. `SERVER_HEADER` is applied above that too, by
+the application itself, so every HTTP answer carries it:
+
+```python
+SERVER_HEADER = "api"  # Server: api, on a 500 too; Granian adds no other.
+```
+
+Granian has no option to leave the header out: it writes
+`Server: granian` on every answer that has none. uvicorn writes
+`Server: uvicorn` unless run with `--no-server-header`, and then writes
+none; run it so, or it sends both. Answers that the server writes
+itself, before the application sees the request (Granian's 431 for
+headers too large, uvicorn's 503 past `--limit-concurrency`), are not
+the application's to change.
 
 ## See also
 
