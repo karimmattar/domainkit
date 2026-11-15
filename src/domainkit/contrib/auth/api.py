@@ -59,7 +59,12 @@ from .devices import (
     proven_limits,
 )
 from .events import UserLoggedOut
-from .gates import check_gates_passed, check_manage_logins, pass_login_gates
+from .gates import (
+    check_gates_passed,
+    check_manage_logins,
+    pass_login_gates,
+    pass_password_gates,
+)
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
@@ -207,6 +212,7 @@ async def login(
     no_store(response)
     user = await check_password(request, body)
     await pass_login_gates(request, user)
+    user = await first_use(user, body.new_password)
     from .mfa import challenge  # Imports this module.
 
     if (pending := await challenge(user)) is not None:
@@ -220,14 +226,19 @@ async def login(
 async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
     """The user a login's identifier and password prove, counted and audited.
 
-    Only wrong credentials count against ``AUTH.LOGIN_RATE``: per address
-    and per account, or, for a client with a device proof for the account,
-    per device and against the account's ceiling of proven attempts
-    (``devices``).
+    The gates of ``on_password_login`` run first: what they refuse is
+    neither checked nor counted. Only wrong credentials count against
+    ``AUTH.LOGIN_RATE``: per address and per account, or, for a client
+    with a device proof for the account, per device and against the
+    account's ceiling of proven attempts (``devices``). A password staff
+    set is not changed here: the route runs the login gates, then
+    ``first_use``.
 
     Raises:
         APIError: 401 for wrong credentials; 429 past ``AUTH.LOGIN_RATE``.
+        Exception: Whatever a gate of ``on_password_login`` raises.
     """
+    await pass_password_gates(request, body.identifier)
     device = await proven_device(request, body.identifier)
     counted = await attempt(
         request,
@@ -246,8 +257,23 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
             code="invalid_credentials",
         )
     await counted.succeeded()
+    return user
+
+
+async def first_use(
+    user: AbstractBaseUser, new_password: str | None
+) -> AbstractBaseUser:
+    """``user``, a password staff set changed (``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``).
+
+    Once the login gates passed: a refused login replaces no password and
+    ends no login.
+
+    Raises:
+        APIError: 403 ``password_change_required`` without ``new_password``.
+        InvalidPassword: The new password breaks a rule.
+    """
     if auth_settings().PASSWORD_CHANGE_ON_FIRST_USE:
-        return await changed_on_first_use(user, body.new_password)
+        return await changed_on_first_use(user, new_password)
     return user
 
 
@@ -276,17 +302,46 @@ async def changed_on_first_use(
             return user
         if new_password is None:
             await _audit_refusal("password_change_required")
-            raise APIError(
-                status.HTTP_403_FORBIDDEN,
-                "This password was set for you: choose a new one to log in.",
-                code="password_change_required",
-            )
+            raise _change_required()
         validate_password(new_password, user)
         stored = await uow.users.get(UserId(user.id))
         await uow.users.set_password(stored, new_password, priority=True)
         await uow.tokens.revoke_user(user.id)
         await uow.commit()
     return stored
+
+
+async def check_first_use(user: AbstractBaseUser, new_password: str | None) -> None:
+    """Refuse now what a change on first use would refuse; change nothing.
+
+    For a route that spends something, such as a code, before it changes a
+    password staff set (``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``): a caller
+    who sent no new password, or one a rule refuses, keeps what it would
+    have spent, and sends again with it.
+
+    Raises:
+        APIError: 403 ``password_change_required`` without ``new_password``.
+        InvalidPassword: The new password breaks a rule.
+    """
+    if not auth_settings().PASSWORD_CHANGE_ON_FIRST_USE:
+        return
+    async with AuthUnitOfWork() as uow:
+        must_change = await uow.passwords.must_change(user.id)
+    if not must_change:
+        return
+    if new_password is None:
+        await _audit_refusal("password_change_required")
+        raise _change_required()
+    validate_password(new_password, user)
+
+
+def _change_required() -> APIError:
+    """403 ``password_change_required``: a password staff set is changed first."""
+    return APIError(
+        status.HTTP_403_FORBIDDEN,
+        "This password was set for you: choose a new one to log in.",
+        code="password_change_required",
+    )
 
 
 async def issue_login(

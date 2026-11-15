@@ -820,11 +820,17 @@ Each one takes `--operator` and is audited.
 
 A command that names a user (`changepassword`, `createtoken`,
 `cleartokens --user`, `resetmfa`, `addcertificate`, and `unbinddevices`)
-takes the username. Where `AUTH.IDENTIFIERS` names them, it also takes the
-email address, in any case, or the mobile number, in any form that
-[normalizes](../auth/users.md) to the same number. Before 2.1.2 these
-commands took the username alone, so they could not name a user who had
-none.
+takes what identifies users (`AUTH.IDENTIFIERS`): the username, the email
+address, in any case, or the mobile number, in any form that
+[normalizes](../auth/users.md) to the same number. Those are tried first.
+Where `AUTH.IDENTIFIERS` leaves usernames out, a username still names its
+user, but never a value that is an email address or a mobile number: a
+username someone chose, `victim@example.com`, never stands for the
+victim's account. Each command says on stderr whom it found, and by which
+field (`'ann@example.com' is user 3f6c…, by its email.`); stdout keeps
+only its result, so `createtoken`'s token is still all a script reads.
+Before 2.1.2 these commands took the username alone; before 2.4 they
+tried it first.
 
 ### `createsuperuser`: make a user who may do everything
 

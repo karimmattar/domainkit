@@ -41,10 +41,11 @@ such as logging out). A route that declares none answers them 403
 (``SCOPED_CREDENTIALS = "refuse"``, the default since 0.11); ``"warn"``
 lets them through with a security log line, as 0.10 did by default.
 
-A refusal of a principal who proved who they are (403) goes to the audit
-trail when an installed domain keeps one (``DenialRecorder``:
-``domainkit.contrib.audit``): the route, the rule, and the actor, at most
-once per actor and route each ``DENIAL_AUDIT_INTERVAL``.
+A refusal of a principal who proved who they are (a 403, or a rule's own
+refusal, with its code) goes to the audit trail when an installed domain
+keeps one (``DenialRecorder``: ``domainkit.contrib.audit``): the route,
+the rule, and the actor, at most once per actor and route each
+``DENIAL_AUDIT_INTERVAL``.
 
 Every route must declare who may call it (``REQUIRE_ROUTE_RULES``): with
 ``Require``, a dependency marked ``reads_principal`` that refuses anonymous
@@ -289,7 +290,8 @@ class BasePermission:
 
         None, the default, answers 403 with ``message``. A rule whose
         refusal tells the client what to do (``StepUp``: authenticate
-        again) returns its own error; it is not recorded as a denial.
+        again) returns its own error; it is recorded as a denial with the
+        error's ``code``, as a 403 is.
         Called only once the rule refused ``request``, and possibly more
         than once for one request (by ``AllOf`` and then by the route), so
         keep it cheap and free of side effects. ``AnyOf`` and ``Not`` never
@@ -786,10 +788,17 @@ denials: Final = _Sampler(DENIAL_AUDIT_INTERVAL, MAX_DENIAL_KEYS)
 
 
 async def record_denial(
-    connection: HTTPConnection, user: Principal, rule: BasePermission | None
+    connection: HTTPConnection,
+    user: Principal,
+    rule: BasePermission | None,
+    *,
+    code: str | None = None,
 ) -> None:
-    """Send a 403 to the audit trail, once per actor and route a while.
+    """Send a refusal to the audit trail, once per actor and route a while.
 
+    A 403, or a rule's own refusal, whose ``code`` the details name (such
+    as ``step_up_required``): a stolen session probing routes behind a
+    step-up or a device signature shows as one probing permissions does.
     Every installed ``DenialRecorder`` records it. A recorder that fails is
     logged, never raised: the refusal stands either way.
     """
@@ -801,6 +810,8 @@ async def record_denial(
         "route": route,
         "rule": "scopes_unbounded" if rule is None else type(rule).__name__,
     }
+    if code is not None:
+        details["code"] = code
     for recorder in recorders:
         try:
             await recorder.record_denial(details)
@@ -1110,8 +1121,9 @@ async def _denied(
 
     The 401's challenge is the principal's own (``challenge()``), if it
     names one. A rule that names its own refusal (``refusal``) answers with
-    it, unrecorded. A 403 is recorded (``record_denial``); ``rule`` None is
-    a refusal of scopes on a route that checks none (``SCOPES_UNBOUNDED``).
+    it, recorded with its code; a 403 is recorded too (``record_denial``).
+    ``rule`` None is a refusal of scopes on a route that checks none
+    (``SCOPES_UNBOUNDED``).
     """
     if not user.is_authenticated:
         challenge = getattr(user, "challenge", None)
@@ -1119,6 +1131,10 @@ async def _denied(
             challenge() if challenge is not None else DEFAULT_CHALLENGE
         )
     if rule is not None and (own := await rule.refusal(connection, user)) is not None:
+        code = getattr(own, "code", None)
+        await record_denial(
+            connection, user, rule, code=code if isinstance(code, str) else None
+        )
         return own
     await record_denial(connection, user, rule)
     return PermissionDenied(SCOPES_UNBOUNDED if rule is None else rule.message)

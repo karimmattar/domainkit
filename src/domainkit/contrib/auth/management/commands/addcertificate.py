@@ -9,6 +9,7 @@ from ...authentication import AuthenticationFailed
 from ...certificates import fingerprint
 from ...events import TokenCreated
 from ...uow import AuthUnitOfWork
+from .. import user_for_staff
 from .createtoken import NAME_MAX_LENGTH
 
 
@@ -47,9 +48,7 @@ class Command(BaseCommand):
     async def _add(self, username: str, digest: str, name: str) -> None:
         """Store the certificate as a token of its kind; record ``TokenCreated``."""
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.find_for_staff(username)
-            if user is None:
-                raise CommandError(f"User {username!r} does not exist.")
+            user = await user_for_staff(uow.users, username, self.note)
             existing = await uow.tokens.find_digest(digest)
             if existing is not None:
                 raise CommandError("That certificate is registered already.")
