@@ -42,7 +42,7 @@ dependencies = [
 postgres = ["asyncpg (>=0.32.0,<1.0.0)"]
 sqlite = ["aiosqlite (>=0.22.1,<1.0.0)"]
 metrics = ["prometheus-client (>=0.26.0,<1.0.0)"]
-tracing = ["opentelemetry-api (>=1.45.1,<2.0.0)"]
+tracing = ["opentelemetry-api (>=1.45.2,<2.0.0)"]
 # Argon2id password hashing for domainkit.contrib.auth (PBKDF2 needs nothing).
 argon2 = ["argon2-cffi (>=25.1.0,<26.0.0)"]
 # JSON Web Tokens for domainkit.contrib.auth (JWTAuthentication), with the
@@ -183,7 +183,7 @@ dev = [
     # Throwaway certificates for the TLS tests.
     "cryptography (>=50.0.2,<51.0.0)",
     # In-memory span exporter for the tracing tests.
-    "opentelemetry-sdk (>=1.45.1,<2.0.0)",
+    "opentelemetry-sdk (>=1.45.2,<2.0.0)",
     # Random test order, property-based tests, mutation testing.
     "pytest-randomly (>=5.0.0,<6.0.0)",
     "hypothesis (>=6.169.0,<7.0.0)",

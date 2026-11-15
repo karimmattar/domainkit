@@ -149,6 +149,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `LoginGate`: A check of a login: return to let it through, raise to refuse it.
 - `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
 - `LoginsCheck`: A check of a request that manages the user's other logins: raise to refuse.
+- `PasswordGate`: A check of a password login before the password is looked at: raise to refuse.
 - `SuperuserCheck`: A check before the admin API makes a user a superuser: raise to refuse.
 - `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
@@ -157,7 +158,9 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_make_superuser`: Register a check of making a superuser in the admin API.
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
+- `on_password_login`: Register a gate of password logins that runs before the password does.
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
+- `pass_password_gates`: Run every gate of `on_password_login` before a password is checked.
 
 ## `domainkit.contrib.auth.hashers`
 
@@ -504,6 +507,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `audit_refusal`: Record a refused attempt, without what was tried: it may be a secret.
 - `auth_settings`: The validated `AUTH` settings.
 - `challenge`: A challenge, if `user` has a second factor; None if not.
+- `check_first_use`: Refuse now what a change on first use would refuse; change nothing.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
@@ -518,6 +522,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `note_login_device`: Say that the user's bound device `device_id` signed this request.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
+- `on_password_login`: Register a gate of password logins that runs before the password does.
 - `on_refusal`: Register what records refused attempts (`on_refusal(record)` in `ready()`).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
@@ -530,6 +535,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
 - `stepping_credentials`: The request's credentials, if they can keep a step-up.
 - `target_of`: What the table keeps of an address or a number: an HMAC of it.
+- `user_for_staff`: The user an operator names (`match_for_staff`); say which field matched.
 - `utc_now`: The current time in UTC.
 
 ## `domainkit.contrib.phones`
@@ -704,6 +710,7 @@ The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
 - `approved_from_the_phone`: Let the login of `user` through if the app is not their identity, or signs it.
 - `managed_from_the_phone`: Let `user`'s logins be managed only from their bound device (ADR 0130).
 - `mark_approved`: Say that `request` redeemed a sign-in `user`'s phone approved.
+- `signed_password_login`: With `APPROVE_LOGINS = "always"`, a password login a bound device signs.
 
 ## `domainkit.contrib.ciba.oidc`
 

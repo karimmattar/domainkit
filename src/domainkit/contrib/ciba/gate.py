@@ -14,7 +14,11 @@ to bind it. Anything else is refused with ``403 phone_approval_required``.
 With ``"always"``, a user with no bound device does not log in at all
 (``403 phone_enrollment_required``): the app enrolls its key first
 (``/devices/enroll``), and that request, signed by the key it binds, is
-the user's first login.
+the user's first login. And a password login no bound device of the
+account signed is refused before the password is looked at
+(``signed_password_login``), the same way for every account and none: it
+could never log anyone in, so it confirms no password, says nothing of
+the account's devices, and spends none of its count.
 """
 
 from typing import Final
@@ -28,7 +32,12 @@ from domainkit.contrib.devices.binding import signing_device
 from .exceptions import PhoneApprovalRequired, PhoneEnrollmentRequired, PhoneRequired
 from .services import ciba_settings
 
-__all__ = ["approved_from_the_phone", "managed_from_the_phone", "mark_approved"]
+__all__ = [
+    "approved_from_the_phone",
+    "managed_from_the_phone",
+    "mark_approved",
+    "signed_password_login",
+]
 
 APPROVED: Final = "domainkit.ciba.approved_user"
 """Where a request that redeemed an approved sign-in keeps its user's id."""
@@ -61,6 +70,26 @@ async def approved_from_the_phone(request: Request, user: AbstractBaseUser) -> N
             raise PhoneEnrollmentRequired()
         return
     if await signing_device(request, user) is None:
+        raise PhoneApprovalRequired()
+
+
+async def signed_password_login(request: Request, identifier: str) -> None:
+    """With ``APPROVE_LOGINS = "always"``, a password login a bound device signs.
+
+    Runs before the password is checked (``on_password_login``). Only the
+    app on a bound device logs in by password then: any other request is
+    refused the same way, whether the account exists, has a device, or the
+    password is right.
+
+    Raises:
+        PhoneApprovalRequired: ``APPROVE_LOGINS`` is ``"always"``, and no
+            bound device of the account ``identifier`` names signed it.
+    """
+    if ciba_settings().APPROVE_LOGINS != "always":
+        return
+    async with DevicesUnitOfWork() as uow:
+        user = await uow.users.find_by_identifier(identifier)
+    if user is None or await signing_device(request, user) is None:
         raise PhoneApprovalRequired()
 
 

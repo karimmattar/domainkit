@@ -137,7 +137,7 @@ handle it got (`request`, or CIBA's `auth_req_id`). The poll answers:
 | --- | --- |
 | tokens | Approved. The handle is spent: a second poll gets `sign_in_unknown`. |
 | `authorization_pending` | Not answered yet. Poll again after `interval`. |
-| `slow_down` | This poll came before `interval` was up. The interval grows by 5 seconds, from now on. |
+| `slow_down` | The phone has not answered, and this poll came before `interval` was up. The interval grows by 5 seconds, from now on. A request the phone approved or denied answers at once, however soon it is polled. |
 | `access_denied` | The phone denied it. |
 | `expired_token` | Its time is up: `REQUEST_TTL` (2 minutes) to answer a push or a scanned QR code, or `QR_TTL` for a QR code no phone scanned. |
 | `sign_in_unknown` | No request has the handle, or it was redeemed, or it is another initiator's. |
@@ -328,7 +328,13 @@ then one of these:
 - the enrollment of the user's first device (`POST /devices/enroll`,
   [Enrolling a first device](devices.md#enrolling-a-first-device)).
 
-No web page logs in with a password. A user signs up and verifies
+No web page logs in with a password: `/login` and `/session` refuse
+every request no bound device of the account signed, before they look
+at the password, with one answer for every account and none (`403
+phone_approval_required`, since 2.4). Such a request could never log
+anyone in, so it confirms no guessed password, says nothing of the
+account's devices, and spends none of its count of wrong passwords. An
+app without a key enrolls first. A user signs up and verifies
 (`/signup`, a code), enrolls the phone, and from then on the phone is the
 only way in: its signed logins, or `DEVICE_LOGIN` behind the phone's
 biometrics. Turn enrollment on with it:
@@ -486,6 +492,15 @@ async def kiosk_login(body: KioskIn, request: Request) -> TokenOut:
 Code that issues a login on the server side, with no request to judge,
 wraps it in `gates_passed(user.id)`.
 
+A gate that needs no password registers with `on_password_login` instead:
+it runs before `/login` and `/session` check the password, given the
+request and the identifier, and must answer the same whatever account the
+identifier names. What it refuses is never checked, counted, or audited
+as a wrong password. Strict mode's `signed_password_login` is one. The
+login gates still run once the password held, and a password staff set
+is changed on first use only after they all passed: a refused login
+replaces no password, and ends no login.
+
 ## OIDC clients
 
 Other services (a call centre, a point of sale, a partner's site) ask the
@@ -602,7 +617,7 @@ other, not `unknown_user_id`.
 | `APPROVE_LOGINS` | `False` | Make the mobile app the user's identity ([above](#the-mobile-app-as-identity)); `"always"` refuses users with no bound device too ([strict mode](#strict-mode-every-login-from-the-phone)). |
 | `REQUEST_TTL` | 2 minutes (at most 10) | How long a push request waits for the phone. |
 | `QR_TTL` | 60 seconds (at most 5 minutes) | How long a QR code can be scanned; once scanned, `REQUEST_TTL` to answer it. |
-| `INTERVAL` | 5 (1 to 60) | Seconds between polls; sooner gets `slow_down`. |
+| `INTERVAL` | 5 (1 to 60) | Seconds between polls; sooner gets `slow_down` while the phone has not answered. |
 | `MAX_PENDING` | 3 (1 to 20) | Push requests a user may have waiting; past it, no push is sent. |
 | `REPORT_COOLDOWN` | 15 minutes (at most 1 day) | How long no push reaches a user who reported a request. |
 | `NUMBER_MATCHING` | `True` | Web push sign-ins show two digits the phone must type. |
@@ -694,7 +709,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | Exception | Status and code | When |
 | --- | --- | --- |
 | `PhoneApprovalRequired` | `403 phone_approval_required` | `APPROVE_LOGINS`: a web login of a user with a bound device. |
-| `PhoneEnrollmentRequired` | `403 phone_enrollment_required` | `APPROVE_LOGINS = "always"`: any login of a user with no bound device. |
+| `PhoneEnrollmentRequired` | `403 phone_enrollment_required` | `APPROVE_LOGINS = "always"`: a login of a user with no bound device that no password route makes (a password login gets `phone_approval_required`, before its password is checked). |
 | `PhoneRequired` | `403 phone_required` | `APPROVE_LOGINS`: listing a user's logins, ending one but the request's own, unbinding a device, changing a second factor, or asking a credential change to end the devices' logins, unsigned by their bound device. |
 | `SignInNotFound` | `404 sign_in_not_found` | The phone answers a request that is not its user's, was answered, or expired. |
 | `QrCodeExpired` | `422 qr_code_expired` | The QR code is unknown, was claimed, or expired. |
