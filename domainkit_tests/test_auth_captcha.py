@@ -8,7 +8,7 @@ import pytest
 
 from domainkit.contrib.auth.captcha import VERIFY, CaptchaUnavailable
 from domainkit.http.client import stub
-from domainkit_tests.conftest import Api
+from domainkit_tests.conftest import Api, UseAuth, domain_warnings
 from domainkit_tests.support.auth import PASSWORD, create_user
 
 TURNSTILE = {"PROVIDER": "turnstile", "SECRET": "site-secret"}
@@ -134,3 +134,67 @@ def test_a_browser_login_asks_for_the_same_captcha(identity: Api) -> None:
     assert (missing.status_code, missing.json()["code"]) == (400, "captcha_failed")
     assert solved.status_code == 200, solved.json()
     assert seen == [{"secret": "site-secret", "response": "good"}]
+
+
+def test_a_captcha_for_no_known_action_is_refused_at_once() -> None:
+    """A typo, ``captcha("signin")``, would never ask for a token: refused."""
+    from domainkit.contrib.auth.captcha import captcha
+    from domainkit.exceptions import ImproperlyConfigured
+
+    with pytest.raises(
+        ImproperlyConfigured, match=r"captcha\('signin'\) guards nothing"
+    ):
+        captcha("signin")
+
+
+def test_a_token_solved_on_another_site_or_form_can_be_refused(identity: Api) -> None:
+    """``HOSTNAMES`` and ``CHECK_ACTION`` compare the verdict with the request.
+
+    A token solved on a page of another site that shows the key, or for a
+    form that asks less, opens no login.
+    """
+    checked = {**TURNSTILE, "HOSTNAMES": ["app.example.com"], "CHECK_ACTION": True}
+    client = identity(CAPTCHA=checked)
+    create_user("ann")
+    credentials = {"username": "ann", "password": PASSWORD}
+    token = {"X-Captcha-Token": "t"}
+    seen: list[dict[str, str]] = []
+
+    def verdict(**fields: str) -> dict[str, Any]:
+        return {"success": True, "hostname": "app.example.com", "action": "login"} | (
+            fields
+        )
+
+    with stub(verifier(verdict(hostname="evil.example"), seen)):
+        elsewhere = client.post("/auth/login", json=credentials, headers=token)
+    with stub(verifier(verdict(action="newsletter"), seen)):
+        other_form = client.post("/auth/login", json=credentials, headers=token)
+    with stub(verifier(verdict(), seen)):
+        solved = client.post("/auth/login", json=credentials, headers=token)
+
+    assert (elsewhere.status_code, elsewhere.json()["code"]) == (400, "captcha_failed")
+    assert (other_form.status_code, other_form.json()["code"]) == (
+        400,
+        "captcha_failed",
+    )
+    assert solved.status_code == 200
+
+
+def test_deployments_warn_of_a_captcha_from_any_site(use_auth: UseAuth) -> None:
+    """Without ``HOSTNAMES``, a token solved anywhere passes: ``auth.W008``."""
+    deployed = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "RATE_LIMIT_BACKEND": "domainkit.http.ratelimit.RedisBackend",
+    }
+
+    hashers = ["domainkit.contrib.auth.hashers.PBKDF2PasswordHasher"]
+
+    use_auth(settings=deployed, PASSWORD_HASHERS=hashers, CAPTCHA=TURNSTILE)
+    anywhere = domain_warnings("auth")
+    named_hosts = {**TURNSTILE, "HOSTNAMES": ["app.example.com"]}
+    use_auth(settings=deployed, PASSWORD_HASHERS=hashers, CAPTCHA=named_hosts)
+    named = domain_warnings("auth")
+
+    assert any("AUTH.CAPTCHA.HOSTNAMES is empty" in each for each in anywhere)
+    assert not any("CAPTCHA" in each for each in named)

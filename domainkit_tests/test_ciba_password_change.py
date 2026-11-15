@@ -193,7 +193,7 @@ def test_in_the_phone_modes_only_the_phone_signs_the_phone_out(app: App) -> None
 
 def test_a_reset_keeps_or_ends_the_phones_login_as_a_change_does(app: App) -> None:
     """The reset by code follows the setting; ``"keep"`` keeps the phone."""
-    phone = Phone(app(PHONE), email=EMAIL)
+    phone = Phone(app(PHONE), email=EMAIL, email_verified=True)
     web = app()
     laptop = bearer(login(web, "alice")["access_token"])
 
@@ -216,7 +216,7 @@ def test_a_reset_asking_to_end_the_phone_needs_it_and_spends_nothing(
     app: App,
 ) -> None:
     """Phone modes, ``"ask"``, false, unsigned: 403, and the code still works."""
-    phone = Phone(app(PHONE, APPROVE_LOGINS=True), email=EMAIL)
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True), email=EMAIL, email_verified=True)
     web = app()
     code = mailed_reset_code(web)
     body = {"identifier": EMAIL, "code": code, "new_password": NEW_PASSWORD}
@@ -243,7 +243,12 @@ def test_a_reset_asking_to_end_the_phone_needs_it_and_spends_nothing(
 def test_a_reset_may_end_the_phones_login_too(app: App) -> None:
     """``"end"`` and ``"ask"`` with false, outside the phone modes."""
     for mode, extra in (("end", {}), ("ask", {"keep_device_logins": False})):
-        phone = Phone(app(PHONE), username=f"alice-{mode}", email=f"{mode}@x.example")
+        phone = Phone(
+            app(PHONE),
+            username=f"alice-{mode}",
+            email=f"{mode}@x.example",
+            email_verified=True,
+        )
         web = app()
         ask_reset(web, identifier=f"{mode}@x.example")
         drain()

@@ -384,8 +384,10 @@ class AuthConfig(DomainConfig):
         (with ``AUTH.REQUIRE_SHARED_THROTTLES = False``; refused otherwise),
         cookies without ``__Host-`` where it could hold, and principals
         kept longer than ``PRINCIPAL_TTL`` where nothing tells other
-        processes of changes. Anywhere, a backend that does not list its
-        grants on objects (``auth.W007``).
+        processes of changes, a captcha without ``HOSTNAMES``
+        (``auth.W008``), and a worker that may send codes once they expired
+        (``auth.W009``). Anywhere, a backend that does not list its grants
+        on objects (``auth.W007``).
         """
         unlisted: list[str] = [
             CheckMessage(
@@ -464,6 +466,16 @@ class AuthConfig(DomainConfig):
                     ("CSRF_NAME", cookie.CSRF_NAME),
                 )
                 if name is not None and not name.startswith("__Host-")
+            )
+        warnings.extend(_late_codes(config.CODE_TTL.total_seconds()))
+        if config.CAPTCHA is not None and not config.CAPTCHA.HOSTNAMES:
+            warnings.append(
+                CheckMessage(
+                    "auth.W008",
+                    "AUTH.CAPTCHA.HOSTNAMES is empty, so a token solved on "
+                    "another site that shows your site key passes; name your "
+                    "hostnames, or restrict the key's domains at the provider.",
+                )
             )
         return warnings
 
@@ -618,6 +630,34 @@ class AuthConfig(DomainConfig):
 
 NIST_DAILY_GUESSES: Final = 100
 """Wrong passwords NIST SP 800-63B 5.2.2 lets one account take: 100 at most."""
+
+
+def _late_codes(ttl: float) -> list[str]:
+    """``auth.W009``: messaging may send a code after half its life is gone.
+
+    A code whose worker died mid-send runs again after
+    ``MESSAGING.VISIBILITY_TIMEOUT``, and one a broker lost is published
+    again after ``REPUBLISH_AFTER``: either should leave the code most of
+    ``AUTH.CODE_TTL`` to be used. Nothing without messaging installed.
+    """
+    if not registry.is_installed("domainkit.contrib.messaging"):
+        return []
+    from domainkit.contrib.messaging import MessagingSettings
+
+    messaging = registry.settings(MessagingSettings)
+    late = [("VISIBILITY_TIMEOUT", messaging.VISIBILITY_TIMEOUT)]
+    if messaging.BROKER is not None:
+        late.append(("REPUBLISH_AFTER", messaging.REPUBLISH_AFTER))
+    return [
+        CheckMessage(
+            "auth.W009",
+            f"MESSAGING.{name} ({seconds:g} s) is more than half of AUTH.CODE_TTL "
+            f"({ttl:g} s): a code whose sending was cut short is sent again "
+            f"too late to be used; set it to {ttl / 2:g} s or less.",
+        )
+        for name, seconds in late
+        if seconds > ttl / 2
+    ]
 
 
 def _over_a_day(rate: str | None) -> bool:
