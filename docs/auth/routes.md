@@ -14,6 +14,7 @@ On this page you learn how to:
 - check a rule on one object;
 - find the routes that declare no rule;
 - read who sent a request when another system authenticates it;
+- mount part of a framework router, and add a rule to one of its routes;
 - manage users, groups, and permissions over the admin API, and act as
   a user for support.
 
@@ -314,6 +315,82 @@ deny by default once you mark it with `reads_principal`, as
 scoped credentials are held to the route's rules where it reads them,
 but it never counts as a rule.
 
+## Rules on the framework's routes
+
+The framework's routers (`auth_router`, `devices_router`, and the
+others) declare their own rules. To add a rule to one of their routes,
+or to mount only some of them, mount a copy made by `select_routes`
+(`domainkit.http.routers`, since 2.4). The router it copies is left as
+it is.
+
+```python
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends
+
+from domainkit.contrib.auth import StepUp
+from domainkit.contrib.devices.api import router as devices_router
+from domainkit.http.access import Require
+from domainkit.http.routers import select_routes
+
+recent = StepUp(max_age=timedelta(minutes=5))
+
+router = APIRouter()
+router.include_router(
+    select_routes(
+        devices_router,
+        without=["POST /devices/login"],
+        dependencies={"POST /devices/enroll/code": [Depends(Require(recent))]},
+    ),
+    prefix="/auth",
+)
+```
+
+- `only=[...]` copies the routes it names. Without it, every route is
+  copied.
+- `without=[...]` leaves out the routes it names.
+- `dependencies={name: [Depends(...)]}` adds dependencies to a route: a
+  rule, as here, or a check of your own, which may read the request's
+  body. They run after its routers' dependencies and the route's own,
+  before its endpoint. OpenAPI shows them as it shows the route's other
+  dependencies.
+
+A route's name is `METHOD /path`, as its router declares it: the path
+has the prefixes of the routers it is included through, but not the
+prefix you mount it under. A route with two methods is `GET POST /path`,
+and a WebSocket route is `WEBSOCKET /path`. `route_names(router)` lists
+them:
+
+```python
+from domainkit.http.routers import route_names
+
+print(route_names(devices_router))
+```
+
+```text
+['POST /passkeys/register/options', 'POST /passkeys/register', ..., 'POST /devices/enroll/code', 'POST /devices/enroll', ...]
+```
+
+A name that matches no route is refused with `ImproperlyConfigured`,
+which names it and lists the router's routes. So a typo never mounts
+every route, or leaves a rule out. Dependencies given to a route that
+is left out are refused too.
+
+- **The copies keep what the routes declare:** their rules, tags, and
+  answers, and the prefixes and dependencies of the routers they are
+  included through. They sit in a plain `APIRouter`, in the router's
+  order, with its lifespan. Mount it where you mounted the router.
+- **`account_router()` is a router too:**
+  `select_routes(account_router(), ...)` adds a rule to a route of any
+  app it mounts.
+- **A router that serves requests in its own way is refused**, and so is
+  one that includes such a router. A `matches` or `handle` of its own (an
+  IP gate) or frontend routes would be lost in a copy: include that
+  router whole.
+- **Starlette's own routes and mounts** are copied as they are when the
+  router declares them itself. They take no dependencies, so giving them
+  some is refused.
+
 ## The admin API
 
 `domainkit.contrib.auth.admin.router` is Django's admin for users,
@@ -383,6 +460,16 @@ what.
   of your own can hold superusers back the same way: register a check
   with `on_make_superuser` (`domainkit.contrib.auth.gates`) in its
   `ready()`, and raise to refuse.
+- **Every change to a user passes the project's own checks**:
+  `on_admin_change(check)` (`domainkit.contrib.auth.gates`) is called
+  with the staff member, the user (None when creating one), and an
+  `AdminChange`, before the change: its `kind` (`create`, `update`,
+  `delete`, `password`, `logout`, `impersonate`, `groups`,
+  `permissions`), the `fields` and flags it sets, and the groups or
+  permissions it `added` and `removed`. Raise `PermissionDenied` to
+  refuse it ("nobody edits their own account here", "making staff needs
+  another permission"). `admin.may_grant` and `admin.may_hold`, the
+  ceilings below, are public for your own routes.
 - **Other staff cannot grant a permission they lack**, directly or
   through a group (`403`).
 - **Nor can they change a user or a group that holds such a
@@ -504,6 +591,12 @@ See [reference/settings.md](../reference/settings.md) and
   A plain refusal always answers first.
 - **Turning impersonation on for long.** Keep `IMPERSONATION_TTL` short;
   the token acts as the user until it ends.
+- **Naming a route with the prefix it is mounted under.** `select_routes`
+  reads `POST /login`, not `POST /auth/login`, and refuses a name that
+  matches no route.
+- **Mounting a router and a copy of it.** Each route then appears
+  twice, under one operation id, which `check` refuses (`openapi.E001`).
+  Mount the copy in place of the router.
 
 ## See also
 

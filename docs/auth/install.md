@@ -83,6 +83,9 @@ router.include_router(account_router(), prefix="/auth")
 Public signup is off unless you include it
 (`account_router(include=["signup"])`), and `exclude=[...]` leaves routes
 out. [`domainkit.contrib.auth.routing`](../api/auth.md) lists the names.
+To mount only some routes of a router, or to add a rule of your own to
+one of them, mount a copy made by `select_routes`
+([Rules on the framework's routes](routes.md#rules-on-the-frameworks-routes)).
 
 Then make the tables, and a user who may do everything:
 

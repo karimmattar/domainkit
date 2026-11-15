@@ -343,6 +343,7 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
         _listen(engine.sync_engine, "begin", _begin_snapshot)
         _listen(engine.sync_engine, "savepoint", _begin_before_savepoint)
         _listen(engine.sync_engine, "connect", _enforce_foreign_keys)
+        _listen(engine.sync_engine.pool, "reset", _end_transaction_left_open)
     if direct:
         engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
         _keep_settled(engine.sync_engine)
@@ -903,6 +904,29 @@ def _begin_snapshot(connection: Connection) -> None:
     """
     if connection.get_execution_options().get(SNAPSHOT_BEGIN):
         connection.exec_driver_sql("BEGIN", execution_options={INTERNAL: True})
+
+
+def _end_transaction_left_open(
+    dbapi_connection: Any,  # noqa: ANN401 - SQLAlchemy's adapter.
+    record: ConnectionPoolEntry,
+    state: PoolResetState,
+) -> None:
+    """Roll back what SQLite kept open, as the connection goes back to the pool.
+
+    A ``COMMIT`` that SQLite refuses as busy ("database is locked": a
+    reader's lock outlasted the busy timeout, in the default journal)
+    leaves its transaction open, so that the ``COMMIT`` may be tried
+    again. SQLAlchemy marks the transaction ended all the same, sends no
+    ``ROLLBACK``, and tells the pool it was reset: the next unit of work
+    handed the connection would run inside it, reading what failed to
+    commit, and its own commit would write it. If the rollback fails, the
+    pool closes the connection. A connection being closed anyway is left
+    alone.
+    """
+    if state.terminate_only or not state.asyncio_safe:
+        return
+    if dbapi_connection.driver_connection.in_transaction:
+        dbapi_connection.rollback()
 
 
 def _begin_before_savepoint(connection: Connection, name: str) -> None:

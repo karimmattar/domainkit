@@ -30,6 +30,11 @@ class CibaSettings(BaseModel):
     """How long a QR code can be scanned; then ``REQUEST_TTL`` to answer it."""
     INTERVAL: int = Field(default=5, ge=1, le=60)
     """Seconds an initiator waits between polls; sooner gets ``slow_down``."""
+    WAIT_SECONDS: int = Field(default=20, ge=1, le=55)
+    """Seconds a page's ``…/wait`` holds at most, until the phone answers.
+
+    Within the request's deadline (``REQUEST_TIMEOUT``), less a second.
+    """
     MAX_PENDING: int = Field(default=3, ge=1, le=20)
     """Live push requests a user may have; past it, no push is sent."""
     REPORT_COOLDOWN: timedelta = Field(

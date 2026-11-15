@@ -94,6 +94,16 @@ from domainkit.contrib.approvals import requires_approval
 async def refund(command: Refund, uow: PaymentsUnitOfWork) -> Payment: ...
 ```
 
+A `@use_case` is guarded the same way, with `@requires_approval` above
+it: its call (`refund(uow, ...)`) and its `run`, which routes call, are
+both refused, and `guard()` takes the use case, its command included:
+
+```python
+@requires_approval("payments.refund")
+@use_case
+async def refund(uow: PaymentsUnitOfWork, payment_id: UUID, amount: Money) -> None: ...
+```
+
 Second, the domain registers the guard in `ready()`, with the policies
 that decide who approves the command and when. This is the same place
 where every hook is registered
@@ -149,7 +159,14 @@ Called directly with a command that needs approval, the service raises
 `ApprovalRequired` (403, `approval_required`) and runs nothing: it fails
 closed. With `submit=True`, it submits the command and raises
 `ApprovalPending` (403, `approval_pending`), whose `request_id` names the
-request. A route may answer that with a 202.
+request. A route may answer that with a 202. Over HTTP, the error's body
+names it `approval_request_id` (since 2.4), beside the body's own
+`request_id`, which is the HTTP request's, as in every error
+([the fields of an error](../reference/responses.md#the-fields-of-an-error)):
+
+```text
+{"type":"about:blank","title":"Forbidden","status":403,"detail":"This command needs approval: it was submitted for approval.","instance":"/payouts","code":"approval_pending","request_id":"9d319f0bc63345f5fdcf152e7013bd03","approval_request_id":"0192f0aa-5b7e-7c3d-9a41-3f6b1e2d4c5a"}
+```
 
 The guard checks itself both ways. A decorated service with no guard
 registered refuses every call (`ImproperlyConfigured`). `guard()`
@@ -476,6 +493,27 @@ it promotes. The run checks that its maker is still an active
 superuser, and fails it otherwise (`maker_not_allowed`). `manage.py
 createsuperuser` stays the operator's way to make the first one.
 
+**With one superuser, no one can approve.** The maker never approves
+their own request, so, with `SUPERUSER_APPROVERS` unset, a request
+needs `SUPERUSER_APPROVALS` superusers other than its maker. A project
+with a single superuser has none: the request waits until it expires.
+The way out is the operator's: `manage.py createsuperuser`, run on the
+server, makes another superuser without approvals, who may then
+approve. Keep more superusers than `SUPERUSER_APPROVALS`.
+
+**With `SUPERUSER_APPROVERS`, a superuser can approve through a second
+account.** With it set, whoever holds the permission approves, and a
+superuser may give any permission to any account, through the admin
+API, without approvals. So a superuser can give it to a second account
+of their own, which then approves their request: the approval proves
+two accounts, not two people. Staff who may change users and hold the
+permission can give it too. Unset, only another superuser approves, and
+no one makes a superuser alone over the API. Set it only where the
+permission is given out under a control of its own, and watch the audit
+trail for who is given it (`auth.user_permission_granted`,
+`auth.group_permission_granted`, `auth.user_joined_group`), as
+[for any approver](#what-maker-checker-does-not-stop).
+
 `refuse_if_guarded(action)` raises `ApprovalRequired` when a guard is
 registered for `action`. Use it on a path that does a guarded action
 without its service. The auth admin API is such a path: before it makes
@@ -708,7 +746,7 @@ other settings.
 | `ENTRY_APPROVALS` | `2` | Approvals a posting over its threshold needs (at most 10). |
 | `ENTRY_APPROVERS` | `"accounting.add_entry"` | The permission whoever approves a posting holds. |
 | `SUPERUSER_APPROVALS` | `0` | Approvals that making a superuser needs (at most 10); 0: it is not guarded. |
-| `SUPERUSER_APPROVERS` | `None` | The permission whoever approves making a superuser holds; `None`: superusers approve, and only they. |
+| `SUPERUSER_APPROVERS` | `None` | The permission whoever approves making a superuser holds; `None`: superusers approve, and only they. An empty text is `None` too (an unset variable in a compose file). Set, it lets a superuser approve through a second account ([Making superusers](#making-superusers)). |
 
 ## On PostgreSQL and SQLite
 
@@ -722,7 +760,7 @@ exactly one completes it.
 | Error | When | HTTP |
 | --- | --- | --- |
 | `ApprovalRequired` | A direct call of a command that needs approval. | 403, `approval_required` |
-| `ApprovalPending` | The same, with `submit=True`: the request was submitted. | 403, `approval_pending` |
+| `ApprovalPending` | The same, with `submit=True`: the request was submitted. | 403, `approval_pending`, with `approval_request_id` |
 | `MakerCannotDecide` | The maker tried to approve or reject. | 403, `maker_cannot_decide` |
 | `InterestedParty` | A party to the command tried to decide it. | 403, `interested_party` |
 | `NotTheMaker` | Someone else tried to cancel. | 403, `not_the_maker` |

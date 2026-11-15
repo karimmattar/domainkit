@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import case, delete, func, insert, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -351,14 +351,45 @@ class PushTokenStore:
     async def register(
         self, user_id: UUID, token: str, platform: str, *, keep: int
     ) -> PushToken:
-        """The token, now the user's; past ``keep``, their oldest end."""
-        digest = token_digest(token)
+        """The token, now the user's; past ``keep``, their oldest end.
+
+        One statement, an upsert on the digest. A token the user registered
+        before keeps its id and ``created_at``, and is seen now: an app
+        that registers on every start keeps one id. A token another user
+        held moves to this one as a new registration, with a new id.
+        Registrations of one token at once each succeed, on PostgreSQL and
+        SQLite alike (user report A11).
+        """
         now = utc_now()
-        await self.session.execute(
-            delete(push_tokens).where(push_tokens.c.digest == digest)
+        fresh = PushToken(
+            uuid.uuid4(), user_id, token_digest(token), token, platform, now, now
         )
-        stored = PushToken(uuid.uuid4(), user_id, digest, token, platform, now, now)
-        await self.session.execute(insert(push_tokens).values(**_fields(stored)))
+        dialect = self.session.get_bind().dialect.name
+        statement = (postgresql if dialect == "postgresql" else sqlite).insert(
+            push_tokens
+        )
+        statement = statement.values(**_fields(fresh))
+        theirs = push_tokens.c.user_id == statement.excluded.user_id
+        row = (
+            await self.session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[push_tokens.c.digest],
+                    set_={
+                        "id": case(
+                            (theirs, push_tokens.c.id), else_=statement.excluded.id
+                        ),
+                        "created_at": case(
+                            (theirs, push_tokens.c.created_at),
+                            else_=statement.excluded.created_at,
+                        ),
+                        "user_id": statement.excluded.user_id,
+                        "platform": statement.excluded.platform,
+                        "last_seen_at": statement.excluded.last_seen_at,
+                    },
+                ).returning(*push_tokens.c)
+            )
+        ).one()
+        stored = PushToken(**row._mapping)
         held = await self.of_user(user_id)
         if len(held) > keep:
             await self.session.execute(

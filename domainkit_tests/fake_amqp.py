@@ -5,12 +5,14 @@ publisher confirms, durable direct exchanges, queues bound by routing key,
 mandatory publishing (unroutable messages raise ``PublishError`` once
 ``on_return_raises`` is on), prefetch per consumer, consumers,
 acknowledgements, and requeues (which fail once their channel closed, with the
-connection). Tests break it on purpose with ``down``, ``refuse``, and
-``timeout``, and stall the calls named in ``stalled`` (a server that
-accepts connections but stops answering): a stalled call with aio-pika's
-``timeout=`` raises ``TimeoutError`` once it passes, as aio-pika does, and
-one without waits until ``release()``. ``test_rabbitmq.py`` runs the same
-tests on real servers.
+connection). Tests break it on purpose with ``down`` (connections are
+refused, and an open one has lost its transport, as a robust connection
+has while it reconnects), ``refuse``, and ``timeout``, and stall the
+calls named in ``stalled`` (a server that accepts connections but stops
+answering): a stalled call with aio-pika's ``timeout=`` raises
+``TimeoutError`` once it passes, as aio-pika does, and one without waits
+until ``release()``. ``test_rabbitmq.py`` runs the same tests on real
+servers.
 """
 
 import asyncio
@@ -268,7 +270,9 @@ class FakeConnection:
     async def channel(
         self, publisher_confirms: bool = True, on_return_raises: bool = False
     ) -> FakeChannel:
-        """Open a channel."""
+        """Open a channel; none while the server is down, as aio-pika refuses it."""
+        if self.server.down:
+            raise ChannelInvalidStateError("No active transport in channel")
         await self.server.answer("channel", None)
         channel = FakeChannel(self.server, publisher_confirms, on_return_raises)
         self.server.last_channel = channel

@@ -72,6 +72,7 @@ from domainkit.db import uow as sql_uow
 from domainkit.db.connections import (
     _begin_snapshot,
     _drop_detail,
+    _end_transaction_left_open,
     _enforce_foreign_keys,
     _keep_cut_off,
     _note_returned,
@@ -1221,7 +1222,16 @@ def test_engines_never_share_a_listener() -> None:
             [_keep_cut_off, _drop_detail, _ping_idle, _note_returned, _set_local],
         ),
         (create_engine, unpinged, unpinged_listeners),
-        (create_engine, local, [_drop_detail, _enforce_foreign_keys, _begin_snapshot]),
+        (
+            create_engine,
+            local,
+            [
+                _drop_detail,
+                _enforce_foreign_keys,
+                _end_transaction_left_open,
+                _begin_snapshot,
+            ],
+        ),
     ]:
         first, second = own_listeners(build(config)), own_listeners(build(config))
 

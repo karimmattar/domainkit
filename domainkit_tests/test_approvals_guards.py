@@ -698,6 +698,39 @@ def test_the_guards_approvals_brings_follow_their_settings() -> None:
         registry.clear()
 
 
+def test_an_empty_superuser_approvers_is_none_superusers_approve() -> None:
+    """``SUPERUSER_APPROVERS=""``, an unset compose variable, is None (user report P3).
+
+    The pattern refused it, so the project did not start. Superusers then
+    approve, as with None; other text is still checked.
+    """
+    from pydantic import ValidationError
+
+    from domainkit.contrib.approvals import ApprovalsSettings
+
+    assert ApprovalsSettings(SUPERUSER_APPROVERS="").SUPERUSER_APPROVERS is None
+    with pytest.raises(ValidationError, match="SUPERUSER_APPROVERS"):
+        ApprovalsSettings(SUPERUSER_APPROVERS=" ")
+    with pytest.raises(ValidationError, match="ENTRY_APPROVERS"):
+        ApprovalsSettings(ENTRY_APPROVERS="")
+    registry.clear()
+    try:
+        with override_settings(
+            INSTALLED_DOMAINS=[
+                "domainkit.contrib.contenttypes",
+                "domainkit.contrib.auth",
+                *DOMAINS,
+            ],
+            APPROVALS={"SUPERUSER_APPROVALS": 1, "SUPERUSER_APPROVERS": ""},
+        ):
+            setup()
+            [policy] = guards()["auth.grant_superuser"].policies
+            assert (policy.permission, policy.group) == (None, None)
+            assert type(policy.approver_rule).__name__ == "IsSuperuser"
+    finally:
+        registry.clear()
+
+
 async def test_a_missing_guard_is_named_when_refused(installed: None) -> None:
     """The refusal of a decorated service with no guard says what to do."""
     with pytest.raises(

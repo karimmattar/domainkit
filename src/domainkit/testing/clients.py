@@ -51,7 +51,12 @@ from domainkit.exceptions import ImproperlyConfigured
 
 TEST_SERVER: Final = "http://testserver"
 TEST_CLIENT: Final = ("testclient", 50000)
-"""The client address both clients send, as Starlette's does."""
+"""The client address both clients send, as Starlette's does, unless given one.
+
+``testclient`` is no network address: no ``TRUSTED_PROXIES`` holds it, so
+its ``X-Forwarded-For`` is never read. A test of what goes by the
+caller's address gives the client one (``client=("203.0.113.7", 50000)``,
+or a proxy's), which ``another`` and the clients it makes keep."""
 
 
 class TestClient(StarletteTestClient):
@@ -63,6 +68,17 @@ class TestClient(StarletteTestClient):
 
     __test__ = False
 
+    def __init__(
+        self,
+        app: ASGIApp,
+        *args: Any,  # noqa: ANN401 - Starlette's arguments.
+        **options: Any,  # noqa: ANN401 - Starlette's options.
+    ) -> None:
+        """Serve ``app`` as Starlette's client does; ``client=`` is its address."""
+        super().__init__(app, *args, **options)
+        self.client_address: tuple[str, int] = options.get("client", TEST_CLIENT)
+        """The address the application sees the requests come from."""
+
     @contextmanager
     def _portal_factory(self) -> Generator[BlockingPortal]:
         """Hand the transport a portal that carries the caller's context."""
@@ -73,9 +89,10 @@ class TestClient(StarletteTestClient):
         """Return a client of the same application that sends ``headers``.
 
         It shares this client's event loop and lifespan, so its requests use
-        the same database connections. Enter this client first.
+        the same database connections, and comes from the same address.
+        Enter this client first.
         """
-        client = TestClient(self.app, headers=dict(headers))
+        client = TestClient(self.app, headers=dict(headers), client=self.client_address)
         client.portal = self._entered()
         client.app_state.update(self.app_state)
         return client
@@ -209,8 +226,13 @@ class AsyncTestClient(httpx2.AsyncClient):
         client: tuple[str, int] = TEST_CLIENT,
         lifespan: bool = True,
     ) -> None:
-        """Serve ``app``; ``lifespan=False`` skips its startup and shutdown."""
+        """Serve ``app``; ``lifespan=False`` skips its startup and shutdown.
+
+        Its requests come from the address ``client``.
+        """
         self.app = app
+        self.client_address = client
+        """The address the application sees the requests come from."""
         self.app_state: dict[str, Any] = {}
         """The lifespan's state; each request gets a copy, as servers do."""
         self.lifespan = Lifespan(app, self.app_state) if lifespan else None
@@ -244,10 +266,12 @@ class AsyncTestClient(httpx2.AsyncClient):
     def another(self, headers: Mapping[str, str]) -> "AsyncTestClient":
         """Return a client of the same application that sends ``headers``.
 
-        It shares this client's lifespan instead of running its own; close
-        it with ``aclose()``.
+        It shares this client's lifespan instead of running its own, and
+        comes from the same address; close it with ``aclose()``.
         """
-        client = AsyncTestClient(self.app, headers=headers, lifespan=False)
+        client = AsyncTestClient(
+            self.app, headers=headers, client=self.client_address, lifespan=False
+        )
         client.app_state.update(self.app_state)
         return client
 

@@ -37,11 +37,13 @@ Typed hooks a domain registers for what it takes part in.
 - `on_seed`: Add the rows a fresh database needs (`manage.py seed`): `()`.
 - `on_shutdown`: Release what the domain's startup hooks opened: `()`.
 - `on_startup`: Open process resources, such as clients and pools: `()`.
+- `unregistered_methods`: `apps.W001`: each `start` or `stop` coroutine method no point holds.
 
 ## `domainkit.architecture`
 
 Enforce the dependency rules of a domain-driven package layout.
 
+- `ALLOWED_MODULES`: Modules a layer may import although a library it must not use holds them.
 - `FORBIDDEN_LAYERS`: Layers of the same domain that each layer must not import.
 - `FORBIDDEN_LIBRARIES`: Libraries each layer must not import.
 - `LAYER_MODULES`: The simple layout's modules, and the layer each one is.

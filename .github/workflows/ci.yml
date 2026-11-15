@@ -603,6 +603,7 @@ jobs:
           python -m zipfile -l dist/*.whl | grep -q "management/templates/domain"
           python -m zipfile -l dist/*.whl | grep -q "management/templates/project/dot-env-tpl"
           python -m zipfile -l dist/*.whl | grep -q "management/templates/profiles/fintech/dot-github/workflows/ci.yml-tpl"
+          python -m zipfile -l dist/*.whl | grep -q "management/templates/servers/granian/Dockerfile-tpl"
           python -m zipfile -l dist/*.whl | grep -q "contrib/auth/common-passwords.txt.gz"
       # Uploaded as built, before anything else is installed or run here: what
       # the smoke tests below install could otherwise change the files the
@@ -1220,7 +1221,8 @@ jobs:
             mutants: >-
               domainkit.http.application.* domainkit.http.blocking.*
               domainkit.http.errors.* domainkit.http.filters.* domainkit.http.guard.*
-              domainkit.http.live_events.* domainkit.http.locale.*
+              domainkit.http.live_events.* domainkit.http.live_fanout.*
+              domainkit.http.locale.*
               domainkit.http.metrics.* domainkit.http.openapi.*
               domainkit.http.ratelimit.* domainkit.http.routing.*
               domainkit.http.shedding.* domainkit.http.compression.* domainkit.http.sse.* domainkit.http.versioning.*
@@ -1230,6 +1232,7 @@ jobs:
               domainkit.http.client.* domainkit.http.deadlines.* domainkit.http.health.*
               domainkit.http.live.* domainkit.http.middleware.*
               domainkit.http.pagination.* domainkit.http.responses.*
+              domainkit.http.routers.*
               domainkit.http.servers.* domainkit.http.uploads.*
               domainkit.http.websockets.* domainkit.http.apidocs.*
           - name: data-1
@@ -1277,6 +1280,7 @@ jobs:
               domainkit.management.commands.check.*
               domainkit.management.commands.diffsettings.*
               domainkit.management.commands.flush.* domainkit.management.commands.init.*
+              domainkit.management.commands.logconfig.*
               domainkit.management.commands.runserver.* domainkit.management.operators.*
               domainkit.utils.closing.* domainkit.utils.formatting.*
               domainkit.utils.module_loading.* domainkit.utils.delivery.*

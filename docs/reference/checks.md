@@ -140,8 +140,9 @@ application logs them as a warning and starts.
 | `idempotency.E002` | in staging and production: keyed requests without a deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`), unless `IDEMPOTENCY.REQUIRE_DEADLINE = False` |
 | `keys.E001` | in staging and production: `KEYS.PROVIDER = "local"` without `KEYS.ALLOW_LOCAL_KEK`, whose key-encryption key derives from `SECRET_KEY` ([keys.md](../contrib/keys.md#providers)) |
 | `keys.E002` | in staging and production: `KEYS.VAULT.URL` over plain `http://`, which sends Vault's token and the data keys in clear |
-| `audit.E001`, `audit.E002`, `audit.E003` | in staging and production: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a schedule, unless `AUDIT.REQUIRE_BASELINE = False` ([audit](../contrib/audit.md#in-staging-and-production)) |
-| `audit.E004`, `audit.E005` | at startup in staging and production: an audited PostgreSQL database whose `protect()` triggers could not be checked, or are missing, unless `AUDIT.REQUIRE_BASELINE = False` |
+| `keys.E003` | in any environment, at startup and from `check`: a key service with no `KEYS.DATA_KEYS`, so nothing can be sealed or opened. `manage.py keys generate` makes the first one ([keys.md](../contrib/keys.md)) |
+| `audit.E001`, `audit.E002`, `audit.E003` | in staging and production: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a schedule, for the parts `AUDIT.REQUIRE` names ([audit](../contrib/audit.md#in-staging-and-production)) |
+| `audit.E004`, `audit.E005` | at startup in staging and production: an audited PostgreSQL database whose `protect()` triggers could not be checked, or are missing, while `AUDIT.REQUIRE` names `"triggers"` |
 | `accounting.E001`, `accounting.E002` | at startup: a ledger on PostgreSQL whose append-only triggers are missing, disabled, or changed, or could not be checked, unless `ACCOUNTING.REQUIRE_PROTECTION = False` ([accounting.md](../contrib/accounting.md#entries)) |
 | `limits.E001` | in any environment, at `setup()`: limits routed to another database than the ledger's ([limits.md](../contrib/limits.md)) |
 | `limits.E002` | in any environment, at `setup()`: a default of `LIMITS.DEFAULTS` that is not a limit |
@@ -161,6 +162,7 @@ everywhere.
 
 | Id | Warned |
 | --- | --- |
+| `apps.W001` | in every environment: a `start` or `stop` coroutine method of a `DomainConfig` that no hook point holds. Only registered functions run, so nothing calls it: register it in `ready()` with `on_startup(self.start)` or `on_shutdown(self.stop)` ([Extension points](extension-points.md)) |
 | `security.W001` | `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json` |
 | `security.W002` | `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS |
 | `security.W003` | no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE` |
@@ -177,6 +179,7 @@ everywhere.
 | `servers.W001` | an application that serves WebSockets under a server that reads larger messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or `GUNICORN_CMD_ARGS`; a deployed application also logs it at start) ([live.md](../live.md#message-size)) |
 | `servers.W002` | a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no caller has an address ([Server limits](servers.md); a deployed application also logs it at start) |
 | `live.W001` | WebSockets served without `WebSocketLimitsMiddleware` ([live.md](../live.md#message-size)) |
+| `live.W003` | domains share live event types (`live_events.share`) and `LIVE_FANOUT` names no backend (in staging and production): a client sees only the events its own process committed, and none the worker did ([live.md](../live.md#every-processs-events)) |
 | `live.W002` | a route with an access rule that turns re-authorization off (`LiveLimits(reauth_interval=None)`): its open connections keep a revoked token |
 | `blocking.W001` | in every environment: a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](../runtime.md#finding-blocking-code)) |
 | `blocking.W002` | in every environment: an event handler (in-process or durable) or a messaging task written as `def`. It is awaited on the event loop itself, so its work holds every request and message of the process, and the keys of the messages waiting behind it; then it fails, because it returns nothing to await ([runtime.md](../runtime.md#finding-blocking-code)). `allow_sync` marks one that returns an awaitable on purpose |
@@ -187,13 +190,15 @@ everywhere.
 | `auth.W006` | `AUTH.ACCOUNT_LOGIN_RATE` set to `None`, or to more than 100 wrong passwords a day at one account: past NIST SP 800-63B 5.2.2 ([auth.md](../auth/logging-in.md#wrong-passwords-and-device-proofs)) |
 | `ciba.W001` | in every environment: `CIBA.APPROVE_LOGINS` on with `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "end"`, so a password change or reset signs the phone out too ([Credential changes and the phone](../auth/logging-in.md#credential-changes-and-the-phone)) |
 | `auth.W007` | in every environment: a backend of `AUTH.BACKENDS` other than `ModelBackend` that does not answer `object_grants`. Only superusers then change users and groups through the admin API ([auth.md](../auth/routes.md#the-admin-api)) |
-| `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
+| `audit.W001` to `audit.W005` | for the parts `AUDIT.REQUIRE` leaves out (all, with `REQUIRE_BASELINE = False`): what `audit.E001` to `audit.E005` refuse |
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
 | `accounting.W003` | the ledger without `domainkit.contrib.messaging`: no worker releases expired holds, which keep counting against what is available. Silence it once `manage.py accounting expireholds` runs on the project's own schedule ([accounting.md](../contrib/accounting.md#holds)) |
 | `messaging.W001` | a task registered without `name=` (in staging and production): its name is its module's path. Moving or renaming the function renames its messages, which then wait for a task of the old name and are dead-lettered after `MESSAGING.UNKNOWN_TARGET_GRACE` ([messaging.md](../contrib/messaging.md)) |
+| `messaging.W002` | a durable handler subscribed without `name=` (in staging and production): its key is its module's path. Moving or renaming the function, or making it in-process, renames its messages, which then wait for a handler of the old name and are dead-lettered after `MESSAGING.UNKNOWN_TARGET_GRACE`. `formerly=` keeps running them under the new name ([messaging.md](../contrib/messaging.md#durable-event-handlers)) |
+| `messaging.W003` | a network database whose pool holds fewer connections than `MESSAGING.CONCURRENCY` + 1 (in staging and production): a worker's running messages each hold one, besides its listener's, and the rest wait up to `POOL_TIMEOUT`, then fail and are retried ([operations.md](../operations.md#the-worker)) |
 | `limits.W001` | limits without `domainkit.contrib.messaging`: no worker purges old usage, and its table grows with every movement. Silence it once `manage.py limits purge` runs on the project's own schedule ([limits.md](../contrib/limits.md#settings)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
-| `keys.W001` | in every environment: `KEYS.DATA_KEYS` keeps retired keys, so values, blind indexes, or subjects' keys may still be sealed under them. `manage.py keys reencrypt` moves them, and `keys status --check` fails until none is left ([keys.md](../contrib/keys.md#rotating)) |
+| `keys.W001` | from `manage.py keys status --check`, not `check`: values, blind indexes, or subjects' keys are still sealed under a retired key. `manage.py keys reencrypt` moves them; then remove the key ([keys.md](../contrib/keys.md#rotating)) |
 
 The production settings that `init` writes avoid the first three
 warnings, and ask for `TRUSTED_PROXIES`: leave it empty only when callers
@@ -218,6 +223,16 @@ refused there: each error stands for an unsafe or broken configuration.
 `idempotency.W002` (0.10: `IDEMPOTENCY.ANONYMOUS` left unset, so
 `"per-address"`) is gone since 0.11, whose default is `"refuse"`. Listed
 in `SILENCED_CHECKS`, it silences nothing.
+
+## Information
+
+| Id | Said |
+| --- | --- |
+| `security.I001` | in staging and production: where a request's scheme comes from ([below](#information-https)) |
+| `keys.I001` | in every environment: `KEYS.DATA_KEYS` keeps retired keys, as a rotation does until `keys reencrypt` moved what they seal; `keys status --check` says when they can go ([keys.md](../contrib/keys.md#rotating)) |
+
+A domain's own infos (`<label>.I001`, from `on_deployment_warnings`) are
+listed the same way: never a failure, and nothing to silence.
 
 ## Information: HTTPS
 

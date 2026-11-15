@@ -111,6 +111,9 @@ Authorize one act, with its arguments, once (ADR 0144).
 
 The admin API: users, groups, and permissions over REST (Django's admin).
 
+- `may_change`: Refuse to change a user who holds more than `actor`.
+- `may_grant`: Refuse to hand out (or take away) permissions `actor` does not have.
+- `may_hold`: Refuse to hand out (or touch) grants on objects `actor` does not hold.
 - `router`: The routes: the admin API: users, groups, and permissions over REST (Django's admin).
 
 ## `domainkit.contrib.auth.api`
@@ -178,6 +181,7 @@ Device proofs: a client that logged in keeps a count of its own (SEC-r1-2).
 Login gates: checks every login passes before it is issued (ADR 0128).
 
 - `MANAGES_LOGINS`: `dependencies=[MANAGES_LOGINS]`: the route passes `on_manage_logins`.
+- `AdminChange`: What a staff member is about to do to a user through the admin API.
 - `LoginGate`: A check of a login: return to let it through, raise to refuse it.
 - `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
 - `LoginsCheck`: A check of a request that manages the user's other logins: raise to refuse.
@@ -187,6 +191,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
+- `on_admin_change`: Register a check of every change the admin API makes to a user.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_make_superuser`: Register a check of making a superuser in the admin API.
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
@@ -714,11 +719,13 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `poll`: The approved request `handle` polls for, redeemed now; it works once.
 - `start_push`: Ask `user`'s phone to approve a sign-in; queue the push to their apps.
 - `start_qr`: A request for whichever phone scans its QR code, within `QR_TTL`.
+- `wait`: Wait up to `seconds` for the phone to answer request `handle`; approved?
 
 ## `domainkit.contrib.ciba.api`
 
 The routes of sign-ins approved from the phone: the web's, and the phone's.
 
+- `count_start`: Count a start against `START_RATE` for the client's address.
 - `router`: The routes: the web's sign-ins, and the phone's answers.
 
 ## `domainkit.contrib.ciba.clients`
@@ -772,6 +779,13 @@ The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
 - `mark_approved`: Say that `request` redeemed a sign-in `user`'s phone approved.
 - `signed_password_login`: With `APPROVE_LOGINS = "always"`, a password login a bound device signs.
 
+## `domainkit.contrib.ciba.hooks`
+
+Hook points of the project's own sign-in pages (user report A8).
+
+- `on_approve`: A sign-in the user's phone approves: `(request, user, sign_in)`.
+- `on_start`: A sign-in the project's own page starts (push or QR): `(request)`.
+
 ## `domainkit.contrib.ciba.oidc`
 
 The OpenID Provider's CIBA routes, for clients that ask a user's phone.
@@ -796,6 +810,7 @@ Start a sign-in request, let the phone answer it, and poll it (ADR 0128).
 - `poll`: The approved request `handle` polls for, redeemed now; it works once.
 - `start_push`: Ask `user`'s phone to approve a sign-in; queue the push to their apps.
 - `start_qr`: A request for whichever phone scans its QR code, within `QR_TTL`.
+- `wait`: Wait up to `seconds` for the phone to answer request `handle`; approved?
 
 ## `domainkit.contrib.ciba.settings`
 

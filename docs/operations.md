@@ -144,15 +144,18 @@ shows up before a rollout.
 Run uvicorn or Granian with one worker process per core, behind a
 reverse proxy or load balancer that limits header sizes and slow
 clients. The image that `init` writes runs uvicorn, and
-`WEB_CONCURRENCY` sets its worker processes (one unless set). The whole
-command, with each limit, is on [reference/servers.md](reference/servers.md).
-The two settings that matter most:
+`WEB_CONCURRENCY` sets its worker processes (one unless set); with
+`init --server granian` it runs Granian, and `GRANIAN_WORKERS` sets them.
+The whole command, with each limit, is on
+[reference/servers.md](reference/servers.md). The two settings that
+matter most:
 
 - **Shutdown.** The server's graceful timeout
   (`--timeout-graceful-shutdown`) plus `SHUTDOWN_TIMEOUT` (15 seconds)
   must fit in the orchestrator's grace period (30 seconds on
   Kubernetes). Otherwise a stop ends in `SIGKILL`
-  ([runtime.md](runtime.md#shutting-down-within-a-budget)).
+  ([runtime.md](runtime.md#shutting-down-within-a-budget)). Granian's
+  `--workers-kill-timeout` counts both, and kills a worker past it.
 - **Proxies.** Run uvicorn with `--no-proxy-headers`, and list the
   proxies in `TRUSTED_PROXIES`, so that domainkit, not uvicorn, decides
   each caller's address. Rate limits, audit records, and logs depend on
@@ -381,12 +384,32 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
   ([runtime.md](runtime.md#workers-and-the-outbox)).
 - **Metrics.** `runworker --metrics-port 9100` serves the worker's
   Prometheus metrics, on `127.0.0.1` unless `--metrics-address` says
-  otherwise.
+  otherwise. With `METRICS_TOKEN` set, a scrape needs `Authorization:
+  Bearer <METRICS_TOKEN>`, as the web's `/metrics` does.
+- **Connections.** Each running message holds a database connection,
+  besides the one the worker listens and claims with: give the workers'
+  pool at least `MESSAGING.CONCURRENCY + 1` connections (`POOL_SIZE` +
+  `MAX_OVERFLOW`). `check` warns about a smaller one where deployed
+  (`messaging.W003`).
+- **Health.** `runworker --heartbeat-file /tmp/worker-alive` checks,
+  from the worker's own event loop, what `/ready` checks (domains,
+  databases, ledgers, caches) and the broker it consumes from, every
+  `--heartbeat-interval` seconds (15). While all hold it rewrites the
+  file; a failing check, or a stuck loop, lets it age, and it goes when
+  the worker stops. A container's health check reads its age:
+
+  ```dockerfile
+  HEALTHCHECK --interval=30s CMD test $(( $(date +%s) - $(stat -c %Y /tmp/worker-alive) )) -lt 60
+  ```
+
+  `--metrics-port` is no health signal: it answers from a thread of its
+  own, however stuck the loop is.
 - **Without a long-running worker.** `runworker --once` runs what is due
   and exits, for cron. Messages then wait for the next run.
 - **RabbitMQ.** With `MESSAGING = {"BROKER": ...}`, commits publish to
   the broker and workers consume from it. The outbox stays the source of
-  truth, and relays publish what a commit could not.
+  truth, and relays publish what a commit could not. While the broker is
+  away, relaying workers run the outbox themselves.
   `runworker --no-relay` only consumes
   ([messaging.md](contrib/messaging.md#workers-on-rabbitmq)).
 
@@ -396,13 +419,16 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
 python manage.py messages status            # counts by status, and each queue's lag
 python manage.py messages list pending      # also: held, locked, dead
 python manage.py messages retry 42          # or: retry all
+python manage.py messages drop 42           # or: drop all [--blanked]
 python manage.py messages cancel 42
 python manage.py messages release           # unblock keys with held messages and none pending
 ```
 
-`retry`, `cancel`, and `release` take `--operator`. With
+`retry`, `drop`, `cancel`, and `release` take `--operator`. With
 `domainkit.contrib.audit` installed, each one is recorded in the audit
-trail with the operator's name.
+trail with the operator's name. Dead letters stay until retried or
+dropped, unless `MESSAGING.DEAD_RETENTION_SECONDS` is set: then cleanup
+deletes those that died that long ago.
 
 ## Sealing the audit trail
 

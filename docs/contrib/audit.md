@@ -542,10 +542,18 @@ protect. The probe looks at the database's own schema, and at each
 tenant's schema that holds a trail; a trail of a tenant is named
 `<alias>/<schema>`, and the fix is `migrate --tenant <tenant>`.
 
-Since 0.10 these checks refuse. `AUDIT.REQUIRE_BASELINE` is `True` by
-default, so staging and production do not start without the four parts,
-`check` fails, and each missing part is an error that `SILENCED_CHECKS`
-cannot name. `AUDIT.REQUIRE_BASELINE = False` keeps 0.9's warnings.
+Since 0.10 these checks refuse. `AUDIT.REQUIRE` names all four parts by
+default, so staging and production do not start without them, `check`
+fails, and each missing part is an error that `SILENCED_CHECKS` cannot
+name. A part left out of `REQUIRE` only warns: a project that runs
+without a ledger still requires the triggers, which need none:
+
+```python
+AUDIT = {"REQUIRE": ["triggers", "sealing"]}  # No ledger, by choice.
+```
+
+`AUDIT.REQUIRE_BASELINE = False` keeps 0.9's warnings for all four,
+unless `REQUIRE` is set too.
 
 | Error | Warning | What is missing |
 | --- | --- | --- |
@@ -707,7 +715,8 @@ other settings.
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
 | `SEALED_EXTERNALLY` | `False` | `audit seal` runs from a schedule of your own (cron), not in the worker: staging and production then do not report that nothing seals. |
-| `REQUIRE_BASELINE` | `True` | Refuse to start in staging and production without a ledger, a namespace, a sealing schedule, and the triggers (the default since 0.10). `False` only warns, as 0.9 did. |
+| `REQUIRE_BASELINE` | `True` | Refuse to start in staging and production without a ledger, a namespace, a sealing schedule, and the triggers (the default since 0.10). `False` only warns, as 0.9 did, unless `REQUIRE` is set. |
+| `REQUIRE` | all four | The parts staging and production refuse to start without: `"ledger"`, `"namespace"`, `"sealing"`, `"triggers"`; a part left out only warns ([In staging and production](#in-staging-and-production)). |
 | `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `audit seal --late`, and `audit verify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
 | `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |

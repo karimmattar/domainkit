@@ -47,7 +47,7 @@ of its own. It answers what trying them all answers.
 
 import copy
 import dataclasses
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import Any, Final, Self, SupportsIndex
 
 from fastapi import APIRouter
@@ -142,6 +142,28 @@ def serves_itself(router: APIRouter) -> bool:
             break
         own.update(vars(base))
     return not own.isdisjoint(serving)
+
+
+def routers_within(router: APIRouter) -> Iterator[APIRouter]:
+    """``router``, then every router it includes, at any depth, in order.
+
+    Only ``router`` on a FastAPI that copies routes when they are included:
+    it includes no router then.
+    """
+    yield router
+    for route in router.routes:
+        if _INCLUDED is not None and isinstance(route, _INCLUDED):
+            included: Any = route
+            yield from routers_within(included.original_router)
+
+
+def has_frontend_routes(router: APIRouter) -> bool:
+    """Whether ``router`` itself has frontend routes (``APIRouter.frontend``).
+
+    FastAPI keeps them out of ``router.routes``, and matches them after
+    every other route.
+    """
+    return bool(getattr(router, "_low_priority_routes", None))
 
 
 def flatten_routes(router: APIRouter) -> int:

@@ -19,6 +19,7 @@ from domainkit.contrib.mail import EmailMessage, MailDeliveryFailed
 from domainkit.contrib.mail import providers as mail_providers
 from domainkit.contrib.notifications import (
     NotificationFailed,
+    NotificationRefused,
     PushMessage,
     SmsMessage,
 )
@@ -318,10 +319,12 @@ async def test_fcm_sends_with_the_service_accounts_token(
     )
 
     await backend.send_messages([PUSH])
-    for _ in range(2):
-        with pytest.raises(PushTokenGone):
-            await backend.send_messages([PUSH])
-    with pytest.raises(NotificationFailed, match="INVALID_ARGUMENT"):
+    with pytest.raises(PushTokenGone):
+        await backend.send_messages([PUSH])
+    # No UNREGISTERED: not a token gone (a wrong PROJECT_ID answers so too).
+    with pytest.raises(NotificationFailed, match=r"refused the notification: 404\.$"):
+        await backend.send_messages([PUSH])
+    with pytest.raises(NotificationRefused, match="INVALID_ARGUMENT"):
         await backend.send_messages([PUSH])
 
     send = calls.requests[1]

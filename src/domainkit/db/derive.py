@@ -26,6 +26,8 @@ Hint                           Column
 ``date``, ``time``             ``Date``, ``Time``
 ``UUID``                       ``Uuid``
 ``Currency``                   ``CurrencyCode``: the code
+``tuple[str, ...]``            ``JSONTuple(str)``: a JSON array; also of
+                               ``int``, ``float``, ``bool``
 ``Point``                      ``PointType``: PostGIS geography, or JSON
 ``Money``                      ``MoneyColumns``: ``<name>`` and ``<name>_currency``
 an ``Enum``                    ``EnumValue``: its values, as text or integers
@@ -88,7 +90,13 @@ from domainkit.db.encrypted import EncryptedColumns
 from domainkit.db.money import CHECK, PRECISION, SCALE, MoneyColumns, money_check
 from domainkit.db.orm import VERSION
 from domainkit.db.orm import metadata as default_metadata
-from domainkit.db.types import CurrencyCode, ExactDecimal, UTCDateTime
+from domainkit.db.types import (
+    JSON_SCALARS,
+    CurrencyCode,
+    ExactDecimal,
+    JSONTuple,
+    UTCDateTime,
+)
 from domainkit.ddd.fields import (
     DatabaseDefault,
     Digits,
@@ -569,10 +577,14 @@ def column_type(field: FieldInfo) -> TypeEngine[Any]:
     if issubclass(kind, Enum):
         return EnumValue(kind)
     if (inner := wrapped_field(kind)) is not None:
-        nested = FieldInfo(inner.name, kind, inner.kind, metadata=inner.metadata)
+        nested = FieldInfo(
+            inner.name, kind, inner.kind, metadata=inner.metadata, item=inner.item
+        )
         return ValueObjectType(kind, column_type(nested))
     if kind in _SIMPLE:
         return _SIMPLE[kind]()
+    if kind is tuple and field.item is not None and field.item in JSON_SCALARS:
+        return JSONTuple(field.item)
     if _is_point(kind):
         from domainkit.db.places import PointType
 
@@ -581,9 +593,14 @@ def column_type(field: FieldInfo) -> TypeEngine[Any]:
         from domainkit.db.refs import ObjectRefType
 
         return ObjectRefType()
+    tuples = (
+        " (a tuple[X, ...] of str, int, float, or bool is a JSON array)"
+        if kind is tuple
+        else ""
+    )
     raise TypeError(
-        f"{_where(field)}: no column type for {kind.__name__}; pass a Column "
-        "for it, or call register_column_type."
+        f"{_where(field)}: no column type for {kind.__name__}{tuples}; pass a "
+        "Column for it, or call register_column_type."
     )
 
 

@@ -51,6 +51,7 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `EnumValue`: An `Enum` stored by its members' values, so order follows them.
 - `ExactDecimal`: Fixed-point amounts that come back exactly as stored, also on SQLite.
 - `Isolation`: The isolation level of a unit of work's transaction (`isolation=`).
+- `JSONTuple`: A tuple of text, integers, floats, or booleans, stored as a JSON array.
 - `MoneyColumns`: The two columns of a money field: `<name>` and `<name>_currency`.
 - `Reads`: How a read-only session reads (`SqlAlchemyUnitOfWork(reads=...)`).
 - `SqlAlchemyRepository`: Store one imperatively mapped aggregate type; set `model` in subclasses.
@@ -164,6 +165,7 @@ Domain-driven design building blocks ("seedwork").
 - `EventHandler`: An event handler: `async def handle(event) -> None`.
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `Generated`: `Annotated` metadata: the database computes the column (`GeneratedField`).
+- `HandlerKey`: A key a worker runs messages of: the handler, and the event type it takes.
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
 - `IPAddress`: An IPv4 or IPv6 address (Django's `GenericIPAddressField`).
 - `IPAddressFormat`: `Annotated` metadata: an IPv4 or IPv6 address, as `ipaddress` reads it.

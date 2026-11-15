@@ -480,6 +480,7 @@ Transactional outbox, durable event handlers, and background tasks.
 - `Chain`: Tasks that run one after another, each once the one before succeeds.
 - `LeaseLost`: Another worker took the message over; this run's commit is refused.
 - `MessagingSettings`: Delivery, retry, and worker options; every key is optional.
+- `RunLater`: Run this message again once `after` has passed: not a failure.
 - `Worker`: Run outbox messages of one database.
 - `chain`: Run `first`, then each task of `then` once the one before succeeds.
 - `current_attempt`: The run of the message being processed, or None outside the worker.
@@ -492,15 +493,24 @@ Transactional outbox, durable event handlers, and background tasks.
 
 ## `domainkit.contrib.messaging.admin`
 
-Operator queries: queue depth, lag, listings, retries, and cancelling.
+Operator queries: queue depth, lag, listings, retries, cancelling, dropping.
 
 - `blanked_dead_letters`: Count dead messages (one, or all) whose arguments were blanked.
 - `cancel`: Cancel a pending message that no worker is running; report whether it was.
+- `drop_dead`: Delete dead messages (one, or all); return how many went.
 - `list_messages`: List messages in `state`, most urgent (or, for dead ones, newest) first.
 - `queue_counts`: Count messages by status in alias `database` (default: the home outbox).
 - `queue_lag`: Seconds the oldest due message of each queue has waited to start.
 - `release_stalled`: Make the next message of each stalled ordering key pending; how many.
 - `retry_dead`: Return dead messages (one, or all) to the queue with fresh attempts.
+
+## `domainkit.contrib.messaging.heartbeat`
+
+The worker's health signal: a file it touches while every check holds.
+
+- `beat`: Run the checks once; touch `path` if all hold. Whether they did.
+- `failures`: What fails now: `/ready`'s checks, and `broker` (`broker:<alias>`).
+- `heartbeat`: Beat every `interval` seconds until `stop`; then remove `path`.
 
 ## `domainkit.contrib.messaging.testing`
 
@@ -523,6 +533,7 @@ Text messages and push notifications through the outbox.
 - `MemoryPushBackend`: Keeps notifications in `push_outbox`, for tests.
 - `MemorySmsBackend`: Keeps text messages in `sms_outbox`, for tests.
 - `NotificationFailed`: The provider did not take a message; the worker tries again later.
+- `NotificationRefused`: The provider will not take this message as it is: it is not tried again.
 - `NotificationsSettings`: Where text messages and push notifications go, and how often to retry.
 - `PushBackend`: Sends push notifications through a provider.
 - `PushMessage`: A push notification to one device, by the token its platform gave it.
@@ -546,6 +557,7 @@ Ports for text messages and push notifications, with development adapters.
 - `MemoryPushBackend`: Keeps notifications in `push_outbox`, for tests.
 - `MemorySmsBackend`: Keeps text messages in `sms_outbox`, for tests.
 - `NotificationFailed`: The provider did not take a message; the worker tries again later.
+- `NotificationRefused`: The provider will not take this message as it is: it is not tried again.
 - `PushBackend`: Sends push notifications through a provider.
 - `PushTokenGone`: The push service no longer knows the token: the app was removed.
 - `SmsBackend`: Sends text messages through a provider.
@@ -652,6 +664,7 @@ Push providers: Firebase Cloud Messaging, Apple's APNs, Huawei Push Kit.
 - `ApnsPushBackend`: Apple's push service (APNs), over HTTP/2, with a provider token.
 - `FcmPushBackend`: Firebase Cloud Messaging's HTTP v1 API (Android, iOS, the web).
 - `HuaweiPushBackend`: Huawei Push Kit's HTTP API, for devices without Google's services.
+- `Refusal`: How a push service refused a notification, read from its answer.
 
 ## `domainkit.contrib.mail.providers`
 

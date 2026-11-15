@@ -21,6 +21,7 @@ __all__ = [
     "MemoryPushBackend",
     "MemorySmsBackend",
     "NotificationFailed",
+    "NotificationRefused",
     "PushBackend",
     "PushTokenGone",
     "SmsBackend",
@@ -38,7 +39,25 @@ class NotificationFailed(DomainkitError):
     """The provider did not take a message; the worker tries again later.
 
     Adapters raise it with the provider's error code, never a number or a
-    token.
+    token: ``code`` keeps it, and ``fields`` the fields of the message the
+    provider named, never their values.
+    """
+
+    def __init__(
+        self, message: str, *, code: str | None = None, fields: Sequence[str] = ()
+    ) -> None:
+        """Say what failed; keep the provider's ``code`` and the ``fields`` it named."""
+        super().__init__(message)
+        self.code = code
+        self.fields = tuple(fields)
+
+
+class NotificationRefused(NotificationFailed):
+    """The provider will not take this message as it is: it is not tried again.
+
+    A refusal that would come again, such as a payload the service cannot
+    take: the worker dead-letters the message at once, and reports it,
+    instead of trying it again as it does after an outage.
     """
 
 

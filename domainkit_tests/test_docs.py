@@ -22,6 +22,7 @@ from domainkit.conf.global_settings import (
     DebugToolbarConfig,
     HttpClientConfig,
     LedgerConfig,
+    LiveFanoutConfig,
     Settings,
     ShardConfig,
     StorageConfig,
@@ -100,6 +101,7 @@ def documented(pages: str) -> set[str]:
         (StorageConfig, REFERENCE),
         (DebugToolbarConfig, REFERENCE),
         (HttpClientConfig, REFERENCE),
+        (LiveFanoutConfig, "live.md"),
         (ArchitectureConfig, REFERENCE),
         (MessagingSettings, "contrib/messaging.md"),
         (AuditSettings, "contrib/audit.md"),
@@ -422,6 +424,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (StorageConfig, REFERENCE, "STORAGES"),
     (BrokerConfig, REFERENCE, "BROKERS"),
     (HttpClientConfig, REFERENCE, "HTTP_CLIENT"),
+    (LiveFanoutConfig, "live.md", "LIVE_FANOUT"),
     (DebugToolbarConfig, REFERENCE, "DEBUG_TOOLBAR"),
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
     (WebhooksSettings, "contrib/webhooks.md", "WEBHOOKS"),
@@ -452,7 +455,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
 """Each settings model, the page of its table, and how the table is found."""
 PROSE_DEFAULTS = {
     "Settings": {"SETTINGS_MODULE", "BASE_DIR", "MIDDLEWARE", "LOGGING"}
-    | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE"},
+    | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE", "LIVE_FANOUT"},
     "DatabaseConfig": {"URL", "COMMAND_TIMEOUT", "POOL_SIZE", "MAX_OVERFLOW"}
     | {"POOL_TIMEOUT", "POOL_RECYCLE"},
     "LedgerConfig": {"URL"},
@@ -468,6 +471,7 @@ PROSE_DEFAULTS = {
     "AwsKmsSettings": {"KEY_ID", "REGION"},
     "VaultSettings": {"URL", "KEY", "TOKEN"},
     "MailSettings": {"SMTP"},
+    "AuditSettings": {"REQUIRE"},
 }
 """Defaults the tables state in words (computed, required, or "see below")."""
 _UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
@@ -758,6 +762,39 @@ def test_the_projects_image_runs_uvicorn_with_the_limits_the_reference_gives() -
     ]
     assert command[8:] == given[2:workers] + given[workers + 2 :]
     assert "WEB_CONCURRENCY" in dockerfile.split("FROM", 1)[0]  # Said up top.
+
+
+def test_the_granian_image_runs_the_commands_the_reference_gives() -> None:
+    """``init --server granian``'s ``Dockerfile`` keeps "Server limits" too.
+
+    ``logconfig`` first, then Granian, from ``src``; its processes are
+    ``GRANIAN_WORKERS``, not ``--workers``. Its notes link to the section
+    (user report S1).
+    """
+    reference = (DOCS / "reference/servers.md").read_text(encoding="utf-8")
+    assert "\n## Granian\n" in reference
+    block = reference.split("written for its own process first:\n\n```bash\n", 1)[1]
+    written, served = block.split("```", 1)[0].split("\n", 1)
+    given = shlex.split(served.replace("\\\n", " "))
+    workers = given.index("--workers")
+    dockerfile = (
+        ROOT / "src/domainkit/management/templates/servers/granian/Dockerfile-tpl"
+    ).read_text(encoding="utf-8")
+    shell, run, command = json.loads(
+        dockerfile.split("CMD ", 1)[1].replace("\\\n", " ")
+    )
+    first, then = command.split(" && ")
+    granian = shlex.split(then)
+
+    assert (shell, run) == ("sh", "-c")
+    assert first == written
+    application = ["granian", "--interface", "asgi", "config.asgi:application"]
+    assert granian[0] == "exec"
+    assert granian[1:5] == given[:4] == application
+    assert granian[5:7] == ["--working-dir", "src"]
+    assert granian[7:] == given[4:workers] + given[workers + 2 :]
+    assert "GRANIAN_WORKERS" in dockerfile.split("FROM", 1)[0]
+    assert "{{ docs }}/reference/servers.md#granian" in dockerfile
 
 
 _PYTHON = re.compile(r"^```python\n(.*?)^```$", re.DOTALL | re.MULTILINE)

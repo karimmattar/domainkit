@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from domainkit import clock
 from domainkit.conf import override_settings
@@ -35,6 +36,8 @@ from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.integration import auth_settings
 from domainkit.contrib.ciba.api import FREE_TEXT_STEP_UP_WARNING
 from domainkit.contrib.ciba.api import _warn_free_text_step_up as warn_once
+from domainkit.contrib.ciba.hooks import on_approve
+from domainkit.ddd import PermissionDenied
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit_tests import sample_action_routes as acts
 from domainkit_tests.conftest import UseAuth
@@ -263,6 +266,31 @@ def test_another_digest_denies_the_request_and_the_act_is_refused(
     assert len(audited("ciba.sign_in_denied")) == 1
 
 
+async def refuse_every_act(request: Request, user: Any, sign_in: Any) -> None:  # noqa: ANN401
+    """A project's rule: no act is approved from the phone."""
+    if sign_in.kind == "authorization":
+        raise PermissionDenied("Acts are not approved from the phone here.")
+
+
+def test_an_act_a_hook_refuses_is_neither_confirmed_nor_approved(acting: App) -> None:
+    """``on_approve`` runs before auth confirms the act: nothing is kept."""
+    phone = Phone(acting(PHONE))
+    session = Session(acting())
+    on_approve(refuse_every_act, domain="ciba")
+    _, started, listed = asked_of_the_phone(session, phone)
+
+    refused = approve(phone, listed, started)
+    with later():
+        polled = session.redeem(started["request"])
+
+    assert refused.status_code == 403, refused.json()
+    assert refused.json()["detail"] == "Acts are not approved from the phone here."
+    assert polled.json()["code"] == "authorization_pending"
+    assert [each["id"] for each in phone.waiting()] == [listed["id"]]
+    [row] = rows()
+    assert (row["confirmed_at"], row["signature"]) == (None, None)
+
+
 def test_another_session_can_neither_ask_the_phone_nor_redeem_the_answer(
     acting: App,
 ) -> None:
@@ -465,13 +493,18 @@ def test_the_free_text_step_up_is_deprecated_with_a_header_and_a_warning_once(
     for listed in phone.waiting():
         approved = phone.approve(listed["id"])
         assert approved.status_code == 204, approved.json()
+    waited = web.post(
+        "/auth/app-sign-in/step-up/wait",
+        json={"request": first.json()["request"]},
+        headers=headers,
+    )
     stepped = redeem(web, headers, first.json()["request"])
 
     said = [str(each.message) for each in warned]
     assert said == [FREE_TEXT_STEP_UP_WARNING]
     assert warned_again == []  # Once a process.
     assert "removed in domainkit 3.0" in said[0]
-    for answer in (first, second, stepped):
+    for answer in (first, second, waited, stepped):
         assert answer.status_code == 200, answer.json()
         assert answer.headers["Deprecation"] == "@1794700800"  # 2026-11-15.
         assert answer.headers["Link"] == f'<{DEPRECATION_DOCS}>; rel="deprecation"'

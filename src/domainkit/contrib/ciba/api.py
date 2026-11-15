@@ -20,6 +20,11 @@ per address):
   ``slow_down``, ``expired_token``, ``access_denied`` or ``sign_in_unknown``.
 - ``POST /app-sign-in/session`` ``{"request"}``: the same, as a browser
   session in cookies (``/session``).
+- ``POST /app-sign-in/wait`` ``{"request"}``: holds until the phone
+  answers, at most ``WAIT_SECONDS``; ``{"status": "approved"}`` (redeem it
+  now) or ``"pending"`` (wait again). It never redeems, nor counts as a
+  poll. ``/app-sign-in/step-up/wait`` and
+  ``/app-sign-in/transactions/wait`` do the same for a session's asks.
 
 A signed-in web session (credentials without scopes) asks the user's
 phone for more (ADR 0129); only that session redeems the answer:
@@ -65,12 +70,13 @@ import hashlib
 import hmac
 import warnings
 from datetime import UTC, date, datetime
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from domainkit import deadlines
 from domainkit.contrib.auth import AbstractBaseUser
 from domainkit.contrib.auth.actions import ActionAuthorizationOut, AuthorizationNotFound
 from domainkit.contrib.auth.authentication import Credentials, Proof
@@ -121,6 +127,7 @@ from domainkit.contrib.devices.binding import (
 )
 from domainkit.ddd import NotFound
 from domainkit.deprecation import DomainkitDeprecationWarning
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import error_responses
 from domainkit.http.versioning import Deprecation
@@ -134,6 +141,7 @@ from .exceptions import (
     WrongMatchCode,
 )
 from .gate import mark_approved
+from .hooks import on_approve, on_start
 from .services import (
     PHONE_CONFIRMS,
     Requester,
@@ -148,6 +156,7 @@ from .services import (
     secret_digest,
     start_push,
     start_qr,
+    wait,
     waiting,
 )
 from .stores import (
@@ -160,7 +169,7 @@ from .stores import (
     SignInRequest,
 )
 
-__all__ = ["router"]
+__all__ = ["count_start", "router"]
 
 router = APIRouter(tags=["sign-in approvals"])
 DEVICE_SIGNED = Depends(Require(IsUnscoped(), DeviceSigned()))
@@ -185,7 +194,7 @@ FREE_TEXT_STEP_UP: Final = Deprecation(
     link="https://github.com/karimmattar/domainkit/blob/main/docs/auth/ciba.md"
     "#the-pages-words-and-a-window-deprecated",
 )
-"""``POST /app-sign-in/step-up`` and its token: deprecated in 2.4, gone in 3.0."""
+"""``POST /app-sign-in/step-up``, its token and wait: deprecated in 2.4, gone in 3.0."""
 FREE_TEXT_STEP_UP_WARNING: Final = (
     "POST /app-sign-in/step-up is deprecated: the phone shows the page's words, "
     "and its approval opens a window for every guarded act. Ask for an action "
@@ -230,6 +239,24 @@ class StartedOut(BaseModel):
     qr_expires_in: int | None = None
     """Seconds the QR code can be scanned: then start a new one. Once
     scanned, keep polling: the phone has ``expires_in`` to answer."""
+
+
+class WaitOut(BaseModel):
+    """What a wait found: the phone approved, or has not answered yet."""
+
+    status: Literal["approved", "pending"]
+    """``approved``: redeem it now (``…/token``); ``pending``: wait again."""
+
+
+def _wait_seconds() -> float:
+    """``WAIT_SECONDS``, within the request's deadline less a second to answer."""
+    seconds = float(ciba_settings().WAIT_SECONDS)
+    return max(deadlines.remaining(at_most=seconds + 1.0) - 1.0, 0.0)
+
+
+def _waited(approved: bool) -> WaitOut:
+    """The answer of a wait."""
+    return WaitOut(status="approved" if approved else "pending")
 
 
 class PollIn(BaseModel):
@@ -378,8 +405,10 @@ def _requester(request: Request) -> Requester:
     return Requester(_address(request), request.headers.get("user-agent") or None)
 
 
-async def _count_start(request: Request) -> None:
+async def count_start(request: Request) -> None:
     """Count a start against ``START_RATE`` for the client's address.
+
+    For a project's own start routes too, so they share the routes' count.
 
     Raises:
         APIError: 429 past the rate.
@@ -390,6 +419,25 @@ async def _count_start(request: Request) -> None:
         action="ciba.start",
         detail=STARTS_THROTTLED,
     )
+
+
+async def _start_message(request: Request) -> str | None:
+    """The binding message the domains' ``on_start`` hooks give; they may refuse.
+
+    Raises:
+        ImproperlyConfigured: A hook gave a message the phone cannot show.
+    """
+    message: str | None = None
+    for hook in on_start:
+        given = await hook.call(request)
+        if given is not None and message is None:
+            if not given.isprintable() or not 0 < len(given.strip()) <= MESSAGE_LENGTH:
+                raise ImproperlyConfigured(
+                    f"{hook.domain}'s on_start hook gave a message the phone "
+                    f"cannot show: 1 to {MESSAGE_LENGTH} printable characters."
+                )
+            message = given
+    return message
 
 
 def _started(started: Started) -> StartedOut:
@@ -419,7 +467,8 @@ async def start_push_sign_in(
     page cannot tell a user who exists from one who does not.
     """
     _no_store(response)
-    await _count_start(request)
+    await count_start(request)
+    message = await _start_message(request)
     async with CibaUnitOfWork() as uow:
         user = await uow.users.find_by_identifier(body.identifier)
         started = await start_push(
@@ -427,6 +476,7 @@ async def start_push_sign_in(
             user,
             requester=_requester(request),
             match=ciba_settings().NUMBER_MATCHING,
+            binding_message=message,
         )
         await uow.commit()
     return _started(started)
@@ -441,9 +491,12 @@ async def start_push_sign_in(
 async def start_qr_sign_in(request: Request, response: Response) -> StartedOut:
     """A QR code for the phone to scan; ask for a new one when it expires."""
     _no_store(response)
-    await _count_start(request)
+    await count_start(request)
+    message = await _start_message(request)
     async with CibaUnitOfWork() as uow:
-        started = await start_qr(uow, requester=_requester(request))
+        started = await start_qr(
+            uow, requester=_requester(request), binding_message=message
+        )
         await uow.commit()
     return _started(started)
 
@@ -476,7 +529,7 @@ async def ask_to_bind_device(
         DeviceSignatureRefused: The key did not sign the request.
     """
     _no_store(response)
-    await _count_start(request)
+    await count_start(request)
     algorithm, key = device_key(body.public_key)
     if not await proves_key(request, algorithm, key):
         raise DeviceSignatureRefused()
@@ -596,6 +649,23 @@ async def redeem_sign_in(
         expires_in=issued.expires_in,
         refresh_token=issued.refresh_token,
     )
+
+
+@router.post(
+    "/app-sign-in/wait",
+    dependencies=[Public],
+    responses=error_responses(status.HTTP_400_BAD_REQUEST),
+)
+async def wait_for_sign_in(body: PollIn, response: Response) -> WaitOut:
+    """Hold until the phone answers the page's sign-in, at most ``WAIT_SECONDS``.
+
+    Instead of polling (user report L2): ``approved`` comes as soon as the
+    phone approves; the page then redeems it (``/token``, ``/session``).
+    Denied, expired, or unknown answer as a poll does. It never redeems,
+    nor counts as a poll.
+    """
+    _no_store(response)
+    return _waited(await wait(body.request, seconds=_wait_seconds()))
 
 
 @router.post(
@@ -742,6 +812,8 @@ async def approve_sign_in(
     device = await _device(request, user)
     async with CibaUnitOfWork() as uow:
         asked = await waiting(uow, user.id, request_id)
+    for hook in on_approve:  # Raising refuses it: nothing is approved or confirmed.
+        await hook.call(request, user, asked)
     if asked.kind == AUTHORIZATION and matches(asked, body.match_code):
         await _confirm_act(request, user, asked, device, body.digest)
     async with CibaUnitOfWork() as uow:
@@ -856,7 +928,7 @@ async def _ask(
     sca_challenge_id: UUID | None = None,
 ) -> StartedOut:
     """Ask the user's phone, counted against ``START_RATE``."""
-    await _count_start(request)
+    await count_start(request)
     async with CibaUnitOfWork() as uow:
         started = await ask_signed_in(
             uow,
@@ -921,6 +993,52 @@ async def ask_phone_step_up(
     _no_store(response)
     _, digest = _session_of(request)
     return await _ask(request, user, digest, kind=STEP_UP, message=body.message)
+
+
+@router.post(
+    "/app-sign-in/step-up/wait",
+    dependencies=[Depends(FREE_TEXT_STEP_UP)],
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
+)
+async def wait_for_phone_step_up(
+    body: PollIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> WaitOut:
+    """Hold until the phone answers this session's step-up (``/wait``'s rules)."""
+    _no_store(response)
+    _, digest = _session_of(request)
+    approved = await wait(
+        body.request, seconds=_wait_seconds(), kind=STEP_UP, credential_digest=digest
+    )
+    return _waited(approved)
+
+
+@router.post(
+    "/app-sign-in/transactions/wait",
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
+)
+async def wait_for_phone_transaction(  # Before /{challenge_id}, which "wait" matches.
+    body: PollIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> WaitOut:
+    """Hold until the phone answers this session's transaction (``/wait``'s rules)."""
+    _no_store(response)
+    _, digest = _session_of(request)
+    approved = await wait(
+        body.request,
+        seconds=_wait_seconds(),
+        kind=TRANSACTION,
+        credential_digest=digest,
+    )
+    return _waited(approved)
 
 
 @router.post(
@@ -1077,7 +1195,7 @@ async def ask_phone_authorization(
     authorization = await action_authorization(authorization_id, user.id, login=digest)
     if _asks(authorization) - PHONE_COVERS:
         raise AuthorizationNeedsOtherFactors
-    await _count_start(request)
+    await count_start(request)
     request_id = uuid4()
     await link_action_authorization(
         authorization.id, user_id=user.id, sign_in_request_id=request_id

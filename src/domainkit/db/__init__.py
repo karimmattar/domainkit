@@ -27,7 +27,7 @@ from domainkit.db.orm import (
     mapper_registry as mapper_registry,
 )
 from domainkit.db.repository import SqlAlchemyRepository
-from domainkit.db.types import CurrencyCode, ExactDecimal, UTCDateTime
+from domainkit.db.types import CurrencyCode, ExactDecimal, JSONTuple, UTCDateTime
 from domainkit.db.uow import Isolation, SqlAlchemyUnitOfWork, lock_key
 
 __all__ = [
@@ -39,6 +39,7 @@ __all__ = [
     "EnumValue",
     "ExactDecimal",
     "Isolation",
+    "JSONTuple",
     "MoneyColumns",
     "Reads",
     "SqlAlchemyRepository",

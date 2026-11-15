@@ -212,9 +212,13 @@ def test_addevent_adds_an_event_and_a_durable_handler(shop: Shop) -> None:
     )
     apps = shop.read("apps.py")
     assert (
-        "event_bus.subscribe(ProductRestocked, on_product_restocked, durable=True)"
-        in apps
-    )
+        "event_bus.subscribe(\n"
+        "            ProductRestocked,\n"
+        "            on_product_restocked,\n"
+        "            durable=True,\n"
+        '            name="shop.on_product_restocked",\n'
+        "        )"
+    ) in apps
     assert "on_product_noted" not in apps
     assert not (shop.tests / "test_on_product_noted.py").exists()
     assert "quantity=1" in shop.test("test_on_product_restocked.py")
@@ -1803,9 +1807,10 @@ def test_addevent_grows_a_four_file_domain(desk: Shop) -> None:
         "class Ticket(AggregateRoot[TicketId]):"
     )
     controllers = desk.read("controllers.py")
-    assert "@handles(TicketSeen, durable=True)\nasync def on_ticket_seen(" in (
-        controllers
-    )
+    assert (
+        '@handles(TicketSeen, durable=True, name="desk.on_ticket_seen")\n'
+        "async def on_ticket_seen("
+    ) in controllers
     assert "logger = logging.getLogger(__name__)" in controllers
     assert (desk.tests / "test_on_ticket_seen.py").is_file()
     assert check_domain("gen.desk") == []

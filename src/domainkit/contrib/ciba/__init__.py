@@ -55,6 +55,7 @@ from .services import (
     poll,
     start_push,
     start_qr,
+    wait,
 )
 from .settings import CibaSettings
 from .stores import CibaClient, CibaUnitOfWork, SignInRequest
@@ -93,4 +94,5 @@ __all__ = [
     "poll",
     "start_push",
     "start_qr",
+    "wait",
 ]

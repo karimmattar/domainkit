@@ -633,8 +633,10 @@ async def register_push_token(
 ) -> PushTokenOut:
     """Keep the token the user's app was given: notifications go there.
 
-    Checked by auth's ``on_manage_logins`` first: in the phone modes, one
-    of the user's devices signs the request (ADR 0134).
+    A token the user registered before keeps its id, so an app may
+    register on every start. Checked by auth's ``on_manage_logins``
+    first: in the phone modes, one of the user's devices signs the
+    request (ADR 0134).
     """
     async with DevicesUnitOfWork() as uow:
         token = await uow.push_tokens.register(

@@ -195,6 +195,15 @@ def _custom(custom: CustomProviderSettings, config: KeysSettings) -> KeyProvider
     return provider
 
 
+def missing_keys_problem(provider: str) -> str:
+    """What a key service with no data key is refused with (``keys.E003``)."""
+    return (
+        f"KEYS.PROVIDER {provider!r} has no data key: nothing can be sealed or "
+        "opened. Make the first with 'manage.py keys generate', and add it to "
+        "KEYS['DATA_KEYS']."
+    )
+
+
 def ring_for(config: KeysSettings) -> Keyring:
     """The ring ``KEYS`` describes, its subjects' keys in their table.
 
@@ -253,6 +262,8 @@ class SettingsKeyring:
         if current is not None and current[0] is source:
             return current[1]
         config = registry.settings(KeysSettings)
+        if config.missing_keys:
+            raise ImproperlyConfigured(missing_keys_problem(config.PROVIDER))
         fingerprint = _fingerprint(config)
         with self._lock:
             ring = self._rings.get(fingerprint)
