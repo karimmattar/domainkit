@@ -26,6 +26,11 @@ is all there is::
   ``service(command, uow)`` shape ``ResourceRouter.command_route``, tasks,
   and tests already call. ``ResourceRouter.use_case(restock)`` declares its
   route from all this.
+- A parameter hinted ``Annotated[str, Field(repr=False)]`` (pydantic's
+  ``Field``, as a request model hides a password) is a command field with
+  ``repr=False``, as a ``Command`` written by hand hides one with
+  ``dataclasses.field(repr=False)``: the command's ``repr``, and so its
+  logs, leave it out.
 
 Plain Python, as the domain and application layers need.
 """
@@ -36,6 +41,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, get_type_hints, overload
 
 from domainkit.ddd._dataclass import MessageMeta
+from domainkit.ddd.fields import describe
 from domainkit.ddd.messages import Command
 from domainkit.ddd.uow import UnitOfWork
 from domainkit.utils.text import camel_case
@@ -114,7 +120,11 @@ def _command_of(
     parameters: list[inspect.Parameter],
     hints: dict[str, Any],
 ) -> type[Command]:
-    """A ``Command`` class whose fields are ``parameters``, with their hints."""
+    """A ``Command`` class whose fields are ``parameters``, with their hints.
+
+    A parameter hinted with ``Field(repr=False)`` is a field with
+    ``repr=False`` (``FieldInfo.shown``).
+    """
     annotations: dict[str, Any] = {}
     defaults: dict[str, Any] = {}
     for parameter in parameters:
@@ -133,8 +143,12 @@ def _command_of(
                 "the command and its request schema are made from it."
             )
         annotations[parameter.name] = hints[parameter.name]
+        given = {}
         if parameter.default is not inspect.Parameter.empty:
+            given = {"default": parameter.default}
             defaults[parameter.name] = parameter.default
+        if not describe(Command, parameter.name, hints[parameter.name]).shown:
+            defaults[parameter.name] = dataclasses.field(repr=False, **given)
     namespace = {
         "__annotations__": annotations,
         "__module__": function.__module__,

@@ -77,7 +77,7 @@ curl -H "Authorization: Bearer $METRICS_TOKEN" https://api.example.com/metrics
 
 | Metric | Labels |
 | --- | --- |
-| `messaging_messages_total` | `kind`, `outcome` (`done`, `retry`, `dead`, `throttled`, `handled`, `superseded`, `unknown`, `unrecorded`, `interrupted`) |
+| `messaging_messages_total` | `kind`, `outcome` (`done`, `retry`, `dead`, `throttled`, `later`, `handled`, `superseded`, `unknown`, `unrecorded`, `interrupted`) |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |
 | `messaging_outbox_lag_seconds` | `queue` (seconds its oldest due message has waited for a worker) |

@@ -376,8 +376,16 @@ none arrive (`403 phone_required`, since 2.3).
 
 An app registers the token its push service gave it. A token moves to
 whoever registers it last (a phone that changed hands). Past
-`MAX_PUSH_TOKENS`, a user's oldest tokens end. A use case notifies the
-user on every app of theirs, through
+`MAX_PUSH_TOKENS`, a user's oldest tokens end.
+
+An app may register its token on every start. A token the user
+registered before keeps its `id` and `created_at`; its `last_seen_at`
+and `platform` are the new ones (before 2.4, each registration gave it a
+new `id`). A token that moves to another user gets a new `id` there.
+Registrations of one token at once each succeed: one upsert, on
+PostgreSQL and SQLite.
+
+A use case notifies the user on every app of theirs, through
 [`domainkit.contrib.notifications`](../mail.md#text-messages-and-push-notifications):
 
 ```python

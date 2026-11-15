@@ -112,13 +112,36 @@ request. Each committed event becomes a message:
 from domainkit.ddd import event_bus
 
 # In DomainConfig.ready():
-event_bus.subscribe(UserCreated, notify_crm, durable=True)
+event_bus.subscribe(UserCreated, notify_crm, durable=True, name="crm.notify")
 ```
 
 A durable handler runs only for the events it is subscribed to (or their
 subclasses). A message that pairs it with another event is
 dead-lettered. Durable handlers use the `MESSAGING` settings for their
 retries and timeouts.
+
+Each message carries its handler's key: `name=`, or else the function's
+`module.QualName`, which moving or renaming it changes. Give every
+durable handler a name, as you give every task one; `check` warns about
+those without one in staging and production (`messaging.W002`).
+`formerly=` lists keys a handler's messages were queued under before:
+its module path before you named it, an older name, or its key while it
+was durable, once it runs in-process. Workers still run the messages
+queued under them with it, and new events queue none under them. Keep
+it until those messages have run.
+
+```python
+@handles(
+    UserCreated,
+    durable=True,
+    name="crm.notify",
+    formerly=["domains.crm.controllers.notify_crm"],
+)
+async def notify_crm(event: UserCreated) -> None: ...
+```
+
+Two handlers never share a key, and one handler has one name, whatever
+events it handles: `subscribe` refuses both with `ValueError`.
 
 ## Delivery is at least once
 
@@ -143,6 +166,33 @@ task shop.flaky failed (attempt 1 of 2); retrying in 0.0s
 Dead-lettered task shop.flaky after 2 attempts
 ```
 
+A task or handler that finds the world not ready yet, such as a provider
+that has not decided, raises `RunLater`. That is not a failure: the
+worker gives the attempt back, logs one line at INFO, reports nothing,
+and runs the message again once `after` has passed. `retry_on` and
+`dont_retry_on` do not apply, and it is never dead-lettered for that,
+so give work that could wait for ever an end of its own:
+
+```python
+from domainkit.contrib.messaging import RunLater
+
+
+@task(name="kyc.recheck")
+async def recheck(session_id: str, give_up_at: datetime) -> None:
+    if (decision := await provider.decision(session_id)) is None:
+        if clock.now() >= give_up_at:
+            raise ProviderNeverDecided(session_id)  # A failure: retried, then dead.
+        raise RunLater(after=timedelta(minutes=1), reason="not decided yet")
+    await record(decision)
+```
+
+```text
+Task kyc.recheck runs again in 60s: not decided yet
+```
+
+It is counted as the outcome `later`. `domainkit.ddd.Retry` is another
+thing: how a unit of work runs again after losing a race.
+
 A handler or task that raises `CancelledError` while the worker is not
 stopping it (it awaited a task or future that was cancelled) has failed,
 as `HandlerCancelled`. It is retried and counted as any failure.
@@ -151,8 +201,9 @@ A message keeps its last error, which is logged and reported too.
 Validation errors (arguments or an event that no longer fit) are kept as
 `InvalidData`, naming the fields and rules but not the values, which are
 often personal data. `python manage.py messages list dead` lists dead
-letters, and `messages retry ID` (or `all`) queues them again after a
-fix ([Inspecting and cancelling](#inspecting-and-cancelling)).
+letters, `messages retry ID` (or `all`) queues them again after a fix,
+and `messages drop ID` (or `all`) deletes them
+([Inspecting and cancelling](#inspecting-and-cancelling)).
 
 ### Unknown tasks and handlers, and deploys
 
@@ -173,9 +224,9 @@ and `messages retry` queues it again. So:
   module, or renaming it, renames the task, and messages queued under the
   old name wait, then die. `@task(name="billing.push_invoice")` keeps the
   name whatever the code does. `check` warns about tasks without one in
-  staging and production (`messaging.W001`). A durable handler's name is
-  always `module.QualName`: keep a moved handler's old one subscribed for
-  a release, or let its messages drain first.
+  staging and production (`messaging.W001`). So with durable handlers:
+  `name=`, and `formerly=` for the keys they had before
+  ([Durable event handlers](#durable-event-handlers), `messaging.W002`).
 
 The test plugin's `drain` dead-letters such a message at once and
 reports it: in a test's process, every task is there.
@@ -447,7 +498,8 @@ async def push_invoice(invoice_id: UUID) -> None:
   statement that marks it done, and `cancel` when it cancels it. The row
   keeps the task's name, id, times, attempts, and error, for
   `RETENTION_SECONDS`. A dead message keeps its arguments, so `messages
-  retry` can run it again, for as long as it stays dead, unless its task
+  retry` can run it again, for as long as it stays dead (until dropped,
+  or `DEAD_RETENTION_SECONDS`), unless its task
   is `sensitive`. Then they are blanked with its error recorded, its
   headers say `payload_blanked`, and a retry refuses it. Mark a task
   sensitive when its arguments hold secrets or personal data; mail, text
@@ -613,7 +665,10 @@ among them: the worker queues a periodic slot when it next polls, and a
 cron run is queued ahead, due later, so either can start up to
 `POLL_INTERVAL_IDLE` after its time. Workers that cannot listen (SQLite,
 PgBouncer, `NOTIFY = False`, a listening connection that dropped) poll
-every `POLL_INTERVAL`.
+every `POLL_INTERVAL`. With a broker that commits publish to
+(`PUBLISH_ON_COMMIT`), the relay backs off the same way: it finds only
+what commits could not publish, and what comes due, which waits up to
+`POLL_INTERVAL_IDLE`.
 
 **Watching PostgreSQL's notification queue.** PostgreSQL keeps sent
 notifications in one queue per server (8 GB by default) until every
@@ -715,6 +770,16 @@ aio-pika). Then `runworker` works like this:
 - **Losses** cost time, never messages. A worker that dies mid-message
   leaves it to come back after `VISIBILITY_TIMEOUT`; a message that
   RabbitMQ lost is published again after `REPUBLISH_AFTER`.
+- **While the broker is away, relaying workers run the outbox.** Each
+  relay has a breaker, as commits do (`BREAKER_FAILURES`,
+  `BREAKER_COOLDOWN`). While it is open, the worker claims the due
+  messages of its queues and runs them, as a worker without a broker
+  does, within the same `CONCURRENCY`. After the cooldown it checks the
+  broker, and publishes again once it answers. What committed during the
+  outage runs within a poll; what the broker held before waits
+  `REPUBLISH_AFTER`, then runs too, and its copies are skipped when the
+  broker delivers them. Consume-only workers (`--no-relay`) wait for the
+  broker ([ADR 0142](../adr/0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md)).
 - **Ordering keys** need nothing of RabbitMQ. The outbox holds a key's
   later messages back, so only its first is ever published, and the
   consumer that finishes it publishes the key's next at once. Any
@@ -744,7 +809,8 @@ and a full outbox drained at 950 tasks per second instead of 470.
 `python manage.py broker declare` creates the exchange and the queues
 before the workers start; run it with an account that may configure the
 virtual host if the workers' account may not. `broker check` tells
-whether each broker answers. In staging and production, brokers must use
+whether each broker answers: on RabbitMQ it opens and closes a channel,
+a round trip, as `runworker --heartbeat-file` does. In staging and production, brokers must use
 `amqps://` with certificate checks, and a user other than `guest`;
 `memory://`, an in-process broker for tests and development, is refused
 there.
@@ -758,7 +824,12 @@ skipped, but the queue grows. Add workers before a backlog gets that
 long. Quorum queues dead-letter or drop a message delivered more than
 their delivery limit (20 by default); for the worker that is harmless,
 because the relay publishes such a message again after
-`REPUBLISH_AFTER`.
+`REPUBLISH_AFTER`. A worker requeues a delivery every `POLL_INTERVAL`
+while its outbox is unreachable, so an outage longer than 20 of them
+leaves every message delivered meanwhile to wait `REPUBLISH_AFTER`. A
+policy raises the limit, or lifts it (`-1`, from RabbitMQ 4.0):
+`rabbitmqctl set_policy work '^shop\.' '{"delivery-limit": -1}'
+--apply-to quorum_queues`.
 
 ### Other brokers
 
@@ -796,6 +867,7 @@ takes `--database` (default: `MESSAGING.DATABASE`):
 | `messages status` | Count messages by status, and show each queue's lag: how long its oldest due message has waited for a worker. |
 | `messages list STATE [--queue Q] [--limit N]` | List messages, without their arguments: `pending` (in the order workers take them, `due` or `scheduled`), `held` (waiting for an earlier one of their key, by key and in order), `locked` (`running`, or `published` to the broker), or `dead`. `--limit` defaults to 20. |
 | `messages retry ID` or `all` | Queue dead letters again, with fresh attempts. |
+| `messages drop ID` or `all` | Delete dead letters. `--blanked`: only those whose arguments were blanked, which `retry` cannot run. |
 | `messages cancel ID` | Cancel a message that no worker is running. |
 | `messages release` | Make the next message of each stalled ordering key pending. |
 
@@ -813,6 +885,9 @@ Queued 1 message(s).
 
 `retry` skips the dead letters of `sensitive` tasks, whose arguments were
 blanked: `retry ID` refuses one, and `retry all` says how many it left.
+`drop all --blanked` deletes them, once they were sent again from where
+they came from; `drop ID` deletes any one dead letter. Nothing else
+deletes a dead letter, unless `DEAD_RETENTION_SECONDS` is set.
 `cancel` cancels a waiting or held message, or one on its way through the
 broker (its delivery is then skipped). A running message is refused:
 
@@ -822,13 +897,13 @@ CommandError: 00000000-0000-4000-8000-000000000001 was not cancelled: it is runn
 
 A cancelled message never runs, nor does the rest of its chain. It is
 kept as `cancelled`, without its arguments, and deleted after
-`RETENTION_SECONDS`. `retry`, `cancel`, and `release` take `--operator`,
-and are recorded in the audit trail with the operator who ran them
-([operators](../reference/commands.md#operators)).
+`RETENTION_SECONDS`. `retry`, `drop`, `cancel`, and `release` take
+`--operator`, and are recorded in the audit trail with the operator who
+ran them ([operators](../reference/commands.md#operators)).
 
 `domainkit.contrib.messaging.admin` has the same operations for your own
 tools, unrecorded: `list_messages`, `cancel`, `queue_counts`,
-`queue_lag`, `retry_dead`, `blanked_dead_letters`, and
+`queue_lag`, `retry_dead`, `drop_dead`, `blanked_dead_letters`, and
 `release_stalled`.
 
 With Prometheus, `messaging_outbox_lag_seconds` (per queue) is the same
@@ -894,12 +969,13 @@ other settings.
 | `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
 | `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must be more than `TASK_TIMEOUT` (at most 2 days). A message whose worker died runs again after it: with auth's codes, keep it under half of `AUTH.CODE_TTL`, or a code cut short arrives expired (`auth.W009` where deployed). |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
-| `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message that no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
+| `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL), or publish themselves to the broker (`PUBLISH_ON_COMMIT`, for the relay): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message that no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | The most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `DRAIN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
 | `UNKNOWN_TARGET_GRACE` | `3600.0` | Seconds a message naming a task or handler that no worker knows waits for one, given back with a doubling delay, before it is dead-lettered ([Unknown tasks and handlers](#unknown-tasks-and-handlers-and-deploys)); 0 dead-letters it at once (at most 365 days). |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. A periodic task's run is kept until its slot ends, however long: it is what stops workers from queueing the slot again. |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried or dropped, or for `DEAD_RETENTION_SECONDS`. A periodic task's run is kept until its slot ends, however long: it is what stops workers from queueing the slot again. |
+| `DEAD_RETENTION_SECONDS` | `None` | Dead letters are deleted this long after they died (at most 365 days); `None` keeps them until `messages retry` or `messages drop`. A periodic task's dead run is kept until its slot ends, as a finished one is. |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | The most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox ([Workers on RabbitMQ](#workers-on-rabbitmq)). |
@@ -915,6 +991,8 @@ other settings.
 | Id or error | When | What to do |
 | --- | --- | --- |
 | `messaging.W001` | Staging or production: a task registered without `name=`. | Give every task a stable `name=`. |
+| `messaging.W002` | Staging or production: a durable handler subscribed without `name=`. | Give it one, with `formerly=` its old key for the messages queued under it. |
+| `messaging.W003` | Staging or production: a database pool smaller than `CONCURRENCY` + 1. | Lower `CONCURRENCY`, or raise the workers' pool. |
 | `ImproperlyConfigured` at startup | A task's `timeout` (or `TASK_TIMEOUT`) is not under `VISIBILITY_TIMEOUT`; a cron expression never runs; `@ordered` names an argument the task does not have. | Fix the task or the setting. |
 | Refused in staging and production | A broker without TLS or credentials, `guest`, or `memory://`. | Use `amqps://` (or the TLS scheme of your broker) and a user of its own. |
 | A commit that fails | A unit of work defers tasks or publishes events with durable handlers, and messaging is not installed. | Install messaging. |

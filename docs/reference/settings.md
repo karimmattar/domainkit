@@ -219,7 +219,9 @@ domains' own models keep those keys as secrets.
   domain`;
 - the domain layer imports only the standard library, `domainkit.ddd`,
   `domainkit.clock`, `domainkit.money`, and itself;
-- the application layer uses no web or database library;
+- the application layer uses no web or database library, and the
+  infrastructure layer no web library but the outgoing HTTP client
+  (`domainkit.http.client`), which adapters call other services with;
 - another domain is reached only through its `application` or
   `domain.events`.
 

@@ -128,7 +128,9 @@ pytest
     aggregate that its own unit of work wrote, so a client that creates
     an order sees it at once. But a list read right after may not show it
     yet. A read that must see a write, such as a check before a change,
-    belongs in the writable unit of work.
+    belongs in the writable unit of work, or in a read-only one that
+    keeps to the primary: `readonly=True, replica=False`, or
+    `replica = False` on its class (permission checks, for one).
 
 ## See also
 

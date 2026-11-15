@@ -143,6 +143,7 @@ def test_the_default_rules_are_the_tables() -> None:
     assert rules.layers == architecture.LAYERS
     assert rules.domain_allowed == architecture.DOMAIN_ALLOWED_PREFIXES
     assert dict(rules.forbidden_libraries) == architecture.FORBIDDEN_LIBRARIES
+    assert dict(rules.allowed_modules) == architecture.ALLOWED_MODULES
     assert dict(rules.forbidden_layers) == architecture.FORBIDDEN_LAYERS
     assert rules.public_surface == architecture.PUBLIC_SURFACE
     assert ArchitectureConfig() == Settings().ARCHITECTURE
@@ -466,3 +467,77 @@ def test_the_simple_layout_holds_each_file_to_its_layer(
         ("flat.orders.controllers", "flat.shop.models"),
         ("flat.orders.controllers", "flat.shop.models.b"),
     }
+
+
+@pytest.fixture
+def gateway(make_package: MakePackage) -> str:
+    """A domain whose adapters call another service, in both layouts."""
+    make_package(
+        "arch.billing",
+        {
+            "infrastructure/rates.py": """
+                import domainkit.http.client
+                from domainkit.http.client import CircuitOpen, HttpClient
+                from domainkit.http.errors import APIError
+                import domainkit.http.routing
+            """,
+            "application/services.py": """
+                from domainkit.http.client import HttpClient
+            """,
+            "api/routes.py": "from domainkit.http.client import HttpClient\n",
+        },
+    )
+    make_package(
+        "arch.flat",
+        {"models.py": "from domainkit.http.client import HttpClient\n"},
+    )
+    return "arch.billing"
+
+
+def test_infrastructure_may_call_other_services_through_the_http_client(
+    gateway: str,
+) -> None:
+    """The outgoing client is an adapter's; the rest of ``domainkit.http`` is not.
+
+    Every other ``domainkit.http`` import stays forbidden where it was, and
+    the application layer still may not call out (user report D2).
+    """
+    found = {
+        (v.module.removeprefix("arch.billing."), v.imported, v.rule)
+        for v in check_domains(["arch.billing", "arch.flat"], LayerRules())
+    }
+    refused = "the infrastructure layer must not use domainkit"
+
+    assert found == {
+        ("infrastructure.rates", "domainkit.http.errors", refused),
+        ("infrastructure.rates", "domainkit.http.errors.APIError", refused),
+        ("infrastructure.rates", "domainkit.http.routing", refused),
+        (
+            "application.services",
+            "domainkit.http.client",
+            "the application layer must not use domainkit",
+        ),
+        (
+            "application.services",
+            "domainkit.http.client.HttpClient",
+            "the application layer must not use domainkit",
+        ),
+    }
+
+
+def test_a_project_that_forbids_the_client_by_name_forbids_it(gateway: str) -> None:
+    """``FORBIDDEN_LIBRARIES`` naming the client wins: settings add rules (D2).
+
+    Neither ``ARCHITECTURE`` nor ``extend`` adds exceptions; ``extend``
+    keeps the framework's.
+    """
+    extra = {"FORBIDDEN_LIBRARIES": {"infrastructure": ["domainkit.http.client"]}}
+    with override_settings(ARCHITECTURE=extra):
+        found = {v.imported for v in check_domain(gateway)}
+    extended = LayerRules().extend(forbidden_libraries={"application": ["httpx"]})
+
+    assert {"domainkit.http.client", "domainkit.http.client.HttpClient"} <= found
+    assert "domainkit.http.client.CircuitOpen" in found
+    assert extended.allowed_modules == LayerRules().allowed_modules
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        Settings(ARCHITECTURE={"ALLOWED_MODULES": {"application": ["httpx"]}})

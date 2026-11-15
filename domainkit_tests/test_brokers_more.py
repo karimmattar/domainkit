@@ -20,6 +20,13 @@ from typing import Any
 
 import httpx2
 import pytest
+from aiokafka.errors import (
+    KafkaConnectionError,
+    KafkaTimeoutError,
+    MessageSizeTooLargeError,
+    NotEnoughReplicasError,
+    NotLeaderForPartitionError,
+)
 
 from domainkit.broker import BrokerRefused, BrokerUnavailable, Delivery
 from domainkit.broker.handler import connect_broker
@@ -299,6 +306,7 @@ class FakeKafka:
         self.topics: dict[str, list[tuple[bytes, list[tuple[str, bytes]]]]] = {}
         self.committed: dict[Any, int] = {}
         self.fail_start = False
+        self.fail_send: Exception | None = None
         self.fail_commit = False
         self.options: dict[str, Any] = {}
         fake = self
@@ -338,6 +346,8 @@ class FakeKafka:
                 value: bytes,
                 headers: Any,  # noqa: ANN401
             ) -> None:
+                if fake.fail_send is not None:
+                    raise fake.fail_send
                 if topic not in fake.topics:
                     raise KeyError(topic)
                 fake.topics[topic].append((value, headers))
@@ -444,6 +454,22 @@ async def test_kafka_failures_are_named() -> None:
     fake.fail_start = False
     with pytest.raises(BrokerRefused, match="KeyError"):
         await broker.publish("missing", b"x", message_id="1")
+    # A cluster that cannot take it now is unavailable, which opens the
+    # publishing breaker; one that never will, a refusal (user report W9).
+    for transient in (
+        KafkaConnectionError(),
+        NotLeaderForPartitionError(),
+        NotEnoughReplicasError(),
+        KafkaTimeoutError(),
+        ConnectionResetError(),
+    ):
+        fake.fail_send = transient
+        with pytest.raises(BrokerUnavailable, match=type(transient).__name__):
+            await broker.publish("missing", b"x", message_id="1")
+    fake.fail_send = MessageSizeTooLargeError()
+    with pytest.raises(BrokerRefused, match="MessageSizeTooLargeError"):
+        await broker.publish("missing", b"x", message_id="1")
+    fake.fail_send = None
 
     secure = KafkaBroker(
         BrokerConfig(URL="kafka+ssl://app:s%40cret@k:9093", PREFIX="t"), kafka=fake

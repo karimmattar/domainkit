@@ -18,7 +18,7 @@ from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.ledger.trust import use_states
 
-from .baseline import check_at_startup, required, settings_problems
+from .baseline import check_at_startup, is_required, settings_problems
 from .checkpoints import configured_public_key
 from .history import index_history
 from .ledgerstates import DatabaseStateStore
@@ -111,14 +111,14 @@ class AuditConfig(DomainConfig):
         while ``AUDIT.REQUIRE_BASELINE`` holds (the default): staging and
         production refuse to start without them, and ``check`` fails.
         """
-        return settings_problems() if required() else []
+        return [each for each in settings_problems() if is_required(each)]
 
     def weak_settings(self) -> list[str]:
         """The same settings, as warnings, with ``AUDIT.REQUIRE_BASELINE = False``.
 
         The application checks the ``protect()`` triggers when it starts.
         """
-        return [] if required() else settings_problems()
+        return [each for each in settings_problems() if not is_required(each)]
 
     async def start(self) -> None:
         """Refuse to start, where deployed, with a trail that is not tamper-evident.

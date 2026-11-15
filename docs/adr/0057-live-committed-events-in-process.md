@@ -1,6 +1,6 @@
 # 0057. Stream committed events to clients in process, filtered per event by an access rule
 
-- Status: Accepted; amended in place 2026-10-21
+- Status: Accepted; amended in place 2026-10-21; amended by [0143](0143-fan-live-events-out-through-postgresql-or-redis.md)
 - Date: 2026-10-20
 
 ## Context

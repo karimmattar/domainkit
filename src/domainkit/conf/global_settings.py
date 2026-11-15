@@ -712,6 +712,22 @@ class DebugToolbarConfig(BaseModel):
     None turns profiling off."""
 
 
+class LiveFanoutConfig(BaseModel):
+    """``LIVE_FANOUT``: how committed live events reach every process (ADR 0143)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    BACKEND: Literal["postgres", "redis"] | None = None
+    """``postgres`` (``LISTEN``/``NOTIFY``) or ``redis`` (publish/subscribe).
+
+    None: live events stay in the process that committed them.
+    """
+    ALIAS: str = DEFAULT_DB_ALIAS
+    """The alias in ``DATABASES`` (postgres) or ``CACHES`` (redis) that carries them."""
+    CHANNEL: str = Field(default="domainkit_live", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+    """The channel; projects that share a database or a cache each need one."""
+
+
 class HttpClientConfig(BaseModel):
     """``HTTP_CLIENT``: what ``domainkit.http.client`` clients do by default.
 
@@ -977,6 +993,13 @@ class Settings(BaseModel):
     """Reuse a readiness result this long, so probe floods cannot load the database."""
     READINESS_DETAILS: bool = False
     """Name failing components in ``/ready`` responses; they are always logged."""
+    READINESS_BROKERS: bool = False
+    """``/ready`` checks each broker of ``BROKERS`` too (``broker:<alias>``).
+
+    Off by default: a process serves while its broker is away, and commits
+    leave their messages to the outbox's relay. Turn it on where a process
+    cannot do its work without one.
+    """
     ACCESS_LOG_QUIET_PATHS: tuple[str, ...] = ("/health", "/ready")
     """Successful requests to these paths are logged at DEBUG, not INFO."""
     ACCESS_LOG_SAMPLE_RATE: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -1027,6 +1050,8 @@ class Settings(BaseModel):
         default=60.0, gt=0, le=MAX_REAUTH_INTERVAL
     )
     """Seconds between re-checks of an open connection's credentials and rules."""
+    LIVE_FANOUT: LiveFanoutConfig = Field(default_factory=LiveFanoutConfig)
+    """How committed live events reach every process (``live_events.share``)."""
     WEBSOCKET_IDLE_TIMEOUT: float = Field(default=300.0, gt=0)
     """Seconds without a message either way before a WebSocket is closed (1001)."""
     WEBSOCKET_MAX_LIFETIME: float = Field(default=3600.0, gt=0, le=MAX_LIFETIME)
@@ -1191,6 +1216,11 @@ class Settings(BaseModel):
             raise ValueError(
                 "LIVE_MAX_CONNECTIONS_PER_CALLER cannot exceed LIVE_MAX_CONNECTIONS"
             )
+        fanout = self.LIVE_FANOUT
+        if fanout.BACKEND == "postgres" and fanout.ALIAS not in self.DATABASES:
+            raise ValueError(f"LIVE_FANOUT.ALIAS {fanout.ALIAS!r} is not in DATABASES")
+        if fanout.BACKEND == "redis" and fanout.ALIAS not in self.CACHES:
+            raise ValueError(f"LIVE_FANOUT.ALIAS {fanout.ALIAS!r} is not in CACHES")
 
     def _check_i18n(self) -> None:
         """Languages are codes like ``pt-br``, listed once; the zone exists."""

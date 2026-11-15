@@ -1952,3 +1952,31 @@ def test_the_build_runs_reviewed_tools_and_uploads_what_it_built() -> None:
         r"^[a-z0-9._-]+==\S+ \\\n((?:\s+--hash=sha256:[0-9a-f]{64}.*\n)+)", pinned, re.M
     )
     assert len(pins) == len(re.findall(r"^[a-z0-9._-]+==", pinned, re.M)) > 1
+
+
+def test_every_advisory_pip_audit_ignores_is_explained() -> None:
+    """An ignored advisory is in SECURITY.md and on a docs page (user report D2).
+
+    PYSEC-2026-1325 (python-ecdsa, through the ``immudb`` extra) is on the
+    ledger page, which says why verifying alone is unaffected and how a
+    project ignores it by its id.
+    """
+    sources = [*WORKFLOWS.glob("*.yml"), ROOT / "Makefile"]
+    ignored = {
+        found
+        for source in sources
+        for found in re.findall(r"--ignore-vuln\s+(\S+)", source.read_text())
+    }
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    docs = [
+        page.read_text(encoding="utf-8")
+        for page in (ROOT / "docs").rglob("*.md")
+        if "audit" not in page.parts
+    ]
+    ledgers = (ROOT / "docs" / "databases.md").read_text(encoding="utf-8")
+
+    assert "PYSEC-2026-1325" in ignored
+    for advisory in ignored:
+        assert advisory in security
+        assert any(f"--ignore-vuln {advisory}" in page for page in docs)
+    assert "VerifyingKey.verify" in ledgers.split("## Ledgers (immudb)")[1]

@@ -116,6 +116,8 @@ Request deadlines over HTTP: `REQUEST_TIMEOUT`, and `RequestTimeout` per route.
 
 The liveness and readiness endpoints every generated project mounts.
 
+- `broker_failures`: Each broker of `aliases` that does not answer within `seconds`.
+- `readiness_failures`: What `/ready` finds failing: domains, databases, ledgers, caches, brokers.
 - `router`: `GET /health` and `GET /ready`, which guard themselves; include it in the root router.
 
 ## `domainkit.http.live`
@@ -130,7 +132,18 @@ Long-lived connections: WebSockets and event streams, bounded and re-checked.
 
 Live committed events: domain events streamed to the clients that may see them.
 
+- `fanout_warnings`: `live.W003`: shared event types with no `LIVE_FANOUT`, where deployed.
 - `live_events`: The process's live events, fed by the global `event_bus`.
+
+## `domainkit.http.live_fanout`
+
+Live events across processes, through PostgreSQL or Redis (ADR 0143).
+
+- `Backend`: Where shared events go between processes.
+- `PostgresBackend`: `pg_notify` on a database, and `LISTEN` on a connection of its own.
+- `RedisBackend`: `PUBLISH` and a subscription on a cache's Redis (not a cluster).
+- `Sender`: One event loop's messages for the other processes, sent in the background.
+- `backend`: The backend `LIVE_FANOUT` names, or None (in process).
 
 ## `domainkit.http.locale`
 
@@ -178,6 +191,13 @@ JSON responses encoded in Rust, byte for byte as Starlette encodes them.
 
 - `JSONResponse`: Starlette's `JSONResponse`, rendered by `encode_json`: the same bytes.
 - `json_native`: Whether `to_json` writes `content` as `json.dumps` does (see above).
+
+## `domainkit.http.routers`
+
+Mount part of a router, with dependencies of your own on some of its routes.
+
+- `route_names`: Each route's name, `METHOD /path`, as `select_routes` reads it, in order.
+- `select_routes`: A copy of `router` with some of its routes, and dependencies on some.
 
 ## `domainkit.http.shedding`
 

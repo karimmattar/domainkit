@@ -1,4 +1,4 @@
-"""The circuit breaker of publishing on commit (see ADR 0042).
+"""The circuit breakers of publishing on commit and of the relay (ADRs 0042, 0142).
 
 While a broker keeps failing, publishing each commit's messages only costs:
 two transactions on the web process's pool (lock, then unlock) and a log
@@ -13,6 +13,10 @@ closes.
 
 A refusal (``BrokerRefused``: no queue took the message) is an answer, so
 it counts as reaching the broker, not as a failure.
+
+Each relaying worker has a breaker of its own: while it is open, the
+worker runs the outbox's due messages itself, as a worker without a broker
+does (``dispatch.BrokerWorkers``).
 """
 
 import logging
@@ -42,16 +46,33 @@ logger = logging.getLogger(__name__)
 class Breaker:
     """Counts a broker's failures in a row, and opens after too many."""
 
-    def __init__(self, broker: str, failures: int, cooldown: float) -> None:
-        """Open after ``failures`` in a row, for ``cooldown`` seconds each time."""
+    def __init__(
+        self,
+        broker: str,
+        failures: int,
+        cooldown: float,
+        *,
+        meanwhile: str = "commits leave their messages to the relay",
+        again: str = "confirms messages again; commits publish them again",
+        observed: bool = True,
+    ) -> None:
+        """Open after ``failures`` in a row, for ``cooldown`` seconds each time.
+
+        ``meanwhile`` and ``again`` say, in its log lines, what happens while
+        it is open and once it closes; ``observed`` reports it as
+        ``messaging_publisher_breaker_open`` (commits' breaker only).
+        """
         self.broker = broker
         self.threshold = failures
         self.cooldown = cooldown
+        self.meanwhile = meanwhile
+        self.again = again
+        self.observed = observed
         self.failures = 0
         """Failed calls in a row."""
         self.opened_at: float | None = None
         """When it last opened (``clock.monotonic``), or None while closed."""
-        observe_breaker(broker, is_open=False)
+        self._observe(is_open=False)
 
     def __repr__(self) -> str:
         """Show the broker and the state."""
@@ -73,11 +94,8 @@ class Breaker:
     def succeeded(self) -> None:
         """Count a confirmed publication: the broker works, so close."""
         if self.opened_at is not None:
-            logger.warning(
-                "Broker %r confirms messages again; commits publish them again",
-                self.broker,
-            )
-            observe_breaker(self.broker, is_open=False)
+            logger.warning("Broker %r %s", self.broker, self.again)
+            self._observe(is_open=False)
         self.failures = 0
         self.opened_at = None
 
@@ -93,15 +111,20 @@ class Breaker:
             return
         if self.failures >= self.threshold:
             self.opened_at = clock.monotonic()
-            observe_breaker(self.broker, is_open=True)
+            self._observe(is_open=True)
             logger.warning(
-                "Broker %r failed %d time(s) in a row (%s); commits leave their "
-                "messages to the relay, trying again every %gs",
+                "Broker %r failed %d time(s) in a row (%s); %s, trying again every %gs",
                 self.broker,
                 self.failures,
                 exc,
+                self.meanwhile,
                 self.cooldown,
             )
+
+    def _observe(self, *, is_open: bool) -> None:
+        """Report the state, if this breaker is the one the gauge shows."""
+        if self.observed:
+            observe_breaker(self.broker, is_open=is_open)
 
 
 class Watched(Broker):

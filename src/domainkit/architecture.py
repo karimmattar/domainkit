@@ -14,7 +14,9 @@ domain layer), ``controllers.py`` (application), ``models.py``
   settings.
 - ``application``: no ``infrastructure`` or ``api`` code, and no web or
   database libraries; it reaches storage through repository ports.
-- ``infrastructure``: no ``api`` code and no web libraries.
+- ``infrastructure``: no ``api`` code and no web libraries, but the
+  outgoing HTTP client (``domainkit.http.client``): calling another
+  service is what an adapter does.
 - Another domain may be used only through its ``application`` layer or its
   ``domain.events`` (bounded contexts stay decoupled).
 
@@ -38,6 +40,7 @@ if TYPE_CHECKING:
     from domainkit.conf.global_settings import ArchitectureConfig
 
 __all__ = [
+    "ALLOWED_MODULES",
     "FORBIDDEN_LAYERS",
     "FORBIDDEN_LIBRARIES",
     "LAYER_MODULES",
@@ -77,6 +80,13 @@ FORBIDDEN_LIBRARIES: Final = {
     "infrastructure": ("fastapi", "starlette", "domainkit.http"),
 }
 """Libraries each layer must not import."""
+
+ALLOWED_MODULES: Final = {"infrastructure": ("domainkit.http.client",)}
+"""Modules a layer may import although a library it must not use holds them.
+
+An entry lifts only a library entry less specific than itself: a project
+that forbids ``domainkit.http.client`` by name forbids it.
+"""
 
 FORBIDDEN_LAYERS: Final = {
     "application": ("infrastructure", "api"),
@@ -118,6 +128,10 @@ class LayerRules:
         default_factory=lambda: _frozen(FORBIDDEN_LIBRARIES)
     )
     """Libraries each layer must not import."""
+    allowed_modules: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: _frozen(ALLOWED_MODULES)
+    )
+    """Modules each layer may import although a forbidden library holds them."""
     forbidden_layers: Mapping[str, tuple[str, ...]] = field(
         default_factory=lambda: _frozen(FORBIDDEN_LAYERS)
     )
@@ -134,13 +148,18 @@ class LayerRules:
         forbidden_layers: Mapping[str, Iterable[str]] | None = None,
         public_surface: Iterable[str] = (),
     ) -> Self:
-        """These rules with more entries; nothing already here is removed."""
+        """These rules with more entries; nothing already here is removed.
+
+        Nothing extends ``allowed_modules``: a project adds rules, never
+        exceptions to them.
+        """
         return type(self)(
             layers=_merged(self.layers, layers),
             domain_allowed=_merged(self.domain_allowed, domain_allowed),
             forbidden_libraries=_merged_table(
                 self.forbidden_libraries, forbidden_libraries or {}
             ),
+            allowed_modules=self.allowed_modules,
             forbidden_layers=_merged_table(
                 self.forbidden_layers, forbidden_layers or {}
             ),
@@ -284,7 +303,9 @@ def _layer_rule(
     ]
     if _within(imported, forbidden):
         return f"the {layer} layer must not depend on outer layers"
-    if _within(imported, rules.forbidden_libraries.get(layer, ())):
+    library = _closest(imported, rules.forbidden_libraries.get(layer, ()))
+    exception = _closest(imported, rules.allowed_modules.get(layer, ()))
+    if library is not None and (exception is None or len(exception) <= len(library)):
         return f"the {layer} layer must not use {imported.partition('.')[0]}"
     return None
 
@@ -344,6 +365,15 @@ def _names_of(layer: str) -> tuple[str, ...]:
 def _within(name: str, prefixes: Iterable[str]) -> bool:
     """Report whether ``name`` is one of ``prefixes`` or inside one."""
     return any(name == prefix or name.startswith(f"{prefix}.") for prefix in prefixes)
+
+
+def _closest(name: str, prefixes: Iterable[str]) -> str | None:
+    """The longest of ``prefixes`` that ``name`` is or is inside; None if none."""
+    return max(
+        (prefix for prefix in prefixes if _within(name, (prefix,))),
+        key=len,
+        default=None,
+    )
 
 
 def _is_stdlib(name: str) -> bool:

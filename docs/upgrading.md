@@ -74,6 +74,18 @@ domainkit.
   `AUTH.EMAIL_RATE`, as the other requests that send a code do. A client
   that asked for the same account's code more than five times an hour
   now gets `429 rate_limited`.
+- **Name your durable handlers.** `check --deploy` warns about each one
+  subscribed without `name=` (`messaging.W002`), as it warns about
+  unnamed tasks. Give each a name, with its key until now in
+  `formerly=`, so the messages queued under it still run:
+  `@handles(Event, durable=True, name="billing.notify",
+  formerly=["domains.billing.controllers.notify"])`. `check` names the
+  key in its hint. Keep `formerly=` until those messages have run.
+- **Two durable handlers under one key are refused.** Two functions
+  with one `module.QualName` (closures made by one factory, methods of
+  two instances) shared a key, and workers ran the last one subscribed
+  for the messages of both. `subscribe` now raises `ValueError` at
+  startup: give each its own `name=`.
 
 ### uvicorn becomes an extra in 3.0
 

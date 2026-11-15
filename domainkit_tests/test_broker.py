@@ -74,7 +74,7 @@ async def test_racing_first_uses_share_one_connection() -> None:
     config = BrokerConfig.model_validate(RABBIT)
     broker = RabbitMQBroker(config, connect=cast(Any, slow_connect))
 
-    await asyncio.gather(*(broker.check() for _ in range(5)))
+    await asyncio.gather(*(broker.declare(()) for _ in range(5)))
     await broker.close()
 
     assert (len(server.connections), len(channels)) == (1, 1)
@@ -385,6 +385,28 @@ async def test_rabbitmq_failures_are_broker_errors() -> None:
         await rabbit(server).check()
 
 
+async def test_a_rabbitmq_check_takes_a_round_trip() -> None:
+    """A broker gone while aio-pika reconnects fails the check (user report W7).
+
+    The connection and the publishing channel stay cached meanwhile; the
+    check opens a channel of its own, which needs the broker, and closes it.
+    """
+    server = FakeAMQP()
+    broker = rabbit(server)
+    await broker.check()
+    server.down = True
+
+    with pytest.raises(BrokerUnavailable, match="No active transport"):
+        await broker.check()
+    server.down = False
+    await broker.check()
+    await broker.close()
+
+    assert len(server.connections) == 1
+    assert server.calls["channel"] == 3  # The publisher's, and two checks'.
+    assert server.calls["close_channel"] == 2
+
+
 async def test_rabbitmq_consumers_respect_prefetch_and_requeue() -> None:
     """Consumers get messages within the prefetch; requeued ones come back."""
     server = FakeAMQP()
@@ -524,6 +546,7 @@ async def test_a_stalled_broker_fails_publishers_in_time(call: str) -> None:
             broker.check(), broker.check(), return_exceptions=True
         )
     server.stalled.clear()
+    discarded = server.calls["close_channel"]
     await broker.check()  # Nothing was left holding the lock or a channel.
     await broker.close()
 
@@ -531,7 +554,7 @@ async def test_a_stalled_broker_fails_publishers_in_time(call: str) -> None:
     assert "TimeoutError" in str(results[0])
     assert server.timeouts["declare_exchange"] == 0.05
     if call == "declare_exchange":  # A channel that failed is closed, not kept.
-        assert server.calls["close_channel"] == 2
+        assert discarded == 2
 
 
 @pytest.mark.parametrize("call", ["set_qos", "declare_queue", "bind", "consume"])

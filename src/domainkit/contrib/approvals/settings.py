@@ -3,7 +3,7 @@
 from datetime import timedelta
 from typing import Annotated, Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 LONGEST_WAIT: Final = timedelta(days=90)
 """The longest a request may wait for its approvals."""
@@ -44,4 +44,11 @@ class ApprovalsSettings(BaseModel):
     """Approvals making a superuser needs; 0: it is not guarded."""
     SUPERUSER_APPROVERS: Permission | None = None
     """The permission whoever approves making a superuser holds; None:
-    superusers approve, and only they."""
+    superusers approve, and only they. An empty text is None: what an
+    unset variable gives in a compose file."""
+
+    @field_validator("SUPERUSER_APPROVERS", mode="before")
+    @classmethod
+    def _empty_is_none(cls, value: object) -> object:
+        """Read ``""`` as None (user report P3)."""
+        return None if value == "" else value
