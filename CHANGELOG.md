@@ -11,6 +11,19 @@ and a status.
 
 ### Added
 
+- Live events reach every process: `live_events.share(OrderShipped)` in
+  a domain's `ready()`, and `LIVE_FANOUT = {"BACKEND": "postgres"}` (or
+  `"redis"`), carry the committed events of those types from whichever
+  process committed them, the worker included, to the subscribers of
+  every process. Without it, a client saw only its own replica's events,
+  and none the worker committed. `check` warns about shared types with
+  no backend where deployed (`live.W003`). ADR 0143 (user report L1).
+- `POST /auth/app-sign-in/wait` `{"request"}` holds until the phone
+  answers, at most `CIBA.WAIT_SECONDS` (20), instead of polling: an
+  approval reached the page up to `interval` seconds late, and a poll too
+  soon slowed it down. It never redeems, nor counts as a poll;
+  `/app-sign-in/step-up/wait` and `/app-sign-in/transactions/wait` do the
+  same for a session's asks (user report L2).
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and
