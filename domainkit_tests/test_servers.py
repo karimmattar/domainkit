@@ -24,6 +24,7 @@ import pytest
 
 from domainkit.conf import override_settings, settings
 from domainkit.conf.env import project_prefix
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, websockets
 from domainkit.http.servers import (
     UNIX_SOCKET_WARNING,
@@ -426,6 +427,48 @@ def test_runserver_names_the_granian_extra(monkeypatch: pytest.MonkeyPatch) -> N
     assert str(missing.value) == (
         "--server granian needs the granian extra: pip install 'domainkit[granian]'."
     )
+
+
+@pytest.mark.parametrize(
+    ("setting", "option", "started"),
+    [
+        ("uvicorn", None, "uvicorn"),
+        ("granian", None, "granian"),
+        ("granian", "uvicorn", "uvicorn"),
+        ("uvicorn", "granian", "granian"),
+    ],
+)
+def test_runserver_starts_the_server_its_setting_names(
+    monkeypatch: pytest.MonkeyPatch, setting: str, option: str | None, started: str
+) -> None:
+    """``RUNSERVER_SERVER`` chooses, unless ``--server`` does (user report S3)."""
+    servers: list[str] = []
+
+    class Recorded:
+        def __init__(self, target: str, **options: Any) -> None:  # noqa: ANN401 - Granian's options.
+            servers.append("granian")
+
+        def serve(self) -> None:
+            pass
+
+    monkeypatch.setattr("granian.Granian", Recorded)
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: servers.append("uvicorn"))
+    with override_settings(
+        ASGI_APPLICATION="config.asgi:application", RUNSERVER_SERVER=setting
+    ):
+        call_command("runserver", reload=False, server=option)
+
+    assert servers == [started]
+
+
+def test_runserver_serves_with_uvicorn_unless_set() -> None:
+    """Today's default stays (user report S3); only the two servers are taken."""
+    assert settings.RUNSERVER_SERVER == "uvicorn"
+    with (
+        pytest.raises(ImproperlyConfigured, match="RUNSERVER_SERVER"),
+        override_settings(RUNSERVER_SERVER="hypercorn"),
+    ):
+        pass
 
 
 def test_runserver_refuses_an_unknown_server() -> None:

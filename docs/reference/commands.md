@@ -410,14 +410,15 @@ python manage.py runserver 0.0.0.0:8000 --server granian
 
 `runserver` starts a development server for `ASGI_APPLICATION`, on
 uvicorn or Granian (the `granian` extra). It restarts when your code
-changes. In production you run the server yourself
-([Server limits](servers.md)).
+changes. `RUNSERVER_SERVER = "granian"` in the development settings
+serves with Granian without `--server`. In production you run the
+server yourself ([Server limits](servers.md)).
 
 | Option | What it does |
 | --- | --- |
 | `[address]` | A port, or `address:port` (default: `127.0.0.1:8000`). |
 | `--noreload` | Does not restart when the code changes. |
-| `--server` | `uvicorn` (the default) or `granian`. |
+| `--server` | `uvicorn` or `granian`; unless given, `RUNSERVER_SERVER` (`uvicorn` unless set) chooses. |
 
 ### `logconfig`: write `LOGGING` for the server
 

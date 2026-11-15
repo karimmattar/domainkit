@@ -60,6 +60,9 @@ and a status.
   copy of `LOGGING`, which it no longer changes
   ([The server's own lines](docs/runtime.md#the-servers-own-lines))
   (user report S2).
+- `RUNSERVER_SERVER` (`"uvicorn"` unless set): the server `runserver`
+  starts when `--server` names none, so the development settings can
+  choose Granian once (user report S3).
 
 ### Changed
 

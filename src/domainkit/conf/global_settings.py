@@ -892,6 +892,8 @@ class Settings(BaseModel):
     """``module:attribute`` that ``runserver`` serves."""
     EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"
     """Commands' and ``runserver``'s loop: uvloop when installed (``auto``), or not."""
+    RUNSERVER_SERVER: Literal["uvicorn", "granian"] = "uvicorn"
+    """The server ``runserver`` starts when ``--server`` names none."""
 
     DATABASES: dict[str, DatabaseConfig] = Field(default_factory=dict)
     """SQL databases by alias; if any are set, ``default`` is required."""

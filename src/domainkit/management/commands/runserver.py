@@ -51,19 +51,24 @@ class Command(BaseCommand):
         parser.add_argument(
             "--server",
             choices=SERVERS,
-            default="uvicorn",
-            help="the ASGI server (default: %(default)s; granian needs its extra)",
+            help="the ASGI server (default: RUNSERVER_SERVER, uvicorn unless set; "
+            "granian needs its extra)",
         )
 
     def handle(
-        self, *, address: str, reload: bool, server: str = "uvicorn", **options: object
+        self,
+        *,
+        address: str,
+        reload: bool,
+        server: str | None = None,
+        **options: object,
     ) -> None:
         """Start the server; framework logging replaces the server's own."""
         if not settings.ASGI_APPLICATION:
             raise CommandError("Set ASGI_APPLICATION, e.g. 'config.asgi:application'.")
         host, port = parse_address(address)
         loop_factory(settings.EVENT_LOOP)  # Refuse a loop that is not installed.
-        if server == "granian":
+        if (server or settings.RUNSERVER_SERVER) == "granian":
             serve_with_granian(settings.ASGI_APPLICATION, host, port, reload=reload)
             return
         import uvicorn
