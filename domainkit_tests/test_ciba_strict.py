@@ -43,7 +43,7 @@ def test_the_whole_cycle_runs_from_the_phone(app: App) -> None:
     """No password login anywhere; enroll, then the phone signs or approves."""
     web = app(APPROVE_LOGINS=ALWAYS)
     phone_client = app(PHONE, APPROVE_LOGINS=ALWAYS)
-    create_user("alice", email="alice@example.com")
+    create_user("alice", email="alice@example.com", proved=True)
     with override_settings(DEVICES=ON):
         refused = log_in(web)
         session = web.post(

@@ -651,8 +651,10 @@ def test_changepassword_asks_again_for_a_reused_password(
 
     call_command("changepassword", "alice", stdout=io.StringIO(), stderr=stderr)
 
-    assert stderr.getvalue() == (
-        "This password is one of your last 4; choose one you have not used.\n"
+    found, refused = stderr.getvalue().splitlines()
+    assert found.startswith("'alice' is user ")  # Whom it found (user_for_staff).
+    assert refused == (
+        "This password is one of your last 4; choose one you have not used."
     )
     assert len(history_rows()) == 2
 

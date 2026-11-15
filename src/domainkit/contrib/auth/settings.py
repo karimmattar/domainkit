@@ -518,6 +518,13 @@ class AuthSettings(BaseModel):
     """How long a code works, from 1 minute to 1 hour."""
     CODE_ATTEMPTS: int = Field(default=5, ge=1, le=10)
     """Wrong tries that spend a code, from 1 to 10."""
+    CODES_TO_UNPROVED: bool = False
+    """Send password-reset and enrollment codes to an address or a number
+    its user never proved (``email_verified``, ``mobile_number_verified``).
+    Off since 2.4: anyone could put someone else's number on their own
+    account and have the service text it, and the owner who used such a
+    code set the password of that account. True for accounts made before
+    their identifiers could be proved; verification codes go either way."""
     SIGNUP_ENABLED: bool = False
     """Let anyone create an account at ``/signup`` (``auth.signup.router``)."""
     COOKIE: CookieSettings = CookieSettings()

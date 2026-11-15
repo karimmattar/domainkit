@@ -112,7 +112,7 @@ def other(code: str) -> str:
 
 def test_a_mailed_code_sets_a_new_password(identity: Api) -> None:
     """A weak password keeps the code; a strong one spends it and ends sessions."""
-    client = identity(**MAILED)
+    client = identity(**MAILED, CODES_TO_UNPROVED=True)  # As made before 2.4.
     ann = create_user(None, email="ann@example.com")
     old = bearer(login(client, "ann@example.com")["access_token"])
 
@@ -143,7 +143,7 @@ def test_a_mailed_code_sets_a_new_password(identity: Api) -> None:
 
 def test_the_email_field_asks_for_a_code_too(identity: Api) -> None:
     """``{"email": ...}``, as before 1.8, gets a code where codes are on."""
-    create_user("bob", email="bob@example.com")
+    create_user("bob", email="bob@example.com", proved=True)
     client = identity()
 
     ask_reset(client, email="bob@example.com")
@@ -177,7 +177,12 @@ def test_a_reset_needs_a_value(identity: Api) -> None:
 def test_a_texted_code_sets_a_new_password(texting: App) -> None:
     """A number gets a text message; it may be written any way."""
     client = texting(**CODES)
-    erin = create_user(None, mobile_number=NUMBER, email="erin@example.com")
+    erin = create_user(
+        None,
+        mobile_number=NUMBER,
+        email="erin@example.com",
+        mobile_number_verified=True,
+    )
 
     ask_reset(client, identifier="+33 6 12 34 56 78")
     drain()
@@ -193,10 +198,40 @@ def test_a_texted_code_sets_a_new_password(texting: App) -> None:
     assert (proved.mobile_number_verified, proved.email_verified) == (True, False)
 
 
+def test_reset_codes_go_only_where_their_user_proved_they_read(texting: App) -> None:
+    """An address or a number its user never proved gets no reset code.
+
+    Mallory put the victim's number on her account, unproved: a reset asked
+    for with it texts the victim nothing, so the victim never sets Mallory's
+    password, nor proves the number on her account. Mallory's proved
+    address still gets its code; ``AUTH.CODES_TO_UNPROVED`` sends as 2.3 did.
+    """
+    client = texting(**CODES)
+    create_user(
+        "mallory",
+        email="mallory@example.com",
+        email_verified=True,
+        mobile_number=NUMBER,
+    )
+
+    ask_reset(client, identifier=NUMBER)
+    ask_reset(client, identifier="mallory@example.com")
+    drain()
+    assert sms_outbox == []
+    (message,) = mail.outbox
+    assert message.to == ("mallory@example.com",)
+
+    legacy = texting(**CODES, CODES_TO_UNPROVED=True)
+    ask_reset(legacy, identifier=NUMBER)
+    drain()
+    (text,) = sms_outbox
+    assert text.to == NUMBER
+
+
 def test_a_username_gets_its_code_by_mail(identity: Api) -> None:
     """An identifier that is neither an address nor a number: the address."""
     frank = create_user("frank", email="frank@example.com")
-    client = identity(IDENTIFIERS=("username", "email"))
+    client = identity(IDENTIFIERS=("username", "email"), CODES_TO_UNPROVED=True)
 
     ask_reset(client, identifier="frank")
     run_worker()

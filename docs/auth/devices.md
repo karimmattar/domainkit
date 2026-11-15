@@ -318,7 +318,7 @@ none, with no login first. This is how a user starts once
 
 | Endpoint | Who | Answer |
 | --- | --- | --- |
-| `POST /devices/enroll/code` | anyone | `{"identifier"}`: `202`, always. The worker sends a code to the account. |
+| `POST /devices/enroll/code` | anyone | `{"identifier"}`: `202`, always. The worker sends a code to the account, at an address or a number its user proved ([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)). |
 | `POST /devices/enroll` | anyone, signed by the new key | `{"identifier", "code", "password", "name", "public_key"}`: `201` with the tokens of a login and the `device`. |
 
 1. The app asks for a code. `identifier` is what the user logs in with

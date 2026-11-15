@@ -566,7 +566,12 @@ How a reset works:
    address names the one account that has it, even where addresses do
    not log in. A user whose stored address cannot take mail, from before
    addresses were checked, is skipped with a warning that names the
-   user's id, never the address.
+   user's id, never the address. So is an address or a number the user
+   never proved (`email_verified`, `mobile_number_verified`), since 2.4:
+   anyone could put someone else's number on their own account, and the
+   owner who typed the code set that account's password
+   ([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)).
+   `AUTH.CODES_TO_UNPROVED = True` sends there too, as 2.3 did.
 3. **Your app posts the same identifier, the code, and the new
    password:**
 
@@ -745,9 +750,11 @@ Why the password comes last:
   stop working. A number held unproved moves the same way
   (`auth.mobile_number_released`).
   - The code's mail warns the reader (`auth/signup_code_held`): an
-    account that is theirs keeps the address if they log in or reset
-    their password instead. A reset whose code was sent to the address
-    or the number proves it.
+    account that is theirs keeps the address if they log in and prove
+    it instead. Reset codes go only to proved addresses since 2.4
+    ([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md));
+    with `AUTH.CODES_TO_UNPROVED`, a reset whose code was sent to the
+    address or the number proves it.
   - A holder left with nothing it logs in by (`AUTH.IDENTIFIERS`) is
     ended as an erased account is: deactivated, its password unusable,
     its tokens and second factor deleted. Its data stays, for staff.

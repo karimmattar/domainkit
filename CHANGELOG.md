@@ -85,6 +85,15 @@ and a status.
   user by username there, and each command says on stderr whom it found,
   and by which field (`BaseCommand.note`; `uow.users.match_for_staff`)
   (user report A3).
+- Password-reset and enrollment codes go only to an address or a number
+  its user proved (`email_verified`, `mobile_number_verified`). Someone
+  could put the victim's number on their own account, unproved, and have
+  the service text it on request; a victim who typed the code set the
+  password of that account, and proved their number on it.
+  `AUTH.CODES_TO_UNPROVED = True` sends as before, and a reset code that
+  reached an address then still proves it
+  ([ADR 0141](docs/adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md),
+  amending 0133; user report A2).
 
 ## [2.3.0] - 2026-11-11
 

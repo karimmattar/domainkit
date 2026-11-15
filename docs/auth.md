@@ -134,6 +134,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `IDENTIFIERS` | `None` | The user fields that identify a user (`None`: the user model's `USERNAME_FIELD` alone), in the order a login tries them, such as `("email", "mobile_number")`; at least one. Each must be a field of the user model, and named once (`auth.E011`) (ADR 0126). |
 | `CODE_TTL` | 10 minutes | How long a code works, from 1 minute to 1 hour. Signup, email and mobile verification, and password resets prove that someone reads an address or a number with a code of 6 digits; the links of 1.x, and their settings (`VERIFICATION`, `PASSWORD_RESET_URL`, `PASSWORD_RESET_TIMEOUT`, `EMAIL_VERIFICATION_URL`, `EMAIL_VERIFICATION_TIMEOUT`, `SIGNUP_URL`), were removed in 2.0: setting one is refused. |
 | `CODE_ATTEMPTS` | `5` | Wrong tries that spend a code, from 1 to 10. |
+| `CODES_TO_UNPROVED` | `False` | Send password-reset and enrollment codes to an address or a number its user never proved (`email_verified`, `mobile_number_verified`). Off since 2.4: anyone could put someone else's number on their own account, have the service text it, and the owner who used the code set that account's password. A user model without those fields counts them proved. `True` for accounts made before their identifiers could be proved; verification codes go either way. |
 | `SIGNUP_ENABLED` | `False` | Let anyone ask for an account at `/signup`. |
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
 | `MFA` | see below | Second factors (`auth.mfa`). |

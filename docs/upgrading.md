@@ -55,6 +55,14 @@ pointed at the wrong account.
   username where usernames identify no one. Each says on stderr whom it
   found; stdout is unchanged. A user stored with such a username before
   2.4 is named by their address or number instead.
+- **Reset and enrollment codes go only to proved identifiers**
+  ([ADR 0141](adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)).
+  A user whose address or number was never proved (`email_verified`,
+  `mobile_number_verified` false) gets no code there: staff-made accounts,
+  and those from before 2.0, are the usual case. They log in and prove it,
+  or staff set a password (`changepassword`). To send as 2.3 did while
+  they do, set `AUTH.CODES_TO_UNPROVED = True`. A project that overrides
+  `auth/signup_code_held` drops its advice to reset the password.
 - **`POST /devices/enroll/code` counts per recipient** against
   `AUTH.EMAIL_RATE`, as the other requests that send a code do. A client
   that asked for the same account's code more than five times an hour
