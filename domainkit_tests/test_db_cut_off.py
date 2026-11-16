@@ -185,6 +185,7 @@ async def through_proxy(
 
     One connection, and no ping: a deadline lands on the statement. The
     pool's connection is made, writing the gadget "made", before the block.
+    No TLS: see ``slow_proxy``.
     """
     url = make_url(database_url)
     proxy = await slow_proxy(url.port or 5432, delay)
@@ -199,6 +200,7 @@ async def through_proxy(
                     "POOL_SIZE": 1,
                     "MAX_OVERFLOW": 0,
                     "POOL_PRE_PING": False,
+                    "SSLMODE": "disable",
                 }
             }
         ):

@@ -603,7 +603,18 @@ async def test_a_failing_read_under_a_deadline_raises_its_own_error(
 
 
 async def slow_proxy(port: int, delay: dict[str, float]) -> asyncio.Server:
-    """A TCP proxy to PostgreSQL that holds the server's answers ``delay["s"]``."""
+    """A TCP proxy to PostgreSQL that holds the server's answers ``delay["s"]``.
+
+    Connections through it set ``SSLMODE`` to ``disable``. With the driver's
+    default, asyncpg starts each connection with an SSLRequest, the one it
+    opens to send a cancel request included. When a connection is closed
+    while its cancel request is still connecting (here: a connection that
+    did not settle in time, on a loop that stalled at that moment), asyncpg
+    sets an exception on the SSLRequest's future, which nobody awaits any
+    more: "unexpected connection_lost() call". The loop reports it, and the
+    test runner fails whichever test is running with it. These tests check
+    no TLS.
+    """
 
     async def pipe(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter, slow: bool
@@ -677,6 +688,7 @@ async def test_a_deadline_during_begin_leaves_no_transaction_behind(
                 "POOL_SIZE": 1,
                 "MAX_OVERFLOW": 0,
                 "POOL_PRE_PING": False,  # The deadline lands on BEGIN, not a ping.
+                "SSLMODE": "disable",  # See slow_proxy.
             }
         )
     )
