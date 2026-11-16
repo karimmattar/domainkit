@@ -123,12 +123,13 @@ class QueryRoute:
         ]
         if self.many:
             hidden = await presenting.hidden_fields(router, request)
-            items = [
-                presenting.dump(router, context, item, hidden)
+            reached = [
+                item
                 for item in cast("Iterable[Aggregate]", result)
                 if all(each.matches(item) for each in criteria)
                 and await reach.allows(request, item, self.rules)
             ]
+            items = await presenting.documents(router, context, reached, hidden)
             return BuiltJSONResponse({"items": items})
         if not isinstance(result, AggregateRoot):
             raise RuntimeError(

@@ -62,7 +62,9 @@ class CommandRoute:
 
         Raises:
             TypeError: The body has fields the command lacks, or the
-                command needs fields nothing gives.
+                command needs fields nothing gives; or the route acts on a
+                tenants' collection without naming its action
+                (``reach.named_action``).
         """
         names = {field.name for field in dataclasses.fields(command)}
         self.router = router
@@ -71,6 +73,9 @@ class CommandRoute:
         self.retry = retry
         """Run the service again when its transaction loses a race (``run``)."""
         self.detail = router.lookup in names
+        reach.named_action(
+            router, f"/{{{router.lookup}}}{path}" if self.detail else path, action
+        )
         self.from_path = {router.lookup} if self.detail else set()
         if router.parent_field is not None and router.parent_field in names:
             self.from_path.add(router.parent_field)

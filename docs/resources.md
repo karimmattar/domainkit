@@ -787,6 +787,49 @@ request's value into what the field holds: value objects built, enums
 found. The routes call it with the field's description, which domainkit
 reads from the class. A value that does not fit is an `InvalidQuery`.
 
+### A page at once
+
+`present` turns one aggregate into the schema, and cannot wait. To show
+what another domain holds, such as a member's name, a resource takes
+`present_many` in its place (since 2.5). It is async, takes the
+aggregates of one answer and the request, and returns one schema for
+each, in their order:
+
+```python
+class MemberOut(BaseModel):
+    id: UUID
+    role: str
+    name: str
+
+
+async def members_out(members, request) -> list[MemberOut]:
+    names = await people_named({each.user_id for each in members})  # one query
+    return [
+        MemberOut(id=each.id, role=each.role, name=names.get(each.user_id, ""))
+        for each in members
+    ]
+
+
+members = ResourceRouter("/members", ..., schema=MemberOut, present_many=members_out)
+```
+
+- It is called once per answer: a page, an export's chunk, a query's
+  items, or one aggregate for a read or a write. An empty page does not
+  call it.
+- The field policy, links, and the `ETag` apply to what it returns, as
+  to `present`'s.
+- One schema too few or too many, or one whose `id` is not its
+  aggregate's (out of order), fails the request (`RuntimeError`): a name
+  never lands on another's row. A schema without `id` is held to the
+  count only.
+- Give `present` or `present_many`, not both (`TypeError`).
+- Show only what the caller may see of the other domain: the function
+  has the request to decide.
+
+A client that keeps the two apart asks the other domain once per page
+instead, by id: the admin API's `GET /users` takes `id`, repeated
+([the admin API](auth/routes.md#the-admin-api)).
+
 ### Partial changes
 
 A `PatchModel` is a partial change, as RFC 7396's merge patch describes
@@ -949,6 +992,126 @@ A resource without a rule declares none, so it fails the deny-by-default
 check: `check` lists its routes, and staging and production refuse to
 start. Pass `dependencies=[Public]` for a resource anyone may call.
 
+### A resource whose items are tenants
+
+A resource's items may be tenants: companies, organisations, projects,
+each with members (since 2.5). `tenant=` takes a `PathTenant`, and
+serves each route whose path holds its parameter as that tenant, before
+the route's rules ([a tenant from the path](tenancy.md#a-tenant-from-the-path)):
+
+```python
+from uuid import UUID
+
+from starlette.requests import HTTPConnection
+
+from domainkit.ddd import Criteria, F
+from domainkit.http.access import IsAuthenticated
+from domainkit.resources import MemberActions, ResourceRouter
+from domainkit.tenancy import PathTenant
+
+
+async def companies_of_caller(request: HTTPConnection) -> Criteria:
+    user = request.scope["user"]
+    ids = await member_tenants(user) if user.is_authenticated else []
+    return F("id").in_([UUID(each) for each in ids])
+
+
+companies = ResourceRouter(
+    "/companies",
+    ...,
+    tenant=PathTenant("company_id"),
+    rule=MemberActions(Company, outside=IsAuthenticated()),
+    scope=companies_of_caller,
+)
+companies.command_route(RenameCompany, service=rename, body=RenameIn, path="/rename")
+companies.command_route(FoundCompany, service=found, body=FoundIn, action="add")
+```
+
+`member_tenants` is the project's `TENANCY.MEMBER_TENANTS` function: the
+ids of the companies the user belongs to.
+
+- `GET /companies/{company_id}` and `POST /companies/{company_id}/rename`
+  are served as the company. A caller who does not belong to it gets
+  `404`, an anonymous one `401`, as `PathTenant` answers.
+- `GET /companies` and `POST /companies` hold no `{company_id}`: they
+  serve no tenant. On a router, `PathTenant` would refuse them
+  (`tenancy.E001`).
+- No member rule narrows a list: the `scope` keeps each caller to the
+  companies they belong to, in lists, queries, and exports. Under
+  `MemberActions(outside=<a rule>)`, a resource without one is refused
+  with `TypeError`; a public directory gives a scope that returns
+  `None`, on purpose.
+- Each command, use case, or batch on the collection names its action
+  (`action="add"` to create a company; `"change"`, `"delete"`, or one of
+  its own otherwise), or is refused with `TypeError`. A `POST` there is
+  `add` by default, which `outside` may let anyone do: a command that
+  names another company in its body would change it for them.
+- A batch of commands on single companies is refused with `TypeError`:
+  each item names a company the batch is not served as. Declare a
+  command route on one company instead.
+- The parameter may be the resource's id, its parent's, or one of its
+  prefix (`/orgs/{org_id}/projects`, where every route is the org's). One
+  that no route holds is refused with `TypeError`.
+- A resource whose own id is the tenant lives at a prefix that names no
+  parameter: under `/orgs/{org_id}`, its collection would serve no
+  tenant, and is refused with `TypeError`.
+- A nested resource takes its parent's tenant. One of its own is refused
+  with `TypeError`: the routes that name only the parent's id would
+  serve no tenant.
+- Every other route of the resource is served as no tenant
+  (`serve_no_tenant`), even with `TenantMiddleware` too: the tenant a
+  header or a subdomain names decides nothing on the collection. So no
+  member's keys count there, `ModelActions` and a `FieldPolicy` count
+  what the caller holds everywhere, and `current_tenant()` is None.
+- A command on the collection is not held to the `scope`: the item its
+  body names is the service's to load, and the route cannot know it. Its
+  action's rule decides (`outside`'s, or `Actions`'), and the service
+  checks the item it loads. To act on one company as its member, put the
+  command under `/{company_id}`, where the scope and the member's rule
+  hold.
+- `fetch(request, uow, id_)` from a route of your own on the collection
+  serves no tenant and asks no member's key: it reaches the companies in
+  the caller's `scope`, and asks only the rules that look at objects. To
+  act as a member of one company, put the route under `/{company_id}`.
+- A router included into the resource is served as the tenant its
+  prefix names: `companies.include_router(files,
+  prefix="/{company_id}/files")`. One included under another prefix, and
+  a Starlette route, WebSocket route, mount, or host, which take no
+  dependency, are refused with `TypeError`: on the resource, and inside
+  a router it includes, at any depth, as FastAPI serves those without the
+  include's dependencies. FastAPI includes a router as it is, so one
+  added to it after the include is served too: `check`, and the
+  application as it starts, refuse it (`tenancy.E003`). Finish a router
+  before you include it.
+- Routes of your own on the resource (`@companies.get(...)`, a
+  WebSocket) are served alike, by their path.
+- The id is read as the resource's id type. A UUID is the tenant's id in
+  lowercase, however the path writes it, and a value that is not one is
+  `422`. A route of your own that reads the parameter itself reads it as
+  it declares it: declare it as a `UUID` too, or take the tenant's id
+  from the `PathTenant` (`Annotated[str, Depends(companies.tenant)]`).
+
+`MemberActions(Company)` asks for the permission of each route's action,
+as `ModelActions` does, among the keys the caller holds as a member of
+the tenant served (`TENANCY.MEMBER_PERMISSIONS`), and no others. A member
+who is also staff acts there with their role, not with their staff
+permissions ([members' rules](tenancy.md#members-permissions)). On a
+route that serves no tenant it refuses, unless `outside=` says who may
+call it:
+
+- A rule, such as `IsAuthenticated()`, decides the `view` and `add`
+  routes there: the list, queries on the collection, creation. A route
+  of another action there, such as a command on the collection declared
+  with `action="change"` (a merge), is refused. Give such a command its
+  action: a `POST` on the collection is `add` by default.
+- `Actions`, such as `ModelActions(Company)`, name the rules of every
+  action there themselves, as for a resource without tenants.
+- Credentials limited to scopes pass `outside` only where its rules
+  check scopes. On a tenant's routes, the member's rule checks them.
+
+A resource given `outside=` and no `tenant=` is refused with `TypeError`:
+its items would serve no tenant either, and `outside` would rule them.
+
 ### Rules on objects, and scope
 
 Rules that look at objects (`HasObjectPermissions`, or a rule of your own
@@ -1096,7 +1259,8 @@ clients read it:
 | `repository` | (required) | Picks the repository from a unit of work: `lambda uow: uow.products`. |
 | `schema` | `schema_for(model)` | The read schema. |
 | `present` | `schema.from_domain` | Turns an aggregate into the schema. |
-| `rule` | `None` | A rule for every route, or `ModelActions`. |
+| `present_many` | `None` | Async, in `present`'s place: turns the aggregates of one answer into their schemas, in one call ([a page at once](#a-page-at-once)). |
+| `rule` | `None` | A rule for every route, `ModelActions`, or `MemberActions`. |
 | `filters` | `None` | A `FilterSet`, or a dependency that returns a `Selection` or criteria. |
 | `pagination` | `Pagination()` | How the listing pages ([pages over HTTP](queries.md#pages-over-http)). |
 | `page_schema` | (derived) | Replaces the page's schema. |
@@ -1104,6 +1268,7 @@ clients read it:
 | `id_type` | the aggregate's id type | The type of the id in the path. |
 | `basename`, `plural` | from the class name | The names in routes and paths. |
 | `parent`, `parent_field` | `None` | Nest under another resource. |
+| `tenant` | the parent's, or `None` | A `PathTenant`: the routes whose path holds its parameter are served as that tenant ([items that are tenants](#a-resource-whose-items-are-tenants)). |
 | `scope` | `None` | Criteria a caller may reach ([scope](#rules-on-objects-and-scope)). |
 | `policy` | `None` | A `FieldPolicy`. |
 | `require_if_match` | `False` | Writes to one aggregate need `If-Match` (428 without). |

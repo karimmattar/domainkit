@@ -241,6 +241,69 @@ and a status.
   for Chromium and LibreOffice: `docs/documents.md`, "Hardening
   Gotenberg". ADR 0168 (user report U2).
 
+- `ResourceRouter(tenant=PathTenant("company_id"))` serves each route
+  whose path holds the parameter as that tenant, before the route's
+  rules: a companies resource serves `/companies/{company_id}` and its
+  commands as the company, and lists `/companies` as no tenant. A nested
+  resource takes its parent's tenant, and may not name another. The
+  parameter may be the resource's id, its parent's, or one of its
+  prefix; one no route holds is refused, and so is a batch whose items
+  name tenants. Where the resource's own id is the tenant, a project
+  names the action of every command, use case, and batch on the
+  collection (`action="add"` to create one; `TypeError` without), and
+  keeps the resource at a prefix that names no parameter. Every other
+  route of the resource (its collection's) is served as no tenant
+  (`serve_no_tenant`, and `no_tenant()` for code), whatever
+  `TenantMiddleware` named. A router included into it goes under the
+  tenant's parameter (`prefix="/{company_id}/..."`); one included
+  elsewhere, and Starlette routes, mounts, and hosts, on the resource or
+  inside a router it includes, are refused. Its `PathTenant` is strict
+  (`PathTenant(..., strict=True)`): `check` refuses a route under its
+  path that does not take its tenant from it (`tenancy.E003`), such as
+  one added to an included router after the include. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
+  that type, so a UUID in capitals is the same tenant; a resource's
+  tenant reads its id's type. On the router, `PathTenant` refused the
+  list (`tenancy.E001`), and command routes take no `dependencies=`.
+  ADR 0170 (user report D3).
+
+- `HasMemberPermissions(*perms)` (`domainkit.tenancy`) and
+  `MemberActions(model, *rules, outside=None)` (`domainkit.resources`)
+  count the keys a caller holds as a member of the tenant served
+  (`MEMBER_PERMISSIONS`), and nothing else: staff who are members act in
+  a tenant with their role, not their staff permissions, which
+  `HasPermissions` and `ModelActions` add. `outside` rules the routes
+  that serve no tenant, such as a companies resource's list: a rule
+  decides their `view` and `add` routes only, `Actions` each action;
+  without it they are refused. With `outside`, a member's keys count
+  only where the path named the tenant (`path_tenant()`), whatever
+  tenant `TenantMiddleware` serves; under a rule as `outside`, the
+  resource needs a `scope` (the tenants the caller belongs to), as no
+  member rule narrows its list. `InTenant` allows requests served as a
+  tenant.
+  ADR 0170 (user report D3).
+
+- `Throttle(..., per_tenant=False)` counts a caller once across tenants:
+  a member of ten tenants gets the rate once, not ten times. The default
+  stays one count per tenant. ADR 0170 (user report D3).
+
+- The admin API's `GET /users` takes `id`, repeated, up to 200: a page of
+  rows that refer to users names them in one request. ADR 0170 (user
+  report D2).
+
+- `ResourceRouter(present_many=...)`, an async function of an answer's
+  aggregates and the request, shows them in one call, in `present`'s
+  place: a page, an export's chunk, a query's items, or one aggregate.
+  It can load what another domain holds for the whole page at once; an
+  answer not in the aggregates' order fails the request.
+  ADR 0170 (user report D2).
+
+- `FilterSet.search_through = {"user_id": users_named}` searches what a
+  field refers to: `users_named(word, limit)` returns the ids of at most
+  `max_reference_matches` (100) rows each word names, once per word in
+  any case and only for a query the set accepts, and a row matches when
+  its field is one of them. A resource's members can be found by
+  their user's name, wherever users are kept. ADR 0170 (user report D2).
+
 ### Changed
 
 - `import domainkit.i18n` imports none of its modules. Its names, and its

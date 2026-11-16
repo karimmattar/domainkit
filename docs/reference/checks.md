@@ -123,6 +123,7 @@ application logs them as a warning and starts.
 | `openapi.E001` | two routes with one operation id ([Operation ids](responses.md#operation-ids)) |
 | `tenancy.E001` | a route whose `PathTenant` names a path parameter its path does not have ([A tenant from the path](../tenancy.md#a-tenant-from-the-path)) |
 | `tenancy.E002` | a route whose own dependencies check callers (`Require`) before `PathTenant` serves the path's tenant |
+| `tenancy.E003` | a route under the path of a strict `PathTenant` (a resource's whose items are tenants: `/companies/{company_id}/...`) that does not take its tenant from it, such as a mount or a Starlette route added to a router after it was included into the resource ([A resource whose items are tenants](../resources.md#a-resource-whose-items-are-tenants)) |
 | `auth.E101` | routes that check users, but `MIDDLEWARE` lacks `AuthenticationMiddleware` |
 | `auth.E102` | auth's cookie routes mounted, but `AUTH.AUTHENTICATION_CLASSES` lacks `CookieAuthentication` |
 | `auth.E103` | auth's routes that send mail, without the apps they need in `INSTALLED_DOMAINS` |

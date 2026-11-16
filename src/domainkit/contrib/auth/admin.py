@@ -50,7 +50,7 @@ from pydantic import (
 
 from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import PermissionDenied
-from domainkit.ddd.query import F
+from domainkit.ddd.query import And, F
 from domainkit.ddd.query import Selection as Listing
 from domainkit.http import Pagination, error_responses
 from domainkit.http.access import BasePermission, IsUnscoped, Principal, Require
@@ -434,17 +434,32 @@ async def user_listing(
             ),
         ),
     ] = None,
+    ids: Annotated[
+        list[UUID] | None,
+        Query(
+            alias="id",
+            max_length=MAX_PAGE_SIZE,
+            description=(
+                f"Only these users, by id: repeat it, up to {MAX_PAGE_SIZE} "
+                "(as many as one page holds)."
+            ),
+        ),
+    ] = None,
 ) -> Listing:
-    """Users by their first identifier; ``search`` keeps those it finds.
+    """Users by their first identifier; ``search`` and ``id`` keep those they name.
 
     ``user_search`` finds them by the username and the fields of
-    ``AUTH.IDENTIFIERS``. They are ordered by the first of those fields
-    that is not encrypted (``AUTH.IDENTIFIERS[0]``, else the username), and
-    by id among equal values.
+    ``AUTH.IDENTIFIERS``. ``id`` names users by id, so a page of rows that
+    refer to users names them in one request (user report D2). They are
+    ordered by the first of those fields that is not encrypted
+    (``AUTH.IDENTIFIERS[0]``, else the username), and by id among equal
+    values.
     """
     model = get_user_model()
-    found = user_search(model, search) if search else None
-    return Listing(found, ordering=[F(_ordered_by(model))])
+    found = [user_search(model, search)] if search else []
+    if ids:
+        found.append(F("id").in_(dict.fromkeys(ids)))
+    return Listing(And.of(*found) if found else None, ordering=[F(_ordered_by(model))])
 
 
 def _ordered_by(model: type[AbstractBaseUser]) -> str:
@@ -475,7 +490,8 @@ users = ResourceRouter(
     pagination=pages,
     rule=staff_rules(get_user_model),
 )
-"""``GET /users`` (``search`` matches part of an identifier) and ``/users/{id}``."""
+"""``GET /users`` (``search`` matches part of an identifier; ``id`` names
+users) and ``/users/{id}``."""
 groups = ResourceRouter(
     "/groups",
     model=Group,
