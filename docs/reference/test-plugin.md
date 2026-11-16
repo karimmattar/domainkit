@@ -97,7 +97,8 @@ Fixtures for published events and queued work (`captured_events`,
 `domainkit.testing` also exports factories (`Factory`, `SubFactory`,
 `Sequence`, ...), clients (`TestClient`, `AsyncTestClient`), and helpers
 for logins (`user_token`, `token_for`, `enrol_totp`, `totp_code`,
-`step_up`, `confirm_sca`, `approve_request`, `browser_session_for`). The
+`step_up`, `confirm_sca`, `authorize_act`, `confirm_authorization`,
+`approve_request`, `browser_session_for`). The
 [API page](../api.md) lists every name.
 
 ## Options

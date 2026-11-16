@@ -353,11 +353,14 @@ def recent_second_factor(request: Request) -> bool:
 ```
 
 The login gates see the login they judge with `login_origin(request)`:
-[Login gates](ciba.md#login-gates). A login route of your own names its
-proof as it names its method: `pass_login_gates(request, user,
-method=..., amr={"pwd"})`, then `issue_login(user, method=...,
-amr={"pwd"})`. `Credentials.auth_time` and `amr` stay those of the last
-step-up.
+[Login gates](ciba.md#login-gates). A sign-in approved on the phone
+also names, while its login is made, the request it redeems
+(`sign_in_request_id`) and its `binding_message` (since 2.5); the login
+does not keep them, so `request.auth.origin` has neither. A login route
+of your own names its proof as it names its method:
+`pass_login_gates(request, user, method=..., amr={"pwd"})`, then
+`issue_login(user, method=..., amr={"pwd"})`. `Credentials.auth_time`
+and `amr` stay those of the last step-up.
 
 #### Shorter sessions for some users
 
@@ -392,7 +395,7 @@ class AccountsConfig(DomainConfig):
 - **Asked once, when the login is made**, past the gates, with the user
   and how the login is made. It may read the database. Decide by the
   user (`is_staff`, a group) or by the login (`origin.amr`,
-  `origin.device_id`).
+  `origin.device_id`, a phone sign-in's `origin.binding_message`).
 - **The login keeps its limits.** `lifetime` shortens its expiry: the
   login token's (its `expires_in` says so), the browser session's and its
   cookies' `Max-Age`, a JSON Web Token login's refresh tokens.

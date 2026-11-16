@@ -339,9 +339,10 @@ class AsksAuthorization(Protocol):
     """A rule that asks for an authorization of the act it guards (ADR 0144).
 
     ``ResourceRouter`` gives each command route whose rules hold one (at
-    the top, or inside ``&``) a twin, ``POST <the route's path>/authorization``:
-    it builds the command as the route does, asks the route's other rules,
-    and answers ``201`` with what ``ask_authorization`` returns.
+    the top, or inside ``&``) a twin, ``POST <the route's path>/authorization``
+    (``.../authorization/<method>`` where routes of one path ask by several
+    methods): it builds the command as the route does, asks the route's
+    other rules, and answers ``201`` with what ``ask_authorization`` returns.
     """
 
     def authorization_model(self) -> type[BaseModel]:
@@ -349,7 +350,14 @@ class AsksAuthorization(Protocol):
         ...
 
     async def ask_authorization(self, request: Request, command: object) -> BaseModel:
-        """Store an authorization of ``command`` for the request's caller: the body."""
+        """Store an authorization of ``command`` for the request's caller: the body.
+
+        A method that also takes ``uow`` (``uow=None``) is given the route's
+        unit of work, not yet open, to read what the caller is shown in
+        (ADR 0161). A rule may define ``service_problem(service)`` too: why
+        the route's service would not spend what it asks for, or None; the
+        route is then refused when it is declared.
+        """
         ...
 
 

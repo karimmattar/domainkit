@@ -349,6 +349,7 @@ EXTRA_MESSAGES: Final = {
     "Too many attempts; try again later.",  # auth.mfa and auth.recovery, by keyword
     "Too many requests for mail; try again later.",  # auth.recovery and auth.signup
     "Too many sign-ins were started; try again later.",  # ciba, a throttle's detail
+    "Too many requests were sent to your phone; try again later.",  # ciba, the same
     MoneyError.summary,
     UnknownCurrency.summary,
     InexactAmount.summary,

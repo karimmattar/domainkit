@@ -72,8 +72,9 @@ class PhoneRequired(APIError):
 class PhoneUnavailable(APIError):
     """No phone of the signed-in user can be asked now (409).
 
-    None is bound, ``MAX_PENDING`` requests wait, or the user reported one
-    within ``REPORT_COOLDOWN``.
+    None is bound, ``MAX_PENDING`` requests wait, the user's sessions asked
+    twice as many within ``REQUEST_TTL`` that were not answered (withdrawn
+    ones too), or the user reported one within ``REPORT_COOLDOWN``.
     """
 
     def __init__(self) -> None:

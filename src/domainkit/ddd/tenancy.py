@@ -21,6 +21,7 @@ __all__ = [
     "all_tenants",
     "check_tenant_id",
     "current_tenant",
+    "no_tenant",
     "row_tenant",
     "scoped_key",
     "shared_keys",
@@ -101,6 +102,22 @@ def tenant(tenant_id: object) -> Iterator[str]:
     token = _current.set(checked)
     try:
         yield checked
+    finally:
+        _current.reset(token)
+
+
+@contextmanager
+def no_tenant() -> Iterator[None]:
+    """Serve no tenant inside the block, whatever one is served outside it.
+
+    For work that belongs to no tenant though a tenant is current: the
+    collection of a resource whose items are tenants (ADR 0170). Rows of
+    ``TenantOwned`` aggregates are then refused (``TenantRequired``), as
+    with no tenant at all.
+    """
+    token = _current.set(None)
+    try:
+        yield
     finally:
         _current.reset(token)
 

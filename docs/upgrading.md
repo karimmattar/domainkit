@@ -77,6 +77,116 @@ relied on 2.4's behaviour changes.
   ([ADR 0165](adr/0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md)):
   name a user whose username is written as digits by its id.
 
+2.5 answers the third report of the project 2.4 answered. Each item of
+this list says what a project that relied on 2.4's behaviour changes.
+
+- **A command gets the dataclasses it declares as instances.** A command
+  field declared as a dataclass, such as a value object, or a tuple of
+  one, whose body field is typed as that same class (or a tuple of it),
+  got dicts from a command route, a batch, or a twin: a `@use_case`'s
+  `tuple[Address, ...]` came as `({"street": ..., "city": ...},)`. It
+  gets the instances the body validated, `(Address(...),)`. A service
+  that rebuilt them (`Address(**item)`) drops that step; it gets
+  pydantic's instances, built with their `__post_init__` but without
+  their markers (`MaxLength`, ...) checked, as 2.4 built them before
+  dumping them, so a service that relied on the rebuild to check the
+  markers checks them itself. A
+  `@field_serializer` on such a body field no longer applies to what the
+  command gets. A field the command declares as `dict`, `Any`, `Mapping`,
+  or anything else, a `list[...]`, and a field the body gives in a shape
+  of its own (a nested model) still get what `model_dump()` gives.
+
+2.5 answers a third report from a project. Nothing a project relies on
+changes; what follows may ask something of it.
+
+- **`check --deploy` warns about clamd reached in clear.** Where
+  `UPLOAD_SCANNER` names `ClamAVScanner` on a host other than this one,
+  without `tls`, `check` warns (`security.W007`), and `check --deploy`
+  fails. Put a TLS proxy in front of clamd and set `tls`, or, where clamd
+  is on a network only the service reaches, add `security.W007` to
+  `SILENCED_CHECKS` ([clamd on another host](uploads.md#clamd-on-another-host)).
+- **FCM tokens refused as `INVALID_ARGUMENT` with no field cost a dry
+  run.** `FcmPushBackend.send` asks FCM about the token alone before it
+  forgets it, and dead-letters the message when the token passes. A
+  subclass that overrode `refusal` for this case may drop the override.
+- **Opt in to what 2.5 adds where it fits:** `SERVE["HTTP"] = "1"` unless
+  the proxy speaks h2c to the server, `SERVE["EXIT_ON_FAILED_START"] =
+  True` where an orchestrator restarts the container
+  ([Server limits](reference/servers.md#http-versions)), and
+  `check_write_once` on an `S3Storage` whose store is not AWS S3 or R2
+  ([A store that ignores create only](uploads.md#a-store-that-ignores-create-only)).
+
+### Authorize the admin API's changes and a request's steps as acts
+
+Nothing changes until a project turns the new settings on. A project
+that asks the phone's free-text step-up (`POST /auth/app-sign-in/step-up`,
+deprecated, removed in 3.0) for the admin API's changes, or for
+submitting, rejecting, or cancelling approval requests, moves those acts
+to action authorizations
+([The framework's own acts](auth/actions.md#the-frameworks-own-acts-the-admin-api-and-approvals)):
+
+1. Turn on `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`,
+   `REJECT_ACTION`, and `CANCEL_ACTION` (and `APPROVE_ACTION`) as the
+   project needs. Each needs `domainkit.contrib.auth`.
+2. Take away the `StepUp(max_age=...)` that `select_routes` added to
+   those routes: it would ask for a window as well.
+3. In the web client, on `401 authorization_required`, ask the route's
+   twin (`POST <the route's path>/authorization`; where a `PATCH` and a
+   `DELETE` share a path, `<path>/authorization/patch` and
+   `.../delete`), have the phone confirm it,
+   and send the act again with `Action-Authorization`, as for any act
+   ([Move from the phone's free-text step-up](#move-from-the-phones-free-text-step-up-to-action-authorizations)).
+4. Once nothing asks the free-text step-up, leave its routes out of
+   ciba's router (`select_routes(..., without=[...])`), and the test that
+   ignored its deprecation goes.
+
+No table changes.
+
+2.5 answers a third report from a project that runs an identity service
+on domainkit. It breaks nothing a project relies on; each item of this
+list says what changes, and what a project that relied on 2.4's
+behaviour does.
+
+- **An `on_approve` hook's refusal denies the request.** A hook that
+  raises `PermissionDenied`, or an HTTP error of 403, ends the request:
+  the page's poll and wait answer `access_denied` at once, where the
+  request waited until it expired; nothing is reported. A hook that
+  called `deny()` itself before raising may drop the call: it still
+  works. Any other error leaves the request waiting, as before
+  ([Hooks of the web pages](auth/ciba.md#hooks-of-the-web-pages)).
+- **Each kind of request has its own push text.** `CIBA.PUSH_TITLE` and
+  `PUSH_BODY` default to `None`, and each kind has its words
+  ([Push texts](auth/ciba.md#push-texts)). A project that set them keeps
+  them, for every kind; to give each kind its own, unset them, or name
+  each in `PUSH_TEXTS`. Code that read `PUSH_TITLE` gets `None` where it
+  was not set. domainkit's catalogs have the new texts in Arabic; a
+  project whose catalogs translate the push into other languages adds
+  them there.
+- **A session's asks are counted per user.** `START_RATE` counts what a
+  signed-in session asks the phone per user, from any address. A test
+  suite that raised `START_RATE` for one user's acts still needs it
+  raised; one that raised it for many users behind one address no
+  longer does.
+
+2.5 answers a third report from the project that runs an identity
+service on domainkit. The sections below say what a project that relied
+on 2.4's behaviour changes.
+
+### Decorate the service of a route that asks for an act's authorization
+
+A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
+service not decorated with `requires_authorization` of that act warns
+when it is declared (`DomainkitDeprecationWarning`), and 3.0 refuses it
+([A use case as the act](auth/actions.md#a-use-case-as-the-act)).
+Decorate the route's own service, not one it calls, so the route is
+known to spend what it asks for. A route that runs a `@use_case` takes
+the copy `requires_authorization(ACTION)(use_case)` makes: one that runs
+the use case itself is refused in 2.5 already, as it never spent the
+authorization.
+
+2.5 breaks nothing. Each item of this list says what a project may see
+change, and what it does then.
+
 2.5 changes no API a project calls. A project's CI can still fail after
 upgrading: `makemessages --check` finds texts it did not find before.
 Each item of this list says what a project may see change, and what it

@@ -19,6 +19,8 @@ On this page you learn how to:
 - hold changes of the admin API for approval: making staff, groups,
   permissions, passwords, impersonation;
 - ask approvers for a step-up, or to authorize each approval once;
+- have makers and approvers authorize each submission, rejection, and
+  cancellation once;
 - choose who reads which requests, and tell the approvers of one;
 - add a staff rule or a step-up to the routes of your choice;
 - know what maker-checker does not stop.
@@ -619,7 +621,8 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   second person.
 - **Creating a user who is staff is refused** while making staff is held
   (`403 approval_required`, "Making staff needs approval: create the
-  user, then make them staff.").
+  user, then make them staff."). Since 2.5 the refusal is auth's
+  `on_create_staff` check, which the creation's twin asks too.
 - **Superusers approve**, other than the staff member, and never the user
   the change is about (`interested_party`). With `ADMIN_APPROVERS` set,
   the holders of that permission approve instead; as with
@@ -628,6 +631,13 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
 - **Only the admin API submits them**: `POST /requests` answers
   `404 unknown_action`. Staff acting as someone else (an impersonation)
   are refused ("Requests are made and decided in one's own name only.").
+- **With `AUTH.ADMIN_ACTION` on, the call is an act too** (since 2.5):
+  its authorization is checked before the change is submitted, so a
+  change other than the one authorized is refused and never waits. A
+  call that waits spends nothing: once the request is approved, the
+  staff member sends it again with an authorization, the first one while
+  it lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one
+  ([Each change, authorized as one act](../auth/routes.md#each-change-authorized-as-one-act)).
 
 The admin API asks through auth's `on_admin_change` hook, which approvals
 registers a check with while `ADMIN_APPROVALS` names a change: auth
@@ -760,6 +770,72 @@ Off, the default, approving is as it was, and
 that is not there: a caller the approve route refuses is refused there
 first.
 
+## Submitting, rejecting, and cancelling with an authorization
+
+The other three steps of a request have actions of their own too (since
+2.5, [ADR 0163](../adr/0163-authorize-admin-changes-and-requests-steps-as-acts.md)), each off by default and turned on by its own setting, as
+`APPROVE_ACTION` is. A project whose web pages asked the phone's
+free-text step-up for them (`POST /auth/app-sign-in/step-up`,
+deprecated, [Sign-in approvals](../auth/ciba.md#the-pages-words-and-a-window-deprecated))
+turns them on instead, and the phone confirms each act:
+
+```python
+APPROVALS = {
+    "SUBMIT_ACTION": True,
+    "APPROVE_ACTION": True,
+    "REJECT_ACTION": True,
+    "CANCEL_ACTION": True,
+}
+```
+
+| Setting | Action | Its arguments | Subject | The twin |
+| --- | --- | --- | --- | --- |
+| `SUBMIT_ACTION` | `approvals.submit` | `SubmitRequest`: the action, the arguments as sent, and the maker | `approvals.action:<action>` | `POST /requests/authorization` |
+| `REJECT_ACTION` | `approvals.reject` | `RejectRequest`: the request, the approver, and the reason | `approvals.request:<id>` | `POST /requests/{id}/reject/authorization` |
+| `CANCEL_ACTION` | `approvals.cancel` | `CancelRequest`: the request, the maker, and the reason | `approvals.request:<id>` | `POST /requests/{id}/cancel/authorization` |
+
+The client goes round once per act, as for approving:
+
+```http
+POST /api/approvals/requests {"action": "treasury.payout", "arguments": {...}}                 401 authorization_required
+POST /api/approvals/requests/authorization {"action": "treasury.payout", "arguments": {...}}   201 {"id": "9f0c...", "shown": {...}}
+POST /auth/app-sign-in/authorizations/9f0c...                                                  200 {"request": "kq3D1...", ...}
+POST /auth/app-sign-in/authorizations/token {"request": "kq3D1..."}                           200 {"authorization": "9f0c....mYd3..."}
+POST /api/approvals/requests {"action": "treasury.payout", "arguments": {...}}
+     Action-Authorization: 9f0c....mYd3...                                                     201
+```
+
+- **What is shown** is built by the server: "Submit a request", "Reject
+  a request", or "Cancel a request"; the action; the reason, when one is
+  given; then the arguments by name, as approving shows them (six values
+  at most, the last line counting those not shown). A submission shows
+  the arguments as they would be stored, the maker's fields set to the
+  maker.
+- **The act is bound.** A submission with other arguments, a rejection
+  or a cancellation with another reason, or of another request, is
+  refused (`403 action_not_authorized`), and voids the authorization.
+- **Asking is refused as the act would be**: an unknown action
+  (`unknown_action`), arguments that make no command
+  (`invalid_arguments`), a command no policy holds
+  (`approval_not_needed`); the maker rejecting (`maker_cannot_decide`),
+  someone else cancelling (`not_the_maker`), a request no longer pending.
+  The twin asks the route's rules too.
+- **The service spends it**, as `approve_request` does: with the
+  request's commit where the requests share auth's database. With a
+  setting on, `submit_request`, `reject_request`, or `cancel_request`
+  called from code, with no request's authorization, is refused
+  (`AuthorizationRequired`, 401).
+- **Only `POST /requests` is `approvals.submit`.** A guarded service
+  called directly, and a change of the admin API held for approval,
+  submit as before: their own routes are the acts
+  ([the admin API](../auth/routes.md#each-change-authorized-as-one-act)).
+- **Rejecting stops a request.** It asks for an authorization only where
+  `REJECT_ACTION` is on: leave it off where stopping a request should
+  never wait for a second factor.
+
+Off, each step is as it was, and its twin answers `404`, to a caller the
+step's route does not refuse first.
+
 ## Over HTTP
 
 ```python
@@ -771,11 +847,14 @@ router.include_router(approvals, prefix="/api/approvals")
 | Route | Who | What it does |
 | --- | --- | --- |
 | `GET /requests`, `/requests/{id}` | `approvals.view_approvalrequest` | Requests (`?status=pending`, `action`, `policy`, `maker`), with their command, fingerprint, and decisions: those the caller made, and those they may decide ([Who reads which requests](#who-reads-which-requests)). |
-| `POST /requests` | `approvals.add_approvalrequest`, and the guard's `permission` and `maker_rule` | Submit `{"action": ..., "arguments": {...}}`: 201, with `Location`. |
+| `POST /requests` | `approvals.add_approvalrequest`, and the guard's `permission` and `maker_rule` | Submit `{"action": ..., "arguments": {...}}`: 201, with `Location`; with `SUBMIT_ACTION`, and an `Action-Authorization` of this submission. |
 | `POST /requests/{id}/approve` | an approver of its policy, and its approve rule | Approve, stating `{"fingerprint": ...}`; with `APPROVE_ACTION`, and an `Action-Authorization` of this approval. |
-| `POST /requests/{id}/approve/authorization` | as for approving | With `APPROVE_ACTION` on: ask for an authorization of approving, stating `{"fingerprint": ...}`: 201, `{"id", "purpose", "shown", "expires_at"}`. Off: 404. |
-| `POST /requests/{id}/reject` | an approver of its policy | Reject, with `{"reason": ...}`. |
-| `POST /requests/{id}/cancel` | `approvals.add_approvalrequest`, and being its maker | Withdraw it (`{"reason": ...}`, optional). |
+| `POST /requests/{id}/approve/authorization` | as for approving | With `APPROVE_ACTION` on: ask for an authorization of approving, stating `{"fingerprint": ...}`: 201, `{"id", "purpose", "shown", "expires_at", "methods"}`. Off: 404. |
+| `POST /requests/{id}/reject` | an approver of its policy | Reject, with `{"reason": ...}`; with `REJECT_ACTION`, and an `Action-Authorization` of this rejection. |
+| `POST /requests/{id}/reject/authorization` | as for rejecting | With `REJECT_ACTION` on: ask for an authorization of rejecting, with `{"reason": ...}`: 201. Off: 404. |
+| `POST /requests/{id}/cancel` | `approvals.add_approvalrequest`, and being its maker | Withdraw it (`{"reason": ...}`, optional); with `CANCEL_ACTION`, and an `Action-Authorization` of this cancellation. |
+| `POST /requests/{id}/cancel/authorization` | as for cancelling | With `CANCEL_ACTION` on: ask for an authorization of cancelling: 201. Off: 404. |
+| `POST /requests/authorization` | as for submitting | With `SUBMIT_ACTION` on: ask for an authorization of submitting `{"action", "arguments"}`: 201. Off: 404. |
 
 Submitting, approving, rejecting, and cancelling also refuse a caller
 who acts for someone else (impersonation, above). The maker and the
@@ -842,7 +921,10 @@ before the route. Mount the copy in place of `approvals`, not beside it.
 Keep a step-up off rejecting: stopping a request should never wait for a
 second factor. Approving has its own setting (`APPROVE_RULE`, or
 `APPROVE_ACTION`). No setting of approvals does this, as the rule is the
-project's: `route_names(approvals)` lists the names.
+project's: `route_names(approvals)` lists the names. To have each
+submission or cancellation confirmed once, rather than a step-up window,
+turn on `SUBMIT_ACTION` and `CANCEL_ACTION`
+([above](#submitting-rejecting-and-cancelling-with-an-authorization)).
 
 ## Telling the approvers
 
@@ -964,6 +1046,9 @@ other settings.
 | `EXPIRE_EVERY` | 5 minutes | How often the worker expires the requests whose time is up (at most 1 day). |
 | `APPROVE_RULE` | `None` | Import path of an access rule (an instance, or a class that takes no arguments) that whoever approves must pass as well, unless the policy names its own; a path that is not a rule fails `setup()`. |
 | `APPROVE_ACTION` | `False` | Each approval asks for an authorization of its own (`approvals.approve`), bound to the request and its fingerprint, in place of a step-up window ([Approving with an authorization](#approving-with-an-authorization)). It needs `domainkit.contrib.auth` (`setup()` fails without it); `check` refuses a `StepUp` in an approve rule beside it (`approvals.E001`). |
+| `SUBMIT_ACTION` | `False` | Submitting at `POST /requests` asks for an authorization of its own (`approvals.submit`), bound to the action and its arguments ([Submitting, rejecting, and cancelling with an authorization](#submitting-rejecting-and-cancelling-with-an-authorization), since 2.5). It needs `domainkit.contrib.auth` (`setup()` fails without it). |
+| `REJECT_ACTION` | `False` | Rejecting asks for an authorization of its own (`approvals.reject`), bound to the request and the reason (since 2.5). It needs `domainkit.contrib.auth`. |
+| `CANCEL_ACTION` | `False` | Cancelling asks for an authorization of its own (`approvals.cancel`), bound to the request and the reason (since 2.5). It needs `domainkit.contrib.auth`. |
 | `MAX_ARGUMENTS_BYTES` | `65536` | The largest command a request holds, as JSON (1 KiB to 1 MiB). |
 | `ENTRY_THRESHOLDS` | `{}` | Per currency, the amount (text) over which `accounting.post_entry`, `capture_hold`, and `reverse_entry` need approval; empty: they are not guarded. A currency it does not name always needs approval, unless `"*"` gives an amount for every one (read in each currency's units). An amount not exact in its currency fails `setup()`. |
 | `ENTRY_APPROVALS` | `2` | Approvals a posting over its threshold needs (at most 10). |
@@ -1004,6 +1089,8 @@ With `APPROVE_ACTION` on, approving answers auth's refusals too:
 `401 authorization_required` without an authorization, `403
 action_not_authorized` with one that does not hold, and those of asking
 for one ([Errors and refusals](../auth/actions.md#errors-and-refusals)).
+So do submitting, rejecting, and cancelling with `SUBMIT_ACTION`,
+`REJECT_ACTION`, and `CANCEL_ACTION` on.
 
 ## Common mistakes
 
@@ -1027,7 +1114,7 @@ for one ([Errors and refusals](../auth/actions.md#errors-and-refusals)).
 - [Accounting](accounting.md): the ledger whose postings can be guarded.
 - [Limits](limits.md): bound what moves in a window, against splitting.
 - [Stepping up](../auth/step-up.md): a fresh second factor.
-- [Authorizing one act](../auth/actions.md): what `APPROVE_ACTION` asks
-  for.
+- [Authorizing one act](../auth/actions.md): what `APPROVE_ACTION`,
+  `SUBMIT_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` ask for.
 - [Audit](audit.md): the events of every request.
 - [Privacy](../privacy.md): erasure and export.

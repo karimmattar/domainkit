@@ -23,6 +23,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
 from domainkit.db.connections import pool_sizing_warnings
 from domainkit.ddd import event_bus
+from domainkit.documents.base import flags_statement
 from domainkit.http import websockets
 from domainkit.http.application import application_problems, build_application
 from domainkit.http.blocking import awaited_sync, sync_calls
@@ -103,6 +104,8 @@ class Command(BaseCommand):
         self.write(f"System check identified no issues{counted}. Domains: {labels}.")
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             self.write(describe(https_statement(), label="Info: "))
+            if settings.DOCUMENTS.RENDERER is not None:
+                self.write(describe(flags_statement(), label="Info: "))
         for info in infos:  # Nothing to silence: they never fail.
             self.write(describe(info, label="Info: "))
         for warning in warnings:

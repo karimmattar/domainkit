@@ -8,13 +8,14 @@ from the messages' docstrings.
 
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, get_origin, get_type_hints
+from types import NoneType, UnionType
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
 from domainkit.db.models import model_key
 from domainkit.ddd.fields import FieldInfo, fields_of, wrapped_field
-from domainkit.ddd.model import ValueObject
+from domainkit.ddd.model import Entity, ValueObject
 
 from ..schemas import PatchModel
 
@@ -41,16 +42,69 @@ def to_domain(field: FieldInfo, value: object) -> object:
     return field.coerce(value)
 
 
-def changes(payload: BaseModel | None) -> dict[str, Any]:
+def instances(message: type, body: type[BaseModel] | None) -> frozenset[str]:
+    """The fields of ``body`` that give ``message`` the instances it declares.
+
+    A body field typed as a dataclass (a value object among them), or a
+    tuple of one, holds the instances pydantic validated: where ``message``
+    declares that same class, or a tuple of it, they are its value, as
+    they are. Other fields, and every field of a message whose hints do
+    not resolve, come as ``model_dump()`` gives them.
+    """
+    if body is None:
+        return frozenset()
+    try:
+        fields = fields_of(message)
+    except (NameError, TypeError):  # Hints that do not resolve, as 2.4 took them.
+        return frozenset()
+    return frozenset(
+        name
+        for name, info in body.model_fields.items()
+        if name in fields and _declared(fields[name], _bare(info.annotation))
+    )
+
+
+def _declared(field: FieldInfo, annotation: object) -> bool:
+    """Whether ``annotation`` is the dataclass ``field`` holds, or a tuple of it."""
+    held, given = field.kind, annotation
+    if held is tuple:
+        args = get_args(annotation)
+        held = field.item
+        given = (
+            args[0] if get_origin(annotation) is tuple and args[1:] == (...,) else None
+        )
+    return (
+        given is held
+        and isinstance(held, type)
+        and dataclasses.is_dataclass(held)
+        and not issubclass(held, Entity)
+    )
+
+
+def _bare(annotation: object) -> object:
+    """``annotation`` without ``| None``."""
+    members = [each for each in get_args(annotation) if each is not NoneType]
+    if get_origin(annotation) in {Union, UnionType} and len(members) == 1:
+        return members[0]
+    return annotation
+
+
+def changes(
+    payload: BaseModel | None, kept: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """A body's fields as a command's keywords; a ``PatchModel``'s set ones only.
 
-    Nested models become dicts, as ``model_dump`` gives them.
+    Nested models become dicts, as ``model_dump`` gives them, but in the
+    fields ``kept`` names (``instances``): the instances pydantic validated.
     """
     if payload is None:
         return {}
-    if isinstance(payload, PatchModel):
+    if isinstance(payload, PatchModel):  # Gives the instances already.
         return {name: plain(value) for name, value in payload.changes().items()}
-    return payload.model_dump()
+    if not kept:
+        return payload.model_dump()
+    given = payload.model_dump(exclude=set(kept))
+    return given | {name: getattr(payload, name) for name in kept}
 
 
 def plain(value: object) -> object:

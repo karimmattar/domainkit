@@ -20,6 +20,7 @@ from types import TracebackType
 from typing import Any, Final, Self
 
 from fastapi import status
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, JsonValue
 from starlette.exceptions import HTTPException
 
@@ -41,6 +42,9 @@ MAX_ITEMS: Final = 100
 NOT_APPLIED: Final = "not_applied"
 INTERNAL_ERROR: Final = "internal_error"
 """The code of an item that raised an unexpected error (``crashed``)."""
+INVALID: Final = "validation_error"
+INVALID_DETAIL: Final = "The request is invalid."
+"""An item that raised ``RequestValidationError``, as a request is answered."""
 
 
 class BatchError(BaseModel):
@@ -113,6 +117,8 @@ def failure(exc: Exception) -> BatchResult | None:
         return _failed(status_code_for(exc), exc.code, exc.message)
     if isinstance(exc, MoneyError):  # As money_error_handler answers it (WEB-17).
         return _failed(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.summary)
+    if isinstance(exc, RequestValidationError):  # As a request it refuses is answered.
+        return _failed(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID, INVALID_DETAIL)
     if isinstance(exc, ServiceBusy):
         exc = busy_refusal(exc)
     elif isinstance(exc, UpstreamError):

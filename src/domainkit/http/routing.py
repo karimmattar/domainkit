@@ -157,6 +157,23 @@ def routers_within(router: APIRouter) -> Iterator[APIRouter]:
             yield from routers_within(included.original_router)
 
 
+def plain_routes(router: APIRouter) -> Iterator[BaseRoute]:
+    """The routes in ``router``, at any depth, that take no dependency.
+
+    Starlette's own (a ``Route``, a ``WebSocketRoute``, a ``Mount``, a
+    ``Host``), and a router's frontend routes: neither FastAPI's routes nor
+    the routers ``router`` includes. FastAPI serves them without the
+    dependencies of the routers they are included through.
+    """
+    for each in routers_within(router):
+        yield from getattr(each, "_low_priority_routes", ())
+        for route in each.routes:
+            if not isinstance(route, APIRoute | APIWebSocketRoute) and not (
+                _INCLUDED is not None and isinstance(route, _INCLUDED)
+            ):
+                yield route
+
+
 def has_frontend_routes(router: APIRouter) -> bool:
     """Whether ``router`` itself has frontend routes (``APIRouter.frontend``).
 

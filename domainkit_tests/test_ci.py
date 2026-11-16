@@ -838,8 +838,9 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
     top-level Markdown file; a run with an audit hook on ``open`` found the
     same four (October 2026), 0.12 added the recipes' (DOCS-05), 0.13
     the upgrade guide's proof, which reads the changelog (SEC-13c-1),
-    0.15 the fintech page's, which checks the tests it names (FIN-74), and
-    1.0 the problem codes' page's (DSGN-20).
+    0.15 the fintech page's, which checks the tests it names (FIN-74),
+    1.0 the problem codes' page's (DSGN-20), and 2.5 the testing page's
+    example of an act authorized in a test (user report A17).
     """
     reading = re.compile(r'(?:ROOT|parents\[1\])\s*/\s*"(?:docs|[A-Za-z]+\.md)"')
     readers = {
@@ -853,7 +854,7 @@ def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
         if "pytest" in step.get("run", "")
     ]
     assert set(re.findall(r"domainkit_tests/\S+\.py", command)) == readers
-    assert len(readers) == 10
+    assert len(readers) == 11
 
 
 def test_the_suite_runs_on_every_core() -> None:

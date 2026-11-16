@@ -57,7 +57,12 @@ def fcm(status: int, error: dict[str, Any]) -> Refusal:
 
 
 def test_fcm_reads_the_two_invalid_arguments_of_its_reference() -> None:
-    """Its own error and no field: the token. A field named: the message."""
+    """A field named: the message. No field: the answer alone cannot tell.
+
+    FCM answers a token it never made and a message too big the same
+    way, its own error and no field: read alone, neither forgets the
+    token; ``send`` asks a dry run first (user report N1).
+    """
     token = fcm(
         400,
         {
@@ -93,7 +98,7 @@ def test_fcm_reads_the_two_invalid_arguments_of_its_reference() -> None:
         },
     )
 
-    assert token == Refusal("INVALID_ARGUMENT", gone=True)
+    assert token == Refusal("INVALID_ARGUMENT", lasting=True)
     assert payload == Refusal(
         "INVALID_ARGUMENT", lasting=True, fields=("message.data[0].value",)
     )
@@ -192,6 +197,40 @@ def test_apns_reads_apples_reasons(
 def test_push_kit_reads_its_codes(code: str, expected: Refusal) -> None:
     """Tokens it does not know are gone; a message it cannot take is lasting."""
     assert HUAWEI.refusal(httpx2.Response(200, json={"code": code})) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"error": {"details": 5}}, Refusal("400", lasting=True)),
+        ({"error": "Bad Request"}, Refusal("400", lasting=True)),
+        (["error"], Refusal("400", lasting=True)),
+        ("unreadable", Refusal("400", lasting=True)),
+        (
+            {"error": {"status": "INVALID_ARGUMENT", "details": [7, "x", None]}},
+            Refusal("INVALID_ARGUMENT", lasting=True),
+        ),
+        (
+            {
+                "error": {
+                    "status": "INVALID_ARGUMENT",
+                    "details": [{"fieldViolations": 5}, {"fieldViolations": [3]}],
+                }
+            },
+            Refusal("INVALID_ARGUMENT", lasting=True),
+        ),
+    ],
+)
+def test_fcm_reads_an_answer_of_another_shape_without_failing(
+    body: Any,  # noqa: ANN401 - any JSON.
+    expected: Refusal,
+) -> None:
+    """An error that is no object, details that are no list: read, never raised.
+
+    ``{"error": {"details": 5}}`` raised ``TypeError`` inside ``send``, so
+    the task failed with a traceback instead of the refusal (user report N1).
+    """
+    assert FCM.refusal(httpx2.Response(400, json=body)) == expected
 
 
 def test_a_refusal_becomes_what_the_worker_needs() -> None:
