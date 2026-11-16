@@ -71,30 +71,21 @@ and a status.
   lists them all. A domain layer that imports `domainkit.i18n.lazy` so
   loads no settings (ADR 0166, user report I2).
 
-- A body `schema_for` derives, a `@use_case`'s or `schema_for(Command,
-  write=True)`, gives a command route, a batch, and a twin the value
-  objects the command declares, built inside out. One of several fields,
-  alone or in a tuple (`tuple[Address, ...]`), is built from its parts,
-  so its own checks run; it came as a dict, or a tuple of dicts. One of a
-  single field is built around its value, or around the value object it
-  wraps; it came as that value. A `list[...]` of them still comes as
-  dicts. In a write schema, each item of such a tuple is the item's write
-  schema (`AddressIn`), with its limits, where pydantic built the item
-  running its `__post_init__` but not the checks of its markers
-  (`MaxLength`, ...). A write schema leaves out the fields a class sets
-  itself (`field(init=False)`): a body that sends one is `422`. A body
-  field typed as a value object or a dataclass itself, or a tuple of it,
-  gives it as validated where the command declares that same class (or a
-  tuple of it), each value object in it built again so its markers are
-  checked, where `model_dump()` gave a dict. Every other field, and one
-  the command declares as `dict`, `Any`, `Mapping`, or anything else,
-  comes as before, as `model_dump()` gives it. A value object's refusal
-  (a check of its markers, `ValueError`, `TypeError`, `AssertionError`,
-  or `ArithmeticError`) is `422` at its place in the body; in a batch,
-  that item's `422 validation_error`. A write schema refuses NaN and
-  infinity for a `float`, which `crud=True` answered with `500`. A
-  service that rebuilt the value objects stops
+- A command field declared as a dataclass, such as a value object, or a
+  tuple of one (a `@use_case`'s `tuple[Address, ...]`), gets the
+  instances the body validated, where the body's field is typed as that
+  same class (or a tuple of it), from a command route, a batch, or a
+  twin. They came as dicts, as `model_dump()` gives them. Nothing is
+  built again: pydantic builds them as it did, running their
+  `__post_init__` and checking none of their markers (`MaxLength`, ...).
+  A field the command declares as `dict`, `Any`, `Mapping`, or anything
+  else, a `list[...]`, and every field a body gives in a shape of its own
+  (a nested model) come as before. Schemas are unchanged. A service that
+  rebuilt the instances from dicts stops
   ([upgrading.md](docs/upgrading.md#24-to-25)) (user report U5).
+- A batch item whose service raises `RequestValidationError` answers that
+  item's `422 validation_error`, as a request of its own would, and no
+  longer `500` (user report U5).
 
 ### Fixed
 

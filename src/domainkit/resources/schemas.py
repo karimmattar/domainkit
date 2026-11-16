@@ -28,7 +28,6 @@ sent, so ``{"note": null}`` clears a note and ``{}`` changes nothing.
 """
 
 import dataclasses
-import weakref
 from collections.abc import Callable, Collection, Mapping
 from datetime import datetime
 from decimal import Decimal
@@ -81,10 +80,6 @@ from domainkit.utils.decimals import decimal_text
 
 GENERATED: Final = frozenset({"id", "version", DELETED_AT})
 """Fields a write schema leaves out: the domain and the database set them."""
-_SOURCES: Final = weakref.WeakKeyDictionary[
-    type, tuple[type, Mapping[str, FieldInfo]]
-]()
-"""Each write schema ``schema_for`` made: its class, and the fields it holds."""
 
 
 def generated_fields(model: type) -> frozenset[str]:
@@ -193,14 +188,11 @@ def schema_for(
     password) stays out of the schema's ``repr``, and a write schema with
     one keeps inputs out of its validation errors.
 
-    A write schema leaves out the fields the class sets itself
-    (``field(init=False)``).
-
     Raises:
         TypeError: A field named is not one of the model's, its type has
-            no schema (exclude it, or write the schema yourself), it holds
-            a secret (``Sensitive``, as a password hash), which no schema
-            shows or takes, or a write schema names one the class sets.
+            no schema (exclude it, or write the schema yourself), or it
+            holds a secret (``Sensitive``, as a password hash), which no
+            schema shows or takes.
     """
     fields = fields_of(model)
     writing = write or partial
@@ -217,14 +209,6 @@ def schema_for(
         for each in names
         if each not in exclude and not (writing and each in generated_fields(model))
     ]
-    if writing:
-        made = {each.name for each in dataclasses.fields(model) if not each.init}
-        if include is not None and (named := sorted(made & set(chosen))):
-            raise TypeError(
-                f"{model.__name__}.{', '.join(named)} is set by the class "
-                "(init=False), not given: leave it out of a write schema."
-            )
-        chosen = [each for each in chosen if each not in made]
     if secret := sorted(
         each
         for each in chosen
@@ -254,31 +238,16 @@ def schema_for(
             options.update(_default(defaults[each]))
         definitions[each] = (annotation, Field(**options))
         presenters.append((each, present))
-    if writing:
+    if partial:
+        return create_model(title, __base__=PatchModel, **definitions)
+    if write:
         hidden = any(not fields[each].shown for each in chosen)
-        written = (
-            create_model(title, __base__=PatchModel, **definitions)
-            if partial
-            else create_model(
-                title,
-                __config__=ConfigDict(extra="forbid", hide_input_in_errors=hidden),
-                **definitions,
-            )
-        )
-        _SOURCES[written] = (model, {each: fields[each] for each in chosen})
-        return written
+        config = ConfigDict(extra="forbid", hide_input_in_errors=hidden)
+        return create_model(title, __config__=config, **definitions)
     schema = create_model(title, __base__=DomainSchema, **definitions)
     schema.domain_class = model
     schema.domain_fields = tuple(presenters)
     return schema
-
-
-def derived_from(schema: type) -> tuple[type, Mapping[str, FieldInfo]] | None:
-    """The class a write schema of ``schema_for`` was derived from, and its fields.
-
-    None for a schema written by hand.
-    """
-    return _SOURCES.get(schema)
 
 
 def _hints(model: type) -> dict[str, object]:
@@ -322,15 +291,6 @@ def _shape(field: FieldInfo, hint: object, *, write: bool) -> tuple[Any, Present
     if issubclass(kind, ValueObject):
         nested = _nested(kind, write)
         return nested, _shown(nested)
-    item = field.item
-    if (
-        write
-        and item is not None
-        and issubclass(item, ValueObject)
-        and wrapped_field(item) is None
-    ):  # Each item's parts, checked as a value object field's are.
-        nested = _nested(item, write)
-        return tuple[nested, ...], _same  # type: ignore[valid-type]
     if kind in {set, frozenset}:
         return (hint, _same) if write else (_as_list(hint), _sorted)
     return _scalar(field, kind, hint, write=write), _same
@@ -357,8 +317,6 @@ def _scalar(field: FieldInfo, kind: type, hint: object, *, write: bool) -> Any: 
             int,
             Field(ge=max(-INT64, bounds.get("ge", -INT64)), lt=INT64, **_upper(bounds)),
         ]
-    if write and kind is float:
-        return Annotated[float, Field(allow_inf_nan=False, **bounds)]
     if kind in {int, float} and bounds:
         return Annotated[kind, Field(**bounds)]
     if write and kind is datetime:

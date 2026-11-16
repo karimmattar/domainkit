@@ -12,7 +12,7 @@ for an authorization of the act gets a twin that asks for one
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import Response, params, status
 from pydantic import BaseModel
@@ -26,7 +26,7 @@ from . import presenting, reach
 from .authorizing import AuthorizationRoute
 from .context import COMMAND, DEFAULT, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
-from .values import builders, changes, check_given, summary_of
+from .values import changes, check_given, instances, summary_of
 
 if TYPE_CHECKING:
     from domainkit.ddd.uow import Retry, UnitOfWork
@@ -78,8 +78,8 @@ class CommandRoute:
         self.provided = dict(provide or {})
         given = set(body.model_fields) if body is not None else set()
         check_given(command, given, self.provided, self.from_path)
-        self.values = builders(command, body)
-        """How the command's value objects are made from the body's fields."""
+        self.instances = instances(command, body)
+        """The body's fields that give the command its dataclasses as validated."""
         self.returns, self.status_code, self.action = _answers(
             method, self.detail, returns, status_code, action
         )
@@ -120,20 +120,16 @@ class CommandRoute:
 
         The path wins over ``provide``, and ``provide`` over the body. A
         ``PatchModel`` body gives the fields the request set, and the
-        resource's policy must let the caller change them. The value objects
-        of a body ``schema_for`` derived are built (``values.builders``).
+        resource's policy must let the caller change them. A dataclass the
+        command declares comes as the body validated it (``instances``).
 
         Raises:
             FieldNotEditable: The policy keeps the caller from changing a field.
-            RequestValidationError: A value object refused its parts.
         """
         router = self.router
-        body = context.body
+        given = changes(context.body, self.instances)
         if self.partial and router.policy is not None:
-            # Before anything is built: who may not change a field is told so.
-            sent = cast("BaseModel", body).model_fields_set
-            await router.policy.check_changes(context.request, sent)
-        given = changes(body, self.values)
+            await router.policy.check_changes(context.request, given)
         return self.command(
             **{
                 **given,

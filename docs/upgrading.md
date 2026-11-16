@@ -41,31 +41,17 @@ never published), with each section below.
 2.5 answers the third report of the project 2.4 answered. Each item of
 this list says what a project that relied on 2.4's behaviour changes.
 
-- **Commands get their value objects built, from a body `schema_for`
-  derives.** A `@use_case`'s body, or `schema_for(Command, write=True)`,
-  gave a command route, a batch, or a twin the value objects the command
-  declares as dicts (several fields: `{"street", "city"}`, or a tuple of
-  them) or as their value (one field: `"A-1"`). They arrive built:
-  `Address(...)`, `Code("A-1")`. A body field typed as a value object or a
-  dataclass itself, or a tuple of it, gives it as validated, where it gave
-  a dict, when the command declares that same class (or a tuple of it). A
-  service that rebuilt them (`Address(**item)`, `Code(value)`) drops that
-  step. A command field declared as `dict`, `Any`, `Mapping`, or anything
-  else still gets what `model_dump()` gives, whatever the body's field is
-  typed as; so does every field of a body written by hand in a shape of
-  its own, a nested model or a `dict`. Only tuples are built: a
-  `list[Address]` still gives dicts.
-- **A body field typed as a value object's class checks its markers.**
-  Where the command declares that class, the value object is built
-  again, and each one inside it, so `{"shelf": "TOOLONG"}` for a
-  `MaxLength(4)` shelf is `422`, where 2.4 passed it on as a dict. A
-  `@field_serializer` on such a field no longer applies: the command gets
-  the value object, not what the serializer writes.
-- **Write schemas leave out the fields a class sets itself**
-  (`field(init=False)`): a request that sends one is `422`, where 2.4 took
-  it and passed it on.
-- **Write schemas refuse NaN and infinity for a `float`**, which a
-  request could send as `NaN` or `Infinity`: `422`.
+- **A command gets the dataclasses it declares as instances.** A command
+  field declared as a dataclass, such as a value object, or a tuple of
+  one, whose body field is typed as that same class (or a tuple of it),
+  got dicts from a command route, a batch, or a twin: a `@use_case`'s
+  `tuple[Address, ...]` came as `({"street": ..., "city": ...},)`. It
+  gets the instances the body validated, `(Address(...),)`. A service
+  that rebuilt them (`Address(**item)`) drops that step. A
+  `@field_serializer` on such a body field no longer applies to what the
+  command gets. A field the command declares as `dict`, `Any`, `Mapping`,
+  or anything else, a `list[...]`, and a field the body gives in a shape
+  of its own (a nested model) still get what `model_dump()` gives.
 
 2.5 changes no API a project calls. A project's CI can still fail after
 upgrading: `makemessages --check` finds texts it did not find before.

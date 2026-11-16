@@ -44,7 +44,7 @@ INTERNAL_ERROR: Final = "internal_error"
 """The code of an item that raised an unexpected error (``crashed``)."""
 INVALID: Final = "validation_error"
 INVALID_DETAIL: Final = "The request is invalid."
-"""An item a value object refused, as a request it refused is answered."""
+"""An item that raised ``RequestValidationError``, as a request is answered."""
 
 
 class BatchError(BaseModel):
@@ -117,7 +117,7 @@ def failure(exc: Exception) -> BatchResult | None:
         return _failed(status_code_for(exc), exc.code, exc.message)
     if isinstance(exc, MoneyError):  # As money_error_handler answers it (WEB-17).
         return _failed(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.code, exc.summary)
-    if isinstance(exc, RequestValidationError):  # A value object refused its parts.
+    if isinstance(exc, RequestValidationError):  # As a request it refuses is answered.
         return _failed(status.HTTP_422_UNPROCESSABLE_CONTENT, INVALID, INVALID_DETAIL)
     if isinstance(exc, ServiceBusy):
         exc = busy_refusal(exc)
