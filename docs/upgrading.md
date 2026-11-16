@@ -38,9 +38,16 @@ never published), with each section below.
 
 ## 2.4 to 2.5
 
-2.5 answers the third report from a project that runs an identity
-service on domainkit. Each item of this list says what a project that
-relied on 2.4's behaviour changes.
+2.5 answers a third report from the project that runs an identity
+service on domainkit. No table changes: there is no migration to make.
+Deploy the workers before the web processes: the tasks that send a
+verification code take the address or number it goes to (`value`),
+which a 2.4 worker refuses, retrying the message until its attempts run
+out. A code an upgraded worker sends is kept for its user (verification
+codes are each user's own, below), which a 2.4 web process does not
+read: it refuses that code until it is upgraded too, and takes it then,
+within `AUTH.CODE_TTL`. Each item
+of this list says what a project that relied on 2.4's behaviour changes.
 
 - **A number given at signup with an address is on the account only once
   its own code is proved**
@@ -67,19 +74,35 @@ relied on 2.4's behaviour changes.
   Where numbers identify users, a signup gives it as `mobile_number`, not
   under `fields` (`422 unknown_user_field` there), and is proved as
   above. A client that sent it in `fields` moves it up.
-- **Verification codes are each user's own.** Codes for `/email-verification`
-  and `/mobile-verification` issued before the upgrade stop working; they
-  last `AUTH.CODE_TTL`. Asking again with no body now counts against
-  `EMAIL_RATE` per the number or address the code goes to, and can answer
-  `429`.
+- **Verification codes are each user's own.** Codes for
+  `/email-verification` and `/mobile-verification` issued before the
+  upgrade stop working; they last `AUTH.CODE_TTL`. Asking again with no
+  body now counts against `EMAIL_RATE` per the number or address the code
+  goes to, and can answer `429`.
 - **`createsuperuser --promote` reads an id in any form, and refuses
   digits that are no number in international form**
   ([ADR 0165](adr/0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md)):
   name a user whose username is written as digits by its id.
-
-2.5 answers the third report of the project 2.4 answered. Each item of
-this list says what a project that relied on 2.4's behaviour changes.
-
+- **An `on_approve` hook's refusal denies the request.** A hook that
+  raises `PermissionDenied`, or an HTTP error of 403, ends the request:
+  the page's poll and wait answer `access_denied` at once, where the
+  request waited until it expired; nothing is reported. A hook that
+  called `deny()` itself before raising may drop the call: it still
+  works. Any other error leaves the request waiting, as before
+  ([Hooks of the web pages](auth/ciba.md#hooks-of-the-web-pages)).
+- **Each kind of request has its own push text.** `CIBA.PUSH_TITLE` and
+  `PUSH_BODY` default to `None`, and each kind has its words
+  ([Push texts](auth/ciba.md#push-texts)). A project that set them keeps
+  them, for every kind; to give each kind its own, unset them, or name
+  each in `PUSH_TEXTS`. Code that read `PUSH_TITLE` gets `None` where it
+  was not set. domainkit's catalogs have the new texts in Arabic; a
+  project whose catalogs translate the push into other languages adds
+  them there.
+- **A session's asks are counted per user.** `START_RATE` counts what a
+  signed-in session asks the phone per user, from any address. A test
+  suite that raised `START_RATE` for one user's acts still needs it
+  raised; one that raised it for many users behind one address no
+  longer does.
 - **A command gets the dataclasses it declares as instances.** A command
   field declared as a dataclass, such as a value object, or a tuple of
   one, whose body field is typed as that same class (or a tuple of it),
@@ -90,15 +113,18 @@ this list says what a project that relied on 2.4's behaviour changes.
   pydantic's instances, built with their `__post_init__` but without
   their markers (`MaxLength`, ...) checked, as 2.4 built them before
   dumping them, so a service that relied on the rebuild to check the
-  markers checks them itself. A
-  `@field_serializer` on such a body field no longer applies to what the
-  command gets. A field the command declares as `dict`, `Any`, `Mapping`,
-  or anything else, a `list[...]`, and a field the body gives in a shape
-  of its own (a nested model) still get what `model_dump()` gives.
-
-2.5 answers a third report from a project. Nothing a project relies on
-changes; what follows may ask something of it.
-
+  markers checks them itself. A `@field_serializer` on such a body field
+  no longer applies to what the command gets. A field the command
+  declares as `dict`, `Any`, `Mapping`, or anything else, a `list[...]`,
+  and a field the body gives in a shape of its own (a nested model) still
+  get what `model_dump()` gives.
+- **A route that asks `StepUp(for_=...)` warns unless its service is
+  decorated** with `requires_authorization` of that act; 3.0 refuses it
+  ([below](#decorate-the-service-of-a-route-that-asks-for-an-acts-authorization)).
+- **An act whose command holds a set is digested with the set sorted.**
+  Its items came in their hashes' order, which differs between
+  processes. An authorization asked for before the upgrade, and not yet
+  spent, for such an act no longer matches it: ask again.
 - **`check --deploy` warns about clamd reached in clear.** Where
   `UPLOAD_SCANNER` names `ClamAVScanner` on a host other than this one,
   without `tls`, `check` warns (`security.W007`), and `check --deploy`
@@ -109,12 +135,34 @@ changes; what follows may ask something of it.
   run.** `FcmPushBackend.send` asks FCM about the token alone before it
   forgets it, and dead-letters the message when the token passes. A
   subclass that overrode `refusal` for this case may drop the override.
+- **A catalog that translated the password rules' filled-in text
+  translates their placeholders instead.** `MinimumLengthValidator` and
+  `UserAttributeSimilarityValidator` now translate `...at least
+  {min_length} characters.` and `The password is too similar to the
+  {label}.`, then fill the value in; a project catalog that held `...at
+  least 12 characters.` moves to the text with its placeholder.
+- **A malformed `email` is refused with `type` `value_error`.** On
+  `/signup`, `/password-reset` and `/email-verification`, an `email` not
+  shaped as an address answers `Enter a valid email address.`, and its
+  error's `type` is `value_error`, no longer `string_pattern_mismatch`.
+  A client that read the type reads the new one.
+- **`makemessages --check` can fail after upgrading.** It now extracts
+  `gettext_noop`, and reads the project's own modules: the settings'
+  package and `ROOT_ROUTER`'s. Run `makemessages` once and commit the
+  catalogs. A text marked outside every domain that no catalog
+  translates needs `LOCALE_PATHS`
+  ([i18n.md](i18n.md#the-projects-own-messages)); without it, `--check`
+  fails, and a run names the text, which reached clients in English.
 - **Opt in to what 2.5 adds where it fits:** `SERVE["HTTP"] = "1"` unless
   the proxy speaks h2c to the server, `SERVE["EXIT_ON_FAILED_START"] =
   True` where an orchestrator restarts the container
-  ([Server limits](reference/servers.md#http-versions)), and
+  ([Server limits](reference/servers.md#http-versions)),
   `check_write_once` on an `S3Storage` whose store is not AWS S3 or R2
-  ([A store that ignores create only](uploads.md#a-store-that-ignores-create-only)).
+  ([A store that ignores create only](uploads.md#a-store-that-ignores-create-only)),
+  the admin API's and approvals' acts
+  ([below](#authorize-the-admin-apis-changes-and-a-requests-steps-as-acts)),
+  and `pip install "domainkit[documents]"` for `domainkit.documents`
+  ([documents.md](documents.md)).
 
 ### Authorize the admin API's changes and a request's steps as acts
 
@@ -140,38 +188,6 @@ to action authorizations
    ciba's router (`select_routes(..., without=[...])`), and the test that
    ignored its deprecation goes.
 
-No table changes.
-
-2.5 answers a third report from a project that runs an identity service
-on domainkit. It breaks nothing a project relies on; each item of this
-list says what changes, and what a project that relied on 2.4's
-behaviour does.
-
-- **An `on_approve` hook's refusal denies the request.** A hook that
-  raises `PermissionDenied`, or an HTTP error of 403, ends the request:
-  the page's poll and wait answer `access_denied` at once, where the
-  request waited until it expired; nothing is reported. A hook that
-  called `deny()` itself before raising may drop the call: it still
-  works. Any other error leaves the request waiting, as before
-  ([Hooks of the web pages](auth/ciba.md#hooks-of-the-web-pages)).
-- **Each kind of request has its own push text.** `CIBA.PUSH_TITLE` and
-  `PUSH_BODY` default to `None`, and each kind has its words
-  ([Push texts](auth/ciba.md#push-texts)). A project that set them keeps
-  them, for every kind; to give each kind its own, unset them, or name
-  each in `PUSH_TEXTS`. Code that read `PUSH_TITLE` gets `None` where it
-  was not set. domainkit's catalogs have the new texts in Arabic; a
-  project whose catalogs translate the push into other languages adds
-  them there.
-- **A session's asks are counted per user.** `START_RATE` counts what a
-  signed-in session asks the phone per user, from any address. A test
-  suite that raised `START_RATE` for one user's acts still needs it
-  raised; one that raised it for many users behind one address no
-  longer does.
-
-2.5 answers a third report from the project that runs an identity
-service on domainkit. The sections below say what a project that relied
-on 2.4's behaviour changes.
-
 ### Decorate the service of a route that asks for an act's authorization
 
 A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
@@ -183,22 +199,6 @@ known to spend what it asks for. A route that runs a `@use_case` takes
 the copy `requires_authorization(ACTION)(use_case)` makes: one that runs
 the use case itself is refused in 2.5 already, as it never spent the
 authorization.
-
-2.5 breaks nothing. Each item of this list says what a project may see
-change, and what it does then.
-
-2.5 changes no API a project calls. A project's CI can still fail after
-upgrading: `makemessages --check` finds texts it did not find before.
-Each item of this list says what a project may see change, and what it
-does then.
-
-- **`makemessages --check` can fail after upgrading.** It now extracts
-  `gettext_noop`, and reads the project's own modules: the settings'
-  package and `ROOT_ROUTER`'s. Run `makemessages` once and commit the
-  catalogs. A text marked outside every domain that no catalog
-  translates needs `LOCALE_PATHS`
-  ([i18n.md](i18n.md#the-projects-own-messages)); without it, `--check`
-  fails, and a run names the text, which reached clients in English.
 
 ## 2.3 to 2.4
 
