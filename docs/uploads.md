@@ -328,15 +328,22 @@ the file the application checked, and nothing says so.
 | Huawei OBS, Alibaba OSS, GCS's interoperability API | not known: probe them |
 
 `S3Storage(check_write_once=True)` asks the store before the first
-presigned upload of each storage, in each process: it writes a probe
-object under the prefix (`write-once-probes/`) twice, expects the second
-write refused (`412`, or `409`), and deletes it. Where the store took the
-second write, `presigned_upload` raises `StorageError` and asks again
-next time:
+presigned upload of each storage, in each process, once however many
+uploads ask at once: it writes a probe object under the prefix
+(`write-once-probes/`) twice, expects the second write refused (`412`,
+or `409`), and deletes it. Its verdict is kept. Where the store took the
+second write, `presigned_upload` raises `WriteOnceIgnored`, a
+`StorageError` that the HTTP layer answers `503
+direct_upload_unavailable`, so the client uploads through the API
+instead:
 
 ```text
-domainkit.storage.base.StorageError: The S3 store at http://garage:3900 replaced an object written with If-None-Match: *: it ignores the header, so a presigned upload's URL could replace the file it made. Use a store that honours it, or upload through the application.
+domainkit.storage.s3.WriteOnceIgnored: Write-once probe: the S3 store at http://garage:3900 replaced an object written with If-None-Match: *. It ignores the header, so a presigned upload's URL could replace the file it made: use a store that honours it, or upload through the application.
 ```
+
+A probe that cannot tell (the store refused the first write, or was
+unreachable) raises a `StorageError` that starts `Write-once probe:`,
+and is made again at the next upload.
 
 ```python
 STORAGES = {
@@ -357,7 +364,7 @@ The probe needs `PutObject` and `DeleteObject` on the prefix; a probe the
 store will not delete stays, logged, and the answer stands. Without
 `check_write_once`, as before, `presigned_upload` sends no request. A
 deployment job can ask once instead: `await storage.probe_write_once()`
-raises the same error.
+raises the same errors.
 
 ## Receiving uploads
 

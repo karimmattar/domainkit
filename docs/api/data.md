@@ -381,6 +381,7 @@ What object stores share: ranged reads, parts, presigned URLs.
 `S3Storage`: files in an S3 bucket, or any store that speaks S3's API.
 
 - `S3Storage`: Files in one bucket of S3, or of a store that speaks its API.
+- `WriteOnceIgnored`: The S3 store ignores `If-None-Match: *`: presigned uploads are refused.
 
 ## `domainkit.storage.scanning`
 

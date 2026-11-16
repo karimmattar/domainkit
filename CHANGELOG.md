@@ -29,8 +29,9 @@ and a status.
 - `S3Storage.probe_write_once()` writes a probe object twice with
   `If-None-Match: *` and raises `StorageError` unless the store refuses
   the second write; `S3Storage(check_write_once=True)` runs it before
-  the first presigned upload, and refuses presigned uploads where the
-  store would let their URL replace the file. Garage and Scality
+  the first presigned upload, once, and refuses presigned uploads where
+  the store would let their URL replace the file (`WriteOnceIgnored`,
+  `503 direct_upload_unavailable`). Garage and Scality
   CloudServer ignore the header on `PutObject`, without an error. The
   docs name the stores that honour it, and no longer name MinIO first,
   which is no longer maintained
@@ -38,7 +39,8 @@ and a status.
   ADR 0169) (user report U4).
 - `ClamAVScanner` speaks TLS to a proxy in front of clamd (stunnel),
   which speaks none: `tls`, `tls_ca`, and a client certificate
-  (`tls_cert`, `tls_key`) for the proxy to require. Where deployed,
+  (`tls_cert`, `tls_key`, `tls_key_password`) for the proxy to require.
+  Where deployed,
   `check` warns (`security.W007`) when `UPLOAD_SCANNER` reaches clamd on
   another host without TLS
   ([clamd on another host](docs/uploads.md#clamd-on-another-host),

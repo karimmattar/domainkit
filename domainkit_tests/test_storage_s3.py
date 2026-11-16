@@ -1,5 +1,6 @@
 """``S3Storage``: SigV4 as AWS documents it, and a store that keeps files."""
 
+import asyncio
 import re
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
@@ -10,9 +11,10 @@ import pytest
 
 from domainkit.clock import freeze_time
 from domainkit.http.client import stub
+from domainkit.http.errors import upstream_refusal
 from domainkit.storage import FileMissing, StorageError
 from domainkit.storage.remote import ObjectFile, PresignedUpload
-from domainkit.storage.s3 import S3Storage
+from domainkit.storage.s3 import S3Storage, WriteOnceIgnored
 
 pytestmark = pytest.mark.anyio
 
@@ -423,28 +425,64 @@ async def test_the_probe_passes_a_store_that_refuses_a_second_create(
 async def test_presigned_uploads_are_refused_where_the_store_replaces_files(
     bucket: tuple[S3Storage, FakeS3],
 ) -> None:
-    """A store that took the second write: refused, the probe deleted, asked again.
+    """A store that took the second write: refused, the probe deleted, the verdict kept.
 
     Garage and Scality CloudServer read no condition on ``PutObject``: a
     presigned upload's URL could replace the file once it was checked
-    (user report U4).
+    (user report U4). The refusal is 503 ``direct_upload_unavailable`` over
+    HTTP, and the store is not asked again.
     """
     storage, fake = bucket
     storage.check_write_once = True
     fake.write_once = False
 
     for _ in range(2):
-        with pytest.raises(StorageError) as refused:
+        with pytest.raises(WriteOnceIgnored) as refused:
             await storage.presigned_upload(size=1, content_type="text/plain")
 
     assert str(refused.value) == (
-        "The S3 store at http://minio:9000 replaced an object written with "
-        "If-None-Match: *: it ignores the header, so a presigned upload's URL "
-        "could replace the file it made. Use a store that honours it, or "
-        "upload through the application."
+        "Write-once probe: the S3 store at http://minio:9000 replaced an object "
+        "written with If-None-Match: *. It ignores the header, so a presigned "
+        "upload's URL could replace the file it made: use a store that honours "
+        "it, or upload through the application."
     )
-    assert [method for method, _ in fake.requests] == ["PUT", "PUT", "DELETE"] * 2
+    answer = upstream_refusal(refused.value)
+    assert (answer.status_code, answer.code) == (503, "direct_upload_unavailable")
+    assert isinstance(refused.value, StorageError)
+    assert [method for method, _ in fake.requests] == ["PUT", "PUT", "DELETE"]
     assert fake.objects == {}
+
+
+async def test_uploads_asked_at_once_wait_for_one_probe(
+    bucket: tuple[S3Storage, FakeS3], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three first uploads at once: one probe, whose verdict the others take.
+
+    A probe that could not tell is not kept: the next upload asks again.
+    """
+    storage, _ = bucket
+    storage.check_write_once = True
+    probes = 0
+
+    async def probe() -> bool:
+        nonlocal probes
+        probes += 1
+        for _ in range(3):
+            await asyncio.sleep(0)
+        if probes == 1:
+            raise StorageError("Write-once probe: S3 answered 503 to PUT (Slow).")
+        return True
+
+    monkeypatch.setattr(storage, "_probe", probe)
+
+    with pytest.raises(StorageError, match=r"^Write-once probe: S3 answered 503"):
+        await storage.presigned_upload(size=1, content_type="text/plain")
+    uploads = await asyncio.gather(
+        *(storage.presigned_upload(size=1, content_type="text/plain") for _ in range(3))
+    )
+
+    assert probes == 2
+    assert len({upload.name for upload in uploads}) == 3
 
 
 @pytest.mark.parametrize(
@@ -453,11 +491,14 @@ async def test_presigned_uploads_are_refused_where_the_store_replaces_files(
         ({"second": httpx2.Response(409)}, None),
         (
             {"first": httpx2.Response(501, content=b"<Code>NotImplemented</Code>")},
-            r"^S3 answered 501 to PUT \(NotImplemented\)\.$",
+            r"^Write-once probe: S3 answered 501 to PUT \(NotImplemented\)\.$",
         ),
         (
             {"second": httpx2.Response(500, content=b"<Code>InternalError</Code>")},
-            r"^S3 answered 500 to the write-once probe \(InternalError\)\.$",
+            (
+                r"^Write-once probe: S3 answered 500 to the second write "
+                r"\(InternalError\)\.$"
+            ),
         ),
     ],
 )

@@ -121,17 +121,23 @@ Options considered:
   `check_token` takes an `INVALID_ARGUMENT` naming no other field than
   the token for a token gone.
 - `S3Storage.probe_write_once()` writes a probe object under the prefix
-  twice with `If-None-Match: *`, expects `412` (or `409`), deletes it,
-  and raises `StorageError` otherwise. `S3Storage(check_write_once=True)`
-  runs it before the first presigned upload of each storage; a store
-  that took the second write is refused, and asked again next time. The
-  docstring and `uploads.md` name the stores that honour the header and
-  those that do not.
+  twice with `If-None-Match: *`, expects `412` (or `409`), and deletes
+  it. A store that took the second write raises `WriteOnceIgnored`, a
+  `StorageError` and an `UpstreamError` the HTTP layer answers `503
+  direct_upload_unavailable`; a probe that cannot tell raises a
+  `StorageError` that says it was the probe.
+  `S3Storage(check_write_once=True)` runs it before the first presigned
+  upload of each storage, once however many uploads ask at once, and
+  keeps a verdict; one that could not tell is asked again. The docstring
+  and `uploads.md` name the stores that honour the header and those
+  that do not.
 - `ClamAVScanner(tls=True, tls_ca=..., tls_cert=..., tls_key=...)`
   speaks TLS 1.2 or later to a proxy in front of clamd, checking its
-  certificate against `host`. `check` warns where deployed
-  (`security.W007`) when `UPLOAD_SCANNER` reaches clamd on a host other
-  than `localhost`, `127.0.0.1` or `::1` without `tls`.
+  certificate against `host`; an encrypted key needs `tls_key_password`,
+  rather than a prompt on the terminal. `check` warns where deployed
+  (`security.W007`) when `UPLOAD_SCANNER` reaches clamd, through
+  `ClamAVScanner` or a subclass, on a host other than `localhost`,
+  `127.0.0.1` or `::1` without `tls`.
 - `domainkit.storage.cleanup`: `keeps_files(*columns, storage=...)`
   declares the columns that hold a storage's names: a table's own
   column, as the framework's layout makes tables with `table_for` and

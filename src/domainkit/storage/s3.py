@@ -35,10 +35,12 @@ MinIO do; Garage (2.5) and Scality CloudServer (9.5) read no condition
 on ``PutObject`` and replace the file without a word. ``probe_write_once``
 asks the store: it writes a probe object twice and expects the second
 write refused. ``check_write_once=True`` runs it before the first
-presigned upload of each storage, in each process, and refuses presigned
-uploads where the store would replace their files (ADR 0169).
+presigned upload of each storage, in each process, once however many ask
+at once, keeps its verdict, and refuses presigned uploads where the store
+would replace their files: ``WriteOnceIgnored``, 503 over HTTP (ADR 0169).
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -47,8 +49,10 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, timedelta
 from typing import TYPE_CHECKING, ClassVar, Final
 from urllib.parse import quote, urlsplit
+from weakref import WeakKeyDictionary
 
 from domainkit import clock
+from domainkit.exceptions import UpstreamError
 from domainkit.keys.aws import (
     ALGORITHM,
     AwsCredentials,
@@ -62,7 +66,7 @@ from domainkit.storage.remote import ObjectStorage, PresignedUpload
 if TYPE_CHECKING:
     import httpx2
 
-__all__ = ["S3Storage"]
+__all__ = ["S3Storage", "WriteOnceIgnored"]
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,20 @@ PROBES: Final = "write-once-probes"
 """Where, under the storage's prefix, ``probe_write_once`` writes its object."""
 REFUSED_AGAIN: Final = frozenset({409, 412})
 """What a store answers a second create of one key: 412, or 409 in a race."""
+
+
+class WriteOnceIgnored(StorageError, UpstreamError):
+    """The S3 store ignores ``If-None-Match: *``: presigned uploads are refused.
+
+    Its URL could replace the file the application checked. Over HTTP,
+    503 ``direct_upload_unavailable``: the client uploads through the API.
+    """
+
+    status_code: ClassVar[int] = 503
+    code: ClassVar[str] = "direct_upload_unavailable"
+    detail: ClassVar[str] = (
+        "Uploads straight to storage are not available; upload through the API."
+    )
 
 
 class S3Storage(ObjectStorage):
@@ -149,7 +167,11 @@ class S3Storage(ObjectStorage):
 
         self.client = HttpClient(timeout=timeout, propagate=False)
         self.check_write_once = check_write_once
-        self._write_once_holds = False
+        self._write_once: bool | None = None
+        """The store's verdict: True, it refuses a second create; None, unasked."""
+        self._probing: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+            WeakKeyDictionary()
+        )
 
     async def presigned_upload(
         self,
@@ -162,17 +184,18 @@ class S3Storage(ObjectStorage):
     ) -> PresignedUpload:
         """``ObjectStorage.presigned_upload``, probed first with ``check_write_once``.
 
-        The probe runs once per storage: once the store refused the
-        probe's second write, it is not asked again.
+        The store is probed once per storage and process: uploads asked at
+        once wait for the one probe, and its verdict is kept. A probe that
+        could not tell is made again at the next upload.
 
         Raises:
-            StorageError: The store would let the URL replace its file, or
-                the probe could not be made.
+            WriteOnceIgnored: The store would let the URL replace its file
+                (503 over HTTP).
+            StorageError: The probe could not tell.
             ValueError: As ``ObjectStorage.presigned_upload``.
         """
-        if self.check_write_once and not self._write_once_holds:
-            await self.probe_write_once()
-            self._write_once_holds = True
+        if self.check_write_once:
+            await self._check_write_once()
         return await super().presigned_upload(
             size=size,
             content_type=content_type,
@@ -181,6 +204,22 @@ class S3Storage(ObjectStorage):
             expires=expires,
         )
 
+    async def _check_write_once(self) -> None:
+        """Probe the store once, however many uploads ask at once; keep the verdict.
+
+        Raises:
+            WriteOnceIgnored: The store ignores ``If-None-Match: *``.
+            StorageError: The probe could not tell.
+        """
+        if self._write_once is None:
+            loop = asyncio.get_running_loop()
+            probing = self._probing.setdefault(loop, asyncio.Lock())
+            async with probing:
+                if self._write_once is None:
+                    self._write_once = await self._probe()
+        if not self._write_once:
+            raise self._ignored()
+
     async def probe_write_once(self) -> None:
         """Ask the store whether it honours ``write_once``'s ``If-None-Match: *``.
 
@@ -188,14 +227,32 @@ class S3Storage(ObjectStorage):
         then written again with the header: the store must refuse the
         second write (``412``, or ``409``). The probe is then deleted; a
         store that refuses the delete leaves it, and the answer stands.
+        The verdict is kept for ``check_write_once``.
 
         Raises:
-            StorageError: The store replaced the probe, so a presigned
-                upload's URL could replace the file it made; or it refused
-                a write, or answered otherwise.
+            WriteOnceIgnored: The store replaced the probe, so a presigned
+                upload's URL could replace the file it made.
+            StorageError: The store refused a write, or answered otherwise:
+                the probe could not tell.
+        """
+        self._write_once = await self._probe()
+        if not self._write_once:
+            raise self._ignored()
+
+    async def _probe(self) -> bool:
+        """Whether the store refused the probe's second write.
+
+        Raises:
+            StorageError: It refused the first, or answered the second
+                otherwise; the message says it was the probe.
         """
         name = new_name(PROBES)
-        await self._call("PUT", name, headers=self.write_once, body=b"1", expect={200})
+        try:
+            await self._call(
+                "PUT", name, headers=self.write_once, body=b"1", expect={200}
+            )
+        except StorageError as exc:
+            raise StorageError(f"Write-once probe: {exc}") from exc
         try:
             again = await self._send("PUT", name, {}, dict(self.write_once), b"2")
         finally:
@@ -206,17 +263,21 @@ class S3Storage(ObjectStorage):
                     "The write-once probe %s stays in the bucket: %s", name, exc
                 )
         if again.status_code in REFUSED_AGAIN:
-            return
+            return True
         if again.status_code == 200:
-            raise StorageError(
-                f"The S3 store at {self.origin} replaced an object written with "
-                "If-None-Match: *: it ignores the header, so a presigned "
-                "upload's URL could replace the file it made. Use a store that "
-                "honours it, or upload through the application."
-            )
+            return False
         raise StorageError(
-            f"S3 answered {again.status_code} to the write-once probe "
-            f"({_code(again.content)})."
+            f"Write-once probe: S3 answered {again.status_code} to the second "
+            f"write ({_code(again.content)})."
+        )
+
+    def _ignored(self) -> "WriteOnceIgnored":
+        """The refusal of a store that ignores ``If-None-Match: *``."""
+        return WriteOnceIgnored(
+            f"Write-once probe: the S3 store at {self.origin} replaced an object "
+            "written with If-None-Match: *. It ignores the header, so a "
+            "presigned upload's URL could replace the file it made: use a "
+            "store that honours it, or upload through the application."
         )
 
     def path(self, name: str) -> str:
