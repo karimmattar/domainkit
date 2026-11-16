@@ -315,6 +315,42 @@ Invoice F-7 for 19.90 EUR is due.
 directory there to replace a template that a contrib app ships, such as
 `auth/password_reset` ([auth.md](auth/logging-in.md#password-reset)).
 
+#### Templates in other languages
+
+*New in 2.4.* A template is written in other languages beside it, with
+the language before the suffix, as Rails names its localized views:
+
+```text
+billing/templates/mail/billing/invoice.txt               English
+billing/templates/mail/billing/invoice.ar.subject.txt    Arabic
+billing/templates/mail/billing/invoice.ar.txt
+billing/templates/mail/billing/invoice.ar.html           (optional)
+```
+
+`render_mail` uses the files of the active language
+([i18n.md](i18n.md)): inside a request, the request's; elsewhere,
+`LANGUAGE_CODE`, or the language you choose with `override`:
+
+```python
+from domainkit.i18n import override
+
+with override(customer.language):
+    message = render_mail("billing/invoice", context, to=[customer.email])
+```
+
+- A language with a region (`pt-br`) uses its own files, then those of
+  its primary subtag (`pt`), then the template's.
+- A language's files stand for the whole template. Its subject and HTML
+  body are its own files, or there are none: an English subject never
+  goes out with an Arabic body.
+- The directory that holds the template's text body decides. A
+  `MAIL.TEMPLATE_DIRS` directory with only `auth/password_reset_code.txt`
+  replaces auth's template in every language, so your wording never loses
+  to a translation of the one you replaced. Put your translations beside
+  it.
+- Values are not translated: compute translated text in Python, inside
+  `override`, and pass it in.
+
 ### Settings
 
 These are the keys of `MAIL`:

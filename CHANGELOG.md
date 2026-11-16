@@ -393,6 +393,13 @@ and a status.
   for an authorization, and an act may ask `["phone"]` with devices alone
   ([Confirming one act](docs/auth/devices.md#confirming-one-act), ADR
   0144) (user report A6).
+- Mail templates in other languages: `auth/password_reset_code.ar.txt`
+  beside `auth/password_reset_code.txt`, with its own subject and HTML
+  body, is what `render_mail` uses while Arabic is active; `pt` serves
+  `pt-br`. A directory searched first with only the template's own files
+  still wins, so a project's override is never replaced by a translation
+  ([Templates in other languages](docs/mail.md#templates-in-other-languages))
+  (user report A11).
 - `domainkit docs docs/live.md` (or `python manage.py docs`) prints the
   link of a page that a docstring, a message, a `check` hint, or a
   generated note names, for the release installed, under its tag;
