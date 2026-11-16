@@ -2,7 +2,7 @@
 
 import dataclasses
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID, uuid4
@@ -785,4 +785,104 @@ def test_hand_written_bodies_give_the_command_what_model_dump_gives(
             note="loud",
         ),
         Later(gadget_id=gadget_id, places=(place,), later=7),  # type: ignore[arg-type]
+    ]
+
+
+class Loose(Command):
+    """Fields that ask for anything but the classes the body validates."""
+
+    gadget_id: UUID
+    point: dict[str, int]
+    points: tuple[dict[str, int], ...]
+    place: Any
+    places: Mapping[str, object]
+
+
+class Typed(Command):
+    """The same fields, declared as the classes the body validates."""
+
+    gadget_id: UUID
+    point: Point
+    points: tuple[Point, ...]
+    place: Place
+    places: tuple[Place, ...]
+
+
+class ClassesIn(BaseModel):
+    """A hand-written body whose fields are typed as a dataclass and a value object."""
+
+    point: Point
+    points: tuple[Point, ...]
+    place: Place
+    places: Place
+
+
+class TupleIn(BaseModel):
+    """As ``ClassesIn``, with a tuple of places."""
+
+    point: Point
+    points: tuple[Point, ...]
+    place: Place
+    places: tuple[Place, ...]
+
+
+def test_a_class_the_body_validates_reaches_only_a_command_that_declares_it(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """A dataclass or value object comes as itself where the command declares it.
+
+    Where the command declares ``dict``, ``Any``, ``Mapping``, or anything
+    else, it comes as ``model_dump()`` gives it, as in 2.4 (U5).
+    """
+    use_auth()
+    seen: list[object] = []
+
+    async def keep(command: object, uow: FakeGadgetsUnitOfWork) -> None:
+        seen.append(command)
+
+    resource = gadgets(store)
+    resource.command_route(
+        Loose, service=keep, body=ClassesIn, path="/loose", returns=None
+    )
+    resource.command_route(
+        Typed, service=keep, body=TupleIn, path="/typed", returns=None
+    )
+    client = client_of(resource)
+    (gadget_id,) = store.items
+    place = {"shelf": "A", "row": 1}
+    body = {"point": {"x": 1, "y": 2}, "points": [{"x": 3, "y": 4}], "place": place}
+
+    loose = client.post(
+        f"{LOCATION}{gadget_id}/loose",
+        json={**body, "places": place},
+        headers=as_("changer"),
+    )
+    typed = client.post(
+        f"{LOCATION}{gadget_id}/typed",
+        json={**body, "places": [place]},
+        headers=as_("changer"),
+    )
+
+    assert (loose.status_code, typed.status_code) == (204, 204)
+    assert seen == [
+        Loose(
+            gadget_id=gadget_id,
+            point={"x": 1, "y": 2},
+            points=({"x": 3, "y": 4},),
+            place=place,
+            places=place,
+        ),
+        Typed(
+            gadget_id=gadget_id,
+            point=Point(1, 2),
+            points=(Point(3, 4),),
+            place=Place("A", 1),
+            places=(Place("A", 1),),
+        ),
+    ]
+    assert [type(each) for each in vars(seen[0]).values()][1:] == [
+        dict,
+        tuple,
+        dict,
+        dict,
     ]

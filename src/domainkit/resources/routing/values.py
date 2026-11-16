@@ -61,11 +61,13 @@ def builders(message: type, body: type[BaseModel] | None) -> dict[str, Build]:
     - one of a single field, in a schema ``schema_for`` derived from a
       field of the same type: built around the value;
     - a value object or another dataclass, or a tuple of them, as that
-      class: the value pydantic validated; a value object built again, so
+      class, where ``message`` declares that same class (or a tuple of
+      it): the value pydantic validated; a value object built again, so
       its checks run.
 
-    Other fields, and every field of a message whose hints do not resolve,
-    are given as ``model_dump()`` gives them.
+    Other fields, a field ``message`` declares as ``dict``, ``Any``, or
+    anything else, and every field of a message whose hints do not
+    resolve, are given as ``model_dump()`` gives them.
     """
     if body is None:
         return {}

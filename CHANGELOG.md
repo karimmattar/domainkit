@@ -40,8 +40,10 @@ and a status.
   each item of such a tuple is the item's write schema (`AddressIn`),
   with its limits, where pydantic built it without its checks. A body
   field typed as a value object or a dataclass itself, or a tuple of it,
-  gives it as validated, where `model_dump()` gave a dict. Other body
-  fields come as before, as `model_dump()` gives them. A `ValueError` or
+  gives it as validated where the command declares that same class (or a
+  tuple of it), where `model_dump()` gave a dict. Every other field, and
+  one the command declares as `dict`, `Any`, `Mapping`, or anything else,
+  comes as before, as `model_dump()` gives it. A `ValueError` or
   `TypeError` from a value object is `422` under its field. A write
   schema refuses NaN and infinity for a `float`, which `crud=True` answered
   with `500`. A service that rebuilt the value objects stops

@@ -48,9 +48,12 @@ this list says what a project that relied on 2.4's behaviour changes.
   them) or as their value (one field: `"A-1"`). They arrive built:
   `Address(...)`, `Code("A-1")`. A body field typed as a value object or a
   dataclass itself, or a tuple of it, gives it as validated, where it gave
-  a dict. A service that rebuilt them (`Address(**item)`, `Code(value)`)
-  drops that step. A body written by hand in a shape of its own, a nested
-  model or a `dict`, still gives what `model_dump()` gives.
+  a dict, when the command declares that same class (or a tuple of it). A
+  service that rebuilt them (`Address(**item)`, `Code(value)`) drops that
+  step. A command field declared as `dict`, `Any`, `Mapping`, or anything
+  else still gets what `model_dump()` gives, whatever the body's field is
+  typed as; so does every field of a body written by hand in a shape of
+  its own, a nested model or a `dict`.
 - **Write schemas refuse NaN and infinity for a `float`**, which a
   request could send as `NaN` or `Infinity`: `422`.
 

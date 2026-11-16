@@ -446,8 +446,10 @@ products.command_route(DeleteProduct, service=delete_product, method="DELETE")
   from its parts, so its own checks run; one of a single field is built
   around its value. A body field typed as a value object or a dataclass
   itself, or a tuple of it, gives it as validated, a value object built
-  again. Any other body field comes as `model_dump()` gives it: a nested
-  model as a dict. A `ValueError` or `TypeError` from a value object is
+  again, where the command declares that same class (or a tuple of it).
+  Any other body field, and any field the command declares as `dict`,
+  `Any`, `Mapping`, or anything else, comes as `model_dump()` gives it:
+  a nested model or a dataclass as a dict. A `ValueError` or `TypeError` from a value object is
   `422` under its field. *Changed in 2.5.*
 - The answer is the aggregate the service returns, in the resource's
   schema, with its `ETag`. A `POST` on the collection answers `201` with
