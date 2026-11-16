@@ -702,6 +702,19 @@ and a status.
 
 ### Fixed
 
+- A refusal that will come again is no longer tried as an outage is, for
+  text messages and mail too. Each SMS adapter lists the codes its
+  provider documents for a message it will refuse again (`lasting`): an
+  invalid or non-mobile number, a recipient who opted out or is barred, a
+  region the account may not send to, a text it cannot take (Twilio,
+  Vonage, SNS, Unifonic, Huawei Cloud), and raises `NotificationRefused`
+  for them. Mail gets `MailRefused`, a `MailDeliveryFailed` the mail task
+  no longer retries (`dont_retry_on`): SMTP's permanent `5xx` replies to
+  the sender, every recipient (`550` mailbox unavailable; not `552`,
+  which RFC 5321 makes temporary there), or the message, and the codes
+  SES, SendGrid, Mailgun, and Postmark document for a message they will
+  refuse again. Each is dead-lettered after one try, not five, and keeps
+  the provider's code in `code` (user report N2).
 - The images `init` writes install the wheels a build offers
   (`--build-context wheels=<directory>`) before reading the package
   index. A wheel of the same version as a release, a fork's or a release

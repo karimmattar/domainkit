@@ -445,6 +445,7 @@ Email through the outbox (Django's `django.core.mail`).
 - `ConsoleBackend`: Writes each message to standard output, for development.
 - `EmailMessage`: An email: a plain-text body, and an HTML one if it has one.
 - `MailDeliveryFailed`: The server did not take a message; the worker tries again later.
+- `MailRefused`: The server will not take this message as it is: it is not tried again.
 - `MailSettings`: Where mail goes, who sends it, and how often sending is retried.
 - `MemoryBackend`: Keeps messages in `outbox`, for tests: nothing leaves the process.
 - `SmtpBackend`: Hands messages to an SMTP server (`MAIL.SMTP`) on a worker thread.
@@ -465,6 +466,7 @@ Where mail goes: an SMTP server, the console, or a list for tests.
 - `BaseEmailBackend`: Sends messages somewhere; subclasses say where.
 - `ConsoleBackend`: Writes each message to standard output, for development.
 - `MailDeliveryFailed`: The server did not take a message; the worker tries again later.
+- `MailRefused`: The server will not take this message as it is: it is not tried again.
 - `MemoryBackend`: Keeps messages in `outbox`, for tests: nothing leaves the process.
 - `SmtpBackend`: Hands messages to an SMTP server (`MAIL.SMTP`) on a worker thread.
 - `outbox`: Messages `MemoryBackend` sent, oldest first (Django's `mail.outbox`).

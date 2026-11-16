@@ -15,7 +15,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
-from domainkit.contrib.mail import EmailMessage, MailDeliveryFailed
+from domainkit.contrib.mail import EmailMessage, MailDeliveryFailed, MailRefused
 from domainkit.contrib.mail import providers as mail_providers
 from domainkit.contrib.notifications import (
     NotificationFailed,
@@ -275,6 +275,139 @@ async def test_huawei_sms_signs_with_wsse(provider: Any) -> None:  # noqa: ANN40
     calls.answers = [httpx2.Response(200, json={"code": "000000"})]
     await unsigned.send_messages([SMS])
     assert "signature" not in calls.form()
+
+
+TWILIO = {"ACCOUNT_SID": "AC1", "AUTH_TOKEN": "secret", "FROM": "+15005550006"}
+VONAGE = {"API_KEY": "k", "API_SECRET": "s", "FROM": "Acme"}
+SNS = {"REGION": "eu-west-1", "ACCESS_KEY_ID": "AKID", "SECRET_ACCESS_KEY": "s"}
+UNIFONIC = {"APP_SID": "app", "SENDER_ID": "Acme"}
+HUAWEI_SMS = {
+    "URL": "https://smsapi.example.com",
+    "APP_KEY": "key",
+    "APP_SECRET": "secret",
+    "SENDER": "8823",
+    "TEMPLATE_ID": "t1",
+}
+
+
+def twilio(code: int, status: int = 400) -> httpx2.Response:
+    """Twilio's error answer."""
+    return httpx2.Response(
+        status, json={"code": code, "message": "x", "status": status}
+    )
+
+
+def vonage(status: str) -> httpx2.Response:
+    """Vonage's answer of one part."""
+    return httpx2.Response(200, json={"messages": [{"status": status}]})
+
+
+def sns(code: str, status: int = 400) -> httpx2.Response:
+    """An AWS query API's error."""
+    return httpx2.Response(status, text=f"<Error><Code>{code}</Code></Error>")
+
+
+def unifonic(code: str, status: int = 200) -> httpx2.Response:
+    """Unifonic's error answer."""
+    return httpx2.Response(status, json={"success": False, "errorCode": code})
+
+
+def huawei_sms(code: str) -> httpx2.Response:
+    """Huawei Cloud SMS's answer."""
+    return httpx2.Response(200, json={"code": code})
+
+
+@pytest.mark.parametrize(
+    ("backend", "options", "answer", "kind", "code"),
+    [
+        # Twilio's error dictionary.
+        (TwilioSmsBackend, TWILIO, twilio(21211), NotificationRefused, "21211"),
+        (TwilioSmsBackend, TWILIO, twilio(21614), NotificationRefused, "21614"),
+        (TwilioSmsBackend, TWILIO, twilio(21610), NotificationRefused, "21610"),
+        (TwilioSmsBackend, TWILIO, twilio(21408), NotificationRefused, "21408"),
+        (TwilioSmsBackend, TWILIO, twilio(21612), NotificationRefused, "21612"),
+        (TwilioSmsBackend, TWILIO, twilio(20003, 401), NotificationFailed, "20003"),
+        (TwilioSmsBackend, TWILIO, twilio(20429, 429), NotificationFailed, "20429"),
+        # Vonage's SMS API statuses.
+        (VonageSmsBackend, VONAGE, vonage("6"), NotificationRefused, "6"),
+        (VonageSmsBackend, VONAGE, vonage("7"), NotificationRefused, "7"),
+        (VonageSmsBackend, VONAGE, vonage("33"), NotificationRefused, "33"),
+        (VonageSmsBackend, VONAGE, vonage("1"), NotificationFailed, "1"),  # Throttled.
+        (VonageSmsBackend, VONAGE, vonage("9"), NotificationFailed, "9"),  # Credit.
+        # SNS Publish's errors.
+        (
+            SnsSmsBackend,
+            SNS,
+            sns("InvalidParameter"),
+            NotificationRefused,
+            "InvalidParameter",
+        ),
+        (
+            SnsSmsBackend,
+            SNS,
+            sns("ParameterValueInvalid"),
+            NotificationRefused,
+            "ParameterValueInvalid",
+        ),
+        (
+            SnsSmsBackend,
+            SNS,
+            sns("AuthorizationError", 403),
+            NotificationFailed,
+            "AuthorizationError",
+        ),
+        (SnsSmsBackend, SNS, sns("Throttling"), NotificationFailed, "Throttling"),
+        # Unifonic's codes and statuses.
+        (UnifonicSmsBackend, UNIFONIC, unifonic("ER-02"), NotificationRefused, "ER-02"),
+        (UnifonicSmsBackend, UNIFONIC, unifonic("ER-14"), NotificationRefused, "ER-14"),
+        (UnifonicSmsBackend, UNIFONIC, unifonic("ER-99"), NotificationFailed, "ER-99"),
+        (
+            UnifonicSmsBackend,
+            UNIFONIC,
+            httpx2.Response(482, json={"success": False}),
+            NotificationRefused,
+            "482",
+        ),
+        # Huawei Cloud's.
+        (
+            HuaweiSmsBackend,
+            HUAWEI_SMS,
+            huawei_sms("E000503"),
+            NotificationRefused,
+            "E000503",
+        ),
+        (
+            HuaweiSmsBackend,
+            HUAWEI_SMS,
+            huawei_sms("E000623"),
+            NotificationFailed,
+            "E000623",
+        ),
+    ],
+)
+async def test_sms_refusals_that_last_are_not_tried_again(
+    provider: Any,  # noqa: ANN401
+    backend: type[Any],
+    options: dict[str, str],
+    answer: httpx2.Response,
+    kind: type[Exception],
+    code: str,
+) -> None:
+    """Each provider's codes for a number, recipient, or text it will refuse (N2).
+
+    Every SMS refusal was ``NotificationFailed``: an invalid number, or one
+    that replied STOP, was tried five times, as an outage is. The code is
+    kept, never the number.
+    """
+    provider(answer)
+
+    with pytest.raises(NotificationFailed) as failed:
+        await backend(options).send_messages([SMS])
+
+    assert type(failed.value) is kind
+    assert failed.value.code == code
+    assert str(failed.value).endswith(f"{code}.")
+    assert PHONE not in str(failed.value)
 
 
 def service_account_file(tmp_path: Any) -> str:  # noqa: ANN401 - a path.
@@ -583,3 +716,102 @@ async def test_postmark_sends_json(provider: Any) -> None:  # noqa: ANN401
     assert {"Name": "X-Order", "Value": "7"} in body["Headers"]
     assert calls.requests[0].headers["x-postmark-server-token"] == "pm"
     assert "HtmlBody" not in calls.json(1)
+
+
+SES = {"REGION": "eu-west-1", "ACCESS_KEY_ID": "AKID", "SECRET_ACCESS_KEY": "s"}
+SENDGRID = {"API_KEY": "k"}
+MAILGUN = {"API_KEY": "k", "DOMAIN": "mg.acme.example"}
+POSTMARK = {"SERVER_TOKEN": "pm"}
+
+
+def ses(kind: str, status: int = 400) -> httpx2.Response:
+    """SES v2's error answer, its type in a header."""
+    return httpx2.Response(
+        status, json={"message": "x"}, headers={"x-amzn-ErrorType": f"{kind}:http://x"}
+    )
+
+
+def postmark(code: int, status: int = 422) -> httpx2.Response:
+    """Postmark's error answer."""
+    return httpx2.Response(status, json={"ErrorCode": code, "Message": "x"})
+
+
+@pytest.mark.parametrize(
+    ("backend", "options", "answer", "kind", "code"),
+    [
+        # SES v2 SendEmail's errors.
+        ("SesBackend", SES, ses("MessageRejected"), MailRefused, "MessageRejected"),
+        (
+            "SesBackend",
+            SES,
+            ses("BadRequestException"),
+            MailRefused,
+            "BadRequestException",
+        ),
+        (
+            "SesBackend",
+            SES,
+            httpx2.Response(
+                400, json={"__type": "com.amazonaws.sesv2#BadRequestException"}
+            ),
+            MailRefused,
+            "BadRequestException",
+        ),
+        (
+            "SesBackend",
+            SES,
+            ses("SendingPausedException"),
+            MailDeliveryFailed,
+            "SendingPausedException",
+        ),
+        (
+            "SesBackend",
+            SES,
+            ses("TooManyRequestsException", 429),
+            MailDeliveryFailed,
+            "TooManyRequestsException",
+        ),
+        # SendGrid's and Mailgun's statuses.
+        ("SendGridBackend", SENDGRID, httpx2.Response(400), MailRefused, "400"),
+        ("SendGridBackend", SENDGRID, httpx2.Response(413), MailRefused, "413"),
+        ("SendGridBackend", SENDGRID, httpx2.Response(403), MailDeliveryFailed, "403"),
+        ("MailgunBackend", MAILGUN, httpx2.Response(400), MailRefused, "400"),
+        ("MailgunBackend", MAILGUN, httpx2.Response(429), MailDeliveryFailed, "429"),
+        # Postmark's codes, and its statuses where it sends none.
+        ("PostmarkBackend", POSTMARK, postmark(406), MailRefused, "406"),
+        ("PostmarkBackend", POSTMARK, postmark(300), MailRefused, "300"),
+        # Its own 413 is an account not approved yet: tried again.
+        ("PostmarkBackend", POSTMARK, postmark(413), MailDeliveryFailed, "413"),
+        (
+            "PostmarkBackend",
+            POSTMARK,
+            httpx2.Response(413, text="big"),
+            MailRefused,
+            "413",
+        ),
+        ("PostmarkBackend", POSTMARK, postmark(0, 500), MailDeliveryFailed, "500"),
+    ],
+)
+async def test_mail_refusals_that_last_are_not_tried_again(
+    provider: Any,  # noqa: ANN401
+    backend: str,
+    options: dict[str, str],
+    answer: httpx2.Response,
+    kind: type[Exception],
+    code: str,
+) -> None:
+    """Each mail provider's codes for a message it will refuse again (N2).
+
+    Every refusal was ``MailDeliveryFailed``, and the mail task had no
+    ``dont_retry_on``: a message a provider rejected for its content was
+    tried five times. The code is kept, never an address.
+    """
+    provider(answer)
+
+    with pytest.raises(MailDeliveryFailed) as failed:
+        await getattr(mail_providers, backend)(options).send_messages([PLAIN])
+
+    assert type(failed.value) is kind
+    assert failed.value.code == code
+    assert str(failed.value).endswith(f"{code}.")
+    assert "ann@example.com" not in str(failed.value)

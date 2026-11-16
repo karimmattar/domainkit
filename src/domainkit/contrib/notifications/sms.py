@@ -15,7 +15,11 @@ Each calls its provider's HTTP API through ``domainkit.http.client``
 (the ``httpclient`` extra), with no SDK. A message's ``sender`` replaces
 the configured one where the provider allows it. A refusal raises
 ``NotificationFailed`` with the provider's error code, never the number
-or the text, and the worker tries again.
+or the text, and the worker tries again. One of the codes the provider
+documents for a message it will refuse again (``lasting``: a number that
+is not valid or not a mobile's, a recipient who opted out or is barred, a
+destination the account may not send to, a text it cannot take) raises
+``NotificationRefused``, which is not tried again.
 """
 
 import base64
@@ -32,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from domainkit import clock
 
-from .backends import NotificationFailed, SmsBackend
+from .backends import NotificationFailed, NotificationRefused, SmsBackend
 from .messages import SmsMessage
 from .settings import NotificationsSettings
 
@@ -81,6 +85,8 @@ class ProviderSmsBackend(SmsBackend):
     name: ClassVar[str]
     """The provider, as errors name it."""
     Options: ClassVar[type[_Options]]
+    lasting: ClassVar[frozenset[str]] = frozenset()
+    """The provider's codes for a message it will refuse again, as it is."""
 
     def __init__(self, options: Any = None) -> None:  # noqa: ANN401 - the provider's Options.
         """Read ``options``, or ``NOTIFICATIONS.SMS_OPTIONS``."""
@@ -114,9 +120,16 @@ class ProviderSmsBackend(SmsBackend):
         """Send one message."""
         raise NotImplementedError
 
-    def refused(self, code: object) -> NotificationFailed:
-        """``NotificationFailed`` naming the provider's error code."""
-        return NotificationFailed(f"{self.name} refused the message: {code}.")
+    def refused(self, code: object, *, shown: str = "") -> NotificationFailed:
+        """The error for the provider's ``code``, which it keeps and names.
+
+        ``NotificationRefused`` for one of ``lasting``, which the worker
+        does not try again; ``NotificationFailed`` for any other. ``shown``
+        comes before the code in the message.
+        """
+        text = str(code)
+        kind = NotificationRefused if text in self.lasting else NotificationFailed
+        return kind(f"{self.name} refused the message: {shown}{text}.", code=text)
 
 
 @asynccontextmanager
@@ -176,6 +189,11 @@ class TwilioSmsBackend(ProviderSmsBackend):
     name = "Twilio"
     Options = TwilioOptions
     options: TwilioOptions
+    lasting = frozenset({"21211", "21408", "21610", "21612", "21614"})
+    """An invalid ``To`` (``21211``), not a mobile number (``21614``), a
+    recipient who replied STOP (``21610``), a region the account's geo
+    permissions block (``21408``), and a ``To`` it cannot reach from this
+    sender (``21612``)."""
 
     async def send(self, message: SmsMessage) -> None:
         """POST the message to the account's Messages."""
@@ -197,7 +215,7 @@ class TwilioSmsBackend(ProviderSmsBackend):
         )
         if response.status_code not in (200, 201):
             body = json_of(response) or {}
-            raise self.refused(f"error {body.get('code', response.status_code)}")
+            raise self.refused(body.get("code", response.status_code), shown="error ")
 
 
 class VonageOptions(_Options):
@@ -215,6 +233,10 @@ class VonageSmsBackend(ProviderSmsBackend):
     name = "Vonage"
     Options = VonageOptions
     options: VonageOptions
+    lasting = frozenset({"3", "6", "7", "12", "33"})
+    """A parameter's value refused (``3``), a message it cannot route, such
+    as an unknown prefix (``6``), a barred number (``7``), a text too long
+    (``12``), and a number de-activated (``33``)."""
 
     async def send(self, message: SmsMessage) -> None:
         """POST the message; every part must be accepted (status ``0``)."""
@@ -235,7 +257,7 @@ class VonageSmsBackend(ProviderSmsBackend):
         failed = [part.get("status") for part in parts if part.get("status") != "0"]
         if response.status_code != 200 or failed:
             raise self.refused(
-                f"status {failed[0] if failed else response.status_code}"
+                failed[0] if failed else response.status_code, shown="status "
             )
 
 
@@ -260,6 +282,10 @@ class SnsSmsBackend(ProviderSmsBackend):
     name = "Amazon SNS"
     Options = SnsOptions
     options: SnsOptions
+    lasting = frozenset(
+        {"InvalidParameter", "InvalidParameterValue", "ParameterValueInvalid"}
+    )
+    """Publish's errors for a parameter it refuses, such as the number."""
 
     def __init__(self, options: Any = None) -> None:  # noqa: ANN401
         """Read the options, and where the credentials come from."""
@@ -330,6 +356,16 @@ class UnifonicSmsBackend(ProviderSmsBackend):
     name = "Unifonic"
     Options = UnifonicOptions
     options: UnifonicOptions
+    lasting = frozenset(
+        {
+            *("ER-02", "ER-03", "ER-04", "ER-05", "ER-07", "ER-13", "ER-14"),
+            *("410", "412", "481", "482"),
+        }
+    )
+    """A number it does not take: malformed, too long or short, unroutable
+    (``ER-02`` to ``ER-05``, statuses ``410``, ``481``, ``482``); a text
+    filtered (``ER-07``) or too long (``412``); a country the account may
+    not send to (``ER-13``); a number on the blacklist (``ER-14``)."""
 
     async def send(self, message: SmsMessage) -> None:
         """POST the message; ``success`` must be true."""
@@ -371,6 +407,9 @@ class HuaweiSmsBackend(ProviderSmsBackend):
     name = "Huawei Cloud SMS"
     Options = HuaweiSmsOptions
     options: HuaweiSmsOptions
+    lasting = frozenset({"E000503", "E200028"})
+    """A parameter it refuses, such as the number (``E000503``), and a text
+    the template's variable cannot take (``E200028``)."""
 
     async def send(self, message: SmsMessage) -> None:
         """POST the message as the template's one variable; code ``000000``."""

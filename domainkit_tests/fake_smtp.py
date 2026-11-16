@@ -1,7 +1,9 @@
 """A small SMTP server on a thread, with STARTTLS and implicit TLS, for tests.
 
 It speaks enough of RFC 5321 for ``smtplib``: EHLO, STARTTLS, AUTH PLAIN,
-MAIL, RCPT, DATA, RSET, NOOP, and QUIT. Recipients in ``refuse`` get 550.
+MAIL, RCPT, DATA, RSET, NOOP, and QUIT. Recipients in ``refuse`` get
+``refuse_with`` (550); ``sender_reply`` answers MAIL, and ``data_reply`` the
+end of a message, which the server keeps only when it is a 2xx.
 """
 
 import base64
@@ -40,6 +42,9 @@ class SmtpServer:
     user: str | None = None
     password: str | None = None
     refuse: set[str] = field(default_factory=set)
+    refuse_with: str = "550 No such user"
+    sender_reply: str = "250 OK"
+    data_reply: str = "250 Queued"
     received: list[Received] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
     port: int = 0
@@ -127,11 +132,11 @@ class _Handler(socketserver.StreamRequestHandler):
                     self._reply("535 Authentication failed")
             elif verb == "MAIL":
                 sender, recipients = _address(command), []
-                self._reply("250 OK")
+                self._reply(smtp.sender_reply)
             elif verb == "RCPT":
                 recipient = _address(command)
                 if recipient in smtp.refuse:
-                    self._reply("550 No such user")
+                    self._reply(smtp.refuse_with)
                 else:
                     recipients.append(recipient)
                     self._reply("250 OK")
@@ -140,8 +145,9 @@ class _Handler(socketserver.StreamRequestHandler):
                 data = b""
                 while (chunk := self.rfile.readline()) not in {b".\r\n", b""}:
                     data += chunk
-                smtp.received.append(Received(sender, recipients, data))
-                self._reply("250 Queued")
+                if smtp.data_reply.startswith("2"):
+                    smtp.received.append(Received(sender, recipients, data))
+                self._reply(smtp.data_reply)
             elif verb == "QUIT":
                 self._reply("221 Bye")
                 return

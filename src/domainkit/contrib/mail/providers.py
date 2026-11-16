@@ -14,7 +14,10 @@ built as SMTP's is (``to_mime``), signed with SigV4; the others are sent
 its parts: sender, recipients (Bcc as such, never in a header), subject,
 text, HTML, ``Reply-To``, and extra headers. A refusal raises
 ``MailDeliveryFailed`` with the provider's error code, never an address,
-and the worker tries again.
+and the worker tries again; one of the codes the provider documents for a
+message it will refuse again (``lasting``: its content, its size, an
+address it will not send to) raises ``MailRefused``, which is not tried
+again.
 """
 
 import base64
@@ -27,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from domainkit.apps import registry
 
-from .backends import BaseEmailBackend, MailDeliveryFailed
+from .backends import BaseEmailBackend, MailDeliveryFailed, MailRefused
 from .message import EmailMessage
 from .settings import MailSettings
 
@@ -39,6 +42,7 @@ if TYPE_CHECKING:
 __all__ = ["MailgunBackend", "PostmarkBackend", "SendGridBackend", "SesBackend"]
 
 TIMEOUT: Final = 10.0
+TOO_LARGE: Final = 413
 _clients: dict[float, "HttpClient"] = {}
 
 
@@ -56,6 +60,8 @@ class ProviderBackend(BaseEmailBackend):
     name: ClassVar[str]
     """The provider, as errors name it."""
     Options: ClassVar[type[_Options]]
+    lasting: ClassVar[frozenset[str]] = frozenset()
+    """The provider's codes for a message it will refuse again, as it is."""
 
     def __init__(self, options: Any = None) -> None:  # noqa: ANN401 - the provider's Options.
         """Read ``options``, or ``MAIL.OPTIONS``."""
@@ -100,9 +106,20 @@ class ProviderBackend(BaseEmailBackend):
                 f"{self.name} could not be reached ({type(exc).__name__})."
             ) from None
 
-    def refused(self, code: object) -> MailDeliveryFailed:
-        """``MailDeliveryFailed`` naming the provider's error code."""
-        return MailDeliveryFailed(f"{self.name} refused the message: {code}.")
+    def refused(
+        self, code: object, *, shown: str = "", lasting: bool | None = None
+    ) -> MailDeliveryFailed:
+        """The error for the provider's ``code``, which it keeps and names.
+
+        ``MailRefused`` for one of ``lasting`` (or when ``lasting`` says
+        so), ``MailDeliveryFailed`` for any other; ``shown`` comes before
+        the code in the message.
+        """
+        text = str(code)
+        if lasting is None:
+            lasting = text in self.lasting
+        kind = MailRefused if lasting else MailDeliveryFailed
+        return kind(f"{self.name} refused the message: {shown}{text}.", code=text)
 
 
 def _json(response: "httpx2.Response") -> Any:  # noqa: ANN401 - any JSON.
@@ -137,6 +154,8 @@ class SesBackend(ProviderBackend):
     name = "Amazon SES"
     Options = SesOptions
     options: SesOptions
+    lasting = frozenset({"MessageRejected", "BadRequestException"})
+    """SendEmail's errors for content it refuses, and for input that is invalid."""
 
     def __init__(self, options: Any = None) -> None:  # noqa: ANN401
         """Read the options, and where the credentials come from."""
@@ -183,9 +202,9 @@ class SesBackend(ProviderBackend):
         )
         if response.status_code != 200:
             error = _json(response) or {}
-            raise self.refused(
+            raise self.refused(  # A type may come with its namespace: ...#Name.
                 response.headers.get("x-amzn-ErrorType", "").split(":")[0]
-                or error.get("__type")
+                or str(error.get("__type") or "").rpartition("#")[2]
                 or response.status_code
             )
 
@@ -204,6 +223,8 @@ class SendGridBackend(ProviderBackend):
     name = "SendGrid"
     Options = SendGridOptions
     options: SendGridOptions
+    lasting = frozenset({"400", "413"})
+    """Mail Send's statuses for a request it cannot take: invalid, or too large."""
 
     async def send(self, message: EmailMessage) -> None:
         """POST the message's parts; 202 is accepted."""
@@ -249,6 +270,8 @@ class MailgunBackend(ProviderBackend):
     name = "Mailgun"
     Options = MailgunOptions
     options: MailgunOptions
+    lasting = frozenset({"400", "413"})
+    """The Messages API's statuses for a bad request, and one too large."""
 
     async def send(self, message: EmailMessage) -> None:
         """POST the message's parts as a form."""
@@ -294,6 +317,11 @@ class PostmarkBackend(ProviderBackend):
     name = "Postmark"
     Options = PostmarkOptions
     options: PostmarkOptions
+    lasting = frozenset({"300", "402", "403", "406", "411"})
+    """Its codes for an invalid message (``300``), JSON it cannot read
+    (``402``, ``403``), an inactive recipient (``406``), and an attachment
+    it forbids (``411``). Its own ``413`` is an account not approved, tried
+    again; the status ``413``, a request over its size, is lasting."""
 
     async def send(self, message: EmailMessage) -> None:
         """POST the message's parts; ``ErrorCode`` 0 is sent."""
@@ -325,7 +353,12 @@ class PostmarkBackend(ProviderBackend):
             },
         )
         code = (_json(response) or {}).get("ErrorCode")
-        if response.status_code != 200 or code not in (0, None):
+        if response.status_code == 200 and code in (0, None):
+            return
+        if code in (0, None):  # The status alone says what failed.
             raise self.refused(
-                f"error {code if code is not None else response.status_code}"
+                response.status_code,
+                shown="error ",
+                lasting=response.status_code == TOO_LARGE,
             )
+        raise self.refused(code, shown="error ")
