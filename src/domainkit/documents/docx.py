@@ -75,7 +75,7 @@ METHODS: Final = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
 """How a file of the archive may be compressed: as Word writes them."""
 NAME_SEGMENT: Final = re.compile(r"[^\x00-\x1f\x7f\\:]+")
 """A segment of a file's name: no control character, backslash, or colon."""
-NOT_XML: Final = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")
+NOT_XML: Final = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 """Characters XML 1.0 cannot hold."""
 BREAKS: Final = re.compile(r"([\n\t])")
 SHOWN: Final = 40
