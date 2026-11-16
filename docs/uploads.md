@@ -234,7 +234,7 @@ deadline), with no cloud SDK. Install the `cloud` extra.
 
 | Backend | Stores | Credentials |
 | --- | --- | --- |
-| `domainkit.storage.s3.S3Storage` | AWS S3, and with `endpoint` the stores that speak its API: MinIO (`path_style=True`), Cloudflare R2 (`region="auto"`), Huawei OBS, Alibaba OSS | `access_key_id` and `secret_access_key`, else the environment as AWS's tools read it (variables, EKS's web identity, the container's) |
+| `domainkit.storage.s3.S3Storage` | AWS S3, and with `endpoint` the stores that speak its API: Cloudflare R2 (`region="auto"`), SeaweedFS, RustFS, Versity's gateway (usually `path_style=True`), Huawei OBS, Alibaba OSS. MinIO speaks it too, but its community edition is no longer maintained, and is published as source only | `access_key_id` and `secret_access_key`, else the environment as AWS's tools read it (variables, EKS's web identity, the container's) |
 | `domainkit.storage.gcs.GCSStorage` | Google Cloud Storage | `credentials_file` (a service account's key), else the metadata server (GKE, Compute Engine) |
 | `domainkit.storage.azure.AzureBlobStorage` | Azure Blob storage | `account_key` (Shared Key), or `credential`: an Entra ID application or the host's managed identity (`domainkit.cloud.azure`) |
 
@@ -251,7 +251,7 @@ The options of each backend:
 
 | Backend | Options |
 | --- | --- |
-| `S3Storage` | `bucket`, `region` (both required), `endpoint`, `path_style`, `access_key_id`, `secret_access_key`, `credentials` (an async callable that returns them), `prefix`, `public_url`, `timeout` |
+| `S3Storage` | `bucket`, `region` (both required), `endpoint`, `path_style`, `access_key_id`, `secret_access_key`, `credentials` (an async callable that returns them), `prefix`, `public_url`, `timeout`, `check_write_once` ([below](#a-store-that-ignores-create-only)) |
 | `GCSStorage` | `bucket` (required), `credentials_file`, `account`, `endpoint`, `prefix`, `public_url`, `timeout` |
 | `AzureBlobStorage` | `account`, `container` (both required), `account_key`, `credential`, `endpoint`, `prefix`, `public_url`, `timeout` |
 
@@ -296,7 +296,8 @@ client is done.
 - **Create only.** An upload's URL only creates its name. S3 is sent
   `If-None-Match: *` and GCS `x-goog-if-generation-match: 0`, both signed,
   and Azure's SAS grants create only (`c`). So once the file is there and
-  checked, the same URL cannot replace it.
+  checked, the same URL cannot replace it, where the store honours the
+  header ([below](#a-store-that-ignores-create-only)).
 - **Signing keys.** GCS signs with the service account's key (the
   metadata server cannot sign), and Azure with the account key. Without
   one, Azure raises `CloudAuthError: A SAS needs the storage account's
@@ -307,6 +308,52 @@ client is done.
     finds its type from its bytes or scans it, as `save_upload` does.
     Before the application trusts the file, read it back and check it, or
     upload through the application instead.
+
+### A store that ignores create only
+
+*New in 2.5.* Some stores that speak S3's API ignore `If-None-Match` on
+`PutObject`, without an error: a second `PUT` to the URL then replaces
+the file the application checked, and nothing says so.
+
+| Store | `If-None-Match: *` on `PutObject` |
+| --- | --- |
+| AWS S3 | refuses a second write with `412` (since August 2024) |
+| Cloudflare R2 | refuses it with `412` |
+| SeaweedFS, RustFS, Versity's gateway, MinIO | read the header on `PutObject` |
+| Garage 2.5, Scality CloudServer 9.5 | read no condition on `PutObject`: the file is replaced |
+| Huawei OBS, Alibaba OSS, GCS's interoperability API | not known: probe them |
+
+`S3Storage(check_write_once=True)` asks the store before the first
+presigned upload of each storage, in each process: it writes a probe
+object under the prefix (`write-once-probes/`) twice, expects the second
+write refused (`412`, or `409`), and deletes it. Where the store took the
+second write, `presigned_upload` raises `StorageError` and asks again
+next time:
+
+```text
+domainkit.storage.base.StorageError: The S3 store at http://garage:3900 replaced an object written with If-None-Match: *: it ignores the header, so a presigned upload's URL could replace the file it made. Use a store that honours it, or upload through the application.
+```
+
+```python
+STORAGES = {
+    "default": {
+        "BACKEND": "domainkit.storage.s3.S3Storage",
+        "OPTIONS": {
+            "bucket": "files",
+            "region": "us-east-1",
+            "endpoint": "http://seaweedfs:8333",
+            "path_style": True,
+            "check_write_once": True,
+        },
+    },
+}
+```
+
+The probe needs `PutObject` and `DeleteObject` on the prefix; a probe the
+store will not delete stays, logged, and the answer stands. Without
+`check_write_once`, as before, `presigned_upload` sends no request. A
+deployment job can ask once instead: `await storage.probe_write_once()`
+raises the same error.
 
 ## Receiving uploads
 

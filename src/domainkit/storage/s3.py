@@ -9,25 +9,39 @@
         },
     }
 
-AWS S3, and with ``endpoint`` the stores that speak its API: MinIO
-(``path_style=True``), Cloudflare R2 (``region="auto"``), Huawei OBS,
-Alibaba OSS, Google Cloud Storage's interoperability API (HMAC keys).
-Every request is signed with Signature Version 4 here and sent through
-``domainkit.http.client`` (pooled, retried, bounded by the deadline): no
-AWS SDK is needed. Credentials come from ``access_key_id`` and
-``secret_access_key``, else from the environment as AWS's tools read it
-(``domainkit.keys.aws.default_credentials``: variables, a web identity,
-the container's).
+AWS S3, and with ``endpoint`` the stores that speak its API: Cloudflare
+R2 (``region="auto"``), SeaweedFS, RustFS, and Versity's gateway
+(usually ``path_style=True``), Huawei OBS, Alibaba OSS, and Google Cloud
+Storage's interoperability API (HMAC keys). MinIO speaks it too, but
+its community edition is no longer maintained, and publishes source
+only. Every request is signed with Signature Version 4 here and sent
+through ``domainkit.http.client`` (pooled, retried, bounded by the
+deadline): no AWS SDK is needed. Credentials come from
+``access_key_id`` and ``secret_access_key``, else from the environment
+as AWS's tools read it (``domainkit.keys.aws.default_credentials``:
+variables, a web identity, the container's).
 
 Files of up to 8 MiB are one ``PUT``; larger ones a multipart upload,
 aborted if the content fails. Reads are ranged ``GET`` requests of 4 MiB.
 ``presigned_url`` and ``presigned_upload`` let clients fetch and send
 files without passing through the application; an upload's size and type
 are signed, so the URL takes nothing else.
+
+An upload's URL also signs ``If-None-Match: *`` (``write_once``), so it
+creates its name and never replaces the file once it is there. That holds
+only where the store honours the header on ``PutObject``: AWS S3 (since
+August 2024), Cloudflare R2, SeaweedFS, RustFS, Versity's gateway, and
+MinIO do; Garage (2.5) and Scality CloudServer (9.5) read no condition
+on ``PutObject`` and replace the file without a word. ``probe_write_once``
+asks the store: it writes a probe object twice and expects the second
+write refused. ``check_write_once=True`` runs it before the first
+presigned upload of each storage, in each process, and refuses presigned
+uploads where the store would replace their files (ADR 0169).
 """
 
 import hashlib
 import hmac
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, timedelta
@@ -42,18 +56,24 @@ from domainkit.keys.aws import (
     default_credentials,
     signing_key,
 )
-from domainkit.storage.base import StorageError
-from domainkit.storage.remote import ObjectStorage
+from domainkit.storage.base import StorageError, new_name
+from domainkit.storage.remote import ObjectStorage, PresignedUpload
 
 if TYPE_CHECKING:
     import httpx2
 
 __all__ = ["S3Storage"]
 
+logger = logging.getLogger(__name__)
+
 UNSIGNED: Final = "UNSIGNED-PAYLOAD"
 _UPLOAD_ID: Final = re.compile(rb"<UploadId>([^<]{1,1024})</UploadId>")
 _ERROR_CODE: Final = re.compile(rb"<Code>([A-Za-z0-9]{1,64})</Code>")
 _BUCKET: Final = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+PROBES: Final = "write-once-probes"
+"""Where, under the storage's prefix, ``probe_write_once`` writes its object."""
+REFUSED_AGAIN: Final = frozenset({409, 412})
+"""What a store answers a second create of one key: 412, or 409 in a race."""
 
 
 class S3Storage(ObjectStorage):
@@ -74,6 +94,7 @@ class S3Storage(ObjectStorage):
         prefix: str = "",
         public_url: str | None = None,
         timeout: float | None = None,
+        check_write_once: bool = False,
     ) -> None:
         """Keep files in ``bucket`` of ``region``.
 
@@ -82,6 +103,9 @@ class S3Storage(ObjectStorage):
         rather than the host name. ``access_key_id`` and
         ``secret_access_key`` are the credentials, or ``credentials`` an
         async callable returning them; without either, the environment's.
+        ``check_write_once`` probes the store (``probe_write_once``) before
+        the first presigned upload, and refuses presigned uploads if it
+        would replace their files.
 
         Raises:
             ValueError: The bucket name, the endpoint, or the prefix is malformed,
@@ -124,6 +148,76 @@ class S3Storage(ObjectStorage):
         from domainkit.http.client import HttpClient
 
         self.client = HttpClient(timeout=timeout, propagate=False)
+        self.check_write_once = check_write_once
+        self._write_once_holds = False
+
+    async def presigned_upload(
+        self,
+        *,
+        size: int,
+        content_type: str,
+        directory: str = "",
+        extension: str = "",
+        expires: timedelta = timedelta(minutes=15),
+    ) -> PresignedUpload:
+        """``ObjectStorage.presigned_upload``, probed first with ``check_write_once``.
+
+        The probe runs once per storage: once the store refused the
+        probe's second write, it is not asked again.
+
+        Raises:
+            StorageError: The store would let the URL replace its file, or
+                the probe could not be made.
+            ValueError: As ``ObjectStorage.presigned_upload``.
+        """
+        if self.check_write_once and not self._write_once_holds:
+            await self.probe_write_once()
+            self._write_once_holds = True
+        return await super().presigned_upload(
+            size=size,
+            content_type=content_type,
+            directory=directory,
+            extension=extension,
+            expires=expires,
+        )
+
+    async def probe_write_once(self) -> None:
+        """Ask the store whether it honours ``write_once``'s ``If-None-Match: *``.
+
+        A probe object is written under the prefix, in ``write-once-probes/``,
+        then written again with the header: the store must refuse the
+        second write (``412``, or ``409``). The probe is then deleted; a
+        store that refuses the delete leaves it, and the answer stands.
+
+        Raises:
+            StorageError: The store replaced the probe, so a presigned
+                upload's URL could replace the file it made; or it refused
+                a write, or answered otherwise.
+        """
+        name = new_name(PROBES)
+        await self._call("PUT", name, headers=self.write_once, body=b"1", expect={200})
+        try:
+            again = await self._send("PUT", name, {}, dict(self.write_once), b"2")
+        finally:
+            try:
+                await self._call("DELETE", name, expect={204, 200})
+            except StorageError as exc:
+                logger.warning(
+                    "The write-once probe %s stays in the bucket: %s", name, exc
+                )
+        if again.status_code in REFUSED_AGAIN:
+            return
+        if again.status_code == 200:
+            raise StorageError(
+                f"The S3 store at {self.origin} replaced an object written with "
+                "If-None-Match: *: it ignores the header, so a presigned "
+                "upload's URL could replace the file it made. Use a store that "
+                "honours it, or upload through the application."
+            )
+        raise StorageError(
+            f"S3 answered {again.status_code} to the write-once probe "
+            f"({_code(again.content)})."
+        )
 
     def path(self, name: str) -> str:
         """The object's path on the origin."""
