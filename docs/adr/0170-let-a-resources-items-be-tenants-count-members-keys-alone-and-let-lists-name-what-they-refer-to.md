@@ -111,11 +111,33 @@ refuse. A companies list must still answer. Options:
 - **A second rule on `ResourceRouter`** for the collection's routes. One
   more option, read by every route kind.
 - **A rule that falls back while no tenant is served**: within
-  `MemberActions`, `outside=` rules the routes that serve none. It is
-  composed of rules that exist (`AnyOf`, `Not`, `AllOf`), so object
-  checks and scope checks read it unchanged. A resource without
-  `tenant=` would serve its items as no tenant too, so `outside=` there
-  would rule them all: it is refused.
+  `MemberActions`, `outside=` rules the routes that serve none. It joins
+  the member's rule with `|`, so object checks and scope checks read it
+  as any rule; on objects it asks `outside`'s rules only, and it lets
+  scoped credentials through only where those rules check scopes. A
+  resource without `tenant=` would serve its items as no tenant too, so
+  `outside=` there would rule them all: it is refused.
+
+Which routes of the collection `outside` may decide matters. A batch of
+commands on single companies is on the collection, but each item names a
+company: under `outside=IsAuthenticated()` any signed-in caller would
+change every company. A command on the collection that merges or archives
+companies is the same. Options:
+
+- **Serve and admit each batch item as its own tenant.** The batch's
+  rules are checked once, on the route, before any item: each item would
+  need its own admission and its own rules, in its own context. Much
+  machinery for a route a command on one company already offers.
+- **Refuse such a batch when it is declared**, and let a rule given as
+  `outside` decide only `view` and `add` (the list, queries on the
+  collection, creation). Any other action there is refused, unless
+  `outside` is `Actions`, which name each action's rules. Fails closed.
+
+A nested resource with a tenant of its own, under a parent that has one,
+would serve its collection (`/companies/{company_id}/projects`) as no
+tenant: a stranger to the company would list its projects. Serving each
+route as the innermost tenant its path names would need two tenants at
+once, which tenancy does not have. It is refused.
 
 For limits across tenants:
 
@@ -162,8 +184,9 @@ For searching through a reference:
   first among the route's own dependencies, before its rules
   (`tenancy.E002` holds). The parameter may be the resource's id, its
   parent's, or one in its prefix; one no route holds is refused
-  (`TypeError`). A nested resource takes its parent's tenant unless it
-  has one. Routes of one's own declared on the resource, WebSockets
+  (`TypeError`). A nested resource takes its parent's tenant; one of its
+  own, under a parent that has one, is refused (`TypeError`). Routes of
+  one's own declared on the resource, WebSockets
   included, are served alike: the router adds the dependency to every
   route whose path holds the parameter. OpenAPI documents `401` and
   `404` on those routes.
@@ -172,18 +195,23 @@ For searching through a reference:
   lowercase), so one tenant has one id however the path spells it. A
   value of the wrong type is `422`, as the route would answer, for
   members and strangers alike. A resource's tenant reads its id's type.
+  A route that reads the parameter itself, declared as text, gets it as
+  typed; the docs say to declare it with the tenant's type.
 - **`domainkit.tenancy.HasMemberPermissions(*perms)`**: an active
   caller holding every key as a member of the tenant served
   (`member_permissions`), and within their credentials' scopes. Global
   grants and a superuser's status do not count. No tenant served:
   refused. Without `MEMBER_PERMISSIONS`: `ImproperlyConfigured`.
-  `InTenant` allows a request served as a tenant.
+  `InTenant` allows a request served as a tenant, and its objects.
 - **`domainkit.resources.MemberActions(model, *rules, outside=None)`**:
   `ModelActions`' keys (`HasMemberModelPermission`), counted by
-  `HasMemberPermissions`. `outside` (a rule, or `Actions`) rules the
-  routes that serve no tenant; without it they are refused. A resource
-  given `MemberActions(outside=...)` and no tenant is refused
-  (`TypeError`).
+  `HasMemberPermissions`. `outside` rules the routes that serve no
+  tenant; without it they are refused. A rule as `outside` decides only
+  their `view` and `add` routes; `Actions` decide each action. A
+  resource given `MemberActions(outside=...)` and no tenant is refused
+  (`TypeError`), and so is a batch whose items name the resource's
+  tenants. The list needs a `scope` of the project's (the tenants the
+  caller belongs to): no member rule narrows it.
 - **`Throttle(..., per_tenant=False)`** counts the caller once across
   tenants. The default stays per tenant. `@cached` gets no such option;
   `shared_keys()` stays the way to share keys on purpose.
@@ -192,13 +220,15 @@ For searching through a reference:
 - **`ResourceRouter(present_many=...)`**, async, in `present`'s place
   (both is a `TypeError`), shows the aggregates of each answer in one
   call: a page, an export's chunk, a query's items, one read or write.
-  It must answer one schema per aggregate, in order, or the request
-  fails (`RuntimeError`); an empty page asks nothing.
+  It must answer one schema per aggregate, in order (a schema's `id`
+  must be its aggregate's), or the request fails (`RuntimeError`); an
+  empty page asks nothing.
 - **`FilterSet.search_through`** maps a field to a finder of the word and
-  a limit (async or not). Each distinct word asks each finder once, for
-  at most `max_reference_matches` ids (100; more are left out). A word
-  matches a row that holds it in a search field, or whose field is one
-  of the ids. A search the set would refuse asks nothing. A resource's
+  a limit (async or not). Each distinct word, whatever its case, asks
+  each finder once, for at most `max_reference_matches` ids (100; more
+  are left out, unread). A word matches a row that holds it in a search
+  field, or whose field is one of the ids. A query string the set would
+  refuse (too many words or conditions, an unknown lookup) asks nothing. A resource's
   policy may not hide the field (as for every filtered field).
 
 ## Consequences
@@ -215,8 +245,13 @@ For searching through a reference:
   in their scopes. Tokens cannot carry member keys (ADR 0150), so a
   member route is for sessions.
 - `MemberActions(outside=IsAuthenticated())` checks no scopes on the
-  collection's routes: scoped credentials are refused there
-  (`SCOPED_CREDENTIALS`).
+  collection's routes: scoped credentials are refused there, and still
+  reach a tenant's routes with the key in their scopes.
+- A command on the collection that changes companies must say so
+  (`action="change"`): a `POST` there is `add` by default, which a rule
+  as `outside` decides.
+- Batches on single companies are declared per company, as command
+  routes; companies nested under companies are not offered.
 - A tenant whose id was typed in two spellings before (a UUID in
   capitals, with `PathTenant` on a router) is one tenant on a resource,
   and on a router given `id_type`; routers left as `str` keep reading the

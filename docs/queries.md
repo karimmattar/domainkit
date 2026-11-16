@@ -673,13 +673,15 @@ their role or names their user: "ann" in the role, or `user_id` among
 the users `users_named("ann", 100)` returns, and the same for "smith".
 
 - The function takes the word and a limit, async or not, and returns
-  ids. Each distinct word asks it once per request, for at most
-  `max_reference_matches` ids (100); more are left out. Search an
+  ids. Each distinct word, whatever its case, asks it once per request,
+  for at most `max_reference_matches` ids (100); what it answers past
+  them is left out, unread. Search an
   indexed field there, and keep to what the list can show (the current
   tenant's members, say) so a common word does not reach the bound.
 - The field is read with `in`: index its column. PostgreSQL does not
   index a column that refers to another by itself.
-- A search the set refuses (too long, too many words) asks nothing.
+- A query string the set refuses (too long a search, too many words or
+  conditions, an unknown lookup, a filter given twice) asks nothing.
 - FastAPI runs the function as a dependency of the set, for a resource's
   `filters` and for `Annotated[MemberFilters, Depends()]` alike. A set
   built by hand searches its own fields, unless given what

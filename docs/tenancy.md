@@ -230,7 +230,10 @@ reads the parameter as that type (since 2.5). The tenant id is then the
 value's text, a UUID in lowercase, so one tenant has one id however the
 path spells it, and a value that is not one is `422`, as the route
 answers it. By default the parameter is text, taken as it comes. A
-resource's tenant reads its id's type.
+resource's tenant reads its id's type. A route that reads the parameter
+itself gets it as it declares it: declared as text, a UUID in capitals
+stays in capitals there, while the tenant id is lowercase. Declare it
+with the tenant's type, or take the tenant id the `PathTenant` returns.
 
 ## Members' permissions
 
@@ -331,6 +334,7 @@ companies = ResourceRouter(
     ...,
     tenant=PathTenant("company_id"),
     rule=MemberActions(Company, outside=IsAuthenticated()),
+    scope=companies_of_caller,  # The companies the caller belongs to.
 )
 ```
 
@@ -342,10 +346,19 @@ companies = ResourceRouter(
   Without `MEMBER_PERMISSIONS`, it raises `ImproperlyConfigured`.
 - `MemberActions(model)` asks for the key of each route's action, as
   `ModelActions` does, with `HasMemberPermissions`. A resource's routes
-  that serve no tenant (a companies list, its creation) are refused,
-  unless `outside=` rules them: a rule, or `ModelActions`.
-- `InTenant()` allows a request served as a tenant; `~InTenant()`, one
-  served as none.
+  that serve no tenant are refused, unless `outside=` rules them. A rule
+  given as `outside` decides only the `view` and `add` routes there (the
+  list, queries on the collection, creation); `Actions`, such as
+  `ModelActions`, name each action's rules. A batch of commands on single
+  companies is refused when declared: its items name companies it is not
+  served as.
+- The list serves no tenant, so no member rule narrows it: give the
+  resource a `scope` that keeps each caller to the companies they belong
+  to, from your `MEMBER_TENANTS` function
+  ([resources](resources.md#a-resource-whose-items-are-tenants)).
+  Without it, everyone signed in lists every company.
+- `InTenant()` allows a request served as a tenant, and its objects;
+  `~InTenant()`, one served as none.
 
 **Staff change no one who holds more than they do in a tenant.** Setting
 a user's password, logging them out, or acting as them hands over their

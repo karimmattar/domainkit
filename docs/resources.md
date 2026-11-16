@@ -806,8 +806,10 @@ members = ResourceRouter("/members", ..., schema=MemberOut, present_many=members
   call it.
 - The field policy, links, and the `ETag` apply to what it returns, as
   to `present`'s.
-- One schema too few or too many fails the request (`RuntimeError`): a
-  name never lands on another's row.
+- One schema too few or too many, or one whose `id` is not its
+  aggregate's (out of order), fails the request (`RuntimeError`): a name
+  never lands on another's row. A schema without `id` is held to the
+  count only.
 - Give `present` or `present_many`, not both (`TypeError`).
 - Show only what the caller may see of the other domain: the function
   has the request to decide.
@@ -986,9 +988,21 @@ serves each route whose path holds its parameter as that tenant, before
 the route's rules ([a tenant from the path](tenancy.md#a-tenant-from-the-path)):
 
 ```python
+from uuid import UUID
+
+from starlette.requests import HTTPConnection
+
+from domainkit.ddd import Criteria, F
 from domainkit.http.access import IsAuthenticated
 from domainkit.resources import MemberActions, ResourceRouter
 from domainkit.tenancy import PathTenant
+
+
+async def companies_of_caller(request: HTTPConnection) -> Criteria:
+    user = request.scope["user"]
+    ids = await member_tenants(user) if user.is_authenticated else []
+    return F("id").in_([UUID(each) for each in ids])
+
 
 companies = ResourceRouter(
     "/companies",
@@ -1000,21 +1014,34 @@ companies = ResourceRouter(
 companies.command_route(RenameCompany, service=rename, body=RenameIn, path="/rename")
 ```
 
+`member_tenants` is the project's `TENANCY.MEMBER_TENANTS` function: the
+ids of the companies the user belongs to.
+
 - `GET /companies/{company_id}` and `POST /companies/{company_id}/rename`
   are served as the company. A caller who does not belong to it gets
   `404`, an anonymous one `401`, as `PathTenant` answers.
 - `GET /companies` and `POST /companies` hold no `{company_id}`: they
   serve no tenant. On a router, `PathTenant` would refuse them
   (`tenancy.E001`).
+- No member rule narrows a list: the `scope` keeps each caller to the
+  companies they belong to. Without it, everyone signed in would list
+  every company.
+- A batch of commands on single companies is refused with `TypeError`:
+  each item names a company the batch is not served as. Declare a
+  command route on one company instead.
 - The parameter may be the resource's id, its parent's, or one of its
   prefix (`/orgs/{org_id}/projects`, where every route is the org's). One
   that no route holds is refused with `TypeError`.
-- A nested resource takes its parent's tenant, unless it has its own.
+- A nested resource takes its parent's tenant. One of its own, under a
+  parent that has one, is refused with `TypeError`: the routes that name
+  only the parent's id would serve no tenant.
 - Routes of your own on the resource (`@companies.get(...)`, a
   WebSocket) are served alike, by their path.
 - The id is read as the resource's id type. A UUID is the tenant's id in
   lowercase, however the path writes it, and a value that is not one is
-  `422`.
+  `422`. A route of your own that reads the parameter itself reads it as
+  it declares it: declare it as a `UUID` too, or take the tenant's id
+  from the `PathTenant` (`Annotated[str, Depends(companies.tenant)]`).
 
 `MemberActions(Company)` asks for the permission of each route's action,
 as `ModelActions` does, among the keys the caller holds as a member of
@@ -1022,9 +1049,20 @@ the tenant served (`TENANCY.MEMBER_PERMISSIONS`), and no others. A member
 who is also staff acts there with their role, not with their staff
 permissions ([members' rules](tenancy.md#members-permissions)). On a
 route that serves no tenant it refuses, unless `outside=` says who may
-call it: a rule, or `Actions` such as `ModelActions(Company)`. A resource
-given `outside=` and no `tenant=` is refused with `TypeError`: its items
-would serve no tenant either, and `outside` would rule them.
+call it:
+
+- A rule, such as `IsAuthenticated()`, decides the `view` and `add`
+  routes there: the list, queries on the collection, creation. A route
+  of another action there, such as a command on the collection declared
+  with `action="change"` (a merge), is refused. Give such a command its
+  action: a `POST` on the collection is `add` by default.
+- `Actions`, such as `ModelActions(Company)`, name the rules of every
+  action there themselves, as for a resource without tenants.
+- Credentials limited to scopes pass `outside` only where its rules
+  check scopes. On a tenant's routes, the member's rule checks them.
+
+A resource given `outside=` and no `tenant=` is refused with `TypeError`:
+its items would serve no tenant either, and `outside` would rule them.
 
 ### Rules on objects, and scope
 
