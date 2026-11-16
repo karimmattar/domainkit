@@ -222,7 +222,9 @@ domains' own models keep those keys as secrets.
 - the layers depend inwards: `api → infrastructure → application →
   domain`;
 - the domain layer imports only the standard library, `domainkit.ddd`,
-  `domainkit.clock`, `domainkit.money`, and itself;
+  `domainkit.clock`, `domainkit.money`, `domainkit.i18n.lazy` (*new in
+  2.5*: marks and lazy strings, [i18n.md](../i18n.md#messages-of-the-domain-layer)),
+  and itself;
 - the application layer uses no web or database library, and the
   infrastructure layer no web library but the outgoing HTTP client
   (`domainkit.http.client`), which adapters call other services with;
@@ -259,7 +261,7 @@ See [i18n.md](../i18n.md) for translations.
 | --- | --- | --- |
 | `LANGUAGE_CODE` | `"en"` | The language of responses when `Accept-Language` asks for none of `LANGUAGES`, and outside requests. It must be one of them. |
 | `LANGUAGES` | `(("en", "English"), ("ar", "Arabic"))` | `(code, name)` of each language responses may be in; `LocaleMiddleware` picks one per request. Codes are lower case (`ar`, `pt-br`). |
-| `LOCALE_PATHS` | `()` | Directories of `<locale>/LC_MESSAGES/messages.mo` catalogs, read before each installed domain's `locale` directory, then domainkit's own. |
+| `LOCALE_PATHS` | `()` | Directories of `<locale>/LC_MESSAGES/messages.mo` catalogs, read before each installed domain's `locale` directory, then domainkit's own. `makemessages` adds the messages the project marks outside its domains to the first ([i18n.md](../i18n.md#the-projects-own-messages)). |
 | `TIME_ZONE` | `"UTC"` | The zone dates are shown in (`localtime`, `localdate`, and the date formats). Dates are stored and compared in UTC, whatever it says. |
 
 ```python

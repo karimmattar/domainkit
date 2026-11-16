@@ -11,6 +11,37 @@ and a status.
 
 ### Added
 
+- A domain layer may import `domainkit.i18n.lazy`, and no other module of
+  `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
+  translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
+  make labels translated when they are shown. Importing it loads no
+  settings and no catalog: `domainkit.i18n` now imports its names on
+  first use. A project that allowed all of `domainkit.i18n` in
+  `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
+  ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
+  report I2).
+
+- `makemessages` also reads the project's own modules: the package that
+  holds the settings module, and the one that holds `ROOT_ROUTER`'s
+  module, without the installed domains. What they mark is added to the
+  catalogs of the first `LOCALE_PATHS` directory, which keep every entry
+  they hold, the project's rewordings of others' messages too. Without
+  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
+  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
+  user report I6).
+
+- Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
+  ship in Arabic. A test holds every mail template domainkit ships to
+  have its files in each language its catalogs translate (user report
+  I7).
+
+- A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
+  language alone: readers of that language get them, and every other
+  reader the template's own. A directory with the template's own text
+  body still wins over a later directory's translation
+  ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
+  report I8).
+
 - `…/authorizations/cancel` and `…/transactions/cancel` (under
   `/auth/app-sign-in`) withdraw what a signed-in session asked the
   phone, from that session alone, and `POST /auth/app-sign-in/cancel
@@ -29,6 +60,7 @@ and a status.
   without HTTP. A page could only let the request expire, or have the
   user deny it as "Not me", which stopped their pushes for
   `REPORT_COOLDOWN`. ADR 0164 (user report A16).
+
 - A login a page redeems at `/auth/app-sign-in/token` or `/session`
   names the sign-in request in its origin, for login gates
   (`login_origin`) and `on_session_limits`:
@@ -47,6 +79,7 @@ and a status.
   kind's. `PUSH_TITLE` and `PUSH_BODY` now default to `None`; set, they
   still stand for every kind `PUSH_TEXTS` names none for. Every kind was
   pushed as "Approve sign-in?". ADR 0164 (user report I8).
+
 - What a signed-in session asks the phone (an act, a transaction, the
   deprecated step-up) is counted against `CIBA.START_RATE` per user,
   from any address, and refused with "Too many requests were sent to
@@ -55,12 +88,22 @@ and a status.
   minute. `count_start(request, user=user)` counts a route of your own
   the same way; a page's sign-ins stay counted per address. ADR 0164
   (user report A15).
+
 - An `on_approve` hook's refusal, `PermissionDenied` or an HTTP error of
   403, denies the request, unreported, before the phone is answered: the
   page's poll and wait answer `access_denied` at once. The request waited
   until it expired. A hook that denies it itself keeps working, and any
   other error (a conflict to retry, a throttle, the hook's own failure)
   still leaves it waiting. ADR 0164 (user report A17).
+
+### Fixed
+
+- `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
+  not when the application is built: a test that overrides them is
+  served in the new ones (user report I5).
+
+- `makemessages` extracts the texts marked with `gettext_noop`, as the
+  docs said it did (user report I2).
 
 ## [2.4.0] - 2026-11-16
 

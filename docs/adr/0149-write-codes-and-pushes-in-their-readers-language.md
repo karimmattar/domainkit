@@ -1,6 +1,6 @@
 # 0149. Write codes and pushes in their reader's language
 
-- Status: Accepted
+- Status: Accepted; amended by [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md)
 - Date: 2026-11-16
 
 ## Context
