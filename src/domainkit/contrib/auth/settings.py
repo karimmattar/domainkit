@@ -629,6 +629,10 @@ class AuthSettings(BaseModel):
         default=None, gt=timedelta(0), le=timedelta(hours=8)
     )
     """How long a support login as another user works (up to 8 hours); None: off."""
+    ADMIN_ACTION: bool = False
+    """Each change of the admin API asks for an authorization of its own
+    (``auth.admin_change``, ADR 0163), bound to the user or group and to
+    what changes, in place of a step-up window."""
     CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ()
     """Origins of pages that may send cookie requests besides ``ALLOWED_HOSTS``'."""
 

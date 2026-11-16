@@ -12,7 +12,9 @@ where ``RECENT_SECOND_FACTOR`` is a rule instance of the project's (such
 as ``StepUp(max_age=timedelta(minutes=5))``), or a class taking no
 arguments. ``ApproveAction`` asks, with ``APPROVALS.APPROVE_ACTION`` on,
 for an authorization of the approval itself (ADR 0144), in place of a
-step-up window.
+step-up window; ``SubmitAction``, ``RejectAction``, and ``CancelAction``
+ask for one of submitting, rejecting, and cancelling, with their own
+settings on (ADR 0163).
 """
 
 from datetime import datetime
@@ -43,9 +45,12 @@ from .settings import ApprovalsSettings
 
 __all__ = [
     "ApproveAction",
+    "CancelAction",
     "IsApprover",
     "MayApprove",
+    "RejectAction",
     "RequestActions",
+    "SubmitAction",
     "configured_rule",
 ]
 
@@ -230,39 +235,42 @@ class ApprovalAuthorizationOut(BaseModel):
     expires_at: datetime
 
 
-class ApproveAction(BasePermission):
-    """With ``APPROVALS.APPROVE_ACTION`` on: the approval holds its own authorization.
+class DecisionAction(BasePermission):
+    """With its setting on: the act holds an authorization of its own (ADR 0144).
 
-    It asks what ``StepUp(for_="approvals.approve")`` asks (ADR 0144): an
-    ``Action-Authorization`` header holding a confirmed authorization of
-    approving this request with this fingerprint, of the approver and of
-    their login. ``401 authorization_required`` without one, ``403
+    It asks what ``StepUp(for_=...)`` asks of approvals' action that
+    ``setting`` turns on: an ``Action-Authorization`` header holding a
+    confirmed authorization of this act, of the caller and of their login.
+    ``401 authorization_required`` without one, ``403
     action_not_authorized`` with one that does not hold. It asks about the
     request itself, after the other rules: one that refuses plainly (not an
     approver) answers first. Off, it allows everyone, and its route's twin
-    (``POST /requests/{id}/approve/authorization``) answers ``404``.
+    (``POST <the route's path>/authorization``) answers ``404``.
     """
+
+    setting: ClassVar[str]
+    """The ``APPROVALS`` key that turns the action on."""
 
     def __init__(self) -> None:
         """Ask nothing until the setting is on."""
         self._rule: BasePermission | None = None
 
     def _asking(self) -> BasePermission | None:
-        """``StepUp(for_="approvals.approve")``, while the setting is on."""
-        if not registry.settings(ApprovalsSettings).APPROVE_ACTION:
+        """``StepUp(for_=<the action>)``, while the setting is on."""
+        if not getattr(registry.settings(ApprovalsSettings), self.setting):
             return None
         if self._rule is None:
             from domainkit.contrib.auth import StepUp
 
-            from .authorizing import APPROVE
+            from .authorizing import ACTIONS
 
-            self._rule = StepUp(for_=APPROVE)
+            self._rule = StepUp(for_=ACTIONS[self.setting])
         return self._rule
 
     async def has_object_permission(
         self, request: HTTPConnection, user: Principal, obj: object
     ) -> bool:
-        """The setting is off, or the request holds an authorization of it."""
+        """The setting is off, or the request holds an authorization of the act."""
         rule = self._asking()
         return rule is None or await rule.has_permission(request, user)
 
@@ -278,21 +286,69 @@ class ApproveAction(BasePermission):
         return ApprovalAuthorizationOut
 
     async def ask_authorization(self, request: Request, command: object) -> BaseModel:
-        """Store an authorization of the approval ``command`` makes; the twin's body.
+        """Store an authorization of the act ``command`` makes; the twin's body.
 
         It is refused as ``request_action_authorization`` refuses, and as
-        ``approve_request`` would refuse the approval itself.
+        the act itself would be refused.
 
         Raises:
-            APIError: 404 ``not_found``, while ``APPROVE_ACTION`` is off.
+            APIError: 404 ``not_found``, while the setting is off.
         """
         if self._asking() is None:
             raise APIError(status.HTTP_404_NOT_FOUND, "Not Found", code="not_found")
         from .authorizing import ask
-        from .services import ApproveRequest
 
-        assert isinstance(command, ApproveRequest)  # noqa: S101 - the route's.
-        return ApprovalAuthorizationOut.model_validate(await ask(request, command))
+        return ApprovalAuthorizationOut.model_validate(
+            await ask(request, self.setting, command)
+        )
+
+
+class ApproveAction(DecisionAction):
+    """With ``APPROVALS.APPROVE_ACTION`` on: the approval holds its own authorization.
+
+    An authorization of approving this request with this fingerprint
+    (``approvals.approve``); its twin is ``POST
+    /requests/{id}/approve/authorization``.
+    """
+
+    setting: ClassVar[str] = "APPROVE_ACTION"
+
+
+class RejectAction(DecisionAction):
+    """With ``APPROVALS.REJECT_ACTION`` on: the rejection holds its own authorization.
+
+    An authorization of rejecting this request for this reason
+    (``approvals.reject``, ADR 0163); its twin is ``POST
+    /requests/{id}/reject/authorization``.
+    """
+
+    setting: ClassVar[str] = "REJECT_ACTION"
+
+
+class CancelAction(DecisionAction):
+    """With ``APPROVALS.CANCEL_ACTION`` on: the withdrawal holds its own authorization.
+
+    An authorization of cancelling this request for this reason
+    (``approvals.cancel``, ADR 0163); its twin is ``POST
+    /requests/{id}/cancel/authorization``.
+    """
+
+    setting: ClassVar[str] = "CANCEL_ACTION"
+
+
+class SubmitAction(DecisionAction):
+    """With ``APPROVALS.SUBMIT_ACTION`` on: the submission holds its own authorization.
+
+    An authorization of submitting this command with these arguments
+    (``approvals.submit``, ADR 0163), asked of the request before its body
+    is read; its twin is ``POST /requests/authorization``.
+    """
+
+    setting: ClassVar[str] = "SUBMIT_ACTION"
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """The setting is off, or the request holds an authorization of a submission."""
+        return await self.has_object_permission(request, user, None)
 
 
 def _rule_of(request: ApprovalRequest) -> BasePermission | None:
@@ -318,13 +374,18 @@ class RequestActions:
         """View to read, add to submit and cancel, approver to decide.
 
         Submitting, deciding, and cancelling are in one's own name only
-        (``ActsForThemselves``). Approving asks ``ApproveAction`` last: an
-        authorization of the approval, with ``APPROVE_ACTION`` on.
+        (``ActsForThemselves``). Each decision asks last for an
+        authorization of itself, with its setting on: ``ApproveAction``,
+        ``RejectAction``, ``CancelAction``.
         """
         if action == "approve":
             return (ActsForThemselves(), IsApprover(), MayApprove(), ApproveAction())
         if action == "reject":
-            return (ActsForThemselves(), IsApprover())
+            return (ActsForThemselves(), IsApprover(), RejectAction())
         if action == "cancel":
-            return (ActsForThemselves(), HasModelPermission("add", ApprovalRequest))
+            return (
+                ActsForThemselves(),
+                HasModelPermission("add", ApprovalRequest),
+                CancelAction(),
+            )
         return (HasModelPermission(action, ApprovalRequest),)

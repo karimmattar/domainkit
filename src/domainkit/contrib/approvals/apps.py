@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 ACCOUNTING: Final = "domainkit.contrib.accounting"
 AUTH: Final = "domainkit.contrib.auth"
+ACTS: Final = ("SUBMIT_ACTION", "APPROVE_ACTION", "REJECT_ACTION", "CANCEL_ACTION")
+"""The settings that make a route of the requests ask for an authorization."""
 
 
 class ApprovalsConfig(DomainConfig):
@@ -41,14 +43,17 @@ class ApprovalsConfig(DomainConfig):
         The requests live in one database (``DATABASE_ROUTING['approvals']``).
         ``APPROVE_RULE`` is imported now, so a wrong path fails ``setup()``.
         With ``APPROVE_ACTION`` on, the action ``approvals.approve`` is
-        registered with auth, which must be installed. The guards of large
+        registered with auth, which must be installed; so are
+        ``approvals.submit``, ``approvals.reject``, and ``approvals.cancel``
+        with ``SUBMIT_ACTION``, ``REJECT_ACTION``, and ``CANCEL_ACTION``
+        (ADR 0163). The guards of large
         postings, of making superusers, and of the admin changes
         ``ADMIN_APPROVALS`` names are registered when their apps are
         installed and their settings ask.
 
         Raises:
-            ImproperlyConfigured: ``APPROVE_ACTION`` or ``ADMIN_APPROVALS``
-                is set without ``domainkit.contrib.auth``.
+            ImproperlyConfigured: One of the ``*_ACTION`` settings, or
+                ``ADMIN_APPROVALS``, is set without ``domainkit.contrib.auth``.
         """
         from .builtin import (
             check_admin_change,
@@ -70,15 +75,15 @@ class ApprovalsConfig(DomainConfig):
         on_erase_subject(self.erase_person)
         on_export_subject(self.export_person)
         on_check_application(self.application_problems)
-        if config.APPROVE_ACTION:
+        if asked := [name for name in ACTS if getattr(config, name)]:
             if not registry.is_installed(AUTH):
                 raise ImproperlyConfigured(
-                    "APPROVALS.APPROVE_ACTION asks approvers for authorizations of "
-                    f"{AUTH}: install it."
+                    f"APPROVALS.{asked[0]} asks for authorizations of {AUTH}: "
+                    "install it."
                 )
-            from .authorizing import register as register_approve
+            from .authorizing import register as register_actions
 
-            register_approve()
+            register_actions(config)
         if config.ENTRY_THRESHOLDS and registry.is_installed(ACCOUNTING):
             guard_entries(config)
         if config.ADMIN_APPROVALS and not registry.is_installed(AUTH):
