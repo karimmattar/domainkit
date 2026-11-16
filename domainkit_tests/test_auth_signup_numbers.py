@@ -32,6 +32,7 @@ from domainkit_tests.test_auth_signup_codes import ask, finish, stored
 __all__ = ["texting"]
 
 NUMBER: Final = "+33612345678"
+OTHER: Final = "+33699999999"
 BOTH: Final = {"SIGNUP_ENABLED": True, "IDENTIFIERS": ("email", "mobile_number")}
 CONFIRM: Final = "Your code to finish signing up"
 
@@ -344,9 +345,16 @@ def test_signups_spend_no_count_of_the_numbers_owner(texting: App) -> None:
     assert asked.status_code == 202, asked.json()
 
 
-def test_holding_runs_the_manage_logins_checks(texting: App) -> None:
-    """As ``POST /mobile-verification`` does: refused, the number is not held."""
-    from fastapi import status
+@pytest.mark.parametrize("refusal", ["api", "http", "permission", "fresh"])
+def test_a_signups_hold_runs_no_manage_logins_check(texting: App, refusal: str) -> None:
+    """The checks guard the logins of an account; this one was just made.
+
+    Run on the signup's public request, a check that refused in its own
+    way (an ``HTTPException``, a ``PermissionError``, one that reads the
+    request's login) answered ``403`` or ``500`` with the account made
+    and the code spent (third review of user report A12).
+    """
+    from fastapi import HTTPException, status
     from starlette.requests import Request
 
     from domainkit.contrib.auth import AbstractBaseUser
@@ -358,11 +366,104 @@ def test_holding_runs_the_manage_logins_checks(texting: App) -> None:
 
     async def refuse(request: Request, user: AbstractBaseUser) -> None:
         seen.append(user.get_username())
-        raise APIError(status.HTTP_403_FORBIDDEN, "Not here.", code="refused")
+        if refusal == "api":
+            raise APIError(status.HTTP_403_FORBIDDEN, "Not here.", code="refused")
+        if refusal == "http":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Not here.")
+        if refusal == "permission":
+            raise PermissionError("Not here.")
+        request.scope["auth"].auth_time  # noqa: B018 - no login: None.
 
     on_manage_logins(refuse, domain="auth")
     signed_up(client, "ann@example.com")
 
-    assert seen == ["ann@example.com"]
-    assert sms_outbox == []
-    assert stored("ann@example.com").mobile_number is None
+    assert seen == []
+    assert [text.to for text in sms_outbox] == [NUMBER]  # Held, and texted.
+
+
+def test_the_code_proves_where_it_went_whatever_the_settings_say_since(
+    texting: App,
+) -> None:
+    """``AUTH.IDENTIFIERS`` changed while the code was out.
+
+    A code texted to Mallory's own number proved the victim's address on
+    the new account; a code mailed to her own address took the victim's
+    number, and ended the victim's account.
+    """
+    client = texting(SIGNUP_ENABLED=True, IDENTIFIERS=("mobile_number",))
+    victim = create_user(None, email="victim@corp.test", mobile_number=OTHER)
+    assert ask(client, email="victim@corp.test", mobile_number=NUMBER).json() == {
+        "detail": "Check your text messages to finish signing up."
+    }
+    drain()
+    (text,) = sms_outbox
+    forward = finish(texting(**BOTH), NUMBER, code_in(text.body))
+
+    client = texting(**BOTH)
+    assert ask(client, email="m@evil.test", mobile_number=OTHER).json() == {
+        "detail": "Check your email to finish signing up."
+    }
+    drain()
+    (message,) = [m for m in mail.outbox if m.to == ("m@evil.test",)]
+    later = texting(SIGNUP_ENABLED=True, IDENTIFIERS=("mobile_number",))
+    reverse = finish(later, "m@evil.test", code_in(message.body))
+
+    assert forward == (204, None)
+    made = stored(NUMBER)
+    assert (made.email, made.mobile_number_verified) == ("", True)
+    kept = user(victim)
+    assert (kept.email, kept.mobile_number, kept.is_active) == (
+        "victim@corp.test",
+        OTHER,
+        True,
+    )
+    # The address it proved logs no one in now: refused, and the number,
+    # never proved, stays with the victim, who stays active.
+    assert reverse == (422, "identifier_required")
+    assert user(victim).is_active
+    assert user(victim).mobile_number == OTHER
+
+
+def test_a_code_goes_only_to_the_value_it_was_counted_for(texting: App) -> None:
+    """Holds queued before a hold of V texted V past V's count.
+
+    The task read the held value when it ran: each request counted for
+    one number sent to whatever number was held by then.
+    """
+    client = texting(**BOTH, EMAIL_RATE="2/hour")
+    answers: list[int] = []
+    for index in range(3):
+        create_user(None, email=f"m{index}@evil.test", email_verified=True)
+        other = from_address(client, f"203.0.113.{index + 1}")
+        headers = bearer(login(other, f"m{index}@evil.test")["access_token"])
+        answers.extend(
+            other.post(
+                "/auth/mobile-verification",
+                json={"mobile_number": number},
+                headers=headers,
+            ).status_code
+            for number in (f"+3360000000{index}", OTHER)
+        )
+    drain()
+
+    assert answers == [202, 202, 202, 202, 202, 429]
+    assert len([text for text in sms_outbox if text.to == OTHER]) == 2
+
+
+def test_an_address_gets_only_the_codes_counted_for_it(texting: App) -> None:
+    """Two addresses held in turn before the worker runs: one mail each, at most.
+
+    The first request's task, counted for the first address, sends nothing
+    once the second is held: the second address gets its own code only.
+    """
+    client = texting(**BOTH)
+    create_user(None, email="ann@example.com", email_verified=True)
+    headers = bearer(login(client, "ann@example.com")["access_token"])
+    for address in ("one@example.com", "two@example.com"):
+        held = client.post(
+            "/auth/email-verification", json={"email": address}, headers=headers
+        )
+        assert held.status_code == 202, held.json()
+    drain()
+
+    assert [message.to for message in mail.outbox] == [("two@example.com",)]

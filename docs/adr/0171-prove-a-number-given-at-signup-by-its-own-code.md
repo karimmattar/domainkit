@@ -79,7 +79,11 @@ A review of user report A12 found it; it was in 2.4.0.
    given identifies users (`AUTH.IDENTIFIERS`): an account made with the
    address alone could not log in there. That value alone decides
    whether the signup can be made, which mail or text it gets, and what
-   it takes from an account that holds it unproved (ADR 0133).
+   it takes from an account that holds it unproved (ADR 0133). Where the
+   code goes is decided when it is sent; when it comes back, what it
+   proves is read from the target it was kept under, never from the
+   settings of that moment: were `AUTH.IDENTIFIERS` changed meanwhile, a
+   code texted to one value would prove the other.
 2. **The account is made with that value; the other is held.** The other
    value given (the number, or the address) is held for the new user
    (`uow.pending_identifiers`), and the worker sends it a verification
@@ -89,7 +93,12 @@ A review of user report A12 found it; it was in 2.4.0.
    moves from an account that held it unproved; or the code answers
    `409 mobile_number_taken` (`email_taken`) where another account
    proved it first. Only the value's reader learns that it is taken.
-   Holding it runs the `on_manage_logins` checks, as that route does.
+   Holding it runs no `on_manage_logins` check: those keep a session from
+   adding a way into an account that has logins, and this account was
+   just made, by a request with no session. Run there, a check that
+   refused in its own way answered `403` or `500` with the account made
+   and the code spent. The task sends the code only to the value counted
+   for it, not to one held after.
 3. **Each text or mail is counted per recipient.** A held value counts
    against `AUTH.EMAIL_RATE` per value among signups (the count a signup
    by that value spends), apart from the count of the value's owner's
@@ -105,9 +114,9 @@ A review of user report A12 found it; it was in 2.4.0.
    owner's code. Email and mobile verification codes are now kept per
    user too (`user_target`): two users' codes for one value never
    replace each other.
-5. **Past the rate, where it cannot be counted, or where a check
-   refuses, the account is made without the other value**, and nothing
-   says so: `/signup/code` answers `204`. Its user asks for a code later,
+5. **Past the rate, or where it cannot be counted, the account is made
+   without the other value**, and nothing says so: `/signup/code`
+   answers `204`. Its user asks for a code later,
    with the value in the body. A held value lasts as long as its last
    code (`AUTH.CODE_TTL`); once it lapses, `POST /mobile-verification`
    with no body sends nothing (the account has no number), and answers
@@ -144,7 +153,11 @@ signup chose one, and the value the code proves: never the held one.
   and a number could never finish where addresses identify no one (it
   was made with the address alone), that re-asking and signups shared
   or escaped the counts, and that `REQUIRED_FIELDS` let the number round
-  this decision. Decisions 1, 3, 4, 5 and 7 answer them.
+  this decision. Decisions 1, 3, 4, 5 and 7 answer them. A third review
+  found that checks run on the signup's request broke its answer, that
+  a change of `AUTH.IDENTIFIERS` while a code was out let it prove the
+  other value, and that queued tasks texted a value held after they were
+  counted. Decisions 1 and 2 answer them.
 
 ## References
 

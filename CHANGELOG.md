@@ -126,8 +126,9 @@ and a status.
   users; the account is made with that value, and the other is held and
   sent a verification code of its own, which `/auth/mobile-verification/code`
   (or `/email-verification/code`) takes, as for a changed value. Holding
-  runs the `on_manage_logins` checks and counts against
-  `AUTH.EMAIL_RATE` per value among signups. A `mobile_number` that
+  counts against `AUTH.EMAIL_RATE` per value among signups, and the code
+  then goes to that value only. What the signup's code proves is where
+  it went, whatever `AUTH.IDENTIFIERS` says when it comes back. A `mobile_number` that
   `REQUIRED_FIELDS` names comes on its own, never under `fields`. A
   signup by a number alone is unchanged. See
   [upgrading.md](docs/upgrading.md#24-to-25). ADR 0171 (found in review

@@ -10,12 +10,18 @@ one before (ADR 0126)::
 
     target = target_of(email)
     async with AuthUnitOfWork() as uow:
-        code = await uow.verification_codes.issue(EMAIL_VERIFICATION, target)
+        code = await uow.verification_codes.issue(
+            PASSWORD_RESET, target, user_id=user.id
+        )
         await uow.commit()  # then send the code
 
     async with AuthUnitOfWork() as uow:
-        proven = await uow.verification_codes.check(EMAIL_VERIFICATION, target, code)
+        proven = await uow.verification_codes.check(PASSWORD_RESET, target, code)
         await uow.commit()  # a wrong try counts even when it is refused
+
+The verification routes keep ``EMAIL_VERIFICATION`` and
+``MOBILE_VERIFICATION`` codes under ``user_target(value, user.id)``: one
+issued under ``target_of`` is one they never accept.
 """
 
 import hashlib

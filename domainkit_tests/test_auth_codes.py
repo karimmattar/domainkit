@@ -275,3 +275,18 @@ def test_codes_issued_at_once_for_one_target_both_succeed(identity: Api) -> None
 
     assert len(codes) == 2
     assert len(stored_codes()) == 1
+
+
+def test_the_modules_example_is_one_the_routes_accept() -> None:
+    """Verification codes are kept under ``user_target``: the example uses none.
+
+    It issued ``EMAIL_VERIFICATION`` under ``target_of``, which the
+    verification routes no longer accept (third review of user report A12).
+    """
+    from domainkit.contrib.auth import codes
+
+    example = (codes.__doc__ or "").split("::", 1)[1]
+
+    assert "PASSWORD_RESET" in example
+    assert "EMAIL_VERIFICATION, target" not in example
+    assert "MOBILE_VERIFICATION, target" not in example

@@ -524,7 +524,8 @@ async def _hold(
         to = held.value if held else own
         recipients = [email_key(scope, target_of(str(to)))] if to else []
         await _limit_mail(request, scope, f"{scope}:user:{user.id}", *recipients)
-        await enqueue(send, user_id=user.id, **language_argument())
+        # Only to the value counted: "" matches none.
+        await enqueue(send, user_id=user.id, value=to or "", **language_argument())
         return
     if not hasattr(user, f"change_{field}"):
         raise UnknownUserField(UNCHANGEABLE[field])
@@ -539,7 +540,7 @@ async def _hold(
         else:
             ttl = auth_settings().CODE_TTL
             await uow.pending_identifiers.hold(stored.id, field, value, ttl=ttl)
-        uow.defer(send, user_id=stored.id, **language_argument())
+        uow.defer(send, user_id=stored.id, value=value, **language_argument())
         await uow.commit()
 
 
@@ -708,12 +709,16 @@ async def send_code(
     return True
 
 
-async def send_mobile_verification(user_id: UUID, language: str | None = None) -> None:
+async def send_mobile_verification(
+    user_id: UUID, language: str | None = None, value: str | None = None
+) -> None:
     """Text a verification code to the user's mobile number, unless verified.
 
     The ``domainkit.auth.send_mobile_verification`` task; ``language`` is
     the request's (``language_of``). A number held for a change gets it
-    instead, and is held as long as the code works (ADR 0153).
+    instead, and is held as long as the code works (ADR 0153). With
+    ``value``, the number the request was counted for, nothing goes to any
+    other: one held since would get a text it was never counted for.
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))
@@ -724,6 +729,8 @@ async def send_mobile_verification(user_id: UUID, language: str | None = None) -
         if held is None and (
             not number or getattr(user, "mobile_number_verified", True)
         ):
+            return
+        if value is not None and number != value:
             return
         if not can_text(f"User {user.id}"):
             return
@@ -865,14 +872,17 @@ async def _mail_code(
     await deliver([render_mail(template, context, to=[address])])
 
 
-async def send_email_verification(user_id: UUID, language: str | None = None) -> None:
+async def send_email_verification(
+    user_id: UUID, language: str | None = None, value: str | None = None
+) -> None:
     """Mail a verification code to the user's address.
 
     The ``domainkit.auth.send_email_verification`` task. Nothing goes to an
     address that is verified already. A new code replaces the one before.
     ``language`` is the request's (``language_of``). An address held for a
     change gets it instead, and is held as long as the code works
-    (ADR 0153).
+    (ADR 0153). With ``value``, the address the request was counted for,
+    nothing goes to any other.
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))
@@ -885,6 +895,8 @@ async def send_email_verification(user_id: UUID, language: str | None = None) ->
         return
     address = held.value if held else email_of(user)
     if address is None or not _mailable(user, address):
+        return
+    if value is not None and not same_email(address, value):
         return
     async with AuthUnitOfWork() as uow:
         code = await _issue(uow, EMAIL_VERIFICATION, address, user, held)

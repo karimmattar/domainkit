@@ -875,11 +875,13 @@ the value on the account, proved, or `409 mobile_number_taken`
 held value takes nothing from an account that holds it, and plays no
 part in which mail or text the signup gets.
 
-Holding it runs the `on_manage_logins` checks, and counts against
-`EMAIL_RATE` per value among signups (apart from the owner's own
-requests to verify it). Past the rate, or where a check refuses, the
-account is made without it, and nothing says so: `/signup/code` answers
-`204` either way. A held value lasts as long as its last code
+Holding it counts against `EMAIL_RATE` per value among signups (apart
+from the owner's own requests to verify it), and runs no
+`on_manage_logins` check: the account was just made, and has no login
+for one to guard. Past the rate the account is made without it, and
+nothing says so: `/signup/code` answers `204` either way. What the code
+proves is where it went: a change of `AUTH.IDENTIFIERS` while it is out
+does not make it prove the other value. A held value lasts as long as its last code
 (`AUTH.CODE_TTL`). Once it lapses, the user asks again with the value in
 the body (`POST /mobile-verification` `{"mobile_number": ...}`): with no
 body, the route answers `202` and sends nothing, as for a number proved
