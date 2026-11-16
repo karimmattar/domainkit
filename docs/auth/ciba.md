@@ -131,19 +131,17 @@ A sign-in request starts on one of two channels:
 
 - **Push.** The initiator names the user (`/app-sign-in/push`, or a CIBA
   client's `login_hint`). Each app of the user that gave a push token
-  gets a notification. Its text is `PUSH_TITLE` and `PUSH_BODY`; its data
-  is `{"type": "domainkit.sign_in", "request_id": "..."}`. It holds no
-  personal data, since it goes through Apple's or Google's servers: the
-  app fetches the details itself. The text is translated on the server
-  (*new in 2.4*), into the user's language where the user model names it
+  gets a notification. Its data is `{"type": "domainkit.sign_in",
+  "request_id": "..."}`. It holds no personal data, since it goes
+  through Apple's or Google's servers: the app fetches the details
+  itself. Its text says what kind of request asks
+  ([Push texts](#push-texts)), translated on the server (*new in 2.4*),
+  into the user's language where the user model names it
   (`LANGUAGE_FIELD`), else the language of the request that started the
   sign-in, else `LANGUAGE_CODE`
-  ([The language of codes](logging-in.md#the-language-of-codes)).
-  domainkit's catalogs have the defaults in Arabic (`هل توافق على تسجيل
-  الدخول؟`). A `PUSH_TITLE` of your own goes out as you set it, unless
-  your catalogs translate it. The push holds no localization keys
-  (FCM's `title_loc_key`, APNs's `title-loc-key`), so the app needs no
-  strings of its own for it.
+  ([The language of codes](logging-in.md#the-language-of-codes)). The
+  push holds no localization keys (FCM's `title_loc_key`, APNs's
+  `title-loc-key`), so the app needs no strings of its own for it.
 - **QR code.** The initiator names nobody (`/app-sign-in/qr`). Its page
   renders `qr` as a QR code. The phone that scans it sends it to
   `/app-sign-in/requests/claim`, and the request becomes its user's. A
@@ -164,8 +162,40 @@ handle it got (`request`, or CIBA's `auth_req_id`). The poll answers:
 | `authorization_pending` | Not answered yet. Poll again after `interval`. |
 | `slow_down` | The phone has not answered, and this poll came before `interval` was up. The interval grows by 5 seconds, from now on. A request the phone approved or denied answers at once, however soon it is polled. |
 | `access_denied` | The phone denied it. |
-| `expired_token` | Its time is up: `REQUEST_TTL` (2 minutes) to answer a push or a scanned QR code, or `QR_TTL` for a QR code no phone scanned. |
+| `expired_token` | Its time is up: `REQUEST_TTL` (2 minutes) to answer a push or a scanned QR code, or `QR_TTL` for a QR code no phone scanned. Or its initiator withdrew it ([below](#withdrawing-a-request)). |
 | `sign_in_unknown` | No request has the handle, or it was redeemed, or it is another initiator's. |
+
+### Push texts
+
+Each kind of request has its own words (since 2.5,
+[ADR 0164](../adr/0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)),
+so the user knows what asks before opening the app:
+
+| Kind | Title | Body |
+| --- | --- | --- |
+| `sign_in` | Approve sign-in? | Open the app to approve or deny it. |
+| `authorization` (an act) | Approve an action? | Open the app to see what it is, and approve or deny it. |
+| `transaction` | Approve a transaction? | Open the app to see its amount and payee, and approve or deny it. |
+| `step_up` (deprecated) | Confirm it's you? | Open the app to see what for, and approve or deny it. |
+
+domainkit's catalogs have them in Arabic (`هل توافق على تسجيل الدخول؟`,
+`هل توافق على الإجراء؟`, ...). `PUSH_TEXTS` gives a kind words of your
+own, and `PUSH_TITLE` and `PUSH_BODY` give every kind `PUSH_TEXTS`
+names none for; each field falls back on its own:
+
+```python
+CIBA = {
+    "PUSH_TEXTS": {
+        "authorization": {"TITLE": "Confirm a change?"},
+        "transaction": {"TITLE": "Pay?", "BODY": "Open the app to check it."},
+    },
+}
+```
+
+Words of your own go out as you set them, unless your catalogs translate
+them. Keep personal data out of them. Before 2.5 every kind was pushed
+as a sign-in; a `PUSH_TITLE` or `PUSH_BODY` set then still reaches every
+kind: unset it to give each kind its own.
 
 ## The phone's routes
 
@@ -203,7 +233,9 @@ Show all of it, and make "Deny" as easy to reach as "Approve".
 `report: true` says the user did not start the sign-in: someone who knows
 their identifier did. Every request of the user still waiting is denied,
 `SignInReported` goes to the audit trail, and no push reaches the user
-for `REPORT_COOLDOWN` (15 minutes).
+for `REPORT_COOLDOWN` (15 minutes). Without it, "Deny" ends that request
+alone, and reports nothing: offer both, and keep "Not me" for what the
+user did not start.
 
 ## Web sign-in routes
 
@@ -218,6 +250,7 @@ address (`429 rate_limited`).
 | `POST /auth/app-sign-in/token` | `{"request"}` | Tokens, or a poll's answer. |
 | `POST /auth/app-sign-in/session` | `{"request"}` | A browser session (cookies and `csrf_token`), or a poll's answer. |
 | `POST /auth/app-sign-in/wait` | `{"request"}` | `{"status": "approved"}` once the phone approves, or `"pending"` after `WAIT_SECONDS`; never redeems. |
+| `POST /auth/app-sign-in/cancel` | `{"request"}` | `204`: withdrawn ([below](#withdrawing-a-request)). |
 
 Keep `request` in the page's memory: never in the QR code, a URL, or
 storage another page reads. Whoever holds it gets the login once the
@@ -226,6 +259,31 @@ phone approves.
 The answer to `/push` is the same whoever the identifier names. The page
 cannot tell a user who exists from one who does not, or who cannot be
 asked now (see [What holds](#what-holds)).
+
+### Withdrawing a request
+
+A page that no longer wants the answer, its dialog closed, withdraws the
+request with the handle it polls with (since 2.5,
+[ADR 0164](../adr/0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)):
+`POST /auth/app-sign-in/cancel {"request"}` for a sign-in, and
+`…/authorizations/cancel` or `…/transactions/cancel` for what a
+signed-in session asked, from that session alone.
+
+- **It ends now.** The phone no longer lists it, and approving or
+  denying it is `404 sign_in_not_found`. It no longer counts against
+  `MAX_PENDING`, so the page can ask again at once. Nobody redeems it: a
+  poll answers `expired_token`.
+- **Nothing is reported.** The user's pushes go on, and the audit trail
+  records nothing.
+- **Only the initiator.** The handle names the request, and a session's
+  request also names the credentials that asked: another login of the
+  user, or another kind's route, gets `400 sign_in_unknown`, as for an
+  unknown or redeemed handle. A request answered, ended, or a decoy
+  answers `204` all the same.
+- **What it asked about stays.** A withdrawn act's authorization, or a
+  transaction, still waits: ask the phone again, or confirm it another
+  way. The push already shown stays in the phone's notifications; the
+  app finds the request gone.
 
 ### Hooks of the web pages
 
@@ -242,10 +300,17 @@ approval, without its own routes. It registers on two hook points of
   runs.
 - `on_approve(hook)`: `async def hook(request, user, sign_in) -> None`,
   before a phone's approval of the user's own request is recorded; it
-  raises (`PermissionDenied`) to refuse it, and nothing is approved.
+  raises (`PermissionDenied`) to refuse it, and nothing is approved. The
+  refusal denies the request, as the phone's "Deny" would, reporting
+  nothing: the page's poll and wait answer `access_denied` at once
+  (since 2.5). A hook that denies it itself first keeps working. A
+  refusal is a domain error or an HTTP error under 500; any other error
+  is the hook's own failure, and leaves the request waiting.
 
 `domainkit.contrib.ciba.api.count_start(request)` counts a start of a
-project's own route against `START_RATE`, with the built-in ones.
+project's own route against `START_RATE`, with the built-in ones;
+`count_start(request, user=user)` counts what a signed-in session asks
+that user's phone, per user.
 
 ### A policy per page
 
@@ -332,9 +397,11 @@ is bound to its credentials.
 | `POST /auth/app-sign-in/authorizations/{id}` | | `request`, `expires_in`, `interval`, `match_code`. |
 | `POST /auth/app-sign-in/authorizations/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/authorizations/{id}/confirm` answers; or a poll's answer. |
 | `POST /auth/app-sign-in/authorizations/wait` | `{"request"}` | As `/app-sign-in/wait`, for this session's act. |
+| `POST /auth/app-sign-in/authorizations/cancel` | `{"request"}` | `204`: this session's act withdrawn ([Withdrawing a request](#withdrawing-a-request)). |
 | `POST /auth/app-sign-in/transactions/{challenge_id}` | | `request`, `expires_in`, `interval`, `match_code`. |
 | `POST /auth/app-sign-in/transactions/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/sca/{id}/confirm` answers; or a poll's answer. |
 | `POST /auth/app-sign-in/transactions/wait` | `{"request"}` | As `/app-sign-in/wait`, for this session's transaction. |
+| `POST /auth/app-sign-in/transactions/cancel` | `{"request"}` | `204`: this session's transaction withdrawn. |
 | `POST /auth/app-sign-in/step-up` | `{"message"}` | Deprecated ([below](#the-pages-words-and-a-window-deprecated)): `request`, `expires_in`, `interval`, `match_code`. |
 | `POST /auth/app-sign-in/step-up/token` | `{"request"}` | Deprecated: the step-up, `amr` `["hwk"]`, as `/auth/step-up` answers it; or a poll's answer. |
 | `POST /auth/app-sign-in/step-up/wait` | `{"request"}` | Deprecated: as `/app-sign-in/wait`, for this session's step-up. |
@@ -344,7 +411,10 @@ is never a login, and a login request never steps a session up. Staff acting as 
 user cannot ask their phone (`401 reauthentication_required`). A user
 whose phone cannot be asked now (none bound, `MAX_PENDING` waiting, or a
 recent report) gets `409 phone_unavailable`. Each request is counted
-against `START_RATE`, and shows the page's number under
+against `START_RATE` per user, from any address, so an office's staff
+behind one address each have the rate (since 2.5; per address before,
+with the page's sign-ins). A refusal says `Too many requests were sent
+to your phone`. Each request shows the page's number under
 `NUMBER_MATCHING`.
 
 ### Confirming one act
@@ -712,8 +782,13 @@ A gate sees how the login is made with `login_origin(request)` (since
 its `method`, what it proved (`amr`, in RFC 8176's names: `pwd`, `otp`,
 `hwk`, `mfa`), `at`, and the bound device that signed the request
 (`device_id`). Each auth, devices, ciba and identity login route names
-them ([How a login was made](logging-in.md#how-a-login-was-made)). A gate
-decides by them, not by the path:
+them ([How a login was made](logging-in.md#how-a-login-was-made)). A
+login a page redeems at `/app-sign-in/token` or `/session` also names
+the sign-in request (`sign_in_request_id`) and its `binding_message`,
+what the page's `on_start` hook named it (since 2.5,
+[ADR 0164](../adr/0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md));
+`on_session_limits` sees them too. A gate decides by them, not by the
+path or the `Origin` of the redeem:
 
 ```python
 from domainkit.contrib.auth.gates import login_origin
@@ -725,7 +800,18 @@ async def staff_need_a_second_factor(request: Request, user: AbstractBaseUser) -
         raise PermissionDenied("Staff log in with a code or a passkey.")
     if user.is_staff and origin is not None and origin.device_id is not None:
         raise PermissionDenied("Staff log in from the dashboard, not the app.")
+
+
+async def dashboard_is_for_staff(request: Request, user: AbstractBaseUser) -> None:
+    origin = login_origin(request)
+    if origin is not None and origin.binding_message == "Sign in to the dashboard":
+        if not user.is_staff:
+            raise PermissionDenied("Only staff sign in to the dashboard.")
 ```
+
+Whoever starts a sign-in chooses its page
+([A policy per page](#a-policy-per-page)): let a message make a gate
+stricter, never looser.
 
 The device is known once the devices app checked the request's
 signature. With `CIBA.APPROVE_LOGINS`, ciba's gate does; a gate that runs
@@ -869,12 +955,13 @@ other, not `unknown_user_id`.
 | `REQUIRE_BINDING_MESSAGE` | `True` | CIBA clients must send a `binding_message`. |
 | `QR_SAME_NETWORK` | `"warn"` | When the phone claiming a QR code is on another address than the page: tell the app (`same_network: false`), or refuse (`"require"`, `403 different_network`); a page's policy may ask otherwise. |
 | `QR_FORMAT` | `"{code}"` | What a QR code holds, at most 300 characters; `{code}` once, such as `"https://id.example.com/qr#{code}"` for a universal link. |
-| `START_RATE` | `"10/minute"` | Sign-ins the public routes start per client address; `None` for none. |
+| `START_RATE` | `"10/minute"` | Sign-ins the public routes start per client address; and, per user, what a user's signed-in sessions ask their phone (since 2.5; per address before). `None` for none. |
 | `CLIENT_RATE` | `"60/minute"` | Requests each CIBA client starts; `None` for none. |
 | `ACCESS_TOKEN_TTL` | 10 minutes (at most 1 hour) | How long a CIBA client's access token works. |
 | `ID_TOKEN_TTL` | 5 minutes (at most 1 hour) | How long its ID token works. |
 | `ASSERTION_MAX_AGE` | 5 minutes (at most 1 hour) | The furthest a `private_key_jwt` assertion may expire. |
-| `PUSH_TITLE`, `PUSH_BODY` | `"Approve sign-in?"`, `"Open the app to approve or deny it."` | The notification's text, translated by the catalogs into the user's or the request's language. Keep personal data out of it. |
+| `PUSH_TITLE`, `PUSH_BODY` | `None` | Set, the notification's title (at most 100 characters) or body (at most 200) for every kind `PUSH_TEXTS` names none for; `None`: each kind's own ([Push texts](#push-texts); `"Approve sign-in?"` for every kind before 2.5). Translated by the catalogs into the user's or the request's language. Keep personal data out of it. |
+| `PUSH_TEXTS` | `{}` | A kind's notification (`sign_in`, `authorization`, `transaction`, `step_up`): `{"TITLE", "BODY"}`, each optional, not empty, and at most 100 and 200 characters (since 2.5). |
 
 `DEVICES.DEVICE_LOGIN` and `DEVICES.ENROLLMENT` (both `False`) are the
 devices app's ([above](#the-mobile-app-as-identity)).
@@ -905,9 +992,9 @@ devices app's ([above](#the-mobile-app-as-identity)).
   the user is.
 - **Pushes can be crowded out.** Someone who knows a user's identifier can
   keep `MAX_PENDING` push requests waiting for them, so the user's own
-  push sign-ins become decoys until those expire or are denied. QR codes
-  still work, and a report pauses the pushes. Lower `START_RATE` if this
-  is abused.
+  push sign-ins become decoys until those expire, are denied, or are
+  withdrawn. QR codes still work, and a report pauses the pushes. Lower
+  `START_RATE` if this is abused.
 - **A relayed QR code is caught, not prevented.** An attacker can show
   their own page's code to a victim. The phone shows the page's address
   and browser, and warns when it is not on the same network, or refuses
@@ -946,6 +1033,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | `approve(uow, user_id, request_id, device_id, *, match_code=None)` | The approved request, or `None` for a wrong number (commit, then raise `WrongMatchCode`). Raises `SignInNotFound`. |
 | `deny(uow, user_id, request_id, *, report=False)` | Denies, and with `report` every other waiting request. Raises `SignInNotFound`. |
 | `poll(handle, *, client_id)` | The approved request, redeemed; else a `PollRefused`. |
+| `cancel(handle, *, client_id, kind="sign_in", credential_digest=None)` | Withdraws the request: it ends now, reported to no one. Raises `SignInUnknown` as `poll` does. Commits itself (since 2.5). |
 
 `CibaUnitOfWork` is a `DevicesUnitOfWork` with `requests`, `clients`, and
 `assertions`. `register(...)` and `rotate_secret(...)` in

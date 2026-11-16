@@ -154,9 +154,9 @@ statuses, and the amendments they name.
 | [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) | Codes that open an account go only where it was proved | Accepted |
 | [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md) | While the broker is away, relaying workers run the outbox | Accepted |
 | [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted; amended by [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) |
-| [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Accepted |
+| [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Accepted; amended by [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) |
 | [0145](0145-mount-part-of-a-router-as-a-copy.md) | Mount part of a router as a copy | Accepted |
-| [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md) | Show gates how a login was made, and let a login keep shorter limits | Accepted |
+| [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md) | Show gates how a login was made, and let a login keep shorter limits | Accepted; amended by [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) |
 | [0147](0147-name-who-caused-each-event-and-tell-the-old-address.md) | Name who caused each event, and tell the old address | Accepted |
 | [0148](0148-check-new-passwords-against-breaches-and-let-rules-be-async.md) | Check new passwords against breaches, and let password rules be async | Accepted |
 | [0149](0149-write-codes-and-pushes-in-their-readers-language.md) | Write codes and pushes in their reader's language | Accepted |
@@ -171,6 +171,7 @@ statuses, and the amendments they name.
 | [0158](0158-count-outgoing-calls-circuits-fallbacks-and-statements-and-give-requests-a-span.md) | Count outgoing calls, circuits, fallbacks, and statements, and give requests a span | Accepted |
 | [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 | [0160](0160-serve-in-production-from-the-settings.md) | Serve in production from the settings | Accepted |
+| [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) | Let the asker withdraw a phone request, count sessions per user, and word each kind | Accepted |
 
 ### Decisions still without a record
 

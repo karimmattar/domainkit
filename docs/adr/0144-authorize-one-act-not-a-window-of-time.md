@@ -1,6 +1,6 @@
 # 0144. Authorize one act, not a window of time
 
-- Status: Accepted
+- Status: Accepted; amended by [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)
 - Date: 2026-11-15
 
 ## Context

@@ -1,6 +1,6 @@
 # 0146. Show gates how a login was made, and let a login keep shorter limits
 
-- Status: Accepted
+- Status: Accepted; amended by [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)
 - Date: 2026-11-16
 
 ## Context
