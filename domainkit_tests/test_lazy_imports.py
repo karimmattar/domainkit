@@ -19,11 +19,12 @@ import pytest
 
 import domainkit
 import domainkit.http
-from domainkit import lifecycle
+from domainkit import i18n, lifecycle
 from domainkit.conf import override_settings
 from domainkit.contrib import messaging
 from domainkit.contrib.messaging import worker
 from domainkit.http import application, health
+from domainkit.i18n import formats, lazy, timezone, translation
 from domainkit.ledger import MemoryLedger
 from domainkit.utils.module_loading import lazy_names
 
@@ -183,7 +184,51 @@ def test_a_source_tree_has_an_unknown_version(monkeypatch: pytest.MonkeyPatch) -
     assert vars(domainkit)["__version__"] == "0.0.0+unknown"
 
 
-@pytest.mark.parametrize("module", [domainkit, domainkit.http, messaging])
+@pytest.mark.reads_own_source
+def test_a_domain_layer_marks_texts_without_loading_the_settings() -> None:
+    """``domainkit.i18n.lazy`` loads neither the settings nor the domains (I2).
+
+    Its lazy strings look a text up when shown, and only then load the
+    catalogs; ``domainkit.i18n``'s names are imported on first use.
+    """
+    script = textwrap.dedent(
+        """\
+        import sys
+
+        from domainkit.i18n.lazy import gettext_lazy, gettext_noop
+
+        heavy = ["domainkit.conf", "domainkit.apps", "domainkit.i18n.translation"]
+        print([name for name in heavy if name in sys.modules])
+        print(len(sys.modules) < 60)
+        label = gettext_lazy("The request is invalid.")
+        print(gettext_noop("Already paid."))
+        from domainkit.conf import configure
+
+        configure("domainkit_tests.settings")
+        from domainkit.i18n import override
+
+        with override("ar"):
+            print(str(label))
+        print("domainkit.i18n.translation" in sys.modules)
+        """
+    )
+    assert run(script) == ["[]", "True", "Already paid.", "الطلب غير صالح.", "True"]
+
+
+def test_the_translation_names_are_the_public_ones() -> None:
+    """Each name of ``domainkit.i18n`` resolves to its module's object, once."""
+    names = {name: getattr(i18n, name) for name in i18n.__all__}
+
+    assert names["gettext"] is translation.gettext
+    assert names["gettext_lazy"] is lazy.gettext_lazy is translation.gettext_lazy
+    assert names["LazyString"] is lazy.LazyString
+    assert names["timezone"] is timezone
+    assert i18n.__getattr__("timezone") is timezone  # As a fresh process calls it.
+    assert names["date_format"] is formats.date_format
+    assert vars(i18n)["gettext"] is translation.gettext
+
+
+@pytest.mark.parametrize("module", [domainkit, domainkit.http, messaging, i18n])
 def test_other_names_are_still_missing(module: object) -> None:
     """A name the module does not have raises ``AttributeError``, as before."""
     with pytest.raises(AttributeError, match="has no attribute 'missing'"):

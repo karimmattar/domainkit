@@ -212,6 +212,16 @@ Numbers and dates written as each language writes them.
 - `register_formats`: Write numbers and dates of `language` with `formats` from now on.
 - `time_format`: A time, or the local time of an aware datetime: `3:04 PM`.
 
+## `domainkit.i18n.lazy`
+
+Texts translated later: marks, and strings translated when they are shown.
+
+- `LazyString`: A translation made each time the string is used, in the language active then.
+- `gettext_lazy`: `gettext` when the string is used.
+- `gettext_noop`: Mark `message` for translators without translating it now.
+- `ngettext_lazy`: `ngettext` when the string is used.
+- `pgettext_lazy`: `pgettext` when the string is used.
+
 ## `domainkit.i18n.timezone`
 
 Local time for display (Django's `django.utils.timezone`).
