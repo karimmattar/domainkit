@@ -120,6 +120,8 @@ application logs them as a warning and starts.
 | --- | --- |
 | `security.E101` | a route that no rule guards, while `REQUIRE_ROUTE_RULES` is on ([Deny by default](../auth/routes.md#deny-by-default)) |
 | `openapi.E001` | two routes with one operation id ([Operation ids](responses.md#operation-ids)) |
+| `tenancy.E001` | a route whose `PathTenant` names a path parameter its path does not have ([A tenant from the path](../tenancy.md#a-tenant-from-the-path)) |
+| `tenancy.E002` | a route whose own dependencies check callers (`Require`) before `PathTenant` serves the path's tenant |
 | `auth.E101` | routes that check users, but `MIDDLEWARE` lacks `AuthenticationMiddleware` |
 | `auth.E102` | auth's cookie routes mounted, but `AUTH.AUTHENTICATION_CLASSES` lacks `CookieAuthentication` |
 | `auth.E103` | auth's routes that send mail, without the apps they need in `INSTALLED_DOMAINS` |

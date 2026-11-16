@@ -198,7 +198,10 @@ stays open, membership is checked again with the route's rules
 
 Put `PathTenant` first. A rule that runs before it sees no tenant: it
 would answer a member's request `403`, and a stranger's `403` rather than
-`404`.
+`404`. `check`, and the application as it starts, refuse a route whose
+own dependencies put a rule before `PathTenant` (`tenancy.E002`), and one
+whose path lacks the parameter `PathTenant` names (`tenancy.E001`), which
+would refuse every request with `422`.
 
 **With `TenantMiddleware` too.** A project may name some tenants before
 routing and others by path. `TenantMiddleware` then refuses a request
@@ -271,11 +274,27 @@ stream, each re-check asks afresh, as the principal is loaded again. A
 project that authenticates its own way calls `member_permissions` from
 its principal's `ahas_perms`.
 
-!!! warning
-    A key a role grants counts wherever the tenant is served, for every
-    check that asks the backends: the rules, the scopes a personal token
-    may take, and what the admin API lets staff hand out. Grant through
-    roles the permissions on the tenant's own data, not `auth.*` keys.
+**A role never reaches beyond its tenant.** Keys a member holds through
+`MEMBER_PERMISSIONS` answer the checks of requests served as that tenant,
+and count toward no ceiling. `get_all_permissions`, which every ceiling
+reads, leaves out the backends whose grants hold in one tenant only
+(`tenant_scoped`, as `MembershipBackend` is). So, while a tenant is served:
+
+- staff grant through the admin API, directly or through a group, only
+  what they hold everywhere, and change or touch only users and groups
+  within that (`You can only grant permissions you have`);
+- a personal token, and a sign-in approval's access token, carry only
+  scopes the user holds everywhere (`403 scope_not_held`). A scope only
+  bounds a token anyway: each request still needs the permission itself.
+
+`/auth/me` lists a member's keys in the tenant with the rest, as the
+checks count them.
+
+The admin API does not see a user's memberships when it decides whether
+staff may change them: the function answers one tenant at a time. A
+password change hands over the user's memberships too. Refuse such
+changes with `on_admin_change` ([the admin API](auth/routes.md#the-admin-api))
+where staff should not change the members of tenants they do not run.
 
 ## Outside a request
 
@@ -516,7 +535,7 @@ None
   Always pair `HEADER` with `MEMBERSHIP`.
 - **A rule before `PathTenant`.** It runs with no tenant: members get
   `403`, and so do strangers, where they should get `404`. Put
-  `PathTenant` first in the router's dependencies.
+  `PathTenant` first in the router's dependencies (`tenancy.E002`).
 - **A path tenant's prefix that is not exempt.** With `TenantMiddleware`
   and `REQUIRED`, a request that names no tenant before routing gets
   `400 tenant_not_named`. Add the prefix to `EXEMPT_PATHS`.

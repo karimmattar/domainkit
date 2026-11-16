@@ -165,6 +165,31 @@ For memberships that carry permissions:
   `ModelBackend`, and says so (`object_grants` is empty, so the admin API
   does not fall back to superusers only). It refuses to load without
   `MEMBER_PERMISSIONS`, which would make it grant nothing silently.
+- **Ceilings: a member's keys never reach beyond the tenant.** Granted
+  in one tenant, a key must not let its holder hand it out, or carry it,
+  where it does not hold. Every ceiling reads one function,
+  `backends.get_all_permissions(user)`: the admin API's `may_grant` and
+  `may_hold` (what staff may grant, and touch on objects) and
+  `may_change` (whom they may change), personal tokens' scopes (the route
+  and `createtoken`), and the scopes of a sign-in approval's access token
+  (`contrib.ciba`). It now leaves out every backend whose grants hold in
+  one tenant only: `BaseBackend.tenant_scoped`, a class attribute, false
+  by default and true on `MembershipBackend`. So, while a tenant is
+  served, an owner who is staff grants none of the owner's keys through
+  the admin API, and scopes no token with them, beyond what they hold
+  everywhere; inside the tenant, `has_perm` and the rules still count
+  them. `get_all_permissions(user, tenant_scoped=True)` adds them, for
+  `/auth/me`, which lists what the request may do. A token's scopes only
+  bound it (each request still needs the permission itself), so a
+  role-scoped token could widen nothing; the scopes are refused anyway,
+  which keeps every ceiling one rule, and costs a member nothing their
+  session in the tenant cannot do.
+- **Checks.** `check`, and the application as it starts, refuse a route
+  whose `PathTenant` names a parameter its path does not have
+  (`tenancy.E001`: every request would be refused with 422), and one
+  whose own dependencies check callers before `PathTenant`
+  (`tenancy.E002`). A `PathTenant` inside another dependency is checked
+  against the path only.
 
 ## Consequences
 
@@ -173,19 +198,28 @@ For memberships that carry permissions:
   `has_perm`, without a resolver or a backend of its own.
 - A stranger cannot tell an organization that exists from one that does
   not, through the routes that take it from the path.
-- `PathTenant` must come first among a route's dependencies: a rule that
-  runs before it sees no tenant, and answers `403` to members and
-  strangers alike. The docs say so; nothing checks it yet.
-- A key a member holds counts wherever the tenant is served, for every
-  check that asks the backends: the rules, the scopes a personal token
-  may take, and the admin API's ceilings. Roles should grant permissions
-  on the tenant's own data, not `auth.*` keys; the docs warn.
+- A route that puts a rule before `PathTenant`, or names a parameter its
+  path lacks, does not start in staging and production.
+- A member's keys count inside the tenant only. A member cannot scope a
+  personal token with them; their session in the tenant still does what
+  they allow.
+- `may_change` does not see what a user holds through memberships: the
+  hook answers one tenant at a time and cannot list a user's tenants. A
+  password change hands over a user's memberships too, so a project whose
+  staff should not change the members of tenants they do not run refuses
+  it with `on_admin_change`; the docs say so.
+- `contrib.objectpermissions` checks who may grant on an object with
+  `has_perm`, not `get_all_permissions`, so it counts a member's keys in
+  the tenant being served. On that tenant's own objects this stays in the
+  tenant; on an object of no tenant it would not. It is left for later,
+  below.
 - The kept answer is tied to the principal object: a re-check of a live
   connection, with the principal loaded afresh, asks the hook again; a
   principal that is never reloaded keeps its answer for the request.
-- Left for later: a `404` option for `TenantMiddleware`; a check that
-  `PathTenant` comes first; a memberships table in a contrib app; and
-  re-checking membership on connections that `TenantMiddleware` admitted.
+- Left for later: bounding `contrib.objectpermissions`' grants by what
+  the actor holds everywhere; a `404` option for `TenantMiddleware`; a
+  memberships table in a contrib app; and re-checking membership on
+  connections that `TenantMiddleware` admitted.
 
 ## References
 

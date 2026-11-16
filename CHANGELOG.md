@@ -17,15 +17,23 @@ and a status.
   one, and OpenAPI documents the parameter. A caller who does not belong
   gets the `404` of a route that does not exist, whether the tenant
   exists or not, so none is told apart; an anonymous one gets `401`.
-  `MEMBERSHIP` or `MEMBER_PERMISSIONS` must say who belongs. Tenancy
-  chose one tenant per request before routing, and answered strangers
-  `403`. ADR 0150 (user report D2).
+  `MEMBERSHIP` or `MEMBER_PERMISSIONS` must say who belongs. `check`
+  refuses a route whose path lacks the parameter (`tenancy.E001`), or
+  that checks callers before `PathTenant` (`tenancy.E002`). Tenancy chose
+  one tenant per request before routing, and answered strangers `403`.
+  ADR 0150 (user report D2).
 - `TENANCY.MEMBER_PERMISSIONS` names a function of the user and a tenant
   that returns the permission keys a member holds there, such as their
   role's, or None for one who is not a member; it replaces `MEMBERSHIP`.
   It is asked once per request, and `MembershipBackend`
   (`domainkit.contrib.auth.backends`) grants the keys in the tenant being
   served, so `HasPermissions` counts a member's role;
+  `member_permissions(user)` returns them. The keys count toward no
+  ceiling: `get_all_permissions` leaves out backends whose grants hold in
+  one tenant (`BaseBackend.tenant_scoped`), so staff grant none of them
+  through the admin API, and no personal token or sign-in approval is
+  scoped with them; `/auth/me` lists them. A project wrote memberships
+  and a backend of its own for this. ADR 0150 (user report D2).
   `member_permissions(user)` returns them. A project wrote memberships and
   a backend of its own for this. ADR 0150 (user report D2).
 - `AUTH.BREACHED_PASSWORDS = {"ENABLED": True}` checks every new password

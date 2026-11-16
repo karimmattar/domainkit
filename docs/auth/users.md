@@ -549,6 +549,9 @@ The [LDAP backend](identity.md#ldap-and-active-directory) checks
 passwords against a directory. `MembershipBackend` grants what a user
 holds as a member of the tenant being served, such as a role's keys
 (`TENANCY.MEMBER_PERMISSIONS`, [tenancy](../tenancy.md#members-permissions)).
+Such a backend sets `tenant_scoped = True`: `has_perm` counts its keys in
+the tenant, and `get_all_permissions(user)`, which bounds the admin API
+and token scopes, leaves them out (`tenant_scoped=True` adds them).
 
 ### Grants on single objects
 
