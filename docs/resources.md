@@ -441,16 +441,21 @@ products.command_route(DeleteProduct, service=delete_product, method="DELETE")
   lacks, or a required field that nothing gives, is a `TypeError` at
   import.
 - A body `schema_for` derives (a `@use_case`'s, or `schema_for(Command,
-  write=True)`) gives the command the value objects it declares. One of
-  several fields, alone or in a tuple (`tuple[Address, ...]`), is built
-  from its parts, so its own checks run; one of a single field is built
-  around its value. A body field typed as a value object or a dataclass
-  itself, or a tuple of it, gives it as validated, a value object built
-  again, where the command declares that same class (or a tuple of it).
-  Any other body field, and any field the command declares as `dict`,
-  `Any`, `Mapping`, or anything else, comes as `model_dump()` gives it:
-  a nested model or a dataclass as a dict. A `ValueError` or `TypeError` from a value object is
-  `422` under its field. *Changed in 2.5.*
+  write=True)`) gives the command the value objects it declares, built
+  inside out. One of several fields, alone or in a tuple
+  (`tuple[Address, ...]`, not a `list`), is built from its parts, so its
+  own checks run; one of a single field is built around its value, or
+  around the value object it wraps. A body field typed as a value object
+  or a dataclass itself, or a tuple of it, gives it as validated, each
+  value object in it built again, where the command declares that same
+  class (or a tuple of it). Any other body field, and any field the
+  command declares as `dict`, `Any`, `Mapping`, or anything else, comes
+  as `model_dump()` gives it: a nested model or a dataclass as a dict.
+- A value object's refusal, a check of its markers, a `ValueError`,
+  `TypeError`, `AssertionError`, or `ArithmeticError`, is `422` at its
+  place in the body (`["body", "places", 1, "shelf"]`); in a batch, that
+  item's `422 validation_error`. A `PATCH` checks the field policy
+  first. *Changed in 2.5.*
 - The answer is the aggregate the service returns, in the resource's
   schema, with its `ETag`. A `POST` on the collection answers `201` with
   `Location`. OpenAPI documents the `ETag` and `Location`.
@@ -795,9 +800,11 @@ value objects unwrapped, child entities nested. `domain_class` names the
 class it was made from.
 
 **A write schema** (`write=True`) leaves out `id`, `version`, and
-`deleted_at` (and `tenant_id` of a `TenantOwned` aggregate). It takes the
-domain's defaults, forbids unknown fields, takes only datetimes with a
-time zone, and bounds integers to 64 bits.
+`deleted_at` (and `tenant_id` of a `TenantOwned` aggregate), and the
+fields the class sets itself (`field(init=False)`), which `include` may
+not name. It takes the domain's defaults, forbids unknown fields, takes
+only datetimes with a time zone, refuses NaN and infinity, and bounds
+integers to 64 bits.
 
 **Secrets.** A field stored encrypted (`Annotated[str | None,
 Encrypted(...)]`, a card number) is in a schema only where `include`

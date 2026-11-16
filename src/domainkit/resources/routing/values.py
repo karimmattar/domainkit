@@ -16,8 +16,10 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 
 from domainkit.db.models import model_key
+from domainkit.ddd.exceptions import InvalidField
 from domainkit.ddd.fields import FieldInfo, fields_of, wrapped_field
 from domainkit.ddd.model import Entity, ValueObject
+from domainkit.money import MoneyError
 
 from ..schemas import PatchModel, derived_from
 
@@ -45,8 +47,10 @@ def to_domain(field: FieldInfo, value: object) -> object:
     return field.coerce(value)
 
 
-type Build = Callable[[Any], object]
-"""Makes a body's validated value into what the message's field holds."""
+type Loc = tuple[str | int, ...]
+"""Where a value is in the request, as validation errors name it."""
+type Build = Callable[[Any, Loc], object]
+"""Makes a body's validated value, found at a ``Loc``, into what a field holds."""
 
 
 @cache
@@ -59,15 +63,15 @@ def builders(message: type, body: type[BaseModel] | None) -> dict[str, Build]:
     - a value object of several fields, as its write schema (``PlaceIn``),
       alone or in a tuple: built from the parts, so its checks run;
     - one of a single field, in a schema ``schema_for`` derived from a
-      field of the same type: built around the value;
+      field of the same type: built around its value, itself made so;
     - a value object or another dataclass, or a tuple of them, as that
       class, where ``message`` declares that same class (or a tuple of
-      it): the value pydantic validated; a value object built again, so
-      its checks run.
+      it): the value pydantic validated, each value object in it built
+      again, inside out, so its checks run.
 
     Other fields, a field ``message`` declares as ``dict``, ``Any``, or
-    anything else, and every field of a message whose hints do not
-    resolve, are given as ``model_dump()`` gives them.
+    anything else, a ``list``, and every field of a message whose hints do
+    not resolve, are given as ``model_dump()`` gives them.
     """
     if body is None:
         return {}
@@ -97,16 +101,16 @@ def _builder(
     if _composite(item) and _parts_of(items, item):
         return partial(_each, partial(_from_parts, item, items))
     if _plain_class(kind) and annotation is kind:
-        return _validated
+        return _checked
     if _plain_class(item) and items is item:
-        return partial(_each, _validated)
+        return partial(_each, _checked)
     if (
         isinstance(kind, type)
-        and wrapped_field(kind) is not None
+        and (inner := wrapped_field(kind)) is not None
         and source is not None
         and source.kind is kind
-    ):
-        return field.coerce  # What it wraps, built around.
+    ):  # The body gives what it wraps, as a field of that type is derived.
+        return partial(_around, kind, inner.name, _builder(inner, annotation, inner))
     return None
 
 
@@ -116,8 +120,15 @@ def _parts_of(annotation: object, kind: type) -> TypeGuard[type[BaseModel]]:
         return False
     derived = derived_from(annotation)
     return (
-        derived is not None and derived[0] is kind and required(kind) <= set(derived[1])
+        derived is not None
+        and derived[0] is kind
+        and required(kind) <= set(derived[1]) <= _initial(kind)
     )
+
+
+def _initial(kind: type) -> set[str]:
+    """The fields ``kind``'s ``__init__`` takes."""
+    return {each.name for each in dataclasses.fields(kind) if each.init}
 
 
 def _items_of(annotation: object) -> object:
@@ -126,7 +137,9 @@ def _items_of(annotation: object) -> object:
     return args[0] if get_origin(annotation) is tuple and args[1:] == (...,) else None
 
 
-def _from_parts(kind: type, schema: type[BaseModel], parts: BaseModel | None) -> object:
+def _from_parts(
+    kind: type, schema: type[BaseModel], parts: BaseModel | None, loc: Loc
+) -> object:
     """The value object ``kind`` of the write schema's ``parts``.
 
     Its own value objects are made as a body's are; other values stay as
@@ -135,25 +148,82 @@ def _from_parts(kind: type, schema: type[BaseModel], parts: BaseModel | None) ->
     if parts is None:
         return None
     inner = builders(kind, schema)
-    values = {name: getattr(parts, name) for name in schema.model_fields}
-    return kind(
-        **{
-            name: inner[name](value) if name in inner else plain(value)
-            for name, value in values.items()
-        }
-    )
+    arguments = {}
+    for name in schema.model_fields:
+        value = getattr(parts, name)
+        arguments[name] = (
+            inner[name](value, (*loc, name)) if name in inner else plain(value)
+        )
+    return _made(kind, arguments, loc)
 
 
-def _each(build: Build, values: tuple[object, ...] | None) -> object:
+def _each(build: Build, values: tuple[object, ...] | None, loc: Loc) -> object:
     """Each of ``values`` made by ``build``, as a tuple."""
-    return None if values is None else tuple(build(value) for value in values)
+    if values is None:
+        return None
+    return tuple(build(value, (*loc, at)) for at, value in enumerate(values))
 
 
-def _validated(value: object) -> object:
-    """A dataclass as validated; a value object built again, so its checks run."""
-    if isinstance(value, ValueObject):
-        return dataclasses.replace(value)
-    return value
+def _around(
+    kind: type, name: str, build: Build | None, value: object, loc: Loc
+) -> object:
+    """The value object of one field ``kind`` around ``value``, made by ``build``."""
+    if value is None:
+        return None
+    return _made(kind, {name: value if build is None else build(value, loc)}, loc)
+
+
+def _checked(value: object, loc: Loc) -> object:
+    """``value`` as validated, each value object in it built again, inside out.
+
+    So the checks of each run, which pydantic skips; a dataclass is built
+    again only around a value object built again.
+    """
+    if type(value) is tuple:
+        return tuple(_checked(each, (*loc, at)) for at, each in enumerate(value))
+    if not dataclasses.is_dataclass(value) or isinstance(value, type):
+        return value
+    changed = {
+        field.name: _checked(getattr(value, field.name), (*loc, field.name))
+        for field in dataclasses.fields(value)
+        if field.init
+    }
+    if not isinstance(value, ValueObject) and all(
+        each is getattr(value, name) for name, each in changed.items()
+    ):
+        return value
+    return _made(partial(dataclasses.replace, value), changed, loc)
+
+
+def _made(make: Callable[..., object], arguments: dict[str, Any], loc: Loc) -> object:
+    """``make(**arguments)``: a value object at ``loc``, its refusal a 422 there.
+
+    Raises:
+        RequestValidationError: It refused a part (``InvalidField``), or
+            raised ``ValueError``, ``TypeError``, ``AssertionError``, or
+            ``ArithmeticError``, as pydantic answers a validator's.
+    """
+    try:
+        return make(**arguments)
+    except InvalidField as exc:
+        error = {"type": exc.code, "loc": (*loc, exc.field), "msg": exc.message}
+    except AssertionError as exc:
+        error = _refused(loc, "assertion_error", "Assertion failed", exc)
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        if isinstance(exc, MoneyError):
+            raise  # Answered as money errors are.
+        error = _refused(loc, "value_error", "Value error", exc)
+    raise RequestValidationError([error])
+
+
+def _refused(loc: Loc, kind: str, title: str, exc: BaseException) -> dict[str, Any]:
+    """A validation error at ``loc`` for ``exc``, as pydantic writes a validator's."""
+    return {
+        "type": kind,
+        "loc": loc,
+        "msg": f"{title}, {exc}",
+        "ctx": {"error": str(exc)},
+    }
 
 
 def _bare(annotation: object) -> object:
@@ -191,40 +261,21 @@ def changes(
     fields ``build`` makes (``builders``), from the values validated.
 
     Raises:
-        RequestValidationError: A value object refused its parts with a
-            ``ValueError`` or a ``TypeError``: 422, under its field.
+        RequestValidationError: A value object refused its parts: 422,
+            where in the body they are.
     """
     if payload is None:
         return {}
+    build = build or {}
     if isinstance(payload, PatchModel):
-        given = {name: plain(value) for name, value in payload.changes().items()}
-    else:
-        given = payload.model_dump()
-    for name, each in (build or {}).items():
-        if name in given:
-            given[name] = _made(name, each, getattr(payload, name))
+        return {
+            name: build[name](value, ("body", name)) if name in build else plain(value)
+            for name, value in payload.changes().items()
+        }
+    given = payload.model_dump(exclude=set(build))
+    for name, each in build.items():
+        given[name] = each(getattr(payload, name), ("body", name))
     return given
-
-
-def _made(name: str, build: Build, value: object) -> object:
-    """``build(value)``; a ``ValueError`` or ``TypeError`` is a 422 under ``name``.
-
-    Raises:
-        RequestValidationError: ``build`` refused the value.
-    """
-    try:
-        return build(value)
-    except (TypeError, ValueError) as exc:
-        raise RequestValidationError(
-            [
-                {
-                    "type": "value_error",
-                    "loc": ("body", name),
-                    "msg": f"Value error, {exc}",
-                    "ctx": {"error": str(exc)},
-                }
-            ]
-        ) from None
 
 
 def plain(value: object) -> object:

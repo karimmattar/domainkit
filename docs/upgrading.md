@@ -53,7 +53,17 @@ this list says what a project that relied on 2.4's behaviour changes.
   step. A command field declared as `dict`, `Any`, `Mapping`, or anything
   else still gets what `model_dump()` gives, whatever the body's field is
   typed as; so does every field of a body written by hand in a shape of
-  its own, a nested model or a `dict`.
+  its own, a nested model or a `dict`. Only tuples are built: a
+  `list[Address]` still gives dicts.
+- **A body field typed as a value object's class checks its markers.**
+  Where the command declares that class, the value object is built
+  again, and each one inside it, so `{"shelf": "TOOLONG"}` for a
+  `MaxLength(4)` shelf is `422`, where 2.4 passed it on as a dict. A
+  `@field_serializer` on such a field no longer applies: the command gets
+  the value object, not what the serializer writes.
+- **Write schemas leave out the fields a class sets itself**
+  (`field(init=False)`): a request that sends one is `422`, where 2.4 took
+  it and passed it on.
 - **Write schemas refuse NaN and infinity for a `float`**, which a
   request could send as `NaN` or `Infinity`: `422`.
 

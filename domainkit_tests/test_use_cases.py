@@ -8,6 +8,7 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field, ValidationError, field_serializer
 
 from domainkit.ddd import (
@@ -26,8 +27,8 @@ from domainkit.ddd import (
 from domainkit.ddd.fields import fields_of
 from domainkit.http.access import IsAuthenticated
 from domainkit.log import JsonFormatter
-from domainkit.money import Money
-from domainkit.resources import ResourceRouter, schema_for, to_domain
+from domainkit.money import Money, currency
+from domainkit.resources import FieldPolicy, ResourceRouter, schema_for, to_domain
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -886,3 +887,295 @@ def test_a_class_the_body_validates_reaches_only_a_command_that_declares_it(
         dict,
         dict,
     ]
+
+
+class Home(ValueObject):
+    """A value object of one field that wraps one of several."""
+
+    place: Place
+
+
+class Route(ValueObject):
+    """A value object of one field that wraps a tuple of them."""
+
+    stops: tuple[Place, ...]
+
+
+class Measured(ValueObject):
+    """A value object with a field it sets itself, and checks that assert."""
+
+    low: int
+    high: int
+    length: int = dataclasses.field(init=False, default=0)
+
+    def __post_init__(self) -> None:
+        """Set the length; refuse a span that is too wide, or goes backwards."""
+        if self.high - self.low >= 100:  # As ``assert`` raises it, unrewritten.
+            raise AssertionError("Too wide.")
+        object.__setattr__(self, "length", self.high - self.low)
+        if self.length < 0:
+            raise ArithmeticError("Backwards.")
+
+
+class Shelved(ValueObject):
+    """A value object that holds others, by a hand-written body given as such."""
+
+    place: Place
+    note: str
+    extra: tuple[Place, ...] = ()
+
+
+class Priced(ValueObject):
+    """A value object whose check is money's."""
+
+    amount: Decimal
+    currency: str
+
+    def __post_init__(self) -> None:
+        """Refuse a currency money does not know."""
+        currency(self.currency)
+
+
+class GuardStock(Command):
+    """A partial change of a field a policy guards."""
+
+    gadget_id: UUID
+    stock: Span | None = None
+
+
+class ShelvedIn(BaseModel):
+    """A hand-written body that types its field as the value object."""
+
+    shelved: Shelved
+
+
+class Shelve(Command):
+    """Takes what ``ShelvedIn`` gives."""
+
+    gadget_id: UUID
+    shelved: Shelved
+
+
+seen_plans: list[dict[str, object]] = []
+
+
+@use_case
+async def plan(
+    uow: FakeGadgetsUnitOfWork,
+    gadget_id: UUID,
+    home: Home | None = None,
+    route: Route | None = None,
+    measured: Measured | None = None,
+    spans: tuple[Span, ...] = (),
+    stops: tuple[Place, ...] | None = None,
+    price: Priced | None = None,
+) -> None:
+    """Plan where a gadget goes."""
+    seen_plans.append({"home": home, "route": route, "measured": measured})
+
+
+async def kept(command: object, uow: FakeGadgetsUnitOfWork) -> None:
+    """Keep the command."""
+    seen_plans.append({"command": command})
+
+
+def planning(store: InMemoryGadgets) -> tuple[TestClient, str]:
+    """A client of the gadgets with ``plan``'s routes, and the gadget's path."""
+    seen_plans.clear()
+    resource = gadgets(
+        store, policy=FieldPolicy(editable={"stock": "shop.change_stock"})
+    )
+    resource.use_case(plan, path="/plan")
+    resource.batch_route(
+        plan.command,
+        service=plan.run,
+        body=schema_for(plan.command, write=True, include=["spans"]),
+        returns=None,
+    )
+    resource.command_route(
+        GuardStock,
+        service=kept,
+        body=schema_for(GuardStock, partial=True, include=["stock"]),
+        method="PATCH",
+        returns=None,
+    )
+    resource.command_route(
+        Shelve, service=kept, body=ShelvedIn, path="/shelve", returns=None
+    )
+    (gadget_id,) = store.items
+    return client_of(resource), f"{LOCATION}{gadget_id}"
+
+
+def refusal(client: TestClient, path: str, body: object) -> Any:  # noqa: ANN401 - JSON.
+    """The status and errors of posting ``body`` to ``path``."""
+    answer = client.post(path, json=body, headers=as_("changer"))
+    return answer.status_code, answer.json().get("errors")
+
+
+def test_value_objects_inside_value_objects_are_built_first(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """One of a single field wraps what is built for it (U5).
+
+    A ``Home`` around a ``Place``, a ``Route`` around a tuple of them; a
+    field the class sets itself is left out of the body.
+    """
+    use_auth()
+    client, item = planning(store)
+
+    planned = client.post(
+        f"{item}/plan",
+        json={
+            "home": {"shelf": "H", "row": 1},
+            "route": [{"shelf": "R", "row": 2}],
+            "measured": {"low": 1, "high": 3},
+        },
+        headers=as_("changer"),
+    )
+
+    assert planned.status_code == 204
+    assert seen_plans == [
+        {
+            "home": Home(Place("H", 1)),
+            "route": Route((Place("R", 2),)),
+            "measured": Measured(1, 3),
+        }
+    ]
+    assert seen_plans[0]["measured"].length == 2  # type: ignore[attr-defined]
+    assert refusal(
+        client, f"{item}/plan", {"measured": {"low": 1, "high": 3, "length": 9}}
+    ) == (
+        422,
+        [
+            {
+                "loc": ["body", "measured", "length"],
+                "msg": "Extra inputs are not permitted",
+                "type": "extra_forbidden",
+            }
+        ],
+    )
+
+
+def test_a_value_object_s_refusal_is_422_where_it_is(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``assert``, ``ArithmeticError``, and a check, at their path (U5).
+
+    The check of a value object inside one a hand-written body gives as
+    validated runs too.
+    """
+    use_auth()
+    client, item = planning(store)
+
+    assert refusal(client, f"{item}/plan", {"measured": {"low": 1, "high": 200}}) == (
+        422,
+        [
+            {
+                "loc": ["body", "measured"],
+                "msg": "Assertion failed, Too wide.",
+                "type": "assertion_error",
+            }
+        ],
+    )
+    assert refusal(client, f"{item}/plan", {"measured": {"low": 3, "high": 1}}) == (
+        422,
+        [
+            {
+                "loc": ["body", "measured"],
+                "msg": "Value error, Backwards.",
+                "type": "value_error",
+            }
+        ],
+    )
+    assert refusal(
+        client,
+        f"{item}/plan",
+        {"spans": [{"low": 1, "high": 2}, {"low": 2, "high": 1}]},
+    ) == (
+        422,
+        [
+            {
+                "loc": ["body", "spans", 1],
+                "msg": "Value error, A span ends after it starts.",
+                "type": "value_error",
+            }
+        ],
+    )
+    assert refusal(
+        client,
+        f"{item}/shelve",
+        {"shelved": {"place": {"shelf": "LONGER", "row": 1}, "note": "n"}},
+    ) == (
+        422,
+        [
+            {
+                "loc": ["body", "shelved", "place", "shelf"],
+                "msg": "shelf: Use at most 4 characters.",
+                "type": "invalid_field",
+            }
+        ],
+    )
+    inner = {"shelf": "A", "row": 1}
+    deeper = {
+        "place": inner,
+        "note": "n",
+        "extra": [inner, {"shelf": "LONGER", "row": 2}],
+    }
+    assert refusal(client, f"{item}/shelve", {"shelved": deeper})[1][0]["loc"] == [
+        "body",
+        "shelved",
+        "extra",
+        1,
+        "shelf",
+    ]
+    priced = client.post(
+        f"{item}/plan",
+        json={"price": {"amount": "1.00", "currency": "QQQ"}},
+        headers=as_("changer"),
+    )
+    assert (priced.status_code, priced.json()["code"]) == (422, "unknown_currency")
+    assert seen_plans == []
+
+
+def test_a_batch_item_a_value_object_refuses_is_422(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """That item answers 422, as a request of its own; the others run (U5)."""
+    use_auth()
+    client, item = planning(store)
+    gadget_id = item.rsplit("/", 1)[1]
+
+    batched = client.post(
+        "/gadgets/batch",
+        json={
+            "items": [
+                {"gadget_id": gadget_id, "spans": [{"low": 1, "high": 2}]},
+                {"gadget_id": gadget_id, "spans": [{"low": 2, "high": 1}]},
+            ]
+        },
+        headers=as_("changer"),
+    )
+
+    assert batched.status_code == 207
+    assert [each["status"] for each in batched.json()["results"]] == [204, 422]
+    assert batched.json()["results"][1]["error"] == {
+        "code": "validation_error",
+        "detail": "The request is invalid.",
+    }
+    assert len(seen_plans) == 1
+
+
+def test_a_field_the_policy_guards_is_refused_before_it_is_built(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """403 for who may not change it, whatever its value; 422 for who may (U5)."""
+    use_auth()
+    client, item = planning(store)
+    body = {"stock": {"low": 2, "high": 1}}
+
+    guarded = client.patch(item, json=body, headers=as_("changer"))
+    allowed = client.patch(item, json=body, headers=as_("stocker"))
+
+    assert (guarded.status_code, guarded.json()["code"]) == (403, "field_not_editable")
+    assert (allowed.status_code, allowed.json()["code"]) == (422, "validation_error")
+    assert seen_plans == []

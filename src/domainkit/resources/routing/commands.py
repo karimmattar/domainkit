@@ -12,7 +12,7 @@ for an authorization of the act gets a twin that asks for one
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import Response, params, status
 from pydantic import BaseModel
@@ -125,11 +125,15 @@ class CommandRoute:
 
         Raises:
             FieldNotEditable: The policy keeps the caller from changing a field.
+            RequestValidationError: A value object refused its parts.
         """
         router = self.router
-        given = changes(context.body, self.values)
+        body = context.body
         if self.partial and router.policy is not None:
-            await router.policy.check_changes(context.request, given)
+            # Before anything is built: who may not change a field is told so.
+            sent = cast("BaseModel", body).model_fields_set
+            await router.policy.check_changes(context.request, sent)
+        given = changes(body, self.values)
         return self.command(
             **{
                 **given,

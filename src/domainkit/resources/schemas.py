@@ -193,11 +193,14 @@ def schema_for(
     password) stays out of the schema's ``repr``, and a write schema with
     one keeps inputs out of its validation errors.
 
+    A write schema leaves out the fields the class sets itself
+    (``field(init=False)``).
+
     Raises:
         TypeError: A field named is not one of the model's, its type has
-            no schema (exclude it, or write the schema yourself), or it
-            holds a secret (``Sensitive``, as a password hash), which no
-            schema shows or takes.
+            no schema (exclude it, or write the schema yourself), it holds
+            a secret (``Sensitive``, as a password hash), which no schema
+            shows or takes, or a write schema names one the class sets.
     """
     fields = fields_of(model)
     writing = write or partial
@@ -214,6 +217,14 @@ def schema_for(
         for each in names
         if each not in exclude and not (writing and each in generated_fields(model))
     ]
+    if writing:
+        made = {each.name for each in dataclasses.fields(model) if not each.init}
+        if include is not None and (named := sorted(made & set(chosen))):
+            raise TypeError(
+                f"{model.__name__}.{', '.join(named)} is set by the class "
+                "(init=False), not given: leave it out of a write schema."
+            )
+        chosen = [each for each in chosen if each not in made]
     if secret := sorted(
         each
         for each in chosen

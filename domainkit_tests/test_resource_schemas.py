@@ -714,6 +714,23 @@ def test_write_schemas_take_finite_floats_only() -> None:
     assert shown.weight != shown.weight  # type: ignore[attr-defined]
 
 
+class Gauge(ValueObject):
+    """A value object with a field it sets itself."""
+
+    low: int
+    high: int
+    width: int = field(init=False, default=0)
+
+
+def test_write_schemas_leave_out_what_the_class_sets_itself() -> None:
+    """A ``field(init=False)`` is shown, never taken; naming it is refused (U5)."""
+    assert list(schema_for(Gauge, write=True).model_fields) == ["low", "high"]
+    assert list(schema_for(Gauge, partial=True).model_fields) == ["low", "high"]
+    assert list(schema_for(Gauge).model_fields) == ["low", "high", "width"]
+    with pytest.raises(TypeError, match=r"Gauge\.width is set by the class"):
+        schema_for(Gauge, write=True, include=["low", "width"])
+
+
 def test_an_expectation_refuses_what_has_no_id_or_no_version() -> None:
     """An instance of the model without an id is not the one expected.
 

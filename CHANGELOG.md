@@ -33,20 +33,27 @@ and a status.
 
 - A body `schema_for` derives, a `@use_case`'s or `schema_for(Command,
   write=True)`, gives a command route, a batch, and a twin the value
-  objects the command declares. One of several fields, alone or in a
-  tuple (`tuple[Address, ...]`), is built from its parts, so its own
-  checks run; it came as a dict, or a tuple of dicts. One of a single
-  field is built around its value, which came alone. In a write schema,
-  each item of such a tuple is the item's write schema (`AddressIn`),
-  with its limits, where pydantic built it without its checks. A body
+  objects the command declares, built inside out. One of several fields,
+  alone or in a tuple (`tuple[Address, ...]`), is built from its parts,
+  so its own checks run; it came as a dict, or a tuple of dicts. One of a
+  single field is built around its value, or around the value object it
+  wraps; it came as that value. A `list[...]` of them still comes as
+  dicts. In a write schema, each item of such a tuple is the item's write
+  schema (`AddressIn`), with its limits, where pydantic built the item
+  running its `__post_init__` but not the checks of its markers
+  (`MaxLength`, ...). A write schema leaves out the fields a class sets
+  itself (`field(init=False)`): a body that sends one is `422`. A body
   field typed as a value object or a dataclass itself, or a tuple of it,
   gives it as validated where the command declares that same class (or a
-  tuple of it), where `model_dump()` gave a dict. Every other field, and
-  one the command declares as `dict`, `Any`, `Mapping`, or anything else,
-  comes as before, as `model_dump()` gives it. A `ValueError` or
-  `TypeError` from a value object is `422` under its field. A write
-  schema refuses NaN and infinity for a `float`, which `crud=True` answered
-  with `500`. A service that rebuilt the value objects stops
+  tuple of it), each value object in it built again so its markers are
+  checked, where `model_dump()` gave a dict. Every other field, and one
+  the command declares as `dict`, `Any`, `Mapping`, or anything else,
+  comes as before, as `model_dump()` gives it. A value object's refusal
+  (a check of its markers, `ValueError`, `TypeError`, `AssertionError`,
+  or `ArithmeticError`) is `422` at its place in the body; in a batch,
+  that item's `422 validation_error`. A write schema refuses NaN and
+  infinity for a `float`, which `crud=True` answered with `500`. A
+  service that rebuilt the value objects stops
   ([upgrading.md](docs/upgrading.md#24-to-25)) (user report U5).
 
 ### Fixed
