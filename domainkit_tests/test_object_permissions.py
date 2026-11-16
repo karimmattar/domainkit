@@ -1040,13 +1040,13 @@ def test_what_outlives_the_block_or_streams_asks_again(project: str) -> None:
 
     async def streaming() -> tuple[int, int]:
         scope: dict[str, Any] = {"type": "http"}
-        token = open_memo(scope)
+        memo = open_memo(scope)
         try:
             _, before = await counting(asked(ada, product))
             scope[LONG_LIVED] = True
             _, streamed = await counting(asked(ada, product))
         finally:
-            close_memo(token)
+            close_memo(memo)
         return before, streamed
 
     assert after == ([False, False, False, False], 4)

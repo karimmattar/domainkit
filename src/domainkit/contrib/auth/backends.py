@@ -273,18 +273,21 @@ class MembershipBackend(BaseBackend):
 class PermissionMemo:
     """What backends answered within one request, or one block (``memoised``).
 
-    Closed once the request or the block ends: a task that inherited it
-    and outlives them works its answers out again.
+    Current from when it is made (``open_memo``) until it is closed
+    (``close_memo``), once the request or the block ends: a task that
+    inherited it and outlives them works its answers out again.
     """
 
-    __slots__ = ("answers", "scope")
+    __slots__ = ("answers", "scope", "token")
 
     def __init__(self, scope: Mapping[str, Any] | None = None) -> None:
-        """Keep nothing yet; with ``scope``, keep nothing once it is long-lived."""
+        """Keep nothing yet, and be current (``scope``: the request's)."""
         self.answers: dict[Hashable, object] | None = {}
         """The answers, by key; None once closed."""
         self.scope = scope
         """The ASGI scope of the request it belongs to, if any."""
+        self.token: Token[PermissionMemo | None] = _memo.set(self)
+        """What makes the memo current before this one current again."""
 
     def kept(self) -> dict[Hashable, object] | None:
         """The answers to read and add to; None once closed or long-lived.
@@ -297,27 +300,24 @@ class PermissionMemo:
             return None
         return self.answers
 
-    def close(self) -> None:
-        """Drop the answers; keep none from now on."""
-        self.answers = None
-
 
 _memo: ContextVar[PermissionMemo | None] = ContextVar("permission_memo", default=None)
 
 
-def open_memo(scope: Mapping[str, Any] | None = None) -> Token[PermissionMemo | None]:
-    """Memoise backends' answers until ``close_memo(token)``.
+def open_memo(scope: Mapping[str, Any] | None = None) -> PermissionMemo:
+    """Memoise backends' answers until ``close_memo`` closes the memo it gives.
 
     ``AuthenticationMiddleware`` calls it for each HTTP request with
-    credentials, with the request's ``scope``.
+    credentials, with the request's ``scope``. Five calls open and close
+    one: every such request pays them (``benchmarks``, rung ``me``).
     """
-    return _memo.set(PermissionMemo(scope))
+    return PermissionMemo(scope)
 
 
-def close_memo(token: Token[PermissionMemo | None]) -> None:
-    """Close the memo ``open_memo`` gave ``token``; make the one before current."""
-    cast(PermissionMemo, token.var.get()).close()
-    token.var.reset(token)
+def close_memo(memo: PermissionMemo) -> None:
+    """Drop what ``memo`` kept, and keep none; make the one before it current."""
+    memo.answers = None
+    _memo.reset(memo.token)
 
 
 @contextmanager
@@ -328,11 +328,11 @@ def memoised_permissions() -> Iterator[None]:
     credentials get one from ``AuthenticationMiddleware``. A commit inside
     drops what was kept (``forget_permissions``).
     """
-    token = open_memo()
+    memo = open_memo()
     try:
         yield
     finally:
-        close_memo(token)
+        close_memo(memo)
 
 
 def forget_permissions() -> None:
