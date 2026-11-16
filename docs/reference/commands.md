@@ -504,6 +504,8 @@ where the `granian` extra is installed, else uvicorn, with the options
 of [Server limits](servers.md). `SERVE` sets the server, its worker
 processes, and its limits; `WEB_CONCURRENCY` sets the processes unless
 `SERVE["WORKERS"]` does ([The `serve` command](servers.md#the-serve-command)).
+It exits 3 when a worker fails as it starts, under Granian with
+`SERVE["EXIT_ON_FAILED_START"]` ([A worker that fails as it starts](servers.md#a-worker-that-fails-as-it-starts)).
 It never reloads, reads no proxy header, writes no access log, and
 gives the server `LOGGING` for its own lines, its main process's
 included. It loads the settings only: each worker process imports the

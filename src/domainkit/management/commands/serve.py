@@ -11,7 +11,20 @@ options of docs/reference/servers.md ("Server limits"), read from
   else one;
 - each worker's connections, the backlog, how long an idle connection
   stays open, how long requests in flight get once the server stops, the
-  size of a request's headers, and whether it takes WebSockets.
+  size of a request's headers, and whether it takes WebSockets;
+- under Granian, the HTTP versions it speaks (``SERVE["HTTP"]``), and
+  whether a worker that fails as it starts stops the server
+  (``SERVE["EXIT_ON_FAILED_START"]``).
+
+Granian starts again a worker that died, unless it died within 5.5
+seconds of being started again: a startup that fails slower is started
+again for ever, and the container stays up, serving nothing. With
+``EXIT_ON_FAILED_START``, each worker loads the application through
+``load_application``, which signals the main process (``SIGUSR1``) when
+the import or the application's startup fails; the main process then
+stops Granian, as on ``SIGTERM``, and ``serve`` exits 3, as uvicorn and
+gunicorn do when a worker cannot start. A worker that dies once it served
+is started again (ADR 0169).
 
 It never reloads. It reads no proxy header (``TRUSTED_PROXIES`` does),
 writes no access log (``domainkit.access`` does), and, under uvicorn, no
@@ -26,9 +39,14 @@ settings, so it judges the server this command starts (ADR 0160).
 
 import math
 import os
+import signal
 from argparse import ArgumentParser
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, MutableMapping
+from contextlib import contextmanager
+from functools import partial
+from importlib import import_module
 from pathlib import Path
+from types import FrameType
 from typing import Any, Final
 
 from domainkit.conf import settings
@@ -42,6 +60,14 @@ from domainkit.utils.loops import loop_factory
 DEFAULT_HOST: Final = "0.0.0.0"  # noqa: S104 - in a container, behind its proxy.
 """Every address of the host, as a container behind its proxy needs."""
 DEFAULT_PORT: Final = 8000
+FAILED_START: Final = 3
+"""``serve``'s exit status when a worker failed as it started (uvicorn's too)."""
+
+type _Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
+type _Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
+type _Application = Callable[
+    [MutableMapping[str, Any], _Receive, _Send], Awaitable[None]
+]
 
 
 class Command(BaseCommand):
@@ -81,8 +107,17 @@ class Command(BaseCommand):
         host, port = parse_address(address, host=DEFAULT_HOST)
         workers = worker_count(os.environ)
         if serve_server(settings.SERVE.SERVER) == "granian":
-            serve_with_granian(granian_options(target, host, port, uds, workers))
+            given = granian_options(target, host, port, uds, workers)
+            if settings.SERVE.EXIT_ON_FAILED_START:
+                serve_until_a_start_fails(given)
+                return
+            serve_with_granian(given)
             return
+        if settings.SERVE.HTTP == "2":
+            raise CommandError(
+                'SERVE["HTTP"] is "2", but uvicorn speaks HTTP/1.1 only: install '
+                'the granian extra, or set it to "1" or "auto".'
+            )
         import uvicorn
 
         uvicorn.run(**uvicorn_options(target, host, port, uds, workers))
@@ -116,19 +151,22 @@ def granian_options(
     """What ``serve`` gives ``granian.Granian``: the options "Server limits" gives.
 
     Its loop is ``EVENT_LOOP``'s, resolved here: Granian's own ``auto``
-    would take rloop before uvloop. It keeps an idle connection as long
-    as it waits for the next request's headers. A worker that dies is
-    started again. Workers still running ``SERVE["GRACEFUL_TIMEOUT"]``
-    plus ``SHUTDOWN_TIMEOUT`` seconds after the stop are killed: the
-    application's shutdown counts in Granian's time.
+    would take rloop before uvloop. It speaks the HTTP versions of
+    ``SERVE["HTTP"]``, and bounds a request's headers by
+    ``MAX_HEADER_SIZE`` over HTTP/2 as over HTTP/1.1 (its HTTP/2 default
+    is 16 MiB). It keeps an idle connection as long as it waits for the
+    next request's headers. A worker that dies is started again. Workers
+    still running ``SERVE["GRACEFUL_TIMEOUT"]`` plus ``SHUTDOWN_TIMEOUT``
+    seconds after the stop are killed: the application's shutdown counts
+    in Granian's time.
 
     Raises:
         CommandError: Granian is not installed, or ``SERVE["KEEP_ALIVE"]``
             is longer than it takes.
     """
     try:
-        from granian.constants import Interfaces, Loops
-        from granian.http import HTTP1Settings
+        from granian.constants import HTTPModes, Interfaces, Loops
+        from granian.http import HTTP1Settings, HTTP2Settings
     except ImportError:
         raise CommandError(
             'SERVE["SERVER"] is "granian", which needs the granian extra: '
@@ -154,10 +192,12 @@ def granian_options(
         "loop": Loops.uvloop if uvloop else Loops.asyncio,
         "backlog": serve.BACKLOG,
         "backpressure": serve.MAX_CONNECTIONS,
+        "http": HTTPModes(serve.HTTP),
         "http1_settings": HTTP1Settings(
             header_read_timeout=int(keep_alive * 1000),
             max_buffer_size=serve.MAX_HEADER_SIZE,
         ),
+        "http2_settings": HTTP2Settings(max_headers_size=serve.MAX_HEADER_SIZE),
         "websockets": serve.WEBSOCKETS,
         "respawn_failed_workers": True,
         "workers_kill_timeout": serve.GRACEFUL_TIMEOUT
@@ -168,8 +208,8 @@ def granian_options(
     }
 
 
-def serve_with_granian(options: dict[str, Any]) -> None:
-    """Run Granian with ``options`` until it stops.
+def serve_with_granian(options: dict[str, Any], **serving: Any) -> None:  # noqa: ANN401 - Granian's serve() arguments.
+    """Run Granian with ``options`` until it stops; ``serving`` goes to its ``serve``.
 
     Raises:
         CommandError: Granian refused its configuration, as its log says.
@@ -178,11 +218,123 @@ def serve_with_granian(options: dict[str, Any]) -> None:
     from granian.errors import FatalError
 
     try:
-        Granian(**options).serve()
+        Granian(**options).serve(**serving)
     except FatalError as exc:
         raise CommandError(
             f"Granian could not start ({exc}); its log above says why."
         ) from None
+
+
+def serve_until_a_start_fails(options: dict[str, Any]) -> None:
+    """Run Granian until it stops, or until a worker fails as it starts.
+
+    Each worker loads the application with ``load_application``, which
+    signals this process (``SIGUSR1``) as its start fails; this process
+    then stops Granian as ``SIGTERM`` does.
+
+    Raises:
+        CommandError: A worker failed as it started (exit status 3), or
+            Granian refused its configuration.
+    """
+    with _failed_starts() as failed:
+        try:
+            serve_with_granian(
+                options, target_loader=partial(load_application, os.getpid())
+            )
+        except SystemExit:
+            if not failed:
+                raise
+        if failed:
+            raise CommandError(
+                "A worker failed as it started, so the server stopped "
+                '(SERVE["EXIT_ON_FAILED_START"]); its log above says why.',
+                returncode=FAILED_START,
+            )
+
+
+@contextmanager
+def _failed_starts() -> Iterator[list[int]]:
+    """The signals of workers that failed as they started, while Granian serves.
+
+    The first one stops Granian, as ``SIGTERM`` does: its own handler of
+    ``SIGTERM`` stops the workers, then returns from ``serve``.
+
+    Raises:
+        CommandError: This platform has no ``SIGUSR1`` (Windows).
+    """
+    started = getattr(signal, "SIGUSR1", None)
+    if started is None:
+        raise CommandError(
+            'SERVE["EXIT_ON_FAILED_START"] needs POSIX signals, which this '
+            "platform lacks."
+        )
+    failed: list[int] = []
+
+    def stop(signum: int, frame: FrameType | None) -> None:
+        if not failed:
+            signal.raise_signal(signal.SIGTERM)
+        failed.append(signum)
+
+    previous = signal.signal(started, stop)
+    try:
+        yield failed
+    finally:
+        signal.signal(started, previous)
+
+
+def load_application(main: int, target: str) -> "_Starting":
+    """The application at ``target`` (``module:attribute``), for a Granian worker.
+
+    It tells the main process, ``main``, when the import fails, or once
+    the application's startup fails (``serve_until_a_start_fails``).
+    """
+    try:
+        module, _, name = target.partition(":")
+        found: Any = import_module(module)
+        for part in (name or "app").split("."):
+            found = getattr(found, part)
+    except BaseException:
+        _failed(main)
+        raise
+    return _Starting(found, main)
+
+
+class _Starting:
+    """An application that signals the main process when its startup fails.
+
+    Requests reach the application as they would without it: their call
+    returns the application's own awaitable, in one plain call.
+    """
+
+    def __init__(self, application: _Application, main: int) -> None:
+        """Serve ``application``; signal ``main`` if its startup fails."""
+        self.application = application
+        self.main = main
+
+    def __call__(
+        self, scope: MutableMapping[str, Any], receive: _Receive, send: _Send
+    ) -> Awaitable[None]:
+        """The application's answer; for the lifespan, its startup watched."""
+        if scope["type"] != "lifespan":
+            return self.application(scope, receive, send)
+        return self._lifespan(scope, receive, send)
+
+    async def _lifespan(
+        self, scope: MutableMapping[str, Any], receive: _Receive, send: _Send
+    ) -> None:
+        """Run the lifespan, signalling ``main`` once its startup failed."""
+
+        async def sending(message: MutableMapping[str, Any]) -> None:
+            if message["type"] == "lifespan.startup.failed":
+                _failed(self.main)
+            await send(message)
+
+        await self.application(scope, receive, sending)
+
+
+def _failed(main: int) -> None:
+    """Tell the main process, ``main``, that this worker failed as it started."""
+    os.kill(main, signal.SIGUSR1)
 
 
 def uvicorn_options(

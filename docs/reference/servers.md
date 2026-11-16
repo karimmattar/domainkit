@@ -10,6 +10,7 @@ gives the server options to set, and why.
 On this page you find:
 
 - `manage.py serve`, which starts either server with these options;
+- the HTTP versions Granian speaks, and a worker that fails as it starts;
 - the command lines for uvicorn and Granian;
 - which option limits what, on each server;
 - how the server's limits and the application's fit together;
@@ -85,6 +86,8 @@ PROXY_IDLE_TIMEOUT = 60  # an AWS load balancer's, unless set
 | `GRACEFUL_TIMEOUT` | `10` | Seconds the requests in flight get to finish once the server is told to stop, from 1 to 600: uvicorn's `--timeout-graceful-shutdown`. Granian kills its workers this plus `SHUTDOWN_TIMEOUT` seconds after (`--workers-kill-timeout`, 25 by default), as their application's shutdown runs in its time. |
 | `MAX_HEADER_SIZE` | `16384` | Bytes of a request line and headers, from 8192 to 1,048,576: Granian's `--http1-buffer-size`, which answers 431 past it. uvicorn's `--h11-max-incomplete-event-size`, which its h11 parser applies to a header block still arriving only; its httptools parser, which `uvicorn[standard]` installs and uvicorn prefers, has no such limit, so let the proxy limit headers. |
 | `WEBSOCKETS` | `True` | Accept WebSockets. uvicorn reads a message up to `MAX_REQUEST_BODY_SIZE`; Granian reads it whole, at any size ([WebSocket message size](#websocket-message-size)). Set `False` when the API takes none. |
+| `HTTP` | `"auto"` | The HTTP versions Granian speaks (`--http`): `"auto"` takes HTTP/1.1, and HTTP/2 without TLS (h2c) from a client that opens with it; `"1"` HTTP/1.1 only, as uvicorn; `"2"` h2c only, for a proxy that speaks it, with `WEBSOCKETS = False` (Granian carries none over HTTP/2). uvicorn speaks HTTP/1.1 only: it refuses `"2"`. *New in 2.5* ([HTTP versions](#http-versions)). |
+| `EXIT_ON_FAILED_START` | `False` | Under Granian, a worker that fails as it starts (the application cannot be imported, or its startup fails) stops the server, which exits 3, instead of being started again. A worker that dies once it served is still started again. uvicorn stops so whatever this says. *New in 2.5* ([A worker that fails as it starts](#a-worker-that-fails-as-it-starts)). |
 
 What `serve` sets itself:
 
@@ -95,7 +98,9 @@ What `serve` sets itself:
 - `LOGGING` for the server's own lines, in its main process too, as
   `manage.py logconfig` writes it ([The server's own lines](../runtime.md#the-servers-own-lines));
 - under Granian, a worker that dies is started again
-  (`--respawn-failed-workers`).
+  (`--respawn-failed-workers`), and a request's headers are bounded by
+  `MAX_HEADER_SIZE` over HTTP/2 as over HTTP/1.1
+  (`--http2-max-headers-size`, 16 MiB unless set).
 
 Only the settings are loaded: each worker imports the application, as
 under the server's own command line. A deployed application started by
@@ -124,6 +129,7 @@ python manage.py logconfig --output /tmp/logging.json
 granian --interface asgi config.asgi:application --host 0.0.0.0 --port 8000 \
   --workers 4 --loop uvloop --backpressure 1200 --backlog 2048 \
   --http1-header-read-timeout 60000 --http1-buffer-size 16384 \
+  --http2-max-headers-size 16384 \
   --workers-kill-timeout 25 --respawn-failed-workers --no-ws \
   --log-config /tmp/logging.json
 ```
@@ -147,7 +153,9 @@ uvicorn, or Granian with `init --server granian`, which installs it.
 | Request line and headers | `MAX_HEADER_SIZE` | `--h11-max-incomplete-event-size` (16 KiB), with h11 only | `--http1-buffer-size` bytes (about half a megabyte unless set; past it, 431) |
 | WebSocket message | `WEBSOCKETS` | `--ws-max-size` bytes (16 MiB unless set; `serve`: `MAX_REQUEST_BODY_SIZE`) | no option: `--no-ws` if unused, else the proxy |
 | Graceful shutdown | `GRACEFUL_TIMEOUT` | `--timeout-graceful-shutdown` seconds, then open connections are closed, then the application shuts down | no limit unless `--workers-kill-timeout` seconds, the application's shutdown included; then workers are killed |
-| A worker that dies | | `--workers` starts another | every worker stops and Granian exits 1, unless `--respawn-failed-workers` (`serve` sets it) |
+| A worker that dies | `EXIT_ON_FAILED_START` | `--workers` starts another; one that fails as it starts stops the server | every worker stops and Granian exits 1, unless `--respawn-failed-workers` (`serve` sets it), which starts another, and exits 1 only when it dies within 5.5 seconds of that |
+| HTTP versions | `HTTP` | HTTP/1.1 | `--http`: HTTP/1.1, and h2c from a client that opens with it, unless set |
+| Headers over HTTP/2 | `MAX_HEADER_SIZE` | | `--http2-max-headers-size` bytes (16 MiB unless set) |
 | The `Server` header | | `--no-server-header` leaves it out (`serve` sets it) | no option: `Server: granian` unless the answer has one (`SERVER_HEADER`) |
 
 ## How the limits fit together
@@ -223,7 +231,11 @@ option, from uvicorn's command line above:
 - **One process.** `--workers` (`GRANIAN_WORKERS`, `SERVE["WORKERS"]`)
   starts that many worker processes under a main one. When a worker
   dies, Granian stops the others, as on `SIGTERM`, and exits 1, unless
-  `--respawn-failed-workers` starts another in its place.
+  `--respawn-failed-workers` starts another in its place
+  ([A worker that fails as it starts](#a-worker-that-fails-as-it-starts)).
+- **HTTP/1.1.** uvicorn speaks nothing else. Granian also speaks HTTP/2
+  without TLS (h2c) to a client that opens with it, unless `--http 1`
+  ([HTTP versions](#http-versions)).
 - **`--no-proxy-headers`.** Nothing to set: Granian reads no proxy
   header ([Proxy headers](#proxy-headers)).
 - **The log.** Granian's main process never imports the application, so
@@ -243,6 +255,63 @@ server's own process, `SERVE["WORKERS"]` (else `WEB_CONCURRENCY`) in
 `serve`'s; elsewhere `WEB_CONCURRENCY` (which uvicorn and gunicorn
 read), `UVICORN_WORKERS`, `GRANIAN_WORKERS`, `-w` in
 `GUNICORN_CMD_ARGS`, or `SERVE["WORKERS"]`.
+
+## HTTP versions
+
+uvicorn speaks HTTP/1.1 only. Granian, unless told, also speaks HTTP/2
+without TLS (h2c) to a client that opens a connection with HTTP/2's
+preface (`--http auto`). Without TLS there is no ALPN to agree on a
+version, so a client must know beforehand; an HTTP/1.1 client never
+gets HTTP/2. `SERVE["HTTP"]` sets it:
+
+- `"1"`: HTTP/1.1 only, as under uvicorn. Choose it unless the proxy in
+  front is set to speak h2c to the server.
+- `"auto"` (the default, as in 2.4): both. Keep it while a proxy in front
+  sends h2c (Envoy and Traefik can be set to) and something else still
+  sends HTTP/1.1, such as a health check.
+- `"2"`: h2c only. HTTP/1.1 clients, health checks included, are not
+  answered, and Granian carries no WebSocket over HTTP/2: set
+  `SERVE["WEBSOCKETS"] = False`, or `SERVE` refuses it.
+
+`KEEP_ALIVE` is HTTP/1.1's (`--http1-header-read-timeout`); over HTTP/2
+the proxy keeps its own connections. `serve` gives Granian
+`MAX_HEADER_SIZE` for HTTP/2's headers too (`--http2-max-headers-size`),
+where Granian's HTTP/2 takes 16 MiB of headers unless told.
+
+## A worker that fails as it starts
+
+Granian starts again a worker that died (`--respawn-failed-workers`,
+which `serve` sets), unless it died within 5.5 seconds of being started
+again: then it stops, and exits 1. A startup that takes longer to fail,
+such as one that waits for a database that is not there, is started
+again for ever: the container stays up, serves nothing, and its
+orchestrator never sees it fail.
+
+`SERVE["EXIT_ON_FAILED_START"] = True` stops the server the first time a
+worker fails as it starts: the application cannot be imported, or its
+startup fails (`lifespan.startup.failed`). `serve` then exits 3, which
+is what uvicorn and gunicorn exit with when a worker cannot start, and
+the orchestrator restarts the container or reports it. A worker that dies
+once it served (killed for its memory, say) is still started again.
+
+```python
+SERVE = {"EXIT_ON_FAILED_START": True}
+```
+
+```text
+[ERROR] ASGI lifespan startup failed
+[INFO] Granian shutdown completed, see ya!
+Error: A worker failed as it started, so the server stopped (SERVE["EXIT_ON_FAILED_START"]); its log above says why.
+```
+
+Each worker loads the application through `serve`, which signals the
+main process (`SIGUSR1`) when the start fails; the main process stops
+Granian as `SIGTERM` does. It needs POSIX signals: not on Windows. A
+worker killed before its startup ends (out of memory, say) sends
+nothing, and is started again as before. uvicorn already stops when a
+worker fails before it serves: with one worker, it exits 3; with
+several, its main process stops. [ADR 0169](../adr/0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md)
+records the choices.
 
 ## WebSocket message size
 

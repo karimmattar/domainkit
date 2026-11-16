@@ -763,6 +763,14 @@ class ServeConfig(BaseModel):
     ``--http1-buffer-size``)."""
     WEBSOCKETS: bool = True
     """Accept WebSockets; uvicorn reads messages up to ``MAX_REQUEST_BODY_SIZE``."""
+    HTTP: Literal["auto", "1", "2"] = "auto"
+    """The HTTP versions Granian speaks (``--http``): ``auto`` takes HTTP/1.1
+    and, from a client that opens with it, HTTP/2 without TLS (h2c); ``1``
+    HTTP/1.1 only; ``2`` h2c only. uvicorn speaks HTTP/1.1 only."""
+    EXIT_ON_FAILED_START: bool = False
+    """Stop the server, exit status 3, when a worker fails as it starts (its
+    application cannot be imported, or its startup fails), instead of
+    starting it again. uvicorn stops so whatever this says."""
 
     @model_validator(mode="after")
     def _granian_keep_alive(self) -> Self:
@@ -775,6 +783,20 @@ class ServeConfig(BaseModel):
             raise ValueError(
                 f"KEEP_ALIVE is {self.KEEP_ALIVE}, but Granian keeps an idle "
                 f"connection {GRANIAN_MAX_KEEP_ALIVE} seconds at most"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _http_two(self) -> Self:
+        """HTTP/2 alone: Granian's, and with no WebSockets, which it cannot carry."""
+        if self.HTTP != "2":
+            return self
+        if self.SERVER == "uvicorn":
+            raise ValueError('HTTP is "2", but uvicorn speaks HTTP/1.1 only')
+        if self.WEBSOCKETS:
+            raise ValueError(
+                'HTTP is "2", over which Granian serves no WebSocket: set '
+                "WEBSOCKETS to False"
             )
         return self
 

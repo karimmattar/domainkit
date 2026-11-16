@@ -6,6 +6,7 @@ gives, read from ``SERVE`` (user report S1). ``check`` warns
 long as the server, or longer.
 """
 
+import asyncio
 import io
 import json
 import math
@@ -15,7 +16,7 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import Any, Final
 
@@ -59,7 +60,7 @@ class Served:
         """Record ``options``."""
         type(self).made.append(options)
 
-    def serve(self) -> None:
+    def serve(self, **serving: Any) -> None:  # noqa: ANN401 - Granian's.
         """Serve nothing."""
         type(self).made.append({"served": True})
 
@@ -89,10 +90,12 @@ def test_serve_starts_granian_with_the_limits_of_the_reference(
     An idle connection stays its most, 60 seconds; a worker that dies is
     started again; workers are killed 10 seconds plus ``SHUTDOWN_TIMEOUT``
     after the stop. ``LOGGING`` reaches its main process as ``logconfig``
-    writes it, and it never reloads (user report S1).
+    writes it, and it never reloads. It speaks HTTP/1.1 and h2c, as
+    Granian does unless told, and bounds a request's headers to 16 KiB over
+    both (user report S1).
     """
-    from granian.constants import Interfaces, Loops
-    from granian.http import HTTP1Settings
+    from granian.constants import HTTPModes, Interfaces, Loops
+    from granian.http import HTTP1Settings, HTTP2Settings
 
     logging_config = build_logging_config(log_format="json", level="INFO")
     with override_settings(ASGI_APPLICATION=APPLICATION, LOGGING=logging_config):
@@ -110,9 +113,11 @@ def test_serve_starts_granian_with_the_limits_of_the_reference(
         "loop": Loops.uvloop,
         "backlog": 2048,
         "backpressure": 1200,
+        "http": HTTPModes.auto,
         "http1_settings": HTTP1Settings(
             header_read_timeout=60_000, max_buffer_size=16_384
         ),
+        "http2_settings": HTTP2Settings(max_headers_size=16_384),
         "websockets": True,
         "respawn_failed_workers": True,
         "workers_kill_timeout": 25,
@@ -336,6 +341,273 @@ def test_serve_says_why_granian_did_not_start(monkeypatch: pytest.MonkeyPatch) -
     )
 
 
+@pytest.mark.parametrize("http", ["auto", "1", "2"])
+def test_serve_keeps_granian_to_the_http_versions_set(
+    granian: list[dict[str, Any]], http: str
+) -> None:
+    """``SERVE["HTTP"]`` is Granian's ``--http``: ``"1"`` keeps it to HTTP/1.1.
+
+    Granian's own default, ``auto``, also takes HTTP/2 without TLS (h2c)
+    from a client that opens with it. Over HTTP/2 too, a request's
+    headers are bounded by ``MAX_HEADER_SIZE``, where Granian's HTTP/2
+    takes 16 MiB unless told (user report S1).
+    """
+    from granian.constants import HTTPModes
+    from granian.http import HTTP2Settings
+
+    with override_settings(
+        ASGI_APPLICATION=APPLICATION,
+        SERVE={"HTTP": http, "WEBSOCKETS": False, "MAX_HEADER_SIZE": 32_768},
+    ):
+        call_command("serve")
+
+    options = granian[0]
+    assert options["http"] is HTTPModes(http)
+    assert options["http2_settings"] == HTTP2Settings(max_headers_size=32_768)
+    assert HTTP2Settings().max_headers_size == 16 * 1024 * 1024
+
+
+def test_http_two_alone_is_refused_where_it_cannot_be_served(
+    monkeypatch: pytest.MonkeyPatch, uvicorn: list[dict[str, Any]]
+) -> None:
+    """HTTP/2 alone: uvicorn speaks HTTP/1.1 only, Granian no WebSocket over it.
+
+    Named, ``SERVE`` refuses either as it loads; with ``auto`` choosing
+    uvicorn, ``serve`` refuses as it starts. ``"1"`` and ``"auto"`` are
+    uvicorn's HTTP/1.1.
+    """
+    for refused, wrong in [
+        ({"SERVER": "uvicorn", "HTTP": "2"}, "uvicorn speaks HTTP/1.1 only"),
+        ({"HTTP": "2"}, "Granian serves no WebSocket: set WEBSOCKETS to False"),
+    ]:
+        with (
+            pytest.raises(ImproperlyConfigured, match=wrong),
+            override_settings(SERVE=refused),
+        ):
+            pass  # pragma: no cover - refused as it loads.
+    monkeypatch.setattr(servers, "find_spec", lambda name: None)
+    with (
+        override_settings(
+            ASGI_APPLICATION=APPLICATION, SERVE={"HTTP": "2", "WEBSOCKETS": False}
+        ),
+        pytest.raises(CommandError) as refused_at_start,
+    ):
+        call_command("serve")
+    for http in ("1", "auto"):
+        with override_settings(
+            ASGI_APPLICATION=APPLICATION, SERVE={"SERVER": "uvicorn", "HTTP": http}
+        ):
+            call_command("serve")
+
+    assert str(refused_at_start.value) == (
+        'SERVE["HTTP"] is "2", but uvicorn speaks HTTP/1.1 only: install the '
+        'granian extra, or set it to "1" or "auto".'
+    )
+    assert len(uvicorn) == 2
+    assert ServeConfig().HTTP == "auto"
+    assert ServeConfig().EXIT_ON_FAILED_START is False
+
+
+class Lifespan:
+    """An ASGI application whose lifespan startup sends ``outcome``."""
+
+    def __init__(self, outcome: str) -> None:
+        """Answer the startup with ``lifespan.startup.<outcome>``."""
+        self.outcome = outcome
+        self.served: list[str] = []
+
+    async def __call__(
+        self,
+        scope: MutableMapping[str, Any],
+        receive: Any,  # noqa: ANN401 - the server's.
+        send: Any,  # noqa: ANN401 - the server's.
+    ) -> None:
+        """Answer the startup, or note a request."""
+        if scope["type"] != "lifespan":
+            self.served.append(scope["type"])
+            return
+        await receive()
+        await send({"type": f"lifespan.startup.{self.outcome}"})
+
+
+FAILING: Final = Lifespan("failed")
+"""A module-level application that ``load_application`` can import."""
+
+
+@pytest.fixture
+def signalled(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """The signals a worker sends (``os.kill``), recorded, never sent."""
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    return sent
+
+
+@pytest.mark.anyio
+async def test_a_worker_whose_startup_fails_tells_the_main_process(
+    signalled: list[tuple[int, int]],
+) -> None:
+    """The worker's application signals ``SIGUSR1`` once its startup fails.
+
+    A startup that completes signals nothing; a request reaches the
+    application in one plain call, its own awaitable returned.
+    """
+    failing = serve.load_application(4321, f"{__name__}:FAILING")
+    working = serve._Starting(Lifespan("complete"), 4321)
+    sent: list[MutableMapping[str, Any]] = []
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        sent.append(message)
+
+    async def receive() -> MutableMapping[str, Any]:
+        return {"type": "lifespan.startup"}
+
+    await failing({"type": "lifespan"}, receive, send)
+    await working({"type": "lifespan"}, receive, send)
+    answer = working({"type": "http"}, receive, send)
+    await answer
+
+    assert failing.application is FAILING
+    assert signalled == [(4321, signal.SIGUSR1)]
+    assert [message["type"] for message in sent] == [
+        "lifespan.startup.failed",
+        "lifespan.startup.complete",
+    ]
+    assert answer.cr_code is Lifespan.__call__.__code__  # type: ignore[attr-defined]
+    assert working.application.served == ["http"]  # type: ignore[attr-defined]
+
+
+def test_a_worker_that_cannot_import_the_application_tells_the_main_process(
+    signalled: list[tuple[int, int]],
+) -> None:
+    """An import that fails signals, then fails as it would have."""
+    with pytest.raises(ModuleNotFoundError):
+        serve.load_application(4321, "domainkit_tests.no_such_module:application")
+    with pytest.raises(AttributeError):
+        serve.load_application(4321, f"{__name__}:FAILING.missing")
+
+    assert signalled == [(4321, signal.SIGUSR1)] * 2
+
+
+class Starting:
+    """A stand-in for ``granian.Granian`` whose two workers fail as they start.
+
+    Its ``serve`` handles ``SIGTERM`` as Granian does (stop serving), loads
+    the application as each worker would, then exits 1, as Granian does
+    when a worker died, unless ``exits`` is 0.
+    """
+
+    made: list[dict[str, Any]]
+    exits: int = 1
+
+    def __init__(self, **options: Any) -> None:  # noqa: ANN401 - Granian's options.
+        """Record ``options``."""
+        type(self).made.append(options)
+
+    def serve(self, target_loader: Any) -> None:  # noqa: ANN401 - Granian's loader.
+        """Load the application as a worker does; stop on ``SIGTERM``."""
+        stopped: list[int] = []
+        previous = signal.signal(signal.SIGTERM, lambda sig, frame: stopped.append(sig))
+        try:
+            for _ in range(2):
+                loaded = target_loader(f"{__name__}:FAILING")
+                asyncio.run(loaded({"type": "lifespan"}, _startup, _ignore))
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        type(self).made.append({"stopped": stopped, "loader": target_loader})
+        if self.exits:
+            raise SystemExit(self.exits)
+
+
+async def _startup() -> MutableMapping[str, Any]:
+    """The lifespan's first message."""
+    return {"type": "lifespan.startup"}
+
+
+async def _ignore(message: MutableMapping[str, Any]) -> None:
+    """Take a message the server would read."""
+
+
+@pytest.mark.parametrize("exits", [1, 0])
+def test_serve_exits_when_a_worker_fails_as_it_starts(
+    monkeypatch: pytest.MonkeyPatch, exits: int
+) -> None:
+    """``EXIT_ON_FAILED_START``: the signal stops Granian; ``serve`` exits 3.
+
+    The first worker's signal stops Granian, once. Granian may exit 1 (a
+    worker died) or return: either way ``serve`` says why, with uvicorn's
+    and gunicorn's status for a worker that could not start (user report
+    S1).
+    """
+    made: list[dict[str, Any]] = []
+    monkeypatch.setattr(Starting, "made", made, raising=False)
+    monkeypatch.setattr(Starting, "exits", exits)
+    monkeypatch.setattr("granian.Granian", Starting)
+    before = signal.getsignal(signal.SIGUSR1)
+
+    with (
+        override_settings(
+            ASGI_APPLICATION=APPLICATION, SERVE={"EXIT_ON_FAILED_START": True}
+        ),
+        pytest.raises(CommandError) as stopped,
+    ):
+        call_command("serve")
+
+    (options, served) = made
+    assert options["respawn_failed_workers"] is True
+    assert served["stopped"] == [signal.SIGTERM]
+    assert served["loader"].func is serve.load_application
+    assert served["loader"].args == (os.getpid(),)
+    assert stopped.value.returncode == serve.FAILED_START == 3
+    assert str(stopped.value) == (
+        "A worker failed as it started, so the server stopped "
+        '(SERVE["EXIT_ON_FAILED_START"]); its log above says why.'
+    )
+    assert signal.getsignal(signal.SIGUSR1) is before
+
+
+def test_serve_lets_granian_stop_as_it_would_when_no_start_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker that died once it served: Granian's own exit, and status, stand."""
+
+    class Died(Served):
+        def serve(self, **serving: Any) -> None:  # noqa: ANN401 - Granian's.
+            raise SystemExit(1)
+
+    made: list[dict[str, Any]] = []
+    monkeypatch.setattr(Served, "made", made, raising=False)
+    for granian, ends in [(Served, None), (Died, SystemExit)]:
+        monkeypatch.setattr("granian.Granian", granian)
+        with override_settings(
+            ASGI_APPLICATION=APPLICATION, SERVE={"EXIT_ON_FAILED_START": True}
+        ):
+            if ends is None:
+                call_command("serve")
+            else:
+                with pytest.raises(ends) as exited:
+                    call_command("serve")
+
+    assert exited.value.code == 1
+    assert made[1] == {"served": True}
+
+
+def test_exit_on_failed_start_needs_posix_signals(
+    monkeypatch: pytest.MonkeyPatch, granian: list[dict[str, Any]]
+) -> None:
+    """Without ``SIGUSR1`` (Windows), the option is refused before Granian starts."""
+    monkeypatch.delattr(signal, "SIGUSR1")
+
+    with (
+        override_settings(
+            ASGI_APPLICATION=APPLICATION, SERVE={"EXIT_ON_FAILED_START": True}
+        ),
+        pytest.raises(CommandError, match="needs POSIX signals"),
+    ):
+        call_command("serve")
+
+    assert granian == []
+
+
 def test_serve_needs_an_application_and_logging_json_can_hold(
     granian: list[dict[str, Any]],
 ) -> None:
@@ -436,6 +708,68 @@ def served(request: pytest.FixtureRequest) -> Iterator[tuple[str, Path, list[str
                     process.kill()
     finally:
         shutil.rmtree(directory, ignore_errors=True)
+
+
+FAILING_SETTINGS: Final = """\
+from domainkit_tests.settings import *  # noqa: F403
+
+ASGI_APPLICATION = "failing_asgi:application"
+SERVE = {{"SERVER": "granian", "EXIT_ON_FAILED_START": {exits}}}
+"""
+FAILING_MODULE: Final = """\
+async def application(scope, receive, send):
+    await receive()
+    await send({"type": "lifespan.startup.failed", "message": "no database"})
+"""
+
+
+@pytest.mark.parametrize(("exits", "status"), [(True, 3), (False, 1)])
+def test_granian_under_serve_stops_at_a_failed_start_only_when_set(
+    exits: bool, status: int
+) -> None:
+    """A worker whose startup fails: with the option, ``serve`` exits 3 at once.
+
+    Without it, Granian starts the worker again, and stops only because
+    the second failure came within 5.5 seconds of the restart (its crash
+    loop). A startup that takes longer to fail is started again for
+    ever, and the container stays up, serving nothing (user report S1).
+    """
+    pytest.importorskip("granian")
+    directory = Path(tempfile.mkdtemp(prefix="dk-"))
+    (directory / "failing_settings.py").write_text(FAILING_SETTINGS.format(exits=exits))
+    (directory / "failing_asgi.py").write_text(FAILING_MODULE)
+    environment = {
+        **os.environ,
+        f"{project_prefix()}SETTINGS_MODULE": "failing_settings",
+        f"{project_prefix()}ENV_FILE": "",
+        "PYTHONPATH": os.pathsep.join([str(directory), str(ROOT), *sys.path]),
+    }
+    environment.pop("WEB_CONCURRENCY", None)
+    try:
+        finished = subprocess.run(  # noqa: S603 - this interpreter, fixed arguments.
+            [
+                sys.executable,
+                "-m",
+                "domainkit",
+                "serve",
+                "--uds",
+                str(directory / "serve.sock"),
+            ],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+    output = finished.stdout + finished.stderr
+    assert finished.returncode == status, output
+    assert "no database" in output
+    assert ("Respawning worker-1" in output) is not exits, output
+    assert ('SERVE["EXIT_ON_FAILED_START"]' in output) is exits, output
 
 
 def test_serve_serves_the_application_and_writes_its_lines_through_logging(
