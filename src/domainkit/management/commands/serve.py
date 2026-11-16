@@ -40,6 +40,7 @@ settings, so it judges the server this command starts (ADR 0160).
 
 import logging
 import math
+import multiprocessing
 import os
 import signal
 import sys
@@ -225,11 +226,30 @@ def serve_with_granian(options: dict[str, Any], **serving: Any) -> None:  # noqa
     from granian.errors import FatalError
 
     try:
-        Granian(**options).serve(**serving)
+        with spawned_workers():
+            Granian(**options).serve(**serving)
     except FatalError as exc:
         raise CommandError(
             f"Granian could not start ({exc}); its log above says why."
         ) from None
+
+
+@contextmanager
+def spawned_workers() -> Iterator[None]:
+    """Have Granian start its worker processes by spawn, as it does on Python 3.14.
+
+    Granian forks them where ``multiprocessing`` forks (Python 3.13 on
+    Linux). This process's logging thread may be writing to standard output
+    then: the worker inherits the stream's lock held, and waits on it
+    forever at its first write, before it ever listens. A spawned worker
+    starts a fresh interpreter, holding nothing.
+    """
+    before = multiprocessing.get_start_method(allow_none=True)
+    multiprocessing.set_start_method("spawn", force=True)
+    try:
+        yield
+    finally:
+        multiprocessing.set_start_method(before, force=True)
 
 
 def serve_until_a_start_fails(options: dict[str, Any]) -> None:
