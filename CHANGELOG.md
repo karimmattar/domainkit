@@ -161,6 +161,53 @@ and a status.
   ([Submitting, rejecting, and cancelling with an authorization](docs/contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization),
   ADR 0163) (user report A6).
 
+- `SERVE["HTTP"]` (`"auto"`, `"1"`, `"2"`): the HTTP versions Granian
+  speaks under `manage.py serve`. `"1"` keeps it to HTTP/1.1, as under
+  uvicorn; `"auto"`, the default as in 2.4, also takes HTTP/2 without TLS
+  (h2c) from a client that opens with it; `"2"`, h2c only, is refused
+  under uvicorn and with `WEBSOCKETS` on
+  ([HTTP versions](docs/reference/servers.md#http-versions), ADR 0169)
+  (user report S1).
+
+- `SERVE["EXIT_ON_FAILED_START"]`, off unless set: under Granian, a
+  worker whose application cannot be imported, or whose startup fails,
+  stops the server, and `serve` exits 3, as uvicorn and gunicorn do. A
+  startup that took longer than Granian's 5.5 seconds to fail was
+  started again for ever, the container up and serving nothing. A
+  worker that dies once it served is still started again
+  ([A worker that fails as it starts](docs/reference/servers.md#a-worker-that-fails-as-it-starts),
+  ADR 0169) (user report S1).
+
+- `S3Storage.probe_write_once()` writes a probe object twice with
+  `If-None-Match: *` and raises `StorageError` unless the store refuses
+  the second write; `S3Storage(check_write_once=True)` runs it before
+  the first presigned upload, once, and refuses presigned uploads where
+  the store would let their URL replace the file (`WriteOnceIgnored`,
+  `503 direct_upload_unavailable`). Garage and Scality
+  CloudServer ignore the header on `PutObject`, without an error. The
+  docs name the stores that honour it, and no longer name MinIO first,
+  which is no longer maintained
+  ([A store that ignores create only](docs/uploads.md#a-store-that-ignores-create-only),
+  ADR 0169) (user report U4).
+
+- `ClamAVScanner` speaks TLS to a proxy in front of clamd (stunnel),
+  which speaks none: `tls`, `tls_ca`, and a client certificate
+  (`tls_cert`, `tls_key`, `tls_key_password`) for the proxy to require.
+  Where deployed,
+  `check` warns (`security.W007`) when `UPLOAD_SCANNER` reaches clamd on
+  another host without TLS
+  ([clamd on another host](docs/uploads.md#clamd-on-another-host),
+  ADR 0169) (user report U5).
+
+- `domainkit.storage.cleanup`: a use case defers
+  `remove_unreferenced(names)` to remove the stored files a change
+  dropped, once it commits; the worker deletes each name that no row of
+  the columns declared with `keeps_files` holds, read on the primary,
+  and refuses where none is declared. Messaging registers it as the task
+  `domainkit.storage.remove_unreferenced`
+  ([Removing files a change dropped](docs/uploads.md#removing-files-a-change-dropped),
+  ADR 0169) (user report U5).
+
 ### Changed
 
 - `import domainkit.i18n` imports none of its modules. Its names, and its
@@ -225,6 +272,21 @@ and a status.
   still refused; one declared and never spent still fails its requests
   under `DEBUG` and in tests (`500 authorization_unspent`) (ADR 0163)
   (user report A6).
+
+- `FcmPushBackend` no longer forgets a working token when FCM refuses a
+  message as too big. FCM answers `INVALID_ARGUMENT` with no field both
+  to that and to a token it never made; `send` now asks a dry run of the
+  token alone, and forgets the token only if FCM refuses it too, else
+  dead-letters the message. An answer of another shape, such as
+  `{"error": {"details": 5}}`, is read without raising `TypeError`
+  ([Text messages and push notifications](docs/mail.md#text-messages-and-push-notifications),
+  ADR 0169) (user report N1).
+
+- Under `manage.py serve`, Granian bounds a request's headers by
+  `SERVE["MAX_HEADER_SIZE"]` over HTTP/2 too
+  (`--http2-max-headers-size`), where its HTTP/2 took 16 MiB of headers
+  from an h2c client ([HTTP versions](docs/reference/servers.md#http-versions))
+  (user report S1).
 
 ## [2.4.0] - 2026-11-16
 

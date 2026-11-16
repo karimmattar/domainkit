@@ -38,6 +38,26 @@ never published), with each section below.
 
 ## 2.4 to 2.5
 
+2.5 answers a third report from a project. Nothing a project relies on
+changes; what follows may ask something of it.
+
+- **`check --deploy` warns about clamd reached in clear.** Where
+  `UPLOAD_SCANNER` names `ClamAVScanner` on a host other than this one,
+  without `tls`, `check` warns (`security.W007`), and `check --deploy`
+  fails. Put a TLS proxy in front of clamd and set `tls`, or, where clamd
+  is on a network only the service reaches, add `security.W007` to
+  `SILENCED_CHECKS` ([clamd on another host](uploads.md#clamd-on-another-host)).
+- **FCM tokens refused as `INVALID_ARGUMENT` with no field cost a dry
+  run.** `FcmPushBackend.send` asks FCM about the token alone before it
+  forgets it, and dead-letters the message when the token passes. A
+  subclass that overrode `refusal` for this case may drop the override.
+- **Opt in to what 2.5 adds where it fits:** `SERVE["HTTP"] = "1"` unless
+  the proxy speaks h2c to the server, `SERVE["EXIT_ON_FAILED_START"] =
+  True` where an orchestrator restarts the container
+  ([Server limits](reference/servers.md#http-versions)), and
+  `check_write_once` on an `S3Storage` whose store is not AWS S3 or R2
+  ([A store that ignores create only](uploads.md#a-store-that-ignores-create-only)).
+
 ### Authorize the admin API's changes and a request's steps as acts
 
 Nothing changes until a project turns the new settings on. A project
