@@ -28,7 +28,8 @@ refused on a route that declares no rule that checks scopes
 (``SCOPED_CREDENTIALS``), a ``Public`` one included, before any event.
 
 Each event goes out as its type's name, its ``event_id``, and its fields
-as JSON, but those marked ``Personal``; ``render`` chooses other fields.
+as JSON, but its ``actor`` and those marked ``Personal``; ``render``
+chooses other fields.
 Each connection buffers at most ``LIVE_SEND_QUEUE`` events its rule allows:
 one that falls further behind is closed as too slow (1013), and
 reconnects. Events it may not see never count against it, however many
@@ -63,6 +64,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, LiveFanoutConfig
 from domainkit.ddd import DomainEvent, EventBus, event_bus
+from domainkit.ddd.events import inherits_actor
 from domainkit.ddd.personal import personal_fields
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import check_scopes_bounded, current_user
@@ -116,16 +118,21 @@ def _adapter(event_type: type[DomainEvent]) -> TypeAdapter[Any]:
 
 
 @cache
-def _personal(event_type: type[DomainEvent]) -> frozenset[str]:
-    """The fields of ``event_type`` marked ``Personal``."""
-    return frozenset(personal_fields(event_type))
+def _withheld(event_type: type[DomainEvent]) -> frozenset[str]:
+    """The fields of ``event_type`` marked ``Personal``, and its ``actor``.
+
+    Who acted (ADR 0147) is not a client's to see: which staff member, or
+    that staff act as the user.
+    """
+    actor = {"actor"} if inherits_actor(event_type) else set()
+    return frozenset(personal_fields(event_type)) | actor
 
 
 def payload(event: DomainEvent) -> dict[str, Any]:
-    """``event``'s fields as JSON values, but those marked ``Personal``."""
+    """``event``'s fields as JSON values, but its actor and its ``Personal`` ones."""
     event_type = type(event)
     data: dict[str, Any] = _adapter(event_type).dump_python(
-        event, mode="json", exclude=set(_personal(event_type))
+        event, mode="json", exclude=set(_withheld(event_type))
     )
     return data
 

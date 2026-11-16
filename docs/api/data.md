@@ -142,6 +142,7 @@ Domain-driven design building blocks ("seedwork").
 
 - `UNSET`: A field left out of a partial change (`PatchModel`, `UpdateX` commands).
 - `URL`: An `http` or `https` address (Django's `URLField`): at most 2,048 characters.
+- `Actor`: Who caused an event: a user, staff acting as one, an operator, or the system.
 - `AggregateRoot`: Entry point to a consistency boundary; records events as it changes.
 - `Avg`: The mean of a number field: exact for a `Decimal` field.
 - `BusinessRuleViolation`: The request is well-formed but breaks an invariant of the model.

@@ -99,5 +99,5 @@ def acting_as(user: AbstractBaseUser) -> Iterator[None]:
     if context is None:
         yield
         return
-    with bind_request(replace(context, actor=str(user.id))):
+    with bind_request(replace(context, actor=str(user.id), impersonating=None)):
         yield

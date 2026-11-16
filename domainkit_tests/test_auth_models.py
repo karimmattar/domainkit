@@ -77,8 +77,8 @@ def kinds(events: list[DomainEvent]) -> list[type[DomainEvent]]:
 
 
 def facts(events: list[DomainEvent]) -> list[tuple[str, dict[str, object]]]:
-    """Each event's class and own fields (not its id or time)."""
-    common = {"event_id", "occurred_at"}
+    """Each event's class and own fields (not its id, time, or actor)."""
+    common = {"event_id", "occurred_at", "actor"}
     return [
         (
             type(event).__name__,

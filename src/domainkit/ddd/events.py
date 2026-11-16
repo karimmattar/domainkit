@@ -12,6 +12,10 @@ cannot hold the request that committed for ever. Subscribe with
 ``durable=True`` to run a handler from the outbox instead, in a worker, where
 it survives crashes and is retried. A durable handler's messages carry its
 key: the ``name=`` it was subscribed with, or else ``module.QualName``.
+
+Each event names its ``actor``: who caused it, read from the request, job,
+or command it was made in (ADR 0147). The domain layer reads no request:
+``domainkit.context`` tells this module where to ask when it is imported.
 """
 
 import asyncio
@@ -19,8 +23,9 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
+from functools import cache
 from typing import Any, Final, NamedTuple
 from uuid import UUID, uuid4
 
@@ -37,9 +42,64 @@ DEFAULT_HANDLER_TIMEOUT: Final = 10.0
 """Seconds an in-process handler may run, unless settings or ``subscribe`` say."""
 
 
+SYSTEM_ACTOR: Final = "system"
+"""The actor of work no caller asked for: periodic tasks, commands' messages."""
+
+
 def _now() -> datetime:
     """Return the current time in UTC."""
     return clock.now()
+
+
+@dataclass(frozen=True, slots=True)
+class Actor:
+    """Who caused an event: a user, staff acting as one, an operator, or the system.
+
+    ``id`` is the request's actor, as logs and the audit trail write it: a
+    user's id, ``operator:<name>`` for a command an operator ran, or
+    ``SYSTEM_ACTOR`` for work no caller asked for (periodic tasks).
+    """
+
+    id: str
+    impersonating: str | None = None
+    """The id of the user ``id`` acted as (staff impersonating them); None
+    when ``id`` acted in their own name."""
+
+    @property
+    def is_system(self) -> bool:
+        """Whether no one asked for the work: a periodic task, say."""
+        return self.id == SYSTEM_ACTOR
+
+    def is_self(self, subject: object) -> bool:
+        """Whether ``subject``, an id, acted in their own name.
+
+        False for staff who acted on them, directly or as them, for an
+        operator, and for the system.
+        """
+        return self.impersonating is None and self.id == str(subject)
+
+
+type ActorSource = Callable[[], Actor | None]
+"""Who acts in the current context: a request's user, a job's, a command's."""
+
+_actor_source: list[ActorSource] = [lambda: None]
+"""Where events made without an ``actor`` ask (``read_actors_from``): no one
+until ``domainkit.context`` is imported, and no request is bound before."""
+
+
+def read_actors_from(source: ActorSource) -> None:
+    """Make events made without an ``actor`` ask ``source`` who acts.
+
+    ``domainkit.context`` gives its ``current_actor`` when it is imported,
+    which every request, job, and command does first: the domain layer
+    imports no request (ADR 0147).
+    """
+    _actor_source[0] = source
+
+
+def _acting() -> Actor | None:
+    """Who acts where an event is made; None outside requests, jobs, commands."""
+    return _actor_source[0]()
 
 
 class DomainEvent(metaclass=MessageMeta):
@@ -52,6 +112,24 @@ class DomainEvent(metaclass=MessageMeta):
 
     event_id: UUID = field(default_factory=uuid4)
     occurred_at: datetime = field(default_factory=_now)
+    actor: Actor | None = field(default_factory=_acting)
+    """Who caused it, as the request, job, or command it was made in says
+    (ADR 0147); None for an anonymous caller, or outside all three."""
+
+
+_ACTOR: Final = next(each for each in fields(DomainEvent) if each.name == "actor")
+"""``DomainEvent.actor``: every subclass that declares none shares this field."""
+
+
+@cache
+def inherits_actor(event_type: type[DomainEvent]) -> bool:
+    """Whether ``event_type``'s ``actor`` is ``DomainEvent.actor``.
+
+    False for a class that declares an ``actor`` of its own, from before
+    events had one: webhooks, live events, and the audit trail keep that
+    field as they did, and leave ``DomainEvent.actor`` out.
+    """
+    return any(each is _ACTOR for each in fields(event_type))
 
 
 type EventHandler[E: DomainEvent] = Callable[[E], Awaitable[None]]

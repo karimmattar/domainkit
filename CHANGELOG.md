@@ -296,6 +296,18 @@ and a status.
   documentation of the release that wrote them, where they named a path
   of domainkit's repository
   ([Granian](docs/reference/servers.md#granian)) (user report S1).
+- Every domain event names who caused it: `actor`, an `Actor`
+  (`domainkit.ddd`), read from the request, job, or command it was made
+  in. `actor.id` is the user's id, the staff member's in an
+  impersonation (with `actor.impersonating`, the user's id),
+  `operator:<name>` in a command, or `system`; `None` for an anonymous
+  caller. `actor.is_self(user_id)` holds for the user's own acts only. A
+  durable handler gets it with the event, and the outbox carries the
+  impersonated user to the worker. Webhook bodies, live events, and audit
+  details leave it out, as before. A handler could not tell a change
+  staff made from the user's own
+  ([Who acted](docs/resources.md#the-domain-behind-a-resource), ADR 0147)
+  (user report A11).
 - A command route whose rules ask for an authorization of the act
   (`AsksAuthorization`, as `StepUp(for_=...)` does) gets a twin,
   `POST <the route's path>/authorization`. It builds the command as the

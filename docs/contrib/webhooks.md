@@ -84,7 +84,7 @@ events of a class to the subscribers of `name`:
 | --- | --- |
 | `event_type` | The event class. Its subclasses are sent too. |
 | `name` | The event type that subscribers choose: up to 128 letters, digits, `_`, `.`, `:`, or `-`. A bad name raises `ImproperlyConfigured`. |
-| `payload` | A function that returns the body's `data`. Without it, every field of the event is sent, as JSON. |
+| `payload` | A function that returns the body's `data`. Without it, every field of the event is sent, as JSON, but `actor`: a receiver is not told which staff member acted. |
 | `owner` | A function that returns whose event it is. Only then do users' own subscriptions get it (see [Users' own subscriptions](#users-own-subscriptions)). |
 
 !!! warning

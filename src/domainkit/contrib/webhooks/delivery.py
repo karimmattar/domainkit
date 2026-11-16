@@ -67,6 +67,7 @@ from domainkit.db import connections
 from domainkit.db.query import contains_text
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
+from domainkit.ddd.events import inherits_actor
 from domainkit.ddd.personal import (
     event_subjects,
     fields_about,
@@ -150,7 +151,8 @@ def expose[E: DomainEvent](
     """Send committed ``event_type`` events to the subscribers of ``name``.
 
     Call it in ``DomainConfig.ready()``. ``payload`` picks the event's
-    ``data`` (by default every field, as JSON): leave personal data out.
+    ``data`` (by default every field but ``actor``, as JSON): leave
+    personal data out.
     Subclasses of ``event_type`` are sent too. ``owner`` names whose
     event it is (``lambda e: e.customer_id``): subscriptions that subject
     made through the self-service API get it too. Without one, or when it
@@ -200,12 +202,26 @@ def body_of(event_type: str, data: Mapping[str, Any], occurred_at: datetime) -> 
     ).encode()
 
 
+def event_data(exposure: Exposure, event: DomainEvent) -> Mapping[str, Any]:
+    """The ``data`` a delivery of ``event`` sends: ``payload``'s, or its fields.
+
+    Every field, as JSON, but the event's ``actor`` (ADR 0147): a receiver
+    is not told which staff member acted. ``payload`` may send it.
+    """
+    if exposure.payload is not None:
+        return exposure.payload(event)
+    data = dump_event(event)
+    if inherits_actor(type(event)):
+        del data["actor"]
+    return data
+
+
 async def fan_out(event: DomainEvent) -> None:
     """Queue a delivery of ``event`` to each subscriber (a durable handler)."""
     exposure = exposure_for(type(event))
     if exposure is None:  # No longer exposed since it was committed.
         return
-    data = exposure.payload(event) if exposure.payload else dump_event(event)
+    data = event_data(exposure, event)
     owner = exposure.owner(event) if exposure.owner else None
     try:
         await queue_deliveries(

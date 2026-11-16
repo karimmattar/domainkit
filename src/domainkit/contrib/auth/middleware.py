@@ -101,7 +101,9 @@ class AuthenticationMiddleware:
 
     ``request.user`` is the user, or ``AnonymousUser``; ``request.auth`` is
     the ``Credentials`` used, or None. The actor, which rate limits,
-    idempotency keys, logs, and the audit trail use, is the user's id.
+    idempotency keys, logs, and the audit trail use, is the user's id; in
+    an impersonation, the staff member's, and the user's id is the
+    context's ``impersonating``.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -172,9 +174,15 @@ class AuthenticationMiddleware:
         if context is None:
             await self.app(scope, receive, send)
             return
-        # An impersonation acts for its staff member: the trail names them.
+        # An impersonation acts for its staff member: the trail names them,
+        # and events name the user they act as too (ADR 0147).
         acting = credentials.impersonator or credentials.user.id
-        with bind_request(replace(context, actor=str(acting))):
+        impersonating = (
+            None if credentials.impersonator is None else str(credentials.user.id)
+        )
+        with bind_request(
+            replace(context, actor=str(acting), impersonating=impersonating)
+        ):
             await self.app(scope, receive, send)
 
     async def reauthenticate(self, scope: Scope) -> bool:

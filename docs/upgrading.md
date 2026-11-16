@@ -92,6 +92,16 @@ domainkit.
   awaits it. Code of your own that calls `validate_password` with such a
   rule configured gets `ImproperlyConfigured`; call
   `await avalidate_password(...)` there instead.
+- **Events carry `actor`**
+  ([ADR 0147](adr/0147-name-who-caused-each-event-and-tell-the-old-address.md)).
+  `dataclasses.fields(event)`, `asdict(event)`, and `dump_event` list
+  it after `event_id` and `occurred_at`. Code that lists an event's own
+  fields leaves it out as it leaves those two out, such as a test helper
+  that compares an event's fields with a dict. Webhook bodies, live
+  events, and audit details are unchanged. An event class that declares
+  an `actor` of its own keeps it, and domainkit leaves that field alone;
+  mypy reports the override, so rename it, or keep it with
+  `# type: ignore[assignment]`.
 
 ### Make and apply the object permissions' migration
 

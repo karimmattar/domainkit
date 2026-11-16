@@ -98,7 +98,9 @@ and the request id.
   (`catalog.product_created`). `action_for(EventClass)` gives the name.
 - `outcome`: an `Outcome`, one of `success`, `failure` (attempted, and
   it failed), or `denied` (a policy refused it).
-- `target`, `event_id`, and the event's fields as `details`.
+- `target`, `event_id`, and the event's fields as `details`, but its
+  `actor`, which the row's `actor` names. A staff member acting as a user
+  is the actor; the event names the user too (`actor.impersonating`).
 
 ## Recording actions yourself: `record`
 

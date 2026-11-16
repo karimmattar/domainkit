@@ -249,6 +249,35 @@ published; `pull_events()` takes them. An event has an `event_id` and an
 `occurred_at` of its own. Carry plain values in events (ids, text,
 numbers), so they stay valid messages after the model changes.
 
+**Who acted.** An event names who caused it in `actor`, an `Actor`, read
+from the request, job, or command it was made in, as `occurred_at` is
+when it was made
+([ADR 0147](adr/0147-name-who-caused-each-event-and-tell-the-old-address.md)).
+
+| Made in | `actor` |
+| --- | --- |
+| A request of a user | `Actor("<user id>")` |
+| A request of staff impersonating a user | `Actor("<staff id>", impersonating="<user id>")` |
+| A job a request queued (a durable handler, a task) | The actor of that request |
+| A periodic task, or a job no request queued | `Actor("system")`: `is_system` is true |
+| A command an operator ran | `Actor("operator:<name>")` |
+| An anonymous request, or code outside all of these | `None` |
+
+`actor.is_self(subject_id)` holds when the subject acted in their own
+name: not staff acting on them, directly or as them, nor an operator, nor
+the system. Pass `actor=` to an event to name someone else.
+Webhook bodies, live events, and audit details leave `actor` out: the
+audit row names the actor in its own column. A list of an event's own
+fields, such as a test helper that leaves out `event_id` and
+`occurred_at`, leaves out `actor` too.
+
+```python
+@handles(OrderCancelled, durable=True, name="shop.tell_the_customer")
+async def tell_the_customer(event: OrderCancelled) -> None:
+    by_staff = event.actor is None or not event.actor.is_self(event.customer_id)
+    ...
+```
+
 **Handlers.** A function marked `@handles(ProductRestocked)` reacts to an
 event. In a four-file domain, the handlers in `controllers.py` are
 subscribed to `event_bus` when the domain is ready. `durable=True` runs

@@ -120,6 +120,13 @@ subclasses). A message that pairs it with another event is
 dead-lettered. Durable handlers use the `MESSAGING` settings for their
 retries and timeouts.
 
+The handler runs as the request that committed the event: its request id
+and actor, and the user staff impersonated, if they did. The event names
+who caused it in `event.actor`
+([Who acted](../resources.md#the-domain-behind-a-resource)), and the events
+the handler makes name the same actor. Work no request queued, such as a
+periodic task, runs as `system`.
+
 Each message carries its handler's key: `name=`, or else the function's
 `module.QualName`, which moving or renaming it changes. Give every
 durable handler a name, as you give every task one; `check` warns about

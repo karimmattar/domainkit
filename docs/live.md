@@ -423,7 +423,8 @@ the same `data`. The `address` is not sent.
   Elsewhere `stream` answers `403`, and `forward` and `subscribe` refuse
   the WebSocket or the subscription before any event.
 - **What is sent.** Over Server-Sent Events, each event is named after its
-  type, has its `event_id` as the id, and its fields as JSON data. Over a
+  type, has its `event_id` as the id, and its fields as JSON data, but its
+  `actor`: a client is not told which staff member acted. Over a
   WebSocket, `forward` accepts the connection if the route has not, and
   reads and drops what the client sends.
 - **Personal data.** The fields marked `Personal` are left out. `render=`

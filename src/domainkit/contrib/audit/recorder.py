@@ -26,6 +26,7 @@ from domainkit.apps import registry
 from domainkit.context import SYSTEM_ACTOR, current_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent
+from domainkit.ddd.events import inherits_actor
 from domainkit.ddd.personal import counted_fields, personal_fields
 from domainkit.utils.decimals import jsonable
 from domainkit.utils.text import snake_case
@@ -150,7 +151,8 @@ def event_rows(events: Sequence[DomainEvent], config: AuditSettings) -> list[Dra
     """Audit rows for committed events, minus excluded actions.
 
     A field marked ``Personal`` is the person's that its ``of`` field names;
-    one marked ``Counted`` is kept as its number of items.
+    one marked ``Counted`` is kept as its number of items. The event's
+    ``actor`` is the row's own column: it stays out of the details.
     """
     rows = []
     for event in events:
@@ -160,6 +162,8 @@ def event_rows(events: Sequence[DomainEvent], config: AuditSettings) -> list[Dra
         details = jsonable(event)
         details.pop("event_id", None)
         details.pop("occurred_at", None)
+        if inherits_actor(type(event)):
+            del details["actor"]
         for name in counted_fields(type(event)):
             if details[name] is not None:
                 details[name] = len(details[name])
