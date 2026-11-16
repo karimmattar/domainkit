@@ -546,7 +546,9 @@ So the `OwnerBackend` above should leave `object_grants` out, unless the
 invoices it guards can never change owner through the admin API.
 
 The [LDAP backend](identity.md#ldap-and-active-directory) checks
-passwords against a directory.
+passwords against a directory. `MembershipBackend` grants what a user
+holds as a member of the tenant being served, such as a role's keys
+(`TENANCY.MEMBER_PERMISSIONS`, [tenancy](../tenancy.md#members-permissions)).
 
 ### Grants on single objects
 

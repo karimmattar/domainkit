@@ -11,6 +11,23 @@ and a status.
 
 ### Added
 
+- A route can take its tenant from its path, once routed:
+  `Depends(PathTenant("org_id"))` on a router prefixed `/orgs/{org_id}`
+  serves each of its routes as that tenant, as `TenantMiddleware` serves
+  one, and OpenAPI documents the parameter. A caller who does not belong
+  gets the `404` of a route that does not exist, whether the tenant
+  exists or not, so none is told apart; an anonymous one gets `401`.
+  `MEMBERSHIP` or `MEMBER_PERMISSIONS` must say who belongs. Tenancy
+  chose one tenant per request before routing, and answered strangers
+  `403`. ADR 0150 (user report D2).
+- `TENANCY.MEMBER_PERMISSIONS` names a function of the user and a tenant
+  that returns the permission keys a member holds there, such as their
+  role's, or None for one who is not a member; it replaces `MEMBERSHIP`.
+  It is asked once per request, and `MembershipBackend`
+  (`domainkit.contrib.auth.backends`) grants the keys in the tenant being
+  served, so `HasPermissions` counts a member's role;
+  `member_permissions(user)` returns them. A project wrote memberships and
+  a backend of its own for this. ADR 0150 (user report D2).
 - `AUTH.BREACHED_PASSWORDS = {"ENABLED": True}` checks every new password
   (signup, change, reset, the admin API, a change at the first login or
   at enrollment, the commands) against Have I Been Pwned's Pwned
@@ -31,6 +48,7 @@ and a status.
   no path in `CallTimeout`'s message, for paths that carry what logs must
   not keep, such as the breached-password check's hash prefix (user
   report A11).
+
 - Grants on single objects may expire, come in roles, and name a
   permission of another model. `grant_permission(..., expires_at=...)`
   ends a grant at that moment: from then on it counts nowhere (`has_perm`,
