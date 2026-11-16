@@ -6,8 +6,15 @@ the ``ResourceRouter`` mounts its twin (``POST
 /products/{product_id}/rename/authorization``), and the service, on auth's
 database, spends the authorization with its commit. Auth's routes log in,
 enrol a second factor, and confirm an authorization with its code.
+
+Relabelling is a ``@use_case`` (user report A13): ``/relabel`` runs the
+copy ``requires_authorization`` makes, and asks; ``/relabel-directly``
+runs the use case itself, as a route without an act (the phone's) does.
+Its action takes the use case as its command, and shows the stored name,
+read in the route's unit of work.
 """
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter
@@ -20,11 +27,11 @@ from domainkit.contrib.auth.actions import router as actions_router
 from domainkit.contrib.auth.api import router as auth_router
 from domainkit.contrib.auth.mfa import router as mfa_router
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
-from domainkit.ddd import Command
+from domainkit.ddd import Command, use_case
 from domainkit.resources import ModelActions, ResourceRouter
 from domainkit_tests.sample_domains.shop.models import Product, ProductId
 
-__all__ = ["RENAME_PRODUCT", "ShopUnitOfWork", "router"]
+__all__ = ["RELABEL_PRODUCT", "RENAME_PRODUCT", "ShopUnitOfWork", "router"]
 
 
 class Products(SqlAlchemyRepository[Product, ProductId]):
@@ -77,6 +84,35 @@ async def rename_product(command: RenameProduct, uow: ShopUnitOfWork) -> Product
     return product
 
 
+@use_case
+async def relabel_product(uow: ShopUnitOfWork, product_id: UUID, name: str) -> Product:
+    """Give a product another label: guarded only where a route asks."""
+    product = await uow.products.get(ProductId(product_id))
+    product.name = name
+    return product
+
+
+SHOWN_IN: list[ShopUnitOfWork] = []
+"""The units of work ``show_relabel`` read in."""
+
+
+async def show_relabel(command: Any, uow: ShopUnitOfWork) -> Shown:  # noqa: ANN401 - the use case's command.
+    """The product's name, read in the unit of work it is given, and the new one."""
+    SHOWN_IN.append(uow)
+    product = await uow.products.get(ProductId(command.product_id))
+    return Shown(
+        "Relabel a product", {"Product": product.name, "New label": command.name}
+    )
+
+
+RELABEL_PRODUCT = Action(
+    "shop.relabel_product",
+    command=relabel_product,
+    subject=lambda command: f"shop.product:{command.product_id}",
+    show=show_relabel,
+)
+
+
 class NameIn(BaseModel):
     """The product's new name."""
 
@@ -98,6 +134,13 @@ products.command_route(
     path="/rename",
     rule=StepUp(for_="shop.rename_product"),
 )
+
+products.use_case(
+    requires_authorization(RELABEL_PRODUCT)(relabel_product),
+    path="/relabel",
+    rule=StepUp(for_=RELABEL_PRODUCT),
+)
+products.use_case(relabel_product, path="/relabel-directly", name="relabel_directly")
 
 router = APIRouter()
 router.include_router(auth_router, prefix="/auth")

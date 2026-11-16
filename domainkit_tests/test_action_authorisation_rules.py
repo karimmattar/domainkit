@@ -2,7 +2,8 @@
 
 ``Action``, ``Shown``, ``StepUp(for_=...)``, ``AUTH.AUTHORIZATIONS``, the
 digest, the code, and the checks ``auth.E108`` to ``auth.E111``, without a
-database (ADR 0144).
+database (ADR 0144). A ``@use_case`` as the act, guarded as a copy, and a
+``show`` that reads in the act's unit of work (ADR 0161, user report A13).
 """
 
 from collections.abc import AsyncIterator
@@ -21,6 +22,7 @@ from domainkit.contrib.approvals import fingerprint as approvals_fingerprint
 from domainkit.contrib.auth import Credentials, PasswordHash, StepUp, User, UserId
 from domainkit.contrib.auth.access import ActionStepUp
 from domainkit.contrib.auth.actions import (
+    SPENDS,
     Action,
     ActionAuthorization,
     ActionConfirmation,
@@ -34,10 +36,12 @@ from domainkit.contrib.auth.actions import (
     register_action,
     registered_actions,
     request_action_authorization,
+    requires_authorization,
+    spent_by_a_service,
 )
 from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.settings import AuthorizationsSettings
-from domainkit.ddd import Command, fingerprint
+from domainkit.ddd import Command, EventBus, UnitOfWork, UseCase, fingerprint, use_case
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import AsksAuthorization, Require
 from domainkit.http.errors import APIError
@@ -404,3 +408,138 @@ def test_overriding_methods_in_settings_changes_what_an_action_asks(
     with override_settings(AUTH={"AUTHORIZATIONS": {"METHODS": ["otp", "phone"]}}):
         assert closing().required() == {"otp", "phone"}
         assert StepUp(for_=closing()).required() == {"otp", "phone"}
+
+
+# A use case as the act (ADR 0161, user report A13) ------------------------------
+
+ACCOUNT = UUID("00000000-0000-4000-8000-000000000007")
+
+
+class Ledger(UnitOfWork):
+    """Accounts in memory: what a use case changes, and a ``show`` reads."""
+
+    def __init__(self) -> None:
+        """No account closed, none opened yet."""
+        super().__init__(events=EventBus())
+        self.names = {ACCOUNT: "Savings"}
+        self.closed: list[UUID] = []
+        self.opened = 0
+
+    async def __aenter__(self) -> "Ledger":
+        """Count each time it is opened."""
+        self.opened += 1
+        return await super().__aenter__()
+
+    async def _commit(self) -> None:
+        """Nothing to write."""
+
+    async def _rollback(self) -> None:
+        """Nothing to undo."""
+
+
+@use_case
+async def close_account(uow: Ledger, account_id: UUID, reason: str) -> None:
+    """Close an account: some routes run it without an act."""
+    uow.closed.append(account_id)
+
+
+async def show_closing(command: Any, uow: Ledger) -> Shown:  # noqa: ANN401 - the use case's command.
+    """The account's stored name, read in ``uow``, which is open."""
+    assert uow.opened == 1
+    return Shown("Close an account", {"Account": uow.names[command.account_id]})
+
+
+def closing_by_use_case(**options: Any) -> Action:  # noqa: ANN401 - Action's options.
+    """An action whose command is ``close_account``'s, shown from the ledger."""
+    return Action(
+        "accounts.close_by_use_case",
+        command=close_account,
+        subject=lambda command: f"accounts.account:{command.account_id}",
+        show=options.pop("show", show_closing),
+        **options,
+    )
+
+
+def test_an_action_takes_a_use_case_for_its_command() -> None:
+    """``command=`` a ``@use_case`` is its command; anything else is refused."""
+    action = closing_by_use_case(ignore=["reason"])
+    one = close_account.command(account_id=ACCOUNT, reason="moving")
+    other = close_account.command(account_id=ACCOUNT, reason="fees")
+
+    assert action.command is close_account.command
+    assert action.digest_of(one) == action.digest_of(other)
+    with pytest.raises(TypeError, match="takes a CloseAccount, not a Close"):
+        action.arguments(Close(account_id=ACCOUNT, reason="moving"))
+    with pytest.raises(ImproperlyConfigured, match="or its @use_case"):
+        Action(
+            "accounts.close",
+            command=close_account.run,  # type: ignore[arg-type]
+            subject=str,
+            show=show_closing,
+        )
+
+
+async def test_requires_authorization_guards_a_copy_of_a_use_case(
+    use_auth: UseAuth,
+) -> None:
+    """The copy's ``run`` and call spend; the use case itself stays as it was.
+
+    So a route that runs the use case without an act (the phone's) is
+    left alone, and the route that asks runs the copy.
+    """
+    use_auth()
+    guarded = requires_authorization(closing_by_use_case())(close_account)
+    uow = Ledger()
+    command = close_account.command(account_id=ACCOUNT, reason="moving")
+
+    await close_account.run(command, uow)
+    await close_account(uow, account_id=ACCOUNT, reason="moving")
+    with pytest.raises(AuthorizationRequired):
+        await guarded.run(command, uow)
+    with pytest.raises(AuthorizationRequired):
+        await guarded(uow, account_id=ACCOUNT, reason="moving")
+
+    assert isinstance(guarded, UseCase)
+    assert guarded is not close_account
+    assert (guarded.command, guarded.name, guarded.fields) == (
+        close_account.command,
+        "close_account",
+        ("account_id", "reason"),
+    )
+    assert "run" not in vars(close_account)  # The class's own run, unguarded.
+    assert not hasattr(close_account, SPENDS)
+    assert getattr(guarded, SPENDS) == getattr(guarded.run, SPENDS)
+    assert spent_by_a_service("accounts.close_by_use_case")
+    assert uow.closed == [ACCOUNT, ACCOUNT]
+
+
+def test_a_use_case_of_another_command_is_refused() -> None:
+    """The action must take the use case's command: refused when guarded."""
+    with pytest.raises(ImproperlyConfigured, match="runs a CloseAccount"):
+        requires_authorization(closing())(close_account)
+
+
+async def test_show_reads_in_the_unit_of_work_it_is_given() -> None:
+    """``show(command, uow)`` is given the act's unit of work, opened, not committed.
+
+    Without one it is refused: the asker must lend it. A ``show`` of the
+    command alone, or without a signature, takes none.
+    """
+    action = closing_by_use_case()
+    uow = Ledger()
+    command = close_account.command(account_id=ACCOUNT, reason="moving")
+
+    shown = await action.shown(command, uow)
+
+    assert shown == Shown("Close an account", {"Account": "Savings"})
+    assert (uow.opened, uow.committed) == (1, 0)
+    assert action.reads_unit_of_work
+    with pytest.raises(ImproperlyConfigured, match="pass uow= to request_action"):
+        await action.shown(command)
+    with pytest.raises(ImproperlyConfigured, match="must return a Shown"):
+        await closing_by_use_case(show=lambda command, uow: "words").shown(
+            command, Ledger()
+        )
+    assert await action(command, Ledger()) == shown  # As the hook point calls it.
+    assert not closing().reads_unit_of_work
+    assert not closing_by_use_case(show=vars).reads_unit_of_work

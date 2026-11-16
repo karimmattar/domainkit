@@ -228,6 +228,8 @@ class ApprovalAuthorizationOut(BaseModel):
     purpose: str
     shown: ApprovalShownOut
     expires_at: datetime
+    methods: list[str]
+    """What confirming it must prove: which ways may confirm it."""
 
 
 class ApproveAction(BasePermission):
@@ -274,7 +276,7 @@ class ApproveAction(BasePermission):
         return None if rule is None else await rule.refusal(request, user)
 
     def authorization_model(self) -> type[BaseModel]:
-        """``{"id", "purpose", "shown", "expires_at"}``: the twin's ``201`` body."""
+        """``{"id", "purpose", "shown", "expires_at", "methods"}``: the twin's body."""
         return ApprovalAuthorizationOut
 
     async def ask_authorization(self, request: Request, command: object) -> BaseModel:

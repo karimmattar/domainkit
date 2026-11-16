@@ -35,6 +35,15 @@ and the client sends the request again with ``Action-Authorization:
 <id>.<code>``. The rule checks it and keeps it on the request; the
 decorated service spends it.
 
+A ``@use_case`` is guarded as a copy (ADR 0161):
+``requires_authorization(END_MEMBERSHIP)(end_membership)`` is the use case
+whose ``run`` spends the authorization, for the route that asks for one;
+``end_membership`` itself stays as it was, for the routes that run it
+without an act. ``Action(command=end_membership)`` takes the use case's
+command. A ``show(command, uow)`` reads what it shows in the unit of work
+the act runs in, which the asker gives it: the route's, for a
+``ResourceRouter``'s twin.
+
 How it is bound: the authorization is a stored row (the user, the login
 that asked, the purpose, the subject, the act's digest, what was shown,
 and the expiry). Confirming it returns ``<id>.<code>``, the code an
@@ -54,6 +63,7 @@ request fails.
 """
 
 import base64
+import copy
 import dataclasses
 import functools
 import hashlib
@@ -79,7 +89,7 @@ from domainkit.apps import registry
 from domainkit.apps.hooks import HookPoint
 from domainkit.conf import settings
 from domainkit.db.routing import router as database_router
-from domainkit.ddd import NotFound, PermissionDenied, UnitOfWork, fingerprint
+from domainkit.ddd import NotFound, PermissionDenied, UnitOfWork, UseCase, fingerprint
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsUnscoped, NotAuthenticated, Require
 from domainkit.http.errors import APIError, FieldError, error_response, error_responses
@@ -261,8 +271,9 @@ def _expired() -> APIError:
 # The act ------------------------------------------------------------------------
 
 
-type Show = Callable[[Any], Awaitable[Shown] | Shown]
-"""What builds what the user is shown of a command."""
+type Show = Callable[..., Awaitable[Shown] | Shown]
+"""What builds what the user is shown of a command: ``show(command)``, or
+``show(command, uow)`` to read in the act's unit of work."""
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -270,35 +281,42 @@ class Action:
     """An act that asks for its own authorization: its purpose, command, and words.
 
     ``purpose`` is a lower-case name, one action per purpose. ``command``
-    is the type its service takes; the digest is computed from it, read
-    back through pydantic, less the fields ``ignore`` names (a time, a
-    fresh id). ``subject`` says what the act is on, ``"<type>:<id>"``, at
-    most 200 characters: an internal id, kept for the trail. ``show``
-    builds what the user is shown (``Shown``), from the command and the
-    stored state, in the request's language. ``ttl`` and ``methods`` take
-    the place of ``AUTH.AUTHORIZATIONS.TTL`` and ``METHODS`` for this act.
+    is the type its service takes, or the ``@use_case`` whose command it
+    is; the digest is computed from it, read back through pydantic, less
+    the fields ``ignore`` names (a time, a fresh id). ``subject`` says what
+    the act is on, ``"<type>:<id>"``, at most 200 characters: an internal
+    id, kept for the trail. ``show`` builds what the user is shown
+    (``Shown``), from the command and the stored state, in the request's
+    language: ``show(command)``, or ``show(command, uow)``, given the unit
+    of work the act runs in, open, to read in (a ``ResourceRouter``'s twin
+    gives its route's). ``ttl`` and ``methods`` take the place of
+    ``AUTH.AUTHORIZATIONS.TTL`` and ``METHODS`` for this act.
     """
 
     purpose: str
     _: KW_ONLY
-    command: type
+    command: type | UseCase[Any]
     subject: Callable[[Any], str]
     show: Show
     ignore: Collection[str] = ()
     ttl: timedelta | None = None
     methods: Collection[str] | None = None
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
+    reads_unit_of_work: bool = field(init=False, repr=False)
+    """Whether ``show`` takes the unit of work the act runs in."""
 
     def __post_init__(self) -> None:
         """Check what the act declares; build its command's adapter.
 
+        A use case given as ``command`` is replaced by its command.
+
         Raises:
             ImproperlyConfigured: The purpose is not a lower-case name of at
-                most 100 characters; ``command`` is not a class; ``ignore``
-                names a field the command lacks; ``ttl`` is not more than
-                zero and at most 30 minutes; or ``methods`` names others than
-                ``pwd``, ``otp``, and ``phone``, lacks ``otp`` and ``phone``,
-                or repeats one.
+                most 100 characters; ``command`` is not a class or a use
+                case; ``ignore`` names a field the command lacks; ``ttl`` is
+                not more than zero and at most 30 minutes; or ``methods``
+                names others than ``pwd``, ``otp``, and ``phone``, lacks
+                ``otp`` and ``phone``, or repeats one.
         """
         if (
             not isinstance(self.purpose, str)
@@ -310,13 +328,18 @@ class Action:
                 f"{PURPOSE_MAX_LENGTH} characters, such as "
                 f"organizations.end_membership: {self.purpose!r}."
             )
-        if not isinstance(self.command, type):
+        command = (
+            self.command.command if isinstance(self.command, UseCase) else self.command
+        )
+        if not isinstance(command, type):
             raise ImproperlyConfigured(
-                f"Action {self.purpose!r}: command is the class its service takes."
+                f"Action {self.purpose!r}: command is the class its service takes, "
+                "or its @use_case."
             )
-        if unknown := sorted(set(self.ignore) - _fields_of(self.command)):
+        object.__setattr__(self, "command", command)
+        if unknown := sorted(set(self.ignore) - _fields_of(command)):
             raise ImproperlyConfigured(
-                f"Action {self.purpose!r} ignores fields {self.command.__name__} "
+                f"Action {self.purpose!r} ignores fields {command.__name__} "
                 f"lacks: {', '.join(unknown)}."
             )
         if self.ttl is not None and not timedelta(0) < self.ttl <= (
@@ -338,7 +361,8 @@ class Action:
                 ) from None
             object.__setattr__(self, "methods", frozenset(methods))
         object.__setattr__(self, "ignore", frozenset(self.ignore))
-        object.__setattr__(self, "adapter", TypeAdapter(self.command))
+        object.__setattr__(self, "adapter", TypeAdapter(command))
+        object.__setattr__(self, "reads_unit_of_work", _takes_two(self.show))
 
     def required(self) -> frozenset[str]:
         """What confirming it must prove: ``methods``, or the setting's."""
@@ -356,9 +380,10 @@ class Action:
         Raises:
             TypeError: ``command`` is not the action's command.
         """
-        if not isinstance(command, self.command):
+        kind = cast(type, self.command)  # A class, once checked.
+        if not isinstance(command, kind):
             raise TypeError(
-                f"Action {self.purpose!r} takes a {self.command.__name__}, not a "
+                f"Action {self.purpose!r} takes a {kind.__name__}, not a "
                 f"{type(command).__name__}."
             )
         dumped: dict[str, Any] = self.adapter.dump_python(command, mode="json")
@@ -388,24 +413,55 @@ class Action:
             )
         return subject
 
-    async def shown(self, command: object) -> Shown:
+    async def shown(self, command: object, uow: UnitOfWork | None = None) -> Shown:
         """What the user is shown of ``command``: ``show``'s answer.
 
+        A ``show(command, uow)`` reads in ``uow``, the unit of work the act
+        runs in: opened for it, and left without a commit.
+
         Raises:
-            ImproperlyConfigured: ``show`` returned no ``Shown``.
+            ImproperlyConfigured: ``show`` returned no ``Shown``, or takes a
+                unit of work and none was given.
         """
-        result = self.show(command)
-        if inspect.isawaitable(result):
-            result = await result
+        if not self.reads_unit_of_work:
+            result = await _awaited(self.show(command))
+        elif uow is None:
+            raise ImproperlyConfigured(
+                f"Action {self.purpose!r}: show(command, uow) reads in the act's "
+                "unit of work, and none was given: pass uow= to "
+                "request_action_authorization (a ResourceRouter's twin gives "
+                "its route's)."
+            )
+        else:
+            async with uow:
+                result = await _awaited(self.show(command, uow))
         if not isinstance(result, Shown):
             raise ImproperlyConfigured(
                 f"Action {self.purpose!r}: show(...) must return a Shown."
             )
         return result
 
-    async def __call__(self, command: object) -> Shown:
+    async def __call__(self, command: object, uow: UnitOfWork | None = None) -> Shown:
         """As ``shown``: the hook point an action registers on holds callables."""
-        return await self.shown(command)
+        return await self.shown(command, uow)
+
+
+async def _awaited(result: object) -> object:
+    """``result``, awaited if it is awaitable: a ``show`` may be either."""
+    return await result if inspect.isawaitable(result) else result
+
+
+def _takes_two(show: Callable[..., object]) -> bool:
+    """Whether ``show`` takes two arguments: the command, and a unit of work."""
+    try:
+        signature = inspect.signature(show)
+    except (TypeError, ValueError):  # A built-in without one: the command alone.
+        return False
+    try:
+        signature.bind(None, None)
+    except TypeError:
+        return False
+    return True
 
 
 def _fields_of(command: type) -> set[str]:
@@ -624,6 +680,9 @@ class ActionAuthorizationOut(BaseModel):
     purpose: str
     shown: ShownOut
     expires_at: datetime
+    methods: list[str]
+    """What confirming it must prove (``otp``, ``pwd``, ``phone``): which
+    ways may confirm it, as ``GET /authorizations/{id}`` answers."""
 
     @classmethod
     def of(cls, authorization: ActionAuthorization) -> "ActionAuthorizationOut":
@@ -633,6 +692,7 @@ class ActionAuthorizationOut(BaseModel):
             purpose=authorization.purpose,
             shown=_shown_out(authorization.shown),
             expires_at=authorization.expires_at,
+            methods=sorted(_required(authorization)),
         )
 
 
@@ -645,7 +705,11 @@ def _shown_out(shown: Shown) -> ShownOut:
 
 
 async def request_action_authorization(
-    request: HTTPConnection, action: Action, command: object
+    request: HTTPConnection,
+    action: Action,
+    command: object,
+    *,
+    uow: UnitOfWork | None = None,
 ) -> ActionAuthorization:
     """Store an authorization of ``command`` for the request's user and login.
 
@@ -653,7 +717,8 @@ async def request_action_authorization(
     digest of the arguments, what is shown (``action.show``, in the
     request's language), and the login's digest. It works for the
     action's TTL. A login holds at most ten unconfirmed authorizations:
-    an eleventh ends the oldest.
+    an eleventh ends the oldest. ``uow`` is the unit of work the act runs
+    in, not yet open, for a ``show(command, uow)`` to read in.
 
     Raises:
         NotAuthenticated: The request names no user.
@@ -662,6 +727,8 @@ async def request_action_authorization(
             to scopes, or cannot be told apart from the user's others.
         NoSecondFactor: The user has no way to confirm what the act asks.
         TypeError: ``command`` is not the action's command.
+        ImproperlyConfigured: ``show`` reads a unit of work, and ``uow`` is
+            None.
     """
     from .stepup import NoSecondFactor
 
@@ -682,7 +749,7 @@ async def request_action_authorization(
     digest = action.digest_of(command)
     if not await _can_confirm(user.id, action.required()):
         raise NoSecondFactor
-    shown = await action.shown(command)
+    shown = await action.shown(command, uow)
     now = utc_now()
     authorization = ActionAuthorization(
         id=uuid4(),
@@ -823,7 +890,9 @@ def spent_by_a_service(purpose: str) -> bool:
     return purpose in _spending_purposes
 
 
-def requires_authorization[F: Service](action: Action) -> Callable[[F], F]:
+def requires_authorization[F: Service | UseCase[Any]](
+    action: Action,
+) -> Callable[[F], F]:
     """Spend the request's authorization of ``action`` on the service's command.
 
     The service is ``service(command, uow, ...)``. Called with no
@@ -832,6 +901,12 @@ def requires_authorization[F: Service](action: Action) -> Callable[[F], F]:
     act when ``uow`` is on auth's database (its first commit spends it);
     otherwise just before the act, in a transaction of its own.
 
+    Given a ``@use_case``, it returns a copy whose ``run``, and so its
+    call, spends the authorization: give the copy to the route that asks
+    for one (``ResourceRouter.use_case``). The use case itself stays as it
+    was, for the routes, tasks, and tests that run it without an act
+    (ADR 0161).
+
     Raises (when the service is called):
         AuthorizationRequired: No rule kept an authorization of the purpose.
         ActionNotAuthorized: It is for other arguments or another subject
@@ -839,30 +914,60 @@ def requires_authorization[F: Service](action: Action) -> Callable[[F], F]:
     """
 
     def decorate(service: F) -> F:
-        @functools.wraps(service)
-        async def spending(
-            command: object,
-            uow: object,
-            *args: Any,  # noqa: ANN401 - the service's own.
-            **kwargs: Any,  # noqa: ANN401 - the service's own.
-        ) -> Any:  # noqa: ANN401 - what the service returns.
-            accepted = await _take(action, command)
-            held = _unit_of_work_of(uow)
-            try:
-                if held is not None and _on_auth_database(held):
-                    joined = _Spending(uow, held, accepted)
-                    return await service(command, joined, *args, **kwargs)
-                await _spend_alone(accepted)
-            except _Spent:  # The transaction that found it spent is over.
-                await audit_refusal(ACTION, "used")
-                raise
-            return await service(command, uow, *args, **kwargs)
-
-        setattr(spending, SPENDS, action.purpose)
-        _spending_purposes.add(action.purpose)
-        return cast(F, spending)
+        if isinstance(service, UseCase):
+            return cast(F, _guarded_use_case(action, service))
+        return cast(F, _spending(action, service))
 
     return decorate
+
+
+def _spending(action: Action, service: Service) -> Service:
+    """``service``, spending the request's authorization of ``action`` first."""
+
+    @functools.wraps(service)
+    async def spending(
+        command: object,
+        uow: object,
+        *args: Any,  # noqa: ANN401 - the service's own.
+        **kwargs: Any,  # noqa: ANN401 - the service's own.
+    ) -> Any:  # noqa: ANN401 - what the service returns.
+        accepted = await _take(action, command)
+        held = _unit_of_work_of(uow)
+        try:
+            if held is not None and _on_auth_database(held):
+                joined = _Spending(uow, held, accepted)
+                return await service(command, joined, *args, **kwargs)
+            await _spend_alone(accepted)
+        except _Spent:  # The transaction that found it spent is over.
+            await audit_refusal(ACTION, "used")
+            raise
+        return await service(command, uow, *args, **kwargs)
+
+    setattr(spending, SPENDS, action.purpose)
+    _spending_purposes.add(action.purpose)
+    return spending
+
+
+def _guarded_use_case(action: Action, use_case: UseCase[Any]) -> UseCase[Any]:
+    """A copy of ``use_case`` whose ``run`` spends the authorization first.
+
+    ``UseCase.__call__`` runs ``run``, and routes wire ``run``: guarding it
+    guards every way into the copy. The original stays as it was.
+
+    Raises:
+        ImproperlyConfigured: The use case runs another command than the
+            action's.
+    """
+    if not issubclass(use_case.command, cast(type, action.command)):
+        raise ImproperlyConfigured(
+            f"Action {action.purpose!r} takes a {action.command.__name__}, and "
+            f"the use case {use_case.name} runs a {use_case.command.__name__}: "
+            f"give the action command={use_case.name}."
+        )
+    guarded = copy.copy(use_case)
+    guarded.run = _spending(action, use_case.run)  # type: ignore[method-assign,assignment]
+    setattr(guarded, SPENDS, action.purpose)
+    return guarded
 
 
 async def spend_authorization(
@@ -1435,8 +1540,6 @@ class ActionAuthorizationState(ActionAuthorizationOut):
     """An authorization, as the session that asked sees it."""
 
     confirmed: bool
-    methods: list[str]
-    """What confirming it must prove."""
 
 
 @router.get(
@@ -1456,7 +1559,6 @@ async def show_authorization(
     return ActionAuthorizationState(
         **ActionAuthorizationOut.of(authorization).model_dump(),
         confirmed=authorization.confirmed_at is not None,
-        methods=sorted(_required(authorization)),
     )
 
 

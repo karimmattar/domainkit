@@ -349,7 +349,12 @@ class AsksAuthorization(Protocol):
         ...
 
     async def ask_authorization(self, request: Request, command: object) -> BaseModel:
-        """Store an authorization of ``command`` for the request's caller: the body."""
+        """Store an authorization of ``command`` for the request's caller: the body.
+
+        A method that also takes ``uow`` (``uow=None``) is given the route's
+        unit of work, not yet open, to read what the caller is shown in
+        (ADR 0161).
+        """
         ...
 
 

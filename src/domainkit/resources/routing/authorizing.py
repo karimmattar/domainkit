@@ -6,9 +6,10 @@ client sends one. The twin lets the client ask for it: it takes the
 route's path and body, builds the command as the route does, checks what
 the act would check with the asking rule passing (the route's other rules,
 the aggregate within the caller's reach, the rules on the aggregate), and
-answers ``201`` with what the rule's ``ask_authorization`` returns. It
-never runs the service. So a caller may only ask for an authorization of
-an act they could otherwise make.
+answers ``201`` with what the rule's ``ask_authorization`` returns (given
+the route's unit of work, when it takes one: ADR 0161). It never runs the
+service. So a caller may only ask for an authorization of an act they
+could otherwise make.
 
 The asking rule is found among the route's rules, at the top or inside
 ``AllOf`` (``&``), at any depth. Inside ``AnyOf`` (``|``) or ``Not``
@@ -17,10 +18,13 @@ authorizations of one act: both are refused when the route is declared.
 """
 
 import copy
+import inspect
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Final
 
 from fastapi import Response, status
 from fastapi.routing import APIRoute
+from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
 from domainkit.exceptions import ImproperlyConfigured
@@ -65,6 +69,8 @@ class AuthorizationRoute:
         self.rules = rules
         """The route's rules, the asking one replaced by one that lets it pass."""
         self.model = rule.authorization_model()
+        self.lends = _takes_unit_of_work(rule)
+        """Whether the rule reads in the route's unit of work (ADR 0161)."""
         spec = route.spec
         self.spec = RouteSpec(
             f"{spec.path}{PATH}",
@@ -151,7 +157,9 @@ class AuthorizationRoute:
                     route.router, uow, context.request, context.ids
                 )
             await reach.check_object(context.request, aggregate, self.rules)
-        answer = await self.rule.ask_authorization(context.request, command)
+        lent = {"uow": context.uow} if self.lends else {}
+        ask: Callable[..., Awaitable[BaseModel]] = self.rule.ask_authorization
+        answer = await ask(context.request, command, **lent)
         if not isinstance(answer, self.model):
             raise RuntimeError(
                 f"{type(self.rule).__name__}.ask_authorization answered "
@@ -219,6 +227,11 @@ def _standing_in(
     elif isinstance(rule, Not):
         _standing_in(rule.rule, found, label, inside or "Not (~)")
     return rule
+
+
+def _takes_unit_of_work(rule: AsksAuthorization) -> bool:
+    """Whether ``rule.ask_authorization`` takes ``uow``: a rule of 2.4 does not."""
+    return "uow" in inspect.signature(rule.ask_authorization).parameters
 
 
 def _instance(rule: Rule) -> BasePermission:

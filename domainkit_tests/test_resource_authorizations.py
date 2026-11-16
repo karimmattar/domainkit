@@ -100,6 +100,22 @@ class Asks(BasePermission):
         return user.is_authenticated and "x-authorized" in request.headers
 
 
+class AsksInIt(Asks):
+    """Asks as ``Asks`` does, reading in the unit of work the twin lends."""
+
+    def __init__(self) -> None:
+        """No unit of work lent yet."""
+        super().__init__()
+        self.lent: list[UnitOfWork | None] = []
+
+    async def ask_authorization(
+        self, request: Request, command: object, uow: UnitOfWork | None = None
+    ) -> BaseModel:
+        """Record the unit of work; answer as ``Asks``."""
+        self.lent.append(uow)
+        return await super().ask_authorization(request, command)
+
+
 class Seen(BasePermission):
     """Looks at objects: records each, and allows gadget ``a`` only."""
 
@@ -279,6 +295,53 @@ def test_a_use_case_s_route_gets_its_twin(use_auth: UseAuth) -> None:
     assert asks.asked == [restock.command(gadget_id=gadget_id, quantity=4)]
     assert "restock_authorization" in route_names(resource)
     assert store.items[gadget_id].stock is None
+
+
+def test_the_twin_lends_its_route_s_unit_of_work_to_a_rule_that_takes_one(
+    use_auth: UseAuth,
+) -> None:
+    """``ask_authorization(..., uow)`` reads in the route's; others are not given it.
+
+    A rule written for 2.4 takes no ``uow``, and is called as before (ADR
+    0161, user report A13).
+    """
+    use_auth()
+    in_it = AsksInIt()
+    plain = Asks()
+    store = InMemoryGadgets([make_gadget("a")])
+    made: list[FakeGadgetsUnitOfWork] = []
+
+    def unit_of_work() -> FakeGadgetsUnitOfWork:
+        made.append(FakeGadgetsUnitOfWork(store))
+        return made[-1]
+
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=unit_of_work,
+        repository=lambda uow: uow.gadgets,
+        rule=ModelActions(GADGETS),
+    )
+    resource.use_case(restock, path="/restock", rule=in_it)
+    resource.command_route(MakeGadget, service=make, body=MakeIn, rule=plain)
+    client = client_of(resource)
+    (gadget_id,) = store.items
+
+    restocking = client.post(
+        f"{LOCATION}{gadget_id}/restock/authorization",
+        json={"quantity": 4},
+        headers=as_("changer"),
+    )
+    making = client.post(
+        "/gadgets/authorization",
+        json={"name": "n", "price": "1.00"},
+        headers=as_("adder"),
+    )
+
+    assert (restocking.status_code, making.status_code) == (201, 201)
+    assert in_it.lent == [made[0]]
+    assert plain.asked == [MakeGadget(name="n", price=Decimal("1.00"))]
+    assert [uow.commits for uow in made] == [0, 0]
 
 
 def test_the_twin_refuses_what_the_act_would_refuse(use_auth: UseAuth) -> None:

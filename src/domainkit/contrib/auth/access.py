@@ -65,6 +65,8 @@ from .settings import MAX_STEP_UP_AGE, Factor, auth_settings, with_a_factor
 from .tokens import utc_now
 
 if TYPE_CHECKING:
+    from domainkit.ddd import UnitOfWork
+
     from .actions import Action
 
 PROOF: Final = "domainkit.auth.proof"
@@ -343,13 +345,18 @@ class ActionStepUp(StepUp):
         return authorization_refusal(request, cast(str, self.purpose))
 
     def authorization_model(self) -> type[BaseModel]:
-        """``{"id", "purpose", "shown", "expires_at"}``: the twin's ``201`` body."""
+        """``{"id", "purpose", "shown", "expires_at", "methods"}``: the twin's body."""
         from .actions import ActionAuthorizationOut
 
         return ActionAuthorizationOut
 
-    async def ask_authorization(self, request: Request, command: object) -> BaseModel:
+    async def ask_authorization(
+        self, request: Request, command: object, uow: "UnitOfWork | None" = None
+    ) -> BaseModel:
         """Store an authorization of ``command`` for the request's user and login.
+
+        ``uow`` is the unit of work the act runs in, which a
+        ``show(command, uow)`` reads in: the twin gives its route's.
 
         Raises:
             ImproperlyConfigured: No action is registered for the purpose.
@@ -363,7 +370,9 @@ class ActionStepUp(StepUp):
                 f"StepUp(for_={self.purpose!r}): no registered action has that "
                 "purpose; register_action(...) it in ready()."
             )
-        authorization = await request_action_authorization(request, action, command)
+        authorization = await request_action_authorization(
+            request, action, command, uow=uow
+        )
         return ActionAuthorizationOut.of(authorization)
 
     def _action(self) -> "Action | None":
