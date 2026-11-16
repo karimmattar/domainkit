@@ -19,6 +19,14 @@ request and the user before issuing. These are ``/login``, ``/session``,
 identity providers' logins. Gates run in ``INSTALLED_DOMAINS`` order, and
 the first that raises refuses the login.
 
+A gate sees how the login is made with ``login_origin(request)``: its
+method, what it proved (``amr``), when, and the bound device that signed
+it (ADR 0146). The route names them to ``pass_login_gates``.
+
+An ``on_session_limits`` hook gives a login shorter limits than the
+settings, when it is made: an idle timeout, and a lifetime. The login
+keeps them.
+
 A gate that needs no password registers with ``on_password_login``: it
 runs before ``/login`` and ``/session`` look at the password, given the
 request and the identifier, and refuses the same way whatever account the
@@ -33,7 +41,7 @@ gates to judge, says so with ``gates_passed(user_id)``. Examples are a
 sign-in approved from a phone and a test's session.
 """
 
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -41,31 +49,37 @@ from typing import Any, Final, Literal
 from uuid import UUID
 
 from fastapi import Depends
-from starlette.requests import Request
+from starlette.requests import HTTPConnection, Request
 
 from domainkit.apps.hooks import HookPoint
 from domainkit.exceptions import DomainkitError
 from domainkit.http.access import NotAuthenticated
 
 from .models import AbstractBaseUser
+from .tokens import LoginOrigin, SessionLimits, signed_by_device, utc_now
 
 __all__ = [
     "MANAGES_LOGINS",
     "AdminChange",
     "LoginGate",
     "LoginNotGated",
+    "LoginOrigin",
     "LoginsCheck",
     "PasswordGate",
+    "SessionLimiter",
+    "SessionLimits",
     "SuperuserCheck",
     "check_gates_passed",
     "check_manage_logins",
     "gates_passed",
+    "login_origin",
     "manages_logins",
     "on_admin_change",
     "on_login_gate",
     "on_make_superuser",
     "on_manage_logins",
     "on_password_login",
+    "on_session_limits",
     "pass_login_gates",
     "pass_password_gates",
 ]
@@ -77,6 +91,26 @@ on_login_gate: Final[HookPoint[LoginGate]] = HookPoint(
     "login gate", arguments=2, awaited=True
 )
 """Register a gate every login passes (``on_login_gate(gate)`` in ``ready()``)."""
+
+LOGIN_ORIGIN: Final = "domainkit.auth.login_origin"
+"""Where a request that makes a login keeps how it is made, for its gates."""
+
+type SessionLimiter = Callable[
+    [AbstractBaseUser, LoginOrigin], Awaitable[SessionLimits | None]
+]
+"""Shorter limits for a login being made, from its user and how it is made."""
+
+on_session_limits: Final[HookPoint[SessionLimiter]] = HookPoint(
+    "session limits", arguments=2, awaited=True
+)
+"""Register what gives some logins shorter limits (ADR 0146).
+
+It runs when a login is issued, past the gates, with the user and how the
+login is made (``LoginOrigin``), and returns ``SessionLimits``, or None for
+the settings'. Of several hooks, the shortest of each limit holds, and no
+limit outlasts its setting. The login keeps its limits: a hook that
+changes later changes the logins made after.
+"""
 
 type PasswordGate = Callable[[Request, str], Awaitable[None]]
 """A check of a password login before the password is looked at: raise to refuse."""
@@ -179,15 +213,57 @@ async def pass_password_gates(request: Request, identifier: str) -> None:
         await hook.call(request, identifier)
 
 
-async def pass_login_gates(request: Request, user: AbstractBaseUser) -> None:
+async def pass_login_gates(
+    request: Request,
+    user: AbstractBaseUser,
+    *,
+    method: str | None = None,
+    amr: Iterable[str] = (),
+    device_id: UUID | None = None,
+) -> None:
     """Run every gate on the login of ``user``; record that it passed.
+
+    ``method`` (a ``LoginMethod``), ``amr`` (RFC 8176's names of what the
+    login proved) and ``device_id`` say how it is made: the gates read them
+    with ``login_origin(request)``. Name what ``issue_login`` is given.
 
     Raises:
         Exception: Whatever the first refusing gate raises.
     """
+    request.scope[LOGIN_ORIGIN] = LoginOrigin(
+        method, device_id, frozenset(amr), utc_now()
+    )
     for hook in on_login_gate:
         await hook.call(request, user)
     _passed.set(user.id)
+
+
+def login_origin(request: HTTPConnection) -> LoginOrigin | None:
+    """How the login ``request`` makes is made, for its gates; None: it makes none.
+
+    Its method, what it proved, and when, as its route named them to
+    ``pass_login_gates``, and the bound device that signed the request,
+    once the devices app checked the signature (``signing_device``, which
+    ``CIBA.APPROVE_LOGINS``'s gate calls). A device's signature adds
+    ``hwk``.
+    """
+    origin = request.scope.get(LOGIN_ORIGIN)
+    if not isinstance(origin, LoginOrigin):
+        return None
+    return signed_by_device(origin, request.scope)
+
+
+async def session_limits(user: AbstractBaseUser, origin: LoginOrigin) -> SessionLimits:
+    """The limits every ``on_session_limits`` hook gives this login: the shortest.
+
+    Empty (the settings' limits) with no hook, or none that gives one.
+    """
+    limits = SessionLimits()
+    for hook in on_session_limits:
+        given = await hook.call(user, origin)
+        if given is not None:
+            limits = limits.within(given)
+    return limits
 
 
 @contextmanager

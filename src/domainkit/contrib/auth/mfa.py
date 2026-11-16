@@ -77,7 +77,7 @@ from .throttling import (
     audit_refusal,
     count_failure,
 )
-from .tokens import LoginMethod
+from .tokens import PWD_OTP, LoginMethod
 from .uow import AuthUnitOfWork
 
 __all__ = [
@@ -592,8 +592,8 @@ async def mfa_login(body: MfaLoginIn, request: Request, response: Response) -> T
     user = await first_use_after_code(
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
     )
-    await pass_login_gates(request, user)
-    issued = await issue_login(user, method=LoginMethod.PASSWORD)
+    await pass_login_gates(request, user, method=LoginMethod.PASSWORD, amr=PWD_OTP)
+    issued = await issue_login(user, method=LoginMethod.PASSWORD, amr=PWD_OTP)
     await hand_out(request, response, user)
     return token_out(issued)
 

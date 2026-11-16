@@ -284,6 +284,8 @@ More about idle logins:
 - **A kept principal that looks idle is read again** before it is
   refused: another process may have served it since.
 - **Personal tokens and certificates have no idle timeout.**
+- **Some logins may have a shorter one**, of their own:
+  [Shorter sessions for some users](#shorter-sessions-for-some-users).
 
 #### Where each login came from
 
@@ -310,6 +312,99 @@ A login route of your own names its method:
 `start_browser_session(request, user, response, method=...)`
 (`LoginMethod` is in `auth.integration`). Without one, the login records
 its agent and address, and no method.
+
+#### How a login was made
+
+Each login also keeps what it proved, in RFC 8176's names, as step-ups
+use them (since 2.4,
+[ADR 0146](../adr/0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md)):
+
+| Login | `amr` |
+| --- | --- |
+| `/login`, `/session` | `pwd` |
+| `/mfa/login`, `/session/mfa` | `pwd`, `otp` (a recovery code counts as `otp`: it stands in for the app) |
+| A passkey | `hwk`, `mfa` |
+| A bound device's login or enrollment, a sign-in approved from the phone | `hwk` |
+| An identity provider | none: what the provider checked is its own |
+
+A login whose request a bound device signed adds `hwk`, and names the
+device. Every request sees the login its credentials belong to in
+`request.auth.origin`, a `LoginOrigin`: its `method`, `amr`,
+`device_id`, and `at`, when it was made. A JSON Web Token login keeps
+its first request's across refreshes. A personal token, a certificate,
+or a class of your own gives `None`.
+
+```python
+from datetime import timedelta
+
+from fastapi import Request
+
+from domainkit.contrib.auth.integration import utc_now
+
+
+def recent_second_factor(request: Request) -> bool:
+    """A login made with a code or a passkey, within the hour."""
+    origin = request.auth.origin
+    return (
+        origin is not None
+        and bool({"otp", "mfa"} & origin.amr)
+        and utc_now() - origin.at < timedelta(hours=1)
+    )
+```
+
+The login gates see the login they judge with `login_origin(request)`:
+[Login gates](ciba.md#login-gates). A login route of your own names its
+proof as it names its method: `pass_login_gates(request, user,
+method=..., amr={"pwd"})`, then `issue_login(user, method=...,
+amr={"pwd"})`. `Credentials.auth_time` and `amr` stay those of the last
+step-up.
+
+#### Shorter sessions for some users
+
+The settings give every login the same limits: `AUTH.IDLE_TIMEOUT`, and
+a lifetime of `TOKEN_TTL`, `COOKIE.TTL`, or `JWT.REFRESH_TOKEN_TTL`. A
+hook gives some logins shorter ones (since 2.4,
+[ADR 0146](../adr/0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md)),
+as NIST SP 800-63B asks of the higher assurance levels (at AAL3, 15
+idle minutes and 12 hours in all) and as Okta does for its admins:
+
+```python
+from datetime import timedelta
+
+from domainkit.apps import DomainConfig
+from domainkit.contrib.auth import AbstractBaseUser
+from domainkit.contrib.auth.gates import LoginOrigin, SessionLimits, on_session_limits
+
+STAFF = SessionLimits(idle_timeout=timedelta(minutes=15), lifetime=timedelta(hours=8))
+
+
+async def staff_sessions(
+    user: AbstractBaseUser, origin: LoginOrigin
+) -> SessionLimits | None:
+    return STAFF if user.is_staff else None
+
+
+class AccountsConfig(DomainConfig):
+    def ready(self) -> None:
+        on_session_limits(staff_sessions)
+```
+
+- **Asked once, when the login is made**, past the gates, with the user
+  and how the login is made. It may read the database. Decide by the
+  user (`is_staff`, a group) or by the login (`origin.amr`,
+  `origin.device_id`).
+- **The login keeps its limits.** `lifetime` shortens its expiry: the
+  login token's (its `expires_in` says so), the browser session's and its
+  cookies' `Max-Age`, a JSON Web Token login's refresh tokens.
+  `idle_timeout` ends it once unused that long, as `IDLE_TIMEOUT` does,
+  even where `IDLE_TIMEOUT` is `None`; its last uses are written a tenth
+  as often. A user made staff later keeps their logins' limits until
+  they end: log them out (the admin API's `logout`) for the new ones to
+  hold at once.
+- **Only shorter.** Of several hooks, the shortest of each limit holds,
+  and none outlasts its setting. `None`, or no hook, keeps the settings.
+- **Bounds**: an idle timeout from 5 minutes to 30 days; a positive
+  lifetime. `SessionLimits` refuses others with `ValueError`.
 
 #### Who manages logins
 

@@ -119,6 +119,27 @@ and a status.
   making a superuser had a hook, so "nobody edits their own account" or
   "making staff needs another permission" took a dependency that read
   the body (user report A9).
+- A login gate sees how the login is made: `login_origin(request)`
+  (`domainkit.contrib.auth.gates`) gives its `method`, what it proved
+  (`amr`, RFC 8176's names: `pwd`, `otp`, `hwk`, `mfa`), when, and the
+  bound device that signed it. Gates keep their two arguments; each
+  login route of auth, devices, ciba and identity names its method and
+  proof to `pass_login_gates`, which takes `method=`, `amr=` and
+  `device_id=`. A request sees the same of its login in
+  `request.auth.origin`, its age included; `issue_login` and
+  `start_browser_session` take `amr=`, kept in a new nullable column of
+  the tokens table. A project's gate guessed the method from the path
+  and the `Origin` header. ADR 0146 (user report A11).
+- `on_session_limits(limiter)` (`domainkit.contrib.auth.gates`) gives
+  some logins shorter limits than the settings: an async function of the
+  user and the `LoginOrigin` returns `SessionLimits(idle_timeout=...,
+  lifetime=...)`, asked once when the login is made. The login keeps
+  them: its token's, session cookie's or refresh tokens' expiry, and an
+  idle timeout of its own, kept in a new nullable column, even where
+  `IDLE_TIMEOUT` is `None`. The shortest of each limit holds, and none
+  outlasts its setting. `IDLE_TIMEOUT`, `COOKIE.TTL` and `TOKEN_TTL`
+  were one value for everyone, so staff sessions could not end sooner.
+  ADR 0146 (user report A11).
 
 - ciba's web pages have hooks: `on_start(request)` may refuse a push or
   QR start, or name it with a binding message, shown on both devices (a

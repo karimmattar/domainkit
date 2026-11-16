@@ -41,6 +41,7 @@ from ..principals import (
     withhold_password,
 )
 from ..tables import group_permissions, groups, permissions, tokens, user_link_tables
+from ..tokens import LoginOrigin
 from ..users import get_user_model, get_user_table
 
 GRANT_COLUMNS: Final = 9
@@ -57,14 +58,27 @@ CREDENTIAL: Final = select(
     tokens.c.last_used_at,
     tokens.c.name,
     tokens.c.created_at,
+    tokens.c.method,
+    tokens.c.amr,
+    tokens.c.device_id,
+    tokens.c.idle_timeout,
 ).where(tokens.c.id == bindparam("digest"))
 """What the token table says of one token (built once: no cache key to make)."""
 
 
 LOGIN: Final = select(
-    func.count(), func.count(tokens.c.expires_at), func.max(tokens.c.expires_at)
+    func.count(),
+    func.count(tokens.c.expires_at),
+    func.max(tokens.c.expires_at),
+    func.min(tokens.c.created_at),
+    func.max(tokens.c.method),
+    func.max(tokens.c.amr),
+    # PostgreSQL has no max() of a uuid: the text of the one each row copies.
+    func.max(cast(tokens.c.device_id, String(36))),
+    func.min(tokens.c.idle_timeout),
 ).where(tokens.c.family == bindparam("family"))
-"""How many tokens a login has, how many expire, and when the last does."""
+"""How many tokens a login has, how many expire, and when the last does; and
+how it was made, which each of its tokens copies from the first."""
 
 
 class PrincipalStore:
@@ -86,11 +100,25 @@ class PrincipalStore:
         return None if row is None else Credential(**row._mapping)
 
     async def login(self, family: UUID) -> Login:
-        """Whether the login ``family`` has tokens, and when the last expires."""
-        count, expiring, until = (
-            await self.session.execute(LOGIN, {"family": family})
-        ).one()
-        return Login(active=count > 0, until=None if expiring < count else until)
+        """Login ``family``: whether it has tokens, until when, how it was made."""
+        row = (await self.session.execute(LOGIN, {"family": family})).one()
+        count, expiring, until, started, method, amr, device, idle = row
+        origin = (
+            LoginOrigin(
+                method,
+                None if device is None else UUID(device),
+                amr or frozenset(),
+                started,
+            )
+            if count
+            else None
+        )
+        return Login(
+            active=count > 0,
+            until=None if expiring < count else until,
+            origin=origin,
+            idle_timeout=idle,
+        )
 
     async def user_id(self, username: str) -> UUID | None:
         """The id of the user whose ``USERNAME_FIELD`` is ``username`` (normalized)."""

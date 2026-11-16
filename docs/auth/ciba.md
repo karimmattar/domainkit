@@ -630,6 +630,34 @@ async def kiosk_login(body: KioskIn, request: Request) -> TokenOut:
 Code that issues a login on the server side, with no request to judge,
 wraps it in `gates_passed(user.id)`.
 
+A gate sees how the login is made with `login_origin(request)` (since
+2.4, [ADR 0146](../adr/0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md)):
+its `method`, what it proved (`amr`, in RFC 8176's names: `pwd`, `otp`,
+`hwk`, `mfa`), `at`, and the bound device that signed the request
+(`device_id`). Each auth, devices, ciba and identity login route names
+them ([How a login was made](logging-in.md#how-a-login-was-made)). A gate
+decides by them, not by the path:
+
+```python
+from domainkit.contrib.auth.gates import login_origin
+
+
+async def staff_need_a_second_factor(request: Request, user: AbstractBaseUser) -> None:
+    origin = login_origin(request)
+    if user.is_staff and (origin is None or not {"otp", "mfa"} & origin.amr):
+        raise PermissionDenied("Staff log in with a code or a passkey.")
+    if user.is_staff and origin is not None and origin.device_id is not None:
+        raise PermissionDenied("Staff log in from the dashboard, not the app.")
+```
+
+The device is known once the devices app checked the request's
+signature. With `CIBA.APPROVE_LOGINS`, ciba's gate does; a gate that runs
+before it, or a project without it, calls
+`signing_device(request, user)` (`domainkit.contrib.devices.binding`)
+first. A login route of your own passes them on:
+`pass_login_gates(request, user, method=LoginMethod.PASSWORD,
+amr={"pwd"})`.
+
 A gate that needs no password registers with `on_password_login` instead:
 it runs before `/login` and `/session` check the password, given the
 request and the identifier, and must answer the same whatever account the

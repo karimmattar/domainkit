@@ -43,6 +43,8 @@ HTTPS, so a sibling subdomain cannot plant a session or a CSRF token
 """
 
 import secrets
+from collections.abc import Iterable
+from datetime import timedelta
 from typing import Final
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -85,9 +87,12 @@ from .principals import forget
 from .settings import auth_settings
 from .tokens import (
     LAST_USED_EVERY,
+    PWD,
+    PWD_OTP,
     LoginMethod,
     TokenKind,
     last_used_every,
+    logging_in,
     token_digest,
     well_formed,
 )
@@ -152,8 +157,8 @@ class CookieAuthentication(BaseAuthentication):
             forget(entry)
             return None
         every = LAST_USED_EVERY
-        if config.IDLE_TIMEOUT is not None:
-            every = last_used_every()
+        if config.IDLE_TIMEOUT is not None or token.idle_timeout is not None:
+            every = last_used_every(token.idle_timeout)
             entry = await unless_idle(entry, SCHEME, digest, config.PRINCIPAL_CACHE)
             if entry is None:  # Ended after inactivity: as if it had expired.
                 return None
@@ -164,7 +169,9 @@ class CookieAuthentication(BaseAuthentication):
         await accept(
             entry, config.PRINCIPAL_CACHE, touch=not rechecking(connection), every=every
         )
-        return Credentials(user, scheme=SCHEME, token_id=token.id)
+        return Credentials(
+            user, scheme=SCHEME, token_id=token.id, origin=token.origin()
+        )
 
 
 def check_request(connection: HTTPConnection, session: str) -> None:
@@ -281,7 +288,7 @@ async def log_in(
     no_store(response)
     check_origin(request)
     user = await check_password(request, body)
-    await pass_login_gates(request, user)
+    await pass_login_gates(request, user, method=LoginMethod.PASSWORD, amr=PWD)
     user = await first_use(user, body.new_password)
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
@@ -292,6 +299,7 @@ async def log_in(
         previous=_session_of(request),
         factor_proven=False,
         method=LoginMethod.PASSWORD,
+        amr=PWD,
     )
     await hand_out(request, response, user)
     return started
@@ -316,9 +324,13 @@ async def log_in_with_code(
     user = await first_use_after_code(
         await verify_challenge(request, body.mfa_token, body.code), body.new_password
     )
-    await pass_login_gates(request, user)
+    await pass_login_gates(request, user, method=LoginMethod.PASSWORD, amr=PWD_OTP)
     started = await start_session(
-        user, response, previous=_session_of(request), method=LoginMethod.PASSWORD
+        user,
+        response,
+        previous=_session_of(request),
+        method=LoginMethod.PASSWORD,
+        amr=PWD_OTP,
     )
     await hand_out(request, response, user)
     return started
@@ -381,17 +393,20 @@ async def start_session(
     factor_proven: bool = True,
     method: str | None = None,
     device_id: UUID | None = None,
+    amr: Iterable[str] = (),
 ) -> CsrfOut:
     """Record the login, store a session token, and set both cookies.
 
     The session ``previous`` names (the token of the cookie this browser
     sent) ends, with ``COOKIE.END_PREVIOUS_SESSION``; past
     ``AUTH.MAX_LOGINS``, the user's oldest logins end. The login is held
-    to what was checked (``api.held_login``).
+    to what was checked (``api.held_login``), and kept to the limits
+    ``on_session_limits`` gives it: the cookies last as long as it does.
     """
     configured = auth_settings()
     config = configured.COOKIE
-    with acting_as(user), made_by(method, device_id):
+    made = await made_by(user, method, device_id, amr)
+    with acting_as(user), logging_in(made.origin, made.limits):
         async with audited_changes(), AuthUnitOfWork() as uow:
             stored = await held_login(uow, user, factor_proven=factor_proven)
             if previous is not None and config.END_PREVIOUS_SESSION:
@@ -399,23 +414,24 @@ async def start_session(
             await uow.tokens.end_oldest_logins(
                 stored.id, keep=configured.MAX_LOGINS - 1
             )
-            raw = await uow.tokens.issue(
+            raw, session = await uow.tokens.create(
                 stored.id, kind=TokenKind.SESSION, ttl=config.TTL, name="browser"
             )
             await uow.users.record_login(stored)
             await uow.commit()
+    lasts = session.lifetime() or config.TTL
     token = csrf_token(token_digest(raw))
     response.set_cookie(
         cookie_names()[0],
         raw,
-        max_age=int(config.TTL.total_seconds()),
+        max_age=int(lasts.total_seconds()),
         path=config.PATH,
         domain=config.DOMAIN,
         secure=_secure(),
         httponly=True,
         samesite=config.SAMESITE,
     )
-    _set_csrf_cookie(response, token)
+    _set_csrf_cookie(response, token, lasts)
     return CsrfOut(csrf_token=token)
 
 
@@ -426,6 +442,7 @@ async def start_browser_session(
     *,
     method: str | None = None,
     device_id: UUID | None = None,
+    amr: Iterable[str] = (),
 ) -> CsrfOut:
     """A browser session for ``user``, whose login was checked another way.
 
@@ -433,8 +450,8 @@ async def start_browser_session(
     the phone): the session the request's cookie held ends, as at
     ``/session``. Check the request's origin first (``check_origin``),
     before anything is spent, and run the login gates or pass them.
-    ``method`` (a ``LoginMethod``) and ``device_id`` say how it signed in
-    (ADR 0130).
+    ``method`` (a ``LoginMethod``), ``device_id`` and ``amr`` say how it
+    signed in (ADR 0130, ADR 0146).
     """
     return await start_session(
         user,
@@ -442,6 +459,7 @@ async def start_browser_session(
         previous=_session_of(request),
         method=method,
         device_id=device_id,
+        amr=amr,
     )
 
 
@@ -453,13 +471,18 @@ def _session_of(request: Request) -> str | None:
     return None
 
 
-def _set_csrf_cookie(response: Response, token: str) -> None:
-    """Hand scripts the CSRF token: same scope, readable, for the session's life."""
+def _set_csrf_cookie(
+    response: Response, token: str, lasts: timedelta | None = None
+) -> None:
+    """Hand scripts the CSRF token: same scope, readable, for the session's life.
+
+    ``lasts``: how long the session works (default: ``COOKIE.TTL``).
+    """
     config = auth_settings().COOKIE
     response.set_cookie(
         cookie_names()[1],
         token,
-        max_age=int(config.TTL.total_seconds()),
+        max_age=int((config.TTL if lasts is None else lasts).total_seconds()),
         path=config.PATH,
         domain=config.DOMAIN,
         secure=_secure(),

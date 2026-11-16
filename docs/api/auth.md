@@ -190,18 +190,23 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `AdminChange`: What a staff member is about to do to a user through the admin API.
 - `LoginGate`: A check of a login: return to let it through, raise to refuse it.
 - `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
+- `LoginOrigin`: How a login was made: its method, what it proved, when, and its device.
 - `LoginsCheck`: A check of a request that manages the user's other logins: raise to refuse.
 - `PasswordGate`: A check of a password login before the password is looked at: raise to refuse.
+- `SessionLimiter`: Shorter limits for a login being made, from its user and how it is made.
+- `SessionLimits`: Shorter limits for one login than the settings give every login.
 - `SuperuserCheck`: A check before the admin API makes a user a superuser: raise to refuse.
 - `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
+- `login_origin`: How the login `request` makes is made, for its gates; None: it makes none.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_admin_change`: Register a check of every change the admin API makes to a user.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_make_superuser`: Register a check of making a superuser in the admin API.
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `on_password_login`: Register a gate of password logins that runs before the password does.
+- `on_session_limits`: Register what gives some logins shorter limits (ADR 0146).
 - `pass_login_gates`: Run every gate on the login of `user`; record that it passed.
 - `pass_password_gates`: Run every gate of `on_password_login` before a password is checked.
 

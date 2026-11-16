@@ -59,6 +59,7 @@ from domainkit.contrib.auth.tables import tokens
 from domainkit.contrib.auth.tokens import (
     LAST_USED_EVERY,
     AuthToken,
+    LoginOrigin,
     TokenKind,
     token_digest,
 )
@@ -1351,9 +1352,14 @@ def test_logins_read_whether_any_token_never_expires(api: Api) -> None:
     with freeze_time("2026-05-01T10:00:00Z") as clock:
         _, family, _ = run_async(jwt_login(timedelta(minutes=2)))
         ends = clock.now() + timedelta(minutes=2)
-        assert run_async(login_of(family)) == principals.Login(active=True, until=ends)
+        made = LoginOrigin(at=clock.now())  # Its first token's time, no method.
+        assert run_async(login_of(family)) == principals.Login(
+            active=True, until=ends, origin=made
+        )
         run_async(jwt_login(None, family))
-        assert run_async(login_of(family)) == principals.Login(active=True, until=None)
+        assert run_async(login_of(family)) == principals.Login(
+            active=True, until=None, origin=made
+        )
         gone = principals.Login(active=False, until=None)
         assert run_async(login_of(uuid4())) == gone
 

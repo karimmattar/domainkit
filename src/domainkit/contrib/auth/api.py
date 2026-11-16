@@ -17,7 +17,7 @@ are not counted), and refusals go to the audit trail when
 ``domainkit.contrib.audit`` is installed.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated, Literal, Self
@@ -76,7 +76,7 @@ from .throttling import (
     attempt,
     audit_refusal,
 )
-from .tokens import LoginMethod
+from .tokens import PWD, LoginMethod, logging_in
 from .uow import AuthUnitOfWork
 from .validators import avalidate_password
 
@@ -211,14 +211,16 @@ async def login(
     """Check an identifier and password; return tokens, or a second-factor challenge."""
     no_store(response)
     user = await check_password(request, body)
-    await pass_login_gates(request, user)
+    await pass_login_gates(request, user, method=LoginMethod.PASSWORD, amr=PWD)
     user = await first_use(user, body.new_password)
     from .mfa import challenge  # Imports this module.
 
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
         return pending  # The device proof waits for the second factor.
-    issued = await issue_login(user, factor_proven=False, method=LoginMethod.PASSWORD)
+    issued = await issue_login(
+        user, factor_proven=False, method=LoginMethod.PASSWORD, amr=PWD
+    )
     await hand_out(request, response, user)
     return token_out(issued)
 
@@ -350,6 +352,7 @@ async def issue_login(
     factor_proven: bool = True,
     method: str | None = None,
     device_id: UUID | None = None,
+    amr: Iterable[str] = (),
 ) -> IssuedTokens:
     """Record the user's login, and issue them tokens (the first class's).
 
@@ -358,9 +361,13 @@ async def issue_login(
     that issues a login runs ``pass_login_gates(request, user)`` first:
     while a login gate is registered, one that skipped them raises
     ``LoginNotGated``. ``method`` (a ``LoginMethod``) and ``device_id``
-    say how it signed in, shown with it in ``GET /tokens`` (ADR 0130).
+    say how it signed in, shown with it in ``GET /tokens`` (ADR 0130);
+    ``amr``, RFC 8176's names of what it proved, goes with them to its
+    credentials (``Credentials.origin``). The login keeps the limits
+    ``on_session_limits`` gives it (ADR 0146).
     """
-    with acting_as(user), made_by(method, device_id):
+    made = await made_by(user, method, device_id, amr)
+    with acting_as(user), logging_in(made.origin, made.limits):
         async with audited_changes(), AuthUnitOfWork() as uow:
             stored = await held_login(uow, user, factor_proven=factor_proven)
             await uow.tokens.end_oldest_logins(

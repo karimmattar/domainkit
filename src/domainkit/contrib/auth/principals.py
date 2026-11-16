@@ -532,6 +532,11 @@ class Credential:
     last_used_at: datetime | None
     name: str = ""
     created_at: datetime | None = None
+    method: str | None = None
+    amr: frozenset[str] | None = None
+    device_id: UUID | None = None
+    idle_timeout: int | None = None
+    """Seconds its login may idle, where a hook made it shorter (ADR 0146)."""
 
     def expired(self, now: datetime | None = None) -> bool:
         """Whether the token's lifetime is over, as ``AuthToken.expired``."""
@@ -540,10 +545,11 @@ class Credential:
         )
 
     def idle(self, written: datetime | None, now: datetime | None = None) -> bool:
-        """Whether a login's token idled past ``AUTH.IDLE_TIMEOUT``.
+        """Whether a login's token idled past its idle timeout.
 
-        Its last use is the latest of the stored one, ``written`` (what this
-        process last wrote), and when it was issued. Not a login's: never.
+        ``AUTH.IDLE_TIMEOUT``, or its own if shorter. Its last use is the
+        latest of the stored one, ``written`` (what this process last
+        wrote), and when it was issued. Not a login's: never.
         """
         uses = [
             each
@@ -553,7 +559,19 @@ class Credential:
         return (
             bool(uses)
             and tokens.is_login(self.kind, self.name)
-            and tokens.idle_since(max(uses), now or tokens.utc_now())
+            and tokens.idle_since(max(uses), now or tokens.utc_now(), self.idle_timeout)
+        )
+
+    def origin(self) -> tokens.LoginOrigin | None:
+        """How its login was made; None for a token that is no login's.
+
+        A login's token, or one whose issuer named its method (an
+        impersonation); not a personal token or a certificate.
+        """
+        if self.method is None and not tokens.is_login(self.kind, self.name):
+            return None
+        return tokens.LoginOrigin(
+            self.method, self.device_id, self.amr or frozenset(), self.created_at
         )
 
 
@@ -565,6 +583,10 @@ class Login:
     """Whether the login has a token at all."""
     until: datetime | None
     """When its last token expires; None: one never does."""
+    origin: tokens.LoginOrigin | None = None
+    """How it was made: its first token's method, proof, device, and time."""
+    idle_timeout: int | None = None
+    """Seconds it may idle, where a hook made it shorter (ADR 0146)."""
 
     def active_at(self, now: datetime) -> bool:
         """Whether the login has an unexpired token at ``now``."""

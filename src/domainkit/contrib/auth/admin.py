@@ -72,7 +72,7 @@ from .gates import AdminChange, on_admin_change, on_make_superuser
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
-from .tokens import LoginMethod, logging_in
+from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, get_user_table, typed_fields
 from .validators import avalidate_password
@@ -539,7 +539,7 @@ async def impersonate(
             raise PermissionDenied("Only active users can be impersonated.")
         await may_change(actor, user)
         await _admin_change(actor, user, AdminChange("impersonate"))
-        with logging_in(LoginMethod.IMPERSONATION):
+        with logging_in(LoginOrigin(LoginMethod.IMPERSONATION)):
             raw = await uow.tokens.issue(
                 user.id, ttl=ttl, name=IMPERSONATION, family=staff_id
             )

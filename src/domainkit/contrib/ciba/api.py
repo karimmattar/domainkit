@@ -593,9 +593,15 @@ async def bind_approved_device(
         await uow.commit()
     mark_signed_by(request, device)  # The login that follows is its own.
     mark_approved(request, user)
-    await pass_login_gates(request, user)
+    await pass_login_gates(
+        request, user, method=LoginMethod.DEVICE, amr=HWK, device_id=device.id
+    )
     issued = await issue_login(
-        user, factor_proven=True, method=LoginMethod.DEVICE, device_id=device.id
+        user,
+        factor_proven=True,
+        method=LoginMethod.DEVICE,
+        device_id=device.id,
+        amr=HWK,
     )
     return DeviceBoundOut(
         access_token=issued.access_token,
@@ -645,8 +651,8 @@ async def redeem_sign_in(
     _no_store(response)
     user, method = await _approved_user(body)
     mark_approved(request, user)
-    await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True, method=method)
+    await pass_login_gates(request, user, method=method, amr=HWK)
+    issued = await issue_login(user, factor_proven=True, method=method, amr=HWK)
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -684,8 +690,8 @@ async def start_approved_session(
     check_origin(request)
     user, method = await _approved_user(body)
     mark_approved(request, user)
-    await pass_login_gates(request, user)
-    return await start_browser_session(request, user, response, method=method)
+    await pass_login_gates(request, user, method=method, amr=HWK)
+    return await start_browser_session(request, user, response, method=method, amr=HWK)
 
 
 async def _device(request: Request, user: AbstractBaseUser) -> BoundDevice:
