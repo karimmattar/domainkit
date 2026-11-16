@@ -184,10 +184,10 @@ _made: dict[str, tuple["RendererConfig", Renderer]] = {}
 def renderer() -> Renderer:
     """The ``DOCUMENTS["RENDERER"]`` Gotenberg server, made once per configuration.
 
-    Its calls need ``domainkit[httpclient]``.
-
     Raises:
         ImproperlyConfigured: ``DOCUMENTS["RENDERER"]`` is not set.
+        ImportError: ``domainkit[httpclient]``, which calls Gotenberg, is
+            not installed.
     """
     from domainkit.conf import settings
 
@@ -200,8 +200,13 @@ def renderer() -> Renderer:
     held = _made.get("renderer")
     if held is not None and held[0] == config:
         return held[1]
-    from domainkit.documents.gotenberg import GotenbergRenderer
-
+    try:
+        from domainkit.documents.gotenberg import GotenbergRenderer
+    except ImportError as exc:
+        raise ImportError(
+            "The renderer calls Gotenberg with httpx2: "
+            'pip install "domainkit[httpclient]".'
+        ) from exc
     made = GotenbergRenderer.from_config(config)
     _made["renderer"] = (config, made)
     return made
@@ -213,7 +218,8 @@ def flags_statement() -> CheckMessage:
         "documents.I001",
         "Gotenberg's flags are not checked: they are set where it runs, and "
         "its API does not show them.",
-        "Start it with --chromium-disable-javascript, --api-disable-download-from, "
-        "--webhook-disable, and --chromium-deny-private-ips, and keep "
+        "Start it with --chromium-disable-javascript, --chromium-deny-private-ips, "
+        "--libreoffice-deny-private-ips, a --libreoffice-deny-list or allow list, "
+        "--api-disable-download-from, and --webhook-disable, and keep "
         "--chromium-deny-list's default (docs/documents.md, 'Hardening Gotenberg').",
     )

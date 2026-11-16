@@ -20,12 +20,19 @@ HTML allowlist on nh3. Each is easy to get subtly wrong:
   the same run", and escapes nothing by default [2].
 - **Word's XML is untrusted input** when a user uploads the template.
   OWASP says to disable DTDs, and to reject a DOCTYPE where the parser
-  can [3]. A `.docx` is a ZIP: Apache POI refuses an entry that inflates
-  past 100 times its size (a minimum ratio of 1%) [4].
+  can [3]. lxml told not to load a DTD or resolve entities still opens
+  an outside DTD subset, or an outside parameter entity, as it parses
+  the DOCTYPE: a review found `file:///dev/stdin` and
+  `file:///proc/self/fd/1` hang a parse for good. A `.docx` is a ZIP:
+  Apache POI refuses an entry that inflates past 100 times its size (a
+  minimum ratio of 1%) [4]. Python's `ZipFile.read` asks the
+  decompressor for up to 2 GiB at once and cuts to the stated size only
+  after, so a file that states 10 bytes is inflated whole: a review's
+  1.9 KB bzip2 bomb took the process to 3 GiB.
 - **A rotated page shifts an overlay.** `/Rotate` turns the page as
   shown; content is drawn in the unrotated space, from the crop box,
   which need not start at the origin. pypdf's merge ignores both, and its
-  docs suggest `transfer_rotation_to_content()` on the page first [5, 6],
+  docs suggest `transfer_rotation_to_content()` on the page first [5], [6],
   which rewrites the page's content and boxes.
 - **Arabic needs shaping**: turning code points into "a properly
   arranged sequence of glyphs" [7]. HarfBuzz does it in Chrome and in
@@ -36,20 +43,20 @@ HTML allowlist on nh3. Each is easy to get subtly wrong:
   `--api-tls-cert-file`), `--chromium-disable-javascript`,
   `--chromium-deny-list` (by default `^file:(?!//\/tmp/).*`),
   `--chromium-allow-list`, `--chromium-deny-private-ips` (8.32),
-  `--api-disable-download-from`, `--webhook-disable` [9, 10, 11]. Two
+  `--api-disable-download-from`, `--webhook-disable` [9], [10], [11]. Two
   bypasses of its deny lists were fixed in 8.31 (CVE-2026-40280,
-  CVE-2026-42596) [12, 13]; 8.32 reverted 8.31's strict defaults and
+  CVE-2026-42596) [12], [13]; 8.32 reverted 8.31's strict defaults and
   made private-address checks opt-in [14]. The flags are set where it
   runs; its API does not show them.
 - **Gotenberg 9.0.0** came out on 5 November 2026, with 8.40.0. It
   moves post-processing fields to `stages` and renames some fields
   (`nativePageRanges` to `nativePages`, `waitWindowStatus` to
   `waitForWindowStatus`); a Gotenberg 8 field it no longer takes is a 400
-  [15, 16]. The page fields (`paperWidth`, the margins, `landscape`,
+  [15], [16]. The page fields (`paperWidth`, the margins, `landscape`,
   `scale`, `printBackground`, `preferCssPageSize`,
   `failOnResourceLoadingFailed`), the routes `/forms/chromium/convert/html`
   and `/forms/libreoffice/convert`, `files`, and the `Gotenberg-Trace`
-  header are the same in both [10, 17, 18, 19].
+  header are the same in both [10], [17], [18], [19].
 
 Options considered:
 
@@ -85,7 +92,10 @@ called and says which extra to install when it is missing.
   (`documents.E001`), unless `ALLOW_HTTP` says the network encrypts (a
   service mesh); they warn without a login (`documents.W001`); and
   `check` says, as information (`documents.I001`), that Gotenberg's
-  flags cannot be seen, naming those to set.
+  flags cannot be seen, naming those to set: Chromium's and LibreOffice's
+  alike (`--chromium-deny-private-ips`, `--libreoffice-deny-private-ips`,
+  a LibreOffice deny or allow list), since LibreOffice fetches what a
+  document links too.
 - **`fill_docx(document, values)`** fills `{{ name }}` (letters of any
   script, digits, `_`, dotted parts) across the runs of each paragraph
   of the body, tables, text boxes, headers, footers, footnotes, and
@@ -94,10 +104,14 @@ called and says which extra to install when it is missing.
   Word's. The policy is strict and reports everything at once
   (`PlaceholderError`): a placeholder without a value, a value without a
   placeholder (unless `allow_unused`), and braces that make no
-  placeholder. lxml reads without entities, DTDs, or the network, a DTD
-  is refused, prefixes are kept. The archive is read within
-  `ArchiveLimits`, from its stated sizes, before anything is inflated,
-  with POI's ratio.
+  placeholder. A part that declares a DTD or an entity is refused before
+  it is parsed; lxml then reads UTF-8 only, without entities, DTDs, or
+  the network, and resolves any outside reference to nothing. Each
+  paragraph's text is gathered in one walk, so nesting costs nothing.
+  Prefixes are kept. The archive is read within `ArchiveLimits`: its
+  stated sizes and POI's ratio are checked first, then each file is
+  inflated no further than its stated size. Files are stored or deflated,
+  and named by plain relative paths, each name once.
 - **`overlay_pdf(document, overlay)`** lays page *i* of a rendered PDF
   (or one page per index of a mapping) over page *i*, as shown: the
   overlay is mapped from its shown coordinates to the page's own, by the
@@ -109,7 +123,10 @@ called and says which extra to install when it is missing.
 - **`clean_html(html, links=False)`** keeps rich text to an allowlist on
   nh3: formatting, direction, inline raster images as data; no script,
   style sheet, frame, form, SVG, handler, `class`, `id`, URL to fetch, or
-  CSS `url()`; style values that are plain and not negative. It is the
+  CSS `url()`; style values that are plain and not negative,
+  `vertical-align` by keyword, `line-height` at least 1. nh3 writes a
+  style back as its CSS parser read it, so the text is cleaned twice and
+  the second pass checks what the first wrote. It is the
   first layer; the renderer's flags are the second, since a sanitizer
   parses HTML its own way, the template around it is the project's, and
   only the browser that would fetch can refuse for sure.

@@ -75,7 +75,8 @@ MAX_ASSETS: Final = 64
 OFFICE_EXTENSIONS: Final = frozenset(
     {"doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp"}
 )
-"""What ``office_to_pdf`` sends: Office and OpenDocument files, none with macros."""
+"""What ``office_to_pdf`` sends: Office and OpenDocument files, not those named
+for macros; Gotenberg runs no macro unless ``--libreoffice-enable-macros``."""
 REFUSALS: Final = frozenset({400, 409, 413})
 """Answers that say the input cannot be rendered: sending it again changes nothing."""
 LOGIN_REFUSED: Final = frozenset({401, 403})
@@ -169,7 +170,8 @@ class GotenbergRenderer:
     ) -> bytes:
         """``document`` converted by LibreOffice; ``filename``'s extension names it.
 
-        Gotenberg runs no macros, and none of these kinds hold one.
+        ``doc``, ``xls``, and ``ppt`` may hold macros: Gotenberg runs none
+        unless started with ``--libreoffice-enable-macros``.
 
         Raises:
             ValueError: ``filename`` is not a plain file name, or its

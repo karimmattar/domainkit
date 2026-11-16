@@ -5,6 +5,7 @@ network. The fake reads the multipart form as Gotenberg would.
 """
 
 import io
+import sys
 from collections.abc import Iterator
 from email import policy
 from email.parser import BytesParser
@@ -262,6 +263,22 @@ def test_no_renderer_is_made_without_settings() -> None:
     """``renderer()`` names the setting to set."""
     with pytest.raises(ImproperlyConfigured, match=r'DOCUMENTS = \{"RENDERER"'):
         renderer()
+
+
+def test_the_renderer_names_the_extra_it_needs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without httpx2, ``renderer()`` says which extra calls Gotenberg."""
+    monkeypatch.setitem(sys.modules, "httpx2", None)
+    monkeypatch.delitem(sys.modules, "domainkit.documents.gotenberg")
+
+    with (
+        override_settings(DOCUMENTS={"RENDERER": {"URL": "https://elsewhere:3000"}}),
+        pytest.raises(ImportError) as missing,
+    ):
+        renderer()
+
+    assert str(missing.value) == (
+        'The renderer calls Gotenberg with httpx2: pip install "domainkit[httpclient]".'
+    )
 
 
 def test_the_renderer_is_made_once_per_configuration() -> None:

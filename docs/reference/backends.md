@@ -273,7 +273,7 @@ see [documents.md](../documents.md). *New in 2.5.*
 | `USERNAME` | `None` | The user of Gotenberg's basic auth (`--api-enable-basic-auth`): printable ASCII without a space or a colon, up to 256 characters. Set with `PASSWORD`. Staging and production warn without one (`documents.W001`). |
 | `PASSWORD` | `None` | The password of its basic auth: not empty, at most 1024 characters. Set with `USERNAME`. Shown as `**********`. |
 | `TIMEOUT` | `30.0` | Seconds a rendering may take, its retries included, at most 3600, and never past the deadline of the work it serves. Gotenberg's own `--api-timeout` is 30 seconds by default. |
-| `TRACE_HEADER` | `"Gotenberg-Trace"` | The header that carries the request's id to Gotenberg, which logs the call under it and answers with it: Gotenberg's `--api-correlation-id-header` (`--api-trace-header` before 8.29). Letters, digits, and `-`, up to 64. |
+| `TRACE_HEADER` | `"Gotenberg-Trace"` | The header that carries the request's id to Gotenberg, which logs the call under it and answers with it: Gotenberg's `--api-correlation-id-header` (since 8.29; `--api-trace-header` before, which Gotenberg 9 removed). Letters, digits, and `-`, up to 64. |
 | `ALLOW_HTTP` | `False` | Lets staging and production call Gotenberg over plain http on another host, for a network that encrypts by itself, such as a service mesh. A renderer on `localhost` or a loopback address may use http without it. |
 
 ```python

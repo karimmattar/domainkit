@@ -756,7 +756,8 @@ class RendererConfig(BaseModel):
         default="Gotenberg-Trace", pattern=r"^[A-Za-z0-9-]{1,64}$"
     )
     """The header Gotenberg reads a request's id from and logs it with
-    (``--api-correlation-id-header``, ``--api-trace-header`` before 8.29)."""
+    (``--api-correlation-id-header`` since 8.29; ``--api-trace-header``
+    before, which Gotenberg 9 removed)."""
     ALLOW_HTTP: bool = False
     """Let staging and production call Gotenberg over plain http on another
     host, for a network that encrypts by itself (a service mesh)."""

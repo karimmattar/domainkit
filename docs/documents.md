@@ -80,7 +80,10 @@ methods:
 - `office_to_pdf(document, filename=...)` converts a Word, Excel,
   PowerPoint, or OpenDocument file with LibreOffice. The extension of
   `filename` names the kind: `docx`, `doc`, `odt`, `rtf`, `xlsx`, `xls`,
-  `ods`, `pptx`, `ppt`, or `odp`. Kinds that hold macros are refused.
+  `ods`, `pptx`, `ppt`, or `odp`. The kinds named for macros (`docm`,
+  `xlsm`, ...) are refused, but `doc`, `xls`, and `ppt` may hold macros
+  too: what keeps them from running is Gotenberg's
+  `--libreoffice-enable-macros`, off by default. Leave it off.
 
 ```python
 from domainkit.documents import PageOptions, renderer
@@ -133,13 +136,17 @@ Gotenberg with these:
 | `--chromium-deny-private-ips` (8.32 and later) | A page cannot reach the private network: the cloud's metadata service, a database, an admin page. |
 | `--chromium-deny-list`, kept as it is | Its default, `^file:(?!//\/tmp/).*`, keeps a page from reading the server's files. Keep it if you add to it. |
 | `--chromium-allow-list` | Where every asset is sent with the page, an allow list of Gotenberg's working directory (`^file:///tmp/.*`) keeps pages off the network. Try it with your templates. |
+| `--libreoffice-deny-private-ips` (8.32 and later) | A document converted by LibreOffice, which may link an image or a template, cannot reach the private network either. |
+| `--libreoffice-deny-list` or `--libreoffice-allow-list` | What LibreOffice may fetch, by URL: deny `^https?://` where documents need nothing from outside, or allow only the hosts they do. Gotenberg's docs do not say that the lists cover a `file:` link, so refuse uploaded documents that link outside files. |
 | `--api-disable-download-from` | No form makes Gotenberg download a URL. |
 | `--webhook-disable` | No form makes Gotenberg send the result to a URL. |
 | `--api-body-limit` | Bodies past a size (`10MB`) are refused before they are read. |
 
 Leave these unset: `--api-enable-debug-route`, which shows the
 configuration; `--libreoffice-enable-macros`, which runs a document's
-macros; and `--chromium-allow-file-access-from-files`,
+macros; `--chromium-shared-browser-context`, which lets one conversion's
+cookies and cache reach the next; and
+`--chromium-allow-file-access-from-files`,
 `--chromium-ignore-certificate-errors`, `--chromium-disable-web-security`,
 and `--chromium-proxy-server`, which weaken Chromium's isolation.
 `--chromium-disable-routes` and `--libreoffice-disable-routes` remove
@@ -159,6 +166,8 @@ gotenberg:
     - --api-tls-key-file=/run/secrets/gotenberg.key
     - --chromium-disable-javascript
     - --chromium-deny-private-ips
+    - --libreoffice-deny-private-ips
+    - --libreoffice-deny-list=^https?://
     - --api-disable-download-from
     - --webhook-disable
     - --api-body-limit=20MB
@@ -169,7 +178,10 @@ gotenberg:
 
 Where Gotenberg runs beside the service, on `localhost`, the URL may be
 `http://`. In a network that encrypts by itself, a service mesh with
-mutual TLS, set `ALLOW_HTTP = True`. Gotenberg's own guide is
+mutual TLS, set `ALLOW_HTTP = True`. If Gotenberg names the request's id
+in another header, set `TRACE_HEADER` to it: its
+`--api-correlation-id-header` (8.29 and later) replaced
+`--api-trace-header`, which Gotenberg 9 removed. Gotenberg's own guide is
 [Secure your deployment](https://gotenberg.dev/docs/operate/secure).
 
 ## Filling a Word document
@@ -198,10 +210,15 @@ text, and returns the filled `.docx`:
   are refused.
 
 Every part of the document but the filled ones is written back as it
-was, in its order. The XML is read with lxml without entities, a DTD, or
-the network, and a part that declares a DTD is refused: Word writes
-none. The namespace prefixes are kept, since Word reads `mc:Ignorable`
-by prefix.
+was, in its order. The XML is read as UTF-8 with lxml, without entities,
+a DTD, or anything outside the part. A part that declares a DTD or an
+entity is refused before it is parsed, since Word writes none: a
+parser told not to load a DTD still opens an outside DTD subset or
+parameter entity, which may be a file, or a pipe that never ends. The
+parser also resolves any outside reference to nothing. The namespace
+prefixes are kept, since Word reads `mc:Ignorable` by prefix. The text
+is read in one walk of each part, so paragraphs nested in text boxes,
+however deep, cost no more than the rest.
 
 The archive is read within `ArchiveLimits`, so a zip bomb costs nothing:
 
@@ -214,7 +231,12 @@ The archive is read within `ArchiveLimits`, so a zip bomb costs nothing:
 | `max_ratio` | 100 | A file past 100 KiB may inflate at most this many times its stored size, as Apache POI allows. |
 
 Sizes are checked as the archive states them, before anything is
-inflated. A file that inflates past its stated size fails its checksum.
+inflated. Then each file is inflated no further than its stated size, so
+a file that states 10 bytes and inflates to gigabytes costs 10 bytes;
+it then fails its checksum. Files are stored or deflated, as Word writes
+them; other methods (bzip2, LZMA) are refused. Each file is named by a
+plain relative path (no `/` first, no `..`, `\`, or `:`), and no two
+names are the same once case and Unicode forms are set aside.
 
 `fill_docx` works on the CPU: in a request, run it in a thread with
 `asyncio.to_thread`, as the first example does.
@@ -233,12 +255,15 @@ so the text is rendered first, as a PDF of its own, by the browser:
    document's page *i*.
 
 ```python
+import asyncio
+
 from domainkit.documents import PageOptions, overlay_pdf, page_sizes, renderer
 
 
 async def signed_names(contract: bytes, name: str) -> bytes:
+    sizes = await asyncio.to_thread(page_sizes, contract)
     pages = []
-    for number, (width, height) in enumerate(page_sizes(contract)):
+    for number, (width, height) in enumerate(sizes):
         pages.append(
             f"<style>@page p{number} {{ size: {width}pt {height}pt; margin: 0 }}</style>"
             f'<section style="page: p{number}; height: {height}pt; position: relative">'
@@ -248,11 +273,14 @@ async def signed_names(contract: bytes, name: str) -> bytes:
     overlay = await renderer().html_to_pdf(
         "".join(pages), page=PageOptions(margin_top="0", margin_bottom="0")
     )
-    return overlay_pdf(contract, overlay)
+    return await asyncio.to_thread(overlay_pdf, contract, overlay)
 ```
 
 Escape `name` with `html.escape` before you place it, or clean it with
-`clean_html` if it is rich text.
+`clean_html` if it is rich text. `page_sizes` and `overlay_pdf` work on
+the CPU, so they run in a thread. If a section's text runs onto a second
+page, the overlay has more pages than the contract, and `overlay_pdf`
+refuses it.
 
 A page's shown size is its crop box (where it lies within the media box),
 turned by its rotation: a portrait page rotated 90 degrees is shown, and
@@ -291,7 +319,12 @@ typographic properties (`color`, `font-weight`, `text-align`, margins,
 ...) with plain values, none negative, so text cannot be moved over
 other text. Links are dropped, their text kept; `clean_html(html,
 links=True)` keeps `https:` and `mailto:` links, which a PDF shows and
-never loads. Comments are dropped.
+never loads. Comments are dropped. `vertical-align` keeps keywords only,
+and `line-height` is at least 1 (or 100%). nh3 writes a style back as
+its CSS parser read it (`0-500px` as `0 -500px`), so the text is cleaned
+twice, and the second pass checks what the first wrote. Text made tiny,
+or the colour of the page, is not stopped: show a preview of what is
+signed.
 
 ### Why cleaning is not enough
 

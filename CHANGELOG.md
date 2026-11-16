@@ -23,12 +23,14 @@ and a status.
   in the body, tables, text boxes, headers, footers, and notes, each
   value in the formatting of the run its placeholder starts in; it
   refuses a placeholder without a value, a value without a placeholder,
-  and a malformed placeholder, all at once, reads the archive within
-  `ArchiveLimits` (a zip bomb is refused) and the XML without entities,
-  DTDs, or the network. `overlay_pdf(document, overlay)` lays rendered
+  and a malformed placeholder, all at once. It reads the archive within
+  `ArchiveLimits`, each file inflated no further than its stated size,
+  stored or deflated, under a plain relative name (a zip bomb is refused
+  uninflated), and the XML as UTF-8, refusing a DTD or an entity before
+  parsing, so nothing outside the part is opened. `overlay_pdf(document, overlay)` lays rendered
   pages over a PDF's, rotated and cropped pages too, and `page_sizes`
   gives each page's size as shown. `clean_html` keeps rich text to an
-  allowlist that loads and runs nothing. Arabic is rendered by Chromium
+  allowlist that loads and runs nothing, nor lays text over text. Arabic is rendered by Chromium
   or LibreOffice, never drawn. They need the new `documents` extra
   (pypdf, lxml, nh3) and say so when it is missing. Guide:
   `docs/documents.md`; ADR 0168 (user report U2).
@@ -36,8 +38,9 @@ and a status.
   plain `http://` on another host (`documents.E001`; `localhost` and
   `ALLOW_HTTP = True` may), and warn of one without a login
   (`documents.W001`). `check` says that Gotenberg's flags cannot be
-  checked from the service (`documents.I001`), and names those to set:
-  `docs/documents.md`, "Hardening Gotenberg". ADR 0168 (user report U2).
+  checked from the service (`documents.I001`), and names those to set,
+  for Chromium and LibreOffice: `docs/documents.md`, "Hardening
+  Gotenberg". ADR 0168 (user report U2).
 
 ## [2.4.0] - 2026-11-16
 
