@@ -567,6 +567,6 @@ def test_a_command_whose_hints_raise_type_error_gets_dicts() -> None:
 
     @dataclasses.dataclass
     class Broken:
-        owner: "'Owner' | None" = None  # noqa: F821 - resolving it raises TypeError.
+        owner: "'Owner' | None" = None  # type: ignore[name-defined]  # noqa: F821 - resolving it raises TypeError.
 
     assert instances(Broken, Body) == frozenset()
