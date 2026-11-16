@@ -87,6 +87,36 @@ def uvicorn(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return given
 
 
+def test_granian_spawns_its_workers_on_every_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Granian serves while ``multiprocessing`` spawns, then the method is as it was.
+
+    Forked on Python 3.13 while this process's logging thread wrote to
+    standard output, a worker held the stream's lock and never listened.
+    """
+    import multiprocessing
+
+    seen: list[str | None] = []
+
+    class Spawning(Served):
+        def serve(self, **serving: Any) -> None:  # noqa: ANN401 - Granian's.
+            seen.append(multiprocessing.get_start_method(allow_none=True))
+
+    monkeypatch.setattr(Spawning, "made", [], raising=False)
+    monkeypatch.setattr("granian.Granian", Spawning)
+    multiprocessing.set_start_method("fork", force=True)
+    try:
+        with override_settings(ASGI_APPLICATION=APPLICATION):
+            call_command("serve")
+        after = multiprocessing.get_start_method(allow_none=True)
+    finally:
+        multiprocessing.set_start_method(None, force=True)
+
+    assert seen == ["spawn"]
+    assert after == "fork"
+
+
 def test_serve_starts_granian_with_the_limits_of_the_reference(
     granian: list[dict[str, Any]],
 ) -> None:
@@ -790,9 +820,10 @@ MAIN_PROCESS: Final = {
 """A line of each server's own, not the application's."""
 STOPPED: Final = {"granian": 0, "uvicorn": -signal.SIGTERM}
 """Each server's exit status on ``SIGTERM``: uvicorn raises it again once stopped."""
-SERVE_WAIT: Final = 60.0
-"""Seconds the server gets to listen, and then to stop: well under pytest's
-timeout, whose report a pytest-xdist worker loses with the worker."""
+SERVE_WAIT: Final = 40.0
+"""Seconds the server gets to listen, and then to stop: both, and the stacks,
+well within pytest's timeout, whose report a pytest-xdist worker loses
+with the worker."""
 
 
 class ServerLines:
@@ -811,13 +842,15 @@ class ServerLines:
 
     def _read(self) -> None:
         assert self._process.stdout is not None
-        for line in self._process.stdout:
-            self.lines.append(line)
-            if self._marker in line:
-                self.listening.set()
-                self.settled.set()
-        self.ended.set()
-        self.settled.set()
+        try:
+            for line in self._process.stdout:
+                self.lines.append(line)
+                if self._marker in line:
+                    self.listening.set()
+                    self.settled.set()
+        finally:
+            self.ended.set()
+            self.settled.set()
 
     def stacks(self) -> str:  # pragma: no cover - only when the server hangs.
         """Have each process of the server write its threads' stacks, then end.
@@ -829,19 +862,26 @@ class ServerLines:
         again, then its workers.
         """
         for pid in self._processes():
-            with contextlib.suppress(ProcessLookupError):
+            with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGABRT)
             time.sleep(1)
-        with contextlib.suppress(ProcessLookupError):
+        with contextlib.suppress(OSError):
             os.killpg(self._process.pid, signal.SIGKILL)
-        self.ended.wait(10)
+        if not self.ended.wait(10):
+            # Something outside the group holds the output: closing it would
+            # wait on the reader's read, so it is left to the reader.
+            self._process.stdout = None
         return "".join(self.lines)
 
     def _processes(self) -> list[int]:  # pragma: no cover - only for ``stacks``.
-        """The server's processes, by its process group; the server's own first."""
+        """The server's processes, by its process group; the server's own first.
+
+        Without ``/proc`` (macOS), the server's own only: its workers are
+        killed with the group, their stacks unwritten.
+        """
         group = self._process.pid
         found = []
-        with contextlib.suppress(OSError):  # No /proc: the server's alone.
+        with contextlib.suppress(OSError):
             for entry in Path("/proc").iterdir():
                 with contextlib.suppress(OSError, ValueError):
                     pid = int(entry.name)
@@ -879,6 +919,7 @@ def served(request: pytest.FixtureRequest) -> Iterator[tuple[str, Path, list[str
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="backslashreplace",  # Processes' lines may interleave mid-character.
             start_new_session=True,
         ) as process:
             output = ServerLines(process, STARTED[server])
@@ -900,7 +941,7 @@ def served(request: pytest.FixtureRequest) -> Iterator[tuple[str, Path, list[str
                 assert process.wait(30) == STOPPED[server], output.lines
             finally:
                 if process.poll() is None:  # pragma: no cover - a stuck shutdown.
-                    with contextlib.suppress(ProcessLookupError):
+                    with contextlib.suppress(OSError):
                         os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
     finally:
