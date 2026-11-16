@@ -8,7 +8,7 @@ from the messages' docstrings.
 
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, get_origin, get_type_hints
+from typing import Any, TypeGuard, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -22,43 +22,105 @@ from ..schemas import PatchModel
 def to_domain(field: FieldInfo, value: object) -> object:
     """A request's ``value`` as ``field`` holds it: value objects built, enums found.
 
+    A value object of several fields is built from its parts (a dict), and
+    so is each item of a tuple of them.
+
     Raises:
         InvalidQuery: The value does not fit the field.
     """
     if value is None:
         return None
     kind = field.kind
-    if (
-        isinstance(kind, type)
-        and issubclass(kind, ValueObject)
-        and wrapped_field(kind) is None
-        and isinstance(value, Mapping)
-    ):
+    if _composite(kind) and isinstance(value, Mapping):
         inner = fields_of(kind)
         return kind(
             **{name: to_domain(inner[name], item) for name, item in value.items()}
         )
+    if _composite(field.item) and isinstance(value, list | tuple):
+        each = FieldInfo(field.name, field.owner, field.item)
+        return tuple(to_domain(each, item) for item in value)
     return field.coerce(value)
+
+
+def value_fields(message: type) -> dict[str, FieldInfo]:
+    """The fields of ``message`` that hold value objects of several fields.
+
+    Alone or in a tuple (``tuple[Address, ...]``). A body gives each as its
+    parts, which ``domain_values`` makes into the value object. A message whose
+    hints do not resolve has none.
+    """
+    try:
+        fields = fields_of(message)
+    except NameError:
+        return {}
+    return {
+        name: field
+        for name, field in fields.items()
+        if _composite(field.kind) or _composite(field.item)
+    }
+
+
+def domain_values(
+    fields: Mapping[str, FieldInfo], given: dict[str, Any]
+) -> dict[str, Any]:
+    """``given``, with the value objects ``fields`` hold built from their parts.
+
+    Only parts are built (a dict, or a tuple of dicts); a value given
+    otherwise is left as it is.
+    """
+    if not fields:
+        return given
+    return {
+        name: _domain_value(fields[name], value) if name in fields else value
+        for name, value in given.items()
+    }
+
+
+def _domain_value(field: FieldInfo, value: object) -> object:
+    """``value`` as ``field`` holds it, if it is its value objects' parts."""
+    if isinstance(value, Mapping) or (
+        isinstance(value, list | tuple)
+        and all(isinstance(item, Mapping) for item in value)
+    ):
+        return to_domain(field, value)
+    return value
+
+
+def _composite(kind: object) -> TypeGuard[type]:
+    """Whether ``kind`` is a value object of several fields."""
+    return (
+        isinstance(kind, type)
+        and issubclass(kind, ValueObject)
+        and wrapped_field(kind) is None
+    )
 
 
 def changes(payload: BaseModel | None) -> dict[str, Any]:
     """A body's fields as a command's keywords; a ``PatchModel``'s set ones only.
 
-    Nested models become dicts, as ``model_dump`` gives them.
+    Nested models become dicts, as ``model_dump`` gives them; dataclasses
+    the body validated (value objects among them) stay as they are.
     """
     if payload is None:
         return {}
-    if isinstance(payload, PatchModel):
-        return {name: plain(value) for name, value in payload.changes().items()}
-    return payload.model_dump()
+    given = (
+        payload.changes()
+        if isinstance(payload, PatchModel)
+        else {name: getattr(payload, name) for name in type(payload).model_fields}
+    )
+    return {name: plain(value) for name, value in given.items()}
 
 
 def plain(value: object) -> object:
-    """A nested model (or a list of them) as dicts; other values as they are."""
+    """Nested models (in lists, tuples, and dicts too) as dicts; others as they are."""
     if isinstance(value, BaseModel):
         return value.model_dump()
     if isinstance(value, list):
         return [plain(item) for item in value]
+    if type(value) is tuple:
+        return tuple(plain(item) for item in value)
+    if isinstance(value, dict):
+        return {key: plain(item) for key, item in value.items()}
     return value
 
 

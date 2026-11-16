@@ -16,6 +16,15 @@ and a status.
   a listing with links too: `Location` and `links` were built from the
   resource's and its parent's ids only. They take the prefix's parameters
   from the request (user report U5).
+- A command gets the value objects it declares. A value object of several
+  fields, alone or in a tuple (`tuple[Address, ...]`), reached the
+  command as dicts; it is built from its parts, so its own checks run. A
+  write schema takes each item of such a tuple as the item's write schema
+  (`AddressIn`), with its limits, where pydantic built the items without
+  their checks. A dataclass the body validates stays one, in a whole body
+  as in a partial one; a nested pydantic model still becomes a dict. A
+  service that rebuilt them from dicts stops
+  ([upgrading.md](docs/upgrading.md#24-to-25)) (user report U5).
 
 ## [2.4.0] - 2026-11-16
 

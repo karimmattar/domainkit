@@ -291,6 +291,15 @@ def _shape(field: FieldInfo, hint: object, *, write: bool) -> tuple[Any, Present
     if issubclass(kind, ValueObject):
         nested = _nested(kind, write)
         return nested, _shown(nested)
+    item = field.item
+    if (
+        write
+        and item is not None
+        and issubclass(item, ValueObject)
+        and wrapped_field(item) is None
+    ):  # Each item's parts, checked as a value object field's are.
+        nested = _nested(item, write)
+        return tuple[nested, ...], _same  # type: ignore[valid-type]
     if kind in {set, frozenset}:
         return (hint, _same) if write else (_as_list(hint), _sorted)
     return _scalar(field, kind, hint, write=write), _same

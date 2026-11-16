@@ -36,6 +36,20 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.4 to 2.5
+
+2.5 answers the third report of the project 2.4 answered. Each item of
+this list says what a project that relied on 2.4's behaviour changes.
+
+- **Commands get their value objects built.** A command field, or a
+  `@use_case` parameter, that holds a value object of several fields,
+  alone or in a tuple (`tuple[Address, ...]`), reached the service as a
+  dict, or a tuple of dicts, from a command route or a batch. It arrives
+  as the value object, built from its parts. A dataclass the body
+  validates arrives as itself, in a whole body as in a partial one. A
+  service that rebuilt them (`Address(**item)`) drops that step. A
+  command field typed `dict` still gets a dict.
+
 ## 2.3 to 2.4
 
 2.4 answers a report from a project that runs an identity service on

@@ -19,11 +19,13 @@ from domainkit.ddd import (
     Range,
     UnitOfWork,
     UseCase,
+    ValueObject,
     use_case,
 )
+from domainkit.ddd.fields import fields_of
 from domainkit.http.access import IsAuthenticated
 from domainkit.log import JsonFormatter
-from domainkit.resources import ResourceRouter, schema_for
+from domainkit.resources import ResourceRouter, schema_for, to_domain
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -468,3 +470,204 @@ def test_a_hidden_parameter_stays_out_of_the_request_too(
     assert "hunter2" not in short.text
     assert repr(body.model_validate({"code": SECRET})) == "LockGadgetIn()"
     assert "hunter2" not in str(invalid.value)
+
+
+class Place(ValueObject):
+    """Where a gadget is kept: a value object of several fields."""
+
+    shelf: Annotated[str, MaxLength(4)]
+    row: int
+
+
+class Shelf(ValueObject):
+    """A value object of one field."""
+
+    value: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Point:
+    """A plain dataclass."""
+
+    x: int
+    y: int
+
+
+def test_value_objects_reach_the_function_built(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """A tuple of value objects, or one, is built from its parts (user report U5).
+
+    The body gives each as its fields, checked as a value object field's
+    are; the function gets the value objects, as the command declares.
+    """
+    use_auth()
+    seen: list[dict[str, object]] = []
+
+    @use_case
+    async def keep(
+        uow: FakeGadgetsUnitOfWork,
+        gadget_id: UUID,
+        places: tuple[Place, ...],
+        home: Place | None = None,
+        shelves: tuple[Shelf, ...] = (),
+        points: tuple[Point, ...] = (),
+    ) -> None:
+        """Say where a gadget is kept."""
+        seen.append(
+            {"places": places, "home": home, "shelves": shelves, "points": points}
+        )
+
+    resource = gadgets(store)
+    resource.use_case(keep, path="/keep")
+    resource.use_case(
+        keep,
+        path="/keep",
+        method="PATCH",
+        name="keep_some",
+        body=schema_for(keep.command, partial=True, include=["places"]),
+    )
+    resource.batch_route(
+        keep.command,
+        service=keep.run,
+        body=schema_for(keep.command, write=True, include=["places"]),
+        returns=None,
+    )
+    client = client_of(resource)
+    (gadget_id,) = store.items
+    item = f"{LOCATION}{gadget_id}"
+
+    kept = client.post(
+        f"{item}/keep",
+        json={
+            "places": [{"shelf": "A1", "row": 2}, {"shelf": "B", "row": 0}],
+            "home": {"shelf": "H", "row": 1},
+            "shelves": [{"value": "s"}],
+            "points": [{"x": 1, "y": 2}],
+        },
+        headers=as_("changer"),
+    )
+    none = client.post(f"{item}/keep", json={"places": []}, headers=as_("changer"))
+    patched = client.patch(
+        f"{item}/keep",
+        json={"places": [{"shelf": "P", "row": 3}]},
+        headers=as_("changer"),
+    )
+    batched = client.post(
+        "/gadgets/batch",
+        json={
+            "items": [
+                {"gadget_id": str(gadget_id), "places": [{"shelf": "Q", "row": 4}]}
+            ]
+        },
+        headers=as_("changer"),
+    )
+    too_long = client.post(
+        f"{item}/keep",
+        json={"places": [{"shelf": "LONGER", "row": 1}]},
+        headers=as_("changer"),
+    )
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+
+    assert [each.status_code for each in (kept, none, patched)] == [204, 204, 204]
+    assert batched.json()["results"][0]["status"] == 204
+    assert seen == [
+        {
+            "places": (Place("A1", 2), Place("B", 0)),
+            "home": Place("H", 1),
+            "shelves": (Shelf("s"),),
+            "points": (Point(1, 2),),
+        },
+        {"places": (), "home": None, "shelves": (), "points": ()},
+        {"places": (Place("P", 3),), "home": None, "shelves": (), "points": ()},
+        {"places": (Place("Q", 4),), "home": None, "shelves": (), "points": ()},
+    ]
+    assert all(type(each) is Place for each in seen[0]["places"])  # type: ignore[attr-defined]
+    assert (too_long.status_code, too_long.json()["errors"][0]["loc"]) == (
+        422,
+        ["body", "places", 0, "shelf"],
+    )
+    assert schemas["KeepIn"]["properties"]["places"]["items"] == {
+        "$ref": "#/components/schemas/PlaceIn"
+    }
+    assert schemas["PlaceIn"]["properties"]["shelf"]["maxLength"] == 4
+    command: type = keep.command
+    assert to_domain(fields_of(command)["places"], [{"shelf": "A", "row": 1}]) == (
+        Place("A", 1),
+    )
+
+
+class Parts(BaseModel):
+    """A part, as a request gives it."""
+
+    sku: str
+
+
+class Assembled(Command):
+    """Fields a hand-written body gives, as models and as dataclasses."""
+
+    gadget_id: UUID
+    main: dict[str, str]
+    parts: tuple[dict[str, str], ...]
+    named: dict[str, dict[str, str]]
+    places: tuple[Place, ...]
+    points: list[Point]
+    later: "Undefined"  # type: ignore[name-defined]  # noqa: F821 - never resolves.
+
+
+class AssemblyIn(BaseModel):
+    """A hand-written body: nested models, and dataclasses pydantic validates."""
+
+    main: Parts
+    parts: tuple[Parts, ...]
+    named: dict[str, Parts]
+    places: tuple[Place, ...]
+    points: list[Point]
+    later: int
+
+
+def test_whole_bodies_give_models_as_dicts_and_keep_dataclasses(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Nested models become dicts, as ``model_dump`` gives them; dataclasses stay (U5).
+
+    A command whose hints do not resolve takes its fields as given.
+    """
+    use_auth()
+    seen: list[Assembled] = []
+
+    async def assemble(command: Assembled, uow: FakeGadgetsUnitOfWork) -> None:
+        seen.append(command)
+
+    resource = gadgets(store)
+    resource.command_route(
+        Assembled, service=assemble, body=AssemblyIn, path="/assemble", returns=None
+    )
+    client = client_of(resource)
+    (gadget_id,) = store.items
+
+    answer = client.post(
+        f"{LOCATION}{gadget_id}/assemble",
+        json={
+            "main": {"sku": "m"},
+            "parts": [{"sku": "p"}],
+            "named": {"n": {"sku": "q"}},
+            "places": [{"shelf": "A", "row": 1}],
+            "points": [{"x": 1, "y": 2}],
+            "later": 7,
+        },
+        headers=as_("changer"),
+    )
+
+    assert answer.status_code == 204
+    assert seen == [
+        Assembled(
+            gadget_id=gadget_id,
+            main={"sku": "m"},
+            parts=({"sku": "p"},),
+            named={"n": {"sku": "q"}},
+            places=(Place("A", 1),),
+            points=[Point(1, 2)],
+            later=7,
+        )
+    ]

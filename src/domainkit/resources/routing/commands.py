@@ -26,7 +26,7 @@ from . import presenting, reach
 from .authorizing import AuthorizationRoute
 from .context import COMMAND, DEFAULT, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
-from .values import changes, check_given, summary_of
+from .values import changes, check_given, domain_values, summary_of, value_fields
 
 if TYPE_CHECKING:
     from domainkit.ddd.uow import Retry, UnitOfWork
@@ -77,6 +77,8 @@ class CommandRoute:
         self.provided = dict(provide or {})
         given = set(body.model_fields) if body is not None else set()
         check_given(command, given, self.provided, self.from_path)
+        self.values = value_fields(command)
+        """The command's fields that hold value objects, built from their parts."""
         self.returns, self.status_code, self.action = _answers(
             method, self.detail, returns, status_code, action
         )
@@ -116,7 +118,8 @@ class CommandRoute:
 
         The path wins over ``provide``, and ``provide`` over the body. A
         ``PatchModel`` body gives the fields the request set, and the
-        resource's policy must let the caller change them.
+        resource's policy must let the caller change them. Value objects
+        the body gives as their parts are built.
 
         Raises:
             FieldNotEditable: The policy keeps the caller from changing a field.
@@ -127,7 +130,7 @@ class CommandRoute:
             await router.policy.check_changes(context.request, given)
         return self.command(
             **{
-                **given,
+                **domain_values(self.values, given),
                 **context.provided,
                 **{
                     name: context.ids[reach.path_name(router, name)]

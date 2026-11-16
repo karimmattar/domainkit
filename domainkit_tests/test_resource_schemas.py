@@ -667,6 +667,32 @@ def test_write_schemas_nest_write_schemas_of_children() -> None:
     assert schema["properties"]["lines"]["items"] == {"$ref": "#/$defs/LineIn"}
 
 
+class Parcel(AggregateRoot[UUID]):
+    """Tuples of value objects: of several fields, and of one."""
+
+    sums: tuple[Money, ...] = ()
+    codes: tuple[Code, ...] = ()
+
+
+def test_write_schemas_take_tuples_of_value_objects_as_their_parts() -> None:
+    """Each item of several fields is its write schema, limits and all (U5).
+
+    A read schema, and a tuple of value objects of one field, keep the
+    class as pydantic shows it.
+    """
+    written = schema_for(Parcel, write=True).model_json_schema()
+    read = schema_for(Parcel).model_json_schema()
+
+    assert written["properties"]["sums"]["items"] == {"$ref": "#/$defs/MoneyIn"}
+    assert written["$defs"]["MoneyIn"]["additionalProperties"] is False
+    assert written["properties"]["codes"]["items"] == {"$ref": "#/$defs/Code"}
+    assert read["properties"]["sums"]["items"] == {"$ref": "#/$defs/Money"}
+    with pytest.raises(ValidationError):
+        schema_for(Parcel, write=True).model_validate(
+            {"sums": [{"amount": "1.234", "currency": "EUR"}]}
+        )
+
+
 def test_an_expectation_refuses_what_has_no_id_or_no_version() -> None:
     """An instance of the model without an id is not the one expected.
 
