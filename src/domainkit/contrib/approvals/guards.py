@@ -42,7 +42,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
-from typing import Any, Final, get_type_hints
+from typing import Any, Final, cast, get_type_hints
 
 from pydantic import TypeAdapter
 
@@ -329,7 +329,7 @@ class Guard:
                 f"Guard {self.action!r} names its parties with a coroutine "
                 "function: await aparties_of(command)."
             )
-        return frozenset(found)
+        return frozenset(cast("Iterable[str]", found))  # Not awaitable: a plain one's.
 
     async def aparties_of(self, command: object) -> frozenset[str]:
         """The people ``command`` is about, ``parties`` awaited if it is async."""
