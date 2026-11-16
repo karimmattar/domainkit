@@ -38,13 +38,16 @@ never published), with each section below.
 
 ## 2.4 to 2.5
 
-2.5 breaks nothing. Each item of this list says what a project may see
-change, and what it does then.
+2.5 changes no API a project calls. A project's CI can still fail after
+upgrading: `makemessages --check` finds texts it did not find before.
+Each item of this list says what a project may see change, and what it
+does then.
 
-- **`makemessages --check` may fail where it passed.** It now extracts
+- **`makemessages --check` can fail after upgrading.** It now extracts
   `gettext_noop`, and reads the project's own modules: the settings'
   package and `ROOT_ROUTER`'s. Run `makemessages` once and commit the
-  catalogs. A text marked outside every domain needs `LOCALE_PATHS`
+  catalogs. A text marked outside every domain that no catalog
+  translates needs `LOCALE_PATHS`
   ([i18n.md](i18n.md#the-projects-own-messages)); without it, `--check`
   fails, and a run names the text, which reached clients in English.
 

@@ -19,13 +19,13 @@ projects add their own per domain (see ``translation`` and ADR 0039).
 ``timezone`` shows stored UTC times in ``TIME_ZONE``, and ``formats``
 writes numbers and dates as the language does.
 
-The names below are imported on first use, so importing
-``domainkit.i18n.lazy``, which a domain layer may, loads no settings
-(ADR 0166).
+The names below, and the package's modules, are imported on first use,
+so importing ``domainkit.i18n.lazy``, which a domain layer may, loads no
+settings (ADR 0166).
 """
 
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from domainkit.utils.module_loading import lazy_names
 
@@ -114,8 +114,27 @@ _names = lazy_names(
 )
 
 
+_MODULES: Final = frozenset(
+    {
+        "catalogs",
+        "extraction",
+        "formats",
+        "lazy",
+        "timezone",
+        "translation",
+        "validation",
+    }
+)
+"""The package's modules, imported when first read as its attributes."""
+
+
 def __getattr__(name: str) -> object:
-    """A name of ``__all__``, imported on first use; ``timezone`` is a module."""
-    if name == "timezone":
-        return import_module("domainkit.i18n.timezone")
+    """A name of ``__all__``, or one of ``_MODULES``, imported on first use."""
+    if name in _MODULES:
+        return import_module(f"{__name__}.{name}")
     return _names(name)
+
+
+def __dir__() -> list[str]:
+    """The module's own names, those of ``__all__``, and ``_MODULES``."""
+    return sorted({*globals(), *__all__, *_MODULES})
