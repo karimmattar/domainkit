@@ -472,6 +472,8 @@ A hardware security module, through PKCS#11, as a `KeyProvider`.
 
 Multi-tenancy: a tenant per request; its rows, caches, limits, and database.
 
+- `HasMemberPermissions`: Members holding every permission named, in the tenant being served.
+- `InTenant`: Requests served as a tenant: `TenantMiddleware`'s, or a `PathTenant`'s.
 - `PathTenant`: A FastAPI dependency: serve the route as the tenant its path names.
 - `TenantMiddleware`: Serve each request as its tenant (see the module).
 - `TenantMismatch`: An aggregate of another tenant was handed to this tenant's repository (403).

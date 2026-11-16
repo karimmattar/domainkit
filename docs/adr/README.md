@@ -160,7 +160,7 @@ statuses, and the amendments they name.
 | [0147](0147-name-who-caused-each-event-and-tell-the-old-address.md) | Name who caused each event, and tell the old address | Accepted |
 | [0148](0148-check-new-passwords-against-breaches-and-let-rules-be-async.md) | Check new passwords against breaches, and let password rules be async | Accepted |
 | [0149](0149-write-codes-and-pushes-in-their-readers-language.md) | Write codes and pushes in their reader's language | Accepted |
-| [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md) | Take the tenant from the path, and let members hold permissions | Accepted |
+| [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md) | Take the tenant from the path, and let members hold permissions | Accepted; amended by [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) |
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
 | [0153](0153-hold-a-new-address-or-number-until-its-code-proves-it.md) | Hold a new address or number until its code proves it | Accepted |
@@ -171,6 +171,7 @@ statuses, and the amendments they name.
 | [0158](0158-count-outgoing-calls-circuits-fallbacks-and-statements-and-give-requests-a-span.md) | Count outgoing calls, circuits, fallbacks, and statements, and give requests a span | Accepted |
 | [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 | [0160](0160-serve-in-production-from-the-settings.md) | Serve in production from the settings | Accepted |
+| [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) | Let a resource's items be tenants, count members' keys alone, and let lists name what they refer to | Accepted |
 
 ### Decisions still without a record
 

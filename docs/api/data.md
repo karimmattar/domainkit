@@ -311,7 +311,9 @@ REST resources over aggregates: routes, schemas, conditional writes, policies.
 - `ExportTooLarge`: `422`: an export would hold more rows than the resource allows.
 - `FieldNotEditable`: A partial change sets a field the caller may not change.
 - `FieldPolicy`: Who sees and who changes each field of a resource (see the module).
+- `HasMemberModelPermission`: Members granted `<domain>.<action>_<model>` in the tenant being served.
 - `HasModelPermission`: Users granted `<domain>.<action>_<model>`, the model resolved per request.
+- `MemberActions`: Members' permissions by each route's action, after any `rules` given.
 - `ModelActions`: Model permissions by each route's action, after any `rules` given.
 - `NotAcceptable`: `406`: the request accepts none of the media types offered.
 - `Operation`: One route of a resource, as its rules and a generic client see it.

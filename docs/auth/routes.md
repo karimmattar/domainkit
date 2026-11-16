@@ -410,7 +410,7 @@ action: `view`, `add`, `change`, or `delete` on the user model
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `GET /users` | `?limit=50&cursor=&search=` | A page of users, by the first field of `AUTH.IDENTIFIERS` (by username without it). `search` matches part of the username, or of the email address or mobile number where `AUTH.IDENTIFIERS` names them, in any case; a mobile number also in any form that normalizes to it. An encrypted field matches only its whole value, with a blind index. |
+| `GET /users` | `?limit=50&cursor=&search=&id=` | A page of users, by the first field of `AUTH.IDENTIFIERS` (by username without it). `search` matches part of the username, or of the email address or mobile number where `AUTH.IDENTIFIERS` names them, in any case; a mobile number also in any form that normalizes to it. An encrypted field matches only its whole value, with a blind index. `id`, repeated up to 200 times (since 2.5), keeps the users it names, so a page of rows that refer to users names them in one request; unknown ids are left out. |
 | `POST /users` | `{"username", "password", "is_active", "is_staff", "is_superuser", "fields"}` | `201` and the user. The password is validated; without one, it is unusable. |
 | `GET /users/{id}` | | The user. |
 | `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what you leave out stays. A new email or mobile number is set at once, unproved, and drops one the user held ([Changing an address or a number](users.md#changing-an-address-or-a-number)). |

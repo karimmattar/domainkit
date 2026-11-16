@@ -643,12 +643,60 @@ Other parameters are left alone: `limit`, `cursor`, the route's own, and
 has that field or not. So answers tell clients nothing of the model's
 other fields.
 
+**Searching through a reference.** An aggregate refers to another by id,
+often in another domain or database: a membership's `user_id`, a
+document's `company_id`. No join reaches what that id names.
+`search_through` maps such a field to a function that finds the rows a
+word names, where they live (since 2.5):
+
+```python
+from domainkit.contrib.auth import AuthUnitOfWork
+from domainkit.ddd import F, Selection
+
+
+async def users_named(word: str, limit: int) -> list[UUID]:
+    async with AuthUnitOfWork() as uow:
+        found = await uow.users.filter(
+            Selection(F("username").icontains(word), limit=limit)
+        )
+    return [user.id for user in found]
+
+
+class MemberFilters(FilterSet):
+    model = Membership
+    search_fields = ("role",)
+    search_through = {"user_id": users_named}
+```
+
+`?search=ann smith` then keeps the members each of whose words is in
+their role or names their user: "ann" in the role, or `user_id` among
+the users `users_named("ann", 100)` returns, and the same for "smith".
+
+- The function takes the word and a limit, async or not, and returns
+  ids. Each distinct word asks it once per request, for at most
+  `max_reference_matches` ids (100); more are left out. Search an
+  indexed field there, and keep to what the list can show (the current
+  tenant's members, say) so a common word does not reach the bound.
+- The field is read with `in`: index its column. PostgreSQL does not
+  index a column that refers to another by itself.
+- A search the set refuses (too long, too many words) asks nothing.
+- FastAPI runs the function as a dependency of the set, for a resource's
+  `filters` and for `Annotated[MemberFilters, Depends()]` alike. A set
+  built by hand searches its own fields, unless given what
+  `await MemberFilters.through(search)` found, as `_through=`.
+- What the function searches is what a caller learns about the rows it
+  refers to: search only fields the caller may see. A resource's
+  `FieldPolicy` may not hide the field searched through, as for any
+  field a set filters.
+
 | `FilterSet` class variable | Default | What it does |
 | --- | --- | --- |
 | `model` | (required) | The aggregate class. |
 | `ordering_fields` | `()` | Fields clients may order by, each ascending or descending. |
 | `default_ordering` | `()` | The ordering without `?ordering=` (`"-placed_at"`). The id ends every ordering. |
 | `search_fields` | `()` | Text fields that `?search=` looks in, in any case. |
+| `search_through` | `{}` | Fields that refer to other rows, each with a function of a word and a limit that returns the ids of the rows the word names. |
+| `max_reference_matches` | 100 | The most ids one word names through one field; at least 1. |
 | `max_conditions` | 10 | The most filters and search words one request may combine. |
 | `max_values` | 50 | The most values an `__in` filter may list. |
 | `max_search_length` | 100 | The longest `?search=`, in characters. |
@@ -658,7 +706,7 @@ other fields.
 `Filter(*lookups, field=None, max_length=200)` allows `lookups` (default:
 `exact`) on `field` (default: the attribute's name; a dotted name reaches
 a child entity). `max_length` bounds text values, in characters.
-`ordering`, `search`, and `request` cannot name a filter.
+`ordering`, `search`, `_request`, and `_through` cannot name a filter.
 
 ## Several aggregates at once
 

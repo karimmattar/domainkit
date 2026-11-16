@@ -9,6 +9,45 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `ResourceRouter(tenant=PathTenant("company_id"))` serves each route
+  whose path holds the parameter as that tenant, before the route's
+  rules: a companies resource serves `/companies/{company_id}` and its
+  commands as the company, and lists `/companies` as no tenant. A nested
+  resource takes its parent's tenant. The parameter may be the
+  resource's id, its parent's, or one of its prefix; one no route holds
+  is refused. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
+  that type, so a UUID in capitals is the same tenant; a resource's
+  tenant reads its id's type. On the router, `PathTenant` refused the
+  list (`tenancy.E001`), and command routes take no `dependencies=`.
+  ADR 0170 (user report D3).
+- `HasMemberPermissions(*perms)` (`domainkit.tenancy`) and
+  `MemberActions(model, *rules, outside=None)` (`domainkit.resources`)
+  count the keys a caller holds as a member of the tenant served
+  (`MEMBER_PERMISSIONS`), and nothing else: staff who are members act in
+  a tenant with their role, not their staff permissions, which
+  `HasPermissions` and `ModelActions` add. `outside` rules the routes
+  that serve no tenant, such as a companies resource's list; without it
+  they are refused. `InTenant` allows requests served as a tenant.
+  ADR 0170 (user report D3).
+- `Throttle(..., per_tenant=False)` counts a caller once across tenants:
+  a member of ten tenants gets the rate once, not ten times. The default
+  stays one count per tenant. ADR 0170 (user report D3).
+- The admin API's `GET /users` takes `id`, repeated, up to 200: a page of
+  rows that refer to users names them in one request. ADR 0170 (user
+  report D2).
+- `ResourceRouter(present_many=...)`, an async function of an answer's
+  aggregates and the request, shows them in one call, in `present`'s
+  place: a page, an export's chunk, a query's items, or one aggregate.
+  It can load what another domain holds for the whole page at once.
+  ADR 0170 (user report D2).
+- `FilterSet.search_through = {"user_id": users_named}` searches what a
+  field refers to: `users_named(word, limit)` returns the ids of at most
+  `max_reference_matches` (100) rows each word names, and a row matches
+  when its field is one of them. A resource's members can be found by
+  their user's name, wherever users are kept. ADR 0170 (user report D2).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on

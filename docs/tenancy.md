@@ -216,6 +216,22 @@ TENANCY = {
 }
 ```
 
+**A resource whose items are tenants.** A companies resource lists at
+`/companies`, whose path names no company, and reads one at
+`/companies/{company_id}`. `PathTenant` on its router would refuse the
+list (`tenancy.E001`). Give it to the resource instead (since 2.5):
+`ResourceRouter("/companies", ..., tenant=PathTenant("company_id"))`
+serves each route whose path holds `{company_id}` as that company, and
+the list as no tenant
+([resources](resources.md#a-resource-whose-items-are-tenants)).
+
+**The id's type.** `PathTenant("company_id", id_type=UUID)` (or `int`)
+reads the parameter as that type (since 2.5). The tenant id is then the
+value's text, a UUID in lowercase, so one tenant has one id however the
+path spells it, and a value that is not one is `422`, as the route
+answers it. By default the parameter is text, taken as it comes. A
+resource's tenant reads its id's type.
+
 ## Members' permissions
 
 A member's role in a tenant often decides what they may do there: an
@@ -289,6 +305,47 @@ reads, leaves out the backends whose grants hold in one tenant only
 
 `/auth/me` lists a member's keys in the tenant with the rest, as the
 checks count them.
+
+**Rules that count a member's keys alone.** `HasPermissions` asks every
+backend: in a tenant, a user holds their role's keys and what
+`ModelBackend` grants them everywhere. A back-office officer who is a
+company's member would then act on the company's routes with their staff
+permissions. Where only the role should count, use the member rules
+(since 2.5):
+
+```python
+from domainkit.http.access import IsAuthenticated, Require
+from domainkit.resources import MemberActions, ResourceRouter
+from domainkit.tenancy import HasMemberPermissions, PathTenant
+
+
+@router.post(
+    "/invoices/{invoice_id}/approve",
+    dependencies=[Depends(Require(HasMemberPermissions("billing.change_invoice")))],
+)
+async def approve(invoice_id: UUID) -> None: ...
+
+
+companies = ResourceRouter(
+    "/companies",
+    ...,
+    tenant=PathTenant("company_id"),
+    rule=MemberActions(Company, outside=IsAuthenticated()),
+)
+```
+
+- `HasMemberPermissions(*perms)` allows an active caller who holds every
+  key as a member of the tenant being served (`member_permissions`),
+  within their credentials' scopes. What they hold everywhere does not
+  count, nor does a superuser's status: a superuser who is a member holds
+  there what the membership gives. With no tenant served, it refuses.
+  Without `MEMBER_PERMISSIONS`, it raises `ImproperlyConfigured`.
+- `MemberActions(model)` asks for the key of each route's action, as
+  `ModelActions` does, with `HasMemberPermissions`. A resource's routes
+  that serve no tenant (a companies list, its creation) are refused,
+  unless `outside=` rules them: a rule, or `ModelActions`.
+- `InTenant()` allows a request served as a tenant; `~InTenant()`, one
+  served as none.
 
 **Staff change no one who holds more than they do in a tenant.** Setting
 a user's password, logging them out, or acting as them hands over their
@@ -483,6 +540,20 @@ with tenant("acme"):
         scoped_key("rates")  # 'rates'
 ```
 
+**A limit across tenants.** A route's `Throttle` counts, like every key,
+per tenant: a member of ten companies may send ten times a day's
+invitations. `Throttle(..., per_tenant=False)` counts each caller once,
+whichever tenant the route serves (since 2.5):
+
+```python
+invitations = Throttle("50/day", scope="invitations", per_tenant=False)
+```
+
+A limit holds no data, so one count for every tenant tells nothing of
+any. A cache entry does: computed while a tenant is served, it holds that
+tenant's rows. So `@cached` has no such option; share an entry on purpose
+with `shared_keys()`, where you know it belongs to no tenant.
+
 `shared_keys()` keeps keys once, for every tenant, while rows stay
 scoped. domainkit uses it for what belongs to no tenant: the login
 attempts of an account and of an address, what principals rest on, and
@@ -551,7 +622,7 @@ None
 | (`PathTenant`) | The caller does not belong to the path's tenant, or it is not one. | `404 not_found` |
 | (`PathTenant`) | An anonymous caller does not belong to the path's tenant. | `401 not_authenticated` |
 | `ValueError` | `tenant()` or `check_tenant_id()` with a malformed id. | |
-| `ImproperlyConfigured` | `TenantMiddleware` without `TENANCY`; both `SUBDOMAIN_OF` and `HEADER`, or both `MEMBERSHIP` and `MEMBER_PERMISSIONS`, or `MEMBER_TENANTS` without either; `PathTenant` without either; `MembershipBackend` without `MEMBER_PERMISSIONS`; a hook that answers one string or a bool. | |
+| `ImproperlyConfigured` | `TenantMiddleware` without `TENANCY`; both `SUBDOMAIN_OF` and `HEADER`, or both `MEMBERSHIP` and `MEMBER_PERMISSIONS`, or `MEMBER_TENANTS` without either; `PathTenant` without either, or with an `id_type` other than `str`, `int`, or `UUID`; `MembershipBackend` or `HasMemberPermissions` without `MEMBER_PERMISSIONS`; a hook that answers one string or a bool. | |
 
 ## Common mistakes
 
@@ -562,6 +633,11 @@ None
 - **A rule before `PathTenant`.** It runs with no tenant: members get
   `403`, and so do strangers, where they should get `404`. Put
   `PathTenant` first in the router's dependencies (`tenancy.E002`).
+- **`HasPermissions` where only the role should count.** It counts what
+  a member holds everywhere too: staff who are members act as staff. Use
+  `HasMemberPermissions` or `MemberActions`.
+- **`PathTenant` on a resource's router.** Its list has no tenant in its
+  path (`tenancy.E001`). Pass `tenant=` to the `ResourceRouter`.
 - **A path tenant's prefix that is not exempt.** With `TenantMiddleware`
   and `REQUIRED`, a request that names no tenant before routing gets
   `400 tenant_not_named`. Add the prefix to `EXEMPT_PATHS`.
