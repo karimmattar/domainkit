@@ -38,11 +38,13 @@ from dataclasses import dataclass, replace
 from typing import IO, Final
 from urllib.parse import quote
 
+import anyio
 from fastapi import status
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 
+from domainkit.exceptions import ServiceBusy
 from domainkit.http.errors import APIError
 from domainkit.storage.base import CHUNK_SIZE, FileTooLarge, Storage
 from domainkit.storage.base import StoredUpload as StoredUpload
@@ -53,6 +55,7 @@ from domainkit.storage.inspection import (
     OfficeCheck,
     PdfCheck,
 )
+from domainkit.utils.loops import PerLoop
 
 __all__ = [
     "CHECKED_PDF",
@@ -91,6 +94,11 @@ _RESERVED_NAMES: Final = frozenset(
 _FORBIDDEN: Final = frozenset('<>:"/\\|?*')
 _TEXT_CONTROLS: Final = frozenset(b"\t\n\r\f")
 SPOOL_MEMORY: Final = 1024 * 1024
+CHECKS_AT_ONCE: Final = 4
+"""Checks an event loop runs at once, each in a thread of its own; past
+that, an upload is refused (503) rather than queued."""
+_checks: PerLoop[anyio.CapacityLimiter] = PerLoop()
+"""Each event loop's limiter of checks, apart from the threads others use."""
 """How much of an upload held for a check stays in memory; the rest goes to disk."""
 
 type Upload = UploadFile | bytes | AsyncIterable[bytes]
@@ -252,7 +260,8 @@ class ReceivedUpload:
     """An upload received whole and checked, held in a temporary file.
 
     Nothing is stored yet: ``store`` keeps it, through the virus scan, and
-    ``close`` drops it. ``receive_upload`` makes one (New in 2.5).
+    drops the temporary file; ``close`` drops it without storing.
+    ``receive_upload`` makes one (New in 2.5).
     """
 
     kind: FileType
@@ -282,18 +291,21 @@ class ReceivedUpload:
             ValueError: ``directory`` is malformed.
         """
         target = storages[storage] if isinstance(storage, str) else storage
-        stored = await _store(
-            target,
-            self.kind,
-            self._chunks(),
-            directory=directory,
-            max_size=self.size,
-            filename=self.filename,
-        )
+        try:
+            stored = await _store(
+                target,
+                self.kind,
+                self._chunks(),
+                directory=directory,
+                max_size=self.size,
+                filename=self.filename,
+            )
+        finally:
+            self.close()
         return replace(stored, sha256=self.sha256)
 
     def close(self) -> None:
-        """Drop the temporary file."""
+        """Drop the temporary file; again, nothing more."""
         self.file.close()
 
     async def _chunks(self) -> AsyncIterator[bytes]:
@@ -348,10 +360,7 @@ async def save_upload(
             filename=sanitize_filename(reader.filename),
         )
     received = await _received(reader, head, candidates, max_size)
-    try:
-        return await received.store(target, directory=directory)
-    finally:
-        received.close()
+    return await received.store(target, directory=directory)
 
 
 async def receive_upload(
@@ -494,12 +503,28 @@ async def _received(
                 await asyncio.to_thread(spool.write, chunk)  # It goes to disk.
             else:
                 spool.write(chunk)
-        kind = await asyncio.to_thread(_inspected, spool, candidates)
+        kind = await _checked(spool, candidates)
     except BaseException:
         spool.close()
         raise
     filename = sanitize_filename(reader.filename)
     return ReceivedUpload(kind, size, digest.hexdigest(), filename, spool)
+
+
+async def _checked(file: IO[bytes], candidates: list[FileType]) -> FileType:
+    """The type ``file`` is, checked in a thread of the checks' own.
+
+    At most ``CHECKS_AT_ONCE`` run at once on a loop; a check that does
+    not end with the request runs to its own deadline.
+
+    Raises:
+        ServiceBusy: As many checks run already (503).
+        UploadRefused: A check refused it (422), or no type took it (415).
+    """
+    limiter = _checks.get(lambda: anyio.CapacityLimiter(CHECKS_AT_ONCE))
+    if limiter.available_tokens < 1:
+        raise ServiceBusy("Uploads cannot be checked now; try again later.")
+    return await anyio.to_thread.run_sync(_inspected, file, candidates, limiter=limiter)
 
 
 def _inspected(file: IO[bytes], candidates: list[FileType]) -> FileType:

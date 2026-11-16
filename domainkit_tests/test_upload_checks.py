@@ -6,10 +6,16 @@ hook reads the whole file before ``save_upload`` stores it, and a file it
 refuses is never stored (ADR 0167).
 """
 
+import asyncio
+import codecs
 import io
+import struct
 import sys
+import threading
+import time
 import zipfile
-from collections.abc import AsyncIterator
+import zlib
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import IO, Final
 
@@ -17,7 +23,7 @@ import pytest
 from pypdf import PdfWriter
 from starlette.datastructures import UploadFile
 
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import ImproperlyConfigured, ServiceBusy
 from domainkit.http import uploads
 from domainkit.http.uploads import (
     CHECKED_PDF,
@@ -78,8 +84,71 @@ FIELD: Final = (
     '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
 )
 """A Word field whose instruction is split over two runs, as Word writes them."""
+NESTED_DDE: Final = (
+    '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    "<w:r><w:instrText>QUOTE 68 68 69 65 85 84 79</w:instrText></w:r>"
+    '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    "<w:r><w:t>DDEAUTO</w:t></w:r>"
+    '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+    '<w:r><w:instrText> "c:\\cmd.exe" "/c calc"</w:instrText></w:r>'
+    '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+)
+"""DDEAUTO spelled by a nested QUOTE field: the instruction starts with a field."""
+UTF16_DECLARED: Final = '<?xml version="1.0" encoding="UTF-16"?><x/>'
+SHEETML: Final = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+CONNECTIONS: Final = "xl/connections.xml"
 SHEET: Final = "xl/macrosheets/sheet1.xml"
 LINKED: Final = "xl/externalLinks/externalLink1.xml"
+
+
+def sheet(cells: str) -> bytes:
+    """A workbook whose one worksheet holds ``cells`` in its first row."""
+    return office(
+        "xlsx",
+        main_relationships=[(f"{R}worksheet", "worksheets/sheet1.xml")],
+        parts={
+            "xl/worksheets/sheet1.xml": f'<worksheet xmlns="{SHEETML}"><sheetData>'
+            f'<row r="1">{cells}</row></sheetData></worksheet>'
+        },
+        types={"xl/worksheets/sheet1.xml": f"{OOXML}spreadsheetml.worksheet+xml"},
+    )
+
+
+def bad_utf8_name(data: bytes) -> bytes:
+    """``data`` with ``word/zzzz.xml`` named in bytes not UTF-8, flagged UTF-8."""
+    changed = bytearray(data)
+    start = changed.find(b"PK\x01\x02")
+    while start != -1:
+        size = struct.unpack_from("<H", changed, start + 28)[0]
+        if bytes(changed[start + 46 : start + 46 + size]) == b"word/zzzz.xml":
+            flags = struct.unpack_from("<H", changed, start + 8)[0] | 0x800
+            struct.pack_into("<H", changed, start + 8, flags)
+            changed[start + 46 + 5] = 0xFF
+        start = changed.find(b"PK\x01\x02", start + 1)
+    return bytes(changed)
+
+
+def renamed_in_directory(data: bytes) -> bytes:
+    """``data`` with ``word/vbaProject.bin`` named otherwise in its directory only."""
+    changed = bytearray(data)
+    start = changed.find(b"PK\x01\x02")
+    while start != -1:
+        size = struct.unpack_from("<H", changed, start + 28)[0]
+        if bytes(changed[start + 46 : start + 46 + size]) == b"word/vbaProject.bin":
+            changed[start + 46 : start + 46 + size] = b"word/vbaProjecX.bin"
+        start = changed.find(b"PK\x01\x02", start + 1)
+    return bytes(changed)
+
+
+def jump() -> Callable[[], float]:
+    """A clock that reads 0 once, then 100 seconds on: a check's time is up."""
+    readings = [0.0]
+
+    def monotonic() -> float:
+        return readings.pop() if readings else 100.0
+
+    return monotonic
 
 
 def verdict(check: PdfCheck | OfficeCheck, data: bytes) -> str:
@@ -212,6 +281,58 @@ async def refusal(data: bytes, *types: FileType) -> tuple[int, str, str]:
             FORMS,
         ),
         (b"%PDF-1.7\nnot a PDF at all", "unreadable_file"),
+        (
+            one_page(
+                "",
+                "/Annots [4 0 R]",
+                "<< /Subtype /3D /3DD << /OnInstantiate 5 0 R >> >>",
+                "(x)",
+            ),
+            SCRIPTS,
+        ),
+        (
+            one_page(
+                "", "/Annots [4 0 R]", "<< /A << /S /Thread /F (other.pdf) /D 0 >> >>"
+            ),
+            ACTIONS,
+        ),
+        (
+            one_page("", "/Annots [4 0 R]", "<< /A << /S /Thread /D 0 >> >>"),
+            "ok",
+        ),
+        (
+            one_page(
+                "", "", "<< /Type /Filespec /FS /URL /F (https://a.example/m.mp4) >>"
+            ),
+            EXTERNAL,
+        ),
+        (
+            one_page(
+                "",
+                "/Annots [4 0 R]",
+                "<< /A << /S /URI /URI 5 0 R >> >>",
+                "<< /Length 4 >>\nstream\nhttp\nendstream",
+            ),
+            EXTERNAL,
+        ),
+        (
+            one_page("/URI << /Base (https://a.example/) >>"),
+            "ok",
+        ),
+        (
+            one_page()
+            + b"9 0 obj\n<< /S /JavaScript /JS (written, never listed) >>\nendobj\n",
+            SCRIPTS,
+        ),
+        (
+            one_page() + b"9 0 obj\n) not an object (\nendobj\n",
+            "ok",
+        ),
+        (
+            one_page()
+            + b"9 0 obj\n<< /Length 99 0 R >>\nstream\nx\nendstream\nendobj\n",
+            "unreadable_file",
+        ),
     ],
 )
 def test_a_pdf_is_refused_for_what_runs_sends_or_hides(
@@ -238,7 +359,7 @@ def test_a_pdf_with_a_password_or_too_many_pages_is_refused() -> None:
     assert verdict(PdfCheck(), encrypted.getvalue()) == ENCRYPTED
     assert verdict(PdfCheck(max_pages=1), two) == PAGES
     assert verdict(PdfCheck(max_pages=2), two) == "ok"
-    with pytest.raises(ValueError, match="max_pages is 1 or more"):
+    with pytest.raises(ValueError, match="max_pages is more than 0"):
         PdfCheck(max_pages=0)
 
 
@@ -419,6 +540,137 @@ async def test_a_checked_pdf_is_stored_and_a_refused_one_never() -> None:
         ),
         (office(compression=zipfile.ZIP_BZIP2), "unreadable_file"),
         (b"PK\x03\x04 and nothing of a zip", "unreadable_file"),
+        (
+            office(
+                parts={
+                    "word/be.xml": '<!DOCTYPE x [<!ENTITY e "e">]><x/>'.encode(
+                        "utf-16-be"
+                    )
+                }
+            ),
+            DTD,
+        ),
+        (
+            office(
+                parts={"word/decl.xml": '<?xml version="1.0" encoding="UTF-8"?><x/>'}
+            ),
+            "ok",
+        ),
+        (office(main_relationships=[(f"{R}aFChunk", "chunk.rtf")]), EMBEDDED),
+        (
+            office(
+                main_relationships=[
+                    (f"{R}attachedTemplate", "https://a.example/t", "external")
+                ]
+            ),
+            EXTERNAL,
+        ),
+        (
+            office(
+                main_relationships=[
+                    (f"{R}attachedTemplate", "https://a.example/t", " External")
+                ]
+            ),
+            EXTERNAL,
+        ),
+        (
+            office(
+                main_relationships=[
+                    (f"{R}attachedTemplate", "https://a.example/t", "1")
+                ]
+            ),
+            EXTERNAL,
+        ),
+        (
+            office(
+                main_relationships=[(f"{R}attachedTemplate", "https://a.example/t")]
+            ),
+            EXTERNAL,
+        ),
+        (
+            office(main_relationships=[(f"{R}attachedTemplate", "\\\\host\\t.dotm")]),
+            EXTERNAL,
+        ),
+        (
+            office(main_relationships=[(f"{R}attachedTemplate", "//host/t.dotm")]),
+            EXTERNAL,
+        ),
+        (office(main_relationships=[(f"{R}image", "C:/pictures/a.png")]), EXTERNAL),
+        (office(main_relationships=[(f"{R}image", "media/a.png", "Internal")]), "ok"),
+        (office(main=document(NESTED_DDE)), ACTIONS),
+        (office(main=document(FIELD.format('DDEAUTO"c:\\cmd.exe"', ""))), ACTIONS),
+        (office(main=document(FIELD.format(' DATABASE \\d "x.mdb"', ""))), EXTERNAL),
+        (
+            office(
+                main=document(FIELD.format(" INCLUDE ", '"https://a.example/b.docx"'))
+            ),
+            EXTERNAL,
+        ),
+        (
+            office(main=document(FIELD.format(" IMPORT ", "https://a.example/a.png"))),
+            EXTERNAL,
+        ),
+        (
+            office(main=document(FIELD.format(" IF ", '{ MERGEFIELD x } = "y" "z"'))),
+            "ok",
+        ),
+        (
+            office(
+                main=document(
+                    f'<w:p xmlns:r="{R[:-1]}">'
+                    '<w:r><w:drawing r:link="rId9"/></w:r></w:p>'
+                )
+            ),
+            EXTERNAL,
+        ),
+        (
+            office(
+                parts={
+                    "word/drawing.vml": '<!DOCTYPE x [<!ENTITY e SYSTEM "file:///dev/stdin">]><x>&e;</x>'
+                }
+            ),
+            DTD,
+        ),
+        (office(parts={"word/odd.xml": '<x><!ENTITY e "e"></x>'}), DTD),
+        (
+            office(
+                parts={
+                    "word/wide.xml": (
+                        '<!DOCTYPE x SYSTEM "file:///dev/stdin"><x/>'
+                    ).encode("utf-16")
+                }
+            ),
+            DTD,
+        ),
+        (
+            office(
+                parts={
+                    "word/wide.xml": codecs.BOM_UTF32_LE + "<x/>".encode("utf-32-le")
+                }
+            ),
+            "unreadable_file",
+        ),
+        (office(parts={"word/old.xml": b"\x4c\x6f\xa7\x94\x93@"}), "unreadable_file"),
+        (
+            office(
+                parts={"word/odd.xml": '<?xml version="1.0" encoding="x-nothing"?><x/>'}
+            ),
+            "unreadable_file",
+        ),
+        (
+            office(parts={"word/odd.xml": UTF16_DECLARED.encode("utf-16")}),
+            "ok",
+        ),
+        (office(parts={"word/media/image1.png": b"\x89PNG binary"}), "ok"),
+        (
+            office(parts={"word/_rels/odd.xml.rels": b"\x89PNG not a list"}),
+            "unreadable_file",
+        ),
+        (bad_utf8_name(office(parts={"word/zzzz.xml": "<x/>"})), "unreadable_file"),
+        (
+            renamed_in_directory(office(parts={"word/vbaProject.bin": b"x" * 10})),
+            "unreadable_file",
+        ),
     ],
 )
 def test_a_word_document_is_refused_for_macros_objects_and_outside_links(
@@ -485,6 +737,45 @@ def test_a_word_document_is_refused_for_macros_objects_and_outside_links(
             "not of type",
         ),
         ("pptx", office("docx"), "not of type"),
+        (
+            "xlsx",
+            office(
+                "xlsx",
+                parts={CONNECTIONS: "<connections/>"},
+                types={CONNECTIONS: f"{OOXML}spreadsheetml.connections+xml"},
+            ),
+            EXTERNAL,
+        ),
+        (
+            "xlsx",
+            office(
+                "xlsx", main_relationships=[(f"{R}queryTable", "queryTables/q.xml")]
+            ),
+            EXTERNAL,
+        ),
+        (
+            "xlsx",
+            sheet('<c r="A1"><f>WEBSERVICE("https://a.example/")</f></c>'),
+            EXTERNAL,
+        ),
+        (
+            "xlsx",
+            sheet('<c r="A1"><f>_xlfn.webservice("https://a.example/")</f></c>'),
+            EXTERNAL,
+        ),
+        ("xlsx", sheet("<c r=\"A1\"><f>cmd|' /C calc'!A0</f></c>"), ACTIONS),
+        ("xlsx", sheet('<c r="A1"><f>CONCAT("a|b", B1)</f></c>'), "ok"),
+        ("xlsx", sheet('<c r="A1"><f>SUM(B1:B9)</f></c>'), "ok"),
+        (
+            "xlsx",
+            office(
+                "xlsx",
+                main=f'<workbook xmlns="{SHEETML}"><definedNames>'
+                '<definedName name="x">RTD("a",,"b")</definedName>'
+                "</definedNames></workbook>",
+            ),
+            EXTERNAL,
+        ),
     ],
 )
 def test_workbooks_and_presentations_are_checked_alike(
@@ -533,14 +824,17 @@ def test_a_zip_is_bounded_by_its_directory_before_it_is_inflated() -> None:
     assert verdict(OfficeCheck("docx", max_parts=3), office()) == "ok"
     assert verdict(OfficeCheck("docx", max_size=100), office()) == COMPLEX
     assert verdict(OfficeCheck("docx"), bomb) == COMPLEX
-    assert verdict(OfficeCheck("docx", max_ratio=5000), bomb) == "ok"
+    assert verdict(OfficeCheck("docx", max_ratio=5000), bomb) == COMPLEX
+    roomy = OfficeCheck("docx", max_ratio=5000, max_expansion=10_000)
+    assert verdict(roomy, bomb) == "ok"
+    assert verdict(OfficeCheck("docx", max_expansion=10_000), bomb) == COMPLEX
     assert (
         verdict(OfficeCheck("docx"), zipped(("a.xml", b"<a/>"), flags=1)) == ENCRYPTED
     )
     assert verdict(OfficeCheck("docx"), repeated) == "unreadable_file"
     with pytest.raises(ValueError, match="An Office check takes"):
         OfficeCheck("odt")  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="max_parts is 1 or more"):
+    with pytest.raises(ValueError, match="max_parts is more than 0"):
         OfficeCheck("docx", max_parts=0)
 
 
@@ -710,3 +1004,289 @@ async def test_a_hook_of_ones_own_reads_the_whole_file(tmp_path: Path) -> None:
     assert seen == [b"hello", b"a SECRET"]
     assert (refused.value.status_code, refused.value.code) == (422, "secret")
     assert list(storage.files) == [stored.name]
+
+
+# What a check costs, whatever the file ------------------------------------------
+
+
+def xref_stream_pdf(entries: int, padding: int = 1000) -> bytes:
+    """A PDF whose cross-reference stream names object 1's offset for each entry.
+
+    pypdf searched the whole file for each object not where its table
+    said: thousands of entries made a check of minutes.
+    """
+    out = b"%PDF-1.7\n"
+    one = len(out)
+    out += b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+    two = len(out)
+    out += b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
+    out += b"%" + b"A" * padding + b"\n"
+    three = len(out)
+    rows = [struct.pack(">BIB", 0, 0, 255), struct.pack(">BIB", 1, one, 0)]
+    rows += [struct.pack(">BIB", 1, two, 0), struct.pack(">BIB", 1, three, 0)]
+    rows += [struct.pack(">BIB", 1, one, 0)] * (entries - 4)
+    data = zlib.compress(b"".join(rows))
+    out += (
+        (
+            f"3 0 obj\n<< /Type /XRef /Size {entries} /W [1 4 1] /Root 1 0 R "
+            f"/Filter /FlateDecode /Length {len(data)} >>\nstream\n"
+        ).encode()
+        + data
+        + b"\nendstream\nendobj\n"
+    )
+    return out + f"startxref\n{three}\n%%EOF\n".encode()
+
+
+def listed_pdf(objects: dict[int, str], listed: set[int]) -> bytes:
+    """A PDF of ``objects`` whose table lists only those of ``listed`` in use."""
+    out = b"%PDF-1.7\n"
+    offsets = {}
+    for number, body in objects.items():
+        offsets[number] = len(out)
+        out += f"{number} 0 obj\n{body}\nendobj\n".encode()
+    start = len(out)
+    size = max(objects) + 1
+    out += f"xref\n0 {size}\n0000000000 65535 f \n".encode()
+    for number in range(1, size):
+        if number in listed:
+            out += f"{offsets[number]:010d} 00000 n \n".encode()
+        else:
+            out += b"0000000000 65535 f \n"
+    trailer = f"trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n"
+    return out + trailer.encode()
+
+
+def streamed_pdf(*sizes: int) -> bytes:
+    """A PDF whose object streams each decode to one of ``sizes`` bytes."""
+    out = b"%PDF-1.7\n"
+    offsets = {1: len(out)}
+    out += b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+    offsets[2] = len(out)
+    out += b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
+    for index, size in enumerate(sizes):
+        header = f"{100 + index} 0 ".encode()
+        data = zlib.compress(header + b" " * size + b"null")
+        offsets[3 + index] = len(out)
+        out += (
+            (
+                f"{3 + index} 0 obj\n<< /Type /ObjStm /N 1 /First {len(header)} "
+                f"/Filter /FlateDecode /Length {len(data)} >>\nstream\n"
+            ).encode()
+            + data
+            + b"\nendstream\nendobj\n"
+        )
+    table = 3 + len(sizes)
+    total = 100 + len(sizes)
+    rows = []
+    for number in range(total):
+        if number in offsets:
+            rows.append(struct.pack(">BIH", 1, offsets[number], 0))
+        elif number >= 100:
+            rows.append(struct.pack(">BIH", 2, 3 + number - 100, 0))
+        elif number == table:
+            rows.append(b"")  # Filled in below, once its offset is known.
+        else:
+            rows.append(struct.pack(">BIH", 0, 0, 0 if number else 65535))
+    rows[table] = struct.pack(">BIH", 1, len(out), 0)
+    data = zlib.compress(b"".join(rows))
+    start = len(out)
+    out += (
+        (
+            f"{table} 0 obj\n<< /Type /XRef /Size {total} /W [1 4 2] /Root 1 0 R "
+            f"/Filter /FlateDecode /Length {len(data)} >>\nstream\n"
+        ).encode()
+        + data
+        + b"\nendstream\nendobj\n"
+    )
+    return out + f"startxref\n{start}\n%%EOF\n".encode()
+
+
+@pytest.fixture
+def searches(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """How often pypdf copies the whole file to search it for an object."""
+    import pypdf._reader
+
+    copies: list[int] = []
+    copy = pypdf._reader.get_stream_data  # type: ignore[attr-defined]
+
+    def counted(stream: IO[bytes]) -> bytes:
+        data = copy(stream)
+        copies.append(len(data))
+        return data
+
+    monkeypatch.setattr(pypdf._reader, "get_stream_data", counted)
+    return copies
+
+
+def test_a_pdf_whose_table_points_elsewhere_is_refused_without_a_search(
+    searches: list[int],
+) -> None:
+    """Each wrong entry was a search of the whole file; the first one refuses now."""
+    assert verdict(PdfCheck(), xref_stream_pdf(4000)) == "unreadable_file"
+    assert searches == []
+
+
+@pytest.mark.parametrize(
+    ("objects", "listed"),
+    [
+        (
+            {
+                1: "<< /Type /Catalog /Pages 2 0 R "
+                "/OpenAction << /S /JavaScript /JS (x) >> >>",
+                2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+            },
+            {2, 3},
+        ),
+        (
+            {
+                1: "<< /Type /Catalog /Pages 2 0 R >>",
+                2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                3: "<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+                4: "<< /Type /Annot /Subtype /Link /A << /S /Launch /F (cmd) >> >>",
+            },
+            {1, 2, 3},
+        ),
+        (
+            {
+                1: "<< /Type /Catalog /Pages 2 0 R /Names 4 0 R >>",
+                2: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                3: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+                4: "<< /JavaScript << /Names [(a) << /S /JavaScript /JS (x) >>] >> >>",
+            },
+            {1, 2, 3},
+        ),
+    ],
+)
+def test_an_object_the_table_does_not_declare_is_never_searched_for(
+    objects: dict[int, str], listed: set[int], searches: list[int]
+) -> None:
+    """A reference to an object listed free, or not at all, refuses the file.
+
+    pypdf found such objects by searching the file, and the check, which
+    read only what the table lists, never saw their scripts (A6 review).
+    """
+    assert verdict(PdfCheck(), listed_pdf(objects, listed)) == "unreadable_file"
+    assert searches == []
+
+
+def test_an_earlier_revision_is_read_too() -> None:
+    """An object an update replaced keeps what it held, for a reader that repairs."""
+    first = one_page("", "/Annots [4 0 R]", "<< /A << /S /JavaScript /JS (x) >> >>")
+    update = "4 0 obj\n<< /A << /S /GoTo /D [3 0 R /Fit] >> >>\nendobj\n"
+    start = len(first) + len(update)
+    data = (
+        first
+        + update.encode()
+        + (
+            f"xref\n4 1\n{len(first):010d} 00000 n \ntrailer\n<< /Size 5 /Root 1 0 R "
+            f"/Prev {first.index(b'\nxref') + 1} >>\nstartxref\n{start}\n%%EOF\n"
+        ).encode()
+    )
+
+    assert verdict(PdfCheck(), data) == SCRIPTS
+    replaced = data.replace(b"/JavaScript /JS (x)", b"/Named /N /NextPage")
+    assert verdict(PdfCheck(), replaced) == "ok"
+
+
+def test_object_streams_decode_to_a_bound_each_and_in_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Many streams under pypdf's own limit made a check of a gigabyte."""
+    three = streamed_pdf(400_000, 400_000, 400_000)
+
+    assert verdict(PdfCheck(max_decoded=1_000_000), three) == COMPLEX
+    assert verdict(PdfCheck(max_decoded=2_000_000), three) == "ok"
+    monkeypatch.setitem(
+        inspection_module.PDF_LIMITS, "zlib_maximum_output_length", 1000
+    )
+    assert verdict(PdfCheck(), streamed_pdf(2000)) == "unreadable_file"
+
+
+def test_a_pdf_check_is_bounded_in_objects_and_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``max_objects`` the table declares; ``max_seconds``, looked at per object."""
+    assert verdict(PdfCheck(max_objects=2), one_page()) == COMPLEX
+    monkeypatch.setattr(time, "monotonic", jump())
+    assert verdict(PdfCheck(max_seconds=10), one_page()) == COMPLEX
+
+
+def test_pypdf_may_name_an_object_by_its_number_alone() -> None:
+    """``get_object(1)``, as pypdf asks for a catalog it recovers: generation 0."""
+    import pypdf
+
+    data = one_page()
+    reader = pypdf.PdfReader(io.BytesIO(data), strict=True)
+    check = inspection_module._Pdf(
+        PdfCheck(), reader, data, inspection_module._Clock(1e18)
+    )
+
+    assert check.resolve(1) == reader.trailer["/Root"]
+
+
+def test_a_pdf_a_strict_reader_must_repair_is_unreadable() -> None:
+    """A table at the wrong place: pypdf rebuilt it from the file; no longer."""
+    data = one_page()
+    broken = data.replace(b"startxref\n", b"startxref\n1", 1)
+
+    assert verdict(PdfCheck(), broken) == "unreadable_file"
+
+
+def test_an_office_check_is_bounded_by_the_uploads_own_size_and_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 parts just under 1 MiB, each held to no ratio, made a check of 37 s.
+
+    In all, a package inflates to ``max_expansion`` times its size; and the
+    clock is looked at part after part.
+    """
+    part = "<x>" + "<a/>" * 5_000 + "</x>"
+    many = office(parts={f"word/p{index}.xml": part for index in range(20)})
+
+    assert verdict(OfficeCheck("docx"), many) == COMPLEX
+    assert verdict(OfficeCheck("docx", max_expansion=1000), many) == "ok"
+    monkeypatch.setattr(time, "monotonic", jump())
+    assert verdict(OfficeCheck("docx", max_expansion=1000), many) == COMPLEX
+
+
+async def test_checks_run_in_threads_of_their_own_and_refuse_past_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A check that holds its thread leaves the others; one more is 503 at once."""
+    monkeypatch.setattr(uploads, "CHECKS_AT_ONCE", 1)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(file: IO[bytes]) -> None:
+        started.set()
+        release.wait(5)
+
+    held = FileType("text/plain", ".txt", lambda head: True, slow)
+    storage = MemoryStorage()
+    first = asyncio.ensure_future(
+        save_upload(b"one", types=[held], max_size=10, storage=storage)
+    )
+    assert await asyncio.to_thread(started.wait, 5)
+    with pytest.raises(ServiceBusy, match="cannot be checked now"):
+        await save_upload(b"two", types=[held], max_size=10, storage=storage)
+    release.set()
+    stored = await first
+
+    assert list(storage.files) == [stored.name]
+
+
+async def test_storing_a_received_upload_drops_its_temporary_file() -> None:
+    """Stored or refused, the temporary file is closed; closing again is nothing."""
+    storage = MemoryStorage()
+    stored = await receive_upload(PNG_BYTES, types=IMAGES, max_size=1000)
+    failing = await receive_upload(PNG_BYTES, types=IMAGES, max_size=1000)
+
+    await stored.store(storage)
+    with pytest.raises(ValueError, match="storage directory"):
+        await failing.store(storage, directory="../x")
+    stored.close()
+
+    assert stored.file.closed
+    assert failing.file.closed
+    assert time.monotonic()
