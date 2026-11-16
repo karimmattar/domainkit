@@ -11,6 +11,39 @@ and a status.
 
 ### Added
 
+- A domain layer may import `domainkit.i18n.lazy`, and no other module of
+  `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
+  translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
+  make labels translated when they are shown; a refusal with values is
+  `gettext_lazy(...).format(...)`. Importing it loads no settings and no
+  catalog. A project that allowed all of `domainkit.i18n` in
+  `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
+  ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
+  report I2).
+
+- `makemessages` also reads the project's own modules: the package that
+  holds the settings module, and the one that holds `ROOT_ROUTER`'s
+  module, without the installed domains. What they mark is added to the
+  catalogs of the first `LOCALE_PATHS` directory, which keep every entry
+  they hold, the project's rewordings of others' messages too, and an
+  obsolete (`#~`) entry of a message marked again comes back. Without
+  `LOCALE_PATHS`, a run names on stderr those messages that no catalog
+  translates already, and `--check` fails on them
+  ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166, user
+  report I6).
+
+- Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
+  ship in Arabic. A test holds every mail template domainkit ships to
+  have its files in each language its catalogs translate (user report
+  I7).
+
+- A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
+  language alone: readers of that language get them, and every other
+  reader the template's own. A directory with the template's own text
+  body still wins over a later directory's translation
+  ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
+  report I8).
+
 - `command_route(dependencies=[...])`, and so `use_case(...,
   dependencies=...)`: FastAPI dependencies of a command route's own, run
   after its rules, such as `Depends(Throttle("50/day"))`. A request the
@@ -22,6 +55,7 @@ and a status.
   on both: `provide`, rules, and the resource's dependencies. A limit had
   to go in `provide`, which the twin runs, and counted each act twice.
   ADR 0162 (user report A14).
+
 - Routes of one path that ask for an authorization by several methods,
   such as a `PATCH` and a `DELETE` of one item, each get a twin, whose
   path names its route's method: `POST <path>/authorization/patch` and
@@ -30,6 +64,12 @@ and a status.
   (user report A17).
 
 ### Changed
+
+- `import domainkit.i18n` imports none of its modules. Its names, and its
+  modules (`domainkit.i18n.translation`, `formats`, ...), are imported
+  when first read as its attributes, and are the same objects; `dir()`
+  lists them all. A domain layer that imports `domainkit.i18n.lazy` so
+  loads no settings (ADR 0166, user report I2).
 
 - A body `schema_for` derives, a `@use_case`'s or `schema_for(Command,
   write=True)`, gives a command route, a batch, and a twin the value
@@ -57,6 +97,18 @@ and a status.
   ([upgrading.md](docs/upgrading.md#24-to-25)) (user report U5).
 
 ### Fixed
+
+- A lazy string (`gettext_lazy`) given as a `DomainError`'s message, an
+  `InvalidField`'s, or `error_response`'s detail is answered as its text
+  in the caller's language. It made a `500`: the body refused anything
+  but text (user report I2).
+
+- `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
+  not when the application is built: a test that overrides them is
+  served in the new ones (user report I5).
+
+- `makemessages` extracts the texts marked with `gettext_noop`, as the
+  docs said it did (user report I2).
 
 - A resource whose prefix holds a path parameter of its own, such as
   `/companies/{company_id}/templates`, answered a create with `500`, and
