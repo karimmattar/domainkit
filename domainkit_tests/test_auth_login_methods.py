@@ -31,6 +31,9 @@ from domainkit_tests.test_auth_principals import credentials_of
 __all__ = ["clock"]  # The fixture, used here.
 
 MADE = "2026-11-16T09:00:00Z"
+ENROLLED = "2026-11-16T08:00:00Z"
+"""Before ``MADE``: a login made then is older than those made at ``MADE``,
+whatever the time is now."""
 
 
 def recording(seen: list[tuple[str, LoginOrigin | None]]) -> Any:  # noqa: ANN401 - a gate.
@@ -85,8 +88,9 @@ def test_a_gate_sees_the_second_factor_once_its_code_holds(
     """``/login`` proves the password; ``/mfa/login``, ``/session/mfa`` a code too."""
     create_user("alice")
     client = browser(identity)
-    headers = bearer(login(client, "alice")["access_token"])
-    secret, _ = enrol(client, headers, clock)
+    with freeze_time(ENROLLED):  # Not now: the oldest login whenever it runs.
+        headers = bearer(login(client, "alice")["access_token"])
+        secret, _ = enrol(client, headers, clock)
     seen: list[tuple[str, LoginOrigin | None]] = []
     on_login_gate(recording(seen), domain="auth")
 
