@@ -477,17 +477,29 @@ def test_the_parser_resolves_an_outside_reference_to_nothing(
 
 
 @pytest.mark.timeout(10, method="signal")
-def test_a_part_not_in_utf_8_is_not_read(pipe: Pipe) -> None:
-    """UTF-16 would hide a DTD from the check of the bytes: it is not parsed so."""
+@pytest.mark.parametrize("codec", ["utf-16", "utf-16-le", "utf-16-be", "utf-32"])
+def test_a_part_not_in_utf_8_is_not_read(pipe: Pipe, codec: str) -> None:
+    """UTF-16 would hide a DTD from the check of the bytes: it is refused as such.
+
+    With its byte order mark or without, the refusal says what it is.
+    """
     xml = (
-        f'<?xml version="1.0" encoding="UTF-16"?>'
+        f'<?xml version="1.0" encoding="{codec.upper()}"?>'
         f'<!DOCTYPE w:document SYSTEM "file://{pipe.path}">'
         f'<w:document xmlns:w="{W}"><w:body/></w:document>'
     )
-    template = replaced(docx(""), "word/document.xml", xml.encode("utf-16"))
+    template = replaced(docx(""), "word/document.xml", xml.encode(codec))
 
-    with pytest.raises(DocumentError, match="is not well-formed XML"):
+    with pytest.raises(DocumentError, match="is in UTF-16 or UTF-32; it is read in"):
         fill_docx(template, {})
+
+
+def test_a_part_in_utf_8_with_a_byte_order_mark_is_read() -> None:
+    """Some tools write UTF-8's mark: the part is read all the same."""
+    template = docx(runs("{{a}}"))
+    marked = replaced(template, "word/document.xml", b"\xef\xbb\xbf" + read(template))
+
+    assert paragraphs(fill_docx(marked, {"a": "1"})) == ["1"]
 
 
 def test_an_entity_without_a_dtd_is_not_well_formed() -> None:
@@ -670,6 +682,23 @@ def test_folders_are_kept_and_names_compared_as_people_read_them() -> None:
 
 
 @pytest.mark.timeout(20, method="signal")
+def test_many_placeholders_in_one_text_cost_no_more_than_they_do() -> None:
+    """Each text that changes is built once.
+
+    Rebuilt for each placeholder, a text of 300,000 took a minute; built
+    once, a fraction of a second. The work runs before the placeholders
+    and values are compared, so a refused template would have cost it too.
+    """
+    count = 300_000
+    body = "<w:p><w:r><w:t>" + "{{a}} " * count + "</w:t></w:r></w:p>"
+    limits = ArchiveLimits(max_ratio=100_000)
+
+    filled = fill_docx(docx(body), {"a": "x"}, limits=limits)
+
+    assert paragraphs(filled) == ["x " * count]
+
+
+@pytest.mark.timeout(20, method="signal")
 def test_paragraphs_nested_deep_cost_no_more_than_flat_ones() -> None:
     """Each text is grouped with its paragraph in one walk.
 
@@ -687,6 +716,94 @@ def test_paragraphs_nested_deep_cost_no_more_than_flat_ones() -> None:
     body = etree.fromstring(read(filled))[0]
     assert "".join(body[-1].itertext()) == "1"
     assert len(body[0].findall(f".//{{{W}}}t")) == texts
+
+
+def listed_only(count: int, *, stated: int | None = None, zip64: bool = False) -> bytes:
+    """An archive whose central directory lists ``count`` empty files, and nothing else.
+
+    Its end record states ``stated`` files (``count`` unless given); a
+    ZIP64 one states them in its ZIP64 end record.
+    """
+    entries = b"".join(
+        struct.pack(
+            "<4s6H3I5H2I",
+            b"PK\x01\x02",
+            20,
+            20,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        + name
+        for name in (f"{number:x}".encode() for number in range(count))
+    )
+    files = count if stated is None else stated
+    ending = b""
+    if zip64:
+        ending = struct.pack(
+            "<4sQ2H2I4Q", b"PK\x06\x06", 44, 45, 45, 0, 0, files, files, len(entries), 0
+        ) + struct.pack("<4sIQI", b"PK\x06\x07", 0, len(entries), 1)
+        files = 0xFFFF
+    end = struct.pack("<4s4H2IH", b"PK\x05\x06", 0, 0, files, files, len(entries), 0, 0)
+    return entries + ending + end
+
+
+@pytest.mark.parametrize(
+    ("archive", "message"),
+    [
+        (lambda: listed_only(100_000, zip64=True), "holds more than 1,000 files"),
+        (lambda: listed_only(30_000, stated=1), "list of files is larger than"),
+    ],
+)
+def test_the_files_are_counted_before_zipfile_lists_them(
+    archive: Callable[[], bytes], message: str
+) -> None:
+    """``zipfile`` reads every entry first: a long list is refused from the end record.
+
+    A list that states one file but holds thousands is bounded by its size.
+    """
+    document = archive()
+    tracemalloc.start()
+    try:
+        with pytest.raises(DocumentError, match=message):
+            fill_docx(document, {})
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 1024 * 1024
+
+
+def test_a_list_that_understates_its_files_is_counted_again() -> None:
+    """A short list that states one file and holds 1,500 is counted once read."""
+    with pytest.raises(DocumentError, match="holds more than 1,000 files"):
+        fill_docx(listed_only(1500, stated=1), {})
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [
+        b"PK\x05\x06\x00\x00",  # An end record cut short.
+        b"PK\x06\x07"
+        + bytes(16)
+        + struct.pack("<4s4H2IH", b"PK\x05\x06", 0, 0, 1, 1, 0, 0, 0),
+    ],
+)
+def test_an_archive_without_a_whole_end_record_is_no_document(ending: bytes) -> None:
+    """No end record, or a ZIP64 locator pointing nowhere: ``zipfile`` refuses it."""
+    with pytest.raises(DocumentError, match="is not a Word document"):
+        fill_docx(b"%PDF-1.7 " + ending, {})
 
 
 def zip_of(files: Mapping[str, bytes]) -> bytes:

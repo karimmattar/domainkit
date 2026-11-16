@@ -33,6 +33,7 @@ part of the archive is written back unchanged, in its order.
 
 import io
 import re
+import struct
 import unicodedata
 import zipfile
 import zlib
@@ -71,6 +72,16 @@ PLACEHOLDER: Final = re.compile(r"\{\{\s*([^\W\d]\w*(?:\.[^\W\d]\w*)*)\s*\}\}")
 BRACES: Final = re.compile(r"\{\{|\}\}")
 DECLARATION: Final = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 """What declares a DTD or an entity: refused before the XML is parsed."""
+END: Final = b"PK\x05\x06"
+END_SIZE: Final = 22
+"""The ZIP end-of-central-directory record, and its size without a comment."""
+ZIP64_LOCATOR: Final = b"PK\x06\x07"
+ZIP64_END: Final = b"PK\x06\x06"
+DIRECTORY_BYTES: Final = 1024
+"""Bytes of the central directory allowed per file: a Word document's names
+and extra fields take a tenth of it."""
+NOT_UTF_8: Final = (b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff", b"<\x00", b"\x00<")
+"""How a part in UTF-16 or UTF-32 starts: with its byte order mark, or not."""
 METHODS: Final = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
 """How a file of the archive may be compressed: as Word writes them."""
 NAME_SEGMENT: Final = re.compile(r"[^\x00-\x1f\x7f\\:]+")
@@ -181,9 +192,12 @@ def _read(
 ) -> list[tuple[zipfile.ZipInfo, bytes]]:
     """Every file of the archive, in its order, within ``limits``.
 
-    The sizes are checked as the archive states them, before anything is
-    inflated; then each file is inflated no further than its stated size,
-    and ``zipfile`` refuses one whose CRC-32 then differs.
+    The count of files and the size of the central directory are read
+    from the archive's end first: ``zipfile`` reads every entry the
+    directory holds before any can be counted. The sizes are checked as
+    the archive states them, before anything is inflated; then each file
+    is inflated no further than its stated size, and ``zipfile`` refuses
+    one whose CRC-32 then differs, or it is kept cut to that size.
 
     Raises:
         DocumentError: It is not a ZIP archive, is past a limit, is
@@ -193,6 +207,14 @@ def _read(
     """
     if len(document) > limits.max_bytes:
         raise DocumentError(f"The document is larger than {limits.max_bytes:,} bytes.")
+    stated = _directory(document)
+    if stated is not None and stated[0] > limits.max_parts:
+        raise DocumentError(f"The document holds more than {limits.max_parts:,} files.")
+    if stated is not None and stated[1] > limits.max_parts * DIRECTORY_BYTES:
+        raise DocumentError(
+            f"The document's list of files is larger than {limits.max_parts:,} "
+            "files need."
+        )
     try:
         archive = zipfile.ZipFile(io.BytesIO(document))
     except (zipfile.BadZipFile, ValueError):
@@ -204,6 +226,25 @@ def _read(
             return [(info, _inflated(archive, info)) for info in infos]
         except (zipfile.BadZipFile, EOFError, OSError, zlib.error):
             raise DocumentError("The document's archive is damaged.") from None
+
+
+def _directory(document: bytes) -> tuple[int, int] | None:
+    """The files, and the bytes of the central directory, the archive's end states.
+
+    None where there is no end record: ``zipfile`` then refuses the archive.
+    A ZIP64 archive states them in its ZIP64 end record, which the locator
+    before the end record points to.
+    """
+    end = document.rfind(END, max(0, len(document) - END_SIZE - 0xFFFF))
+    if end < 0 or end + END_SIZE > len(document):
+        return None
+    files, size = struct.unpack_from("<HI", document, end + 10)
+    locator = end - 20
+    if locator >= 0 and document[locator : locator + 4] == ZIP64_LOCATOR:
+        (offset,) = struct.unpack_from("<Q", document, locator + 8)
+        if document[offset : offset + 4] == ZIP64_END and offset + 56 <= end:
+            files, size = struct.unpack_from("<QQ", document, offset + 32)
+    return files, size
 
 
 def _inflated(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
@@ -309,9 +350,14 @@ def _parse(etree: Any, data: bytes, name: str) -> Any:  # noqa: ANN401 - lxml ha
     Word writes, so the check above sees what it parses.
 
     Raises:
-        DocumentError: It is not well-formed UTF-8 XML, or declares a DTD
-            or an entity.
+        DocumentError: It is in UTF-16 or UTF-32, is not well-formed UTF-8
+            XML, or declares a DTD or an entity.
     """
+    if data.startswith(NOT_UTF_8):
+        raise DocumentError(
+            f"{name} in the document is in UTF-16 or UTF-32; it is read in UTF-8 "
+            "only, as Word writes it."
+        )
     if DECLARATION.search(data):
         raise DocumentError(
             f"{name} in the document declares a DTD or an entity; Word writes none."
@@ -418,28 +464,29 @@ def _replace(
 ) -> None:
     """Put each match's value where it starts; take its text out of the others.
 
-    ``matches`` are offsets into the joined text of ``texts``, in order;
-    they are replaced from the last, so the offsets of the earlier ones hold.
+    ``matches`` are offsets into the joined text of ``texts``, in order. Each
+    text that changes is built once, from the pieces of it left between the
+    matches and the values put in it: a text of many placeholders costs no
+    more than they do, where rebuilding it for each one cost their square.
     """
     contents = [text.text or "" for text in texts]
     starts = list(accumulate((len(content) for content in contents), initial=0))
-    touched: set[int] = set()
-    for match in reversed(matches):
+    pieces: dict[int, list[str]] = {}
+    taken: dict[int, int] = {}  # How far into each changed text its pieces reach.
+    for match in matches:
         first = bisect_right(starts, match.start()) - 1
         last = bisect_right(starts, match.end() - 1) - 1
-        head = contents[first][: match.start() - starts[first]]
-        tail = contents[last][match.end() - starts[last] :]
-        value = values[match[1]]
-        if first == last:
-            contents[first] = head + value + tail
-        else:
-            contents[first] = head + value
-            for between in range(first + 1, last):
-                contents[between] = ""
-            contents[last] = tail
-        touched.update(range(first, last + 1))
-    for index in sorted(touched):
-        _write(texts[index], contents[index])
+        made = pieces.setdefault(first, [])
+        made.append(
+            contents[first][taken.get(first, 0) : match.start() - starts[first]]
+        )
+        made.append(values[match[1]])
+        for index in range(first + 1, last + 1):
+            pieces.setdefault(index, [])
+            taken[index - 1] = len(contents[index - 1])
+        taken[last] = match.end() - starts[last]
+    for index, made in sorted(pieces.items()):
+        _write(texts[index], "".join(made) + contents[index][taken[index] :])
 
 
 def _write(text: Any, content: str) -> None:  # noqa: ANN401 - lxml has no types.
