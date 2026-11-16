@@ -16,10 +16,12 @@ text, in the language active then::
         PAID = "paid", gettext_lazy("Paid in full")
 
 ``makemessages`` finds the texts each of them marks (ADR 0166).
+A ``LazyString`` names the lookup that makes it (``source``), so that a
+process with no settings can tell another which string to make again.
 """
 
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 __all__ = [
     "LazyString",
@@ -79,6 +81,21 @@ class LazyString:
         """``str.format`` the translation."""
         return str(self).format(*args, **kwargs)
 
+    def source(self) -> tuple[str, tuple[object, ...]] | None:
+        """The lookup that makes the text, and its arguments; None for another function.
+
+        ``"gettext"``, ``"ngettext"`` or ``"pgettext"``, for a string made by
+        ``gettext_lazy``, ``ngettext_lazy`` or ``pgettext_lazy``:
+        ``gettext_lazy("Paid")`` is ``("gettext", ("Paid",))``. Reading it
+        needs no settings: a process that has none to make the text sends it
+        instead, and another makes the same string again (an upload check's
+        refusal, ``domainkit.inspection``).
+        """
+        lookup = next(
+            (name for function, name in _NAMED if function is self._function), None
+        )
+        return None if lookup is None else (lookup, self._arguments)
+
 
 def gettext_noop(message: str) -> str:
     """Mark ``message`` for translators without translating it now."""
@@ -137,3 +154,12 @@ def _ngettext(singular: str, plural: str, n: int) -> str:
 def _pgettext(context: str, message: str) -> str:
     """``translation.pgettext``."""
     return (_found or _lookups()).pgettext(context, message)
+
+
+_NAMED: Final[tuple[tuple[Callable[..., str], str], ...]] = (
+    (_gettext, "gettext"),
+    (_ngettext, "ngettext"),
+    (_pgettext, "pgettext"),
+)
+"""Each lookup, and the name ``LazyString.source`` gives it: a function is
+compared by identity, so that any callable may make a ``LazyString``."""

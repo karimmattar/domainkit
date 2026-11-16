@@ -1,6 +1,6 @@
 # 0167. Check an upload whole before it is kept, and let a resource take one
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-17 (at the end)
 - Date: 2026-11-16
 - Amends: [0003](0003-enforced-layer-rules.md), [0040](0040-store-files-under-random-names.md)
 
@@ -356,3 +356,75 @@ How a fixture's stub reaches a test in another context:
 16. Linux, getrlimit(2): <https://man7.org/linux/man-pages/man2/getrlimit.2.html>
 17. Linux, proc_pid_oom_score_adj(5):
     <https://man7.org/linux/man-pages/man5/proc_pid_oom_score_adj.5.html>
+18. Python, `pickle`: Python object serialization (the warning):
+    <https://docs.python.org/3/library/pickle.html>
+19. Django, `django/utils/functional.py` (`lazy`, `__reduce__`):
+    <https://github.com/django/django/blob/main/django/utils/functional.py>
+20. Linux, ngettext(3): <https://man7.org/linux/man-pages/man3/ngettext.3.html>
+
+## Amendment (2026-11-17, 2.6): a check's lazy refusal
+
+A check's process gets no settings, so a check gave its message as text.
+Making a lazy string text (`gettext_lazy`, `ngettext_lazy`,
+`pgettext_lazy`) reads the settings: the process answered that its
+check failed, and every file such a check refused was a 500 ("failed in
+its process: ImproperlyConfigured"). Since 2.5 a domain error's lazy
+message is answered in the caller's language (user report I2); a
+project that wrote its checks' refusals the same way got a 500.
+
+| Option | What it costs |
+| --- | --- |
+| Hand the process the settings, or the language and the catalogs | The settings hold the secrets the process is kept from; every domain's catalogs would be read again at each process start. |
+| Pickle the lazy string back to the parent | The parent would unpickle what a process that parsed a hostile file wrote, which can run any code [18]; Django pickles a lazy string with its function [19]. |
+| Send the English text (the `msgid`) | The boundary translates it as a plain message, but a `pgettext` context is lost, and so is the count that picks an `ngettext` form. |
+| **Send the lookup and its arguments, as JSON; the parent makes the lazy string again** | A public method, `LazyString.source`. A lazy string of another function, or a text filled with values (`.format`), is still made text in the process. |
+
+- `LazyString.source()` is `("gettext", (message,))`,
+  `("ngettext", (singular, plural, n))` or
+  `("pgettext", (context, message))` for a string of `gettext_lazy`,
+  `ngettext_lazy` or `pgettext_lazy`, and None for one of another
+  function. It reads no settings.
+- The process answers such a refusal with the lookup and its arguments
+  (`{"lookup": "ngettext", "arguments": [...]}`) in place of the text.
+  The parent reads it as data: one of the three lookups, no other key,
+  as many arguments as it takes, each of its exact type, a count from 0
+  to `2**64 - 1` (C's `unsigned long` [20]; not a boolean). Each text is
+  read as a plain message is (below). It makes the string again with
+  `gettext_lazy`, `ngettext_lazy` or `pgettext_lazy`, and raises
+  `FileRefused` with it. Any other answer is of no known shape: 422
+  `unreadable_file`, "could not be read". The process could already
+  choose any plain message; now it may also name a catalog lookup, never
+  code, and the parent still unpickles nothing it sends.
+- Every text of an answer (a message, a lazy string's argument, what an
+  `ImproperlyConfigured` said, the name of what a check raised) is cut
+  to its bound (500 characters; 100 for a name) and must encode as
+  UTF-8: JSON lets a lone surrogate through, which no body or log
+  encodes, so a refusal in a file's own words decoded with
+  `surrogateescape` was a 500. One that does not is of no known shape.
+  White space in it becomes a space, and a control or format character
+  is dropped, so that a log line is one line, shown as it reads.
+- Any other message is made text in the process, as before. One that
+  reads the settings there (`gettext_lazy(...).format(...)` makes text
+  at once) raises `ImproperlyConfigured` in the process. The process
+  prints where, and the parent logs it at `ERROR` with the end of the
+  process's standard error, and raises `ImproperlyConfigured("A check
+  of an upload, in its process: Set the DOMAINKIT_SETTINGS_MODULE
+  environment variable.")`: a 500. A missing library is told the same
+  way. Before, the parent raised the process's message alone, as if the
+  application had no settings, and logged nothing.
+- `FileRefused` takes a `str | LazyString`, and keeps what it is
+  given; its `message` stays declared `str`, as `DomainError.message`
+  and `APIError.detail` are, so that no project's code that reads it as
+  text stops type-checking. A lazy one compares and formats as its
+  text, and `str()` makes it text.
+- `save_upload` logs a refusal in English, as its check wrote it: a
+  lazy one as no catalog translates it (`NullTranslations`), so that a
+  log reads one way whatever each caller asked for. It hands the lazy
+  string to `UploadRefused`, and the HTTP layer answers it in the
+  caller's language: an `APIError` whose detail is a lazy string is
+  answered as its text since 2.6; in 2.5 it was answered with its code
+  in words.
+
+A check refuses with a lazy string as a domain layer does: the answer
+is in the caller's language, its plural form the language's, its
+context kept.
