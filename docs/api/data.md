@@ -342,6 +342,7 @@ Files: a storage port, on the file system or in memory.
 - `StorageError`: A storage refused an operation.
 - `StorageHandler`: Make each configured storage on first use; one per alias and process.
 - `StoredFile`: A file open for reading; close it, or use it in `async with`.
+- `StoredUpload`: A file a client sent, stored: what a command keeps of it.
 - `storages`: The process-wide storages: `storages["default"]`.
 
 ## `domainkit.storage.azure`

@@ -11,7 +11,7 @@ from typing import Final
 import pytest
 from pydantic_core._pydantic_core import list_all_errors
 
-from domainkit import setup
+from domainkit import inspection, setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.recovery import INVALID_EMAIL
@@ -360,6 +360,14 @@ EXTRA_MESSAGES: Final = {
     "The amount has more digits than this field holds.",  # resources.schemas
     INVALID_EMAIL,  # auth.recovery: an address's shape (user report I8)
     *SIGNUP_TAKEN.values(),  # auth.signup.SignupTaken, by what the signup gave
+    *(  # inspection: the refusals of an upload's check, constants.
+        value
+        for name, value in vars(inspection).items()
+        if name.isupper()
+        and isinstance(value, str)
+        and value.endswith(".")
+        and " " in value
+    ),
 }
 """Framework messages the scan below cannot see: constants and returns."""
 SCANNED: Final = (

@@ -2,6 +2,7 @@
 
 import asyncio
 import gzip
+import io
 import ipaddress
 import json
 import logging
@@ -301,6 +302,60 @@ async def test_bodies_are_sent_as_httpx2_sends_them() -> None:
         await api.post(URL, content=b"raw")
 
     assert [r.content for r in upstream.requests] == [b'{"a":1}', b"a=1", b"raw"]
+
+
+async def test_files_are_sent_as_a_form_and_sent_whole_again_on_a_retry(
+    waits: list[float],
+) -> None:
+    """``files=`` posts ``multipart/form-data``; a retry reads each file again (U5)."""
+    upstream = Upstream(status(503), status(201))
+    document = io.BytesIO(b"%PDF-1.7 contract")
+    document.read()  # Already read once: the form starts it again.
+    with stub(upstream):
+        answer = await HttpClient().post(
+            URL,
+            files={
+                "file": ("contract.pdf", document, "application/pdf"),
+                "note": b"plain bytes",
+            },
+            data={"kind": "contract"},
+            retry=True,
+        )
+
+    first, second = upstream.requests
+    assert answer.status_code == 201
+    assert first.content == second.content
+    assert first.headers["content-type"].startswith("multipart/form-data; boundary=")
+    assert b'name="kind"\r\n\r\ncontract' in first.content
+    assert b'filename="contract.pdf"' in first.content
+    assert b"%PDF-1.7 contract" in first.content
+    assert b"plain bytes" in second.content
+    assert len(waits) == 1
+
+
+class Pipe(io.RawIOBase):
+    """A binary stream that cannot seek, as a pipe or a socket."""
+
+    def readable(self) -> bool:
+        """It can be read."""
+        return True
+
+
+async def test_a_form_whose_file_cannot_be_sent_again_is_refused() -> None:
+    """A stream that cannot seek, a text file, or a form with another body."""
+    api = HttpClient()
+
+    for files in (
+        {"file": Pipe()},
+        [("file", ("a.txt", io.StringIO("text")))],
+        {"file": ("a.txt", "text")},
+    ):
+        with pytest.raises(ValueError, match="a retry sends it whole again"):
+            await api.post(URL, files=files)
+    with pytest.raises(ValueError, match="takes no content= or json="):
+        await api.post(URL, files={"file": b"x"}, json={"a": 1})
+    with pytest.raises(ValueError, match="takes no content= or json="):
+        await api.post(URL, files={"file": b"x"}, content=b"raw")
 
 
 async def test_async_handlers_and_transports_stub_calls() -> None:

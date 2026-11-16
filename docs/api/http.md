@@ -226,15 +226,23 @@ A server span per HTTP request (`domainkit[tracing]`).
 
 Receiving uploaded files, and serving stored ones, safely.
 
+- `CHECKED_PDF`: A PDF without scripts, actions, embedded files, XFA or a password (New in 2.5).
+- `DOCX`: A Word document without macros, objects or outside links (New in 2.5).
 - `GIF`: A type of file a route accepts, and how to recognize its first bytes.
 - `IMAGES`: Images browsers show; SVG is not one of them, as it can carry scripts.
 - `JPEG`: A type of file a route accepts, and how to recognize its first bytes.
+- `OFFICE`: Word, Excel and PowerPoint documents, each checked (New in 2.5).
 - `PDF`: A type of file a route accepts, and how to recognize its first bytes.
 - `PNG`: A type of file a route accepts, and how to recognize its first bytes.
+- `PPTX`: A PowerPoint presentation without macros, objects or outside links (New in 2.5).
 - `TEXT`: UTF-8 text, CSV included; it cannot be told apart by its bytes.
 - `WEBP`: A type of file a route accepts, and how to recognize its first bytes.
-- `ZIP`: Also Office documents (`.docx`, `.xlsx`), which are zip files.
+- `XLSX`: An Excel workbook without macros, objects or outside links (New in 2.5).
+- `ZIP`: Any zip file, Office documents included, by its first bytes only.
 - `FileType`: A type of file a route accepts, and how to recognize its first bytes.
+- `ReceivedUpload`: An upload received whole and checked, held in a temporary file.
+- `UploadRefused`: An upload was empty (400), too large (413), not taken (415), or refused (422).
+- `receive_upload`: Receive `upload` whole and check it as `save_upload` does; store nothing.
 - `sanitize_filename`: A client's file name, safe to show and to put in `Content-Disposition`.
 - `save_upload`: Store `upload` if it is one of `types` and at most `max_size` bytes.
 - `serve`: Answer with the stored file `name`, streamed, as `content_type`.

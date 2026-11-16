@@ -21,6 +21,7 @@ from domainkit.storage.base import (
     Storage,
     StorageError,
     StoredFile,
+    StoredUpload,
 )
 from domainkit.storage.base import (
     check_name as check_name,
@@ -41,5 +42,6 @@ __all__ = [
     "StorageError",
     "StorageHandler",
     "StoredFile",
+    "StoredUpload",
     "storages",
 ]

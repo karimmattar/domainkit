@@ -31,6 +31,7 @@ from domainkit.conf.global_settings import (
     ShardConfig,
     StorageConfig,
     TenancyConfig,
+    UploadChecksConfig,
 )
 from domainkit.contrib.accounting import AccountingSettings
 from domainkit.contrib.approvals import ApprovalsSettings
@@ -538,6 +539,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (BrokerConfig, REFERENCE, "BROKERS"),
     (TenancyConfig, REFERENCE, "TENANCY"),
     (HttpClientConfig, REFERENCE, "HTTP_CLIENT"),
+    (UploadChecksConfig, REFERENCE, "UPLOAD_CHECKS"),
     (ServeConfig, REFERENCE, "SERVE"),
     (DocumentsConfig, REFERENCE, "DOCUMENTS"),
     (RendererConfig, REFERENCE, 'DOCUMENTS["RENDERER"]'),
@@ -574,7 +576,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
 PROSE_DEFAULTS = {
     "Settings": {"SETTINGS_MODULE", "BASE_DIR", "MIDDLEWARE", "LOGGING"}
     | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE", "LIVE_FANOUT", "SERVE"}
-    | {"DOCUMENTS"},
+    | {"UPLOAD_CHECKS", "DOCUMENTS"},
     "DatabaseConfig": {"URL", "COMMAND_TIMEOUT", "POOL_SIZE", "MAX_OVERFLOW"}
     | {"POOL_TIMEOUT", "POOL_RECYCLE"},
     "LedgerConfig": {"URL"},

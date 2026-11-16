@@ -343,6 +343,66 @@ and a status.
   never enroll a phone, nor log in. Nothing changes for a command that
   gives neither option. ADR 0165 (user report A12).
 
+- Uploads can be checked whole before they are stored. A `FileType` takes
+  an `inspect` hook, which `save_upload` runs on the upload, held in a
+  temporary file, in a process of its own; a file it refuses is never
+  stored (422 `unsafe_file` or `unreadable_file`, the detail translated).
+  `CHECKED_PDF` reads a PDF strictly, as its tables declare it, and every
+  object written in it; it refuses an encrypted PDF, scripts, actions run
+  on opening or on an event, actions that launch, open other files or
+  send data, links but `http`, `https` and `mailto`, embedded files, XFA,
+  and more than 1,000 pages. `DOCX`, `XLSX`, `PPTX` (and `OFFICE`, the
+  three) refuse macro-enabled documents, macros, OLE objects, ActiveX,
+  imported chunks, linked pictures, outside relationships but
+  hyperlinks, fields that pull content in or run a program, OLE objects
+  in the XML, links to other workbooks, data connections, web-service,
+  picture and DDE formulas anywhere in a sheet, and DTDs in any XML
+  part, with the ZIP bounded by its directory and the upload's size
+  before it is inflated. Each upload's check runs in a new process,
+  which the system holds to `UPLOAD_CHECKS.MEMORY` (512 MiB, at least
+  128 MiB) and `SECONDS` (15) of CPU, killed past `SECONDS` of wall
+  clock: a check stopped by a limit, or ended by a signal (logged),
+  refuses the file. The process gets none of the application's settings
+  or environment but `PATH`, the locale and the temporary directory, and
+  a session of its own; it is not a sandbox. A check that fails, or a
+  process that ends without an answer, is a 500, logged with the end of
+  what it wrote. At most `PROCESSES` (4) run at once; one more upload is
+  503 `service_busy`, and a slot is freed only once its process has
+  exited. A checked upload costs a process start, about a tenth of a
+  second. A check must pickle, from a module other than `__main__`. The
+  checks are `PdfCheck` and `OfficeCheck`
+  of `domainkit.inspection`, and need the `documents` extra. `PDF` and
+  `ZIP` still read the first bytes only
+  ([ADR 0167](docs/adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md))
+  (user report U1).
+
+- `save_upload` takes bytes, or an async iterable of bytes such as a
+  request's body, with `filename=`, as well as an `UploadFile`.
+  `receive_upload` receives and checks a file without storing it
+  (`ReceivedUpload`). `StoredUpload` is public, in `domainkit.storage`,
+  and carries the SHA-256 of what was stored (user report U3).
+
+- `ResourceRouter.upload_route(...)` takes a file: the body itself, its
+  name in `X-Filename`, which a phone can sign, or a form. It checks the
+  reach and `If-Match` before it reads the body, as a command route
+  checks them, stores the file before the service runs and deletes it if
+  the request fails before its unit of work commits, and gives a command
+  field the `StoredUpload` (and another its digest). A route whose rule
+  asks for an authorization gets its twin, which stores nothing. An
+  `Action` binds an uploaded file by its content, not by the name the
+  storage gave it, wherever the command holds it (a list, a set, a
+  mapping under any keys, a model), so the twin and the act agree on the
+  file; a set's items are bound in a sorted order (user report U3).
+
+- `HttpClient.request(files=...)` sends a `multipart/form-data` form,
+  `data=` its other fields, within the client's deadlines and retries; a
+  retry sends each file whole again (user report U5).
+
+- `stub(handler, everywhere=True)` stubs every call of the process until
+  its block ends, for a pytest fixture whose context the test does not
+  share: an async fixture of a sync test, or a sync fixture after an
+  async one (user report U5).
+
 ### Changed
 
 - `import domainkit.i18n` imports none of its modules. Its names, and its
@@ -392,6 +452,12 @@ and a status.
   item's `422 validation_error`, as a request of its own would, and no
   longer `500` (user report U5).
 
+- The layer rules let the infrastructure layer import
+  `domainkit.http.uploads`, as they let it import `domainkit.http.client`:
+  a file gateway checks and stores the bytes its route hands it.
+  Starlette and `domainkit.http.errors` stay forbidden there (user report
+  D2).
+
 ### Deprecated
 
 - A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
@@ -403,6 +469,13 @@ and a status.
   ([upgrading.md](docs/upgrading.md#24-to-25)) (user report A13).
 
 ### Fixed
+
+- An act whose command holds a set, such as a `frozenset` of roles, is
+  digested with the set's items sorted, in every process. They came in
+  their hashes' order, which differs from one process to the next: a
+  twin answered by one process and the act run by another, or after a
+  restart, disagreed, and the confirmed authorization was voided as
+  changed.
 
 - A lazy string (`gettext_lazy`) given as a `DomainError`'s message, an
   `InvalidField`'s, or `error_response`'s detail is answered as its text

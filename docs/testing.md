@@ -1349,6 +1349,24 @@ def test_prices_in_euros(admin_client: TestClient) -> None:
 Both clients carry the block's context into the application, so calls
 made while serving a request are stubbed too.
 
+A stub set in a fixture whose context the test does not share (an async
+fixture of a sync test, or a sync fixture after an async one) is not
+seen: give it `everywhere=True`, which holds for every call of the
+process until the fixture ends (*New in 2.5*;
+[runtime.md](runtime.md#outgoing-calls-in-tests)):
+
+```python
+from collections.abc import AsyncIterator
+
+import pytest
+
+
+@pytest.fixture
+async def rates_stubbed() -> AsyncIterator[None]:
+    with stub(rates, everywhere=True):
+        yield
+```
+
 ## Blocking the event loop
 
 `pytest --detect-blocking` fails a test that holds its event loop for 0.1

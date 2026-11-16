@@ -72,7 +72,15 @@ import inspect
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable, Collection, Iterable, Iterator
+import sys
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+)
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass, field, replace
@@ -396,6 +404,11 @@ class Action:
     def arguments(self, command: object) -> dict[str, Any]:
         """``command`` read back as JSON, less the fields ``ignore`` names.
 
+        An uploaded file (``StoredUpload``), wherever it is in the command,
+        is bound by its content: its type, size, file name and SHA-256,
+        never the name the storage gave it, which is new on every request.
+        One without a SHA-256 is bound by its name (ADR 0167).
+
         Raises:
             TypeError: ``command`` is not the action's command.
         """
@@ -405,7 +418,11 @@ class Action:
                 f"{type(command).__name__}."
             )
         dumped: dict[str, Any] = self.adapter.dump_python(command, mode="json")
-        return {key: value for key, value in dumped.items() if key not in self.ignore}
+        return {
+            key: _by_content(getattr(command, key, None), value)
+            for key, value in dumped.items()
+            if key not in self.ignore
+        }
 
     def digest_of(self, command: object) -> str:
         """The act's digest: ``fingerprint(purpose, arguments)`` (64 hex digits)."""
@@ -524,6 +541,52 @@ BY_NAME: Final = frozenset(
     {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
 )
 """The kinds of parameter a unit of work can be given to by name."""
+
+
+def _by_content(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON values.
+    """``dumped``, the JSON of ``value``, without the storage's name of an upload.
+
+    Wherever the upload is: a field, a list, a set, a mapping (its keys
+    whatever they dump to: an enum's value), a model or a dataclass
+    inside. A set's items come in the order of their hashes, which hold
+    the storage's name: they are sorted once the names are out, so the
+    twin's and the act's agree. Every set is sorted, holding uploads or
+    not: its order is its items' hashes', which differ from one process
+    to the next. One upload without its SHA-256 has no content to be bound
+    by, and keeps its name: it matches no other request. Where ``value``
+    and ``dumped`` do not pair up item by item (two keys dumped to one),
+    the names stay. The upload's class exists only once its module is
+    loaded: a process that never loaded it holds none, and loads nothing
+    here.
+    """
+    module = sys.modules.get("domainkit.storage.base")
+    upload: type | None = getattr(module, "StoredUpload", None)
+    if upload is not None and isinstance(value, upload) and isinstance(dumped, dict):
+        if not getattr(value, "sha256", ""):
+            return dumped
+        return {key: item for key, item in dumped.items() if key != "name"}
+    if isinstance(dumped, list) and isinstance(value, list | tuple | set | frozenset):
+        if len(value) != len(dumped):
+            return dumped
+        items = [_by_content(*pair) for pair in zip(value, dumped, strict=True)]
+        if isinstance(value, set | frozenset):
+            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+        return items
+    if isinstance(dumped, dict):
+        if isinstance(value, Mapping):
+            if len(value) != len(dumped):
+                return dumped
+            return {  # In the order the model dumped them: the mapping's own.
+                key: _by_content(item, inner)
+                for item, (key, inner) in zip(
+                    value.values(), dumped.items(), strict=True
+                )
+            }
+        return {
+            key: _by_content(getattr(value, key, None), item)
+            for key, item in dumped.items()
+        }
+    return dumped
 
 
 def _fields_of(command: type) -> set[str]:
