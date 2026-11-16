@@ -75,6 +75,18 @@ def relationships(*each: Relationship) -> str:
     )
 
 
+def entry(name: str) -> zipfile.ZipInfo:
+    """A ZIP entry named ``name``, of a fixed time, as ``writestr`` makes one.
+
+    ``writestr`` given a name stamps it with the time now, so that a
+    package built twice differs: pytest-xdist's workers, which each build
+    the parameters they collect, then disagree on the tests' ids.
+    """
+    info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+    info.external_attr = 0o600 << 16
+    return info
+
+
 def office(
     kind: str = "docx",
     *,
@@ -127,7 +139,7 @@ def office(
     with zipfile.ZipFile(out, "w", compression) as archive:
         for part, content in written.items():
             if part not in leave_out:
-                archive.writestr(part, content)
+                archive.writestr(entry(part), content, compress_type=compression)
     return out.getvalue()
 
 
@@ -144,7 +156,7 @@ def zipped(*entries: tuple[str, bytes], flags: int = 0) -> bytes:
     ):
         warnings.simplefilter("ignore", UserWarning)
         for name, content in entries:
-            archive.writestr(name, content)
+            archive.writestr(entry(name), content, compress_type=zipfile.ZIP_DEFLATED)
     data = bytearray(out.getvalue())
     for signature, at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
         start = data.find(signature)
