@@ -21,6 +21,9 @@ A backend that stores grants on single objects also says which it holds
 for a user or a group (``object_grants``), so the admin API bounds staff
 by them as by model permissions: staff change no one, and join no group,
 holding a grant they lack (AUTH-14).
+
+``MembershipBackend`` grants what a user holds as a member of the tenant
+being served (``TENANCY.MEMBER_PERMISSIONS``, ADR 0150).
 """
 
 from collections.abc import Iterable, Mapping
@@ -28,8 +31,10 @@ from dataclasses import dataclass
 from functools import cache
 from uuid import UUID
 
+from domainkit.conf import settings
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.tenancy import member_permissions
 from domainkit.utils.module_loading import import_string
 
 from .hashers import amake_password, averify_password
@@ -40,6 +45,7 @@ from .users import get_user_model
 
 __all__ = [
     "BaseBackend",
+    "MembershipBackend",
     "ModelBackend",
     "ObjectGrant",
     "authenticate",
@@ -189,6 +195,45 @@ class ModelBackend(BaseBackend):
         async with AuthUnitOfWork() as uow:
             await uow.users.store_rehash(user_id, verified, PasswordHash(rehashed))
             await uow.commit()
+
+
+class MembershipBackend(BaseBackend):
+    """What a user holds as a member of the tenant being served.
+
+    ``TENANCY.MEMBER_PERMISSIONS`` names the keys, such as a role's, for
+    the user and the current tenant; the request asked it once, when it
+    was admitted (``domainkit.tenancy.member_permissions``). With no
+    tenant current, the backend grants nothing. Inactive users have
+    nothing. Object permissions (``obj``) are left to other backends, as
+    ``ModelBackend`` leaves them, and so it grants on no object.
+    """
+
+    def __init__(self) -> None:
+        """Refuse to be configured where nothing names a member's permissions.
+
+        Raises:
+            ImproperlyConfigured: ``TENANCY.MEMBER_PERMISSIONS`` is not set.
+        """
+        config = settings.TENANCY
+        if config is None or config.MEMBER_PERMISSIONS is None:
+            raise ImproperlyConfigured(
+                "MembershipBackend grants what TENANCY.MEMBER_PERMISSIONS "
+                "names: set it to the function that says what a member holds."
+            )
+
+    async def get_all_permissions(
+        self, user: AnyUser, obj: object | None = None
+    ) -> frozenset[str]:
+        """The keys an active ``user`` holds in the current tenant (none on ``obj``)."""
+        if obj is not None or not user.is_active:
+            return frozenset()
+        return await member_permissions(user)
+
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """None: a member's keys are not grants on single objects."""
+        return frozenset()
 
 
 @cache

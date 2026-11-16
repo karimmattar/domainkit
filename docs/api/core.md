@@ -471,12 +471,14 @@ A hardware security module, through PKCS#11, as a `KeyProvider`.
 
 Multi-tenancy: a tenant per request; its rows, caches, limits, and database.
 
+- `PathTenant`: A FastAPI dependency: serve the route as the tenant its path names.
 - `TenantMiddleware`: Serve each request as its tenant (see the module).
 - `TenantMismatch`: An aggregate of another tenant was handed to this tenant's repository (403).
 - `TenantOwned`: Mixin for aggregates each of which belongs to one tenant.
 - `TenantRequired`: Tenant data was asked for with no tenant current (403).
 - `all_tenants`: Read and change every tenant's rows inside the block, on purpose.
 - `current_tenant`: The tenant being served, if any.
+- `member_permissions`: The permission keys `user` holds as a member of the current tenant.
 - `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
 - `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
 - `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).
