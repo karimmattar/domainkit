@@ -159,7 +159,6 @@ statuses, and the amendments they name.
 | [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md) | Show gates how a login was made, and let a login keep shorter limits | Accepted |
 | [0147](0147-name-who-caused-each-event-and-tell-the-old-address.md) | Name who caused each event, and tell the old address | Accepted |
 | [0148](0148-check-new-passwords-against-breaches-and-let-rules-be-async.md) | Check new passwords against breaches, and let password rules be async | Accepted |
-| [0149](0149-write-codes-and-pushes-in-their-readers-language.md) | Write codes and pushes in their reader's language | Accepted |
 | [0149](0149-write-codes-and-pushes-in-their-readers-language.md) | Write codes and pushes in their reader's language | Accepted; amended by [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) |
 | [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md) | Take the tenant from the path, and let members hold permissions | Accepted; amended by [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) |
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
