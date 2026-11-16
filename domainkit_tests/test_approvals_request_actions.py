@@ -15,7 +15,8 @@ Code the project trusts takes every step without an authorization, through
 the rest the services refuse.
 """
 
-from collections.abc import Iterator
+import warnings
+from collections.abc import Callable, Iterator
 from typing import Any, Final
 from uuid import UUID
 
@@ -56,9 +57,25 @@ from domainkit.contrib.approvals import (
     reject_request,
     submit_request,
 )
+from domainkit.contrib.approvals.api import (
+    ApproveIn,
+    CancelIn,
+    RejectIn,
+    RequestOut,
+    SubmitIn,
+    caller,
+)
 from domainkit.contrib.approvals.builtin import (
     check_admin_change,
     refuse_staff_creation,
+)
+from domainkit.contrib.approvals.rules import (
+    ApproveAction,
+    CancelAction,
+    DecisionAction,
+    RejectAction,
+    RequestActions,
+    SubmitAction,
 )
 from domainkit.contrib.approvals.tables import requests
 from domainkit.contrib.auth.actions import AuthorizationRequired, action_for
@@ -69,6 +86,7 @@ from domainkit.ddd import fingerprint
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.management.base import run_async
+from domainkit.resources import ResourceRouter
 from domainkit_tests.conftest import ALPHA, Migrated, Shape
 from domainkit_tests.sample_admin_action_routes import TRANSFER, transfer
 from domainkit_tests.support.auth import audited, create_user, grant
@@ -564,6 +582,114 @@ def test_code_decides_no_request_changed_in_the_database_or_whose_time_is_up(
         rejected_by(late, ann)
 
     assert stored(late).approvals == 0
+
+
+def requests_router() -> ResourceRouter:
+    """A router of the requests with approvals' own rules, as ``api.requests``."""
+    return ResourceRouter(
+        "/requests",
+        model=ApprovalRequest,
+        schema=RequestOut,
+        present=RequestOut.of,
+        unit_of_work=ApprovalsUnitOfWork,
+        repository=lambda uow: uow.requests,
+        lookup="request_id",
+        rule=RequestActions(),
+    )
+
+
+def declare(command: type, service: Callable[..., Any], rule: DecisionAction) -> None:
+    """Declare a route of ``command`` running ``service``, as approvals' routes are.
+
+    A submission's route adds ``rule`` itself (``RequestActions`` asks it
+    of no route); a decision's takes it from ``RequestActions``.
+    """
+    router = requests_router()
+    if isinstance(rule, SubmitAction):
+        router.command_route(
+            SubmitRequest,
+            service=service,
+            body=SubmitIn,
+            path="/submitted",
+            action="add",
+            rule=rule,
+            provide={"maker": caller},
+        )
+        return
+    step = {ApproveAction: "approve", RejectAction: "reject", CancelAction: "cancel"}
+    action = step[type(rule)]
+    body = {"approve": ApproveIn, "reject": RejectIn, "cancel": CancelIn}
+    router.command_route(
+        command,
+        service=service,
+        body=body[action],
+        path=f"/{action}",
+        action=action,
+        provide={"maker" if action == "cancel" else "approver": caller},
+    )
+
+
+STEPS: Final = [
+    (SubmitRequest, SubmitAction(), submit_request, record_submission),
+    (ApproveRequest, ApproveAction(), approve_request, record_approval),
+    (RejectRequest, RejectAction(), reject_request, record_rejection),
+    (CancelRequest, CancelAction(), cancel_request, record_cancellation),
+]
+"""Each step's command, the rule that asks for its act, its service, and its
+record function."""
+
+
+@pytest.mark.parametrize(
+    ("command", "rule", "service", "record"),
+    STEPS,
+    ids=["submit", "approve", "reject", "cancel"],
+)
+def test_a_route_of_approvals_rules_that_runs_a_record_function_is_refused(
+    command: type,
+    rule: DecisionAction,
+    service: Callable[..., Any],
+    record: Callable[..., Any],
+) -> None:
+    """Declared, it raises: its rule asks for an authorization nothing would spend.
+
+    The rule takes any authorization of its act, and the service spends it
+    on the command, which binds it; a record function spends none, so an
+    authorization of one request would take the step on another. The
+    step's own service declares, with no warning, as approvals' routes do.
+    """
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=rf"asks for an authorization of its act, but runs {record.__name__}",
+    ):
+        declare(command, record, rule)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        declare(command, service, rule)
+
+
+@pytest.mark.parametrize(
+    ("rule", "own", "record"),
+    [step[1:] for step in STEPS],
+    ids=["submit", "approve", "reject", "cancel"],
+)
+def test_approvals_rules_say_which_services_never_spend_their_act(
+    rule: DecisionAction, own: Callable[..., Any], record: Callable[..., Any]
+) -> None:
+    """A record function spends none, another step's service another's; others pass."""
+    others = [step[2] for step in STEPS if step[2] is not own]
+
+    async def of_the_project(command: object, uow: object) -> None:
+        """A service of the project's own, which the rule cannot judge."""
+
+    assert rule.service_problem(own) is None
+    assert rule.service_problem(of_the_project) is None
+    assert f"runs {record.__name__}, which asks for no authorization" in str(
+        rule.service_problem(record)
+    )
+    for other in others:
+        assert f"runs {other.__name__}, which spends the authorization" in str(
+            rule.service_problem(other)
+        )
 
 
 def test_creating_staff_is_refused_only_while_making_staff_is_held(

@@ -20,7 +20,11 @@ and a status.
   and the services they run, keep asking for one. The functions refuse
   all the services refuse but the authorization, and trust their caller
   for who acts, as every service of approvals does: never call them from
-  a route a user reaches
+  a route a user reaches. A `ResourceRouter` route of approvals' rules
+  (`RequestActions`, `ApproveAction`, `RejectAction`, `CancelAction`,
+  `SubmitAction`) that runs one, or another step's service, is refused
+  when it is declared: its rule takes any authorization of the act, and
+  only the step's own service binds it to the request
   ([From the project's own code](docs/contrib/approvals.md#from-the-projects-own-code),
   ADR 0163) (follow-up of 2.5.0).
 

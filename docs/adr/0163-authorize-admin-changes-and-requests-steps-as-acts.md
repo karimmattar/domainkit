@@ -282,15 +282,30 @@ what a person must prove is the entrypoint's to ask.
   function, so code already approved in the name it gave. The docs tell
   code that acts for a person it did not authenticate to check them
   first (`approvers_of`).
-- **For the project's own code, never for a route a user reaches.**
-  Nothing refuses such a route. A call from a task and a call from a
-  route look the same as they run, and an in-process handler of an event
-  that a route commits runs inside that route's request, as the handler
-  that withdraws a request whose subject is deleted may. A static look at a route's endpoint would not see a call
-  made through the project's own service. What exists stays: a route that
-  asks for the act's authorization and runs one of them leaves it unspent
-  (`500 authorization_unspent` under `DEBUG` and in tests, voided and
-  logged elsewhere), and a `ResourceRouter` route that does so warns when
-  it is declared. The docs and the docstrings state the rule.
+- **For the project's own code, never for a route a user reaches.** A
+  call from a task and a call from a route look the same as they run,
+  and an in-process handler of an event that a route commits runs inside
+  that route's request, as the handler that withdraws a request whose
+  subject is deleted may. A static look at a route's endpoint would not
+  see a call made through the project's own service. So a route that
+  asks for nothing is not refused; the docs and the docstrings state the
+  rule.
+- **A route that asks for the act and runs one is refused where it can
+  be told.** Approvals' rules take any authorization of their act; the
+  service binds it to the request and its arguments when it spends it.
+  A record function spends none, so an authorization confirmed for one
+  request would take the step on another (found in review).
+  `DecisionAction`, and so `ApproveAction`, `RejectAction`,
+  `CancelAction`, and `SubmitAction`, answers `service_problem`, as
+  `StepUp(for_=...)` does (ADR 0161): a `ResourceRouter` route of
+  approvals' rules that runs a record function, or another step's
+  service, is refused when it is declared. A service of the project's
+  own passes: the rule cannot tell what it calls. Any other route that
+  asks and runs one takes the step, then leaves the authorization
+  unspent: under `DEBUG` and in tests the request fails after the step
+  is committed (`500 authorization_unspent`); elsewhere it answers as
+  the step did, and the authorization is voided and logged. A
+  `ResourceRouter` route that asks `StepUp(for_=...)` warns when it is
+  declared.
 - No setting, behaviour, or table changes. Four public names: a minor
   release (2.6).

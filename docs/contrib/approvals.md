@@ -931,14 +931,23 @@ async def withdraw_stale() -> None:
   may decide a request now.
 - **Never from a route a user reaches.** Such a route would take the
   step without the phone and without the route's rules. Nothing refuses
-  it as it runs: a call from a task and a call from a route look the
-  same, and a handler of an event that a route commits runs inside that
-  route's request. One mistake does show: a route that asks for the
-  act's authorization (`StepUp(for_="approvals.cancel")`) and runs one of
-  these leaves it unspent, which fails the request under `DEBUG` and in
-  tests (`500 authorization_unspent`), and a `ResourceRouter` route that
-  does so warns when it is declared
-  ([Authorizing one act](../auth/actions.md)). Routes run the services.
+  a route that asks for nothing: a call from a task and a call from a
+  route look the same as they run, and a handler of an event that a
+  route commits runs inside that route's request. Routes run the
+  services.
+
+A route that asks for the act's authorization and runs a `record_*`
+function is worse than one that asks nothing. Its rule takes any
+authorization of the act; the service binds it to the request and its
+arguments when it spends it, and a `record_*` function spends none. So an
+authorization confirmed for one request would take the step on another.
+Where that can be told, it is refused:
+
+| The route | What happens |
+| --- | --- |
+| A `ResourceRouter` route of approvals' rules (`RequestActions`, `ApproveAction`, `RejectAction`, `CancelAction`, `SubmitAction`) | Refused when it is declared (`ImproperlyConfigured`, since 2.6), as is one that runs another step's service. A service of your own passes: the rule cannot tell what it calls. |
+| A `ResourceRouter` route that asks `StepUp(for_="approvals.cancel")` | Warns when it is declared (`DomainkitDeprecationWarning`), then runs as the next row. |
+| Any other route that asks | Takes the step, then leaves the authorization unspent. Under `DEBUG` and in tests the request fails after the step is committed (`500 authorization_unspent`); elsewhere it answers as the step did, and the authorization is voided and logged ([Authorizing one act](../auth/actions.md)). |
 
 ## Over HTTP
 
@@ -1204,9 +1213,10 @@ So do submitting, rejecting, and cancelling with `SUBMIT_ACTION`,
   Guard the service itself, and `guard()` refuses one that is not
   decorated.
 - **Calling `record_approval` (or another `record_*`) from a route.** It
-  skips the act's authorization and the route's rules on who acts. Routes
-  run the services; tasks, commands, and handlers of the project's own
-  call the `record_*` functions.
+  skips the act's authorization and the route's rules on who acts, and a
+  `ResourceRouter` route of approvals' rules that runs one is refused
+  when it is declared. Routes run the services; tasks, commands, and
+  handlers of the project's own call the `record_*` functions.
 - **Letting approvers create users.** One person can then approve with a
   second account. Keep the two rights apart.
 - **A use case that commits twice.** The request is marked with the
