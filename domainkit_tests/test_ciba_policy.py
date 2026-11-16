@@ -240,7 +240,7 @@ def test_staff_approve_only_the_sign_ins_that_asked_the_number(app: App) -> None
     [waiting] = phone.waiting()
     refused = phone.approve(waiting["id"])
     assert refused.status_code == 403
-    assert redeem(web, shop["request"]).json()["code"] == "authorization_pending"
+    assert redeem(web, shop["request"]).json()["code"] == "access_denied"
 
     dashboard = push(web, "dashboard")
     asked = next(each for each in phone.waiting() if each["match_required"])

@@ -15,9 +15,11 @@ are bound, for any act.
 On this page you learn how to:
 
 - declare an act, register it, and guard its route;
+- authorize a `@use_case`, on one route and not another;
 - ask for an authorization, confirm it, and send it with the act;
 - choose what confirming proves, and when the act spends it;
-- confirm another way, from an app of your own.
+- confirm another way, from an app of your own;
+- authorize an act in a test.
 
 ## A first example
 
@@ -92,7 +94,7 @@ for a web client:
 ```http
 DELETE /organizations/7/memberships/42                       401 authorization_required
 POST   /organizations/7/memberships/42/authorization         201 {"id": "9f0c...", "purpose": "organizations.end_membership",
-                                                                  "shown": {...}, "expires_at": "..."}
+                                                                  "shown": {...}, "expires_at": "...", "methods": ["otp"]}
 POST   /auth/authorizations/9f0c.../confirm {"code": "123456"} 200 {"authorization": "9f0c....mYd3...", "expires_at": "..."}
 DELETE /organizations/7/memberships/42
        Action-Authorization: 9f0c....mYd3...                 204
@@ -106,9 +108,9 @@ action_not_authorized`: the authorization was spent.
 | `Action` argument | Meaning |
 | --- | --- |
 | `purpose` | A lower-case name of at most 100 characters (`organizations.end_membership`); one action per purpose. |
-| `command` | The class the service takes. The digest is computed from it, read back through pydantic as JSON. |
+| `command` | The class the service takes, or the `@use_case` whose command it is (*new in 2.5*). The digest is computed from it, read back through pydantic as JSON. |
 | `subject` | `command -> "<type>:<id>"`: what the act is on, an internal id of at most 200 characters (letters, digits, and `_ . : / -`), kept for the trail. |
-| `show` | `command -> Shown`, a coroutine or a plain function: what the user is shown, from the command and the stored state, in the request's language. |
+| `show` | `command -> Shown`, a coroutine or a plain function: what the user is shown, from the command and the stored state, in the request's language. `(command, uow) -> Shown` reads in the unit of work the act runs in (*new in 2.5*, [below](#a-use-case-as-the-act)). |
 | `ignore` | Fields of the command that change on every call (a time, a fresh id), left out of the digest. |
 | `ttl` | How long its authorizations work, in place of `AUTH.AUTHORIZATIONS.TTL`: more than 0, 30 minutes at most. |
 | `methods` | What confirming must prove, in place of `AUTH.AUTHORIZATIONS.METHODS`: `otp`, `pwd`, and `phone`, holding `otp` or `phone`. |
@@ -122,6 +124,77 @@ and kept: every screen shows the kept words, never words a page sent.
 `register_action(action)` in `ready()` registers it, a hook point of
 auth's ([ADR 0140](../adr/0140-auth-asks-other-apps-through-hooks.md)).
 Two actions of one purpose are refused.
+
+## A use case as the act
+
+*New in 2.5* ([ADR 0161](../adr/0161-authorize-a-use-case-as-a-copy-and-read-what-is-shown-in-its-unit-of-work.md)).
+In the simple layout, a use case is a `@use_case` in `controllers.py`,
+which may not import the unit of work on the database (`models.py`).
+The action lives beside it all the same: its `command` is the use case,
+and its `show` takes the unit of work the act runs in, and reads
+through its port:
+
+```python
+# controllers.py
+from domainkit.contrib.auth.actions import Action, Shown
+from domainkit.ddd import use_case
+
+
+@use_case
+async def end_membership(uow: OrganizationsUnitOfWork, membership_id: UUID) -> None:
+    """End someone's membership of an organization."""
+    membership = await uow.memberships.get(MembershipId(membership_id))
+    membership.end()
+
+
+async def show_ending(command, uow: OrganizationsUnitOfWork) -> Shown:
+    membership = await uow.memberships.get(MembershipId(command.membership_id))
+    return Shown("End a membership", {"Member": membership.display_name})
+
+
+END_MEMBERSHIP = Action(
+    "organizations.end_membership",
+    command=end_membership,
+    subject=lambda command: f"organizations.membership:{command.membership_id}",
+    show=show_ending,
+)
+```
+
+`requires_authorization(END_MEMBERSHIP)` given a use case returns a copy
+whose `run`, and so its call, spends the authorization. The use case
+itself stays as it was. Give the copy to the route that asks, and the use
+case to the routes that run it without an act, such as the phone's,
+where the user's own device is the proof:
+
+```python
+# routes.py
+memberships.use_case(
+    requires_authorization(controllers.END_MEMBERSHIP)(controllers.end_membership),
+    method="DELETE",
+    rule=StepUp(for_=controllers.END_MEMBERSHIP),
+)
+phone_memberships.use_case(controllers.end_membership, method="DELETE")
+```
+
+- **The twin lends the route's unit of work.** A `show` with a
+  parameter named `uow` is given it open, as one whose `commit` is
+  refused, and it is left without a commit: `show` only reads. A block
+  `async with uow:` in it enters nothing. A `ResourceRouter`'s twin
+  gives its route's; a route of your own names the class, and a new one
+  is made: `request_action_authorization(request, END_MEMBERSHIP,
+  command, unit_of_work=OrganizationsUnitOfWork)`. Without it, asking is
+  refused with `ImproperlyConfigured`.
+- **The route that asks runs the copy.** A `ResourceRouter` refuses,
+  when it declares the route, one that asks `StepUp(for_=...)` and runs
+  the use case itself, or a service that spends another act's
+  authorization: it would run the act with arguments nobody confirmed. A
+  service left undecorated warns (`DomainkitDeprecationWarning`): it
+  may call one that is decorated, as in 2.4, and 3.0 refuses it.
+- **One command.** A use case is guarded only for its own command, not
+  for a class it derives from (`ImproperlyConfigured`).
+- **A `show` of the command alone**, or with parameters of its own
+  (`language="en"`), is called as before, and opens what it reads
+  itself.
 
 ## The route asks: `StepUp(for_=...)`
 
@@ -144,8 +217,13 @@ Two actions of one purpose are refused.
 
 A `ResourceRouter` gives each command route that asks a twin, `POST
 <the route's path>/authorization`, which builds the command as the route
-does and answers `201`. A route of your own gets a twin of your own, that
-builds the command and calls `request_action_authorization`:
+does and answers `201` with the authorization: its `id`, `purpose`,
+`shown`, `expires_at`, and `methods`, what confirming it must prove
+(*new in 2.5*). A page reads `methods` to offer the ways that may
+confirm it, a code, the phone, or a passkey, without asking `GET
+/auth/authorizations/{id}` again. A route of your own gets a twin of
+your own, that builds the command and calls
+`request_action_authorization`:
 
 ```python
 from fastapi import Request
@@ -217,10 +295,16 @@ POST /auth/app-sign-in/authorizations/token {"request"}  400 authorization_pendi
 ```
 
 - The request is counted and bounded as the phone's step-up is
-  (`START_RATE`, `MAX_PENDING`, `NUMBER_MATCHING`, `409
-  phone_unavailable`), and only the session that asked redeems it.
+  (`START_RATE` per user, `MAX_PENDING`, `NUMBER_MATCHING`, `409
+  phone_unavailable`), and only the session that asked redeems it, or
+  withdraws it (`POST /auth/app-sign-in/authorizations/cancel
+  {"request"}`, since 2.5): unanswered, the phone no longer lists it,
+  and the authorization stays to be confirmed; approved, it stays to be
+  redeemed. A user's unanswered asks of the last `REQUEST_TTL`,
+  withdrawn ones too, are at most twice `MAX_PENDING`.
 - The phone lists it with an `authorization` object: the purpose, the
-  kept title and details, and the digest, read from the row.
+  kept title and details, what confirming it must prove (`methods`),
+  and the digest, read from the row.
 - It approves with the digest, in a request its device signs: another
   digest denies it (`409 authorization_changed`). The row keeps the
   device, its key, the bytes it signed, its signature, and when.
@@ -449,8 +533,42 @@ An app that confirms its own way (the phone of
 | `auth.E110` | A route whose action nothing spends: no service decorated `requires_authorization`, and no code that said so with `spent_in_code(action)`. |
 | `auth.E111` | `StepUp(for_=...)` on a WebSocket or an event stream. |
 
+## Testing
+
+*New in 2.5.* `domainkit.testing` authorizes an act through the
+application's own routes, as `confirm_sca` confirms a transaction
+([Moving money](../testing.md#moving-money-second-factors-approvals-the-trail-key-services)):
+
+```python
+from domainkit.testing import authorize_act, enrol_totp
+
+app = enrol_totp(as_alice, PASSWORD)
+act = f"/api/organizations/7/memberships/{membership_id}"
+authorization = authorize_act(as_alice, act, app)  # the twin, then a code
+as_alice.delete(act, headers={"Action-Authorization": authorization})
+```
+
+- `authorize_act(client, url, app=None, *, json=None, password=None,
+  prefix="/auth")` asks `POST <url>/authorization` with the act's body,
+  and confirms the answer.
+- `confirm_authorization(client, authorization_id, app=None, *,
+  password=None, prefix="/auth")` confirms one asked elsewhere.
+- With `app`, a code of the authenticator confirms it, and `password`
+  where the act asks it. Without, auth confirms it in the test as
+  proving the act's `methods`: what the phone or a passkey proves, for
+  an act a code cannot confirm. Only under `ENVIRONMENT = "test"`; the
+  client must be entered (the `client` fixture is).
+- Asking is not skipped: the user needs a way to confirm what the act
+  asks (`409 no_second_factor` otherwise), an authenticator app
+  (`enrol_totp`), or for the phone a bound device.
+
 ## Common mistakes
 
+- **The guarded copy on a route that does not ask.** Every call is
+  refused `401 authorization_required`, and there is no twin to ask at.
+  Put `StepUp(for_=...)` on the route that runs the copy.
+- **The guarded copy where the use case should run unguarded**, or the
+  reverse: the phone's route and tasks take the use case itself.
 - **A `show` that puts more on the phone than the user needs to decide.**
   It may be personal data, and the user reads less of it.
 - **An `ignore` list that unbinds what matters.** Leave out only what

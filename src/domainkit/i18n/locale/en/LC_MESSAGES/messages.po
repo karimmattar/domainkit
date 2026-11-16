@@ -1133,6 +1133,9 @@ msgstr ""
 msgid "Too many sign-ins were started; try again later."
 msgstr ""
 
+msgid "Too many requests were sent to your phone; try again later."
+msgstr ""
+
 #. domainkit.contrib.auth and domainkit.contrib.ciba: action authorizations
 msgid "A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization."
 msgstr ""
@@ -1221,6 +1224,24 @@ msgid "Approve sign-in?"
 msgstr ""
 
 msgid "Open the app to approve or deny it."
+msgstr ""
+
+msgid "Confirm it's you?"
+msgstr ""
+
+msgid "Open the app to see what for, and approve or deny it."
+msgstr ""
+
+msgid "Approve a transaction?"
+msgstr ""
+
+msgid "Open the app to see its amount and payee, and approve or deny it."
+msgstr ""
+
+msgid "Approve an action?"
+msgstr ""
+
+msgid "Open the app to see what it is, and approve or deny it."
 msgstr ""
 
 #. domainkit.contrib.auth: new addresses and numbers, held until proved

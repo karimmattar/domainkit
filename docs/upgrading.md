@@ -64,13 +64,61 @@ to action authorizations
 
 No table changes.
 
+2.5 answers a third report from a project that runs an identity service
+on domainkit. It breaks nothing a project relies on; each item of this
+list says what changes, and what a project that relied on 2.4's
+behaviour does.
+
+- **An `on_approve` hook's refusal denies the request.** A hook that
+  raises `PermissionDenied`, or an HTTP error of 403, ends the request:
+  the page's poll and wait answer `access_denied` at once, where the
+  request waited until it expired; nothing is reported. A hook that
+  called `deny()` itself before raising may drop the call: it still
+  works. Any other error leaves the request waiting, as before
+  ([Hooks of the web pages](auth/ciba.md#hooks-of-the-web-pages)).
+- **Each kind of request has its own push text.** `CIBA.PUSH_TITLE` and
+  `PUSH_BODY` default to `None`, and each kind has its words
+  ([Push texts](auth/ciba.md#push-texts)). A project that set them keeps
+  them, for every kind; to give each kind its own, unset them, or name
+  each in `PUSH_TEXTS`. Code that read `PUSH_TITLE` gets `None` where it
+  was not set. domainkit's catalogs have the new texts in Arabic; a
+  project whose catalogs translate the push into other languages adds
+  them there.
+- **A session's asks are counted per user.** `START_RATE` counts what a
+  signed-in session asks the phone per user, from any address. A test
+  suite that raised `START_RATE` for one user's acts still needs it
+  raised; one that raised it for many users behind one address no
+  longer does.
+
+2.5 answers a third report from the project that runs an identity
+service on domainkit. The sections below say what a project that relied
+on 2.4's behaviour changes.
+
+### Decorate the service of a route that asks for an act's authorization
+
+A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
+service not decorated with `requires_authorization` of that act warns
+when it is declared (`DomainkitDeprecationWarning`), and 3.0 refuses it
+([A use case as the act](auth/actions.md#a-use-case-as-the-act)).
+Decorate the route's own service, not one it calls, so the route is
+known to spend what it asks for. A route that runs a `@use_case` takes
+the copy `requires_authorization(ACTION)(use_case)` makes: one that runs
+the use case itself is refused in 2.5 already, as it never spent the
+authorization.
+
 2.5 breaks nothing. Each item of this list says what a project may see
 change, and what it does then.
 
-- **`makemessages --check` may fail where it passed.** It now extracts
+2.5 changes no API a project calls. A project's CI can still fail after
+upgrading: `makemessages --check` finds texts it did not find before.
+Each item of this list says what a project may see change, and what it
+does then.
+
+- **`makemessages --check` can fail after upgrading.** It now extracts
   `gettext_noop`, and reads the project's own modules: the settings'
   package and `ROOT_ROUTER`'s. Run `makemessages` once and commit the
-  catalogs. A text marked outside every domain needs `LOCALE_PATHS`
+  catalogs. A text marked outside every domain that no catalog
+  translates needs `LOCALE_PATHS`
   ([i18n.md](i18n.md#the-projects-own-messages)); without it, `--check`
   fails, and a run names the text, which reached clients in English.
 

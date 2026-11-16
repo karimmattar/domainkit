@@ -25,6 +25,7 @@ On this page you find:
 | `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
 | `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`, `["REJECT_ACTION"]`, and `["CANCEL_ACTION"]`: the admin API's changes and a request's steps, each authorized as one act | [auth.md](../auth.md#settings), [approvals.md](../contrib/approvals.md#settings) |
 | `DEVICES`'s keys, `DEVICES["PUSH_TOKEN_CHECK"]` (push tokens checked with their service when registered) among them | [devices.md](../auth/devices.md#settings) |
+| `CIBA`'s keys, `CIBA["PUSH_TEXTS"]` (each kind of request's push text) among them | [ciba.md](../auth/ciba.md#settings) |
 
 Each table has a Default column. A default in backticks is the value
 itself. A row also states its bounds, such as "at most 3600".

@@ -56,7 +56,7 @@ from domainkit.exceptions import DomainkitError
 from domainkit.http.access import NotAuthenticated
 
 from .models import AbstractBaseUser
-from .tokens import LoginOrigin, SessionLimits, signed_by_device, utc_now
+from .tokens import LoginOrigin, SessionLimits, noted, utc_now
 
 __all__ = [
     "MANAGES_LOGINS",
@@ -269,12 +269,13 @@ def login_origin(request: HTTPConnection) -> LoginOrigin | None:
     ``pass_login_gates``, and the bound device that signed the request,
     once the devices app checked the signature (``signing_device``, which
     ``CIBA.APPROVE_LOGINS``'s gate calls). A device's signature adds
-    ``hwk``.
+    ``hwk``. A sign-in approved on the phone names the request it redeems,
+    and its binding message (``note_login_sign_in``).
     """
     origin = request.scope.get(LOGIN_ORIGIN)
     if not isinstance(origin, LoginOrigin):
         return None
-    return signed_by_device(origin, request.scope)
+    return noted(origin, request.scope)
 
 
 async def session_limits(user: AbstractBaseUser, origin: LoginOrigin) -> SessionLimits:

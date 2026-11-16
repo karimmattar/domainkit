@@ -1,6 +1,6 @@
 # 0144. Authorize one act, not a window of time
 
-- Status: Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md)
+- Status: Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) and [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)
 - Date: 2026-11-15
 
 ## Context
