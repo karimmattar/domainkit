@@ -347,6 +347,15 @@ Files: a storage port, on the file system or in memory.
 
 - `AzureBlobStorage`: Files in one container of an Azure Storage account.
 
+## `domainkit.storage.cleanup`
+
+Removing the stored files a committed change dropped, once no row keeps them.
+
+- `REMOVE_TASK`: The name `domainkit.contrib.messaging` registers `remove_unreferenced` under.
+- `forget_files`: Forget the columns declared for `storage`, or for every storage (tests).
+- `keeps_files`: Declare that `columns` hold names of `storage`'s files, one per row.
+- `remove_unreferenced`: Delete each of `names` from `storage` that no row keeps.
+
 ## `domainkit.storage.gcs`
 
 `GCSStorage`: files in a Google Cloud Storage bucket (`domainkit[cloud]`).

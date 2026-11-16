@@ -15,11 +15,15 @@ On this page you learn how to:
 - receive an upload safely with `save_upload`, and serve a file with
   `serve`;
 - give an upload route its own body limit with `body_limit`;
-- let a client send or fetch a file directly, with presigned URLs;
-- scan uploads for viruses, and make thumbnails of images.
+- let a client send or fetch a file directly, with presigned URLs, and
+  check that the store keeps them create only;
+- scan uploads for viruses, over TLS where clamd is on another host, and
+  make thumbnails of images;
+- remove the files a committed change dropped, once no row keeps them.
 
 The decisions are in
-[ADR 0040](adr/0040-store-files-under-random-names.md).
+[ADR 0040](adr/0040-store-files-under-random-names.md) and
+[ADR 0169](adr/0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md).
 
 ## A first example
 
@@ -565,6 +569,54 @@ class EicarScanner(Scanner):
                 raise Infected("Eicar-Test-Signature")
             yield chunk
 ```
+
+## Removing files a change dropped
+
+*New in 2.5.* A storage never deletes a file by itself. When a change
+replaces an aggregate's file, or deletes the aggregate, the old file
+stays, unless something removes it. Not in the use case: its
+transaction may still roll back, and another row may hold the same name.
+Defer the removal, to run once the change has committed:
+
+```python
+from domainkit.storage.cleanup import remove_unreferenced
+
+
+async def replace_file(uow: DocumentsUnitOfWork, document_id: str, name: str) -> None:
+    document = await uow.documents.get(document_id)
+    uow.defer(remove_unreferenced, names=[document.file])  # storage="default"
+    document.file = name
+    await uow.commit()
+```
+
+And, beside the tables, in the infrastructure layer, declare each column
+that holds names of a storage's files, one name per row:
+
+```python
+from domainkit.storage.cleanup import keeps_files
+
+keeps_files(DocumentRow.file, TemplateRow.preview)  # storage="default"
+```
+
+- The worker runs it after the commit, and again after a failure (it is
+  a task of `domainkit.contrib.messaging`, registered as
+  `domainkit.storage.remove_unreferenced`). A change that rolls back
+  queues nothing, so its file stays.
+- Before it deletes a name, it asks each declared column whether a row
+  holds it, on the primary database of the column's model, never a
+  replica that may not have seen the commit. A name a row still holds
+  stays; one already gone is passed over.
+- With no column declared for the storage, it refuses
+  (`ImproperlyConfigured`) and deletes nothing.
+- A transaction still open as it reads, which copies the name into a
+  row, is not seen: copy the file (`save` it again) rather than its name.
+- Without messaging, call `await remove_unreferenced([...])` yourself
+  once the commit is done; nothing then runs it again after a failure.
+
+`forget_files()` forgets the declared columns (tests). Like
+django-cleanup, this removes a file once the change commits; unlike it,
+it checks the other rows first, as Active Storage's attachments keep a
+blob that another record holds.
 
 ## Thumbnails
 
