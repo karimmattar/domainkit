@@ -376,11 +376,16 @@ with override(customer.language):
 - A language's files stand for the whole template. Its subject and HTML
   body are its own files, or there are none: an English subject never
   goes out with an Arabic body.
-- The directory that holds the template's text body decides. A
-  `MAIL.TEMPLATE_DIRS` directory with only `auth/password_reset_code.txt`
-  replaces auth's template in every language, so your wording never loses
-  to a translation of the one you replaced. Put your translations beside
-  it.
+- The first directory that holds the template, in the language or its
+  own, decides. A `MAIL.TEMPLATE_DIRS` directory with only
+  `auth/password_reset_code.txt` replaces auth's template in every
+  language, so your wording never loses to a translation of the one you
+  replaced. Put your translations beside it.
+- *New in 2.5:* a `MAIL.TEMPLATE_DIRS` directory may hold a language's
+  files alone. With only `devices/enrollment_code.fr.txt` (and its
+  `.fr.subject.txt`) there, French readers get yours, and every other
+  language the template the devices app ships. You copy no English file
+  to add a language.
 - Values are not translated: compute translated text in Python, inside
   `override`, and pass it in.
 

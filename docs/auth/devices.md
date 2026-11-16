@@ -312,7 +312,9 @@ NIST SP 800-63B-4 asks for it: a subscriber is told of an authenticator
 bound to their account, by another channel than the one that bound it
 ([authenticator events](https://pages.nist.gov/800-63-4/sp800-63b/events)).
 It needs `domainkit.contrib.messaging` and `domainkit.contrib.mail`, and
-an address on the account. The template is `devices/device_bound`;
+an address on the account. The template is `devices/device_bound`, in
+English and, since 2.5, in Arabic, written in the user's language
+([mail.md](../mail.md#templates-in-other-languages));
 `BOUND_NOTICE = False` turns it off.
 
 ## Enrolling a first device
@@ -329,9 +331,10 @@ none, with no login first. This is how a user starts once
 
 1. The app asks for a code. `identifier` is what the user logs in with
    (`AUTH.IDENTIFIERS`): a mobile number gets a text message; anything
-   else, a mail to the account's address. The answer is `202` whoever it
-   names. Nothing is sent to an unknown, inactive, or passwordless
-   account, nor to one with a bound device already.
+   else, a mail to the account's address, from the template
+   `devices/enrollment_code` (English and, since 2.5, Arabic). The answer
+   is `202` whoever it names. Nothing is sent to an unknown, inactive, or
+   passwordless account, nor to one with a bound device already.
 2. The app makes its key, and sends the code, the password, and the
    public key, signed by the new key. The headers are those of any signed
    request, without `X-Device-Id`: there is no device yet.

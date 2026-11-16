@@ -1,6 +1,6 @@
 # 0003. Layer rules enforced by `check`
 
-- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), and 2026-10-25 and 2026-11-15 (at the end)
+- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md) and [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), and 2026-10-25 and 2026-11-15 (at the end)
 - Date: 2026-10-14
 
 ## Context

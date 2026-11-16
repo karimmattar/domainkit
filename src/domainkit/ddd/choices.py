@@ -9,6 +9,8 @@ for people (``get_FOO_display()`` in Django)::
 
     Status.PAID.label  # "Paid in full", in the request's language
     Status.choices()  # [("draft", "Draft"), ("paid", "Paid in full")]
+
+A domain layer imports ``gettext_lazy`` from ``domainkit.i18n.lazy``.
 """
 
 from enum import IntEnum, StrEnum

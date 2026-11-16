@@ -54,6 +54,16 @@ the copy `requires_authorization(ACTION)(use_case)` makes: one that runs
 the use case itself is refused in 2.5 already, as it never spent the
 authorization.
 
+2.5 breaks nothing. Each item of this list says what a project may see
+change, and what it does then.
+
+- **`makemessages --check` may fail where it passed.** It now extracts
+  `gettext_noop`, and reads the project's own modules: the settings'
+  package and `ROOT_ROUTER`'s. Run `makemessages` once and commit the
+  catalogs. A text marked outside every domain needs `LOCALE_PATHS`
+  ([i18n.md](i18n.md#the-projects-own-messages)); without it, `--check`
+  fails, and a run names the text, which reached clients in English.
+
 ## 2.3 to 2.4
 
 2.4 answers a report from a project that runs an identity service on
@@ -1150,10 +1160,8 @@ class SearchConfig(DomainConfig):
     async def startup(self) -> None:
         await index.connect()
 
-
 # 0.12
 from domainkit.apps.hooks import on_startup
-
 
 class SearchConfig(DomainConfig):
     def ready(self) -> None:

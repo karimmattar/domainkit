@@ -18,31 +18,43 @@ projects add their own per domain (see ``translation`` and ADR 0039).
 
 ``timezone`` shows stored UTC times in ``TIME_ZONE``, and ``formats``
 writes numbers and dates as the language does.
+
+The names below are imported on first use, so importing
+``domainkit.i18n.lazy``, which a domain layer may, loads no settings
+(ADR 0166).
 """
 
-from domainkit.i18n import timezone
-from domainkit.i18n.formats import (
-    date_format,
-    datetime_format,
-    number_format,
-    time_format,
-)
-from domainkit.i18n.timezone import localdate, localtime
-from domainkit.i18n.translation import (
-    LazyString,
-    get_language,
-    gettext,
-    gettext_lazy,
-    gettext_noop,
-    negotiate,
-    ngettext,
-    ngettext_lazy,
-    npgettext,
-    override,
-    pgettext,
-    pgettext_lazy,
-)
-from domainkit.i18n.validation import validation_message
+from importlib import import_module
+from typing import TYPE_CHECKING
+
+from domainkit.utils.module_loading import lazy_names
+
+if TYPE_CHECKING:
+    from domainkit.i18n import timezone
+    from domainkit.i18n.formats import (
+        date_format,
+        datetime_format,
+        number_format,
+        time_format,
+    )
+    from domainkit.i18n.lazy import (
+        LazyString,
+        gettext_lazy,
+        gettext_noop,
+        ngettext_lazy,
+        pgettext_lazy,
+    )
+    from domainkit.i18n.timezone import localdate, localtime
+    from domainkit.i18n.translation import (
+        get_language,
+        gettext,
+        negotiate,
+        ngettext,
+        npgettext,
+        override,
+        pgettext,
+    )
+    from domainkit.i18n.validation import validation_message
 
 __all__ = [
     "LazyString",
@@ -66,3 +78,44 @@ __all__ = [
     "timezone",
     "validation_message",
 ]
+
+_names = lazy_names(
+    __name__,
+    {
+        **dict.fromkeys(
+            ["date_format", "datetime_format", "number_format", "time_format"],
+            "domainkit.i18n.formats",
+        ),
+        **dict.fromkeys(
+            [
+                "LazyString",
+                "gettext_lazy",
+                "gettext_noop",
+                "ngettext_lazy",
+                "pgettext_lazy",
+            ],
+            "domainkit.i18n.lazy",
+        ),
+        **dict.fromkeys(["localdate", "localtime"], "domainkit.i18n.timezone"),
+        **dict.fromkeys(
+            [
+                "get_language",
+                "gettext",
+                "negotiate",
+                "ngettext",
+                "npgettext",
+                "override",
+                "pgettext",
+            ],
+            "domainkit.i18n.translation",
+        ),
+        "validation_message": "domainkit.i18n.validation",
+    },
+)
+
+
+def __getattr__(name: str) -> object:
+    """A name of ``__all__``, imported on first use; ``timezone`` is a module."""
+    if name == "timezone":
+        return import_module("domainkit.i18n.timezone")
+    return _names(name)

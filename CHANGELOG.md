@@ -11,6 +11,37 @@ and a status.
 
 ### Added
 
+- A domain layer may import `domainkit.i18n.lazy`, and no other module of
+  `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
+  translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
+  make labels translated when they are shown. Importing it loads no
+  settings and no catalog: `domainkit.i18n` now imports its names on
+  first use. A project that allowed all of `domainkit.i18n` in
+  `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
+  ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
+  report I2).
+
+- `makemessages` also reads the project's own modules: the package that
+  holds the settings module, and the one that holds `ROOT_ROUTER`'s
+  module, without the installed domains. What they mark is added to the
+  catalogs of the first `LOCALE_PATHS` directory, which keep every entry
+  they hold, the project's rewordings of others' messages too. Without
+  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
+  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
+  user report I6).
+
+- Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
+  ship in Arabic. A test holds every mail template domainkit ships to
+  have its files in each language its catalogs translate (user report
+  I7).
+
+- A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
+  language alone: readers of that language get them, and every other
+  reader the template's own. A directory with the template's own text
+  body still wins over a later directory's translation
+  ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
+  report I8).
+
 - `requires_authorization(ACTION)` takes a `@use_case`: it returns a
   copy whose `run`, and so its call, spends the act's authorization,
   and leaves the use case as it was, so a route that runs it without an
@@ -26,6 +57,7 @@ and a status.
   no route of a use case could take
   ([A use case as the act](docs/auth/actions.md#a-use-case-as-the-act),
   ADR 0161) (user report A13).
+
 - An action's `show` may take the unit of work the act runs in,
   `show(command, uow)`, and read through its port: it is given it open,
   and left without a commit. A `ResourceRouter`'s twin lends its
@@ -36,11 +68,13 @@ and a status.
   `ask_authorization` also takes `uow` is given the route's unit of
   work; a rule written for 2.4 is called as before (ADR 0161) (user
   report A13).
+
 - The twin's `201` (`ActionAuthorizationOut`) carries `methods`, what
   confirming the authorization must prove, as `GET
   /auth/authorizations/{id}` answers it, so a page knows at once which
   ways to offer. Approvals' approve twin and the act the phone lists
   carry it too (user report A17).
+
 - `domainkit.testing.authorize_act(client, url, app=None, *, json=None,
   password=None, prefix="/auth")` asks an act's twin for an
   authorization and confirms it; `confirm_authorization(client,
@@ -61,6 +95,15 @@ and a status.
   it spends the act's authorization, so a route could run the act with
   arguments nobody confirmed. Decorate the route's service itself
   ([upgrading.md](docs/upgrading.md#24-to-25)) (user report A13).
+
+### Fixed
+
+- `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
+  not when the application is built: a test that overrides them is
+  served in the new ones (user report I5).
+
+- `makemessages` extracts the texts marked with `gettext_noop`, as the
+  docs said it did (user report I2).
 
 ## [2.4.0] - 2026-11-16
 
