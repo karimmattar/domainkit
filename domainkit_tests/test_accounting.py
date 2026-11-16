@@ -159,6 +159,7 @@ async def count(table: object) -> int:
         )
 
 
+@pytest.mark.usefixtures("many_connections")
 async def test_concurrent_transfers_keep_every_entry_balanced_and_lose_no_update(
     books: str, caplog: pytest.LogCaptureFixture
 ) -> None:

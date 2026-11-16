@@ -5,8 +5,12 @@ revisions in every test; now each shape is migrated once per run (and per
 pytest-xdist worker) and every test gets a copy of it. These tests check
 that a copy is what ``migrate`` left, whatever an earlier test wrote,
 sequences included, and that the templates go when the run ends.
+
+``many_connections`` lets one test at a time open its fifty connections,
+whichever pytest-xdist worker runs it.
 """
 
+import fcntl
 import os
 from pathlib import Path
 
@@ -18,6 +22,7 @@ from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     API,
     AUTH_PROJECT,
+    CROWD_LOCK,
     IDENTITY,
     POSTGRES_VARIABLE,
     TEMPLATE_PREFIX,
@@ -25,6 +30,7 @@ from domainkit_tests.conftest import (
     MakeDatabase,
     Templates,
     on_server,
+    one_at_a_time,
 )
 
 NEXT_TESTS = """
@@ -140,3 +146,35 @@ def test_postgresql_templates_are_dropped_when_the_run_ends(tmp_path: Path) -> N
 
     assert not set(names) & run_async(existing())
     on_server(server, "SELECT 1")  # The server is still there for the next test.
+
+
+@pytest.mark.usefixtures("many_connections")
+def test_a_test_that_asks_for_many_connections_holds_the_runs_lock(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Another worker's test that asks for it waits: the lock is taken.
+
+    It is in the directory above the worker's own, which every worker of
+    the run shares.
+    """
+    shared = tmp_path_factory.getbasetemp().parent / CROWD_LOCK
+    with shared.open("ab") as other, pytest.raises(BlockingIOError):
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_the_lock_is_let_go_when_the_block_ends_however_it_ends(
+    tmp_path: Path,
+) -> None:
+    """The next test gets it once the block ends, by an error too."""
+    lock = tmp_path / CROWD_LOCK
+
+    def fail_holding_it() -> None:
+        with one_at_a_time(lock):
+            with lock.open("ab") as other, pytest.raises(BlockingIOError):
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            raise RuntimeError("the test failed")
+
+    with pytest.raises(RuntimeError, match="the test failed"):
+        fail_holding_it()
+    with lock.open("ab") as other:
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)

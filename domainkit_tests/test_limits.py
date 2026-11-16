@@ -184,6 +184,7 @@ async def counted(kind: str = "holder", direction: str = "out") -> int:
     return int(found or 0)
 
 
+@pytest.mark.usefixtures("many_connections")
 async def test_fifty_payments_at_once_pass_exactly_what_the_limit_allows(
     books: str, caplog: pytest.LogCaptureFixture
 ) -> None:
