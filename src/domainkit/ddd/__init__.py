@@ -7,6 +7,7 @@ imports nothing but ``domainkit.ddd`` stays free of frameworks and I/O.
 
 from domainkit.ddd.choices import IntegerChoices, TextChoices
 from domainkit.ddd.events import (
+    Actor,
     DomainEvent,
     EventBus,
     EventHandler,
@@ -77,6 +78,7 @@ from domainkit.ddd.usecases import UseCase, use_case
 __all__ = [
     "UNSET",
     "URL",
+    "Actor",
     "AggregateRoot",
     "Avg",
     "BusinessRuleViolation",

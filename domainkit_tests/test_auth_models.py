@@ -77,8 +77,8 @@ def kinds(events: list[DomainEvent]) -> list[type[DomainEvent]]:
 
 
 def facts(events: list[DomainEvent]) -> list[tuple[str, dict[str, object]]]:
-    """Each event's class and own fields (not its id or time)."""
-    common = {"event_id", "occurred_at"}
+    """Each event's class and own fields (not its id, time, or actor)."""
+    common = {"event_id", "occurred_at", "actor"}
     return [
         (
             type(event).__name__,
@@ -543,7 +543,15 @@ def test_users_update_their_editable_fields() -> None:
     )
     assert user.last_name == ""
     assert facts(user.pull_events()) == [
-        ("UserUpdated", {"user_id": user.id, "fields": ("email", "first_name")})
+        ("UserUpdated", {"user_id": user.id, "fields": ("email", "first_name")}),
+        (
+            "EmailChanged",
+            {
+                "user_id": user.id,
+                "previous": "a@example.com",
+                "previous_verified": False,
+            },
+        ),
     ]
 
     badge = Badge(id=UserId(uuid4()), password=HASH, code="B-7")

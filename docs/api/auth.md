@@ -548,8 +548,10 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `AuthorizationChanged`: What the device was shown is not what the authorization holds (409).
 - `AuthorizationNeedsOtherFactors`: The act asks confirming it to prove what this way does not (409).
 - `CsrfOut`: The token to send back in `X-CSRF-Token` with unsafe methods.
+- `EmailChanged`: A user's email address changed: tell the old one (ADR 0147).
 - `LoginMethod`: How a login signed in (ADR 0130): shown with it, to tell logins apart.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
+- `MobileNumberChanged`: A user's mobile number changed: tell the old one (ADR 0147).
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `RefusalHook`: Told of a refused attempt: its action (`auth.login`) and the reason's code.
 - `StepUpOut`: When the credentials stepped up, and with what (OpenID Connect's names).

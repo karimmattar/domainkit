@@ -964,7 +964,8 @@ class Worker:
         """Run one message as its request's id, actor, and tenant; never raises.
 
         A message no request queued (a periodic task, a command's) runs as
-        ``SYSTEM_ACTOR``; one an anonymous request queued, without an actor.
+        ``SYSTEM_ACTOR``; one an anonymous request queued, without an actor;
+        one staff queued while impersonating a user, as staff acting as them.
         Its span continues the trace of the work that queued it.
 
         If its outcome cannot be written, the message runs again once its
@@ -978,6 +979,7 @@ class Worker:
             path=message.target,
             actor=message.headers.get("actor")
             or (None if message.headers.get("request_id") else SYSTEM_ACTOR),
+            impersonating=message.headers.get("impersonating"),
         )
         started = time.perf_counter()
         with (

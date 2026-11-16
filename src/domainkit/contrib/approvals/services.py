@@ -491,7 +491,7 @@ def _as_maker(maker: str) -> Iterator[None]:
         current = RequestContext(
             request_id=uuid.uuid4().hex, client_ip=None, method="TASK", path=EXECUTE
         )
-    with bind_request(replace(current, actor=maker)):
+    with bind_request(replace(current, actor=maker, impersonating=None)):
         yield
 
 

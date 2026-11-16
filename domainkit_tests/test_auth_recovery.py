@@ -195,6 +195,7 @@ def test_verified_users_who_change_their_address_lose_the_mark() -> None:
         "EmailVerified",
         "UserUpdated",
         "UserUpdated",
+        "EmailChanged",
     ]
 
 

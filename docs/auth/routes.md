@@ -536,7 +536,10 @@ What the token may do:
 - **It is audited.** `auth.user_impersonated` names the staff member, the
   user, and the reason (kept as the user's personal data, erased with
   them). Every request the token makes is recorded under the staff
-  member (the actor), so the trail shows who really acted.
+  member (the actor), so the trail shows who really acted. The events it
+  causes name both: `actor.id` is the staff member's id, and
+  `actor.impersonating` the user's
+  ([Who acted](../resources.md#the-domain-behind-a-resource)).
 - **It reaches no step-up.** `StepUp` refuses it: what a step-up guards
   is the user's own. For the same reason it cannot add a way into the
   account: a passkey, a bound device, or a linked identity

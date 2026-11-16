@@ -95,11 +95,15 @@ def context_headers(**extra: object) -> dict[str, Any]:
 
     The worker logs and audits under the request id and actor, and continues
     the trace of the span that was active (the commit's, in a unit of work).
+    The user staff impersonate, if they do, goes too: events made in the
+    worker name them (ADR 0147).
     """
     request = current_request()
+    impersonating = request.impersonating if request else None
     return {
         "request_id": request.request_id if request else None,
         "actor": request.actor if request else None,
+        **({"impersonating": impersonating} if impersonating else {}),
         **({"tenant": tenant} if (tenant := current_tenant()) else {}),
         **trace_headers(),
         **extra,

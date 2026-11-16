@@ -231,6 +231,7 @@ Changes are recorded as events, never with passwords or hashes in them:
 | Event | When |
 | --- | --- |
 | `UserCreated`, `UserUpdated`, `UserDeleted` | A user is made, has fields changed (the event names the fields, not the values), or is deleted. |
+| `EmailChanged`, `MobileNumberChanged` | The email address or the mobile number changed, after `UserUpdated`: each names the one it replaced ([Telling the old address](#telling-the-old-address)). |
 | `PasswordChanged`, `UserStatusChanged` | A new password; `is_active`, `is_staff`, or `is_superuser` changed. |
 | `UserJoinedGroup`, `UserLeftGroup` | Group membership. |
 | `UserPermissionGranted`, `UserPermissionRevoked` | Direct grants. |
@@ -248,6 +249,62 @@ audit trail, such as `auth.user_permission_granted`. The username in
 `UserCreated` and `UserDeleted` is personal data: the trail keeps it as
 a pseudonym of the user's id, which `audit forget <user id>` makes
 unlinkable (see [contrib.md](../contrib.md)).
+
+Each event names who caused it in `actor`: the user, staff who changed
+them through the admin API, staff impersonating them
+(`actor.impersonating` is the user's id), an operator's command, or the
+system ([Who acted](../resources.md#the-domain-behind-a-resource)).
+`event.actor.is_self(event.user_id)` holds only for the user's own acts.
+
+### Telling the old address
+
+When an email address or a mobile number changes, tell the old one: if
+someone else made the change, the owner hears of it where they still
+read (OWASP's [Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html),
+ASVS 5.0 V6.3.7). `update` records `EmailChanged` or
+`MobileNumberChanged` after `UserUpdated`, with:
+
+- `previous`: the address or number it replaced; `None` when the user
+  had none.
+- `previous_verified`: whether the user had proved it. One never proved
+  may be someone else's
+  ([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)).
+- `actor`: who made the change.
+
+```python
+from domainkit.contrib.auth.integration import EmailChanged
+from domainkit.contrib.mail import send_mail
+from domainkit.ddd import handles
+
+
+@handles(EmailChanged, durable=True, name="accounts.tell_the_old_address")
+async def tell_the_old_address(event: EmailChanged) -> None:
+    if event.previous is None or not event.previous_verified:
+        return
+    by_user = event.actor is not None and event.actor.is_self(event.user_id)
+    who = "You" if by_user else "Our support team"
+    await send_mail(
+        "Your email address was changed",
+        f"{who} changed the email address of your account. "
+        "If you did not ask for this, contact us.",
+        [event.previous],
+    )
+```
+
+`MobileNumberChanged` is the same, with `send_sms`. The new address is
+the user's own: read it from them, as it may change again before the
+handler runs. Neither event is recorded when a change is refused
+(`IdentifierRequired`), when privacy erases the user, nor when a signup
+takes an address they never proved (`EmailReleased`).
+
+`previous` is marked `Personal`. The audit trail keeps a pseudonym of
+it; the outbox keeps it until the handler's message has run, and
+`privacy erase` finds it there; live events leave it out. A project that
+exposes the event as a webhook picks its `payload`
+([Privacy](../privacy.md#what-erasure-reaches-and-when)).
+`UserUpdated` stays the names of the fields: a handler of every change
+would otherwise hold old names and custom fields too
+([ADR 0147](../adr/0147-name-who-caused-each-event-and-tell-the-old-address.md)).
 
 ## A custom user model
 

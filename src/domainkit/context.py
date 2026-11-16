@@ -11,8 +11,10 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from domainkit.conf import settings
+from domainkit.ddd import events
+from domainkit.ddd.events import Actor
 
-SYSTEM_ACTOR: Final = "system"
+SYSTEM_ACTOR: Final = events.SYSTEM_ACTOR
 """The actor of work no caller asked for: periodic tasks, commands' messages."""
 UNMATCHED_PATH: Final = "unmatched"
 """The path logs show for a request no route matched (``ACCESS_LOG_PATH``)."""
@@ -33,6 +35,9 @@ class RequestContext:
     path: str
     """What logs and error reports show as the path: see ``RoutedRequestContext``."""
     actor: str | None = None
+    impersonating: str | None = None
+    """The id of the user ``actor`` acts as, when staff impersonate one;
+    background work carries it with the actor (ADR 0147)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +130,21 @@ _current: ContextVar[RequestContext | None] = ContextVar("request", default=None
 def current_request() -> RequestContext | None:
     """Return the request being served, or None outside a request."""
     return _current.get()
+
+
+def current_actor() -> Actor | None:
+    """Who acts in the request or job being served, as events name them.
+
+    None for an anonymous caller, and outside requests, jobs, and
+    commands. Events made without an ``actor`` take this one (ADR 0147).
+    """
+    request = _current.get()
+    if request is None or request.actor is None:
+        return None
+    return Actor(request.actor, request.impersonating)
+
+
+events.read_actors_from(current_actor)
 
 
 @contextmanager
