@@ -14,7 +14,8 @@ per address):
   and the ``match_code`` the page shows (``NUMBER_MATCHING``).
 - ``POST /app-sign-in/qr``: answers ``request``, ``expires_in``,
   ``interval``, ``qr``, what the page renders as a QR code, and
-  ``qr_expires_in``, when to show a new one if no phone scanned it.
+  ``qr_expires_in``, when to show a new one if no phone scanned it; and
+  a ``match_code`` under ``QR_NUMBER_MATCHING``.
 - ``POST /app-sign-in/token`` ``{"request"}``: tokens as ``/login`` gives
   them, once the phone approved; else 400 ``authorization_pending``,
   ``slow_down``, ``expired_token``, ``access_denied`` or ``sign_in_unknown``.
@@ -26,6 +27,10 @@ per address):
   poll. ``/app-sign-in/authorizations/wait``,
   ``/app-sign-in/transactions/wait`` and ``/app-sign-in/step-up/wait`` do
   the same for a session's asks.
+
+A domain's ``on_start`` hook may name a page's sign-ins, refuse them, or
+ask more or less of them than the settings do (``SignInPolicy``, ADR
+0155).
 
 A signed-in web session (credentials without scopes) asks the user's
 phone for more (ADR 0129); only that session redeems the answer:
@@ -144,7 +149,7 @@ from .exceptions import (
     WrongMatchCode,
 )
 from .gate import mark_approved
-from .hooks import on_approve, on_start
+from .hooks import SignInPolicy, on_approve, on_start
 from .services import (
     PHONE_CONFIRMS,
     Requester,
@@ -424,23 +429,70 @@ async def count_start(request: Request) -> None:
     )
 
 
-async def _start_message(request: Request) -> str | None:
-    """The binding message the domains' ``on_start`` hooks give; they may refuse.
+async def _start_policy(request: Request) -> SignInPolicy:
+    """What the domains' ``on_start`` hooks ask of the page's sign-in; they may refuse.
+
+    Every hook runs. The first binding message given is kept. Number
+    matching is asked if a hook asks it, and the same network required if
+    a hook requires it: a hook relaxes a setting only where none asks more.
+    A field no hook gives stays None, for the setting to decide.
 
     Raises:
-        ImproperlyConfigured: A hook gave a message the phone cannot show.
+        ImproperlyConfigured: A hook gave a message the phone cannot show,
+            or something other than a message, a ``SignInPolicy``, or None.
     """
     message: str | None = None
+    matching: set[bool] = set()
+    networks: set[Literal["warn", "require"]] = set()
     for hook in on_start:
         given = await hook.call(request)
-        if given is not None and message is None:
-            if not given.isprintable() or not 0 < len(given.strip()) <= MESSAGE_LENGTH:
+        if isinstance(given, str):
+            given = SignInPolicy(binding_message=given)
+        if given is None:
+            continue
+        if not isinstance(given, SignInPolicy) or not _policy_holds(given):
+            raise ImproperlyConfigured(
+                f"{hook.domain}'s on_start hook gave {given!r}: return a binding "
+                "message, a SignInPolicy (number_matching a bool, same_network "
+                '"warn" or "require"), or None.'
+            )
+        if given.binding_message is not None and message is None:
+            if not _showable(given.binding_message):
                 raise ImproperlyConfigured(
                     f"{hook.domain}'s on_start hook gave a message the phone "
                     f"cannot show: 1 to {MESSAGE_LENGTH} printable characters."
                 )
-            message = given
-    return message
+            message = given.binding_message
+        if given.number_matching is not None:
+            matching.add(given.number_matching)
+        if given.same_network is not None:
+            networks.add(given.same_network)
+    return SignInPolicy(
+        binding_message=message,
+        number_matching=(True in matching) if matching else None,
+        same_network=(
+            ("require" if "require" in networks else "warn") if networks else None
+        ),
+    )
+
+
+def _policy_holds(policy: SignInPolicy) -> bool:
+    """Whether a hook's policy holds values the start can apply."""
+    return (
+        (policy.binding_message is None or isinstance(policy.binding_message, str))
+        and (policy.number_matching is None or isinstance(policy.number_matching, bool))
+        and policy.same_network in (None, "warn", "require")
+    )
+
+
+def _showable(message: str) -> bool:
+    """Whether the phone can show ``message`` whole: printable, 1 to 64 characters."""
+    return message.isprintable() and 0 < len(message.strip()) <= MESSAGE_LENGTH
+
+
+def _matching(policy: SignInPolicy, setting: bool) -> bool:
+    """Whether the start asks the number: the page's policy, else ``setting``."""
+    return setting if policy.number_matching is None else policy.number_matching
 
 
 def _started(started: Started) -> StartedOut:
@@ -471,15 +523,15 @@ async def start_push_sign_in(
     """
     _no_store(response)
     await count_start(request)
-    message = await _start_message(request)
+    policy = await _start_policy(request)
     async with CibaUnitOfWork() as uow:
         user = await uow.users.find_by_identifier(body.identifier)
         started = await start_push(
             uow,
             user,
             requester=_requester(request),
-            match=ciba_settings().NUMBER_MATCHING,
-            binding_message=message,
+            match=_matching(policy, ciba_settings().NUMBER_MATCHING),
+            binding_message=policy.binding_message,
         )
         await uow.commit()
     return _started(started)
@@ -492,13 +544,21 @@ async def start_push_sign_in(
     responses=error_responses(status.HTTP_429_TOO_MANY_REQUESTS),
 )
 async def start_qr_sign_in(request: Request, response: Response) -> StartedOut:
-    """A QR code for the phone to scan; ask for a new one when it expires."""
+    """A QR code for the phone to scan; ask for a new one when it expires.
+
+    With a ``match_code``, show it beside the code: the phone that scanned
+    it types it to approve.
+    """
     _no_store(response)
     await count_start(request)
-    message = await _start_message(request)
+    policy = await _start_policy(request)
     async with CibaUnitOfWork() as uow:
         started = await start_qr(
-            uow, requester=_requester(request), binding_message=message
+            uow,
+            requester=_requester(request),
+            binding_message=policy.binding_message,
+            match=_matching(policy, ciba_settings().QR_NUMBER_MATCHING),
+            same_network=policy.same_network,
         )
         await uow.commit()
     return _started(started)

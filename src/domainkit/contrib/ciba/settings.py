@@ -42,13 +42,18 @@ class CibaSettings(BaseModel):
     )
     """How long no push reaches a user who reported a request."""
     NUMBER_MATCHING: bool = True
-    """Web push sign-ins show a two-digit code the phone must type."""
+    """Web push sign-ins show a two-digit code the phone must type; a page's
+    ``on_start`` hook may ask otherwise (``SignInPolicy``)."""
+    QR_NUMBER_MATCHING: bool = False
+    """Web QR sign-ins show one too, which the phone types once it scanned
+    the code; a page's ``on_start`` hook may ask otherwise."""
     REQUIRE_BINDING_MESSAGE: bool = True
     """CIBA clients must send a ``binding_message``, shown on both devices."""
     QR_SAME_NETWORK: Literal["warn", "require"] = "warn"
     """When the phone claiming a QR code is on another address than the page
     showing it: tell the app (``"warn"``), or refuse the claim. The
-    project's own pages only: a CIBA client's server is not the page."""
+    project's own pages only: a CIBA client's server is not the page. A
+    page's ``on_start`` hook may ask otherwise (``SignInPolicy``)."""
     QR_FORMAT: str = Field(default="{code}", max_length=300)
     """What a QR code holds; ``{code}`` is replaced by the secret
     (``"https://id.example.com/qr#{code}"`` for a universal link)."""

@@ -800,6 +800,7 @@ The login gate of `CIBA.APPROVE_LOGINS`: the mobile app is the identity.
 
 Hook points of the project's own sign-in pages (user report A8).
 
+- `SignInPolicy`: What a page's sign-in asks of the phone; a field left None keeps the setting.
 - `on_approve`: A sign-in the user's phone approves: `(request, user, sign_in)`.
 - `on_start`: A sign-in the project's own page starts (push or QR): `(request)`.
 

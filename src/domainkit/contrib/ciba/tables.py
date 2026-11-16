@@ -76,6 +76,9 @@ sign_in_requests = Table(
     Column("credential_digest", String(64), nullable=True),
     # The auth.sca transaction a request confirms. No foreign key: auth's.
     Column("sca_challenge_id", Uuid, nullable=True),
+    # A QR request's page asked "warn" or "require" of a phone on another
+    # network (ADR 0155). None: QR_SAME_NETWORK decides when it is claimed.
+    Column("same_network", String(16), nullable=True),
     Index("ix_domainkit_ciba_requests_user", "user_id", "expires_at"),
     Index("ix_domainkit_ciba_requests_expires_at", "expires_at"),
     info={"domain": "ciba", "fixtures": False},

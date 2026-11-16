@@ -151,6 +151,9 @@ A sign-in request starts on one of two channels:
   `qr_expires_in`); the page shows a new one if no phone scanned it.
   Once scanned, the phone has `REQUEST_TTL` to answer, as for a push:
   `expires_in` covers both, so keep polling after the code is scanned.
+  Under `QR_NUMBER_MATCHING`, or [a page's policy](#a-policy-per-page),
+  the page shows `match_code` beside the code too, and the phone types it
+  once it scanned the code, as for a push.
 
 Then the phone approves or denies, and the initiator polls with the
 handle it got (`request`, or CIBA's `auth_req_id`). The poll answers:
@@ -210,8 +213,8 @@ address (`429 rate_limited`).
 
 | Route | Body | Answer |
 | --- | --- | --- |
-| `POST /auth/app-sign-in/push` | `{"identifier"}` | `request`, `expires_in`, `interval`, `match_code`. |
-| `POST /auth/app-sign-in/qr` | | `request`, `expires_in`, `interval`, `qr`. |
+| `POST /auth/app-sign-in/push` | `{"identifier"}` | `request`, `expires_in`, `interval`, and `match_code` under `NUMBER_MATCHING`. |
+| `POST /auth/app-sign-in/qr` | | `request`, `expires_in`, `interval`, `qr`, `qr_expires_in`, and `match_code` under `QR_NUMBER_MATCHING`. |
 | `POST /auth/app-sign-in/token` | `{"request"}` | Tokens, or a poll's answer. |
 | `POST /auth/app-sign-in/session` | `{"request"}` | A browser session (cookies and `csrf_token`), or a poll's answer. |
 | `POST /auth/app-sign-in/wait` | `{"request"}` | `{"status": "approved"}` once the phone approves, or `"pending"` after `WAIT_SECONDS`; never redeems. |
@@ -230,18 +233,92 @@ A domain can name what its pages start, refuse a start, or refuse an
 approval, without its own routes. It registers on two hook points of
 `domainkit.contrib.ciba.hooks` in `ready()`:
 
-- `on_start(hook)`: `async def hook(request) -> str | None`, when the
-  project's page starts a push or a QR sign-in. It returns a binding
-  message, shown on the page and on the phone ("Sign in to the
-  dashboard"; 1 to 64 printable characters), or None; it raises to
-  refuse the start, as any route's error. The first message given is
-  kept; every hook runs.
+- `on_start(hook)`: `async def hook(request) -> str | SignInPolicy | None`,
+  when the project's page starts a push or a QR sign-in. It returns a
+  binding message, shown on the page and on the phone ("Sign in to the
+  dashboard"; 1 to 64 printable characters), a `SignInPolicy`
+  ([below](#a-policy-per-page)), or None; it raises to refuse the start,
+  as any route's error. The first message given is kept; every hook
+  runs.
 - `on_approve(hook)`: `async def hook(request, user, sign_in) -> None`,
   before a phone's approval of the user's own request is recorded; it
   raises (`PermissionDenied`) to refuse it, and nothing is approved.
 
 `domainkit.contrib.ciba.api.count_start(request)` counts a start of a
 project's own route against `START_RATE`, with the built-in ones.
+
+### A policy per page
+
+A hook can ask more, or less, of one page's sign-ins than the settings
+do (since 2.4,
+[ADR 0155](../adr/0155-choose-number-matching-and-the-same-network-per-page.md)).
+It returns a `SignInPolicy` in place of a message; each field it leaves
+None keeps the setting:
+
+| Field | Setting it stands for | Meaning |
+| --- | --- | --- |
+| `binding_message` | | As a message returned alone. |
+| `number_matching` | `NUMBER_MATCHING` for a push, `QR_NUMBER_MATCHING` for a QR code | Whether the phone types the two digits the page shows. |
+| `same_network` | `QR_SAME_NETWORK` | `"warn"` or `"require"`: what a phone on another address than the page gets when it claims the page's QR code. A push has no code to claim. |
+
+```python
+from domainkit.contrib.ciba.hooks import SignInPolicy, on_start
+
+DASHBOARD = "https://admin.example.com"
+
+
+async def per_page(request: Request) -> SignInPolicy:
+    if request.headers.get("origin") == DASHBOARD:
+        return SignInPolicy(
+            binding_message="Sign in to the dashboard",
+            number_matching=True,
+            same_network="require",
+        )
+    return SignInPolicy(number_matching=False)  # the shop
+
+
+class AccountsConfig(DomainConfig):
+    def ready(self) -> None:
+        on_start(per_page)
+```
+
+The dashboard's QR codes then come with a `match_code` the page shows;
+the phone that scanned one lists it with `match_required` true, and
+types the number to approve (a wrong number denies the request, as for a
+push). A phone on another network cannot claim them (`403
+different_network`). The shop's pushes ask no number. The policy is
+decided from the start's request alone, so the answer says nothing of
+the user, and it stays with the request until it is answered: a setting
+changed meanwhile reaches only the requests whose page gave none. When
+several hooks answer, the first message is kept, the number is asked if
+one asks it, and the same network is required if one requires it: a
+hook relaxes a setting only where no other asks more. A value the start
+cannot apply is the project's mistake, a `500`, and nothing is stored.
+
+Asking the phone from a signed-in session (an act, a transaction) starts
+from no page: those requests follow `NUMBER_MATCHING`.
+
+**Anyone can start from any page.** The policy follows what the request
+says of its page (an `Origin`, a path, a header), and whoever starts a
+sign-in chooses that. A push started as the shop's, with no number,
+reaches whichever user it names, and its login is a login like any
+other. So let a page ask less only where that is safe for every user,
+or keep the stronger policy for those who need it in `on_approve`, which
+sees the request, its `match_code` set when the number was asked:
+
+```python
+async def staff_need_the_number(request, user, sign_in) -> None:
+    if user.is_staff and sign_in.kind == "sign_in" and sign_in.match_code is None:
+        raise PermissionDenied("Sign in from a page that shows a number.")
+
+
+on_approve(staff_need_the_number)
+```
+
+A number on a QR code does not stop a relayed code: whoever shows the
+user someone else's code shows its number too. It makes the user read
+the page that started the sign-in, which a code that reached them as a
+picture, or as a link they tapped (`QR_FORMAT`), does not need.
 
 ## Asking the phone from a signed-in session
 
@@ -787,9 +864,10 @@ other, not `unknown_user_id`.
 | `WAIT_SECONDS` | 20 (1 to 55) | Seconds a `…/wait` holds at most, within the request's deadline (`REQUEST_TIMEOUT`) less a second. |
 | `MAX_PENDING` | 3 (1 to 20) | Push requests a user may have waiting; past it, no push is sent. |
 | `REPORT_COOLDOWN` | 15 minutes (at most 1 day) | How long no push reaches a user who reported a request. |
-| `NUMBER_MATCHING` | `True` | Web push sign-ins show two digits the phone must type. |
+| `NUMBER_MATCHING` | `True` | Web push sign-ins show two digits the phone must type; [a page's policy](#a-policy-per-page) may ask otherwise. |
+| `QR_NUMBER_MATCHING` | `False` | Web QR sign-ins show two digits too, which the phone types once it scanned the code; a page's policy may ask otherwise (since 2.4). |
 | `REQUIRE_BINDING_MESSAGE` | `True` | CIBA clients must send a `binding_message`. |
-| `QR_SAME_NETWORK` | `"warn"` | When the phone claiming a QR code is on another address than the page: tell the app (`same_network: false`), or refuse (`"require"`, `403 different_network`). |
+| `QR_SAME_NETWORK` | `"warn"` | When the phone claiming a QR code is on another address than the page: tell the app (`same_network: false`), or refuse (`"require"`, `403 different_network`); a page's policy may ask otherwise. |
 | `QR_FORMAT` | `"{code}"` | What a QR code holds, at most 300 characters; `{code}` once, such as `"https://id.example.com/qr#{code}"` for a universal link. |
 | `START_RATE` | `"10/minute"` | Sign-ins the public routes start per client address; `None` for none. |
 | `CLIENT_RATE` | `"60/minute"` | Requests each CIBA client starts; `None` for none. |
@@ -816,8 +894,8 @@ devices app's ([above](#the-mobile-app-as-identity)).
   phone and a poll racing never both win: the loser is refused.
 - **Push bombing is bounded.** A user gets at most `MAX_PENDING` pushes
   waiting, none for `REPORT_COOLDOWN` after a report, and a web page
-  needs the number it shows. A wrong number denies the request: guessing
-  gets one try.
+  needs the number it shows, unless its policy turns it off. A wrong
+  number denies the request: guessing gets one try.
 - **Nothing tells who exists.** A push to an unknown identifier, an
   inactive user, a user with no bound device, one at `MAX_PENDING`, or
   one in the cooldown is a decoy. It answers like any request, and nobody
@@ -832,7 +910,9 @@ devices app's ([above](#the-mobile-app-as-identity)).
   is abused.
 - **A relayed QR code is caught, not prevented.** An attacker can show
   their own page's code to a victim. The phone shows the page's address
-  and browser, and warns when it is not on the same network. Passkeys'
+  and browser, and warns when it is not on the same network, or refuses
+  it where the page requires that. A number on the code does not help:
+  it is relayed with the code. Passkeys'
   own cross-device flow (the browser's QR code, with Bluetooth proving
   proximity) is the phishing-resistant choice where it fits.
 
@@ -861,7 +941,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | Function | What it does |
 | --- | --- |
 | `start_push(uow, user, *, requester, client_id=None, scope="", binding_message=None, match=False)` | A push request; a decoy when `user` is None or cannot be asked. Returns `Started` (`handle`, `request_id`, `expires_in`, `interval`, `match_code`). |
-| `start_qr(uow, *, requester, client_id=None, scope="", binding_message=None, kind="sign_in", credential_digest=None)` | A QR request; `Started.qr` holds the code. `kind="device"`, with the SHA-256 of a key as `credential_digest`, is a new phone's request to be bound: only that key redeems it. |
+| `start_qr(uow, *, requester, client_id=None, scope="", binding_message=None, kind="sign_in", credential_digest=None, match=False, same_network=None)` | A QR request; `Started.qr` holds the code, and `Started.match_code` the number with `match`. `same_network` (`"warn"` or `"require"`) stands for `QR_SAME_NETWORK` at its claim. `kind="device"`, with the SHA-256 of a key as `credential_digest`, is a new phone's request to be bound: only that key redeems it. |
 | `claim(uow, user_id, code, *, address)` | The QR request, now the user's. Raises `QrCodeExpired` or `DifferentNetwork`. |
 | `approve(uow, user_id, request_id, device_id, *, match_code=None)` | The approved request, or `None` for a wrong number (commit, then raise `WrongMatchCode`). Raises `SignInNotFound`. |
 | `deny(uow, user_id, request_id, *, report=False)` | Denies, and with `report` every other waiting request. Raises `SignInNotFound`. |
@@ -880,7 +960,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | `PhoneRequired` | `403 phone_required` | `APPROVE_LOGINS`: listing a user's logins, ending one but the request's own, unbinding a device, changing a second factor, or asking a credential change to end the devices' logins, unsigned by their bound device. |
 | `SignInNotFound` | `404 sign_in_not_found` | The phone answers a request that is not its user's, was answered, or expired. |
 | `QrCodeExpired` | `422 qr_code_expired` | The QR code is unknown, was claimed, or expired. |
-| `DifferentNetwork` | `403 different_network` | `QR_SAME_NETWORK = "require"`, and the phone is elsewhere. |
+| `DifferentNetwork` | `403 different_network` | `QR_SAME_NETWORK = "require"`, or the page's policy, and the phone is elsewhere. |
 | `WrongMatchCode` | `422 wrong_match_code` | Not the page's number: the request is denied. |
 | `AuthorizationPending`, `SlowDown`, `SignInExpired`, `AccessDenied`, `SignInUnknown` | `400 authorization_pending`, `slow_down`, `expired_token`, `access_denied`, `sign_in_unknown` | A poll's answers ([above](#how-a-sign-in-works)). |
 | `DeviceLoginOff` | `404 device_login_off` | `POST /devices/login` without `DEVICES.DEVICE_LOGIN`. |
@@ -898,7 +978,9 @@ approved = await poll(started.handle, client_id=None)  # commits itself
   browser, then let the user choose.
 - **Turning `NUMBER_MATCHING` off for web push sign-ins.** The user then
   approves whatever arrives, and an attacker who knows an identifier gets
-  in on a tired tap.
+  in on a tired tap. Turning it off for one page does the same for every
+  user: anyone can start from that page
+  ([A policy per page](#a-policy-per-page)).
 - **A shared-secret `AUTH.JWT` with the OIDC routes.** Clients cannot
   verify HS256 ID tokens without your secret; `ciba.E002` refuses it.
 - **`APPROVE_LOGINS` without a support path.** A user who lost their only
