@@ -84,7 +84,7 @@ from .throttling import (
 )
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, typed_fields
-from .validators import validate_password
+from .validators import avalidate_password
 
 __all__ = [
     "router",
@@ -251,7 +251,8 @@ async def confirm_signup_code(body: SignupCodeIn, request: Request) -> None:
             pending = await uow.signups.get(proven.signup_id)
         if pending is not None and not pending.expired():
             account = _account(get_user_model(), pending, PasswordHash.unusable())
-            validate_password(body.password, account)  # Raises: nothing is spent.
+            # Raises: nothing is spent.
+            await avalidate_password(body.password, account)
             password = PasswordHash(await amake_password(body.password))
             await uow.signups.remove(pending.id)  # The code works once.
             holders = await _unproved_holders(uow, pending)

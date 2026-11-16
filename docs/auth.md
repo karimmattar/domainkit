@@ -112,6 +112,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `HASHING_QUEUE` | `8` | Hashing calls that may wait for a thread (about 0.4 seconds each); more answer `503 password_checks_busy` (at most 10,000). |
 | `HASHING_RESERVED` | `1` | Places of `HASHING_QUEUE` kept for `POST /auth/password` and the admin's password change; other calls are refused once the rest are taken. More than `HASHING_QUEUE` counts as `HASHING_QUEUE`. |
 | `PASSWORD_VALIDATORS` | the four rules | Rules for new passwords ([Validators](auth/users.md#validators)); `[]` checks nothing. |
+| `BREACHED_PASSWORDS` | see below | New passwords checked against data breaches, after `PASSWORD_VALIDATORS`, with Have I Been Pwned's range API; off by default ([Breached passwords](auth/users.md#breached-passwords)). |
 | `PRESET` | `None` | `"pci-dss-4"` sets `PASSWORD_VALIDATORS`, `PASSWORD_HISTORY`, `PASSWORD_CHANGE_ON_FIRST_USE`, `LOGIN_RATE`, `PASSWORD_CHECKS_COUNT_AS_LOGINS`, and `IDLE_TIMEOUT` as PCI DSS v4.0 asks, where they are left unset. It refuses to start where one you set contradicts it (`auth.E010`) ([PCI DSS v4.0's passwords](auth/pci-dss.md)). |
 | `PASSWORD_HISTORY` | `0` | Passwords of a user's own, the current one among them, that a new one may not repeat (0 to 24); `0` keeps none. |
 | `PASSWORD_CHANGE_ON_FIRST_USE` | `False` | A password that staff set (the admin API, `changepassword <user>`) logs in only to be changed: `/login` and `/session` answer `403 password_change_required` until the login sends `new_password`. With a second factor, the change is sent with the code (`/mfa/login`, `/session/mfa`). |
@@ -149,6 +150,14 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
 
+| `AUTH["BREACHED_PASSWORDS"]` key | Default | Meaning |
+| --- | --- | --- |
+| `ENABLED` | `False` | Check every new password (signup, change, reset, the admin API, a change at first use or at enrollment, the commands) after `PASSWORD_VALIDATORS`. Needs the `httpclient` extra. |
+| `URL` | `"https://api.pwnedpasswords.com/range/"` | The range API, `http` or `https`, ending in `/`; the first five characters of the password's SHA-1 follow it. A mirror of the downloaded hashes serves the same paths. At most 2,000 characters. |
+| `TIMEOUT` | `2.0` | Seconds one check may take, its retries included, and never past the request's deadline; at most 10. |
+| `MIN_COUNT` | `1` | Times a password must have been seen in breaches to be refused (1 to 1,000,000). |
+| `FAIL_CLOSED` | `False` | What an API that does not answer in time, or answers what does not read as hashes, does: `False` lets the password through, with a warning in the log, and the other rules still apply; `True` refuses it, `503 breached_passwords_unavailable`. |
+
 | `AUTH["COOKIE"]` key | Default | Meaning |
 | --- | --- | --- |
 | `NAME` | `None`: `"__Host-dk_session"` | The session cookie (HttpOnly). By default `__Host-dk_session` where the prefix holds (Secure, no `DOMAIN`, the `PATH` `/`), else `dk_session`. `__Host-` names need `SECURE`, no `DOMAIN`, and the `PATH` `/`. |
@@ -160,6 +169,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `PATH` | `"/"` | The cookies' path. |
 | `TTL` | 14 days | How long a browser session works. |
 | `END_PREVIOUS_SESSION` | `True` | A login from a browser ends the session its cookie held; `False` keeps it, as before 0.10 ([Sessions](auth/logging-in.md#sessions)). |
+
 
 | `AUTH["MFA"]` key | Default | Meaning |
 | --- | --- | --- |

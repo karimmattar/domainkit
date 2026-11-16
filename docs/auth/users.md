@@ -695,8 +695,11 @@ AUTH = {
 
 `validate_password(password, user)` runs them all and raises
 `InvalidPassword` (422 `invalid_password`) with every rule broken.
-`password_help_texts()` describes the rules, for the page where users
-choose a password:
+`await avalidate_password(password, user)` does the same in async code,
+and awaits the rules that are `async`, such as the
+[breached-password check](#breached-passwords). Each message is
+translated into the request's language. `password_help_texts()`
+describes the rules, for the page where users choose a password:
 
 ```python
 from domainkit.contrib.auth import (
@@ -728,12 +731,13 @@ Your password can't be entirely numeric.
 | `CommonPasswordValidator` | `password_list_path` | Django's list of 20,000 common passwords, or your own (one per line, gzipped or not). |
 | `NumericPasswordValidator` | | Passwords made only of digits. |
 | `LettersAndDigitsValidator` | | Passwords without at least one letter and one digit, of any script ([PCI DSS](pci-dss.md)). |
+| `BreachedPasswordValidator` | a `BreachedPasswordSettings` | Passwords seen in data breaches ([Breached passwords](#breached-passwords)). `AUTH.BREACHED_PASSWORDS` turns it on and gives its settings: you do not list it. |
 
-`PASSWORD_VALIDATORS = []` checks nothing. A validator of your own is a
-class with `validate(password, user)`, which raises
-`PasswordValidationError` (from `domainkit.contrib.auth`),
-and `help_text()`. `validate_password` collects only that error; any
-other exception goes up to the caller.
+`PASSWORD_VALIDATORS = []` checks nothing (but `BREACHED_PASSWORDS`,
+when it is on). A validator of your own is a class with
+`validate(password, user)`, which raises `PasswordValidationError` (from
+`domainkit.contrib.auth`), and `help_text()`. The validators collect
+only that error; any other exception goes up to the caller.
 
 ```python
 from domainkit.contrib.auth import PasswordValidationError
@@ -748,11 +752,81 @@ class NoShopNameValidator:
         return "Your password can't contain the shop's name."
 ```
 
+`validate` may be `async def`, for a rule that reads a table or asks
+another service:
+
+```python
+from accounts.uow import AccountsUnitOfWork
+from domainkit.contrib.auth import PasswordValidationError
+
+
+class BannedPasswordValidator:
+    async def validate(self, password: str, user: object | None = None) -> None:
+        async with AccountsUnitOfWork() as uow:
+            banned = await uow.banned_passwords.contains(password.lower())
+        if banned:
+            raise PasswordValidationError("The security team banned this password.")
+
+    def help_text(self) -> str:
+        return "Your password can't be one the security team banned."
+```
+
+`avalidate_password` awaits it. `validate_password` cannot, so it
+refuses to run with an `async` rule configured (`ImproperlyConfigured`),
+rather than take the password unchecked: call `avalidate_password` from
+async code, or `run_async(avalidate_password(...))` from a command.
+
 `create_user` and the repositories hash a password; they do not validate
 it. The routes that take a password (`/auth/password`, resets, signup,
-the admin API) and the commands (`createsuperuser`, `changepassword`)
-call `validate_password` for you. `AUTH.PASSWORD_HISTORY` also refuses a
+the admin API, a change at the first login or at a phone's enrollment)
+and the commands (`createsuperuser`, `changepassword`) call
+`avalidate_password` for you. `AUTH.PASSWORD_HISTORY` also refuses a
 password the user had before ([PCI DSS](pci-dss.md)).
+
+### Breached passwords
+
+NIST SP 800-63B asks that a new password be compared with passwords
+known to be compromised, and refused with the reason when it is one.
+`CommonPasswordValidator` holds 20,000 of them. `AUTH.BREACHED_PASSWORDS`
+adds the hundreds of millions that Have I Been Pwned has seen in data
+breaches, through its Pwned Passwords range API:
+
+```python
+AUTH = {"BREACHED_PASSWORDS": {"ENABLED": True}}
+```
+
+The check runs after `PASSWORD_VALIDATORS`, wherever passwords are
+chosen, and refuses a password seen `MIN_COUNT` times or more: "This
+password has appeared in a data breach: choose another one."
+
+- **The password never leaves the service, nor its hash.** The check
+  hashes the password with SHA-1 and sends the first five characters of
+  the hash, `GET <URL>21BD1`. The API answers every hash ending it knows
+  under that prefix, padded to 800 to 1,000 lines (`Add-Padding: true`)
+  so the answer's size does not tell the prefix, and the ending is
+  compared here. domainkit's logs name the API's origin, never the
+  prefix.
+- **It goes through the outgoing client** (`domainkit.http.client`, the
+  `httpclient` extra), so the call is bounded by `TIMEOUT` (2 seconds,
+  retries included) and by the request's deadline, and after
+  `HTTP_CLIENT.BREAKER_FAILURES` failures in a row it fails at once for
+  `BREAKER_COOLDOWN` seconds instead of making each person wait.
+- **It fails open by default.** When the API does not answer in time,
+  or answers what does not read as hashes, the password is let through
+  with a warning in the log; the other rules, the 20,000 common
+  passwords among them, still apply. Keep `CommonPasswordValidator` in
+  `PASSWORD_VALIDATORS` for that reason. `FAIL_CLOSED = True` refuses the
+  password instead (`503 breached_passwords_unavailable`): signups and
+  resets then stop while the API is down ([ADR 0148](../adr/0148-check-new-passwords-against-breaches-and-let-rules-be-async.md)).
+- **`URL` can name a mirror** that serves the hashes you downloaded from
+  Have I Been Pwned on the same paths, so no call leaves your network.
+
+The routes that check a password inside their transaction (a reset, a
+signup's code, a change at the first login) hold their database
+connection for the check, `TIMEOUT` at most.
+
+In tests, fake the API with `domainkit.http.client.stub`, or leave the
+check off in the test settings: tests never call it on their own.
 
 ## Users in tests
 
@@ -800,6 +874,7 @@ directly, see [the hub page](../auth.md#tests).
 | `BACKENDS` | `ModelBackend` | Backends, asked in order. |
 | `PASSWORD_HASHERS` | PBKDF2, PBKDF2-SHA1, Argon2, scrypt | The first hashes new passwords. |
 | `PASSWORD_VALIDATORS` | the four rules above | `[]` checks nothing. |
+| `BREACHED_PASSWORDS` | off | New passwords checked against data breaches ([Breached passwords](#breached-passwords)). |
 | `HASHING_THREADS`, `HASHING_QUEUE`, `HASHING_RESERVED` | 1, 8, 1 | Threads, waiting calls, and reserved places. |
 | `PASSWORD_HISTORY` | `0` | Old passwords a new one may not repeat. |
 
@@ -825,12 +900,15 @@ and the full defaults.
 | `UnknownUserField` | 422 | `unknown_user_field` | The model has no such field, or the field changes another way. |
 | `InvalidUserField` | 422 | `invalid_user_field` | A value does not fit the field's type or markers. |
 | `PasswordChecksBusy` | 503 | `password_checks_busy` | The hashing queue is full; see `Retry-After`. |
+| `BreachedPasswordsUnavailable` | 503 | `breached_passwords_unavailable` | The breached-password check could not answer, and `BREACHED_PASSWORDS.FAIL_CLOSED` is set. |
 
 ## Common mistakes
 
 - **Creating users with a password nobody validated.** `create_user`
-  only hashes. Call `validate_password(password, user)` where people
-  choose passwords.
+  only hashes. Call `await avalidate_password(password, user)` where
+  people choose passwords.
+- **Calling `validate_password` with an `async` rule configured.** It
+  raises `ImproperlyConfigured`: await `avalidate_password` instead.
 - **Swapping the user model after the first `migrate`.** Do it first.
 - **Forgetting `AUTH = {**AUTH, ...}` in other settings files.** A plain
   `AUTH = {...}` there drops `USER_MODEL`.

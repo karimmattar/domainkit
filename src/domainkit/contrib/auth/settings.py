@@ -397,6 +397,38 @@ class CaptchaSettings(BaseModel):
     those names; a token from a form that asks less then opens no other."""
 
 
+PWNED_PASSWORDS: Final = "https://api.pwnedpasswords.com/range/"
+"""Have I Been Pwned's Pwned Passwords range API: a hash prefix follows."""
+MAX_BREACH_TIMEOUT: Final = 10.0
+"""The longest ``BREACHED_PASSWORDS.TIMEOUT``, in seconds: a person waits for it."""
+
+
+class BreachedPasswordSettings(BaseModel):
+    """``AUTH["BREACHED_PASSWORDS"]``: new passwords checked against data breaches.
+
+    See ``BreachedPasswordValidator`` and ADR 0148.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    ENABLED: bool = False
+    """Check every new password after ``PASSWORD_VALIDATORS``."""
+    URL: str = Field(
+        default=PWNED_PASSWORDS, pattern=r"^https?://[^\s?#]+/$", max_length=2000
+    )
+    """The range API, ending in ``/``: the first five characters of the
+    password's SHA-1 follow it. A mirror of the downloaded hashes serves
+    the same paths."""
+    TIMEOUT: float = Field(default=2.0, gt=0, le=MAX_BREACH_TIMEOUT)
+    """Seconds one check may take, its retries included."""
+    MIN_COUNT: int = Field(default=1, ge=1, le=1_000_000)
+    """Times a password must have been seen in breaches to be refused."""
+    FAIL_CLOSED: bool = False
+    """Refuse the password (503 ``breached_passwords_unavailable``) when the
+    API cannot answer in time; False lets it through, with a warning in the
+    log, and the other rules still apply."""
+
+
 class AuthSettings(BaseModel):
     """Users, hashing, validation, and backends; every key is optional."""
 
@@ -446,6 +478,8 @@ class AuthSettings(BaseModel):
         PasswordValidatorConfig(NAME=f"{VALIDATORS}.NumericPasswordValidator"),
     )
     """Rules new passwords must follow; ``()`` checks nothing."""
+    BREACHED_PASSWORDS: BreachedPasswordSettings = BreachedPasswordSettings()
+    """New passwords checked against data breaches, off by default."""
     PRESET: Literal["pci-dss-4"] | None = None
     """A set of settings a standard asks for: ``"pci-dss-4"`` sets
     ``PASSWORD_VALIDATORS``, ``PASSWORD_HISTORY``,

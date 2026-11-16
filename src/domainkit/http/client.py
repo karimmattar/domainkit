@@ -43,7 +43,8 @@ calls. Every call:
   more than the limit and a piece;
 - is logged by method, origin, and path: never a query string, a header,
   or a body (``build_logging_config`` quiets httpx2's own lines, which
-  show the whole URL).
+  show the whole URL). ``log_paths=False`` logs the origin alone, for
+  paths that carry what the logs must not keep, such as a hash prefix.
 
 A client made with ``guard=True`` calls only public addresses
 (``domainkit.http.guard``): https only (``allow_http=True`` adds http), no
@@ -298,6 +299,7 @@ class HttpClient:
         breaker: bool = True,
         transport: httpx2.AsyncBaseTransport | None = None,
         http2: bool = False,
+        log_paths: bool | None = None,
     ) -> None:
         """Make a client; nothing is opened until its first call.
 
@@ -313,7 +315,8 @@ class HttpClient:
         a guarded client refuses one, since its checks are made as it
         connects (tests use ``stub``). ``http2`` speaks HTTP/2 where the
         server does (needs ``h2``: ``httpx2[http2]``), as Apple's push
-        service requires.
+        service requires. ``log_paths`` names each call's path in logs and
+        errors besides its origin (default: unless guarded).
 
         Raises:
             ValueError: An option is out of range, or a guarded client was
@@ -338,6 +341,7 @@ class HttpClient:
         self.allow_http = allow_http
         self.allowed_networks = tuple(allowed_networks)
         self.propagate = not guard if propagate is None else propagate
+        self.log_paths = not guard if log_paths is None else log_paths
         self.transport = transport
         self.http2 = http2
         self.breaker = CircuitBreaker() if breaker else None
@@ -411,7 +415,7 @@ class HttpClient:
         seconds = timeout or self.timeout or config.TIMEOUT
         call = _Call(
             method=method,
-            shown=_shown(target, path=not self.guard),
+            shown=_shown(target, path=self.log_paths),
             origin=origin,
             seconds=seconds,
             retries=config.RETRIES if self.retries is None else self.retries,

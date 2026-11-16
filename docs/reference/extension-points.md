@@ -159,7 +159,7 @@ ERROR_REPORTERS = ["config.errors.report_to_tracker"]
 | A rule for who may call a route | `domainkit.http.access.BasePermission` ([recipe](../recipes/permission-rules.md)) | `Depends(Require(rule))` on the route, or `Public` for anyone |
 | Another way to authenticate requests (OpenID Connect, a gateway's header) | an ASGI middleware that puts a `domainkit.http.access.Principal` in `scope["user"]` | `MIDDLEWARE` ([Another authentication](../auth/routes.md#another-authentication)) |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
-| A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
+| A password rule | a class with `validate(password, user)`, sync or `async`, and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
 
 ## Backends
 

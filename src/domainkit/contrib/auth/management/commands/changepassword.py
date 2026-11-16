@@ -10,8 +10,7 @@ from ...exceptions import InvalidPassword
 from ...models import AbstractBaseUser, UserId
 from ...settings import auth_settings
 from ...uow import AuthUnitOfWork
-from ...validators import validate_password
-from .. import user_for_staff
+from .. import check_password_rules, user_for_staff
 
 
 class Command(BaseCommand):
@@ -68,7 +67,7 @@ class Command(BaseCommand):
                     self.stderr.write("Passwords do not match. Please try again.\n")
                     continue
                 try:
-                    validate_password(password, user)
+                    check_password_rules(password, user)
                     run_async(self._save(user.id, password, temporary=temporary))
                 except InvalidPassword as exc:  # A rule, or the history.
                     self.stderr.write("\n".join(exc.errors) + "\n")

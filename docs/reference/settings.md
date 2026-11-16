@@ -22,6 +22,7 @@ On this page you find:
 | Databases, ledgers, shards, caches, storages, search, tenancy, brokers | [backends.md](backends.md) |
 | HTTP, security headers, CORS, outgoing calls, live connections, middleware | [http.md](http.md) |
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
+| `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
 
 Each table has a Default column. A default in backticks is the value
 itself. A row also states its bounds, such as "at most 3600".

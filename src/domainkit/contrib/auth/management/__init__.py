@@ -2,10 +2,12 @@
 
 from collections.abc import Callable
 
-from domainkit.management.base import CommandError
+from domainkit.exceptions import UpstreamError
+from domainkit.management.base import CommandError, run_async
 
 from ..models import AbstractBaseUser
 from ..repositories import UserRepository
+from ..validators import avalidate_password
 
 
 async def user_for_staff(
@@ -26,3 +28,17 @@ async def user_for_staff(
         raise CommandError(f"User {value!r} does not exist.")
     write(f"{value!r} is user {match.user.id}, by its {match.field}.")
     return match.user
+
+
+def check_password_rules(password: str, user: object) -> None:
+    """Run the password validators, ``async`` ones too, on a loop of their own.
+
+    Raises:
+        InvalidPassword: A rule refuses the password.
+        CommandError: A rule could not check it, and refuses it for that
+            (``BreachedPasswordsUnavailable`` under ``FAIL_CLOSED``).
+    """
+    try:
+        run_async(avalidate_password(password, user))
+    except UpstreamError as exc:
+        raise CommandError(exc.detail) from exc

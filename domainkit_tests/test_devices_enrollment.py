@@ -16,6 +16,7 @@ from domainkit.contrib import mail
 from domainkit.contrib.notifications.backends import sms_outbox
 from domainkit_tests.conftest import IDENTITY
 from domainkit_tests.support.auth import PASSWORD, audited, bearer, create_user, login
+from domainkit_tests.support.passwords import BREACHED_ON, LEAKED, pwned
 from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_auth_mfa import clock, code_at, enrol
 from domainkit_tests.test_auth_recovery import run_worker
@@ -283,6 +284,39 @@ def test_a_password_staff_set_is_changed_first(app: App) -> None:
     # Neither refusal spent the code: one message is enough.
     assert changed.status_code == 201, changed.json()
     assert relogged.status_code == 200, relogged.json()
+
+
+def test_a_breached_new_password_is_refused_before_the_code(app: App) -> None:
+    """The breached-password check runs where the new password is checked."""
+    from domainkit.contrib.auth import AuthUnitOfWork
+    from domainkit.contrib.auth.models import UserId
+    from domainkit.http.client import stub
+    from domainkit.management.base import run_async
+
+    client = app(PHONE)
+    alice = create_user("alice", email="alice@example.com", proved=True)
+    staff_set = "Kq7-zv93-Lmw2"
+
+    async def set_by_staff() -> None:
+        async with AuthUnitOfWork() as uow:
+            stored = await uow.users.get(UserId(alice))
+            await uow.users.set_password(stored, staff_set, temporary=True)
+            await uow.commit()
+
+    first_use = {**AUTH, **BREACHED_ON, "PASSWORD_CHANGE_ON_FIRST_USE": True}
+    with override_settings(DEVICES=ON, AUTH=first_use), stub(pwned(LEAKED)):
+        run_async(set_by_staff())
+        ask_code(client, "alice@example.com")
+        code = mailed_code()
+        phone = Device()
+        leaked = enroll(
+            client, phone, code=code, password=staff_set, new_password=LEAKED
+        )
+        changed = enroll(
+            client, phone, code=code, password=staff_set, new_password="Pw4-tt81-Xcv9"
+        )
+    assert (leaked.status_code, leaked.json()["code"]) == (422, "invalid_password")
+    assert changed.status_code == 201, changed.json()
 
 
 def test_a_user_with_a_bound_device_enrolls_no_other(app: App) -> None:
