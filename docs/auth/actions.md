@@ -487,6 +487,10 @@ transaction, after the `on_admin_change` checks, and checks that it binds
 the change before them. Approvals spends each in its services, as
 `approve_request` does ([Submitting, rejecting, and cancelling with an
 authorization](../contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization)).
+The project's own code takes those steps without one, through the
+functions the services run, `record_submission`, `record_approval`,
+`record_rejection`, and `record_cancellation` (since 2.6,
+[From the project's own code](../contrib/approvals.md#from-the-projects-own-code)).
 
 ## For other apps: confirming another way
 

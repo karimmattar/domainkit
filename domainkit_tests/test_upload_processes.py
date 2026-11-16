@@ -26,12 +26,16 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 
 from domainkit import inspection
 from domainkit.conf import override_settings
 from domainkit.conf.global_settings import MIB, UploadChecksConfig
 from domainkit.exceptions import ImproperlyConfigured, ServiceBusy
 from domainkit.http import uploads
+from domainkit.http.errors import install_exception_handlers
+from domainkit.http.locale import LocaleMiddleware
 from domainkit.http.uploads import (
     CHECKED_PDF,
     IMAGES,
@@ -40,6 +44,9 @@ from domainkit.http.uploads import (
     receive_upload,
     save_upload,
 )
+from domainkit.i18n.catalogs import compile_po
+from domainkit.i18n.lazy import LazyString
+from domainkit.i18n.translation import reset_catalogs
 from domainkit.inspection import (
     DAMAGED,
     PDF_STREAM_LIMIT,
@@ -319,7 +326,9 @@ async def test_the_whole_file_is_handed_over_and_read_in_a_thread() -> None:
 
 async def test_a_checks_process_answers_what_its_check_raised() -> None:
     """A library missing, a bug, a print to standard output, a type not taken."""
-    with pytest.raises(ImproperlyConfigured, match="needs a library"):
+    with pytest.raises(
+        ImproperlyConfigured, match="in its process: This check needs a library"
+    ):
         await receive_upload(b"x", types=[typed(hooks.unconfigured)], max_size=10)
     with pytest.raises(RuntimeError, match="failed in its process: KeyError"):
         await receive_upload(b"x", types=[typed(hooks.broken)], max_size=10)
@@ -330,6 +339,254 @@ async def test_a_checks_process_answers_what_its_check_raised() -> None:
 
     assert unsupported.value.status_code == 415
     assert received.kind.inspect is hooks.chatty
+
+
+# A lazy refusal, made again where it is shown ----------------------------------------
+
+SECRETS: Final = "Files with secrets are not accepted."
+ARABIC_CHECKS: Final = (
+    'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=UTF-8\\n"\n'
+    '"Plural-Forms: nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : '
+    'n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5;\\n"\n\n'
+    f'msgid "{SECRETS}"\nmsgstr "لا تُقبل الملفات التي فيها أسرار."\n\n'
+    'msgid "The file holds a secret."\nmsgid_plural "The file holds secrets."\n'
+    'msgstr[0] "لا يحمل الملف أسرارًا."\nmsgstr[1] "يحمل الملف سرًّا."\n'
+    'msgstr[2] "يحمل الملف سرّين."\nmsgstr[3] "يحمل الملف أسرارًا."\n'
+    'msgstr[4] "يحمل الملف أسرارًا."\nmsgstr[5] "يحمل الملف أسرارًا."\n\n'
+    'msgctxt "upload"\nmsgid "Refused."\nmsgstr "مرفوض."\n'
+)
+"""A project's catalog of its checks' refusals, in Arabic."""
+
+
+@pytest.fixture
+def arabic_checks(tmp_path: Path) -> Iterator[None]:
+    """``LOCALE_PATHS`` holds ``ARABIC_CHECKS``, compiled."""
+    po = tmp_path / "ar" / "LC_MESSAGES" / "messages.po"
+    po.parent.mkdir(parents=True)
+    po.write_text(ARABIC_CHECKS, encoding="utf-8")
+    po.with_suffix(".mo").write_bytes(compile_po(ARABIC_CHECKS))
+    reset_catalogs()
+    with override_settings(LOCALE_PATHS=[tmp_path]):
+        yield
+    reset_catalogs()
+
+
+@pytest.mark.parametrize(
+    ("check", "data", "source"),
+    [
+        (hooks.lazy, b"x", ("gettext", (SECRETS,))),
+        (
+            hooks.lazy_count,
+            b"SECRET, SECRET",
+            ("ngettext", ("The file holds a secret.", "The file holds secrets.", 2)),
+        ),
+        (hooks.lazy_in_context, b"x", ("pgettext", ("upload", "Refused."))),
+    ],
+)
+async def test_a_lazy_refusal_is_made_again_by_the_parent(
+    check: Any,  # noqa: ANN401 - a check.
+    data: bytes,
+    source: tuple[str, tuple[object, ...]],
+) -> None:
+    """The process names its lookup; the parent makes the lazy string again.
+
+    The process has no settings to make one text: every file such a check
+    refused was a 500 (follow-up of 2.5.0).
+    """
+    with pytest.raises(FileRefused) as refused:
+        await inspection.run_checks(
+            [check], io.BytesIO(data), processes=1, memory=256 * MIB, seconds=30
+        )
+
+    message: object = refused.value.message  # Declared text; may be lazy.
+    assert isinstance(message, LazyString)
+    assert message.source() == source
+    assert refused.value.code == "unsafe_file"
+
+
+def checked_by(checks: dict[str, Any]) -> TestClient:
+    """A client of an application that checks ``POST /files/<name>`` by ``checks``."""
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.post("/files/{check}")
+    async def upload(check: str, request: Request) -> None:
+        kind = typed(checks[check])
+        (await receive_upload(await request.body(), types=[kind], max_size=99)).close()
+
+    return TestClient(LocaleMiddleware(app))
+
+
+def refusals_logged(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """What ``save_upload`` logged of its checks' refusals."""
+    return [
+        each.getMessage()
+        for each in caplog.records
+        if each.name == "domainkit.http.uploads"
+    ]
+
+
+def test_a_lazy_refusal_is_answered_in_the_callers_language(
+    arabic_checks: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """In Arabic for a caller who asks for it, in English otherwise: 422, not 500.
+
+    As a domain error's lazy message is since 2.5.0; the plural form is
+    the caller's language's, and a context is kept. The log says it in
+    English, whatever the language: as a plain refusal is logged.
+    """
+    caplog.set_level(logging.INFO, logger="domainkit.http.uploads")
+    checks = {
+        "plain": hooks.lazy,
+        "count": hooks.lazy_count,
+        "context": hooks.lazy_in_context,
+    }
+    client = checked_by(checks)
+    answers = {
+        (check, language): client.post(
+            f"/files/{check}",
+            content=b"SECRET, SECRET",
+            headers={"Accept-Language": language} if language else {},
+        )
+        for check in checks
+        for language in ("ar", None)
+    }
+
+    assert {
+        key: (
+            response.status_code,
+            response.json()["code"],
+            response.headers["Content-Language"],
+            response.json()["detail"],
+        )
+        for key, response in answers.items()
+    } == {
+        ("plain", "ar"): (422, "unsafe_file", "ar", "لا تُقبل الملفات التي فيها أسرار."),
+        ("plain", None): (422, "unsafe_file", "en", SECRETS),
+        ("count", "ar"): (422, "unsafe_file", "ar", "يحمل الملف سرّين."),
+        ("count", None): (422, "unsafe_file", "en", "The file holds secrets."),
+        ("context", "ar"): (422, "unsafe_file", "ar", "مرفوض."),
+        ("context", None): (422, "unsafe_file", "en", "Refused."),
+    }
+    assert refusals_logged(caplog) == [
+        f"An upload was refused by its check: {text}"
+        for text in (SECRETS, "The file holds secrets.", "Refused.")
+        for _ in ("ar", None)
+    ]
+
+
+def test_a_refusal_in_the_files_own_words_is_utf_8_on_one_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Bytes that are not UTF-8 make no known answer; a line break is a space.
+
+    A check that refused with the file's own text, decoded with
+    ``surrogateescape``, made a 500: no body encodes a lone surrogate. And
+    a line break in it wrote a line of its own to a plain-text log.
+    """
+    caplog.set_level(logging.INFO, logger="domainkit.http.uploads")
+    client = checked_by({"quoted": hooks.quoted})
+
+    undecodable = client.post("/files/quoted", content=b"Not \xff accepted.")
+    forged = client.post(
+        "/files/quoted", content="No.\nINFO: forged\u202e.\x00".encode()
+    )
+
+    assert (undecodable.status_code, undecodable.json()["code"]) == (
+        422,
+        "unreadable_file",
+    )
+    assert undecodable.json()["detail"] == DAMAGED
+    assert (forged.status_code, forged.json()["detail"]) == (422, "No. INFO: forged.")
+    assert refusals_logged(caplog) == [
+        f"An upload was refused by its check: {DAMAGED}",
+        "An upload was refused by its check: No. INFO: forged.",
+    ]
+
+
+async def test_a_check_that_reads_the_settings_is_told_as_its_process(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Worded as the process's, and logged with where the check raised it.
+
+    A refusal filled in (``gettext_lazy(...).format(...)``) reads the
+    settings, which the process has not: the application raised "Set the
+    DOMAINKIT_SETTINGS_MODULE environment variable.", as if it had none,
+    and nothing was logged.
+    """
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^A check of an upload, in its process: Set the \w+_SETTINGS_MODULE ",
+    ):
+        await receive_upload(b"x", types=[typed(hooks.formatted)], max_size=10)
+
+    (record,) = [each for each in caplog.records if each.name == "domainkit.inspection"]
+    assert record.levelname == "ERROR"
+    assert "ImproperlyConfigured" in record.getMessage()
+    assert ", in formatted" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("said", "source"),
+    [
+        ({"lookup": "gettext", "arguments": ["No."]}, ("gettext", ("No.",))),
+        (
+            {"lookup": "ngettext", "arguments": ["A page.", "Pages.", 0]},
+            ("ngettext", ("A page.", "Pages.", 0)),
+        ),
+        (
+            {"lookup": "ngettext", "arguments": ["A page.", "Pages.", 2**64 - 1]},
+            ("ngettext", ("A page.", "Pages.", 2**64 - 1)),
+        ),
+        (
+            {"lookup": "pgettext", "arguments": ["c" * 501, "m" * 501]},
+            ("pgettext", ("c" * 500, "m" * 500)),
+        ),
+        ({"lookup": "__import__", "arguments": ["os"]}, None),
+        ({"lookup": "gettext_lazy", "arguments": ["No."]}, None),
+        ({"lookup": ["gettext"], "arguments": ["No."]}, None),
+        ({"lookup": "gettext", "arguments": "No."}, None),
+        ({"lookup": "gettext", "arguments": []}, None),
+        ({"lookup": "gettext", "arguments": ["No.", "No."]}, None),
+        ({"lookup": "gettext", "arguments": [7]}, None),
+        ({"lookup": "pgettext", "arguments": ["upload", None]}, None),
+        ({"lookup": "ngettext", "arguments": ["A page.", "Pages.", True]}, None),
+        ({"lookup": "ngettext", "arguments": ["A page.", "Pages.", 2.0]}, None),
+        ({"lookup": "ngettext", "arguments": ["A page.", "Pages.", "2"]}, None),
+        ({"lookup": "ngettext", "arguments": ["A page.", "Pages.", -1]}, None),
+        ({"lookup": "ngettext", "arguments": ["A page.", "Pages.", 2**64]}, None),
+        ({"lookup": "gettext", "arguments": ["No."], "function": "eval"}, None),
+        (
+            {"lookup": "pgettext", "arguments": ["up\nload", "No.\u2028Yes."]},
+            ("pgettext", ("up load", "No. Yes.")),
+        ),
+        ({"lookup": "gettext", "arguments": ["No.\udcff"]}, None),
+        ({"lookup": "ngettext", "arguments": ["A page.", "\ud800", 2]}, None),
+        ({"arguments": ["No."]}, None),
+        (["gettext", "No."], None),
+        (None, None),
+    ],
+)
+def test_a_lazy_refusal_is_read_as_a_lookup_of_known_shape(
+    said: object, source: tuple[str, tuple[object, ...]] | None
+) -> None:
+    """One of three lookups, with its arguments' number and types; nothing else.
+
+    The process read an untrusted file: it may name texts to look up, never
+    code to run. A text is cut as a plain message is; a count is C's
+    ``unsigned long``. Any other answer is of no known shape.
+    """
+    answer = json.dumps({"refused": said, "code": "unsafe_file"}).encode()
+
+    with pytest.raises(FileRefused) as refused:
+        inspection._outcome(answer, 0, b"", 1)
+
+    message: object = refused.value.message  # Declared text; may be lazy.
+    if source is None:
+        assert (message, refused.value.code) == (DAMAGED, "unreadable_file")
+    else:
+        assert isinstance(message, LazyString)
+        assert (message.source(), refused.value.code) == (source, "unsafe_file")
 
 
 # A slot per process, held until it exits --------------------------------------------
@@ -474,7 +731,7 @@ async def test_a_process_that_ends_without_an_answer_is_an_error_logged(
     ("check", "failed", "said"),
     [
         (hooks.exits, "SystemExit", "SystemExit: 3"),
-        (hooks.lazy, "ImproperlyConfigured", "ImproperlyConfigured"),
+        (hooks.lazy_otherwise, "ImproperlyConfigured", "ImproperlyConfigured"),
     ],
 )
 async def test_a_check_that_raises_anything_is_told_and_logged(
@@ -483,7 +740,11 @@ async def test_a_check_that_raises_anything_is_told_and_logged(
     failed: str,
     said: str,
 ) -> None:
-    """``SystemExit``; a lazy message, which the process has no settings to render."""
+    """``SystemExit``; a lazy string made by hand from a lookup, which needs settings.
+
+    The process has none to make it text, and it names no lookup the parent
+    makes again (``LazyString.source``).
+    """
     with pytest.raises(RuntimeError, match=f"failed in its process: {failed}"):
         await receive_upload(b"x", types=[typed(check)], max_size=10)
 
@@ -542,7 +803,9 @@ async def test_a_process_a_signal_ended_refuses_the_file_and_is_logged(
         (b'{"refused": "No.", "code": "Bad Code"}', -9, FileRefused, "No."),
         (b'{"none": true}', 0, NotOfType, ""),
         (b'{"improperly": "Install it."}', 0, ImproperlyConfigured, "Install it."),
+        (b'{"improperly": "Install\\nit."}', 0, ImproperlyConfigured, ": Install it."),
         (b'{"failed": "ValueError"}', 0, RuntimeError, "ValueError"),
+        (b'{"failed": "Value\\nError"}', 0, RuntimeError, ": Value Error."),
         (b'{"what": 1}', 0, FileRefused, DAMAGED),
     ],
 )
@@ -559,6 +822,36 @@ def test_an_answer_is_read_as_data_of_known_shapes(
     else:
         assert match in str(error.value)
     assert inspection._outcome(b'{"took": 0}', -9, b"", 1) == 0
+
+
+@pytest.mark.parametrize(
+    ("answer", "shown"),
+    [
+        ({"refused": "No.\ud800"}, None),
+        ({"refused": "\udcff"}, None),
+        ({"refused": "x" * 499 + "\ud800"}, None),
+        ({"refused": "x" * 500 + "\ud800"}, "x" * 500),
+        ({"refused": "No.\nINFO: forged\u202e.\x00"}, "No. INFO: forged."),
+        ({"refused": "Tab\there,\u2028there."}, "Tab here, there."),
+        ({"improperly": "\ud800"}, None),
+        ({"failed": "\ud800"}, None),
+    ],
+)
+def test_a_text_from_the_process_is_utf_8_on_one_line(
+    answer: dict[str, str], shown: str | None
+) -> None:
+    """A lone surrogate, which JSON lets through, is of no known shape.
+
+    No body or log encodes one: a refusal that held one was a 500. White
+    space becomes a space and a control or format character goes, so that
+    a refusal is one line in a log, shown as it reads. Only what is kept
+    of the text counts.
+    """
+    with pytest.raises(FileRefused) as refused:
+        inspection._outcome(json.dumps(answer).encode(), 0, b"", 1)
+
+    expected = (DAMAGED, "unreadable_file") if shown is None else (shown, "unsafe_file")
+    assert (refused.value.message, refused.value.code) == expected
 
 
 def test_a_checks_process_serves_one_request(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -591,11 +884,25 @@ def test_a_checks_process_serves_one_request(monkeypatch: pytest.MonkeyPatch) ->
     assert served([], b"", request=b"not a pickle") == {"failed": "UnpicklingError"}
     assert served([hooks.exits], b"x") == {"failed": "SystemExit"}
     assert served([hooks.lazy], b"x") == {
-        "refused": "Files with secrets are not accepted.",
+        "refused": {
+            "lookup": "gettext",
+            "arguments": ["Files with secrets are not accepted."],
+        },
+        "code": "unsafe_file",
+    }
+    assert served([hooks.lazy_count], b"SECRET") == {
+        "refused": {
+            "lookup": "ngettext",
+            "arguments": ["The file holds a secret.", "The file holds secrets.", 1],
+        },
+        "code": "unsafe_file",
+    }
+    assert served([hooks.lazy_of_its_own], b"x") == {
+        "refused": "FILES WITH SECRETS ARE NOT ACCEPTED.",
         "code": "unsafe_file",
     }
     assert served([hooks.measured], b"12345") == {"refused": "5", "code": "measured"}
-    assert limited == [(1, 2.0)] * 11
+    assert limited == [(1, 2.0)] * 13
 
 
 def test_what_pypdf_skipped_in_this_thread_is_a_refusal() -> None:

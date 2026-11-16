@@ -9,6 +9,61 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `record_submission`, `record_approval`, `record_rejection`, and
+  `record_cancellation` (`domainkit.contrib.approvals`) are public: the
+  project's own code (a periodic task, a management command, an event
+  handler) submits, approves, rejects, and cancels with them, asking for
+  no action authorization whatever `APPROVALS.SUBMIT_ACTION`,
+  `APPROVE_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` say. The routes,
+  and the services they run, keep asking for one. The functions refuse
+  all the services refuse but the authorization, and trust their caller
+  for who acts, as every service of approvals does: never call them from
+  a route a user reaches. A `ResourceRouter` route of approvals' rules
+  (`RequestActions`, `ApproveAction`, `RejectAction`, `CancelAction`,
+  `SubmitAction`) that runs one, or another step's service, is refused
+  when it is declared: its rule takes any authorization of the act, and
+  only the step's own service binds it to the request
+  ([From the project's own code](docs/contrib/approvals.md#from-the-projects-own-code),
+  ADR 0163) (follow-up of 2.5.0).
+- `LazyString.source()` names the lookup that makes a lazy string
+  (`"gettext"`, `"ngettext"` or `"pgettext"`) and its arguments, without
+  reading the settings ([i18n.md](docs/i18n.md#your-own-messages)); it
+  is None for a string of another function. An `APIError` takes a lazy
+  string as its detail, and a `FileRefused` as its message (follow-up of
+  2.5.0).
+
+### Fixed
+
+- An upload check that refuses a file with a lazy string
+  (`gettext_lazy`, `ngettext_lazy`, `pgettext_lazy`) is answered 422 in
+  the caller's language, as a domain error's lazy message is, and logged
+  in English, as a plain refusal is
+  ([uploads.md](docs/uploads.md#checks-of-your-own)). It was a 500 for
+  every file it refused: the check's process has no settings to make the
+  string text. The process now sends the lookup and its arguments, and
+  the application makes the string again, as ADR 0167 now says
+  (follow-up of 2.5.0).
+- An `APIError` whose detail is a lazy string, `UploadRefused`
+  included, is answered with its text in the caller's language, as a
+  domain error's lazy message is since 2.5.0
+  ([responses.md](docs/reference/responses.md#raising-an-error)). It was
+  answered with its code in words, in every language (follow-up of
+  2.5.0).
+- An upload check's refusal that is not UTF-8 (the file's own text,
+  decoded with `surrogateescape`) refuses the file as one that could not
+  be read, 422 `unreadable_file`; it was a 500. A line break or another
+  control character in a refusal becomes a space or is dropped, so that
+  it is one line in the log (follow-up of 2.5.0).
+- `ImproperlyConfigured` raised in an upload check's process (a missing
+  library, or a check that reads the settings, as
+  `gettext_lazy(...).format(...)` does) is raised as "A check of an
+  upload, in its process: ...", and logged at `ERROR` with where the
+  check raised it. It read "Set the DOMAINKIT_SETTINGS_MODULE
+  environment variable.", as if the application had no settings, and
+  nothing was logged (follow-up of 2.5.0).
+
 ## [2.5.0] - 2026-11-16
 
 2.5 answers a third report from the project that runs an identity

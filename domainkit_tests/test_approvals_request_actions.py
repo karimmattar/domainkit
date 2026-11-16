@@ -8,44 +8,93 @@ the reason. The caller asks for one at the route's twin, confirms it, and
 acts with it once; the screen shows the action, the reason, and the
 arguments, built by the server. Off (the default), each is as it was, and
 the twins answer ``404``.
+
+Code the project trusts takes every step without an authorization, through
+``record_submission``, ``record_approval``, ``record_rejection``, and
+``record_cancellation`` (ADR 0163, amended 2026-11-17), and is refused all
+the rest the services refuse.
 """
 
-from collections.abc import Iterator
+import warnings
+from collections.abc import Callable, Iterator
 from typing import Any, Final
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
+from sqlalchemy import update
 
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
 from domainkit.contrib.approvals import (
+    AlreadyDecided,
+    ApprovalNotNeeded,
+    ApprovalRequest,
     ApprovalRequired,
     ApprovalsSettings,
     ApprovalsUnitOfWork,
+    ApproveRequest,
     CancelRequest,
+    FingerprintMismatch,
+    InterestedParty,
+    InvalidArguments,
+    MakerCannotDecide,
+    NotTheMaker,
     Policy,
+    PolicyRemoved,
     RejectRequest,
+    RequestId,
+    RequestNotPending,
+    RequestStatus,
+    RequestTampered,
     SubmitRequest,
+    UnknownAction,
+    approve_request,
     cancel_request,
     guard,
+    record_approval,
+    record_cancellation,
+    record_rejection,
+    record_submission,
     reject_request,
+    requires_approval,
     submit_request,
+)
+from domainkit.contrib.approvals.api import (
+    ApproveIn,
+    CancelIn,
+    RejectIn,
+    RequestOut,
+    SubmitIn,
+    caller,
 )
 from domainkit.contrib.approvals.builtin import (
     check_admin_change,
     refuse_staff_creation,
 )
+from domainkit.contrib.approvals.rules import (
+    ApproveAction,
+    CancelAction,
+    DecisionAction,
+    RejectAction,
+    RequestActions,
+    SubmitAction,
+)
+from domainkit.contrib.approvals.tables import requests
 from domainkit.contrib.auth.actions import AuthorizationRequired, action_for
 from domainkit.contrib.auth.gates import AdminChange
+from domainkit.contrib.messaging.testing import drain
+from domainkit.db import connections
 from domainkit.ddd import fingerprint
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import ALPHA, Migrated
-from domainkit_tests.sample_admin_action_routes import TRANSFER, transfer
+from domainkit.resources import ResourceRouter
+from domainkit_tests.conftest import ALPHA, Migrated, Shape
+from domainkit_tests.sample_admin_action_routes import TRANSFER, Transfer, transfer
 from domainkit_tests.support.auth import audited, create_user, grant
 from domainkit_tests.test_admin_actions import ACTS, problem, row
 from domainkit_tests.test_admin_actions import frozen as frozen  # The fixture.
@@ -65,20 +114,52 @@ PAYMENT: Final = {
     "memo": "Invoice 7",
     "reference": "inv-7",
 }
+EVERY_STEP: Final = Shape(
+    "approvals_every_step",
+    "approvals",
+    {
+        **ACTS.settings,
+        "ROOT_ROUTER": "domainkit_tests.sample_approval_misuse_routes.router",
+        "APPROVALS": {**ACTS.settings["APPROVALS"], "APPROVE_ACTION": True},
+    },
+)
+"""``ACTS``, approving an act too: every step of a request asks the phone.
+
+Its routes add one that withdraws a request the wrong way."""
+PAYEES: Final = "tests.payee_transfer"
+"""A guarded transfer whose payee is a party to it; one of nothing needs no approval."""
+
+
+@requires_approval(PAYEES)
+async def pay(command: Transfer, uow: ApprovalsUnitOfWork) -> None:
+    """Nothing: the tests decide requests of it, and run nothing."""
+
+
+def guard_transfers() -> None:
+    """Transfers wait for two treasurers."""
+    guard(
+        TRANSFER,
+        transfer,
+        unit_of_work=ApprovalsUnitOfWork,
+        policies=[Policy("tests.acted_transfers", group=TREASURERS, approvals=2)],
+        domain="alpha",
+    )
+    make_group(TREASURERS)
 
 
 @pytest.fixture
 def api(migrated: Migrated) -> Iterator[TestClient]:
     """Approvals' acts on; transfers wait for two treasurers."""
     with migrated(ACTS), TestClient(get_asgi_application()) as test_client:
-        guard(
-            TRANSFER,
-            transfer,
-            unit_of_work=ApprovalsUnitOfWork,
-            policies=[Policy("tests.acted_transfers", group=TREASURERS, approvals=2)],
-            domain="alpha",
-        )
-        make_group(TREASURERS)
+        guard_transfers()
+        yield test_client
+
+
+@pytest.fixture
+def every_step(migrated: Migrated) -> Iterator[TestClient]:
+    """Every step of a request an act; transfers wait for two treasurers."""
+    with migrated(EVERY_STEP), TestClient(get_asgi_application()) as test_client:
+        guard_transfers()
         yield test_client
 
 
@@ -322,6 +403,420 @@ def test_code_that_submits_rejects_or_cancels_needs_an_authorization(
     for call in calls:
         with pytest.raises(AuthorizationRequired):
             run_async(call)
+
+
+def treasurer(name: str) -> str:
+    """The id of ``name``, a new user who is a treasurer: one of the approvers."""
+    created = str(create_user(name))
+    join(name, TREASURERS)
+    return created
+
+
+def submitted(maker: str) -> ApprovalRequest:
+    """A transfer of ``PAYMENT``, submitted from code as ``maker``'s."""
+    command = SubmitRequest(action=TRANSFER, arguments=PAYMENT, maker=maker)
+    return run_async(record_submission(command, ApprovalsUnitOfWork()))
+
+
+def approved_by(
+    request: ApprovalRequest, approver: str, digest: str | None = None
+) -> ApprovalRequest:
+    """``approver`` approves ``request`` from code, stating ``digest`` or its own."""
+    command = ApproveRequest(
+        request_id=request.id,
+        approver=approver,
+        fingerprint=digest or request.fingerprint,
+    )
+    return run_async(record_approval(command, ApprovalsUnitOfWork()))
+
+
+def rejected_by(
+    request: ApprovalRequest, approver: str, reason: str = "No"
+) -> ApprovalRequest:
+    """``approver`` rejects ``request`` from code, for ``reason``."""
+    command = RejectRequest(request_id=request.id, approver=approver, reason=reason)
+    return run_async(record_rejection(command, ApprovalsUnitOfWork()))
+
+
+def cancelled_by(
+    request: ApprovalRequest, maker: str, reason: str = ""
+) -> ApprovalRequest:
+    """``maker`` withdraws ``request`` from code, for ``reason``."""
+    command = CancelRequest(request_id=request.id, maker=maker, reason=reason)
+    return run_async(record_cancellation(command, ApprovalsUnitOfWork()))
+
+
+def stored(request: ApprovalRequest) -> ApprovalRequest:
+    """``request`` as committed."""
+    return stored_as(str(request.id))
+
+
+def stored_as(request_id: str) -> ApprovalRequest:
+    """The request ``request_id`` names, as committed."""
+
+    async def read() -> ApprovalRequest:
+        async with ApprovalsUnitOfWork() as uow:
+            return await uow.requests.get(RequestId(UUID(request_id)))
+
+    return run_async(read())
+
+
+def test_code_the_project_trusts_takes_every_step_without_an_authorization(
+    every_step: TestClient,
+) -> None:
+    """The services refuse code; the record functions submit, decide, and withdraw.
+
+    As the services do once an authorization is spent: the approval that
+    completes a request queues its command, which the worker runs, and the
+    trail records each step with the context's actor, ``system`` outside a
+    request.
+    """
+    maker = str(create_user("maker"))
+    ann, bob = treasurer("ann"), treasurer("bob")
+    submission = SubmitRequest(action=TRANSFER, arguments=PAYMENT, maker=maker)
+
+    with pytest.raises(AuthorizationRequired):
+        run_async(submit_request(submission, ApprovalsUnitOfWork()))
+    paid, refused, withdrawn = [submitted(maker) for _ in range(3)]
+    for approver in (ann, bob):
+        approval = ApproveRequest(
+            request_id=paid.id, approver=approver, fingerprint=paid.fingerprint
+        )
+        with pytest.raises(AuthorizationRequired):
+            run_async(approve_request(approval, ApprovalsUnitOfWork()))
+        paid = approved_by(paid, approver)
+    rejection = RejectRequest(request_id=refused.id, approver=ann, reason="Wrong")
+    with pytest.raises(AuthorizationRequired):
+        run_async(reject_request(rejection, ApprovalsUnitOfWork()))
+    refused = rejected_by(refused, ann, "Wrong")
+    cancellation = CancelRequest(request_id=withdrawn.id, maker=maker, reason="Stale")
+    with pytest.raises(AuthorizationRequired):
+        run_async(cancel_request(cancellation, ApprovalsUnitOfWork()))
+    withdrawn = cancelled_by(withdrawn, maker, "Stale")
+    run_async(drain())
+
+    assert (paid.status, paid.approvals) == (RequestStatus.APPROVED, 2)
+    assert stored(paid).status is RequestStatus.EXECUTED
+    assert (refused.status, refused.reason) == (RequestStatus.REJECTED, "Wrong")
+    assert (withdrawn.status, withdrawn.reason) == (RequestStatus.CANCELLED, "Stale")
+    actors = {
+        step: [each["actor"] for each in audited(f"approvals.{step}")]
+        for step in (
+            "request_submitted",
+            "approval_given",
+            "request_rejected",
+            "request_cancelled",
+        )
+    }
+    assert actors == {
+        "request_submitted": ["system"] * 3,
+        "approval_given": ["system"] * 2,
+        "request_rejected": ["system"],
+        "request_cancelled": ["system"],
+    }
+
+
+def test_code_is_refused_what_the_services_refuse_but_the_authorization(
+    every_step: TestClient,
+) -> None:
+    """The maker deciding, a second decision, another fingerprint, another's withdrawal.
+
+    And a reason too long, a request no longer waiting, an unknown action,
+    arguments that make no command. What was refused changed nothing.
+    """
+    maker = str(create_user("maker"))
+    ann, bob = treasurer("ann"), treasurer("bob")
+    request = submitted(maker)
+
+    with pytest.raises(MakerCannotDecide):
+        approved_by(request, maker)
+    with pytest.raises(MakerCannotDecide):
+        rejected_by(request, maker)
+    with pytest.raises(FingerprintMismatch):
+        approved_by(request, ann, "0" * 64)
+    approved_by(request, ann)
+    with pytest.raises(AlreadyDecided):
+        approved_by(request, ann)
+    with pytest.raises(AlreadyDecided):
+        rejected_by(request, ann)
+    with pytest.raises(NotTheMaker):
+        cancelled_by(request, ann)
+    with pytest.raises(InvalidArguments):
+        rejected_by(request, bob, "x" * 501)
+    with pytest.raises(InvalidArguments):
+        cancelled_by(request, maker, "x" * 501)
+    assert (stored(request).status, stored(request).approvals) == (
+        RequestStatus.PENDING,
+        1,
+    )
+    cancelled_by(request, maker)
+    with pytest.raises(RequestNotPending):
+        approved_by(request, bob)
+    with pytest.raises(RequestNotPending):
+        rejected_by(request, bob)
+    with pytest.raises(RequestNotPending):
+        cancelled_by(request, maker)
+    with pytest.raises(UnknownAction):
+        run_async(
+            record_submission(
+                SubmitRequest(action="tests.nowhere", arguments={}, maker=maker),
+                ApprovalsUnitOfWork(),
+            )
+        )
+    with pytest.raises(InvalidArguments):
+        run_async(
+            record_submission(
+                SubmitRequest(action=TRANSFER, arguments={"x": 1}, maker=maker),
+                ApprovalsUnitOfWork(),
+            )
+        )
+    assert stored(request).status is RequestStatus.CANCELLED
+    assert len(audited("approvals.request_submitted")) == 1
+
+
+def test_code_decides_no_request_changed_in_the_database_or_whose_time_is_up(
+    every_step: TestClient, frozen: FrozenClock
+) -> None:
+    """A seal that does not hold refuses every step; nobody decides a late request."""
+    maker = str(create_user("maker"))
+    ann = treasurer("ann")
+    changed, late = submitted(maker), submitted(maker)
+
+    async def write() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(requests)
+                .where(requests.c.id == changed.id)
+                .values(arguments={**PAYMENT, "payee": "Mallory"})
+            )
+
+    run_async(write())
+    for decide in (approved_by, rejected_by):
+        with pytest.raises(RequestTampered):
+            decide(changed, ann)
+    with pytest.raises(RequestTampered):
+        cancelled_by(changed, maker)
+    frozen.tick(ApprovalsSettings().EXPIRES_AFTER)
+    with pytest.raises(RequestNotPending):
+        approved_by(late, ann)
+    with pytest.raises(RequestNotPending):
+        rejected_by(late, ann)
+    withdrawn = cancelled_by(late, maker)
+
+    assert (withdrawn.status, withdrawn.approvals) == (RequestStatus.CANCELLED, 0)
+
+
+def test_code_is_refused_a_party_a_command_no_policy_holds_and_no_person(
+    every_step: TestClient,
+) -> None:
+    """A party to the command deciding, a command no policy holds, an id of no one.
+
+    A maker or an approver of no characters, or more than 255, is refused
+    as the services refuse them.
+    """
+    guard(
+        PAYEES,
+        pay,
+        unit_of_work=ApprovalsUnitOfWork,
+        policies=[
+            Policy(
+                "tests.paid",
+                group=TREASURERS,
+                when=lambda command: command.amount != "0.00",
+            )
+        ],
+        parties=lambda command: {command.payee},
+        domain="alpha",
+    )
+    maker = str(create_user("maker"))
+    ann = treasurer("ann")
+
+    def submission(by: str = maker, **arguments: str) -> ApprovalRequest:
+        """A payment of ``PAYMENT``, changed by ``arguments``, submitted by ``by``."""
+        command = SubmitRequest(
+            action=PAYEES, arguments={**PAYMENT, **arguments}, maker=by
+        )
+        return run_async(record_submission(command, ApprovalsUnitOfWork()))
+
+    to_ann = submission(payee=ann)
+    with pytest.raises(InterestedParty):
+        approved_by(to_ann, ann)
+    with pytest.raises(InterestedParty):
+        rejected_by(to_ann, ann)
+    with pytest.raises(ApprovalNotNeeded):
+        submission(amount="0.00")
+    for nobody in ("", "x" * 256):
+        with pytest.raises(InvalidArguments):
+            approved_by(to_ann, nobody)
+        with pytest.raises(InvalidArguments):
+            rejected_by(to_ann, nobody)
+        with pytest.raises(InvalidArguments):
+            submission(by=nobody)
+
+    assert (stored(to_ann).status, stored(to_ann).approvals) == (
+        RequestStatus.PENDING,
+        0,
+    )
+
+
+def test_code_withdraws_but_never_decides_a_request_whose_guard_is_gone(
+    every_step: TestClient,
+) -> None:
+    """Approving and rejecting refuse it, as the services do; cancelling takes it."""
+    maker = str(create_user("maker"))
+    ann = treasurer("ann")
+    gone, withdrawn = submitted(maker), submitted(maker)
+
+    registry.clear()  # The guard goes with the registry.
+    setup()
+    with pytest.raises(PolicyRemoved):
+        approved_by(gone, ann)
+    with pytest.raises(PolicyRemoved):
+        rejected_by(gone, ann)
+
+    assert cancelled_by(withdrawn, maker).status is RequestStatus.CANCELLED
+    assert stored(gone).status is RequestStatus.PENDING
+
+
+def test_a_route_that_runs_a_record_function_takes_the_step_then_fails_in_tests(
+    every_step: TestClient, frozen: FrozenClock
+) -> None:
+    """An authorization of one request withdraws another; only then is it 500.
+
+    The route asks ``StepUp(for_="approvals.cancel")`` and runs
+    ``record_cancellation``: the rule takes any authorization of the act,
+    and nothing spends it, so nothing binds it to the request. The step is
+    committed before the request fails (``authorization_unspent``, under
+    ``DEBUG`` and in tests); the authorization is spent by nothing.
+    """
+    maker = Person(every_step, frozen, "maker", treasurer=False)
+    asked, other = maker.submit(), maker.submit(reference="inv-8")
+    authorization = maker.authorized(f"/{asked['id']}/cancel", {})
+
+    misused = every_step.post(
+        f"/misused/{other['id']}/cancel",
+        headers={**maker.headers, "Action-Authorization": authorization},
+    )
+    again = every_step.post(
+        f"/misused/{asked['id']}/cancel",
+        headers={**maker.headers, "Action-Authorization": authorization},
+    )
+
+    problem(misused, 500, "authorization_unspent")
+    problem(again, 403, "action_not_authorized")
+    assert stored_as(other["id"]).status is RequestStatus.CANCELLED
+    assert stored_as(asked["id"]).status is RequestStatus.PENDING
+
+
+def requests_router() -> ResourceRouter:
+    """A router of the requests with approvals' own rules, as ``api.requests``."""
+    return ResourceRouter(
+        "/requests",
+        model=ApprovalRequest,
+        schema=RequestOut,
+        present=RequestOut.of,
+        unit_of_work=ApprovalsUnitOfWork,
+        repository=lambda uow: uow.requests,
+        lookup="request_id",
+        rule=RequestActions(),
+    )
+
+
+def declare(command: type, service: Callable[..., Any], rule: DecisionAction) -> None:
+    """Declare a route of ``command`` running ``service``, as approvals' routes are.
+
+    A submission's route adds ``rule`` itself (``RequestActions`` asks it
+    of no route); a decision's takes it from ``RequestActions``.
+    """
+    router = requests_router()
+    if isinstance(rule, SubmitAction):
+        router.command_route(
+            SubmitRequest,
+            service=service,
+            body=SubmitIn,
+            path="/submitted",
+            action="add",
+            rule=rule,
+            provide={"maker": caller},
+        )
+        return
+    steps: dict[type[DecisionAction], tuple[str, type[BaseModel]]] = {
+        ApproveAction: ("approve", ApproveIn),
+        RejectAction: ("reject", RejectIn),
+        CancelAction: ("cancel", CancelIn),
+    }
+    action, body = steps[type(rule)]
+    router.command_route(
+        command,
+        service=service,
+        body=body,
+        path=f"/{action}",
+        action=action,
+        provide={"maker" if action == "cancel" else "approver": caller},
+    )
+
+
+STEPS: Final = [
+    (SubmitRequest, SubmitAction(), submit_request, record_submission),
+    (ApproveRequest, ApproveAction(), approve_request, record_approval),
+    (RejectRequest, RejectAction(), reject_request, record_rejection),
+    (CancelRequest, CancelAction(), cancel_request, record_cancellation),
+]
+"""Each step's command, the rule that asks for its act, its service, and its
+record function."""
+
+
+@pytest.mark.parametrize(
+    ("command", "rule", "service", "record"),
+    STEPS,
+    ids=["submit", "approve", "reject", "cancel"],
+)
+def test_a_route_of_approvals_rules_that_runs_a_record_function_is_refused(
+    command: type,
+    rule: DecisionAction,
+    service: Callable[..., Any],
+    record: Callable[..., Any],
+) -> None:
+    """Declared, it raises: its rule asks for an authorization nothing would spend.
+
+    The rule takes any authorization of its act, and the service spends it
+    on the command, which binds it; a record function spends none, so an
+    authorization of one request would take the step on another. The
+    step's own service declares, with no warning, as approvals' routes do.
+    """
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=rf"asks for an authorization of its act, but runs {record.__name__}",
+    ):
+        declare(command, record, rule)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        declare(command, service, rule)
+
+
+@pytest.mark.parametrize(
+    ("rule", "own", "record"),
+    [step[1:] for step in STEPS],
+    ids=["submit", "approve", "reject", "cancel"],
+)
+def test_approvals_rules_say_which_services_never_spend_their_act(
+    rule: DecisionAction, own: Callable[..., Any], record: Callable[..., Any]
+) -> None:
+    """A record function spends none, another step's service another's; others pass."""
+    others = [step[2] for step in STEPS if step[2] is not own]
+
+    async def of_the_project(command: object, uow: object) -> None:
+        """A service of the project's own, which the rule cannot judge."""
+
+    assert rule.service_problem(own) is None
+    assert rule.service_problem(of_the_project) is None
+    assert f"runs {record.__name__}, which asks for no authorization" in str(
+        rule.service_problem(record)
+    )
+    for other in others:
+        assert f"runs {other.__name__}, which spends the authorization" in str(
+            rule.service_problem(other)
+        )
 
 
 def test_creating_staff_is_refused_only_while_making_staff_is_held(

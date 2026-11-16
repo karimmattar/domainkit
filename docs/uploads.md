@@ -669,7 +669,9 @@ A Word document with macros, sent as `contract.docx`:
 - `PDF` and `ZIP` read the first bytes, as before 2.5. A route that keeps
   them takes PDFs with scripts and Word documents with macros.
 - Without pypdf or lxml, a check raises `ImproperlyConfigured`, naming
-  the extra.
+  the extra: a 500, "A check of an upload, in its process: Checking PDF
+  and Office uploads needs pypdf: ...", logged at `ERROR`
+  (`domainkit.inspection`) with where the check raised it.
 
 The checks refuse what is known to be used against readers and
 converters. They do not make a file harmless: keep the virus scan, serve
@@ -687,26 +689,55 @@ translated if the catalogs have it), and `NotOfType` when the file is
 not of the type after all, so that the next type that matches is tried.
 The process has no settings and none of the application's environment:
 a check takes what it needs as arguments of its own (an object's
-fields), and its `message` is text (`gettext_noop` marks it for
-translators; a lazy string cannot be made text there, and is a 500).
-What it prints goes to the process's standard error, which is logged
-only when the check fails. Keep its module cheap to import: the
+fields). What it prints goes to the process's standard error, which is
+logged only when the check fails. Keep its module cheap to import: the
 process imports it for each upload.
 
 ```python
 from typing import IO
 
 from domainkit.http.uploads import TEXT, FileType
+from domainkit.i18n.lazy import ngettext_lazy
 from domainkit.inspection import FileRefused
 
 
 def no_formulas(file: IO[bytes]) -> None:
-    if b"=cmd|" in file.read():
-        raise FileRefused("Files with commands are not accepted.")
+    if found := file.read().count(b"=cmd|"):
+        raise FileRefused(
+            ngettext_lazy(
+                "The file holds a command.", "The file holds commands.", found
+            )
+        )
 
 
 CSV = FileType("text/csv", ".csv", TEXT.matches, no_formulas)
 ```
+
+A check's `message` is text, translated where it is shown
+(`gettext_noop` marks it for the catalogs), or a lazy string of
+`gettext_lazy`, `ngettext_lazy` or `pgettext_lazy` (since 2.6; 2.5
+answered it 500). Making a lazy string text reads the settings, which
+the process does not have: it sends the lookup and its arguments
+instead (`LazyString.source`), and the application makes the string
+again. The refusal is answered in the caller's language, as a domain
+error's lazy message is, and logged in English, as a plain one is:
+`An upload was refused by its check: ...` (`domainkit.http.uploads`, at
+`INFO`). `ngettext_lazy` picks the plural form for its count, and fills
+nothing in.
+
+A text filled with values (`gettext_lazy(...).format(...)`), or a
+call to `gettext`, is made at once, in the process, and reads the
+settings it does not have: a 500, `ImproperlyConfigured` "A check of an
+upload, in its process: Set the DOMAINKIT_SETTINGS_MODULE environment
+variable.", logged at `ERROR` (`domainkit.inspection`) with the check's
+traceback.
+
+A message is one line of UTF-8, at most 500 characters: a line break or
+a tab becomes a space, and another control or format character (a
+right-to-left override) is dropped, so that the log line is the
+refusal's alone. A message that is not UTF-8 (a file's bytes decoded
+with `surrogateescape`) refuses the file as one that could not be read,
+422 `unreadable_file`.
 
 ## Virus scanning
 

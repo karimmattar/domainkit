@@ -173,11 +173,11 @@ statuses, and the amendments they name.
 | [0160](0160-serve-in-production-from-the-settings.md) | Serve in production from the settings | Accepted |
 | [0161](0161-authorize-a-use-case-as-a-copy-and-read-what-is-shown-in-its-unit-of-work.md) | Authorize a use case as a copy, and read what is shown in its unit of work | Accepted |
 | [0162](0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md) | Let twins name their method where a path is shared, and skip the act's own dependencies | Accepted |
-| [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) | Authorize admin changes, and a request's steps, as acts | Accepted |
+| [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) | Authorize admin changes, and a request's steps, as acts | Accepted; amended 2026-11-17 (at the end) |
 | [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) | Let the asker withdraw a phone request, count sessions per user, and word each kind | Accepted |
 | [0165](0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md) | Let an operator prove a superuser's address, or promote a proved account | Accepted |
 | [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) | Let a domain layer mark its texts, extract the project's own, and add a translation alone | Accepted |
-| [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md) | Check an upload whole before it is kept, and let a resource take one | Accepted |
+| [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md) | Check an upload whole before it is kept, and let a resource take one | Accepted; amended 2026-11-17 (at the end) |
 | [0168](0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md) | Render documents through a port with Gotenberg, and fill them locally | Accepted |
 | [0169](0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md) | Granian's HTTP versions and failed starts, FCM's dry runs, write-once probes, clamd over TLS, and dropped files | Accepted |
 | [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) | Let a resource's items be tenants, count members' keys alone, and let lists name what they refer to | Accepted |

@@ -37,6 +37,7 @@ import tempfile
 import unicodedata
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, replace
+from gettext import NullTranslations
 from typing import IO, Final
 from urllib.parse import quote
 
@@ -47,6 +48,7 @@ from starlette.datastructures import UploadFile
 
 from domainkit.conf import settings
 from domainkit.http.errors import APIError
+from domainkit.i18n.lazy import LazyString
 from domainkit.inspection import (
     FileRefused,
     NotOfType,
@@ -572,11 +574,26 @@ async def _checked(file: IO[bytes], candidates: list[FileType]) -> FileType:
     except NotOfType:
         raise _unsupported() from None
     except FileRefused as exc:
-        logger.info("An upload was refused by its check: %s", exc.message)
+        logger.info(
+            "An upload was refused by its check: %s", _untranslated(exc.message)
+        )
         raise UploadRefused(
             status.HTTP_422_UNPROCESSABLE_CONTENT, exc.message, code=exc.code
         ) from None
     return taken[index]
+
+
+def _untranslated(message: object) -> str:
+    """A refusal as its check wrote it, in English: a lazy one as no catalog has it.
+
+    So a log reads one way, whatever language each request asked for; the
+    answer is in the caller's (``http_error_handler``).
+    """
+    source = message.source() if isinstance(message, LazyString) else None
+    if source is None:
+        return str(message)
+    lookup, arguments = source
+    return str(getattr(NullTranslations(), lookup)(*arguments))
 
 
 async def _head(upload: "_Reader | UploadFile") -> bytes:
