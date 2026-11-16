@@ -60,6 +60,7 @@ from domainkit.ddd.tenancy import (
     all_tenants,
     check_tenant_id,
     current_tenant,
+    no_tenant,
     row_tenant,
     scoped_key,
     tenant,
@@ -92,6 +93,7 @@ __all__ = [
     "path_tenant",
     "row_tenant",
     "scoped_key",
+    "serve_no_tenant",
     "tenant",
     "tenant_schema",
     "tenants_beyond",
@@ -503,6 +505,23 @@ class PathTenant:
         """Whether the connection's principal, as loaded now, still belongs."""
         user = connection.scope.get("user")
         return await _path_members().admit(user, tenant_id, fresh=True) is not None
+
+
+async def serve_no_tenant() -> AsyncIterator[None]:
+    """A FastAPI dependency: serve the route as no tenant, whatever was chosen.
+
+    ``PathTenant``'s counterpart. A ``ResourceRouter`` whose items are
+    tenants puts it first on its routes that do not take the tenant from
+    the path (its collection's): there, a tenant ``TenantMiddleware``
+    names, by a header or a subdomain, decides nothing, so no member's
+    keys count, and ``current_tenant()`` is None (ADR 0170).
+    """
+    token = _member.set(None)
+    try:
+        with no_tenant():
+            yield
+    finally:
+        _member.reset(token)
 
 
 def _path_members() -> _Members:

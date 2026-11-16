@@ -89,7 +89,7 @@ from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
 from domainkit.http.middleware import body_limit
 from domainkit.http.pagination import Pagination
-from domainkit.tenancy import PathTenant
+from domainkit.tenancy import PathTenant, serve_no_tenant
 from domainkit.utils.text import pluralize, snake_case
 
 from ..access import VIEW, Actions, MemberActions
@@ -387,20 +387,33 @@ class ResourceRouter(APIRouter):
         tenant: PathTenant | None = getattr(self, "tenant", None)
         return tenant is not None and holds(f"{self.prefix}{path}", tenant.parameter)
 
+    def tenancy(self, path: str) -> list[params.Depends]:
+        """What serves the route at ``path`` (after the prefix): its tenant, or none.
+
+        On a resource with a ``tenant``, a route whose path holds its
+        parameter is served as that tenant (``PathTenant``), and every other
+        route as no tenant (``serve_no_tenant``), whatever a middleware
+        chose: the collection of a resource whose items are tenants belongs
+        to none of them (ADR 0170). Either comes first, before the route's
+        rules. Without a ``tenant``, nothing.
+        """
+        tenant: PathTenant | None = getattr(self, "tenant", None)
+        if tenant is None:
+            return []
+        return [Depends(tenant if self.serves_tenant(path) else serve_no_tenant)]
+
     def add_api_route(
         self,
         path: str,
         endpoint: Callable[..., Any],
         **options: Any,  # noqa: ANN401 - APIRouter's options.
     ) -> None:
-        """Add a route; one whose path holds the tenant's parameter is served as it.
+        """Add a route, served as its tenant or as none (``tenancy``).
 
-        Routes of your own on the resource are too: ``tenant`` comes first
-        among the route's own dependencies, before its rules.
+        Routes of your own on the resource are too.
         """
-        if self.serves_tenant(path):
-            given = options.get("dependencies") or ()
-            options["dependencies"] = [Depends(self.tenant), *given]
+        if served := self.tenancy(path):
+            options["dependencies"] = [*served, *(options.get("dependencies") or ())]
         super().add_api_route(path, endpoint, **options)
 
     def add_api_websocket_route(
@@ -411,10 +424,91 @@ class ResourceRouter(APIRouter):
         *,
         dependencies: Sequence[params.Depends] | None = None,
     ) -> None:
-        """Add a WebSocket route; one whose path holds the tenant's is served as it."""
-        if self.serves_tenant(path):
-            dependencies = [Depends(self.tenant), *(dependencies or ())]
+        """Add a WebSocket route, served as its tenant or as none (``tenancy``)."""
+        if served := self.tenancy(path):
+            dependencies = [*served, *(dependencies or ())]
         super().add_api_websocket_route(path, endpoint, name, dependencies=dependencies)
+
+    def include_router(
+        self,
+        router: APIRouter,
+        *,
+        prefix: str = "",
+        dependencies: Sequence[params.Depends] | None = None,
+        **options: Any,  # noqa: ANN401 - APIRouter's options.
+    ) -> None:
+        """Include ``router``; on a resource with a ``tenant``, under its parameter.
+
+        Its routes are then served as the tenant the prefix names, before
+        their own dependencies.
+
+        Raises:
+            TypeError: The resource has a ``tenant`` whose parameter the
+                prefix does not hold: the included routes would be served as
+                no tenant, or name one unchecked.
+        """
+        tenant: PathTenant | None = getattr(self, "tenant", None)
+        if tenant is not None:
+            if not holds(f"{self.prefix}{prefix}", tenant.parameter):
+                raise TypeError(
+                    f"Include routers into {self.prefix} under its tenant, "
+                    f"prefix='/{{{tenant.parameter}}}/...', or declare their "
+                    "routes on the resource: each route of it is served as the "
+                    "tenant its path names, or as none."
+                )
+            dependencies = [Depends(tenant), *(dependencies or ())]
+        super().include_router(
+            router, prefix=prefix, dependencies=dependencies, **options
+        )
+
+    def add_route(self, *args: Any, **options: Any) -> None:  # noqa: ANN401 - Starlette's.
+        """Add a Starlette route: refused on a resource with a ``tenant``.
+
+        Raises:
+            TypeError: It would take no dependency, so no tenant.
+        """
+        self._refuse_plain("a Starlette route")
+        super().add_route(*args, **options)
+
+    def add_websocket_route(self, *args: Any, **options: Any) -> None:  # noqa: ANN401 - Starlette's.
+        """Add a Starlette WebSocket route: refused on a resource with a ``tenant``.
+
+        Raises:
+            TypeError: It would take no dependency, so no tenant.
+        """
+        self._refuse_plain("a Starlette WebSocket route")
+        super().add_websocket_route(*args, **options)
+
+    def mount(self, *args: Any, **options: Any) -> None:  # noqa: ANN401 - Starlette's.
+        """Mount an application: refused on a resource with a ``tenant``.
+
+        Raises:
+            TypeError: It would take no dependency, so no tenant.
+        """
+        self._refuse_plain("a mounted application")
+        super().mount(*args, **options)
+
+    def host(self, *args: Any, **options: Any) -> None:  # noqa: ANN401 - Starlette's.
+        """Route by host: refused on a resource with a ``tenant``.
+
+        Raises:
+            TypeError: It would take no dependency, so no tenant.
+        """
+        self._refuse_plain("a host's application")
+        super().host(*args, **options)
+
+    def _refuse_plain(self, what: str) -> None:
+        """Refuse ``what``, which takes no dependency, on a resource with a tenant.
+
+        Raises:
+            TypeError: The resource has a ``tenant``.
+        """
+        if getattr(self, "tenant", None) is not None:
+            raise TypeError(
+                f"{self.prefix} serves each route as its tenant or as none; "
+                f"{what} takes no dependency to do so. Declare it with "
+                "@resource.get, .post, .websocket, ..., or include a router."
+            )
 
     @property
     def model(self) -> type:

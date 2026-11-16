@@ -39,6 +39,7 @@ from domainkit.http.application import application_problems
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.ratelimit import MemoryBackend, Throttle
 from domainkit.resources import (
+    FieldPolicy,
     HasMemberModelPermission,
     MemberActions,
     ModelActions,
@@ -656,14 +657,16 @@ def test_a_command_on_the_collection_names_its_action(
     assert "archived" not in {gadget.name for gadget in store.items.values()}
 
 
-def test_a_middlewares_tenant_decides_nothing_on_the_collection(
-    store: InMemoryGadgets, use_auth: UseAuth
-) -> None:
-    """The collection's routes are ruled by ``outside``, whatever a header names.
+def with_header(
+    store: InMemoryGadgets,
+    use_auth: UseAuth,
+    **options: Any,  # noqa: ANN401 - ResourceRouter's options.
+) -> TestClient:
+    """A client of ``companies(store, **options)`` behind ``TenantMiddleware``.
 
-    Ann changes a, and holds nothing in b. With ``TenantMiddleware`` serving
-    a from a header, her role in a decided a change of b on the collection.
-    The item's routes still take the path's tenant, which must agree.
+    The middleware takes a tenant from ``X-Tenant``, where one is sent. The
+    resource has an archive on its collection, of action ``change``, and a
+    route that says which tenant the collection is served as.
     """
     use_auth(
         BACKENDS=BACKENDS,
@@ -675,30 +678,103 @@ def test_a_middlewares_tenant_decides_nothing_on_the_collection(
             }
         },
     )
-    a, b = (str(each) for each in ids(store).values())
-    del MEMBERS[("ann", b)]
-    resource = companies(store)
+    resource = companies(store, **options)
     resource.command_route(
         ArchiveGadget, service=archive, body=ArchiveIn, path="/archive", action="change"
     )
+
+    @resource.get("/served/now", dependencies=[Public])
+    async def served_as() -> dict[str, str | None]:
+        return {"tenant": current_tenant(), "path": path_tenant()}
+
     app = FastAPI()
     install_exception_handlers(app)
     app.include_router(resource)
     app.add_middleware(TenantMiddleware)
     app.add_middleware(Users, users=people())
-    client = TestClient(app)
+    return TestClient(app)
+
+
+def test_a_middlewares_tenant_decides_nothing_on_the_collection(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The collection is served as no tenant, whatever a header names.
+
+    Ann changes a, and holds nothing in b. With ``TenantMiddleware`` serving
+    a from a header, her role in a decided a change of b on the collection.
+    The item's routes still take the path's tenant, which must agree.
+    """
+    a, b = (str(each) for each in ids(store).values())
+    del MEMBERS[("ann", b)]
+    client = with_header(store, use_auth)
     in_a = as_("ann", **{"X-Tenant": a})
 
     archived = client.post("/gadgets/archive", json={"target": b}, headers=in_a)
     listed = client.get("/gadgets", headers=in_a)
     read = client.get(f"/gadgets/{a}", headers=in_a)
     elsewhere = client.get(f"/gadgets/{b}", headers=in_a)
+    served_as = client.get("/gadgets/served/now", headers=in_a)
 
     assert archived.status_code == 403
     assert "archived" not in {gadget.name for gadget in store.items.values()}
     assert listed.status_code == 200
     assert read.status_code == 200
     assert elsewhere.status_code == 404
+    assert served_as.json() == {"tenant": None, "path": None}
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        MemberActions(GADGETS, outside=ModelActions(GADGETS)),
+        MemberActions(GADGETS),
+        ModelActions(GADGETS),
+    ],
+    ids=["outside-actions", "members-alone", "model-actions"],
+)
+def test_no_rule_counts_a_headers_tenant_on_the_collection(
+    store: InMemoryGadgets,
+    use_auth: UseAuth,
+    rule: Any,  # noqa: ANN401
+) -> None:
+    """``ModelActions`` counts global grants alone there, and members' rules none.
+
+    Through the header's tenant, ``MembershipBackend`` granted ann's role
+    in a to ``HasPermissions``, so she archived b; and bob, a viewer of b,
+    listed every company. Without a header, both are refused, as now with.
+    """
+    a, b = (str(each) for each in ids(store).values())
+    del MEMBERS[("ann", b)]
+    client = with_header(store, use_auth, rule=rule)
+
+    archived = client.post(
+        "/gadgets/archive", json={"target": b}, headers=as_("ann", **{"X-Tenant": a})
+    )
+    listed = client.get("/gadgets", headers=as_("bob", **{"X-Tenant": b}))
+
+    assert archived.status_code == 403
+    assert "archived" not in {gadget.name for gadget in store.items.values()}
+    assert listed.status_code == 403
+
+
+def test_a_headers_role_shows_no_hidden_field_on_the_collection(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """A field shown to ``change`` holders stays hidden in the list, header or not.
+
+    Ann changes a and views b: her role in a, through a's header, showed
+    b's label in the list, which b's own route hides from her.
+    """
+    a, b = (str(each) for each in ids(store).values())
+    client = with_header(
+        store, use_auth, policy=FieldPolicy(visible={"label": "shop.change_gadget"})
+    )
+
+    own = client.get(f"/gadgets/{b}", headers=as_("ann")).json()
+    listed = client.get("/gadgets", headers=as_("ann", **{"X-Tenant": a})).json()
+
+    assert "label" not in own
+    assert all("label" not in item for item in listed["items"])
 
 
 def test_the_list_of_tenants_needs_a_scope(store: InMemoryGadgets) -> None:
@@ -733,6 +809,66 @@ def test_path_tenant_names_the_tenant_a_path_named(members: None) -> None:
     }
     with tenant("acme"):
         assert path_tenant() is None
+
+
+def test_a_router_included_into_a_tenants_resource_is_served_as_its_tenant(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """Under ``/{gadget_id}``, an included router's routes are the gadget's.
+
+    FastAPI includes a router as it is, without adding its routes one by
+    one, so they were served as no tenant: a stranger read a's files. One
+    included elsewhere, or a route that takes no dependency, is refused.
+    """
+    resource = companies(store)
+    files = APIRouter()
+
+    @files.get("/{file_id}", dependencies=[Depends(Require())])
+    async def read_file(file_id: str) -> dict[str, str | None]:
+        return {"tenant": current_tenant(), "file": file_id}
+
+    resource.include_router(files, prefix="/{gadget_id}/files")
+    client = client_of(resource)
+    a = str(ids(store)["a"])
+
+    assert client.get(f"/gadgets/{a}/files/x", headers=as_("bob")).status_code == 404
+    assert client.get(f"/gadgets/{a}/files/x", headers=as_("ann")).json() == {
+        "tenant": a,
+        "file": "x",
+    }
+    with pytest.raises(TypeError, match=r"prefix='/\{gadget_id\}/...'"):
+        resource.include_router(files, prefix="/files")
+
+    async def plain(scope: Scope, receive: Receive, send: Send) -> None: ...
+
+    with pytest.raises(TypeError, match="a Starlette route"):
+        resource.add_route("/plain", plain)
+    with pytest.raises(TypeError, match="a Starlette WebSocket route"):
+        resource.add_websocket_route("/plain", plain)
+    with pytest.raises(TypeError, match="a mounted application"):
+        resource.mount("/plain", plain)
+    with pytest.raises(TypeError, match="a host's application"):
+        resource.host("plain.example", plain)
+
+
+def test_a_resource_without_a_tenant_takes_routers_and_starlette_routes(
+    store: InMemoryGadgets,
+) -> None:
+    """As any router: nothing is served as a tenant there."""
+    resource = companies(store, tenant=None, rule=ModelActions(GADGETS), scope=None)
+
+    async def plain(scope: Scope, receive: Receive, send: Send) -> None: ...
+
+    resource.include_router(APIRouter(), prefix="/files")
+    resource.add_route("/plain", plain)
+    resource.add_websocket_route("/socket", plain)
+    resource.mount("/mounted", plain)
+    resource.host("plain.example", plain)
+
+    @resource.websocket("/live")
+    async def live(socket: WebSocket) -> None: ...
+
+    assert resource.tenancy("/plain") == []
 
 
 def test_path_tenants_read_their_id_as_text_an_int_or_a_uuid() -> None:
