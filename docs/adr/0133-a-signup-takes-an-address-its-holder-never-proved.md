@@ -1,6 +1,6 @@
 # 0133. A signup takes an address its holder never proved
 
-- Status: Accepted; amended by [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md)
+- Status: Accepted; amended by [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) and [0171](0171-prove-a-number-given-at-signup-by-its-own-code.md)
 - Date: 2026-11-10
 
 ## Context

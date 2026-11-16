@@ -249,7 +249,7 @@ unique constraint may name its own code
 | `service_busy` | 503 | `ServiceBusy` (exceptions): Something the operation needs is busy now; trying again later may work. |
 | `sign_in_not_found` | 404 | `SignInNotFound` (contrib.ciba.exceptions): The user has no sign-in request with that id that waits for an answer. |
 | `sign_in_unknown` | 400 | `SignInUnknown` (contrib.ciba.exceptions): No request has that handle, or it was redeemed, or is another client's. |
-| `signup_taken` | 409 | contrib.auth.signup: An account already uses this username or this address; sign up again with another username, or log in. |
+| `signup_taken` | 409 | contrib.auth.signup: An account already uses this address or this number, or the username the signup chose; log in, or reset the password. Another username is suggested only to a signup that chose one (since 2.5). |
 | `slow_down` | 400 | `SlowDown` (contrib.ciba.exceptions): A poll came before the interval: wait 5 seconds more from now on. |
 | `step_up_required` | 401 | contrib.auth.access: Confirm it is you: authenticate again to do this. |
 | `step_up_unsupported` | 400 | contrib.auth.stepup: These credentials cannot step up: log in, then step up. |

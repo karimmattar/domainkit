@@ -1414,7 +1414,7 @@ async def _replaced(
     one the user held for that field, waiting for its code, is dropped,
     and the codes sent to the replaced one no longer open the account.
     """
-    from .codes import target_of  # Loaded once codes are used (AuthUnitOfWork).
+    from .codes import targets_of  # Loaded once codes are used (AuthUnitOfWork).
 
     replaced = {
         name: old for name, old in before.items() if getattr(user, name, None) != old
@@ -1422,7 +1422,12 @@ async def _replaced(
     if not replaced:
         return
     await uow.pending_identifiers.drop(user.id, *replaced)
-    if targets := [target_of(str(old)) for old in replaced.values() if old]:
+    if targets := [
+        target
+        for old in replaced.values()
+        if old
+        for target in targets_of(str(old), user.id)
+    ]:
         await uow.verification_codes.forget(user.id, targets)
 
 

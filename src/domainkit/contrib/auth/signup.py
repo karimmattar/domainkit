@@ -15,14 +15,24 @@ checked by its type and markers as any change to a user is. The fields
 are checked at once: a refusal there says nothing about other accounts.
 Then the request is kept as a pending signup, and it answers 202, doing
 the same work whatever accounts exist. The worker sends a code of 6
-digits (ADR 0126) to the address, or by text message to the number, or,
-when the username is taken, or an account proved the address or the
-number, word that it is. An account that holds the address or the
-number but never proved it does not stop a signup: the signup whose
+digits (ADR 0126) to the address, or by text message to a number given
+alone, or, when the username is taken, or an account proved what the
+code would prove, word that it is. An account that holds that address
+or number but never proved it does not stop a signup: the signup whose
 code proves it takes it from that account (ADR 0133).
 ``POST /signup/code`` (anyone) takes the address or the number, the code,
 and a password, checked by ``AUTH.PASSWORD_VALIDATORS``, and makes the
 account, its address or number verified.
+
+A signup that gives an address and a number sends its code to the
+address, or, where neither the address nor a username given identifies
+users (``AUTH.IDENTIFIERS``), to the number. The code proves that one
+alone: the account is made without the other, which is held
+(``uow.pending_identifiers``) and sent a code of its own, which
+``/mobile-verification/code`` (or ``/email-verification/code``) takes, as
+for a user's own new value (ADR 0153). Until then it neither leaves an
+account that holds it, nor decides which mail or text the signup gets,
+so that tells nothing of it (ADR 0171).
 
 Whoever reads the mail chooses the password, so whoever asked with
 someone else's address gains nothing: the account made is the address
@@ -48,6 +58,7 @@ from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.messaging import task
+from domainkit.exceptions import DomainkitError
 from domainkit.http.access import Public
 from domainkit.http.errors import APIError, error_responses
 from domainkit.i18n import gettext, override
@@ -74,6 +85,8 @@ from .recovery import (
     language_argument,
     language_of,
     release,
+    send_email_verification,
+    send_mobile_verification,
     text_code,
 )
 from .repositories import PendingSignup
@@ -95,6 +108,42 @@ __all__ = [
 
 SIGNUP_CODE_TASK: Final = "domainkit.auth.send_signup_code"
 MOBILE_NUMBER: Final = "mobile_number"
+EMAIL: Final = "email"
+"""What a held address replaces (``uow.pending_identifiers``)."""
+TAKEN: Final = {
+    False: (
+        "An account already uses this address. If it was you, log in, or "
+        "reset your password."
+    ),
+    True: (
+        "An account already uses this address, or the username chosen. If it "
+        "was you, log in, reset your password, or sign up again with another "
+        "username."
+    ),
+}
+"""What ``auth/signup_exists`` says is taken (its ``taken``), by whether the
+signup chose a username, which only ``AUTH.IDENTIFIERS`` lets it choose. A
+number given with the address plays no part (ADR 0171)."""
+TAKEN_NAME: Final = (
+    "An account already uses this username or this address; sign up again "
+    "with another username, or log in."
+)
+SIGNUP_TAKEN: Final = {
+    (False, False): (
+        "An account already uses this address; log in, or reset your password."
+    ),
+    (False, True): (
+        "An account already uses this number; log in, or reset your password."
+    ),
+    (True, False): TAKEN_NAME,
+    (True, True): (
+        "An account already uses this username or this number; sign up again "
+        "with another username, or log in."
+    ),
+}
+"""The detail of ``409 signup_taken``, by whether the signup chose a
+username, and was made by a number alone: what its code proves, and no
+more."""
 
 router = APIRouter(tags=["auth"])
 
@@ -134,13 +183,17 @@ class SignupCodeIn(BaseModel):
 class SignupTaken(APIError):
     """The username or the address got an account before the code was used (409)."""
 
-    def __init__(self) -> None:
-        """Use status 409 and the code ``signup_taken``."""
+    def __init__(self, pending: PendingSignup, number: str | None) -> None:
+        """Use status 409 and the code ``signup_taken``.
+
+        The detail names what the signup gave (``SIGNUP_TAKEN``), and the
+        ``number`` its code proved, if it was texted; another username is
+        suggested only to a signup that chose one: elsewhere usernames
+        identify no one (``AUTH.IDENTIFIERS``).
+        """
+        given = (pending.username is not None, number is not None)
         super().__init__(
-            status.HTTP_409_CONFLICT,
-            "An account already uses this username or this address; "
-            "sign up again with another username, or log in.",
-            code="signup_taken",
+            status.HTTP_409_CONFLICT, SIGNUP_TAKEN[given], code="signup_taken"
         )
 
 
@@ -160,6 +213,8 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
     Raises:
         APIError: 422 ``missing_value`` without an address (or, where
             numbers identify users, a number).
+        InvalidUserField: No ``mobile_number``, where the user model
+            requires one (``REQUIRED_FIELDS``) and numbers identify users.
         UnknownUserField: A number, where numbers do not identify users,
             or a username, where usernames do not.
         InvalidMobileNumber: The number is not in international form.
@@ -172,8 +227,9 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
             "A mobile number can be given only where it identifies users "
             "(AUTH.IDENTIFIERS)."
         )
-    texted = body.email is None and body.mobile_number is not None
-    if body.email is None and not texted:
+    if body.mobile_number is None and MOBILE_NUMBER in _own(model, identifiers):
+        raise InvalidUserField(f"These user fields are required: {MOBILE_NUMBER}.")
+    if body.email is None and body.mobile_number is None:
         raise APIError(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Give an email address.",
@@ -191,6 +247,7 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
         if body.mobile_number is None
         else normalize_mobile_number(body.mobile_number)
     )
+    texted = _by_text(body.username, body.email, number)
     contact = cast(str, number if texted else body.email)
     await throttle(
         request,
@@ -199,7 +256,7 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
         action="auth.signup",
         detail="Too many requests for mail; try again later.",
     )
-    given = _given(model, body.fields)
+    given = _given(model, body.fields, identifiers)
     fields: dict[str, object] = {}
     if body.username is not None:
         fields[model.USERNAME_FIELD] = body.username
@@ -243,7 +300,8 @@ async def confirm_signup_code(body: SignupCodeIn, request: Request) -> None:
     """Make the account the code was sent for, with the password chosen now.
 
     A password the validators refuse leaves the code working, to try
-    another; the address, or the number, is verified by the code.
+    another; the address, or the number, is verified by the code: the one
+    the code was sent to, whatever ``AUTH.IDENTIFIERS`` says now.
     """
     config = _enabled()
     async with AuthUnitOfWork() as uow:
@@ -253,20 +311,26 @@ async def confirm_signup_code(body: SignupCodeIn, request: Request) -> None:
         if proven is not None and proven.signup_id is not None:
             pending = await uow.signups.get(proven.signup_id)
         if pending is not None and not pending.expired():
-            account = _account(get_user_model(), pending, PasswordHash.unusable())
+            number = _proved_number(pending, target)
+            model = get_user_model()
+            account = _account(model, pending, PasswordHash.unusable(), number)
             # Raises: nothing is spent.
             await avalidate_password(body.password, account)
             password = PasswordHash(await amake_password(body.password))
             await uow.signups.remove(pending.id)  # The code works once.
-            holders = await _unproved_holders(uow, pending)
+            holders = await _unproved_holders(uow, pending, number)
             if holders is None:
                 await uow.commit()
-                raise SignupTaken
+                raise SignupTaken(pending, number)
             for holder in holders:  # The code proved what they never did.
-                await _release(uow, holder, pending)
+                await _release(uow, holder, pending, number)
             await uow.session.flush()  # A released number is free to insert.
-            await _make_account(uow, pending, password)
+            user = await _make_account(uow, pending, password, number)
             await uow.commit()
+            if number is None and pending.mobile_number:
+                await _hold(request, user, MOBILE_NUMBER, pending.mobile_number)
+            elif number is not None and pending.email:
+                await _hold(request, user, EMAIL, pending.email)
             return
         await uow.commit()  # A wrong try stays counted.
     await count_failure(
@@ -304,11 +368,14 @@ async def _send_signup_code(signup_id: UUID) -> None:
         pending = await uow.signups.get(signup_id)
         if pending is None or pending.expired():
             return
-        number = None if pending.email else pending.mobile_number
-        holders = await _unproved_holders(uow, pending)
+        number = _texted(pending)
+        holders = await _unproved_holders(uow, pending, number)
         if holders is None:
             if number is None:
-                context: dict[str, object] = {"email": pending.email}
+                context: dict[str, object] = {
+                    "email": pending.email,
+                    "taken": gettext(TAKEN[pending.username is not None]),
+                }
                 to = [cast(str, pending.email)]
                 await deliver([render_mail("auth/signup_exists", context, to=to)])
             else:  # auth.E107: notifications are installed.
@@ -316,7 +383,7 @@ async def _send_signup_code(signup_id: UUID) -> None:
             await uow.signups.remove(pending.id)
             await uow.commit()
             return
-        contact = cast(str, pending.email or number)
+        contact = cast(str, number or pending.email)
         code = await uow.verification_codes.issue(
             SIGNUP, target_of(contact), signup_id=pending.id
         )
@@ -360,67 +427,172 @@ def _enabled() -> AuthSettings:
 
 
 async def _unproved_holders(
-    uow: AuthUnitOfWork, pending: PendingSignup
+    uow: AuthUnitOfWork, pending: PendingSignup, number: str | None
 ) -> list[AbstractBaseUser] | None:
-    """The accounts that hold the signup's address or number, unproved.
+    """The accounts that hold what the signup's code proves, unproved.
 
-    None when the signup cannot be made: an account has its username (in
-    any case), or proved its address (in any case of its ASCII letters)
-    or its number. An account that holds the address or the number but
-    never proved it does not stop a signup whose code proves it: the
-    signup takes it (ADR 0133). A user model with no such proof counts as
-    having proved it.
+    The code proves the address, or a number given alone (``_texted``): a
+    number given with an address is proved by a code of its own, later,
+    and counts for nothing here (ADR 0171). None when the signup cannot be
+    made: an account has its username (in any case), or proved its address
+    (in any case of its ASCII letters) or that number. An account that
+    holds it but never proved it does not stop a signup whose code proves
+    it: the signup takes it (ADR 0133). A user model with no such proof
+    counts as having proved it.
     """
     if pending.username and await uow.users.username_taken(pending.username):
         return None
     holders: list[AbstractBaseUser] = []
-    if pending.email:
+    if number is None and pending.email:
         for user in await uow.users.find_by_email(pending.email):
             if getattr(user, "email_verified", True):
                 return None
             holders.append(user)
-    if pending.mobile_number:
-        texted = await uow.users.find_by_mobile_number(pending.mobile_number)
+    if number is not None:
+        texted = await uow.users.find_by_mobile_number(number)
         if texted is not None:
             if getattr(texted, "mobile_number_verified", True):
                 return None
-            if texted not in holders:
-                holders.append(texted)
+            holders.append(texted)  # Texted: no address holder.
     return holders
 
 
+def _by_text(username: str | None, email: str | None, number: str | None) -> bool:
+    """Whether a signup's code goes to its number, and proves the number.
+
+    A number given alone; or with an address where neither the address
+    nor a username given identifies users (``AUTH.IDENTIFIERS``): the
+    account made with the address alone could not log in.
+    """
+    if number is None:
+        return False
+    if email is None:
+        return True
+    model = get_user_model()
+    fields = identifier_fields(model)
+    named = username is not None and model.USERNAME_FIELD in fields
+    return model.EMAIL_FIELD not in fields and not named
+
+
+def _texted(pending: PendingSignup) -> str | None:
+    """The number the signup's code is to be texted to, if any (``_by_text``).
+
+    Decided when the code is sent; once it comes back, what it proves is
+    where it went (``_proved_number``).
+    """
+    if _by_text(pending.username, pending.email, pending.mobile_number):
+        return pending.mobile_number
+    return None
+
+
+def _proved_number(pending: PendingSignup, target: str) -> str | None:
+    """The number a signup's code proved: the one it was texted to, if it was.
+
+    Read from the target the code was kept under, not from the settings of
+    the moment: were ``AUTH.IDENTIFIERS`` changed while the code was out,
+    a code texted to one value must not prove the other.
+    """
+    number = pending.mobile_number
+    return number if number and target_of(number) == target else None
+
+
 async def _release(
-    uow: AuthUnitOfWork, holder: AbstractBaseUser, pending: PendingSignup
+    uow: AuthUnitOfWork,
+    holder: AbstractBaseUser,
+    pending: PendingSignup,
+    number: str | None,
 ) -> None:
-    """Take the signup's address and number from ``holder`` (``release``)."""
-    await release(uow, holder, email=pending.email, mobile_number=pending.mobile_number)
+    """Take what the code proved from ``holder``: ``number``, or the address."""
+    email = None if number else pending.email
+    await release(uow, holder, email=email, mobile_number=number)
+
+
+SENDS: Final = {EMAIL: send_email_verification, MOBILE_NUMBER: send_mobile_verification}
+"""The task that sends a held value of each field its code."""
+
+
+async def _hold(
+    request: Request, user: AbstractBaseUser, field: str, value: str
+) -> None:
+    """Hold what the signup's code did not prove, and send it a code of its own.
+
+    As ``POST /mobile-verification`` (or ``/email-verification``) holds a
+    user's new value (ADR 0153): its own verification route takes the
+    code, and only then does the value reach the account, or its reader
+    learn that another account proved it (ADR 0171). The ``on_manage_logins``
+    checks do not run: they keep a session from adding a way into an
+    account that has logins, and this account was just made, by a request
+    with no session. Counted against ``AUTH.EMAIL_RATE`` per value among
+    signups, as a signup by that value is. Past the rate, or where it
+    cannot be counted, the account is made without it, and its user asks
+    for a code later, with the value in the body. Held once the account
+    is: in a transaction of its own. The task sends only to this value.
+    """
+    try:
+        await throttle(
+            request,
+            auth_settings().EMAIL_RATE,
+            [email_key("signup", value)],
+            action="auth.signup",
+            detail="Too many requests for mail; try again later.",
+        )
+    except DomainkitError:  # Refused, or counted out.
+        return
+    ttl = auth_settings().CODE_TTL
+    async with AuthUnitOfWork() as uow:
+        await uow.pending_identifiers.hold(user.id, field, value, ttl=ttl)
+        uow.defer(SENDS[field], user_id=user.id, value=value, **language_argument())
+        await uow.commit()
 
 
 def _account(
-    model: type[AbstractBaseUser], pending: PendingSignup, password: PasswordHash
+    model: type[AbstractBaseUser],
+    pending: PendingSignup,
+    password: PasswordHash,
+    number: str | None,
 ) -> AbstractBaseUser:
-    """The user the signup asks for, with ``password``."""
+    """The user the signup asks for, with ``password``.
+
+    Only what the code proved is on it, ``number`` or else the address: the
+    other's own code adds it (``_hold``).
+    """
     fields: dict[str, object] = {}
     if pending.username is not None:
         fields[model.USERNAME_FIELD] = pending.username
-    if pending.email is not None:
+    if number is None and pending.email is not None:
         fields[cast(str, model.EMAIL_FIELD)] = pending.email
-    if pending.mobile_number is not None:
-        fields[MOBILE_NUMBER] = pending.mobile_number
+    if number is not None:
+        fields[MOBILE_NUMBER] = number
     extra = typed_fields(model, pending.fields or {})
     return model.create(password=password, **fields, **extra)
 
 
+def _own(model: type[AbstractBaseUser], identifiers: tuple[str, ...]) -> set[str]:
+    """The ``signup_fields()`` a signup takes on their own, not under ``fields``.
+
+    ``mobile_number``, where it identifies users: it comes as
+    ``mobile_number``, and is proved by a code, as a signup proves it
+    (ADR 0171). Under ``fields`` it would be stored unproved.
+    """
+    wanted = set(model.signup_fields())
+    return wanted & {MOBILE_NUMBER} & set(identifiers)
+
+
 def _given(
-    model: type[AbstractBaseUser], fields: dict[str, FieldValue]
+    model: type[AbstractBaseUser],
+    fields: dict[str, FieldValue],
+    identifiers: tuple[str, ...],
 ) -> dict[str, FieldValue]:
     """``fields``, if they are the model's ``signup_fields()``, every one.
+
+    But those the signup takes on their own (``_own``).
 
     Raises:
         UnknownUserField: A field is not one a signup gives.
         InvalidUserField: One of them is missing.
     """
-    wanted = model.signup_fields()
+    own = _own(model, identifiers)
+    wanted = [name for name in model.signup_fields() if name not in own]
     if unknown := sorted(set(fields) - set(wanted)):
         raise UnknownUserField(
             f"These user fields cannot be given here: {', '.join(unknown)}."
@@ -431,20 +603,24 @@ def _given(
 
 
 async def _make_account(
-    uow: AuthUnitOfWork, pending: PendingSignup, password: PasswordHash
-) -> None:
-    """Add the user the signup asked for, verified by the code.
+    uow: AuthUnitOfWork,
+    pending: PendingSignup,
+    password: PasswordHash,
+    number: str | None,
+) -> AbstractBaseUser:
+    """Add the user the signup asked for, verified by the code; return it.
 
-    The address is verified, or, for a signup by number alone, the number.
-    The password is kept in the history, as every password stored is
+    What the code proved is verified: ``number``, or else the address. The
+    password is kept in the history, as every password stored is
     (``AUTH.PASSWORD_HISTORY``, AUTH-15).
     """
-    user = _account(uow.users.model, pending, password)
+    user = _account(uow.users.model, pending, password, number)
     # Startup checks that the user model can (AbstractUser can).
-    if pending.email is not None:
+    if number is None:
         cast(AbstractUser, user).verify_email()
     else:
         cast(AbstractUser, user).verify_mobile_number()
     await uow.users.add(user)
     await uow.passwords.record(user.id, password)
     user.record(UserSignedUp(user_id=user.id))
+    return user

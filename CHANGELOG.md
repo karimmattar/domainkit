@@ -323,6 +323,26 @@ and a status.
   `<path>/authorization`. The router refused the second route. ADR 0162
   (user report A17).
 
+- `createsuperuser --verify` proves the new superuser's email address
+  and mobile number: it mails, or texts, a code to each at once, not
+  through the outbox, and asks for it at the prompt. `createsuperuser
+  --promote IDENTIFIER` makes an existing user a superuser and staff,
+  such as one that signed up in the application. It takes the user's
+  username, its id, or an address or a number the user proved: a value
+  nobody proved names no one, with or without `--verify`, so that a
+  value Mallory put on her account unproved never names hers; only a
+  superuser already is named by an unproved value, with `--verify`, to
+  prove it. An address names the user that proved it as its address,
+  never one whose username is written as it. The command shows the user
+  and asks before it changes anything (`--noinput`: only a user named by
+  its username, id, or a proved value). The change is audited with the
+  operator as its actor, who must be named in staging and production.
+  The command now says on stderr when it leaves a superuser that proved
+  neither an address nor a number, and how to prove one: since 2.4 no
+  code reaches it, so under `CIBA.APPROVE_LOGINS = "always"` it could
+  never enroll a phone, nor log in. Nothing changes for a command that
+  gives neither option. ADR 0165 (user report A12).
+
 ### Changed
 
 - `import domainkit.i18n` imports none of its modules. Its names, and its
@@ -428,6 +448,68 @@ and a status.
   (`APIRouter(prefix="/orgs/{org}")`), which failed in 2.4 too, as the
   read route of that name declares them. Each value is percent-encoded,
   ids included (user report U5).
+
+- The password rules' refusals and descriptions are in the shipped
+  catalogs, in English and Arabic. `MinimumLengthValidator` and
+  `UserAttributeSimilarityValidator` filled their value in before
+  translating, so no catalog could hold their text; they translate
+  `...at least {min_length} characters.` (with its singular) and `The
+  password is too similar to the {label}.`, then fill the value in, the
+  length written as the language writes numbers and the field's name
+  translated in the `field` context. A project catalog that translated
+  the filled English text (`...at least 12 characters.`) translates the
+  text with its placeholder instead (user report I4).
+
+- A request's `email` not shaped as an address (`/signup`,
+  `/password-reset`, `/email-verification`) is refused as `Enter a
+  valid email address.`, translated, not with the pattern that checks
+  it. Its error's `type` is now `value_error`, as for an address with a
+  name, not `string_pattern_mismatch`. OpenAPI still shows the pattern
+  (user report I8).
+
+- The `auth/signup_exists` mail, and the `409 signup_taken` of
+  `/signup/code`, name what the signup gave (the username, the address,
+  the number) and suggest another username only where the signup chose
+  one, which `AUTH.IDENTIFIERS` allows; elsewhere they say to log in or
+  reset the password. The template takes the sentence as `taken`, in the
+  reader's language; a project's own template of it still works (user
+  report I8).
+
+### Security
+
+- A signup that gives an address and a number proves each by a code of
+  its own. The address's code proved the address alone, yet the signup
+  took the number from an account that held it unproved (ending that
+  account where the number was its only login: anyone with an address of
+  their own could end a superuser made with `createsuperuser
+  --mobile_number`), put it on the new account unproved, and chose the
+  mail it sent the address by whether an account used the number, which
+  told the asker. The signup's code now goes to the address, or to the
+  number where neither the address nor a username given identifies
+  users; the account is made with that value, and the other is held and
+  sent a verification code of its own, which `/auth/mobile-verification/code`
+  (or `/email-verification/code`) takes, as for a changed value. Holding
+  counts against `AUTH.EMAIL_RATE` per value among signups, and the code
+  then goes to that value only. What the signup's code proves is where
+  it went, whatever `AUTH.IDENTIFIERS` says when it comes back. A `mobile_number` that
+  `REQUIRED_FIELDS` names comes on its own, never under `fields`. A
+  signup by a number alone is unchanged. See
+  [upgrading.md](docs/upgrading.md#24-to-25). ADR 0171 (found in review
+  of user report A12).
+
+- Verification codes (`/email-verification`, `/mobile-verification`) are
+  each user's own: a code another user asked for, for the same address
+  or number, no longer replaces one's own. Asking again with no body
+  counts against `AUTH.EMAIL_RATE` per the value the code goes to, a
+  held one too, which re-asking had escaped since 2.4. Codes issued
+  before the upgrade stop working (found in review of user report A12).
+
+- `createsuperuser --promote` reads its value once NFKC folds look-alike
+  characters, reads any form of an id as an id, and refuses digits that
+  are no number in international form (`0612345678`, `0033…`): such
+  values named a username Mallory could choose. A user model with no
+  `mobile_number` refuses a number rather than crash. ADR 0165 (user
+  report A12).
 
 ## [2.4.0] - 2026-11-16
 

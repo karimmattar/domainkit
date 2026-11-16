@@ -665,6 +665,17 @@ DEVICES = {"ENROLLMENT": True, "DEVICE_LOGIN": True}
 log in at all. Users who logged in before you turned it on keep their
 logins until they end.
 
+The first superuser needs a proved address or number too: enrollment
+codes go nowhere else
+([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)).
+Make it with `createsuperuser --verify`, which mails a code to its
+address (or texts its number) and asks for it, or sign up in the app,
+enroll the phone, and run `createsuperuser --promote` with the address
+([commands](../reference/commands.md#createsuperuser-make-a-user-who-may-do-everything),
+*new in 2.5*). A superuser made without either could never enroll, and
+so never log in; the command says so when it makes one. `createsuperuser
+--promote <its username> --verify` proves the address of one made before.
+
 ### Managing logins from the phone
 
 In both modes, the phone is where a user sees and ends their logins
@@ -1112,6 +1123,9 @@ approved = await poll(started.handle, client_id=None)  # commits itself
   verify HS256 ID tokens without your secret; `ciba.E002` refuses it.
 - **`APPROVE_LOGINS` without a support path.** A user who lost their only
   phone needs `unbinddevices`, after you check who is asking.
+- **A first superuser that proved nothing, in strict mode.** It can
+  never enroll a phone, so never log in. Make it with `createsuperuser
+  --verify`, or promote an account that signed up (`--promote`).
 
 ## See also
 

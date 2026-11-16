@@ -38,6 +38,45 @@ never published), with each section below.
 
 ## 2.4 to 2.5
 
+2.5 answers the third report from a project that runs an identity
+service on domainkit. Each item of this list says what a project that
+relied on 2.4's behaviour changes.
+
+- **A number given at signup with an address is on the account only once
+  its own code is proved**
+  ([ADR 0171](adr/0171-prove-a-number-given-at-signup-by-its-own-code.md)).
+  `POST /auth/signup` with `{"email", "mobile_number"}` makes the account
+  with the address alone when the address's code comes back; the number
+  is held, and texted a code, which the user, logged in, sends to `POST
+  /auth/mobile-verification/code`. Before, the address's code put the
+  number on the account unproved, took it from an account that held it
+  unproved (ending that account where it was its only login), and which
+  mail the address got told whether an account used the number. An app
+  that signs up with both asks for the number's code after the first
+  login, as it does for a changed number; one that read the number from
+  the new account at once reads it once proved. A signup by a number
+  alone is unchanged.
+- **Where addresses identify no one, a signup with an address and a
+  number gets its code by text.** With `AUTH.IDENTIFIERS` such as
+  `("mobile_number",)`, or `("username", "mobile_number")` and no
+  username given, the code goes to the number (2.4 mailed it to the
+  address), and `/signup/code` takes the number as its `identifier`. The
+  address is held and mailed a code of its own, which the user sends to
+  `POST /auth/email-verification/code`.
+- **A `mobile_number` that `REQUIRED_FIELDS` names comes on its own.**
+  Where numbers identify users, a signup gives it as `mobile_number`, not
+  under `fields` (`422 unknown_user_field` there), and is proved as
+  above. A client that sent it in `fields` moves it up.
+- **Verification codes are each user's own.** Codes for `/email-verification`
+  and `/mobile-verification` issued before the upgrade stop working; they
+  last `AUTH.CODE_TTL`. Asking again with no body now counts against
+  `EMAIL_RATE` per the number or address the code goes to, and can answer
+  `429`.
+- **`createsuperuser --promote` reads an id in any form, and refuses
+  digits that are no number in international form**
+  ([ADR 0165](adr/0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md)):
+  name a user whose username is written as digits by its id.
+
 2.5 answers the third report of the project 2.4 answered. Each item of
 this list says what a project that relied on 2.4's behaviour changes.
 

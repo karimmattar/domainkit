@@ -14,6 +14,8 @@ from pydantic_core._pydantic_core import list_all_errors
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
+from domainkit.contrib.auth.recovery import INVALID_EMAIL
+from domainkit.contrib.auth.signup import SIGNUP_TAKEN
 from domainkit.i18n.catalogs import (
     MAGIC,
     CatalogError,
@@ -356,6 +358,8 @@ EXTRA_MESSAGES: Final = {
     "Give money as an object of an amount and a currency, and nothing else.",
     "Give the amount as text, such as 10.50, with at most 38 digits before the point.",
     "The amount has more digits than this field holds.",  # resources.schemas
+    INVALID_EMAIL,  # auth.recovery: an address's shape (user report I8)
+    *SIGNUP_TAKEN.values(),  # auth.signup.SignupTaken, by what the signup gave
 }
 """Framework messages the scan below cannot see: constants and returns."""
 SCANNED: Final = (

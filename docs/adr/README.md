@@ -143,7 +143,7 @@ statuses, and the amendments they name.
 | [0130](0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md) | Show where each login came from, and manage logins from the phone | Accepted |
 | [0131](0131-choose-what-a-password-change-does-to-the-devices-logins.md) | Choose what a password change does to the devices' logins | Accepted |
 | [0132](0132-manage-the-second-factors-from-the-phone.md) | Manage the second factors from the phone | Accepted |
-| [0133](0133-a-signup-takes-an-address-its-holder-never-proved.md) | A signup takes an address its holder never proved | Accepted; amended by [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) |
+| [0133](0133-a-signup-takes-an-address-its-holder-never-proved.md) | A signup takes an address its holder never proved | Accepted; amended by [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) and [0171](0171-prove-a-number-given-at-signup-by-its-own-code.md) |
 | [0134](0134-bind-another-device-from-a-bound-one.md) | Bind another device from a bound one | Accepted |
 | [0135](0135-keep-each-signed-request-not-the-last-time.md) | Keep each signed request, not the last time | Accepted |
 | [0136](0136-declare-the-login-check-on-the-route.md) | Declare the login check on the route | Accepted |
@@ -175,10 +175,12 @@ statuses, and the amendments they name.
 | [0162](0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md) | Let twins name their method where a path is shared, and skip the act's own dependencies | Accepted |
 | [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) | Authorize admin changes, and a request's steps, as acts | Accepted |
 | [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) | Let the asker withdraw a phone request, count sessions per user, and word each kind | Accepted |
+| [0165](0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md) | Let an operator prove a superuser's address, or promote a proved account | Accepted |
 | [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) | Let a domain layer mark its texts, extract the project's own, and add a translation alone | Accepted |
 | [0168](0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md) | Render documents through a port with Gotenberg, and fill them locally | Accepted |
 | [0169](0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md) | Granian's HTTP versions and failed starts, FCM's dry runs, write-once probes, clamd over TLS, and dropped files | Accepted |
 | [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) | Let a resource's items be tenants, count members' keys alone, and let lists name what they refer to | Accepted |
+| [0171](0171-prove-a-number-given-at-signup-by-its-own-code.md) | Prove a number given at signup by its own code | Accepted |
 
 ### Decisions still without a record
 
