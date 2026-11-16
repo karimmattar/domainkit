@@ -267,6 +267,13 @@ class AbstractBaseUser(AggregateRoot[UserId]):
 
     USERNAME_FIELD: ClassVar[str]
     EMAIL_FIELD: ClassVar[str | None] = None
+    LANGUAGE_FIELD: ClassVar[str | None] = None
+    """The field that holds the user's language (``"ar"``), if the model has one.
+
+    Codes and notices sent to the user are written in it, when ``LANGUAGES``
+    lists it (``recovery.language_of``). Without one, they are in the
+    language of the request that asked for them, or ``LANGUAGE_CODE``.
+    """
     REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = ()
     PROTECTED_FIELDS: ClassVar[frozenset[str]] = PROTECTED_FLOOR
     """Fields that change through their own methods, never ``update``.

@@ -892,6 +892,11 @@ def _user_model(path: str) -> type[AbstractBaseUser]:
             f"AUTH.USER_MODEL: REQUIRED_FIELDS names fields {path!r} lacks: "
             f"{', '.join(unknown)}."
         )
+    if model.LANGUAGE_FIELD is not None and model.LANGUAGE_FIELD not in fields:
+        raise ImproperlyConfigured(
+            f"AUTH.USER_MODEL: LANGUAGE_FIELD names a field {path!r} lacks: "
+            f"{model.LANGUAGE_FIELD}."
+        )
     protected = model.PROTECTED_FIELDS | PROTECTED_FLOOR
     if fixed := sorted(set(model.signup_fields()) & protected):
         raise ImproperlyConfigured(

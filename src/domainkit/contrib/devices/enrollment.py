@@ -61,11 +61,12 @@ TEMPLATE: Final = "devices/enrollment_code"
 THROTTLED: Final = "Too many attempts; try again later."
 
 
-async def send_enrollment_code(identifier: str) -> None:
+async def send_enrollment_code(identifier: str, language: str | None = None) -> None:
     """Send an enrollment code to the account ``identifier`` names, if it may enroll.
 
     The ``domainkit.devices.send_enrollment_code`` task, so that answering
-    the request takes as long whoever it names.
+    the request takes as long whoever it names. ``language`` is the
+    request's: the code is written in the user's, or else in it.
     """
     async with DevicesUnitOfWork() as uow:
         user = await uow.users.find_by_identifier(identifier)
@@ -78,6 +79,7 @@ async def send_enrollment_code(identifier: str) -> None:
         purpose=ENROLLMENT,
         wording="enroll your phone",
         template=TEMPLATE,
+        language=language,
     )
 
 

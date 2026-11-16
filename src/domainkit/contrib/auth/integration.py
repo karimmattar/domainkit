@@ -66,7 +66,7 @@ from .mfa import (
     needs_second_factor,
     second_factor_holds,
 )
-from .recovery import mail_user, send_code
+from .recovery import language_argument, language_of, mail_user, send_code
 from .sca import confirm_transaction_with, sca_transaction
 from .settings import auth_settings
 from .stepup import (
@@ -131,6 +131,8 @@ __all__ = [
     "gates_passed",
     "impersonated",
     "issue_login",
+    "language_argument",
+    "language_of",
     "link_action_authorization",
     "linked_action_authorization",
     "login_digest",

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 
+from domainkit.conf import override_settings
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, User
 from domainkit.contrib.auth.codes import EMAIL_VERIFICATION, target_of
@@ -15,12 +16,15 @@ from domainkit.contrib.auth.recovery import _prove_reached
 from domainkit.contrib.auth.signup import send_signup_code
 from domainkit.contrib.notifications.backends import sms_outbox
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import Api
+from domainkit_tests.conftest import MIDDLEWARE, Api
 from domainkit_tests.support.auth import PASSWORD, audited, create_user
 from domainkit_tests.test_auth_recovery import run_worker
 from domainkit_tests.test_auth_reset_codes import (
+    ARABIC,
     CODES,
+    LOCALE,
     NUMBER,
+    OTHER_NUMBER,
     WRONG,
     App,
     code_in,
@@ -35,6 +39,7 @@ __all__ = ["texting"]
 
 BY_MAIL = {"SIGNUP_ENABLED": True, "IDENTIFIERS": ("email",)}
 BY_TEXT = {"SIGNUP_ENABLED": True, **CODES}
+TAKEN = OTHER_NUMBER
 
 
 def ask(client: TestClient, **body: object) -> Any:  # noqa: ANN401 - a response.
@@ -359,3 +364,26 @@ def _user(user_id: UUID) -> User:
             return cast(User, await uow.users.get(UserId(user_id)))
 
     return run_async(read())
+
+
+def test_signup_codes_go_out_in_the_language_of_the_request(texting: App) -> None:
+    """No user yet: the request's language, carried to the task (user report A11)."""
+    with override_settings(MIDDLEWARE=[LOCALE, *MIDDLEWARE]):
+        client = texting(**BY_TEXT)
+        create_user("taken", mobile_number=TAKEN, mobile_number_verified=True)
+        for body in ({"mobile_number": NUMBER}, {"mobile_number": TAKEN}):
+            assert ask_in_arabic(client, body).status_code == 202
+        assert ask_in_arabic(client, {"email": "new@example.com"}).status_code == 202
+        drain()
+
+    code, taken = (text.body for text in sorted(sms_outbox, key=lambda text: text.to))
+    assert "هو رمزك لإكمال التسجيل. يعمل لمدة 10 دقائق." in code
+    assert taken.startswith("حاول أحدهم التسجيل بهذا الرقم، وهو مستخدم في حساب")
+    (message,) = mail.outbox
+    assert message.subject == "رمز إكمال التسجيل"
+    assert "يعمل لمدة 10 دقائق" in message.body
+
+
+def ask_in_arabic(client: TestClient, body: dict[str, str]) -> Any:  # noqa: ANN401 - a response.
+    """Ask for an account, in Arabic."""
+    return client.post("/auth/signup", json=body, headers=ARABIC)

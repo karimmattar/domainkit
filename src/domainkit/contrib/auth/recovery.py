@@ -30,21 +30,35 @@ Requests that send a code count against ``AUTH.EMAIL_RATE`` per client
 address and per recipient (or user); wrong codes count against
 ``AUTH.LOGIN_RATE`` per client address. Refusals, refusals by the rate,
 resets, and verifications go to the audit trail.
+
+Codes go out in the user's language (``LANGUAGE_FIELD``), or the language
+of the request that asked for them, or ``LANGUAGE_CODE``
+(``language_of``): texts through the gettext catalogs, mails from the
+language's templates where there are some (ADR 0149).
 """
 
 import logging
 import math
 from collections.abc import Mapping
 from datetime import timedelta
-from typing import Annotated, Final, cast
+from typing import Annotated, Final, TypedDict, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
+from domainkit.conf import settings
 from domainkit.contrib.messaging import enqueue, task
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError, error_responses
+from domainkit.i18n import (
+    get_language,
+    gettext,
+    negotiate,
+    ngettext,
+    override,
+    pgettext,
+)
 
 from ._http import PASSWORD_MAX_LENGTH
 from .access import AuthenticatedUser
@@ -178,7 +192,7 @@ async def request_password_reset(
     value = value.strip()
     recipient = as_mobile_number(value) or value
     await _limit_mail(request, "password-reset", email_key("password-reset", recipient))
-    await enqueue(send_password_reset_code, identifier=value)
+    await enqueue(send_password_reset_code, identifier=value, **language_argument())
     return AcceptedOut(detail="If an account uses it, a code is on its way.")
 
 
@@ -276,7 +290,7 @@ async def request_mobile_verification(
     await _limit_mail(
         request, "mobile-verification", f"mobile-verification:user:{user.id}"
     )
-    await enqueue(send_mobile_verification, user_id=user.id)
+    await enqueue(send_mobile_verification, user_id=user.id, **language_argument())
     return AcceptedOut(detail="A code to verify your number is on its way.")
 
 
@@ -334,7 +348,7 @@ async def request_email_verification(
     await _limit_mail(
         request, "email-verification", f"email-verification:user:{user.id}"
     )
-    await enqueue(send_email_verification, user_id=user.id)
+    await enqueue(send_email_verification, user_id=user.id, **language_argument())
     return AcceptedOut(detail="A code to verify your address is on its way.")
 
 
@@ -378,7 +392,9 @@ async def confirm_email_verification_code(
         raise InvalidCode
 
 
-async def send_password_reset_code(identifier: str) -> None:
+async def send_password_reset_code(
+    identifier: str, language: str | None = None
+) -> None:
     """Send a reset code to the account ``identifier`` names, if any.
 
     The ``domainkit.auth.send_password_reset_code`` task. The account must
@@ -387,6 +403,7 @@ async def send_password_reset_code(identifier: str) -> None:
     message; an email address, or any other identifier, a mail to the
     account's address. Nothing goes where nothing can be sent, nor to an
     address or a number the user never proved (``reaches_proved``).
+    ``language`` is the request's (``language_of``).
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find_by_identifier(identifier)
@@ -407,11 +424,14 @@ async def send_password_reset_code(identifier: str) -> None:
             PASSWORD_RESET, target, user_id=user.id
         )
         user.record(PasswordResetRequested(user_id=user.id))
+        written_in = language_of(user, language)
         if texted:
-            await text_code(cast(str, number), code, "reset your password", uow)
+            with override(written_in):
+                await text_code(cast(str, number), code, "reset your password", uow)
         await uow.commit()
     if not texted:
-        await _mail_code(user, cast(str, address), code, "auth/password_reset_code")
+        with override(written_in):
+            await _mail_code(user, cast(str, address), code, "auth/password_reset_code")
 
 
 async def send_code(
@@ -421,6 +441,7 @@ async def send_code(
     purpose: str,
     wording: str,
     template: str,
+    language: str | None = None,
 ) -> bool:
     """Issue a code for ``purpose`` and send it where ``identifier`` reaches ``user``.
 
@@ -431,7 +452,10 @@ async def send_code(
     ``uow.verification_codes.check(purpose, target_of(identifier), code)``.
     False, and nothing issued, where nothing can be sent, or where the
     address or number is one the user never proved (``reaches_proved``).
-    For apps built on auth, from a task (``integration``).
+    For apps built on auth, from a task (``integration``). Both are written
+    in ``language_of(user, language)``: ``wording`` is translated in the
+    ``code`` context of the catalogs (``pgettext``), and the mail comes
+    from the language's template where there is one.
     """
     number = as_mobile_number(identifier)
     texted = number is not None and getattr(user, "mobile_number", None) == number
@@ -440,22 +464,24 @@ async def send_code(
         return False
     if not reaches_proved(user, texted=texted):
         return False
-    async with AuthUnitOfWork() as uow:
-        code = await uow.verification_codes.issue(
-            purpose, target_of(identifier), user_id=user.id
-        )
-        if texted:
-            await text_code(cast(str, number), code, wording, uow)
-        await uow.commit()
-    if not texted:
-        await _mail_code(user, cast(str, address), code, template)
+    with override(language_of(user, language)):
+        async with AuthUnitOfWork() as uow:
+            code = await uow.verification_codes.issue(
+                purpose, target_of(identifier), user_id=user.id
+            )
+            if texted:
+                await text_code(cast(str, number), code, wording, uow)
+            await uow.commit()
+        if not texted:
+            await _mail_code(user, cast(str, address), code, template)
     return True
 
 
-async def send_mobile_verification(user_id: UUID) -> None:
+async def send_mobile_verification(user_id: UUID, language: str | None = None) -> None:
     """Text a verification code to the user's mobile number, unless verified.
 
-    The ``domainkit.auth.send_mobile_verification`` task.
+    The ``domainkit.auth.send_mobile_verification`` task; ``language`` is
+    the request's (``language_of``).
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))
@@ -469,7 +495,8 @@ async def send_mobile_verification(user_id: UUID) -> None:
         code = await uow.verification_codes.issue(
             MOBILE_VERIFICATION, target_of(number), user_id=user.id
         )
-        await text_code(number, code, "verify your number", uow)
+        with override(language_of(user, language)):
+            await text_code(number, code, "verify your number", uow)
         await uow.commit()
 
 
@@ -489,13 +516,21 @@ def can_text(label: str) -> bool:
 
 
 async def text_code(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -> None:
-    """Queue a text message with ``code``; it leaves with ``uow``'s commit."""
+    """Queue a text message with ``code``; it leaves with ``uow``'s commit.
+
+    Written in the active language: ``purpose`` ("reset your password") is
+    translated in the ``code`` context (``pgettext``), so a project adds
+    its own purposes to its catalogs that way.
+    """
     from domainkit.contrib.notifications import send_sms
 
-    valid_for = describe(auth_settings().CODE_TTL)
-    body = (
-        f"{code} is your code to {purpose}. It works for {valid_for}. "
+    body = gettext(
+        "{code} is your code to {purpose}. It works for {valid_for}. "
         "Never give it to anyone."
+    ).format(
+        code=code,
+        purpose=pgettext("code", purpose),
+        valid_for=describe(auth_settings().CODE_TTL),
     )
     await send_sms(number, body, uow=uow)
 
@@ -508,7 +543,8 @@ async def mail_user(
     The template is given ``user``, ``username``, and ``context``. For a
     notice an app built on auth sends, from a task (``integration``): a
     device was bound, say. Nothing is mailed to a user with no address, or
-    with one that cannot take mail.
+    with one that cannot take mail. The mail is in the user's language
+    (``language_of``), from its template where there is one.
     """
     from domainkit.contrib.mail import deliver, render_mail
 
@@ -516,8 +552,48 @@ async def mail_user(
     if address is None or not _mailable(user, address):
         return False
     filled = {"user": user, "username": user.get_username(), **(context or {})}
-    await deliver([render_mail(template, filled, to=[address])])
+    with override(language_of(user)):
+        mail = render_mail(template, filled, to=[address])
+    await deliver([mail])
     return True
+
+
+def language_of(user: AbstractBaseUser | None, requested: str | None = None) -> str:
+    """The language to write to ``user`` in: one of ``LANGUAGES``.
+
+    The user's own, where the user model names it (``LANGUAGE_FIELD``);
+    else ``requested``, the language of the request that asked (a task's
+    ``language``); else the active language: the request's, or
+    ``LANGUAGE_CODE``. A value ``LANGUAGES`` does not list is passed over;
+    ``ar-eg`` is ``ar`` where only ``ar`` is listed.
+    """
+    languages = [code for code, _ in settings.LANGUAGES]
+    chosen = get_language()
+    if requested:
+        chosen = negotiate(requested, languages, chosen)
+    field = None if user is None else user.LANGUAGE_FIELD
+    stored = getattr(user, field, None) if field else None
+    if isinstance(stored, str) and stored:
+        return negotiate(stored, languages, chosen)
+    return chosen
+
+
+class LanguageArgument(TypedDict, total=False):
+    """A task's ``language`` keyword argument (``language_argument``)."""
+
+    language: str
+
+
+def language_argument() -> LanguageArgument:
+    """The request's language, as a task's keyword argument: ``{"language": "ar"}``.
+
+    Nothing when it is ``LANGUAGE_CODE``, which the worker writes in
+    anyway: the task's arguments are then what they were before 2.4.
+    """
+    language = get_language()
+    if language == settings.LANGUAGE_CODE:
+        return {}
+    return {"language": language}
 
 
 async def _mail_code(
@@ -530,11 +606,12 @@ async def _mail_code(
     await deliver([render_mail(template, context, to=[address])])
 
 
-async def send_email_verification(user_id: UUID) -> None:
+async def send_email_verification(user_id: UUID, language: str | None = None) -> None:
     """Mail a verification code to the user's address.
 
     The ``domainkit.auth.send_email_verification`` task. Nothing goes to an
     address that is verified already. A new code replaces the one before.
+    ``language`` is the request's (``language_of``).
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))
@@ -548,7 +625,8 @@ async def send_email_verification(user_id: UUID) -> None:
             EMAIL_VERIFICATION, target_of(address), user_id=user.id
         )
         await uow.commit()
-    await _mail_code(user, address, code, "auth/email_verification_code")
+    with override(language_of(user, language)):
+        await _mail_code(user, address, code, "auth/email_verification_code")
 
 
 def _mailable(user: AbstractBaseUser, address: str) -> bool:
@@ -631,12 +709,15 @@ def code_context(code: str, user: AbstractBaseUser | None = None) -> dict[str, o
 
 
 def describe(duration: timedelta) -> str:
-    """``duration`` in words: ``3 days``, ``1 hour``, or ``90 minutes``."""
+    """``duration`` in words, in the active language: ``3 days``, ``1 hour``."""
     seconds = math.ceil(duration.total_seconds())
     if seconds % 86400 == 0:
-        count, unit = seconds // 86400, "day"
+        count = seconds // 86400
+        words = ngettext("{count} day", "{count} days", count)
     elif seconds % 3600 == 0:
-        count, unit = seconds // 3600, "hour"
+        count = seconds // 3600
+        words = ngettext("{count} hour", "{count} hours", count)
     else:
-        count, unit = math.ceil(seconds / 60), "minute"
-    return f"{count} {unit}{'' if count == 1 else 's'}"
+        count = math.ceil(seconds / 60)
+        words = ngettext("{count} minute", "{count} minutes", count)
+    return words.format(count=count)

@@ -73,7 +73,9 @@ class CibaSettings(BaseModel):
         default="Open the app to approve or deny it.", min_length=1, max_length=200
     )
     """The notification's text. No personal data: it goes through the push
-    service; the app fetches the request's details itself."""
+    service; the app fetches the request's details itself. Translated into
+    the user's language, or the request's: domainkit's catalogs have the
+    defaults in Arabic, and a project's catalogs may translate its own."""
 
     @field_validator("QR_FORMAT")
     @classmethod

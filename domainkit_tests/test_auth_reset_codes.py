@@ -3,7 +3,8 @@
 import logging
 import re
 from collections.abc import Callable, Iterator
-from typing import Any, cast
+from datetime import timedelta
+from typing import Any, Final, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,21 +13,27 @@ from fastapi.testclient import TestClient
 from domainkit.conf import override_settings
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, User, UserId
-from domainkit.contrib.auth.recovery import send_mobile_verification
+from domainkit.contrib.auth.recovery import (
+    describe,
+    send_email_verification,
+    send_mobile_verification,
+)
 from domainkit.contrib.notifications.backends import sms_outbox
 from domainkit.http import get_asgi_application
 from domainkit.http.application import application_problems
+from domainkit.i18n import override
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     IDENTITY,
     IDENTITY_DOMAINS,
+    MIDDLEWARE,
     Api,
     ExitStackClients,
     Migrated,
     Shape,
 )
 from domainkit_tests.support.auth import PASSWORD, audited, bearer, create_user, login
-from domainkit_tests.test_auth_recovery import run_worker
+from domainkit_tests.test_auth_recovery import outbox_payloads, run_worker
 
 NEW_PASSWORD = "an0ther-Strong-pass!"
 NUMBER = "+33612345678"
@@ -353,3 +360,92 @@ def user_of(user_id: UUID) -> User:
             return cast(User, await uow.users.get(UserId(user_id)))
 
     return run_async(read())
+
+
+# Their language (user report A11) ----------------------------------------------------
+
+
+LOCALE: Final = "domainkit.http.locale.LocaleMiddleware"
+ARABIC: Final = {"Accept-Language": "ar"}
+OTHER_NUMBER: Final = "+33612345679"
+
+
+def test_codes_go_out_in_the_language_of_the_request(texting: App) -> None:
+    """A text and a mail in Arabic for a request in Arabic; English otherwise."""
+    with override_settings(MIDDLEWARE=[LOCALE, *MIDDLEWARE]):
+        client = texting(**CODES)
+        create_user(
+            None,
+            mobile_number=NUMBER,
+            email="erin@example.com",
+            mobile_number_verified=True,
+            email_verified=True,
+        )
+        client.post("/auth/password-reset", json={"identifier": NUMBER}, headers=ARABIC)
+        reset_by_mail = {"identifier": "erin@example.com"}
+        client.post("/auth/password-reset", json=reset_by_mail, headers=ARABIC)
+        client.post("/auth/password-reset", json=reset_by_mail)
+        payloads = outbox_payloads()
+        drain()
+
+    assert payloads == [
+        {"identifier": NUMBER, "language": "ar"},
+        {"identifier": "erin@example.com", "language": "ar"},
+        {"identifier": "erin@example.com"},  # LANGUAGE_CODE's: as before.
+    ]
+    (text,) = sms_outbox
+    code = code_in(text.body)
+    assert text.body == (
+        f"{code} هو رمزك لإعادة تعيين كلمة المرور. يعمل لمدة 10 دقائق. لا تُعطه لأحد."
+    )
+    english, arabic = sorted(mail.outbox, key=lambda message: message.subject)
+    assert arabic.subject == "رمز إعادة تعيين كلمة المرور"
+    assert "رمز اختيار كلمة مرور جديدة هو:" in arabic.body
+    assert "يعمل لمدة 10 دقائق. لا تُعطه لأحد." in arabic.body
+    assert english.subject == "Your code to reset your password"
+    assert "It works for 10 minutes. Never give it to anyone." in english.body
+
+
+def test_codes_go_out_in_the_users_own_language(
+    texting: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``LANGUAGE_FIELD`` wins over the request's, when ``LANGUAGES`` lists it."""
+    monkeypatch.setattr(User, "LANGUAGE_FIELD", "last_name")
+    client = texting(**CODES, CODES_TO_UNPROVED=True)
+    rana = create_user(
+        None, mobile_number=NUMBER, email="rana@example.com", last_name="ar-EG"
+    )
+    create_user(None, mobile_number=OTHER_NUMBER, last_name="fr")
+
+    ask_reset(client, identifier=NUMBER)  # A request in English.
+    drain()
+    run_async(send_mobile_verification(rana, language="en"))
+    drain()
+    ask_reset(client, identifier=OTHER_NUMBER)  # French: not one of LANGUAGES.
+    drain()
+    run_async(send_email_verification(rana))
+
+    reset_text, verification, other_text = (text.body for text in sms_outbox)
+    assert "هو رمزك لإعادة تعيين كلمة المرور." in reset_text
+    assert "هو رمزك لتأكيد رقمك." in verification
+    assert "is your code to reset your password." in other_text
+    (verification_mail,) = mail.outbox
+    assert verification_mail.subject == "رمز تأكيد عنوان بريدك الإلكتروني"
+
+
+def test_durations_are_written_in_the_language() -> None:
+    """Arabic's six plural forms; English's two."""
+    with override("ar"):
+        arabic = [describe(timedelta(days=days)) for days in (1, 2, 3, 11, 100)]
+        arabic += [describe(timedelta(hours=1)), describe(timedelta(minutes=90))]
+
+    assert arabic == [
+        "يوم واحد",
+        "يومان",
+        "3 أيام",
+        "11 يومًا",
+        "100 يوم",
+        "ساعة واحدة",
+        "90 دقيقة",
+    ]
+    assert describe(timedelta(hours=2)) == "2 hours"

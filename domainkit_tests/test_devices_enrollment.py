@@ -14,13 +14,13 @@ from domainkit.clock import now
 from domainkit.conf import override_settings
 from domainkit.contrib import mail
 from domainkit.contrib.notifications.backends import sms_outbox
-from domainkit_tests.conftest import IDENTITY
+from domainkit_tests.conftest import IDENTITY, MIDDLEWARE
 from domainkit_tests.support.auth import PASSWORD, audited, bearer, create_user, login
 from domainkit_tests.support.passwords import BREACHED_ON, LEAKED, pwned
 from domainkit_tests.test_auth_login_origins import origins
 from domainkit_tests.test_auth_mfa import clock, code_at, enrol
 from domainkit_tests.test_auth_recovery import run_worker
-from domainkit_tests.test_auth_reset_codes import drain
+from domainkit_tests.test_auth_reset_codes import LOCALE, drain
 from domainkit_tests.test_ciba import PHONE, SITE, App, Phone, app
 from domainkit_tests.test_devices import Device
 
@@ -151,6 +151,22 @@ def test_codes_go_by_text_to_a_number(app: App) -> None:
     assert text.to == NUMBER
     assert "is your code to enroll your phone." in text.body
     assert mail.outbox == []
+
+
+def test_codes_go_in_the_language_of_the_request(app: App) -> None:
+    """A page asking in Arabic gets its code texted in Arabic (user report A11)."""
+    with override_settings(DEVICES=ON, MIDDLEWARE=[LOCALE, *MIDDLEWARE]):
+        client = app(PHONE)
+        create_user("hal", mobile_number=NUMBER, proved=True)
+        answer = client.post(
+            "/auth/devices/enroll/code",
+            json={"identifier": NUMBER},
+            headers={"Accept-Language": "ar"},
+        )
+        assert answer.status_code == 202, answer.json()
+        drain()
+    [text] = sms_outbox
+    assert "هو رمزك لتسجيل هاتفك." in text.body
 
 
 def test_enrollment_codes_go_only_to_a_proved_number(app: App) -> None:

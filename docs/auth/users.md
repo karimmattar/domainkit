@@ -414,6 +414,14 @@ Settings files other than the base one extend `AUTH`
 - **`clean_field(name, value)`** tidies a value before it is stored, when
   a user is made and when one is changed. Override it to trim or
   normalize a field.
+- **`LANGUAGE_FIELD`** (*new in 2.4*) names the field that holds the
+  user's language, such as `language: str = ""` with
+  `LANGUAGE_FIELD = "language"`. Codes and pushes sent to the user are
+  written in it, when `LANGUAGES` lists it; without one, in the language
+  of the request that asked for them, or `LANGUAGE_CODE`
+  ([The language of codes](logging-in.md#the-language-of-codes)).
+  Startup refuses a name the model lacks. It is `None` by default: no
+  column is added for you.
 
 The model's links to groups and permissions get tables named after its
 table (`accounts_users_groups`, `accounts_users_permissions`). Startup

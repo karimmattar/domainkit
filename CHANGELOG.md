@@ -393,6 +393,17 @@ and a status.
   for an authorization, and an act may ask `["phone"]` with devices alone
   ([Confirming one act](docs/auth/devices.md#confirming-one-act), ADR
   0144) (user report A6).
+- Codes and sign-in pushes go out in their reader's language: auth's
+  text messages and mails, the time a code works for, and ciba's
+  `PUSH_TITLE` and `PUSH_BODY` are written in the user's language where
+  the user model names its field (`LANGUAGE_FIELD`), else in the language
+  of the request that asked, which the request hands to the task, else
+  in `LANGUAGE_CODE`. domainkit's catalogs and auth's mail templates have
+  them in Arabic; a project's own templates and push text are used as
+  before. `language_of` and `language_argument` are in
+  `auth.integration`. They were in English whatever `LANGUAGES` listed
+  ([The language of codes](docs/auth/logging-in.md#the-language-of-codes),
+  ADR 0149) (user report A11).
 - Mail templates in other languages: `auth/password_reset_code.ar.txt`
   beside `auth/password_reset_code.txt`, with its own subject and HTML
   body, is what `render_mail` uses while Arabic is active; `pt` serves

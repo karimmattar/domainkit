@@ -585,6 +585,8 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `language_argument`: The request's language, as a task's keyword argument: `{"language": "ar"}`.
+- `language_of`: The language to write to `user` in: one of `LANGUAGES`.
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
 - `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.

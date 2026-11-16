@@ -1173,3 +1173,52 @@ msgstr ""
 
 msgid "Passwords cannot be checked against data breaches now; try again later."
 msgstr ""
+
+#. domainkit.contrib.auth and domainkit.contrib.ciba: codes and pushes sent to users
+msgid ""
+"{code} is your code to {purpose}. It works for {valid_for}. Never give it to "
+"anyone."
+msgstr ""
+
+#. The purpose a texted code completes: "{code} is your code to ..."
+msgctxt "code"
+msgid "reset your password"
+msgstr ""
+
+msgctxt "code"
+msgid "verify your number"
+msgstr ""
+
+msgctxt "code"
+msgid "finish signing up"
+msgstr ""
+
+msgctxt "code"
+msgid "enroll your phone"
+msgstr ""
+
+msgid ""
+"Someone tried to sign up with this number, and an account uses it already. "
+"If it was you, log in, or reset your password."
+msgstr ""
+
+msgid "{count} day"
+msgid_plural "{count} days"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "{count} hour"
+msgid_plural "{count} hours"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "{count} minute"
+msgid_plural "{count} minutes"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "Approve sign-in?"
+msgstr ""
+
+msgid "Open the app to approve or deny it."
+msgstr ""

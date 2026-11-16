@@ -158,6 +158,7 @@ statuses, and the amendments they name.
 | [0145](0145-mount-part-of-a-router-as-a-copy.md) | Mount part of a router as a copy | Accepted |
 | [0147](0147-name-who-caused-each-event-and-tell-the-old-address.md) | Name who caused each event, and tell the old address | Accepted |
 | [0148](0148-check-new-passwords-against-breaches-and-let-rules-be-async.md) | Check new passwords against breaches, and let password rules be async | Accepted |
+| [0149](0149-write-codes-and-pushes-in-their-readers-language.md) | Write codes and pushes in their reader's language | Accepted |
 | [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md) | Take the tenant from the path, and let members hold permissions | Accepted |
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
