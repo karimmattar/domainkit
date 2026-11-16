@@ -702,6 +702,12 @@ and a status.
 
 ### Fixed
 
+- The images `init` writes install the wheels a build offers
+  (`--build-context wheels=<directory>`) before reading the package
+  index. A wheel of the same version as a release, a fork's or a release
+  candidate's, lost to the index's copy, and the image ran the release
+  instead: CI's image smoke test ran the published domainkit, not the
+  wheel it had just built (user report S1).
 - A password rule with `async def validate` was accepted and never ran:
   nothing awaited it, so the password it should have refused was stored.
   The routes and commands now await it, and `validate_password`, which

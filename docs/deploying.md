@@ -62,9 +62,10 @@ the `granian` extra: `serve` then starts Granian, with the options of
 `LOGGING` with no file to write first. Its notes, like the uvicorn
 image's, link to the documentation of the release that wrote them.
 
-`docker build --build-context wheels=<directory> .` offers the wheels in
-`<directory>` (a fork, a release candidate) ahead of the package index,
-for a build without a lock.
+`docker build --build-context wheels=<directory> .` installs the wheels
+in `<directory>` (a fork, a release candidate) first, for a build without
+a lock, so they win over a release of the same version on the package
+index.
 
 Every setting comes from the environment, as
 `src/config/settings/production.py` lists them. Nothing secret is built
