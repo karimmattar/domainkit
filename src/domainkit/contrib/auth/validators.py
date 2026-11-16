@@ -270,6 +270,9 @@ class BreachedPasswordValidator:
         """
         import httpx2
 
+        # The range API is keyed by SHA-1 prefixes (k-anonymity): nothing here
+        # relies on SHA-1 resisting collisions.
+        # nosemgrep: insecure-hash-algorithm-sha1  # noqa: ERA001
         digest = hashlib.sha1(password.encode(), usedforsecurity=False)
         hexdigest = digest.hexdigest().upper()
         prefix, suffix = hexdigest[:PREFIX_LENGTH], hexdigest[PREFIX_LENGTH:]
@@ -281,7 +284,8 @@ class BreachedPasswordValidator:
             count = dict(_breaches(response.text)).get(suffix, 0)
         except (httpx2.HTTPError, ValueError) as exc:
             closed = self.config.FAIL_CLOSED
-            logger.warning(
+            # Logs the error's type and the verdict, never the password.
+            logger.warning(  # nosemgrep: python-logger-credential-disclosure
                 "The breached-password check failed (%s); the password was %s",
                 type(exc).__name__,
                 "refused" if closed else "let through",
