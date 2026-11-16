@@ -1291,3 +1291,118 @@ msgstr "يحتاج ضمّ مستخدم إلى الموظفين إلى موافق
 
 msgid "Requests are made and decided in one's own name only."
 msgstr "تُقدَّم الطلبات ويُبتّ فيها باسم صاحبها فقط."
+
+#. domainkit.contrib.auth: what a screen shows of a change of the admin API
+msgid "Create a user"
+msgstr "إنشاء مستخدم"
+
+msgid "Change a user"
+msgstr "تعديل مستخدم"
+
+msgid "Delete a user"
+msgstr "حذف مستخدم"
+
+msgid "Set a user's password"
+msgstr "تعيين كلمة مرور مستخدم"
+
+msgid "Make a user's password unusable"
+msgstr "تعطيل كلمة مرور مستخدم"
+
+msgid "End a user's sessions"
+msgstr "إنهاء جلسات مستخدم"
+
+msgid "Act as a user"
+msgstr "التصرف بصفة مستخدم"
+
+msgid "Change a user's groups"
+msgstr "تعديل مجموعات مستخدم"
+
+msgid "Change a user's permissions"
+msgstr "تعديل صلاحيات مستخدم"
+
+msgid "Create a group"
+msgstr "إنشاء مجموعة"
+
+msgid "Rename a group"
+msgstr "إعادة تسمية مجموعة"
+
+msgid "Change a group's permissions"
+msgstr "تعديل صلاحيات مجموعة"
+
+msgid "Delete a group"
+msgstr "حذف مجموعة"
+
+msgid "User"
+msgstr "المستخدم"
+
+msgid "Group"
+msgstr "المجموعة"
+
+msgid "Username"
+msgstr "اسم المستخدم"
+
+msgid "New name"
+msgstr "الاسم الجديد"
+
+msgid "Reason"
+msgstr "السبب"
+
+msgid "Adds"
+msgstr "يضيف"
+
+msgid "Takes away"
+msgstr "يسحب"
+
+msgid "Password"
+msgstr "كلمة المرور"
+
+msgctxt "password"
+msgid "set"
+msgstr "مُعيّنة"
+
+msgctxt "password"
+msgid "none"
+msgstr "لا توجد"
+
+msgid "{items} and {count} more"
+msgid_plural "{items} and {count} more"
+msgstr[0] "{items} و{count} أخرى"
+msgstr[1] "{items} وواحد آخر"
+msgstr[2] "{items} واثنان آخران"
+msgstr[3] "{items} و{count} أخرى"
+msgstr[4] "{items} و{count} أخرى"
+msgstr[5] "{items} و{count} أخرى"
+
+msgid "{count} more value"
+msgid_plural "{count} more values"
+msgstr[0] "{count} قيمة أخرى"
+msgstr[1] "قيمة أخرى واحدة"
+msgstr[2] "قيمتان أخريان"
+msgstr[3] "{count} قيم أخرى"
+msgstr[4] "{count} قيمة أخرى"
+msgstr[5] "{count} قيمة أخرى"
+
+#. domainkit.contrib.approvals: what a screen shows of a decision
+msgid "Approve a request"
+msgstr "الموافقة على طلب"
+
+msgid "Submit a request"
+msgstr "تقديم طلب"
+
+msgid "Reject a request"
+msgstr "رفض طلب"
+
+msgid "Cancel a request"
+msgstr "إلغاء طلب"
+
+msgid "Action"
+msgstr "الإجراء"
+
+msgid "{count} more argument"
+msgid_plural "{count} more arguments"
+msgstr[0] "{count} وسيط آخر"
+msgstr[1] "وسيط آخر واحد"
+msgstr[2] "وسيطان آخران"
+msgstr[3] "{count} وسائط أخرى"
+msgstr[4] "{count} وسيطًا آخر"
+msgstr[5] "{count} وسيط آخر"

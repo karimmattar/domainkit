@@ -558,6 +558,12 @@ once a process (`DomainkitDeprecationWarning`). Declare the act as an
 confirm it ([above](#confirming-one-act)): the phone then shows the
 server's words, and its approval is worth that act, with its arguments,
 once ([Upgrading](../upgrading.md#move-from-the-phones-free-text-step-up-to-action-authorizations)).
+The framework's own back-office acts have built-in actions for this
+(since 2.5): the admin API's changes (`AUTH["ADMIN_ACTION"]`) and a
+request's steps (`APPROVALS["SUBMIT_ACTION"]`, `APPROVE_ACTION`,
+`REJECT_ACTION`, `CANCEL_ACTION`); turn them on, and the window is no
+longer needed there
+([The framework's own acts](actions.md#the-frameworks-own-acts-the-admin-api-and-approvals)).
 
 ## The mobile app as identity
 

@@ -106,7 +106,11 @@ class AuthConfig(DomainConfig):
         return self.user_table is not users
 
     def ready(self) -> None:
-        """Load the user model, check the configuration, and map the tables."""
+        """Load the user model, check the configuration, and map the tables.
+
+        With ``ADMIN_ACTION`` on, the action ``auth.admin_change`` is
+        registered: each change of the admin API asks for an authorization.
+        """
         config = auth_settings()
         self.user_model = _user_model(config.USER_MODEL)
         self.user_table = _user_table(config, self.user_model)
@@ -134,9 +138,13 @@ class AuthConfig(DomainConfig):
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
         on_export_subject(_export_logins, domain=self.label)
-        from .actions import CODE_CONFIRMATION, on_action_confirmation
+        from .actions import CODE_CONFIRMATION, on_action_confirmation, register_action
 
         on_action_confirmation(CODE_CONFIRMATION, domain=self.label)
+        if config.ADMIN_ACTION:  # Each change of the admin API is an act (ADR 0163).
+            from .admin_actions import ADMIN_CHANGE
+
+            register_action(ADMIN_CHANGE, domain=self.label)
         on_check_application(self.application_problems)
         on_deployment_warnings(self.weak_settings)
         on_account_routes(self.account_routes, domain=self.label)
@@ -753,8 +761,9 @@ def action_problems(app: FastAPI) -> list[CheckMessage]:
 
     An action no installed way to confirm proves (``E108``); a route that
     asks for a purpose no registered action has (``E109``), or whose action
-    no decorated service spends (``E110``); and ``StepUp(for_=...)`` on a
-    WebSocket or an event stream (``E111``).
+    nothing spends (``E110``: no decorated service, and no code that said
+    so with ``spent_in_code``); and ``StepUp(for_=...)`` on a WebSocket or
+    an event stream (``E111``).
     """
     from .actions import provable, registered_actions
 
@@ -806,9 +815,10 @@ def _asking_problems(
         problems.append(
             CheckMessage(
                 "auth.E110",
-                f"{route} asks for an authorization of {purpose!r}, which no "
-                "service spends: decorate the act's service with "
-                "@requires_authorization(...).",
+                f"{route} asks for an authorization of {purpose!r}, which "
+                "nothing spends: decorate the act's service with "
+                "@requires_authorization(...), or, where code of yours calls "
+                "spend_authorization, say so with spent_in_code(...).",
             )
         )
     return problems

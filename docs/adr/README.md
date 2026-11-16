@@ -154,7 +154,7 @@ statuses, and the amendments they name.
 | [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) | Codes that open an account go only where it was proved | Accepted |
 | [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md) | While the broker is away, relaying workers run the outbox | Accepted |
 | [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted; amended by [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) |
-| [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Accepted; amended by [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) |
+| [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) and [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) |
 | [0145](0145-mount-part-of-a-router-as-a-copy.md) | Mount part of a router as a copy | Accepted |
 | [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md) | Show gates how a login was made, and let a login keep shorter limits | Accepted; amended by [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) |
 | [0147](0147-name-who-caused-each-event-and-tell-the-old-address.md) | Name who caused each event, and tell the old address | Accepted |
@@ -164,7 +164,7 @@ statuses, and the amendments they name.
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
 | [0153](0153-hold-a-new-address-or-number-until-its-code-proves-it.md) | Hold a new address or number until its code proves it | Accepted |
-| [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md) | Hold admin changes for approval, and show requests to those they concern | Accepted |
+| [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md) | Hold admin changes for approval, and show requests to those they concern | Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) |
 | [0155](0155-choose-number-matching-and-the-same-network-per-page.md) | Choose number matching and the same network per page | Accepted |
 | [0156](0156-refusals-that-last-push-tokens-checked-and-commands-that-start-the-domains.md) | Refusals that last, push tokens checked when registered, and commands that start the domains | Accepted |
 | [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) | Priorities on RabbitMQ, an unpartitioned outbox and audit trail, and live routes in several processes | Accepted |
@@ -172,6 +172,7 @@ statuses, and the amendments they name.
 | [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 | [0160](0160-serve-in-production-from-the-settings.md) | Serve in production from the settings | Accepted |
 | [0161](0161-authorize-a-use-case-as-a-copy-and-read-what-is-shown-in-its-unit-of-work.md) | Authorize a use case as a copy, and read what is shown in its unit of work | Accepted |
+| [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) | Authorize admin changes, and a request's steps, as acts | Accepted |
 | [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) | Let the asker withdraw a phone request, count sessions per user, and word each kind | Accepted |
 | [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) | Let a domain layer mark its texts, extract the project's own, and add a translation alone | Accepted |
 

@@ -116,6 +116,51 @@ and a status.
   binding_message)` (`auth.integration`). The login does not keep them.
   A gate read the redeem's `Origin` instead. ADR 0164 (user report A11).
 
+- `AUTH.ADMIN_ACTION` (off by default): each change of the admin API asks
+  for an authorization of its own, the action `auth.admin_change`, in
+  place of a step-up window, so the phone confirms making staff, giving
+  groups and permissions, setting a password, impersonating, deleting a
+  user, and each change to a group, one at a time. The act binds the
+  user or group and the change: its kind, what it sets (whether a user
+  created is active included), adds, and takes away, and whether it
+  leaves a usable password, never the password. The screen says which
+  user or group, by name, and what changes: the flags `is_superuser`,
+  `is_staff` and `is_active` first and always, and a list too long for a
+  line with its count ("auditors, clerks and 4 more"). Each changing
+  route has a twin, `POST <its path>/authorization` (where a `PATCH` and
+  a `DELETE` share a path, `<path>/authorization/patch` and `.../delete`;
+  `404` while the setting is off), that runs the route's own checks, the
+  last active superuser's included, and stores the authorization. The
+  route checks it binds the change before the `on_admin_change` checks,
+  so a change held for approval (`APPROVALS.ADMIN_APPROVALS`) is refused
+  before it waits if it does not, and spends it with the change's commit.
+  While the setting is off, the admin API loads nothing of it
+  ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
+  ADR 0163) (user report A6).
+
+- `on_create_staff` (`auth.gates`) registers a check of creating a user
+  who is staff in the admin API, run with the creation's own checks and
+  in its twin. Approvals refuses there, while `ADMIN_APPROVALS` holds
+  making staff, what it refused in its `on_admin_change` check, so asking
+  for an authorization of such a creation is refused too (ADR 0163)
+  (user report A6).
+
+- `APPROVALS.SUBMIT_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` (each
+  off by default), as `APPROVE_ACTION`: submitting at `POST /requests`,
+  rejecting, and cancelling each ask for an authorization of their own,
+  `approvals.submit`, `approvals.reject`, and `approvals.cancel`. A
+  submission is bound to the action and its arguments, a rejection or a
+  cancellation to the request and the reason; the screen shows the
+  action, the reason, and the arguments. The twins are
+  `POST /requests/authorization`, and `.../reject/authorization` and
+  `.../cancel/authorization` under a request, `404` while off; asking is
+  refused as the act would be. `SubmitAction`, `RejectAction`, and
+  `CancelAction` are the routes' rules. With these and `ADMIN_ACTION`, a
+  project needs the phone's free-text step-up, which 3.0 removes, for
+  none of the framework's back-office acts
+  ([Submitting, rejecting, and cancelling with an authorization](docs/contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization),
+  ADR 0163) (user report A6).
+
 ### Changed
 
 - `import domainkit.i18n` imports none of its modules. Its names, and its
@@ -171,6 +216,15 @@ and a status.
 
 - `makemessages` extracts the texts marked with `gettext_noop`, as the
   docs said it did (user report I2).
+
+- `check` refused a route that asks `StepUp(for_=...)` for an act that
+  code spends with `spend_authorization`, as the docs offer for code that
+  is not a service (`auth.E110`: "no service spends it"). Code says so
+  once with `spent_in_code(action)`, and the check passes it; the admin
+  API's `auth.admin_change` is declared so. A purpose nothing spends is
+  still refused; one declared and never spent still fails its requests
+  under `DEBUG` and in tests (`500 authorization_unspent`) (ADR 0163)
+  (user report A6).
 
 ## [2.4.0] - 2026-11-16
 

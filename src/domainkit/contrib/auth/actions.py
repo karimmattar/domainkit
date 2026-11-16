@@ -146,6 +146,7 @@ __all__ = [
     "requires_authorization",
     "router",
     "spend_authorization",
+    "spent_in_code",
 ]
 
 AUTHORIZATION_HEADER: Final = "Action-Authorization"
@@ -948,8 +949,24 @@ _spending_purposes: set[str] = set()
 
 
 def spent_by_a_service(purpose: str) -> bool:
-    """Whether a service decorated ``requires_authorization`` spends ``purpose``."""
+    """Whether something spends ``purpose``: a decorated service, or code that said so.
+
+    A service decorated ``requires_authorization`` says so itself; code that
+    calls ``spend_authorization`` says so with ``spent_in_code``.
+    """
     return purpose in _spending_purposes
+
+
+def spent_in_code(action: Action) -> Action:
+    """Say that code spends ``action``'s authorizations, with ``spend_authorization``.
+
+    ``check`` refuses a route that asks for an act nothing spends
+    (``auth.E110``). A decorated service says so itself; code that is not
+    a service, and calls ``spend_authorization``, says so with this once,
+    where it declares the action. Returns ``action``.
+    """
+    _spending_purposes.add(action.purpose)
+    return action
 
 
 def requires_authorization[F: Service | UseCase[Any]](
@@ -1068,6 +1085,22 @@ async def spend_authorization(
         await audit_refusal(ACTION, "used")
         raise
     return accepted.authorization
+
+
+async def check_authorization(action: Action, command: object) -> None:
+    """Refuse the request's authorization of ``action`` unless it binds ``command``.
+
+    What ``spend_authorization`` checks before it spends, spending nothing:
+    for code that checks the act before a step it cannot take back, then
+    spends it (the admin API, before the ``on_admin_change`` checks, which
+    may spend an approval).
+
+    Raises:
+        AuthorizationRequired: No rule kept an authorization of the purpose.
+        ActionNotAuthorized: It is for other arguments or another subject
+            (it is voided).
+    """
+    await _take(action, command)
 
 
 USERS: Final = "action_authorization_users"
