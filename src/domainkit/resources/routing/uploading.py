@@ -9,26 +9,28 @@ request's body is the file itself, its name in ``X-Filename``
 part named after the field holds it. The body limit is the file's, with
 room for a form.
 
-The route checks what a command route checks (its rules, the aggregate
-within the caller's reach, ``If-Match``) and receives the file as
-``save_upload`` does (its type from its content, its type's check, the
-size bound). It stores the file before the service runs, outside the
-service's transaction; a request that fails before the service returns
-deletes it. A route whose rules ask for an authorization of the act gets
-the twin a command route gets (``authorizing``): it takes the same body,
-receives and checks the file, stores nothing, and builds the command with
-an upload whose name is empty. So an ``Action`` for an upload act ignores
-the upload's field (its name is new on every request), and binds the file
-by its digest (``digest=``), which the twin and the act compute alike.
+The route checks what a command route checks, and before it reads a
+byte of the body: its rules, then on one aggregate, the aggregate within
+the caller's reach (404), the rules on it (403), and ``If-Match`` (412,
+428). It then receives the file as ``save_upload`` does (its type from
+its content, its type's check, the size bound), and stores it before the
+service runs, outside the service's transaction. The reach and
+``If-Match`` are checked again in it, as a command route checks them. A
+request whose unit of work did not commit deletes the file.
+
+A route whose rules ask for an authorization of the act gets the twin a
+command route gets (``authorizing``): it checks the reach first too,
+takes the same body, receives and checks the file, stores nothing, and
+builds the command with an upload whose name is empty. An ``Action``
+binds an upload by its content, not its name (``Action.arguments``), so
+the twin and the act agree on the file.
 """
 
 import dataclasses
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import aclosing
-from contextvars import ContextVar
-from functools import wraps
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 from urllib.parse import unquote
 
 import anyio
@@ -36,12 +38,15 @@ from fastapi import Request, Response, status
 from fastapi.routing import APIRoute
 from starlette.datastructures import UploadFile
 
+from domainkit.ddd.exceptions import PreconditionFailed
 from domainkit.ddd.messages import Command
 from domainkit.http.errors import error_responses
 from domainkit.http.uploads import FileType, ReceivedUpload, receive_upload
 from domainkit.storage.base import Storage, StoredUpload
 from domainkit.storage.handler import storages
 
+from ..conditional import PreconditionRequired, expected_versions
+from . import reach
 from .authorizing import SUFFIX
 from .commands import CommandRoute
 from .context import RouteContext
@@ -65,10 +70,9 @@ FORGET_WITHIN: Final = 10.0
 """Seconds a failed request may take to delete what it stored."""
 MAX_FORM_FIELDS: Final = 16
 """The form fields an upload's form may have besides its file."""
+CHANGED: Final = "This was changed since you read it; read it again before changing it."
+"""The detail of a 412, as a command route's."""
 logger: Final = logging.getLogger(__name__)
-
-_served: ContextVar[list[bool]] = ContextVar("domainkit_upload_served")
-"""Notes that the request's service returned: its upload is the service's now."""
 
 
 class UploadRoute(CommandRoute):
@@ -124,7 +128,7 @@ class UploadRoute(CommandRoute):
         super().__init__(
             router,
             command,
-            service=_noting(service),
+            service=service,
             body=None,
             returns=returns,
             method=method,
@@ -159,11 +163,15 @@ class UploadRoute(CommandRoute):
                 taken, or refused by its type's check.
         """
         request = context.request
-        received = await self.received(request)
         stored: StoredUpload | None = request.scope.get(STORED)
-        if stored is None:  # The twin: nothing is stored, nor kept.
+        if stored is None:  # The twin: the reach first, then the file, kept nowhere.
+            assert self.twin is not None  # noqa: S101 - only a twin builds before storing.
+            await self._reachable(context, self.twin.rules)
+            received = await self.received(request)
             received.close()
             stored = received.unstored()
+        else:
+            received = await self.received(request)
         values: dict[str, object] = {self.field: stored}
         if self.digest is not None:
             values[self.digest] = received.sha256
@@ -171,27 +179,63 @@ class UploadRoute(CommandRoute):
         return await super().build(dataclasses.replace(context, provided=provided))
 
     async def handle(self, context: RouteContext) -> Response:
-        """Receive and store the file, then run the command as a command route does.
+        """Check the reach, receive and store the file, then run the command.
 
-        What was stored is deleted unless the service returned.
+        What was stored is deleted when the request fails and its unit of
+        work did not commit: a commit may have kept the file's name.
+
+        Raises:
+            NotFound: The aggregate is out of the caller's reach.
+            PermissionDenied: A rule refuses the caller the aggregate.
+            PreconditionFailed: ``If-Match`` names another version (412).
+            PreconditionRequired: The resource requires ``If-Match`` (428).
         """
+        await self._reachable(context, self.rules, conditions=True)
         request = context.request
         received = await self.received(request)
-        try:
-            stored = await received.store(self.storage, directory=self.directory)
-        finally:
-            received.close()
+        stored = await received.store(self.storage, directory=self.directory)
         request.scope[STORED] = stored
-        served: list[bool] = []
-        token = _served.set(served)
+        committed = context.uow.committed
         try:
             return await super().handle(context)
         except BaseException:
-            if not served:
+            if context.uow.committed == committed:
                 await _forget(self.storage, stored.name)
             raise
-        finally:
-            _served.reset(token)
+
+    async def _reachable(
+        self,
+        context: RouteContext,
+        rules: "tuple[Rule, ...]",
+        *,
+        conditions: bool = False,
+    ) -> None:
+        """Refuse the request before its body is read, as the act would.
+
+        On one aggregate: within the caller's reach, the rules on it, and,
+        with ``conditions``, ``If-Match``. A route on the collection has
+        nothing to reach (its parent's checked already).
+
+        Raises:
+            NotFound: The aggregate is out of the caller's reach.
+            PermissionDenied: A rule refuses the caller the aggregate.
+            PreconditionFailed: ``If-Match`` names another version.
+            PreconditionRequired: The resource requires ``If-Match``.
+        """
+        if not self.detail:
+            return
+        uow = context.uow
+        async with uow:
+            aggregate = await reach.load(self.router, uow, context.request, context.ids)
+        await reach.check_object(context.request, aggregate, rules)
+        if not conditions:
+            return
+        header = context.if_match
+        versions = None if header is None else expected_versions(header)
+        if versions is None and self.router.require_if_match:
+            raise PreconditionRequired
+        if versions is not None and getattr(aggregate, "version", None) not in versions:
+            raise PreconditionFailed(CHANGED)
 
     async def received(self, request: Request) -> ReceivedUpload:
         """The request's file, received and checked once.
@@ -268,18 +312,6 @@ class UploadRoute(CommandRoute):
 
 async def _from_the_file() -> None:
     """Nothing: the file gives the field, once it is received (``build``)."""
-
-
-def _noting(service: "Service") -> "Service":
-    """``service``, noting for the request that it returned."""
-
-    @wraps(service)
-    async def run(command: Any, uow: Any) -> Any:  # noqa: ANN401 - the service's own.
-        result = await service(command, uow)
-        _served.get([]).append(True)  # Outside an upload route: noted nowhere.
-        return result
-
-    return run
 
 
 async def _forget(storage: Storage | str, name: str) -> None:

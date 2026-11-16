@@ -62,6 +62,7 @@ import inspect
 import json
 import logging
 import re
+import sys
 from collections.abc import Awaitable, Callable, Collection, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -353,6 +354,11 @@ class Action:
     def arguments(self, command: object) -> dict[str, Any]:
         """``command`` read back as JSON, less the fields ``ignore`` names.
 
+        An uploaded file (``StoredUpload``, or a tuple or list of them) is
+        bound by its content: its type, size, file name and SHA-256, never
+        the name the storage gave it, which is new on every request (ADR
+        0167).
+
         Raises:
             TypeError: ``command`` is not the action's command.
         """
@@ -362,7 +368,11 @@ class Action:
                 f"{type(command).__name__}."
             )
         dumped: dict[str, Any] = self.adapter.dump_python(command, mode="json")
-        return {key: value for key, value in dumped.items() if key not in self.ignore}
+        return {
+            key: _by_content(getattr(command, key, None), value)
+            for key, value in dumped.items()
+            if key not in self.ignore
+        }
 
     def digest_of(self, command: object) -> str:
         """The act's digest: ``fingerprint(purpose, arguments)`` (64 hex digits)."""
@@ -406,6 +416,23 @@ class Action:
     async def __call__(self, command: object) -> Shown:
         """As ``shown``: the hook point an action registers on holds callables."""
         return await self.shown(command)
+
+
+def _by_content(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON values.
+    """``dumped``, the JSON of ``value``, without the storage's name of an upload.
+
+    The upload's class exists only once its module is loaded: a process
+    that never loaded it holds none, and loads nothing here.
+    """
+    module = sys.modules.get("domainkit.storage.base")
+    upload: type | None = getattr(module, "StoredUpload", None)
+    if upload is None:
+        return dumped
+    if isinstance(value, upload) and isinstance(dumped, dict):
+        return {key: item for key, item in dumped.items() if key != "name"}
+    if isinstance(value, list | tuple) and isinstance(dumped, list):
+        return [_by_content(*pair) for pair in zip(value, dumped, strict=True)]
+    return dumped
 
 
 def _fields_of(command: type) -> set[str]:

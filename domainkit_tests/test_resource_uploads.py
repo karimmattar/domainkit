@@ -10,7 +10,7 @@ for an authorization gets a twin that stores nothing (ADR 0167).
 import hashlib
 import logging
 from decimal import Decimal
-from typing import Any, Final
+from typing import IO, Any, Final
 from urllib.parse import quote
 from uuid import UUID
 
@@ -27,7 +27,7 @@ from domainkit.ddd.query import F
 from domainkit.http.access import BasePermission
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.middleware import RequestBodyLimitMiddleware
-from domainkit.http.uploads import CHECKED_PDF, IMAGES
+from domainkit.http.uploads import CHECKED_PDF, IMAGES, FileType
 from domainkit.resources import ResourceRouter
 from domainkit.resources.routing import uploading
 from domainkit.storage import MemoryStorage, StoredUpload
@@ -41,7 +41,13 @@ from domainkit_tests.gadgets import (
 )
 from domainkit_tests.support.documents import one_page
 from domainkit_tests.test_resource_authorizations import AUTHORIZED, Asks
-from domainkit_tests.test_resources import LOCATION, Users, as_, everyone, gadgets
+from domainkit_tests.test_resources import (
+    LOCATION,
+    Users,
+    as_,
+    everyone,
+    gadgets,
+)
 
 PDF_FILE: Final = one_page()
 SCRIPTED: Final = one_page(
@@ -438,36 +444,148 @@ class Unforgetting(MemoryStorage):
         raise OSError("The store is away.")
 
 
-def test_a_file_is_the_services_once_it_returned(
+def test_a_file_is_kept_once_the_unit_of_work_committed(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:
-    """A failure after the service returned keeps the file: a row may name it."""
+    """A row may name the file once a commit kept it, whatever fails after.
+
+    A service that commits and then raises keeps its file; one that fails
+    before any commit, even after returning, has its file deleted.
+    """
     use_auth()
     storage = MemoryStorage()
+    named: list[str] = []
+
+    async def attach_then_fail(
+        command: AttachManual, uow: FakeGadgetsUnitOfWork
+    ) -> Gadget:
+        """Name the gadget after its file, commit, then fail."""
+        async with uow:
+            gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+            gadget.rename(command.manual.filename)
+            await uow.commit()
+        named.append(command.manual.name)
+        raise RuntimeError("The notice after the commit failed.")
 
     async def nothing(command: AttachManual, uow: FakeGadgetsUnitOfWork) -> None:
-        """Return nothing, where the route answers the aggregate."""
+        """Return nothing, where the route answers the aggregate; commit nothing."""
 
-    resource = gadgets(store)
+    gadget = ids(store)["a"]
+    for service in (attach_then_fail, nothing):
+        resource = gadgets(store)
+        resource.upload_route(
+            AttachManual,
+            service=service,
+            field="manual",
+            types=[CHECKED_PDF],
+            max_size=10_000,
+            storage=storage,
+            path="/manual",
+            name=service.__name__,
+        )
+        with pytest.raises(RuntimeError):
+            client_of(resource).post(
+                f"{LOCATION}{gadget}/manual",
+                content=PDF_FILE,
+                headers=as_("changer", **{"X-Filename": "kept.pdf"}),
+            )
+
+    (name,) = named
+    assert list(storage.files) == [name]
+    assert "kept.pdf" in {gadget.name for gadget in store.items.values()}
+
+
+class Counting(MemoryStorage):
+    """Counts its saves."""
+
+    def __init__(self) -> None:
+        """Nothing saved yet."""
+        super().__init__()
+        self.saved = 0
+
+    async def save(self, *args: Any, **options: Any) -> str:  # noqa: ANN401 - Storage's.
+        """Count, then save."""
+        self.saved += 1
+        return await super().save(*args, **options)
+
+
+class Only(BasePermission):
+    """Looks at objects: allows gadget ``a`` only."""
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: AnyUser, obj: object
+    ) -> bool:
+        """Gadget ``a``."""
+        return getattr(obj, "name", "") == "a"
+
+
+@pytest.mark.parametrize("require_if_match", [False, True])
+def test_the_reach_is_checked_before_a_byte_of_the_file_is_read(
+    use_auth: UseAuth, require_if_match: bool
+) -> None:
+    """Out of reach (404), refused by a rule on it (403), If-Match (412, 428).
+
+    The act and its twin refuse before they receive, check, scan or store
+    the file (A6 review).
+    """
+    use_auth()
+    read: list[int] = []
+
+    def counted(file: IO[bytes]) -> None:
+        read.append(len(file.read()))
+
+    pdf = FileType("application/pdf", ".pdf", CHECKED_PDF.matches, counted)
+    storage = Counting()
+    store = InMemoryGadgets(
+        [
+            make_gadget(name, price=price)
+            for name, price in (("a", "1"), ("b", "9"), ("c", "2"))
+        ]
+    )
+    resource = gadgets(store, scope=cheap_only, require_if_match=require_if_match)
     resource.upload_route(
         AttachManual,
-        service=nothing,
+        service=Run().attach,
         field="manual",
-        types=[CHECKED_PDF],
+        types=[pdf],
         max_size=10_000,
         storage=storage,
         path="/manual",
+        rule=Asks() & Only(),
     )
     client = client_of(resource)
+    found = {gadget.name: gadget for gadget in store.items.values()}
 
-    with pytest.raises(RuntimeError, match="returned nothing"):
-        client.post(
-            f"{LOCATION}{ids(store)['a']}/manual",
+    def sent(name: str, suffix: str = "", **headers: str) -> int:
+        answer = client.post(
+            f"{LOCATION}{found[name].id}/manual{suffix}",
             content=PDF_FILE,
-            headers=as_("changer"),
+            headers=as_("changer", **AUTHORIZED, **headers),
         )
+        return answer.status_code
 
-    assert list(storage.files.values()) == [PDF_FILE]
+    refused = [
+        sent("b"),
+        sent("b", "/authorization"),
+        sent("c"),
+        sent("c", "/authorization"),
+        sent("a", **{"If-Match": '"99"'}),
+    ]
+    if require_if_match:
+        refused.append(sent("a"))
+
+    assert refused == [404, 404, 403, 403, 412, *([428] if require_if_match else [])]
+    assert read == []
+    assert storage.saved == 0
+    version = f'"{found["a"].version}"'
+    assert sent("a", **{"If-Match": version}) == 200
+    assert read == [len(PDF_FILE)]
+    assert storage.saved == 1
+
+
+async def cheap_only(request: HTTPConnection) -> Any:  # noqa: ANN401 - criteria.
+    """Gadgets under 5.00."""
+    return F("price") < Decimal("5.00")
 
 
 @pytest.mark.parametrize("hang", [False, True])
