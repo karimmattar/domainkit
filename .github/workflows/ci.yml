@@ -1346,7 +1346,8 @@ jobs:
             mutants: >-
               domainkit.x* domainkit.architecture.* domainkit.clock.*
               domainkit.context.* domainkit.deadlines.* domainkit.deprecation.*
-              domainkit.encryption.* domainkit.exceptions.* domainkit.lifecycle.*
+              domainkit.encryption.* domainkit.exceptions.* domainkit.inspection.*
+              domainkit.lifecycle.*
               domainkit.log.* domainkit.reporting.* domainkit.signing.*
               domainkit.tasks.* domainkit.tracing.*
     env:

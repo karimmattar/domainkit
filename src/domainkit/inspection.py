@@ -12,7 +12,7 @@ converted::
 
 They are the ``inspect`` hooks of the types ``domainkit.http.uploads``
 ships (``CHECKED_PDF``, ``DOCX``, ``XLSX``, ``PPTX``); ``save_upload`` runs
-the hook in a worker thread, on the whole file, before it stores it. A
+the hook in a process of its own, on the whole file, before it stores it. A
 hook raises ``FileRefused`` (422 ``unsafe_file``, or ``unreadable_file``)
 for a file it will not accept, and ``NotOfType`` for one that is not its
 type after all (a spreadsheet where a Word document was asked for).
@@ -49,46 +49,65 @@ field pulls content in or runs a program (``INCLUDEPICTURE``,
 ``INCLUDETEXT``, ``INCLUDE``, ``IMPORT``, ``LINK``, ``DATABASE``,
 ``DDE``, ``DDEAUTO``), or its instruction starts with another field,
 which hides its name; when an Excel workbook links to another workbook,
-holds a data connection or a query table, or a formula calls a web
-service (``WEBSERVICE``, ``RTD``) or DDE (``cmd|'...'!A0``); or when an
-XML part, whatever its name, declares a DTD or an entity, which the Open
-Packaging Conventions forbid, or is in an encoding but UTF-8 and UTF-16.
-A DTD is refused in the bytes, before lxml parses them, so nothing
-outside the file is ever opened. An embedded workbook, document or
+holds a data connection or a query table, or a formula anywhere in a
+sheet calls a web service (``WEBSERVICE``, ``RTD``), a picture from a URL
+(``IMAGE``) or DDE (``cmd|'...'!A0``); when its XML writes an OLE object
+or a control (``w:object``, ``o:OLEObject``, ``w:control``), or a picture
+names a hyperlink's relationship; or when an XML part declares a DTD or
+an entity, which the Open Packaging Conventions forbid, or is in an
+encoding but UTF-8 and UTF-16. A part is XML by its name or its content
+type, never by its first bytes, and is read whole; a DTD is refused in
+its bytes, before lxml parses them, so nothing outside the file is ever
+opened. An embedded workbook, document or
 presentation (a chart's data) is checked the same way, one level deep,
 from a temporary file.
 
-Each check runs under a deadline (``max_seconds``) checked at every
-object or part. A PDF's object streams decode to ``max_decoded`` bytes
-in all, each stream to ``PDF_STREAM_LIMIT`` (``PDF_LIMITS``), and the
-check reads at most ``PDF_NODES`` values. A ZIP's sizes are read from its
-directory before a byte is inflated. These bound the work in the
-process, not as a separate process's resource limits would: what pypdf
-and lxml do inside one call is theirs (ADR 0167). The checks do not make
-a file harmless; they refuse what is known to be used against readers
-and converters. Keep the virus scan (``UPLOAD_SCANNER``) too.
+``save_upload`` runs the checks in a process of their own
+(``run_checks``): the system holds it to an address space and CPU time,
+and it is killed past its wall clock. pypdf cannot be bounded from inside
+the process that runs it: its constructor decodes a chain of tables
+before any check starts, and one of its calls can run a minute (ADR
+0167). The checks keep bounds of their own as a second layer: a
+deadline (``max_seconds``) looked at per object or part; a PDF's object
+streams decode to ``max_decoded`` bytes in all, each stream to
+``PDF_STREAM_LIMIT`` (``PDF_LIMITS``); the check reads at most
+``PDF_NODES`` values, and refuses a PDF pypdf read only in part; a ZIP's
+sizes are read from its directory before a byte is inflated. The checks
+do not make a file harmless; they refuse what is known to be used
+against readers and converters. Keep the virus scan (``UPLOAD_SCANNER``)
+too.
 """
 
+import asyncio
 import codecs
+import contextlib
 import io
+import json
+import logging
+import math
+import pickle
 import re
 import shutil
+import signal
+import struct
+import sys
 import tempfile
+import threading
 import time
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from posixpath import dirname, join, normpath
-from typing import IO, TYPE_CHECKING, Any, Final, Literal
+from typing import IO, TYPE_CHECKING, Any, Final, Literal, Self
 from urllib.parse import unquote, urlsplit
 
-from domainkit.exceptions import DomainkitError, ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured, ServiceBusy
 
 if TYPE_CHECKING:
     from pypdf import PdfReader
     from pypdf.generic import IndirectObject
 
-__all__ = ["FileRefused", "NotOfType", "OfficeCheck", "PdfCheck"]
+__all__ = ["FileRefused", "NotOfType", "OfficeCheck", "PdfCheck", "run_checks"]
 
 type Kind = Literal["docx", "xlsx", "pptx"]
 """The Office documents checked: Word, Excel, PowerPoint."""
@@ -129,6 +148,21 @@ PDF_LIMITS: Final = {
     "dictionary_maximum_element_count": 10_000,
 }
 """pypdf's limits while a PDF is checked: each stream, not all of them."""
+PDF_SKIPPED: Final = (
+    "Previous trailer cannot be read",
+    "XRef object at",
+    "Circular xref chain",
+    "Invalid/Truncated xref table",
+    "Invalid parent xref",
+    "Ignoring wrong pointing object",
+    "Invalid stream (index",
+    "Invalid object number",
+    "CAUTION: startxref found",
+    "Clamping XRef count",
+    "Negative XRef count",
+)
+"""What pypdf logs when it reads a file only in part, or elsewhere than its tables
+say, even in strict mode: the start of its messages."""
 PDF_NODES: Final = 1_000_000
 """Objects, entries and items a PDF check reads at most."""
 DEADLINE_EVERY: Final = 1024
@@ -235,7 +269,7 @@ RESULT: Final = "\x00"
 """Stands for a field's result, whose own fields are not its instruction."""
 FIELD_NAME: Final = re.compile(r"^\s*([A-Za-z]+)")
 """A field instruction's name: the letters it starts with, whatever follows."""
-FORMULA_CALLS: Final = re.compile(r"\b(?:WEBSERVICE|RTD)\s*\(", re.IGNORECASE)
+FORMULA_CALLS: Final = re.compile(r"\b(?:WEBSERVICE|RTD|IMAGE)\s*\(", re.IGNORECASE)
 """Excel functions that reach outside the workbook when the sheet calculates."""
 FORMULA_STRINGS: Final = re.compile(r'"(?:[^"]|"")*"')
 """A formula's text literals, left out before it is read for DDE."""
@@ -249,6 +283,44 @@ SHEETML: Final = (
     "{http://purl.oclc.org/ooxml/spreadsheetml/main}",
 )
 """SpreadsheetML's namespaces: transitional and strict."""
+OBJECTS: Final = frozenset(
+    {
+        *(
+            f"{namespace}{name}"
+            for namespace in WORDML
+            for name in ("object", "control")
+        ),
+        "{urn:schemas-microsoft-com:office:office}OLEObject",
+    }
+)
+"""Elements of an OLE object or an ActiveX control, refused wherever they are."""
+RELATIONSHIP_NAMESPACES: Final = (
+    "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}",
+    "{http://purl.oclc.org/ooxml/officeDocument/relationships}",
+)
+"""Where an attribute that names a relationship (``r:id``) lives."""
+HYPERLINK_ELEMENTS: Final = frozenset(
+    {"hyperlink", "hlinkClick", "hlinkHover", "hlinkMouseOver"}
+)
+"""Elements that may name a hyperlink to outside the package."""
+FORMULA_NAMESPACES: Final = (
+    *SHEETML,
+    "{http://schemas.microsoft.com/office/excel/2006/main}",
+    "{http://schemas.openxmlformats.org/drawingml/2006/chart}",
+)
+"""Where a formula's element lives: SpreadsheetML, Excel 2010's, a chart's."""
+FORMULA_ELEMENTS: Final = frozenset(
+    {
+        "f",
+        "definedName",
+        "formula",
+        "formula1",
+        "formula2",
+        "calculatedColumnFormula",
+        "totalsRowFormula",
+    }
+)
+"""Elements that hold a formula."""
 LINKS: Final = (
     "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}link",
     "{http://purl.oclc.org/ooxml/officeDocument/relationships}link",
@@ -260,8 +332,18 @@ RELATIONSHIPS: Final = (
 CONTENT_TYPES: Final = "{http://schemas.openxmlformats.org/package/2006/content-types}"
 RATIO_FLOOR: Final = 1024 * 1024
 """A part inflating to less than this is not held to ``max_ratio``."""
-XML_DECLARED: Final = re.compile(rb"""^<\?xml[^>]*?encoding\s*=\s*["']([^"']*)["']""")
+XML_DECLARED: Final = re.compile(r"""encoding\s*=\s*["']([^"']*)["']""")
 """The encoding an XML declaration names."""
+MARKS: Final = {
+    codecs.BOM_UTF8: "utf-8",
+    codecs.BOM_UTF16_LE: "utf-16-le",
+    codecs.BOM_UTF16_BE: "utf-16-be",
+}
+"""The byte order marks an XML part may start with, and their encodings."""
+XML_EXTENSIONS: Final = frozenset({"xml", "rels", "vml"})
+"""Parts XML by their name."""
+XML_TYPES: Final = frozenset({"application/xml", "text/xml"})
+"""Parts XML by their content type, besides those ending in ``+xml``."""
 XML_ENCODINGS: Final = frozenset({"utf8", "utf16"})
 """What an XML part of a package may be in (ECMA-376 Part 2)."""
 DECLARATIONS: Final = ("<!DOCTYPE", "<!ENTITY")
@@ -366,20 +448,67 @@ class PdfCheck:
         pypdf = _documents_extra("pypdf")
         clock = _Clock(time.monotonic() + self.max_seconds, PDF_NODES)
         data = file.read()
-        with pypdf.apply_configuration(**PDF_LIMITS):
+        with pypdf.apply_configuration(**PDF_LIMITS), _Skipped() as skipped:
             try:
                 reader = pypdf.PdfReader(
                     io.BytesIO(data),
                     strict=True,
                     xref_stream_maximum_entries=self.max_objects,
                 )
+                skipped.check()
                 if reader.is_encrypted:
                     raise FileRefused(ENCRYPTED)
                 _Pdf(self, reader, data, clock).check()
+                skipped.check()
             except FileRefused:
                 raise
             except Exception as exc:  # pypdf raises anything on a malformed file.
-                raise FileRefused(DAMAGED, code=UNREADABLE) from exc
+                short = isinstance(exc, MemoryError) or "allocate" in str(exc)
+                raise FileRefused(
+                    TOO_MUCH if short else DAMAGED, code=UNREADABLE
+                ) from exc
+
+
+class _Skipped(logging.Handler):
+    """What pypdf says it skipped or repaired, in this thread, while a check runs.
+
+    Even in strict mode pypdf passes over an earlier table it cannot read
+    (out of memory, a loop), or finds an object elsewhere than its table
+    says, and only logs it: what it skipped, the check never read.
+    """
+
+    def __init__(self) -> None:
+        """Note nothing yet; only this thread's records."""
+        super().__init__(logging.WARNING)
+        self.thread = threading.get_ident()
+        self.said: list[str] = []
+        self.logger = logging.getLogger("pypdf")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep what this thread's pypdf said."""
+        if record.thread == self.thread:
+            self.said.append(record.getMessage())
+
+    def __enter__(self) -> Self:
+        """Listen to pypdf until the block ends."""
+        self.logger.addHandler(self)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        """Stop listening."""
+        self.logger.removeHandler(self)
+
+    def check(self) -> None:
+        """Refuse a file pypdf read only in part.
+
+        Raises:
+            FileRefused: pypdf skipped or repaired something
+                (``unreadable_file``): out of memory, or damaged.
+        """
+        for said in self.said:
+            if said.startswith(PDF_SKIPPED):
+                short = "allocate" in said
+                raise FileRefused(TOO_MUCH if short else DAMAGED, code=UNREADABLE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -563,6 +692,7 @@ class _Pdf:
 
         for found in PDF_OBJECT.finditer(self.data):
             self.clock.tick()
+            self.clock.check()  # Each may read to the end of the file.
             key = (int(found[1]), int(found[2]))
             if self.declared.get(key) == found.start():
                 continue
@@ -652,6 +782,8 @@ class _Package:
     """The package's parts, by their names in lower case."""
     types: dict[str, str] = field(default_factory=dict)
     """Each part's content type, by its name in lower case."""
+    hyperlinks: dict[str, set[str]] = field(default_factory=dict)
+    """The ids of each part's hyperlinks to outside the package, by part."""
 
     def check(self, file: IO[bytes], kind: Kind, *, nested: bool) -> None:
         """Check the package ``file`` holds as a ``kind`` document.
@@ -665,9 +797,11 @@ class _Package:
                 self.parts = self._bounded(archive)
                 self.types = self._content_types(archive)
                 self._check_main(self._main(archive), kind)
-                for name, info in self.parts.items():
-                    self.budget.clock.check()
-                    self._check_part(archive, name, info, nested=nested)
+                for rels in (True, False):  # Relationships first: parts name them.
+                    for name, info in self.parts.items():
+                        if name.endswith(".rels") is rels:
+                            self.budget.clock.check()
+                            self._check_part(archive, name, info, nested=nested)
         except (FileRefused, NotOfType):
             raise
         except Exception as exc:  # A damaged ZIP raises anything: names, data.
@@ -736,7 +870,7 @@ class _Package:
             raise NotOfType
         found = [
             target
-            for kind, target, external in self._relationships(archive, "_rels/.rels")
+            for kind, target, external, _ in self._relationships(archive, "_rels/.rels")
             if kind.endswith("/officedocument") and not external
         ]
         if len(found) != 1:
@@ -779,38 +913,45 @@ class _Package:
             if marker in content_type:
                 raise FileRefused(message)
         if name.endswith(".rels"):
-            for kind, target, external in self._relationships(archive, name):
+            source = join(dirname(dirname(name)), name.rpartition("/")[2][:-5])
+            for kind, target, external, rid in self._relationships(archive, name):
                 self._check_relationship(archive, kind, target, external, nested=nested)
+                if external:  # A hyperlink, as the check of it found.
+                    self.hyperlinks.setdefault(source, set()).add(rid)
             return
         data = self._xml(archive, name)
         if data is None:
             return
         fields = _Fields()
+        hyperlinks = self.hyperlinks.get(name, set())
         for element in self._elements(data):
             fields.read(element)
             _check_formula(element)
-            if any(element.get(link) is not None for link in LINKS):
-                raise FileRefused(EXTERNAL)  # A picture or an object linked, not held.
+            _check_element(element, hyperlinks)
 
     def _xml(self, archive: zipfile.ZipFile, name: str) -> bytes | None:
-        """The part ``name``, if it holds XML; refused if it declares a DTD.
+        """The part ``name``, if its name or content type says XML; refused if bad.
 
-        Read whole, but never past its stated size. None for a part that
-        is not XML (an image); every part is opened all the same.
+        Whether a part is XML is never read from its bytes, which may start
+        with anything. It is read whole, but never past its stated size;
+        another part (an image) is opened all the same, and not read.
 
         Raises:
             FileRefused: It declares a DTD or an entity, or is XML in an
-                encoding a package may not use.
+                encoding a package may not use, or holds more than its
+                stated size.
         """
         info = self.parts[name]
         with archive.open(info) as part:
-            head = part.read(256)
-            encoding = _xml_encoding(head)
-            if encoding is None:
+            if not _is_xml(name, self.types.get(name, "")):
                 return None
-            data = head + part.read(info.file_size + 1 - len(head))
-        text = codecs.decode(data, encoding, "replace")
-        if any(declaration in text for declaration in DECLARATIONS):
+            # In chunks, and never past the stated size: read whole at
+            # once, zipfile copies what it has so far, four times the part.
+            buffer = io.BytesIO()
+            shutil.copyfileobj(part, buffer, CHUNK)
+        data = buffer.getvalue()
+        encoding = _xml_encoding(data)
+        if any(declaration.encode(encoding) in data for declaration in DECLARATIONS):
             raise FileRefused(DTD)
         return data
 
@@ -854,8 +995,8 @@ class _Package:
 
     def _relationships(
         self, archive: zipfile.ZipFile, name: str
-    ) -> Iterator[tuple[str, str, bool]]:
-        r"""Each relationship of the ``.rels`` part ``name``: type, target, external.
+    ) -> Iterator[tuple[str, str, bool, str]]:
+        r"""Each relationship of the ``.rels`` part ``name``: type, target, mode, id.
 
         A type is in lower case. A relationship is external unless its
         ``TargetMode`` is absent or ``Internal``, or when its target names
@@ -869,18 +1010,19 @@ class _Package:
                 continue
             kind = str(element.get("Type", "")).lower()
             target = str(element.get("Target", ""))
+            rid = str(element.get("Id", ""))
             mode = element.get("TargetMode")
             if (
                 (mode is not None and mode != "Internal")
                 or urlsplit(target).scheme
                 or target.startswith(("\\\\", "//"))
             ):
-                yield kind, target, True
+                yield kind, target, True, rid
                 continue
             within = (
                 target.lstrip("/") if target.startswith("/") else join(source, target)
             )
-            yield kind, unquote(normpath(within)).lower(), False
+            yield kind, unquote(normpath(within)).lower(), False, rid
 
     def _elements(self, data: bytes) -> Iterator[Any]:
         """The elements of the XML ``data``, each once it ends.
@@ -913,29 +1055,53 @@ class _Package:
             raise FileRefused(DAMAGED, code=UNREADABLE) from exc
 
 
-def _xml_encoding(head: bytes) -> str | None:
-    """The encoding of the XML a part starts with; None if it is not XML.
+def _is_xml(name: str, content_type: str) -> bool:
+    """Whether a part is XML, by its name or its content type: never its bytes."""
+    return (
+        _extension(name) in XML_EXTENSIONS
+        or content_type.endswith("+xml")
+        or content_type in XML_TYPES
+    )
+
+
+def _xml_encoding(data: bytes) -> str:
+    """The encoding of the XML part ``data``, read from its start.
+
+    White space before the first markup is passed over, however long; the
+    declaration is read whole, wherever it ends.
 
     Raises:
-        FileRefused: It is XML in an encoding but UTF-8 or UTF-16, which
-            a package may not use (UTF-32, EBCDIC, another a declaration
-            names): a DTD would hide in it.
+        FileRefused: It is in an encoding but UTF-8 or UTF-16, which a
+            package may not use (UTF-32, EBCDIC, another a declaration
+            names), or something else than white space comes first.
     """
-    if head.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE, b"\x4c\x6f\xa7\x94")):
+    if data.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE, b"\x4c\x6f\xa7\x94")):
         raise FileRefused(DAMAGED, code=UNREADABLE)
-    if head.startswith((codecs.BOM_UTF16_LE, b"<\x00")):
-        return "utf-16-le"
-    if head.startswith((codecs.BOM_UTF16_BE, b"\x00<")):
-        return "utf-16-be"
-    stripped = head.removeprefix(codecs.BOM_UTF8).lstrip(b" \t\r\n")
-    if not stripped.startswith(b"<"):
-        return None
-    declared = XML_DECLARED.match(stripped)
-    if declared is not None:
-        name = declared[1].decode("ascii", "replace").lower().replace("-", "")
-        if name not in XML_ENCODINGS:
+    mark = next((each for each in MARKS if data.startswith(each)), None)
+    if mark is not None:
+        encoding, after = MARKS[mark], len(mark)
+    else:
+        first, after = data.find(b"<"), 0
+        encoding = (
+            "utf-16-be"
+            if first % 2 == 1 and data[first - 1] == 0
+            else "utf-16-le"
+            if data[first + 1 : first + 2] == b"\x00"
+            else "utf-8"
+        )
+    # Offsets, not slices: a slice of a large part is a copy of it.
+    start = data.find("<".encode(encoding), after)
+    if start < 0 or data[after:start].decode(encoding, "replace").strip(" \t\r\n"):
+        raise FileRefused(DAMAGED, code=UNREADABLE)
+    if data.startswith("<?xml".encode(encoding), start):
+        end = data.find("?>".encode(encoding), start)
+        declaration = data[start : max(end, start)].decode(encoding, "replace")
+        named = XML_DECLARED.search(declaration)
+        if end < 0 or (
+            named is not None and named[1].lower().replace("-", "") not in XML_ENCODINGS
+        ):
             raise FileRefused(DAMAGED, code=UNREADABLE)
-    return "utf-8"
+    return encoding
 
 
 def _extension(name: str) -> str:
@@ -951,19 +1117,43 @@ def _local(element: Any, namespaces: tuple[str, ...]) -> str | None:  # noqa: AN
 
 
 def _check_formula(element: Any) -> None:  # noqa: ANN401 - an lxml element.
-    """Refuse a cell formula or a defined name that calls outside the workbook.
+    """Refuse a formula that calls outside the workbook, wherever a sheet keeps one.
+
+    A cell's, a defined name's, a conditional format's, a validation's, a
+    table column's, Excel 2010's (``xm:f``), or a chart's.
 
     Raises:
-        FileRefused: It calls a web service, a real-time data server, or
-            DDE (``app|topic!item``).
+        FileRefused: It calls a web service, a real-time data server, a
+            picture from a URL (``IMAGE``), or DDE (``app|topic!item``).
     """
-    if _local(element, SHEETML) not in {"f", "definedName"}:
+    if _local(element, FORMULA_NAMESPACES) not in FORMULA_ELEMENTS:
         return
     formula = element.text or ""
     if FORMULA_CALLS.search(formula):
         raise FileRefused(EXTERNAL)
     if "|" in FORMULA_STRINGS.sub("", formula):
         raise FileRefused(ACTIONS)
+
+
+def _check_element(element: Any, hyperlinks: set[str]) -> None:  # noqa: ANN401 - an lxml element.
+    """Refuse an embedded object, a control, a link, or a hyperlink used as one.
+
+    ``hyperlinks`` are the ids of the part's relationships to outside the
+    package, which only a hyperlink may name: a picture or an object that
+    names one is fetched from there.
+
+    Raises:
+        FileRefused: It is one of them.
+    """
+    tag = str(element.tag)
+    if tag in OBJECTS:
+        raise FileRefused(EMBEDDED)
+    if any(element.get(link) is not None for link in LINKS):
+        raise FileRefused(EXTERNAL)  # A picture or an object linked, not held.
+    if hyperlinks and tag.rpartition("}")[2] not in HYPERLINK_ELEMENTS:
+        for name, value in element.attrib.items():
+            if str(name).startswith(RELATIONSHIP_NAMESPACES) and value in hyperlinks:
+                raise FileRefused(EXTERNAL)
 
 
 @dataclass(slots=True)
@@ -1015,3 +1205,266 @@ def _check_field(instruction: str) -> None:
     name = FIELD_NAME.match(instruction)
     if name is not None and (message := OFFICE_FIELDS.get(name[1].upper())):
         raise FileRefused(message)
+
+
+# A process of its own ----------------------------------------------------------------
+
+
+BOOTSTRAP: Final = (
+    "import json,os,sys\n"
+    "config=json.loads(sys.stdin.buffer.readline())\n"
+    "sys.path[:0]=config['path']\n"
+    "answer=os.fdopen(os.dup(1),'wb')\n"
+    "os.dup2(2,1)\n"
+    "from domainkit.inspection import _serve\n"
+    "_serve(config,sys.stdin.buffer,answer)\n"
+)
+"""What a check's process runs (``python -I -c``): the parent's path, then the
+check. What the check prints goes to standard error, never into its answer."""
+MAX_ANSWER: Final = 64 * 1024
+"""The most bytes of a check's answer the parent reads."""
+CODE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
+"""A problem code a check may answer with."""
+BUSY: Final = "Uploads cannot be checked now; try again later."
+TOO_LONG: Final = "The file took too long to check."
+TOO_MUCH: Final = "The file needed too much memory to check."
+
+_running = 0
+"""The checks' processes running now, in this process, on any event loop."""
+_running_lock = threading.Lock()
+
+
+async def run_checks(
+    checks: Sequence[Callable[[IO[bytes]], None] | None],
+    file: IO[bytes],
+    size: int,
+    *,
+    processes: int,
+    memory: int,
+    seconds: float,
+) -> int:
+    """Run ``checks`` on ``file`` in a process of their own; the first that took it.
+
+    The checks are tried in order, as ``save_upload`` tries the types of a
+    file: one that raises ``NotOfType`` passes it to the next, and None
+    takes it unchecked. The process gets ``memory`` bytes of address space
+    and ``seconds`` of CPU from the system (``RLIMIT_AS``, ``RLIMIT_CPU``,
+    where there are such limits; not on Windows), and is killed past
+    ``seconds`` of wall clock. At most ``processes`` run at once in this
+    process; a slot is freed only once its process has exited, a request
+    cancelled meanwhile included. Each check must pickle: a function at a
+    module's top level, or an object of a class that is.
+
+    Raises:
+        FileRefused: A check refused the file, or its process was stopped
+            by a limit (``unreadable_file``: it took too long or too much).
+        NotOfType: No check took it.
+        ServiceBusy: ``processes`` checks run already (503).
+        ImproperlyConfigured: A check's library is not installed.
+        RuntimeError: A check failed otherwise, as a bug does.
+    """
+    global _running  # The count every event loop of the process shares.
+    with _running_lock:
+        if _running >= processes:
+            raise ServiceBusy(BUSY)
+        _running += 1
+    try:
+        return await _in_a_process(list(checks), file, size, memory, seconds)
+    finally:
+        with _running_lock:
+            _running -= 1
+
+
+async def _in_a_process(
+    checks: list[Callable[[IO[bytes]], None] | None],
+    file: IO[bytes],
+    size: int,
+    memory: int,
+    seconds: float,
+) -> int:
+    """Start the process, hand it the checks and the file, read its answer.
+
+    The process has exited when this returns or raises, cancelled or not.
+    """
+    config = {"path": sys.path, "memory": memory, "seconds": seconds}
+    request = pickle.dumps({"checks": checks, "size": size})
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-I",
+        "-c",
+        BOOTSTRAP,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    clock = asyncio.timeout(seconds)
+    answer = b""
+    try:
+        async with clock:
+            await _hand(process, json.dumps(config).encode() + b"\n", request, file)
+            answer = await _answer(process)
+            await process.wait()
+    except TimeoutError:
+        pass  # The clock's: ``expired`` says so below.
+    finally:
+        await _ended(process)
+    if clock.expired() or process.returncode in _STOPPED:
+        raise FileRefused(TOO_LONG, code=UNREADABLE)
+    return _verdict(answer, len(checks))
+
+
+async def _hand(
+    process: asyncio.subprocess.Process, config: bytes, request: bytes, file: IO[bytes]
+) -> None:
+    """Write the configuration, the request, and the file to the process.
+
+    A process that stopped reading (it refused at once, or a limit ended
+    it) is not written to further.
+    """
+    writer = process.stdin
+    assert writer is not None  # noqa: S101 - made with a pipe.
+    try:
+        writer.write(config + struct.pack(">Q", len(request)) + request)
+        file.seek(0)
+        while chunk := file.read(CHUNK):
+            writer.write(chunk)
+            await writer.drain()
+        writer.close()
+    except (BrokenPipeError, ConnectionResetError):
+        return
+
+
+async def _answer(process: asyncio.subprocess.Process) -> bytes:
+    """The process's answer, at most ``MAX_ANSWER`` bytes."""
+    reader = process.stdout
+    assert reader is not None  # noqa: S101 - made with a pipe.
+    answer = b""
+    while len(answer) <= MAX_ANSWER and (chunk := await reader.read(CHUNK)):
+        answer += chunk
+    return answer
+
+
+async def _ended(process: asyncio.subprocess.Process) -> None:
+    """Kill the process if it still runs, and wait until it has exited.
+
+    A cancellation while it is killed waits for it all the same, then is
+    raised again.
+    """
+    if process.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+    waiting = asyncio.ensure_future(process.wait())
+    cancelled = False
+    while not waiting.done():
+        try:
+            await asyncio.shield(waiting)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+def _verdict(answer: bytes, count: int) -> int:
+    """Which check took the file, from the process's answer; else raise.
+
+    The answer is JSON of a few known shapes, read as data: the process
+    read an untrusted file, and could say anything.
+
+    Raises:
+        FileRefused: A check refused it, or the process ended without an
+            answer (a limit of memory ended it).
+        NotOfType: No check took it.
+        ImproperlyConfigured: A check's library is not installed.
+        RuntimeError: A check failed otherwise.
+    """
+    try:
+        found = json.loads(answer)
+    except ValueError:
+        raise FileRefused(TOO_MUCH, code=UNREADABLE) from None
+    if not isinstance(found, dict):
+        raise FileRefused(DAMAGED, code=UNREADABLE)
+    took = found.get("took")
+    if isinstance(took, int) and 0 <= took < count:
+        return took
+    message = found.get("refused")
+    if isinstance(message, str):
+        code = found.get("code")
+        valid = isinstance(code, str) and CODE.fullmatch(code)
+        raise FileRefused(message[:500], code=code if valid else UNSAFE)  # type: ignore[arg-type]
+    if found.get("none") is True:
+        raise NotOfType
+    if isinstance(missing := found.get("improperly"), str):
+        raise ImproperlyConfigured(missing[:500])
+    if isinstance(failed := found.get("failed"), str):
+        raise RuntimeError(
+            f"A check of an upload failed in its process: {failed[:100]}."
+        )
+    raise FileRefused(DAMAGED, code=UNREADABLE)
+
+
+def _serve(config: dict[str, Any], source: IO[bytes], sink: IO[bytes]) -> None:
+    """The check's process: limit itself, read the request and the file, answer.
+
+    The request comes from the parent, which is trusted, pickled; the
+    answer goes back as JSON.
+    """
+    _limit(int(config["memory"]), float(config["seconds"]))
+    try:
+        (length,) = struct.unpack(">Q", source.read(8))
+        request = pickle.loads(source.read(length))  # noqa: S301 - the parent's.
+        data = source.read(int(request["size"]))
+        verdict = _checked(request["checks"], data)
+    except MemoryError:
+        verdict = {"refused": TOO_MUCH, "code": UNREADABLE}
+    except Exception as exc:  # noqa: BLE001 - told to the parent, which raises it.
+        verdict = {"failed": type(exc).__name__}
+    sink.write(json.dumps(verdict).encode() + b"\n")
+    sink.flush()
+
+
+def _checked(
+    checks: list[Callable[[IO[bytes]], None] | None], data: bytes
+) -> dict[str, Any]:
+    """The verdict of ``checks`` on ``data``, as the parent reads it."""
+    try:
+        for index, check in enumerate(checks):
+            if check is None:
+                return {"took": index}
+            try:
+                check(io.BytesIO(data))
+            except NotOfType:
+                continue
+            return {"took": index}
+    except FileRefused as refused:
+        return {"refused": refused.message, "code": refused.code}
+    except ImproperlyConfigured as missing:
+        return {"improperly": str(missing)}
+    return {"none": True}
+
+
+def _limit(memory: int, seconds: float) -> None:
+    """Hold this process to ``memory`` bytes and ``seconds`` of CPU, where it can be.
+
+    Windows has no such limits: the parent's clock alone ends a check
+    there. A limit the system will not lower to (macOS keeps its own
+    address space) is left as it is.
+    """
+    try:
+        import resource
+    except ImportError:
+        return
+    cpu = math.ceil(seconds)
+    for kind, soft, hard in (
+        (resource.RLIMIT_AS, memory, memory),
+        (resource.RLIMIT_CPU, cpu, cpu + 1),
+    ):
+        with contextlib.suppress(OSError, ValueError):
+            resource.setrlimit(kind, (soft, hard))
+
+
+_STOPPED: Final = frozenset(
+    -number
+    for number in (getattr(signal, "SIGXCPU", None), getattr(signal, "SIGKILL", None))
+    if number is not None
+)
+"""How a process the CPU limit ended exits: a signal's negated number."""

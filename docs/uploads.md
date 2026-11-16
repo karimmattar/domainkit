@@ -514,15 +514,29 @@ A Word document with macros, sent as `contract.docx`:
 ```
 
 - **When.** The upload is held in a temporary file (in memory up to
-  1 MiB, then on disk), the check runs in a thread of the checks' own,
-  and only a file that passes is stored, through the virus scan if one
-  is set. A file a check refuses is never stored: 422 `unsafe_file`, or
+  1 MiB, then on disk), the check runs in a process of its own, and only
+  a file that passes is stored, through the virus scan if one is set. A
+  file a check refuses is never stored: 422 `unsafe_file`, or
   `unreadable_file` for a file its reader cannot read. The detail says
   why, in the caller's language.
-- **A few at a time.** An event loop runs at most four checks at once
-  (`CHECKS_AT_ONCE`), apart from the threads the rest of the application
-  uses. One more upload is refused at once, 503 `service_busy` ("Uploads
-  cannot be checked now; try again later."), not queued.
+- **In a process of its own.** A parser of untrusted files cannot be
+  bounded from inside the process that runs it: one call of pypdf's can
+  take a minute, or a gigabyte, before it returns. So each upload's check
+  runs in a new Python process (`python -I`), handed the file over a
+  pipe, with the system's limits (`UPLOAD_CHECKS`): `MEMORY` of address
+  space (512 MiB), and `SECONDS` of CPU (15). Past `SECONDS` of wall
+  clock it is killed. A check stopped by a limit refuses the file, 422
+  `unreadable_file`: "The file took too long to check." or "The file
+  needed too much memory to check." A process starts in about a tenth of
+  a second, with pypdf or lxml loaded: that is what each checked upload
+  costs more. Windows has no such limits: there, the wall clock alone
+  stops a check; macOS does not hold a process to `MEMORY`.
+- **A few at a time.** At most `PROCESSES` (4) checks run at once in a
+  process of the application, on any of its event loops. One more upload
+  is refused at once, 503 `service_busy` ("Uploads cannot be checked
+  now; try again later."), not queued. A slot is freed only once its
+  check's process has exited: a request cancelled meanwhile (a deadline,
+  a client gone) kills it first. A type without a check takes no slot.
 - **`CHECKED_PDF`** (`PdfCheck`) reads a PDF as a strict reader does,
   and only as its cross-reference tables say: an object they do not
   declare, or one not at its offset, makes the file `unreadable_file`,
@@ -546,25 +560,31 @@ A Word document with macros, sent as `contract.docx`:
   whatever its `TargetMode` says, a Word field that pulls content in or
   runs a program (`INCLUDEPICTURE`, `INCLUDETEXT`, `INCLUDE`, `IMPORT`,
   `LINK`, `DATABASE`, `DDE`, `DDEAUTO`) or whose instruction starts with
-  another field, Excel's links to other workbooks, data connections, query
-  tables, formulas that call `WEBSERVICE`, `RTD` or DDE (`cmd|'...'!A0`),
-  and an XML part, whatever its name, with a DTD or an entity, or in
-  another encoding than UTF-8 and UTF-16. An embedded workbook (a
+  another field, OLE objects and controls written in the XML itself
+  (`w:object`, `o:OLEObject`, `w:control`), a picture or an object that
+  names a hyperlink's relationship, Excel's links to other workbooks,
+  data connections, query tables, formulas anywhere in a sheet (cells,
+  names, conditional formats, validations, tables, charts) that call
+  `WEBSERVICE`, `RTD`, `IMAGE` or DDE (`cmd|'...'!A0`), and an XML part
+  with a DTD or an entity, or in another encoding than UTF-8 and UTF-16.
+  A part is XML by its name (`.xml`, `.rels`, `.vml`) or its content
+  type (`+xml`), never by its first bytes; white space before its markup
+  is passed over, however long, and a part that is not XML after all is
+  `unreadable_file`. An embedded workbook (a
   chart's data) is checked the same way. A template, or another kind of
   document, is not the type: with `OFFICE` the next type is tried, else
   415. Power Query reaches its data through a connection, which is
   refused; a project that takes workbooks with external data writes a
   check of its own.
-- **Bounds.** A ZIP is read from its directory before a byte is
-  inflated: at most 2,000 parts, 50 times the upload's size inflated in
-  all and never more than 200 MiB, and no part over 1 MiB inflating more
-  than 200 times. A PDF's streams decode to 16 MiB each and its object
-  streams to 64 MiB in all; its tables declare at most 200,000 objects;
-  the check reads at most a million values. Each check stops at its
-  deadline, 10 seconds, looked at per object or part. XML is parsed
-  without entities, a DTD, or the network. These bound the work between
-  pypdf's and lxml's steps, in the process, not inside one step as a
-  separate process's resource limits would.
+- **Bounds inside the check.** A second layer, under the process's: a
+  ZIP is read from its directory before a byte is inflated: at most 2,000
+  parts, 50 times the upload's size inflated in all and never more than
+  200 MiB, and no part over 1 MiB inflating more than 200 times. A PDF's
+  streams decode to 16 MiB each and its object streams to 64 MiB in all;
+  its tables declare at most 200,000 objects; the check reads at most a
+  million values; a PDF pypdf read only in part is refused. Each check
+  stops at its own deadline, 10 seconds, looked at per object or part.
+  XML is parsed without entities, a DTD, or the network.
 - **Limits of your own.** `FileType(DOCX.content_type, ".docx",
   DOCX.matches, OfficeCheck("docx", max_expansion=100))`, or
   `PdfCheck(max_pages=50, max_seconds=5)`.
@@ -580,16 +600,21 @@ files with `serve`, and convert them in a sandbox.
 ### Checks of your own
 
 A `FileType`'s `inspect` reads the whole file, from its start, in a
-worker thread. It raises `FileRefused(message, code="unsafe_file")` to
-refuse the file (422 with `message`, which is translated if the catalogs
-have it), and `NotOfType` when the file is not of the type after all, so
-that the next type that matches is tried:
+process of its own, which loads it by name: it must be a function at a
+module's top level, or an object of a class that is (a lambda raises
+`TypeError` when the type is made). It raises `FileRefused(message,
+code="unsafe_file")` to refuse the file (422 with `message`, which is
+translated if the catalogs have it), and `NotOfType` when the file is
+not of the type after all, so that the next type that matches is tried.
+What it prints goes to the process's standard error, which is
+discarded. Keep its module cheap to import: the process imports it for
+each upload.
 
 ```python
 from typing import IO
 
 from domainkit.http.uploads import TEXT, FileType
-from domainkit.storage.inspection import FileRefused
+from domainkit.inspection import FileRefused
 
 
 def no_formulas(file: IO[bytes]) -> None:
@@ -747,6 +772,7 @@ has the full rows:
 | --- | --- | --- |
 | `STORAGES` | `{}` | Storages by alias. Each has `BACKEND` (a `Storage` class, `FileSystemStorage` by default) and `OPTIONS` (its keyword arguments). |
 | `UPLOAD_SCANNER` | `None` | The scanner `save_upload` streams every upload through: `BACKEND` (`ClamAVScanner` by default) and `OPTIONS`. `None`: no scan. |
+| `UPLOAD_CHECKS` | `PROCESSES` 4, `MEMORY` 512 MiB, `SECONDS` 15 | How the checks of uploaded files run, each in a process of its own ([Checking documents](#checking-documents)). |
 | `MAX_REQUEST_BODY_SIZE` | 1 MiB | The largest request body of a route without `body_limit`. |
 
 The arguments of the functions on this page:
@@ -772,8 +798,8 @@ The arguments of the functions on this page:
 | 413 `file_too_large` | The file is over `max_size`. | Send a smaller file. |
 | 413 `content_too_large` | The request is over the route's `body_limit`, or `MAX_REQUEST_BODY_SIZE`. | Send less, or raise the route's limit. |
 | 422 `unsafe_file` | The type's check refused what the file holds: scripts, actions, macros, objects, outside links, a DTD, a password, too many pages, or a ZIP too large to check. | Nothing is kept. Send the file without it. |
-| 422 `unreadable_file` | The type's check could not read the file, or a strict reader could not: a PDF whose table needs repair. | Nothing is kept. Send a file that opens; save a PDF again from a viewer. |
-| 503 `service_busy` | As many checks run as the loop runs at once. | Try again shortly. |
+| 422 `unreadable_file` | The type's check could not read the file, or a strict reader could not (a PDF whose table needs repair), or its process took more time or memory than `UPLOAD_CHECKS` gives it. | Nothing is kept. Send a file that opens; save a PDF again from a viewer. |
+| 503 `service_busy` | `UPLOAD_CHECKS.PROCESSES` checks run already. | Try again shortly; raise `PROCESSES` if the host has room. |
 | 422 `infected_file` | The scanner found something. | Nothing is kept. |
 | `ImproperlyConfigured` | A checked type without pypdf or lxml. | Install the `documents` extra. |
 | 503 `scanner_unavailable` | The scanner could not scan the file. | Try again later; check clamd. |

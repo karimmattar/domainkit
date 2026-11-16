@@ -24,10 +24,12 @@ from starlette.requests import HTTPConnection
 from domainkit.contrib.auth import AnyUser
 from domainkit.ddd import Command, Conflict
 from domainkit.ddd.query import F
+from domainkit.http import uploads
 from domainkit.http.access import BasePermission
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.middleware import RequestBodyLimitMiddleware
-from domainkit.http.uploads import CHECKED_PDF, IMAGES, FileType
+from domainkit.http.uploads import CHECKED_PDF, IMAGES
+from domainkit.inspection import run_checks
 from domainkit.resources import ResourceRouter
 from domainkit.resources.routing import uploading
 from domainkit.storage import MemoryStorage, StoredUpload
@@ -521,7 +523,7 @@ class Only(BasePermission):
 
 @pytest.mark.parametrize("require_if_match", [False, True])
 def test_the_reach_is_checked_before_a_byte_of_the_file_is_read(
-    use_auth: UseAuth, require_if_match: bool
+    use_auth: UseAuth, require_if_match: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Out of reach (404), refused by a rule on it (403), If-Match (412, 428).
 
@@ -530,11 +532,14 @@ def test_the_reach_is_checked_before_a_byte_of_the_file_is_read(
     """
     use_auth()
     read: list[int] = []
+    check = run_checks
 
-    def counted(file: IO[bytes]) -> None:
-        read.append(len(file.read()))
+    async def counted(checks: Any, file: IO[bytes], size: int, **limits: Any) -> int:  # noqa: ANN401 - run_checks's own.
+        read.append(size)
+        return await check(checks, file, size, **limits)
 
-    pdf = FileType("application/pdf", ".pdf", CHECKED_PDF.matches, counted)
+    monkeypatch.setattr(uploads, "run_checks", counted)
+    pdf = CHECKED_PDF
     storage = Counting()
     store = InMemoryGadgets(
         [

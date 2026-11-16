@@ -15,9 +15,10 @@ show people, never to name the file::
 
 A type with an ``inspect`` hook is checked whole before it is stored: the
 upload is held in a temporary file (in memory up to 1 MiB), the hook reads
-it in a worker thread, and a file it refuses is never stored (422).
+it in a process of its own, under the system's limits of memory and time
+(``UPLOAD_CHECKS``), and a file it refuses is never stored (422).
 ``CHECKED_PDF``, ``DOCX``, ``XLSX`` and ``PPTX`` ship such hooks
-(``domainkit.storage.inspection``, the ``documents`` extra); ``PDF`` and
+(``domainkit.inspection``, the ``documents`` extra); ``PDF`` and
 ``ZIP`` read the first bytes only. ``receive_upload`` does the same work
 without storing, for a route that stores later (ADR 0167).
 
@@ -30,6 +31,7 @@ call it (``Require(...)``, or ``Public`` on purpose), as every route must
 import asyncio
 import hashlib
 import logging
+import pickle
 import re
 import tempfile
 import unicodedata
@@ -38,24 +40,23 @@ from dataclasses import dataclass, replace
 from typing import IO, Final
 from urllib.parse import quote
 
-import anyio
 from fastapi import status
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 
-from domainkit.exceptions import ServiceBusy
+from domainkit.conf import settings
 from domainkit.http.errors import APIError
-from domainkit.storage.base import CHUNK_SIZE, FileTooLarge, Storage
-from domainkit.storage.base import StoredUpload as StoredUpload
-from domainkit.storage.handler import storages
-from domainkit.storage.inspection import (
+from domainkit.inspection import (
     FileRefused,
     NotOfType,
     OfficeCheck,
     PdfCheck,
+    run_checks,
 )
-from domainkit.utils.loops import PerLoop
+from domainkit.storage.base import CHUNK_SIZE, FileTooLarge, Storage
+from domainkit.storage.base import StoredUpload as StoredUpload
+from domainkit.storage.handler import storages
 
 __all__ = [
     "CHECKED_PDF",
@@ -94,11 +95,6 @@ _RESERVED_NAMES: Final = frozenset(
 _FORBIDDEN: Final = frozenset('<>:"/\\|?*')
 _TEXT_CONTROLS: Final = frozenset(b"\t\n\r\f")
 SPOOL_MEMORY: Final = 1024 * 1024
-CHECKS_AT_ONCE: Final = 4
-"""Checks an event loop runs at once, each in a thread of its own; past
-that, an upload is refused (503) rather than queued."""
-_checks: PerLoop[anyio.CapacityLimiter] = PerLoop()
-"""Each event loop's limiter of checks, apart from the threads others use."""
 """How much of an upload held for a check stays in memory; the rest goes to disk."""
 
 type Upload = UploadFile | bytes | AsyncIterable[bytes]
@@ -116,10 +112,27 @@ class FileType:
     """Whether a file starting with these bytes is of this type."""
     inspect: Callable[[IO[bytes]], None] | None = None
     """Checks the whole file, read from its start, before it is stored (New
-    in 2.5). It runs in a worker thread, and raises ``FileRefused`` (422)
-    for a file it will not accept, or ``NotOfType`` for one that is not of
-    the type (the next type that matches is tried). None: the first bytes
-    decide."""
+    in 2.5). It runs in a process of its own (``UPLOAD_CHECKS``), so it
+    must pickle: a function at a module's top level, or an object of a
+    class that is. It raises ``FileRefused`` (422) for a file it will not
+    accept, or ``NotOfType`` for one that is not of the type (the next
+    type that matches is tried). None: the first bytes decide."""
+
+    def __post_init__(self) -> None:
+        """Refuse a check that cannot be handed to a process of its own.
+
+        Raises:
+            TypeError: ``inspect`` does not pickle (a lambda, a nested function).
+        """
+        if self.inspect is None:
+            return
+        try:
+            pickle.dumps(self.inspect)
+        except (pickle.PicklingError, AttributeError, TypeError) as exc:
+            raise TypeError(
+                "A FileType's inspect runs in a process of its own: give a function "
+                "defined at a module's top level, or an object of a class that is."
+            ) from exc
 
 
 def _png(head: bytes) -> bool:
@@ -503,7 +516,7 @@ async def _received(
                 await asyncio.to_thread(spool.write, chunk)  # It goes to disk.
             else:
                 spool.write(chunk)
-        kind = await _checked(spool, candidates)
+        kind = await _checked(spool, size, candidates)
     except BaseException:
         spool.close()
         raise
@@ -511,46 +524,49 @@ async def _received(
     return ReceivedUpload(kind, size, digest.hexdigest(), filename, spool)
 
 
-async def _checked(file: IO[bytes], candidates: list[FileType]) -> FileType:
-    """The type ``file`` is, checked in a thread of the checks' own.
+async def _checked(file: IO[bytes], size: int, candidates: list[FileType]) -> FileType:
+    """The first of ``candidates`` whose check takes ``file``: in a process of its own.
 
-    At most ``CHECKS_AT_ONCE`` run at once on a loop; a check that does
-    not end with the request runs to its own deadline.
+    A type without a check takes it, and a file whose first candidate has
+    none takes no process. A check that says the file is not of its type
+    (``NotOfType``) passes it to the next. The process runs as
+    ``UPLOAD_CHECKS`` says (``domainkit.inspection.run_checks``).
 
     Raises:
         ServiceBusy: As many checks run already (503).
-        UploadRefused: A check refused it (422), or no type took it (415).
+        UploadRefused: A check refused it, or a limit stopped it (422), or
+            no type took it (415).
     """
-    limiter = _checks.get(lambda: anyio.CapacityLimiter(CHECKS_AT_ONCE))
-    if limiter.available_tokens < 1:
-        raise ServiceBusy("Uploads cannot be checked now; try again later.")
-    return await anyio.to_thread.run_sync(_inspected, file, candidates, limiter=limiter)
-
-
-def _inspected(file: IO[bytes], candidates: list[FileType]) -> FileType:
-    """The first of ``candidates`` whose check takes ``file``; in a worker thread.
-
-    A type without a check takes it. A check that says the file is not of
-    its type (``NotOfType``) passes it to the next.
-
-    Raises:
-        UploadRefused: A check refused it (422), or no type took it (415).
-    """
-    for kind in candidates:
-        if kind.inspect is None:
-            return kind
-        file.seek(0)
-        try:
-            kind.inspect(file)
-        except NotOfType:
-            continue
-        except FileRefused as exc:
-            logger.info("An upload was refused by its check: %s", exc.message)
-            raise UploadRefused(
-                status.HTTP_422_UNPROCESSABLE_CONTENT, exc.message, code=exc.code
-            ) from None
-        return kind
-    raise _unsupported()
+    if candidates[0].inspect is None:
+        return candidates[0]
+    taken = candidates[
+        : next(
+            (
+                index + 1
+                for index, kind in enumerate(candidates)
+                if kind.inspect is None
+            ),
+            len(candidates),
+        )
+    ]
+    config = settings.UPLOAD_CHECKS
+    try:
+        index = await run_checks(
+            [kind.inspect for kind in taken],
+            file,
+            size,
+            processes=config.PROCESSES,
+            memory=config.MEMORY,
+            seconds=config.SECONDS,
+        )
+    except NotOfType:
+        raise _unsupported() from None
+    except FileRefused as exc:
+        logger.info("An upload was refused by its check: %s", exc.message)
+        raise UploadRefused(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, exc.message, code=exc.code
+        ) from None
+    return taken[index]
 
 
 async def _head(upload: "_Reader | UploadFile") -> bytes:

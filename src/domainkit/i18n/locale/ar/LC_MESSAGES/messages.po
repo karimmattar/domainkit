@@ -1086,7 +1086,7 @@ msgstr "اختبار التحقق مفقود أو لم يُحَل."
 msgid "The virus scan refused the file."
 msgstr "رفض فحص الفيروسات الملف."
 
-#. domainkit.storage.inspection: an upload's check refused it
+#. domainkit.inspection: an upload's check refused it
 msgid "Files with scripts are not accepted."
 msgstr "لا تُقبل الملفات التي تحتوي على نصوص برمجية."
 
@@ -1119,6 +1119,15 @@ msgstr "الملف أكبر أو أعقد من أن يُفحص."
 
 msgid "The file could not be read."
 msgstr "تعذّرت قراءة الملف."
+
+msgid "The file took too long to check."
+msgstr "استغرق فحص الملف وقتًا أطول مما يُسمح به."
+
+msgid "The file needed too much memory to check."
+msgstr "احتاج فحص الملف إلى ذاكرة أكثر مما يُسمح به."
+
+msgid "Uploads cannot be checked now; try again later."
+msgstr "لا يمكن فحص الملفات المرفوعة الآن؛ حاول مرة أخرى لاحقًا."
 
 msgid "An impersonation cannot impersonate."
 msgstr "لا يمكن لمنتحل الهوية أن ينتحل هوية أخرى."

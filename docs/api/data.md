@@ -361,15 +361,6 @@ Thumbnails of stored images (`domainkit[images]`, Pillow).
 - `NotAnImage`: The file is not an image Pillow reads, or is larger than `MAX_PIXELS`.
 - `thumbnail`: Store a thumbnail of the image `name` that fits `size`; its name.
 
-## `domainkit.storage.inspection`
-
-What an uploaded document holds, checked before it is kept (`documents` extra).
-
-- `FileRefused`: The file is of its type, but holds what is not accepted.
-- `NotOfType`: The file is not of the type its first bytes suggested.
-- `OfficeCheck`: Refuse an Office document with macros, objects, or outside links.
-- `PdfCheck`: Refuse a PDF that runs, sends, or hides something; or is too long.
-
 ## `domainkit.storage.remote`
 
 What object stores share: ranged reads, parts, presigned URLs.

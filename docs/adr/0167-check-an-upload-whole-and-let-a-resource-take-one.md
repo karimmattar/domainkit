@@ -64,7 +64,20 @@ users upload reported five gaps in 2.4 (user reports U1, U3, U5 and D2).
   even in strict mode. A review of this change found a 4 MB file whose
   thousands of wrong entries took 51 s, a 1 MB file that took 1 GiB of
   memory, and scripts in objects the table left out that pypdf found and
-  the check did not read.
+  the check did not read. A second review found what no bound in the
+  process can reach: pypdf's constructor decodes and keeps every table
+  of a `/Prev` chain before a check starts (2 MB took 2 GiB); one of its
+  calls reads an object stream's index again and again without
+  returning (529 bytes ran past 60 s); and a thread that runs a check
+  goes on after the request that started it is cancelled, freeing its
+  slot for another.
+- **Process isolation.** Chromium's Rule of 2: never pick more than two
+  of untrustworthy input, an unsafe implementation language, and high
+  privilege; parse untrusted input in a sandboxed process that returns a
+  well-formed answer, which the privileged side validates [14]. The
+  system holds a process to an address space and CPU time
+  (`setrlimit`: `RLIMIT_AS`, `RLIMIT_CPU`, which ends it with `SIGXCPU`)
+  [15], [16]; a thread has no such limits, and cannot be killed.
 - **pytest.** AnyIO's runner runs async fixtures and async tests in one
   task, so they share context variables, but "these context variables are
   not carried over to synchronous tests and fixtures" [12]; pytest-asyncio
@@ -100,8 +113,9 @@ How a PDF check is bounded:
 | Option | What it costs |
 | --- | --- |
 | pypdf's own limits | Per stream only; a search of the file per misplaced object. |
-| A process per check, with `RLIMIT_AS` and `RLIMIT_CPU` | A hard bound, at a process start and pypdf's import per upload (tens of milliseconds); `RLIMIT_AS` is not honoured everywhere (macOS). |
-| **Strict reading of the table: an object not declared, or not at its offset, refuses the file before pypdf searches; a total of decoded bytes, of declared objects, of values read, and a deadline looked at per object; checks in threads of their own, a few at a time, 503 past them** | A file a strict reader cannot read is refused (`unreadable_file`), though a lenient viewer would repair it. What pypdf does within one call is not cut short. |
+| Strict reading of the table, totals and a deadline in the process, checks in threads of their own | Taken first, and kept as a second layer; the second review showed what it cannot bound: pypdf's constructor, one call of its, and a thread a cancelled request leaves running. |
+| A pool of processes kept warm | No start per upload; a process that checked one file checks the next, with what that file left in it. |
+| **A new process per check (`python -I`), with `RLIMIT_AS` and `RLIMIT_CPU`, killed past its wall clock; a slot held until it exits; the answer read as JSON of known shapes** | A process start per checked upload: about 0.08 s for an Office document and 0.14 s for a PDF here, against 0.01 s in the process. A check must pickle. Windows has no such limits (the clock alone), and macOS does not hold a process to `RLIMIT_AS`. |
 
 What a resource's upload route takes, and how its twin binds the file:
 
@@ -124,14 +138,14 @@ How a fixture's stub reaches a test in another context:
 ## Decision
 
 - **`FileType.inspect`**, a callable of the whole file (`IO[bytes]`, read
-  from its start). `save_upload` holds the upload in a
+  from its start), which must pickle. `save_upload` holds the upload in a
   `SpooledTemporaryFile` when the type it matched has one, runs it in a
-  worker thread, and stores the file only if it passes. It raises
+  process of its own, and stores the file only if it passes. It raises
   `FileRefused` (422, `unsafe_file` or `unreadable_file`, its message
   translated) or `NotOfType` (the next matching type is tried; 415 when
   none is left). Types without a hook stream as before.
 - **`CHECKED_PDF`**, `DOCX`, `XLSX`, `PPTX` and `OFFICE`, with
-  `PdfCheck` and `OfficeCheck` in `domainkit.storage.inspection` (the
+  `PdfCheck` and `OfficeCheck` in `domainkit.inspection` (the
   `documents` extra: pypdf, lxml; a missing library is
   `ImproperlyConfigured` naming the extra). `PDF` and `ZIP` are unchanged.
   - A PDF is read by pypdf in strict mode, and only as its tables say:
@@ -159,27 +173,48 @@ How a fixture's stub reaches a test in another context:
     directory. Its main part must be the plain document's (a
     macro-enabled one is refused for its macros, a template or another
     document is `NotOfType`). Refused: macro parts and relationships
-    (VBA, Excel 4.0 macro sheets), OLE objects, ActiveX, imported chunks
-    (`altChunk`), pictures and objects linked (`r:link`), Excel's links
-    to other workbooks, data connections and query tables, formulas that
-    call `WEBSERVICE`, `RTD` or DDE, any relationship to outside the
+    (VBA, Excel 4.0 macro sheets), OLE objects and ActiveX (their parts,
+    and `w:object`, `o:OLEObject`, `w:control` in the XML), imported
+    chunks (`altChunk`), pictures and objects linked (`r:link`), an
+    element but a hyperlink that names a hyperlink's relationship,
+    Excel's links to other workbooks, data connections and query tables,
+    formulas anywhere in a sheet (cells, names, conditional formats,
+    validations, tables, charts) that call `WEBSERVICE`, `RTD`, `IMAGE`
+    or DDE, any relationship to outside the
     package but a hyperlink to `http`, `https` or `mailto` (external
     unless its `TargetMode` is absent or `Internal`, or whenever its
     target names a scheme or a share), Word fields that pull content in
     or run a program (`INCLUDEPICTURE`, `INCLUDETEXT`, `INCLUDE`,
     `IMPORT`, `LINK`, `DATABASE`, `DDE`, `DDEAUTO`, read by the letters
     they start with) or whose instruction starts with another field, and
-    an XML part, whatever its name, that declares a DTD or an entity, or
-    is in another encoding than UTF-8 and UTF-16. A DTD is refused in
-    the bytes, before lxml parses them. XML is parsed by lxml without
+    an XML part that declares a DTD or an entity, or is in another
+    encoding than UTF-8 and UTF-16. A part is XML by its name (`.xml`,
+    `.rels`, `.vml`) or its content type (`+xml`), never by its bytes,
+    which may start with anything: one that is not XML after all is
+    `unreadable_file`. White space before its markup is passed over,
+    however long, and its declaration read whole. A DTD is refused in
+    the bytes, in the part's encoding, before lxml parses them; the part
+    is never decoded to text. XML is parsed by lxml without
     entities, a DTD, or the network, each element dropped once read. An
     embedded workbook, document, or presentation (a chart's data) is
     copied to a temporary file and checked the same way, one level deep,
     within the same budget. The deadline, `max_seconds` (10), is looked
     at per part and every 1,024 elements.
-  - Checks run in threads of their own: at most four at once on an
-    event loop (`CHECKS_AT_ONCE`); past that an upload is refused, 503
-    `service_busy`, not queued.
+  - Each upload's checks run in a new process (`sys.executable -I`),
+    handed the checks (pickled) and the file over a pipe, its own output
+    sent to standard error. It limits itself first (`RLIMIT_AS` to
+    `UPLOAD_CHECKS.MEMORY`, 512 MiB; `RLIMIT_CPU` to `SECONDS`, 15), and
+    the parent kills it past `SECONDS` of wall clock. Its answer is one
+    line of JSON of a few known shapes, read as data. A process stopped
+    by a limit refuses the file, 422 `unreadable_file` ("took too long",
+    "needed too much memory"). At most `PROCESSES` (4) run at once in a
+    process of the application, counted across its event loops; one more
+    upload is 503 `service_busy`, not queued. A slot is freed only once
+    its process has exited: a cancelled request kills it, waits for it,
+    then frees the slot. A type without a check takes no process.
+  - The checks themselves stay bounded as a second layer, and a PDF
+    pypdf read only in part (it logs that it skipped a table, or found
+    an object elsewhere) is refused.
 - **`save_upload` takes bytes or an async iterable of bytes**, with
   `filename=`; **`receive_upload`** receives and checks without storing
   (`ReceivedUpload.store`, which drops the temporary file, `unstored`,
@@ -198,9 +233,11 @@ How a fixture's stub reaches a test in another context:
   deletes the file. Its twin checks the reach first too, receives the
   file, and stores nothing.
 - **`Action.arguments` binds an upload by its content**: a
-  `StoredUpload` (or a tuple of them) is read without the name the
-  storage gave it. The twin's command and the act's agree on the same
-  file, and differ for another; `digest=` is a convenience.
+  `StoredUpload`, wherever it is in the command (a list, a mapping, a
+  model), is read without the name the storage gave it. The twin's
+  command and the act's agree on the same file, and differ for another;
+  `digest=` is a convenience. One without a SHA-256 (made by hand) is
+  bound by its name, so that two such uploads never agree.
 - **`HttpClient.request(files=...)`** sends `multipart/form-data` through
   httpx2, with `data=` for the other fields. A file is bytes or a binary
   file that can seek, since a retry sends the form again from each
@@ -227,14 +264,16 @@ How a fixture's stub reaches a test in another context:
   `serve` (sandboxed, never sniffed), and convert in a sandbox.
 - Some legitimate documents are refused: one attached to a template on a
   share, one with a picture linked rather than embedded, a PDF whose
-  links open files, or one protected by an owner password only. The
+  links open files or name no scheme (`www.example.com`), one protected
+  by an owner password only, or one Acrobat Distiller made with its job
+  options embedded (a `.joboptions` file). The
   refusal says why; a project that must take them writes a `FileType`
   of its own.
-- A check holds the upload on local disk past 1 MiB, and its CPU is a
-  thread's of the checks' own. A request's deadline does not stop a
-  thread; the check's own deadline and budgets do, between the steps of
-  pypdf and lxml, not inside one. They are bounds in the process, not
-  the resource limits a separate process would have.
+- A check holds the upload on local disk past 1 MiB, and a process of
+  its own for at most `SECONDS`. Its memory and CPU are the system's to
+  bound; a request cancelled meanwhile ends it. A checked upload costs a
+  process start more. A check of a project's own runs there too: its
+  module is imported for each upload, so keep it cheap.
 - A PDF that a strict reader cannot read is refused, though a viewer
   that repairs files would show it: a cross-reference table at the
   wrong place, an object not where the table says. Saving it again from
@@ -271,3 +310,8 @@ How a fixture's stub reaches a test in another context:
 12. AnyIO, Testing with AnyIO: <https://anyio.readthedocs.io/en/stable/testing.html>
 13. pytest-asyncio, Changelog (0.25.0, 1.1.0):
     <https://pytest-asyncio.readthedocs.io/en/latest/reference/changelog.html>
+14. Chromium, The Rule Of 2:
+    <https://chromium.googlesource.com/chromium/src/+/main/docs/security/rule-of-2.md>
+15. Python, `resource`: resource usage information:
+    <https://docs.python.org/3/library/resource.html>
+16. Linux, getrlimit(2): <https://man7.org/linux/man-pages/man2/getrlimit.2.html>

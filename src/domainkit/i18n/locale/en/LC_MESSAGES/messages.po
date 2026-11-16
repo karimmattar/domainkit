@@ -1076,7 +1076,7 @@ msgstr ""
 msgid "The virus scan refused the file."
 msgstr ""
 
-#. domainkit.storage.inspection: an upload's check refused it
+#. domainkit.inspection: an upload's check refused it
 msgid "Files with scripts are not accepted."
 msgstr ""
 
@@ -1108,6 +1108,15 @@ msgid "The file is too large or too complex to check."
 msgstr ""
 
 msgid "The file could not be read."
+msgstr ""
+
+msgid "The file took too long to check."
+msgstr ""
+
+msgid "The file needed too much memory to check."
+msgstr ""
+
+msgid "Uploads cannot be checked now; try again later."
 msgstr ""
 
 msgid "An impersonation cannot impersonate."

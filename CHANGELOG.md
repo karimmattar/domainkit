@@ -43,9 +43,9 @@ and a status.
   report I8).
 
 - Uploads can be checked whole before they are stored. A `FileType` takes
-  an `inspect` hook, which `save_upload` runs in a worker thread on the
-  upload, held in a temporary file; a file it refuses is never stored
-  (422 `unsafe_file` or `unreadable_file`, the detail translated).
+  an `inspect` hook, which `save_upload` runs on the upload, held in a
+  temporary file, in a process of its own; a file it refuses is never
+  stored (422 `unsafe_file` or `unreadable_file`, the detail translated).
   `CHECKED_PDF` reads a PDF strictly, as its tables declare it, and every
   object written in it; it refuses an encrypted PDF, scripts, actions run
   on opening or on an event, actions that launch, open other files or
@@ -53,15 +53,19 @@ and a status.
   and more than 1,000 pages. `DOCX`, `XLSX`, `PPTX` (and `OFFICE`, the
   three) refuse macro-enabled documents, macros, OLE objects, ActiveX,
   imported chunks, linked pictures, outside relationships but
-  hyperlinks, fields that pull content in or run a program, links to
-  other workbooks, data connections, web-service and DDE formulas, and
-  DTDs in any XML part, with the ZIP bounded by its directory and the
-  upload's size before it is inflated. Each check has a deadline and
-  budgets, and runs in a thread of the checks' own, four at a time per
-  event loop; past that an upload is 503 `service_busy`. The checks are
-  `PdfCheck` and `OfficeCheck` of `domainkit.storage.inspection`, and
-  need the `documents` extra. `PDF` and `ZIP` still read the first bytes
-  only
+  hyperlinks, fields that pull content in or run a program, OLE objects
+  in the XML, links to other workbooks, data connections, web-service,
+  picture and DDE formulas anywhere in a sheet, and DTDs in any XML
+  part, with the ZIP bounded by its directory and the upload's size
+  before it is inflated. Each upload's check runs in a new process,
+  which the system holds to `UPLOAD_CHECKS.MEMORY` (512 MiB) and
+  `SECONDS` (15) of CPU, killed past `SECONDS` of wall clock: a check
+  stopped by a limit refuses the file. At most `PROCESSES` (4) run at
+  once; one more upload is 503 `service_busy`, and a slot is freed only
+  once its process has exited. A checked upload costs a process start,
+  about a tenth of a second. The checks are `PdfCheck` and `OfficeCheck`
+  of `domainkit.inspection`, and need the `documents` extra. `PDF` and
+  `ZIP` still read the first bytes only
   ([ADR 0167](docs/adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md))
   (user report U1).
 

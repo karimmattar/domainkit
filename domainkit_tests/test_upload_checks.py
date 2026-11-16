@@ -6,12 +6,10 @@ hook reads the whole file before ``save_upload`` stores it, and a file it
 refuses is never stored (ADR 0167).
 """
 
-import asyncio
 import codecs
 import io
 import struct
 import sys
-import threading
 import time
 import zipfile
 import zlib
@@ -23,7 +21,8 @@ import pytest
 from pypdf import PdfWriter
 from starlette.datastructures import UploadFile
 
-from domainkit.exceptions import ImproperlyConfigured, ServiceBusy
+from domainkit import inspection as inspection_module
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import uploads
 from domainkit.http.uploads import (
     CHECKED_PDF,
@@ -40,9 +39,7 @@ from domainkit.http.uploads import (
     receive_upload,
     save_upload,
 )
-from domainkit.storage import MemoryStorage
-from domainkit.storage import inspection as inspection_module
-from domainkit.storage.inspection import (
+from domainkit.inspection import (
     ACTIONS,
     COMPLEX,
     DAMAGED,
@@ -59,6 +56,8 @@ from domainkit.storage.inspection import (
     OfficeCheck,
     PdfCheck,
 )
+from domainkit.storage import MemoryStorage
+from domainkit_tests.support import hooks
 from domainkit_tests.support.documents import (
     MS,
     OOXML,
@@ -95,8 +94,24 @@ NESTED_DDE: Final = (
     '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
 )
 """DDEAUTO spelled by a nested QUOTE field: the instruction starts with a field."""
+DRAWING: Final = (
+    '<w:p><w:r><w:drawing xmlns:r="http://schemas.openxmlformats.org/'
+    'officeDocument/2006/relationships" r:embed="{}"/></w:r></w:p>'
+)
+"""A picture held in the package, by its relationship's id."""
 UTF16_DECLARED: Final = '<?xml version="1.0" encoding="UTF-16"?><x/>'
 SHEETML: Final = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+X14: Final = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"
+XM: Final = "http://schemas.microsoft.com/office/excel/2006/main"
+LATE_UTF7: Final = (
+    b'<?xml version="1.0"' + b" " * 300 + b'encoding="UTF-7"?>'
+    b'+ADwAIQ-DOCTYPE a +AFsAPAAh-ENTITY e "x"+AD4AXQA+-<a>&e;</a>'
+)
+"""A UTF-7 part that declares its encoding past 256 bytes, and hides a DTD."""
+OLE_OBJECT: Final = (
+    '<w:p><w:r><w:object><o:OLEObject xmlns:o="urn:schemas-microsoft-com:office:office"'
+    ' Type="Embed" ProgID="Package"/></w:object></w:r></w:p>'
+)
 CONNECTIONS: Final = "xl/connections.xml"
 SHEET: Final = "xl/macrosheets/sheet1.xml"
 LINKED: Final = "xl/externalLinks/externalLink1.xml"
@@ -110,6 +125,19 @@ def sheet(cells: str) -> bytes:
         parts={
             "xl/worksheets/sheet1.xml": f'<worksheet xmlns="{SHEETML}"><sheetData>'
             f'<row r="1">{cells}</row></sheetData></worksheet>'
+        },
+        types={"xl/worksheets/sheet1.xml": f"{OOXML}spreadsheetml.worksheet+xml"},
+    )
+
+
+def worksheet(content: str) -> bytes:
+    """A workbook whose one worksheet holds ``content`` after its cells."""
+    return office(
+        "xlsx",
+        main_relationships=[(f"{R}worksheet", "worksheets/sheet1.xml")],
+        parts={
+            "xl/worksheets/sheet1.xml": f'<worksheet xmlns="{SHEETML}"><sheetData/>'
+            f"{content}</worksheet>"
         },
         types={"xl/worksheets/sheet1.xml": f"{OOXML}spreadsheetml.worksheet+xml"},
     )
@@ -541,6 +569,71 @@ async def test_a_checked_pdf_is_stored_and_a_refused_one_never() -> None:
         (office(compression=zipfile.ZIP_BZIP2), "unreadable_file"),
         (b"PK\x03\x04 and nothing of a zip", "unreadable_file"),
         (
+            office(main=" " * 300 + document(FIELD.format(" INCLUDEPICTURE ", '"x"'))),
+            EXTERNAL,
+        ),
+        (office(main="\n" * 300 + document(FIELD.format(" DDEAUTO ", "cmd"))), ACTIONS),
+        (office(main="\n" * 300 + '<!DOCTYPE d [<!ENTITY a "a">]>' + document()), DTD),
+        (office(main="\x00 junk " + document()), "unreadable_file"),
+        (office(main="no markup at all"), "unreadable_file"),
+        (office(parts={"customXml/item1.xml": LATE_UTF7}), "unreadable_file"),
+        (
+            office(
+                parts={"customXml/item1.xml": '<?xml version="1.0" encoding="UTF-8"'}
+            ),
+            "unreadable_file",
+        ),
+        (
+            office(parts={"customXml/item1.xml": b"\x89PNG not XML at all"}),
+            "unreadable_file",
+        ),
+        (
+            office(
+                parts={"word/media/a.png": b"   <!DOCTYPE x>"},
+                defaults={"png": "image/png"},
+            ),
+            "ok",
+        ),
+        (office(main=document(OLE_OBJECT)), EMBEDDED),
+        (
+            office(
+                main=document(
+                    '<w:r><w:object><w:control r:id="rId1"/></w:object></w:r>'
+                )
+            ),
+            EMBEDDED,
+        ),
+        (
+            office(
+                main=document(
+                    f'<w:p><w:r><w:control xmlns:r="{R[:-1]}" r:id="rId1"/></w:r></w:p>'
+                )
+            ),
+            EMBEDDED,
+        ),
+        (
+            office(
+                main=document(DRAWING.format("rId1")),
+                main_relationships=[
+                    (f"{R}hyperlink", "https://a.example/a.png", "External")
+                ],
+            ),
+            EXTERNAL,
+        ),
+        (
+            office(
+                main=document(
+                    f'<w:p><w:hyperlink xmlns:r="{R[:-1]}" r:id="rId1"/></w:p>'
+                    + DRAWING.format("rId2")
+                ),
+                main_relationships=[
+                    (f"{R}hyperlink", "https://a.example/", "External"),
+                    (f"{R}image", "media/a.png"),
+                ],
+            ),
+            "ok",
+        ),
+        (
             office(
                 parts={
                     "word/be.xml": '<!DOCTYPE x [<!ENTITY e "e">]><x/>'.encode(
@@ -768,6 +861,35 @@ def test_a_word_document_is_refused_for_macros_objects_and_outside_links(
         ("xlsx", sheet('<c r="A1"><f>SUM(B1:B9)</f></c>'), "ok"),
         (
             "xlsx",
+            sheet('<c r="A1"><f>_xlfn.IMAGE("https://a.example/a.png")</f></c>'),
+            EXTERNAL,
+        ),
+        (
+            "xlsx",
+            worksheet(
+                '<conditionalFormatting><cfRule><formula>WEBSERVICE("x")</formula></cfRule></conditionalFormatting>'
+            ),
+            EXTERNAL,
+        ),
+        (
+            "xlsx",
+            worksheet(
+                "<dataValidations><dataValidation><formula1>cmd|'/c calc'!A0"
+                "</formula1></dataValidation></dataValidations>"
+            ),
+            ACTIONS,
+        ),
+        (
+            "xlsx",
+            worksheet(
+                f'<extLst><x14:dataValidation xmlns:x14="{X14}" xmlns:xm="{XM}">'
+                '<x14:formula1><xm:f>RTD("a",,"b")</xm:f></x14:formula1>'
+                "</x14:dataValidation></extLst>"
+            ),
+            EXTERNAL,
+        ),
+        (
+            "xlsx",
             office(
                 "xlsx",
                 main=f'<workbook xmlns="{SHEETML}"><definedNames>'
@@ -984,26 +1106,23 @@ async def test_a_received_upload_is_checked_and_stored_only_when_asked(
         await receive_upload(data, types=[], max_size=10)
 
 
-async def test_a_hook_of_ones_own_reads_the_whole_file(tmp_path: Path) -> None:
-    """``FileType(..., inspect=...)``: its refusal is 422, with its code."""
-    seen: list[bytes] = []
+async def test_a_hook_of_ones_own_reads_the_whole_file() -> None:
+    """``FileType(..., inspect=...)``: its refusal is 422, with its code.
 
-    def no_secrets(file: IO[bytes]) -> None:
-        content = file.read()
-        seen.append(content)
-        if b"SECRET" in content:
-            raise FileRefused("Files with secrets are not accepted.", code="secret")
-
-    text = FileType("text/plain", ".txt", lambda head: True, no_secrets)
+    It runs in a process of its own, which loads it by name: a lambda or
+    a nested function is refused when the type is made.
+    """
+    text = FileType("text/plain", ".txt", lambda head: True, hooks.no_secrets)
     storage = MemoryStorage()
 
     stored = await save_upload(b"hello", types=[text], max_size=100, storage=storage)
     with pytest.raises(UploadRefused) as refused:
         await save_upload(b"a SECRET", types=[text], max_size=100, storage=storage)
 
-    assert seen == [b"hello", b"a SECRET"]
     assert (refused.value.status_code, refused.value.code) == (422, "secret")
     assert list(storage.files) == [stored.name]
+    with pytest.raises(TypeError, match="runs in a process of its own"):
+        FileType("text/plain", ".txt", lambda head: True, lambda file: None)
 
 
 # What a check costs, whatever the file ------------------------------------------
@@ -1248,32 +1367,6 @@ def test_an_office_check_is_bounded_by_the_uploads_own_size_and_time(
     assert verdict(OfficeCheck("docx", max_expansion=1000), many) == "ok"
     monkeypatch.setattr(time, "monotonic", jump())
     assert verdict(OfficeCheck("docx", max_expansion=1000), many) == COMPLEX
-
-
-async def test_checks_run_in_threads_of_their_own_and_refuse_past_them(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A check that holds its thread leaves the others; one more is 503 at once."""
-    monkeypatch.setattr(uploads, "CHECKS_AT_ONCE", 1)
-    started = threading.Event()
-    release = threading.Event()
-
-    def slow(file: IO[bytes]) -> None:
-        started.set()
-        release.wait(5)
-
-    held = FileType("text/plain", ".txt", lambda head: True, slow)
-    storage = MemoryStorage()
-    first = asyncio.ensure_future(
-        save_upload(b"one", types=[held], max_size=10, storage=storage)
-    )
-    assert await asyncio.to_thread(started.wait, 5)
-    with pytest.raises(ServiceBusy, match="cannot be checked now"):
-        await save_upload(b"two", types=[held], max_size=10, storage=storage)
-    release.set()
-    stored = await first
-
-    assert list(storage.files) == [stored.name]
 
 
 async def test_storing_a_received_upload_drops_its_temporary_file() -> None:
