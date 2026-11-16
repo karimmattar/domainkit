@@ -396,7 +396,7 @@ async def test_a_lazy_refusal_is_made_again_by_the_parent(
             [check], io.BytesIO(data), processes=1, memory=256 * MIB, seconds=30
         )
 
-    message = refused.value.message
+    message: object = refused.value.message  # Declared text; may be lazy.
     assert isinstance(message, LazyString)
     assert message.source() == source
     assert refused.value.code == "unsafe_file"
@@ -501,7 +501,7 @@ def test_a_lazy_refusal_is_read_as_a_lookup_of_known_shape(
     with pytest.raises(FileRefused) as refused:
         inspection._outcome(answer, 0, b"", 1)
 
-    message = refused.value.message
+    message: object = refused.value.message  # Declared text; may be lazy.
     if source is None:
         assert (message, refused.value.code) == (DAMAGED, "unreadable_file")
     else:

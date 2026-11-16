@@ -18,7 +18,7 @@ and a status.
   every file it refused: the check's process has no settings to make the
   string text. The process now sends the lookup and its arguments
   (`LazyString.source()`, new), and the application makes the string
-  again (ADR 0167). `FileRefused`'s message is typed `str | LazyString`
+  again (ADR 0167). `FileRefused` takes a `LazyString` as its message
   (follow-up of 2.5.0).
 - An `APIError` whose detail is a lazy string (`gettext_lazy`,
   `ngettext_lazy`, `pgettext_lazy`), `UploadRefused` included, is

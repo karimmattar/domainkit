@@ -398,12 +398,16 @@ project that wrote its checks' refusals the same way got a 500.
 - Any other message is made text in the process, as before. One that
   reads the settings there (`gettext_lazy(...).format(...)` makes text
   at once) fails: a 500, logged.
-- `FileRefused.message` is `str | LazyString`. `save_upload` makes it
-  text in the request, in the request's language, before the refusal
-  becomes an `UploadRefused`: the HTTP layer answers an `APIError`
-  whose detail is not text with its code in words.
+- `FileRefused` takes a `str | LazyString`, and keeps what it is
+  given; its `message` stays declared `str`, as `DomainError.message`
+  and `APIError.detail` are, so that no project's code that reads it as
+  text stops type-checking. A lazy one compares and formats as its
+  text, and `str()` makes it text.
+- `save_upload` makes the message text in the request, in its language,
+  so that its log line says what the answer says. An `APIError` whose
+  detail is a lazy string is answered as its text too, since 2.6; in
+  2.5 it was answered with its code in words.
 
 A check refuses with a lazy string as a domain layer does: the answer
 is in the caller's language, its plural form the language's, its
-context kept. Code that reads `FileRefused.message` as text calls
-`str()` on it.
+context kept.

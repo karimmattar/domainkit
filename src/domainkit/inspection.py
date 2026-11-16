@@ -367,10 +367,14 @@ class FileRefused(DomainkitError):
     ``save_upload`` answers it 422.
     """
 
+    message: str
+    """Kept as given, and declared text, as ``DomainError.message`` is: a
+    lazy one compares and formats as its text, and ``str()`` makes it text."""
+
     def __init__(self, message: str | LazyString, *, code: str = "unsafe_file") -> None:
         """Say why, and with which code."""
         super().__init__(message)
-        self.message = message
+        self.message = message  # type: ignore[assignment]  # Kept lazy: see above.
         self.code = code
 
 
