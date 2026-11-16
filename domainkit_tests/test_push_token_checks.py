@@ -251,7 +251,8 @@ def test_a_service_that_fails_or_is_slow_lets_the_token_in(
         for each in caplog.records
         if each.name == "domainkit.contrib.notifications.delivery"
     ]
-    assert record.getMessage().startswith("A push token could not be checked")
+    assert record.getMessage().startswith("A push service ")
+    assert "registration" in record.getMessage()
     assert "a-token" not in caplog.text
 
 

@@ -142,11 +142,13 @@ async def check_push_token(
             await get_push_backend(platform).check_token(token)
     except PushTokenGone:
         return False
-    except NotificationFailed as failed:
-        logger.warning("A push token could not be checked, and was taken: %s", failed)
+    except NotificationFailed as failed:  # Its message names no token.
+        logger.warning(
+            "A push service could not check a registration, kept: %s", failed
+        )
     except TimeoutError:
         logger.warning(
-            "A push token could not be checked within %ss, and was taken", within
+            "A push service did not check a registration within %ss, kept", within
         )
     return True
 
