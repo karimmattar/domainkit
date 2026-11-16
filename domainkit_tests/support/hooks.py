@@ -114,6 +114,16 @@ def lazy_of_its_own(file: IO[bytes]) -> None:
     raise FileRefused(LazyString(str.upper, "files with secrets are not accepted."))
 
 
+def formatted(file: IO[bytes]) -> None:
+    """Refuse with a lazy message filled in, which makes it text at once."""
+    raise FileRefused(gettext_lazy("At most {n} pages.").format(n=3))
+
+
+def quoted(file: IO[bytes]) -> None:
+    """Refuse with the file's own text, its undecodable bytes kept as surrogates."""
+    raise FileRefused(file.read().decode("utf-8", "surrogateescape"))
+
+
 def lazy_otherwise(file: IO[bytes]) -> None:
     """Refuse with a lazy string made by hand from a lookup, which needs settings."""
     from domainkit.i18n import translation

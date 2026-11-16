@@ -98,6 +98,7 @@ import tempfile
 import threading
 import time
 import traceback
+import unicodedata
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -1318,6 +1319,11 @@ CODE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """A problem code a check may answer with."""
 MAX_MESSAGE: Final = 500
 """The most characters the parent keeps of a check's message, or of a text it names."""
+MAX_NAME: Final = 100
+"""The most characters the parent keeps of the name of what a check raised."""
+HIDDEN: Final = frozenset({"Cc", "Cf"})
+"""Unicode's control and format characters (a right-to-left override): dropped
+from a text a check's process sends, but for white space, which is a space."""
 LOOKUPS: Final[dict[str, tuple[Callable[..., LazyString], tuple[type, ...]]]] = {
     "gettext": (gettext_lazy, (str,)),
     "ngettext": (ngettext_lazy, (str, str, int)),
@@ -1371,7 +1377,9 @@ async def run_checks(
             signal, logged (the file could not be read).
         NotOfType: No check took it.
         ServiceBusy: ``processes`` checks run already (503).
-        ImproperlyConfigured: A check's library is not installed.
+        ImproperlyConfigured: A check raised it in its process: its
+            library is not installed, or it read the settings, which the
+            process has not. Logged with where it was raised.
         RuntimeError: A check failed otherwise, as a bug does, or its
             process ended without an answer; logged with what it wrote to
             standard error.
@@ -1526,7 +1534,7 @@ def _outcome(answer: bytes, returncode: int, said: bytes, count: int) -> int:
     Raises:
         FileRefused: A check refused it, or a signal ended the process.
         NotOfType: No check took it.
-        ImproperlyConfigured: A check's library is not installed.
+        ImproperlyConfigured: A check raised it in its process; logged.
         RuntimeError: A check failed, or the process gave no answer.
     """
     tail = said.decode(errors="replace")
@@ -1557,35 +1565,60 @@ def _verdict(found: dict[str, Any], count: int, tail: str) -> int:
     """Which check took the file, from the process's answer; else raise.
 
     The answer is JSON of a few known shapes, read as data: the process
-    read an untrusted file, and could say anything.
+    read an untrusted file, and could say anything. Each text in it is
+    UTF-8 on one line (``_shown``), or the answer is of no known shape.
 
     Raises:
         FileRefused: A check refused it, with text or a lookup's lazy
             string (``_lazy``), or the answer is of no known shape.
         NotOfType: No check took it.
-        ImproperlyConfigured: A check's library is not installed.
-        RuntimeError: A check failed otherwise; logged with ``tail``, the
-            end of what the process wrote to standard error.
+        ImproperlyConfigured: A check raised it in its process: its
+            library is not installed, or it read the settings, which the
+            process has not. Worded as the process's, and logged with
+            ``tail``, the end of what the process wrote to standard error.
+        RuntimeError: A check failed otherwise; logged with ``tail``.
     """
     took = found.get("took")
     if isinstance(took, int) and 0 <= took < count:
         return took
     refused = found.get("refused")
-    message = refused[:MAX_MESSAGE] if isinstance(refused, str) else _lazy(refused)
+    message = _shown(refused) if isinstance(refused, str) else _lazy(refused)
     if message is not None:
         code = found.get("code")
         valid = isinstance(code, str) and CODE.fullmatch(code)
         raise FileRefused(message, code=code if valid else UNSAFE)  # type: ignore[arg-type]
     if found.get("none") is True:
         raise NotOfType
-    if isinstance(missing := found.get("improperly"), str):
-        raise ImproperlyConfigured(missing[:MAX_MESSAGE])
-    if isinstance(failed := found.get("failed"), str):
+    missing = found.get("improperly")
+    if isinstance(missing, str) and (said := _shown(missing)) is not None:
+        logger.error("A check of an upload raised ImproperlyConfigured: %s", tail)
+        raise ImproperlyConfigured(f"A check of an upload, in its process: {said}")
+    failed = found.get("failed")
+    if isinstance(failed, str) and (name := _shown(failed, MAX_NAME)) is not None:
         logger.error("A check of an upload failed in its process: %s", tail)
-        raise RuntimeError(
-            f"A check of an upload failed in its process: {failed[:100]}."
-        )
+        raise RuntimeError(f"A check of an upload failed in its process: {name}.")
     raise FileRefused(DAMAGED, code=UNREADABLE)
+
+
+def _shown(text: str, limit: int = MAX_MESSAGE) -> str | None:
+    """``text`` from a check's process, cut to ``limit``, on one line; None if not text.
+
+    JSON lets a lone surrogate through (an escaped ``D800``), which no body
+    or log encodes: a text that does not encode as UTF-8 is of no known
+    shape. Only what is kept of it counts. White space becomes a space,
+    and a control or format character (``HIDDEN``) is dropped, so that a
+    refusal is one line in a log, shown as it reads.
+    """
+    kept = text[:limit]
+    try:
+        kept.encode()
+    except UnicodeEncodeError:
+        return None
+    return "".join(
+        " " if character.isspace() else character
+        for character in kept
+        if character.isspace() or unicodedata.category(character) not in HIDDEN
+    )
 
 
 def _lazy(named: object) -> LazyString | None:
@@ -1594,9 +1627,9 @@ def _lazy(named: object) -> LazyString | None:
     ``{"lookup": "ngettext", "arguments": ["A page.", "Pages.", 3]}``, and
     nothing else: a lookup of ``LOOKUPS``, with as many arguments as it
     takes, each of its exact type (a count is not a boolean). A text is
-    cut to ``MAX_MESSAGE`` characters, as a plain message is; a count is
-    from 0 to ``MAX_COUNT``. The process read an untrusted file: it may
-    name texts to look up, never code to run.
+    read as a plain message is (``_shown``); a count is from 0 to
+    ``MAX_COUNT``. The process read an untrusted file: it may name texts
+    to look up, never code to run.
     """
     if not isinstance(named, dict) or named.keys() != {"lookup", "arguments"}:
         return None
@@ -1609,12 +1642,8 @@ def _lazy(named: object) -> LazyString | None:
         isinstance(value, int) and not 0 <= value <= MAX_COUNT for value in arguments
     ):
         return None
-    return make(
-        *(
-            value[:MAX_MESSAGE] if isinstance(value, str) else value
-            for value in arguments
-        )
-    )
+    shown = [_shown(value) if isinstance(value, str) else value for value in arguments]
+    return None if None in shown else make(*shown)
 
 
 def _serve(config: dict[str, Any], source: IO[bytes], sink: IO[bytes]) -> None:
@@ -1655,6 +1684,7 @@ def _checked(
     except FileRefused as refused:
         return {"refused": _named(refused.message), "code": refused.code}
     except ImproperlyConfigured as missing:
+        traceback.print_exc()  # Where it was raised, which the parent logs.
         return {"improperly": str(missing)}
     return {"none": True}
 

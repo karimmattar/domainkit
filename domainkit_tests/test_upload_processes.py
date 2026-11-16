@@ -326,7 +326,9 @@ async def test_the_whole_file_is_handed_over_and_read_in_a_thread() -> None:
 
 async def test_a_checks_process_answers_what_its_check_raised() -> None:
     """A library missing, a bug, a print to standard output, a type not taken."""
-    with pytest.raises(ImproperlyConfigured, match="needs a library"):
+    with pytest.raises(
+        ImproperlyConfigured, match="in its process: This check needs a library"
+    ):
         await receive_upload(b"x", types=[typed(hooks.unconfigured)], max_size=10)
     with pytest.raises(RuntimeError, match="failed in its process: KeyError"):
         await receive_upload(b"x", types=[typed(hooks.broken)], max_size=10)
@@ -402,6 +404,28 @@ async def test_a_lazy_refusal_is_made_again_by_the_parent(
     assert refused.value.code == "unsafe_file"
 
 
+def checked_by(checks: dict[str, Any]) -> TestClient:
+    """A client of an application that checks ``POST /files/<name>`` by ``checks``."""
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.post("/files/{check}")
+    async def upload(check: str, request: Request) -> None:
+        kind = typed(checks[check])
+        (await receive_upload(await request.body(), types=[kind], max_size=99)).close()
+
+    return TestClient(LocaleMiddleware(app))
+
+
+def refusals_logged(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """What ``save_upload`` logged of its checks' refusals."""
+    return [
+        each.getMessage()
+        for each in caplog.records
+        if each.name == "domainkit.http.uploads"
+    ]
+
+
 def test_a_lazy_refusal_is_answered_in_the_callers_language(
     arabic_checks: None,
 ) -> None:
@@ -410,20 +434,12 @@ def test_a_lazy_refusal_is_answered_in_the_callers_language(
     As a domain error's lazy message is since 2.5.0; the plural form is
     the caller's language's, and a context is kept.
     """
-    app = FastAPI()
-    install_exception_handlers(app)
     checks = {
         "plain": hooks.lazy,
         "count": hooks.lazy_count,
         "context": hooks.lazy_in_context,
     }
-
-    @app.post("/files/{check}")
-    async def upload(check: str, request: Request) -> None:
-        kind = typed(checks[check])
-        (await receive_upload(await request.body(), types=[kind], max_size=99)).close()
-
-    client = TestClient(LocaleMiddleware(app))
+    client = checked_by(checks)
     answers = {
         (check, language): client.post(
             f"/files/{check}",
@@ -450,6 +466,57 @@ def test_a_lazy_refusal_is_answered_in_the_callers_language(
         ("context", "ar"): (422, "unsafe_file", "ar", "مرفوض."),
         ("context", None): (422, "unsafe_file", "en", "Refused."),
     }
+
+
+def test_a_refusal_in_the_files_own_words_is_utf_8_on_one_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Bytes that are not UTF-8 make no known answer; a line break is a space.
+
+    A check that refused with the file's own text, decoded with
+    ``surrogateescape``, made a 500: no body encodes a lone surrogate. And
+    a line break in it wrote a line of its own to a plain-text log.
+    """
+    caplog.set_level(logging.INFO, logger="domainkit.http.uploads")
+    client = checked_by({"quoted": hooks.quoted})
+
+    undecodable = client.post("/files/quoted", content=b"Not \xff accepted.")
+    forged = client.post(
+        "/files/quoted", content="No.\nINFO: forged\u202e.\x00".encode()
+    )
+
+    assert (undecodable.status_code, undecodable.json()["code"]) == (
+        422,
+        "unreadable_file",
+    )
+    assert undecodable.json()["detail"] == DAMAGED
+    assert (forged.status_code, forged.json()["detail"]) == (422, "No. INFO: forged.")
+    assert refusals_logged(caplog) == [
+        f"An upload was refused by its check: {DAMAGED}",
+        "An upload was refused by its check: No. INFO: forged.",
+    ]
+
+
+async def test_a_check_that_reads_the_settings_is_told_as_its_process(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Worded as the process's, and logged with where the check raised it.
+
+    A refusal filled in (``gettext_lazy(...).format(...)``) reads the
+    settings, which the process has not: the application raised "Set the
+    DOMAINKIT_SETTINGS_MODULE environment variable.", as if it had none,
+    and nothing was logged.
+    """
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^A check of an upload, in its process: Set the \w+_SETTINGS_MODULE ",
+    ):
+        await receive_upload(b"x", types=[typed(hooks.formatted)], max_size=10)
+
+    (record,) = [each for each in caplog.records if each.name == "domainkit.inspection"]
+    assert record.levelname == "ERROR"
+    assert "ImproperlyConfigured" in record.getMessage()
+    assert ", in formatted" in record.getMessage()
 
 
 @pytest.mark.parametrize(
@@ -482,6 +549,12 @@ def test_a_lazy_refusal_is_answered_in_the_callers_language(
         ({"lookup": "ngettext", "arguments": ["A page.", "Pages.", -1]}, None),
         ({"lookup": "ngettext", "arguments": ["A page.", "Pages.", 2**64]}, None),
         ({"lookup": "gettext", "arguments": ["No."], "function": "eval"}, None),
+        (
+            {"lookup": "pgettext", "arguments": ["up\nload", "No.\u2028Yes."]},
+            ("pgettext", ("up load", "No. Yes.")),
+        ),
+        ({"lookup": "gettext", "arguments": ["No.\udcff"]}, None),
+        ({"lookup": "ngettext", "arguments": ["A page.", "\ud800", 2]}, None),
         ({"arguments": ["No."]}, None),
         (["gettext", "No."], None),
         (None, None),
@@ -723,7 +796,9 @@ async def test_a_process_a_signal_ended_refuses_the_file_and_is_logged(
         (b'{"refused": "No.", "code": "Bad Code"}', -9, FileRefused, "No."),
         (b'{"none": true}', 0, NotOfType, ""),
         (b'{"improperly": "Install it."}', 0, ImproperlyConfigured, "Install it."),
+        (b'{"improperly": "Install\\nit."}', 0, ImproperlyConfigured, ": Install it."),
         (b'{"failed": "ValueError"}', 0, RuntimeError, "ValueError"),
+        (b'{"failed": "Value\\nError"}', 0, RuntimeError, ": Value Error."),
         (b'{"what": 1}', 0, FileRefused, DAMAGED),
     ],
 )
@@ -740,6 +815,36 @@ def test_an_answer_is_read_as_data_of_known_shapes(
     else:
         assert match in str(error.value)
     assert inspection._outcome(b'{"took": 0}', -9, b"", 1) == 0
+
+
+@pytest.mark.parametrize(
+    ("answer", "shown"),
+    [
+        ({"refused": "No.\ud800"}, None),
+        ({"refused": "\udcff"}, None),
+        ({"refused": "x" * 499 + "\ud800"}, None),
+        ({"refused": "x" * 500 + "\ud800"}, "x" * 500),
+        ({"refused": "No.\nINFO: forged\u202e.\x00"}, "No. INFO: forged."),
+        ({"refused": "Tab\there,\u2028there."}, "Tab here, there."),
+        ({"improperly": "\ud800"}, None),
+        ({"failed": "\ud800"}, None),
+    ],
+)
+def test_a_text_from_the_process_is_utf_8_on_one_line(
+    answer: dict[str, str], shown: str | None
+) -> None:
+    """A lone surrogate, which JSON lets through, is of no known shape.
+
+    No body or log encodes one: a refusal that held one was a 500. White
+    space becomes a space and a control or format character goes, so that
+    a refusal is one line in a log, shown as it reads. Only what is kept
+    of the text counts.
+    """
+    with pytest.raises(FileRefused) as refused:
+        inspection._outcome(json.dumps(answer).encode(), 0, b"", 1)
+
+    expected = (DAMAGED, "unreadable_file") if shown is None else (shown, "unsafe_file")
+    assert (refused.value.message, refused.value.code) == expected
 
 
 def test_a_checks_process_serves_one_request(monkeypatch: pytest.MonkeyPatch) -> None:

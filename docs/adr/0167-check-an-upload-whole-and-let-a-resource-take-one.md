@@ -389,15 +389,29 @@ project that wrote its checks' refusals the same way got a 500.
   The parent reads it as data: one of the three lookups, no other key,
   as many arguments as it takes, each of its exact type, a count from 0
   to `2**64 - 1` (C's `unsigned long` [20]; not a boolean). Each text is
-  cut to 500 characters, as a plain message is. It makes the string
-  again with `gettext_lazy`, `ngettext_lazy` or `pgettext_lazy`, and
-  raises `FileRefused` with it. Any other answer is of no known shape:
-  422 `unreadable_file`, "could not be read". The process could already
+  read as a plain message is (below). It makes the string again with
+  `gettext_lazy`, `ngettext_lazy` or `pgettext_lazy`, and raises
+  `FileRefused` with it. Any other answer is of no known shape: 422
+  `unreadable_file`, "could not be read". The process could already
   choose any plain message; now it may also name a catalog lookup, never
   code, and the parent still unpickles nothing it sends.
+- Every text of an answer (a message, a lazy string's argument, what an
+  `ImproperlyConfigured` said, the name of what a check raised) is cut
+  to its bound (500 characters; 100 for a name) and must encode as
+  UTF-8: JSON lets a lone surrogate through, which no body or log
+  encodes, so a refusal in a file's own words decoded with
+  `surrogateescape` was a 500. One that does not is of no known shape.
+  White space in it becomes a space, and a control or format character
+  is dropped, so that a log line is one line, shown as it reads.
 - Any other message is made text in the process, as before. One that
   reads the settings there (`gettext_lazy(...).format(...)` makes text
-  at once) fails: a 500, logged.
+  at once) raises `ImproperlyConfigured` in the process. The process
+  prints where, and the parent logs it at `ERROR` with the end of the
+  process's standard error, and raises `ImproperlyConfigured("A check
+  of an upload, in its process: Set the DOMAINKIT_SETTINGS_MODULE
+  environment variable.")`: a 500. A missing library is told the same
+  way. Before, the parent raised the process's message alone, as if the
+  application had no settings, and logged nothing.
 - `FileRefused` takes a `str | LazyString`, and keeps what it is
   given; its `message` stays declared `str`, as `DomainError.message`
   and `APIError.detail` are, so that no project's code that reads it as

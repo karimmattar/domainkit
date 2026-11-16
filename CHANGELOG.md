@@ -27,6 +27,18 @@ and a status.
   ([responses.md](docs/reference/responses.md#raising-an-error)). It was
   answered with its code in words, in every language. `APIError` takes a
   `LazyString` as its detail (follow-up of 2.5.0).
+- An upload check's refusal that is not UTF-8 (the file's own text,
+  decoded with `surrogateescape`) refuses the file as one that could not
+  be read, 422 `unreadable_file`; it was a 500. A line break or another
+  control character in a refusal becomes a space or is dropped, so that
+  it is one line in the log (follow-up of 2.5.0).
+- `ImproperlyConfigured` raised in an upload check's process (a missing
+  library, or a check that reads the settings, as
+  `gettext_lazy(...).format(...)` does) is raised as "A check of an
+  upload, in its process: ...", and logged at `ERROR` with where the
+  check raised it. It read "Set the DOMAINKIT_SETTINGS_MODULE
+  environment variable.", as if the application had no settings, and
+  nothing was logged (follow-up of 2.5.0).
 
 ## [2.5.0] - 2026-11-16
 
