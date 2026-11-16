@@ -11,6 +11,37 @@ and a status.
 
 ### Added
 
+- A domain layer may import `domainkit.i18n.lazy`, and no other module of
+  `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
+  translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
+  make labels translated when they are shown. Importing it loads no
+  settings and no catalog: `domainkit.i18n` now imports its names on
+  first use. A project that allowed all of `domainkit.i18n` in
+  `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
+  ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
+  report I2).
+
+- `makemessages` also reads the project's own modules: the package that
+  holds the settings module, and the one that holds `ROOT_ROUTER`'s
+  module, without the installed domains. What they mark is added to the
+  catalogs of the first `LOCALE_PATHS` directory, which keep every entry
+  they hold, the project's rewordings of others' messages too. Without
+  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
+  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
+  user report I6).
+
+- Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
+  ship in Arabic. A test holds every mail template domainkit ships to
+  have its files in each language its catalogs translate (user report
+  I7).
+
+- A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
+  language alone: readers of that language get them, and every other
+  reader the template's own. A directory with the template's own text
+  body still wins over a later directory's translation
+  ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
+  report I8).
+
 - `ResourceRouter(tenant=PathTenant("company_id"))` serves each route
   whose path holds the parameter as that tenant, before the route's
   rules: a companies resource serves `/companies/{company_id}` and its
@@ -26,6 +57,7 @@ and a status.
   tenant reads its id's type. On the router, `PathTenant` refused the
   list (`tenancy.E001`), and command routes take no `dependencies=`.
   ADR 0170 (user report D3).
+
 - `HasMemberPermissions(*perms)` (`domainkit.tenancy`) and
   `MemberActions(model, *rules, outside=None)` (`domainkit.resources`)
   count the keys a caller holds as a member of the tenant served
@@ -41,24 +73,37 @@ and a status.
   member rule narrows its list. `InTenant` allows requests served as a
   tenant.
   ADR 0170 (user report D3).
+
 - `Throttle(..., per_tenant=False)` counts a caller once across tenants:
   a member of ten tenants gets the rate once, not ten times. The default
   stays one count per tenant. ADR 0170 (user report D3).
+
 - The admin API's `GET /users` takes `id`, repeated, up to 200: a page of
   rows that refer to users names them in one request. ADR 0170 (user
   report D2).
+
 - `ResourceRouter(present_many=...)`, an async function of an answer's
   aggregates and the request, shows them in one call, in `present`'s
   place: a page, an export's chunk, a query's items, or one aggregate.
   It can load what another domain holds for the whole page at once; an
   answer not in the aggregates' order fails the request.
   ADR 0170 (user report D2).
+
 - `FilterSet.search_through = {"user_id": users_named}` searches what a
   field refers to: `users_named(word, limit)` returns the ids of at most
   `max_reference_matches` (100) rows each word names, once per word in
   any case and only for a query the set accepts, and a row matches when
   its field is one of them. A resource's members can be found by
   their user's name, wherever users are kept. ADR 0170 (user report D2).
+
+### Fixed
+
+- `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
+  not when the application is built: a test that overrides them is
+  served in the new ones (user report I5).
+
+- `makemessages` extracts the texts marked with `gettext_noop`, as the
+  docs said it did (user report I2).
 
 ## [2.4.0] - 2026-11-16
 
