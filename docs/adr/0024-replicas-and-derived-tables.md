@@ -1,6 +1,6 @@
 # 0024. Read from replicas in read-only work; derive tables from domain classes
 
-- Status: Accepted
+- Status: Accepted; amended by [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md)
 - Date: 2026-10-19
 
 This record holds two storage decisions made together for the data layer.

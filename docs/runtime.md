@@ -311,7 +311,8 @@ a limit, and a slow client can take the whole grace period. See
 
 ### Readiness
 
-`/ready` runs the readiness checks of domains, databases, ledgers, and
+`/ready` runs the readiness checks of domains, databases (read replicas
+with `MAX_LAG` left out: the primary takes their reads), ledgers, and
 caches (those with `READINESS`) at the same time, each within
 `READINESS_TIMEOUT` seconds (5). So a round of checks takes about one
 timeout at worst, however many dependencies hang.
@@ -465,6 +466,7 @@ The framework's own background work runs this way:
 | --- | --- |
 | A `get_or_set` (or `@cached`) computation shared by concurrent callers | `domainkit.cache.compute` |
 | A round of readiness checks shared by concurrent probes | `domainkit.readiness` |
+| Reading how far behind a read replica with `MAX_LAG` is | `domainkit.db.replica_lag` |
 | Storing a keyed response, or releasing the key | `domainkit.idempotency.settle` |
 | Giving back the leases of a relay round, even once the relay is cancelled | `domainkit.messaging.settle` |
 

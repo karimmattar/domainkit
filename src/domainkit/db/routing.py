@@ -12,6 +12,8 @@ belongs to one alias. ``PINNED`` keys skip the hash. See ADRs 0008 and 0009.
 An alias may name read replicas (``REPLICAS``): read-only units of work
 take turns on them, and everything else uses the alias itself, the primary.
 A replica is never a target: nothing writes to it or migrates it (ADR 0024).
+One with ``MAX_LAG`` is read only while it is known to be within it; else
+read-only work reads the primary (``domainkit.db.replicas``, ADR 0159).
 """
 
 import asyncio
@@ -158,12 +160,26 @@ class DatabaseRouter:
                 return primary
         return None
 
-    def read_alias(self, alias: str) -> str:
-        """Where read-only work on ``alias`` goes: its replicas in turn, or itself."""
+    def read_alias(self, alias: str, chosen: str | None = None) -> str:
+        """Where read-only work on ``alias`` goes now: a replica in turn, or itself.
+
+        A replica with ``MAX_LAG`` is read only while it is known to be
+        reachable and within it (``domainkit.db.replicas``); with no replica
+        to read, the primary is. ``chosen``, an earlier answer, is kept
+        while it may still be read, so a unit of work entered again moves
+        only when it must.
+        """
         replicas = settings.DATABASES[alias].REPLICAS
         if not replicas:
             return alias
-        return replicas[next(self._turns) % len(replicas)]
+        from domainkit.db.replicas import readable  # Loaded with replicas only.
+
+        if chosen is not None and chosen in replicas and readable(chosen, alias):
+            return chosen
+        usable = [replica for replica in replicas if readable(replica, alias)]
+        if not usable:
+            return alias
+        return usable[next(self._turns) % len(usable)]
 
     def target_of_alias(self, alias: str) -> str:
         """The target an alias belongs to: its shard group, or itself."""

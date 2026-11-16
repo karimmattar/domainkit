@@ -149,6 +149,8 @@ MAX_REQUESTS_AT_ONCE: Final = 100_000
 """The most requests an event loop may admit, or queue, at once."""
 MAX_LOOKUP_THREADS: Final = 256
 """The most threads the URL guard may look host names up on (each holds a stack)."""
+MAX_REPLICA_LAG: Final = 86_400.0
+"""The longest ``MAX_LAG`` a replica may be given: a day."""
 
 
 class DatabaseConfig(BaseModel):
@@ -197,6 +199,10 @@ class DatabaseConfig(BaseModel):
     """Extra driver arguments; they may not replace TLS or the timeouts above."""
     REPLICAS: tuple[str, ...] = ()
     """Aliases of read replicas of this database; read-only work goes there."""
+    MAX_LAG: float | None = Field(default=None, ge=1, le=MAX_REPLICA_LAG)
+    """On a replica: the most seconds it may be behind its primary and still be
+    read; past it, or out of reach, read-only work reads the primary. None
+    reads it however far behind (ADR 0159)."""
     TEST_NAME: str | None = None
     """The PostgreSQL database the tests create (``test_<name>`` when None)."""
 
@@ -1271,7 +1277,8 @@ class Settings(BaseModel):
         """Each replica is another alias, of one primary, and nothing more.
 
         A replica is not ``default``, in no shard group, and has no replicas
-        of its own, so nothing ever writes to or migrates it.
+        of its own, so nothing ever writes to or migrates it. Only a
+        replica takes ``MAX_LAG``.
         """
         replicas: dict[str, str] = {}
         for primary, config in self.DATABASES.items():
@@ -1289,6 +1296,12 @@ class Settings(BaseModel):
                 if self.DATABASES[alias].REPLICAS:
                     raise ValueError(f"replica {alias!r} cannot have REPLICAS")
                 replicas[alias] = primary
+        for alias, config in self.DATABASES.items():
+            if config.MAX_LAG is not None and alias not in replicas:
+                raise ValueError(
+                    f"DATABASES[{alias!r}].MAX_LAG bounds a read replica's lag, "
+                    f"and no alias lists {alias!r} in its REPLICAS"
+                )
         return replicas
 
     def deployment_warnings(self) -> list[str]:

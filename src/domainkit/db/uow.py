@@ -12,7 +12,10 @@ raises ``DuplicateValue`` (a 409), or the subclass the constraint names.
 
 A read-only unit of work opens its session on a replica of its database
 when ``DATABASES`` names one (``REPLICAS``), and on the database itself
-otherwise; on PostgreSQL its transaction is ``READ ONLY`` either way.
+otherwise; on PostgreSQL its transaction is ``READ ONLY`` either way. A
+replica with ``MAX_LAG`` is read only while it is known to be within it,
+checked again each time the unit of work is entered; a commit makes this
+task's later reads wait for the replica to replay it (ADR 0159).
 ``reads`` says how it reads (``Reads``): ``STATEMENTS`` runs each statement
 on its own, without ``BEGIN`` and ``ROLLBACK``, and ``SNAPSHOT`` reads one
 snapshot (``REPEATABLE READ``). ``savepoint()`` is a ``SAVEPOINT`` in the
@@ -150,7 +153,8 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     ``readonly=True`` (or ``readonly = True`` on the subclass) reads from a
     replica of that database, if it has one, and refuses to commit;
     ``replica=False`` keeps it on the primary, for reads that must see the
-    latest commit, such as permission checks.
+    latest commit, such as permission checks. A replica with ``MAX_LAG``
+    is read only while it is within it (``domainkit.db.replicas``).
     ``reads`` picks how such a unit of work reads (``Reads``), and makes it
     read-only::
 
@@ -174,8 +178,12 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     alias: str
     """The one SQL alias this unit of work uses, resolved from the target.
 
-    A read-only unit of work's is a replica's, when the database has one.
+    A read-only unit of work's is a replica's, when the database has one
+    it may read: chosen when it is made, and checked again as it is
+    entered, when a replica with ``MAX_LAG`` may have fallen behind.
     """
+    _replicated: str | None = None
+    """The primary whose replicas this read-only unit of work reads."""
     session: AsyncSession
     schema: str | None
     """The tenant's schema its transactions use (``TENANCY.SCHEMA_DATABASES``)."""
@@ -238,12 +246,19 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.schema = tenant_schema_of(self.alias)
         if replica is not None:
             self.replica = replica
-        if self.readonly and self.replica:
+        if self.readonly and self.replica and settings.DATABASES[self.alias].REPLICAS:
+            self._replicated = self.alias
             self.alias = router.read_alias(self.alias)
         self.shard_key = shard_key
 
     async def __aenter__(self) -> Self:
-        """Open a session and the repositories that share it."""
+        """Open a session and the repositories that share it.
+
+        A read-only unit of work reads the replica it chose while it still
+        may, or another, or the primary (``router.read_alias``).
+        """
+        if self._replicated is not None:
+            self.alias = router.read_alias(self._replicated, self.alias)
         if self.isolation is None:
             self.session = connections.session(
                 self.alias,
@@ -336,7 +351,9 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         """Commit, translating what the database refused.
 
         A taken unique value raises ``DuplicateValue``; a lost
-        optimistic-locking race is ``commit``'s, wherever it flushed.
+        optimistic-locking race is ``commit``'s, wherever it flushed. On a
+        database with replicas, this task's later reads wait for a replica
+        with ``MAX_LAG`` to replay the commit (``note_commit``).
         """
         try:
             await self.session.commit()
@@ -345,6 +362,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             if duplicate is None:
                 raise
             raise duplicate from exc
+        if settings.DATABASES[self.alias].REPLICAS:
+            from domainkit.db.replicas import note_commit  # Loaded with replicas.
+
+            note_commit(self.alias)
 
     async def _rollback(self) -> None:
         """Roll the session's transaction back, then read again what it expired.

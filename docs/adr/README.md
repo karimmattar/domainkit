@@ -45,7 +45,7 @@ statuses, and the amendments they name.
 | [0021](0021-check-mounted-applications.md) | Check mounted applications and Starlette routes too | Accepted |
 | [0022](0022-query-repositories-with-criteria.md) | Query repositories with criteria that fakes evaluate as SQL does | Accepted |
 | [0023](0023-keyset-pages-and-typed-cursors.md) | Keyset pages with versioned, typed cursors; filters declared per field | Accepted; amended in place 2026-10-20 |
-| [0024](0024-replicas-and-derived-tables.md) | Read from replicas in read-only work; derive tables from domain classes | Accepted |
+| [0024](0024-replicas-and-derived-tables.md) | Read from replicas in read-only work; derive tables from domain classes | Accepted; amended by [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) |
 | [0025](0025-resources-commands-and-expected-versions.md) | Serve aggregates as resources; change them by commands, on the version the client read | Accepted; amended 2026-10-26, twice, and 2026-10-28 (at the end) by [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md) |
 | [0026](0026-object-permission-grants.md) | Grant permissions on single objects, beside the objects, within the granter's own | Accepted; amended by [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) |
 | [0027](0027-batches-and-exports.md) | Run batches as many use cases, atomic on request; stream exports, bounded | Accepted |
@@ -164,6 +164,7 @@ statuses, and the amendments they name.
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
 | [0155](0155-choose-number-matching-and-the-same-network-per-page.md) | Choose number matching and the same network per page | Accepted |
+| [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 
 ### Decisions still without a record
 

@@ -1195,14 +1195,20 @@ class ConnectionHandler:
 
         An alias whose ``STATEMENTS`` pool this loop opened is checked
         through it too, as ``database:<alias>:reads``: its connections are
-        made apart, and refused if they are not read-only.
+        made apart, and refused if they are not read-only. A replica with
+        ``MAX_LAG`` is not checked: while it is out of reach, read-only work
+        reads its primary (ADR 0159).
         """
+        databases = settings.DATABASES
         checks = {
             f"database:{alias}": partial(self.check, alias)
-            for alias in settings.DATABASES
+            for alias, config in databases.items()
+            if config.MAX_LAG is None
         }
         engines = self._engines.get(asyncio.get_running_loop())
         for alias, engine in (engines.reads if engines else {}).items():
+            if getattr(databases.get(alias), "MAX_LAG", None) is not None:
+                continue
             checks[f"database:{alias}{READS_SUFFIX}"] = partial(_select_one, engine)
         return await failing_checks(checks, seconds)
 
