@@ -1,7 +1,7 @@
 """Settings of ``domainkit.contrib.approvals``: ``APPROVALS = {...}``."""
 
 from datetime import timedelta
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -12,6 +12,16 @@ MAX_APPROVALS: Final = 10
 
 Permission = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*\.[a-z0-9_]+$")]
 """A permission key: ``<domain>.<codename>``."""
+AdminAction = Literal[
+    "auth.set_staff",
+    "auth.set_groups",
+    "auth.set_permissions",
+    "auth.set_password",
+    "auth.impersonate",
+]
+"""A change of auth's admin API that ``ADMIN_APPROVALS`` may hold for approval."""
+Approvals = Annotated[int, Field(ge=1, le=MAX_APPROVALS)]
+"""How many approvals a policy asks for: 1 to ``MAX_APPROVALS``."""
 
 
 class ApprovalsSettings(BaseModel):
@@ -50,8 +60,15 @@ class ApprovalsSettings(BaseModel):
     """The permission whoever approves making a superuser holds; None:
     superusers approve, and only they. An empty text is None: what an
     unset variable gives in a compose file."""
+    ADMIN_APPROVALS: dict[AdminAction, Approvals] = Field(default_factory=dict)
+    """The changes of auth's admin API held for approval, each with the
+    approvals it needs: making staff, adding groups or permissions,
+    setting a password, impersonating. Empty: none is."""
+    ADMIN_APPROVERS: Permission | None = None
+    """The permission whoever approves those changes holds; None:
+    superusers approve, and only they. An empty text is None."""
 
-    @field_validator("SUPERUSER_APPROVERS", mode="before")
+    @field_validator("SUPERUSER_APPROVERS", "ADMIN_APPROVERS", mode="before")
     @classmethod
     def _empty_is_none(cls, value: object) -> object:
         """Read ``""`` as None (user report P3)."""

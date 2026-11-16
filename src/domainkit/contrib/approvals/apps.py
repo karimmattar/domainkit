@@ -42,14 +42,17 @@ class ApprovalsConfig(DomainConfig):
         ``APPROVE_RULE`` is imported now, so a wrong path fails ``setup()``.
         With ``APPROVE_ACTION`` on, the action ``approvals.approve`` is
         registered with auth, which must be installed. The guards of large
-        postings and of making superusers are registered when their apps
-        are installed and their settings ask.
+        postings, of making superusers, and of the admin changes
+        ``ADMIN_APPROVALS`` names are registered when their apps are
+        installed and their settings ask.
 
         Raises:
-            ImproperlyConfigured: ``APPROVE_ACTION`` is on without
-                ``domainkit.contrib.auth``.
+            ImproperlyConfigured: ``APPROVE_ACTION`` or ``ADMIN_APPROVALS``
+                is set without ``domainkit.contrib.auth``.
         """
         from .builtin import (
+            check_admin_change,
+            guard_admin_changes,
             guard_entries,
             guard_superusers,
             refuse_ungoverned_superusers,
@@ -78,12 +81,19 @@ class ApprovalsConfig(DomainConfig):
             register_approve()
         if config.ENTRY_THRESHOLDS and registry.is_installed(ACCOUNTING):
             guard_entries(config)
+        if config.ADMIN_APPROVALS and not registry.is_installed(AUTH):
+            raise ImproperlyConfigured(
+                f"APPROVALS.ADMIN_APPROVALS guards the admin API of {AUTH}: install it."
+            )
         if registry.is_installed(AUTH):
-            from domainkit.contrib.auth.gates import on_make_superuser
+            from domainkit.contrib.auth.gates import on_admin_change, on_make_superuser
 
             on_make_superuser(refuse_ungoverned_superusers, domain=self.label)
             if config.SUPERUSER_APPROVALS:
                 guard_superusers(config)
+            if config.ADMIN_APPROVALS:
+                guard_admin_changes(config)
+                on_admin_change(check_admin_change, domain=self.label)
 
     def application_problems(self, app: "FastAPI") -> list[str]:
         """``approvals.E001``: ``APPROVE_ACTION`` beside a step-up window.

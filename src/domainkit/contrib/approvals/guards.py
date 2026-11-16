@@ -27,11 +27,14 @@ called directly with a command that needs approval raises
 ``ApprovalRequired`` (fail closed), or, for a guard with ``submit=True``,
 submits it and raises ``ApprovalPending`` with the request's id. Only
 the run of an approved request (``running``) passes, and only for the
-command it approved.
+command it approved. A guard with ``by_maker=True`` leaves that run to
+its maker: the same call, made again once the request is approved, runs
+it, once.
 """
 
 import copy
 import functools
+import inspect
 import re
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -54,6 +57,8 @@ from .settings import LONGEST_WAIT, MAX_APPROVALS
 
 type Service = Callable[[Any, Any], Awaitable[Any]]
 """An application service: ``service(command, uow)``."""
+type Parties = Callable[[Any], Iterable[str] | Awaitable[Iterable[str]]]
+"""Who a command is about: ``parties(command)``, plain or ``async``."""
 
 ACTION_MARK: Final = "__approval_action__"
 """The attribute ``requires_approval`` sets on the service it guards."""
@@ -226,8 +231,9 @@ class Guard:
     submit requests. ``maker_rule`` is an access rule the maker must pass
     as well (``IsSuperuser()`` to make superusers). ``parties`` names, for
     a command, the people it is about (the user a grant promotes), who may
-    not decide it. ``submit`` makes a direct call submit the command,
-    rather than only refuse it.
+    not decide it: a function of the command, or a coroutine function that
+    may read the database (user report P3). ``submit`` makes a direct call
+    submit the command, rather than only refuse it.
 
     ``maker_fields`` names the command's fields that hold who acts
     (``invited_by``, ``granted_by``): the submit route sets them to the
@@ -235,6 +241,14 @@ class Guard:
     name its maker there, and the run checks them again. ``http=False``
     keeps the command off the submit route: only the project's own code
     submits it (``submit_command``, or a direct call with ``submit``).
+
+    ``by_maker=True`` leaves the approved command to its maker, not the
+    worker: a direct call submits it (``ApprovalPending``), as ``submit``
+    does, unless a request of the caller's holding exactly that command
+    waits already; once it is approved, the same call by the same maker
+    runs the service, as the approved request, and spends it. What the
+    command gives goes to its maker (an impersonation's token), and what
+    it takes is never stored (a password).
     """
 
     action: str
@@ -245,9 +259,10 @@ class Guard:
     permission: str | None = None
     submit: bool = False
     maker_rule: Rule | None = None
-    parties: Callable[[Any], Iterable[str]] | None = None
+    parties: Parties | None = None
     maker_fields: tuple[str, ...] = ()
     http: bool = True
+    by_maker: bool = False
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -299,8 +314,31 @@ class Guard:
         return all(str(getattr(command, name)) == maker for name in self.maker_fields)
 
     def parties_of(self, command: object) -> frozenset[str]:
-        """The people ``command`` is about, who may not decide it."""
-        return frozenset(() if self.parties is None else self.parties(command))
+        """The people ``command`` is about, who may not decide it.
+
+        Raises:
+            ImproperlyConfigured: ``parties`` is a coroutine function: await
+                ``aparties_of`` instead.
+        """
+        if self.parties is None:
+            return frozenset()
+        found = self.parties(command)
+        if inspect.iscoroutine(found):
+            found.close()
+            raise ImproperlyConfigured(
+                f"Guard {self.action!r} names its parties with a coroutine "
+                "function: await aparties_of(command)."
+            )
+        return frozenset(found)
+
+    async def aparties_of(self, command: object) -> frozenset[str]:
+        """The people ``command`` is about, ``parties`` awaited if it is async."""
+        if self.parties is None:
+            return frozenset()
+        found = self.parties(command)
+        if inspect.isawaitable(found):
+            found = await found
+        return frozenset(found)
 
     def policy_named(self, name: str) -> Policy | None:
         """The guard's policy called ``name``, if it still has one."""
@@ -321,9 +359,10 @@ def guard(
     permission: str | None = None,
     submit: bool = False,
     maker_rule: Rule | None = None,
-    parties: Callable[[Any], Iterable[str]] | None = None,
+    parties: Parties | None = None,
     maker_fields: Iterable[str] = (),
     http: bool = True,
+    by_maker: bool = False,
     domain: str | None = None,
 ) -> Guard:
     """Register the guard of a use case decorated ``requires_approval(action)``.
@@ -358,6 +397,7 @@ def guard(
         parties=parties,
         maker_fields=tuple(maker_fields),
         http=http,
+        by_maker=by_maker,
     )
     on_guard(registered, domain=domain)
     return registered
@@ -491,8 +531,12 @@ def approved(action: str, command: object) -> bool:
     )
 
 
-async def check(action: str, command: object) -> None:
+async def check(action: str, command: object) -> Running | None:
     """Refuse ``command`` unless it is approved, or needs no approval.
+
+    For a guard ``by_maker``, an approved request of the caller's holding
+    ``command`` is spent here, and returned as the run the call is: the
+    service runs as it.
 
     Raises:
         ImproperlyConfigured: No guard is registered as ``action``.
@@ -502,7 +546,7 @@ async def check(action: str, command: object) -> None:
             submitted, as the request ``request_id``.
     """
     if approved(action, command):
-        return
+        return None
     registered = guards().get(action)
     if registered is None:
         raise ImproperlyConfigured(
@@ -510,7 +554,11 @@ async def check(action: str, command: object) -> None:
             "install domainkit.contrib.approvals and call guard() in ready()."
         )
     if registered.policy_for(command) is None:
-        return
+        return None
+    if registered.by_maker and current_run() is None:
+        from .services import run_by_maker
+
+        return await run_by_maker(registered, command)
     if registered.submit:
         from .services import submit_directly
 
@@ -538,13 +586,26 @@ def requires_approval[F: Service | UseCase[Any]](action: str) -> Callable[[F], F
 
         @functools.wraps(service)
         async def guarded(command: object, uow: object) -> Any:  # noqa: ANN401 - what the service returns.
-            await check(action, command)
-            return await service(command, uow)
+            return await _checked_run(action, command, service, uow)
 
         setattr(guarded, ACTION_MARK, action)
         return guarded  # type: ignore[return-value]
 
     return decorate
+
+
+async def _checked_run(
+    action: str, command: object, service: Service, uow: object
+) -> Any:  # noqa: ANN401 - what the service returns.
+    """``service(command, uow)``, once ``check`` lets it through.
+
+    A run its maker's call is (a guard ``by_maker``) runs inside it.
+    """
+    run = await check(action, command)
+    if run is None:
+        return await service(command, uow)
+    with running(run.request_id, run.action, run.command, run.maker, run.required):
+        return await service(command, uow)
 
 
 def _guarded_use_case(action: str, use_case: UseCase[Any]) -> UseCase[Any]:
@@ -556,8 +617,7 @@ def _guarded_use_case(action: str, use_case: UseCase[Any]) -> UseCase[Any]:
     unguarded = use_case.run
 
     async def run(command: Any, uow: Any) -> Any:  # noqa: ANN401 - the use case's.
-        await check(action, command)
-        return await unguarded(command, uow)
+        return await _checked_run(action, command, unguarded, uow)
 
     guarded = copy.copy(use_case)
     guarded.run = run  # type: ignore[method-assign]

@@ -1239,3 +1239,10 @@ msgstr ""
 #. domainkit.contrib.devices: DEVICES.PUSH_TOKEN_CHECK
 msgid "The push service does not know this token: ask it for a new one."
 msgstr ""
+
+#. domainkit.contrib.approvals: changes of the admin API held for approval
+msgid "Making staff needs approval: create the user, then make them staff."
+msgstr ""
+
+msgid "Requests are made and decided in one's own name only."
+msgstr ""

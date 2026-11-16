@@ -26,6 +26,16 @@ its entry without a second request (FIN-92).
 a superuser submits one, and the run checks that its maker still is;
 the approvers are superusers (or the holders of ``SUPERUSER_APPROVERS``),
 never the user it promotes.
+
+``ADMIN_APPROVALS`` holds changes of auth's admin API for approval: making
+staff (``SET_STAFF``), adding groups (``SET_GROUPS``) or permissions
+(``SET_PERMISSIONS``), setting a password (``SET_PASSWORD``),
+impersonating (``IMPERSONATE``). The admin API asks before each change
+(``on_admin_change``); for one the setting names, the change is submitted
+as the staff member's request and refused (``approval_pending``), and the
+same call, made again by them once the request is approved, makes it,
+once (a guard ``by_maker``). The approvers are superusers (or the holders
+of ``ADMIN_APPROVERS``), never the user the change is about.
 """
 
 from collections.abc import Mapping
@@ -33,16 +43,19 @@ from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 from domainkit.apps import registry
-from domainkit.ddd import Command
+from domainkit.context import current_request
+from domainkit.ddd import Command, PermissionDenied
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
 from .guards import (
     Guard,
     Policy,
     Running,
+    Service,
     Threshold,
     check,
     current_run,
+    guards,
     on_guard,
     requires_approval,
 )
@@ -57,7 +70,8 @@ if TYPE_CHECKING:
         PostEntry,
         ReverseEntry,
     )
-    from domainkit.contrib.auth import AuthUnitOfWork
+    from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
+    from domainkit.contrib.auth.gates import AdminChange
 
 POST_ENTRY: Final = "accounting.post_entry"
 """The guarded action of postings over their currency's threshold."""
@@ -67,6 +81,16 @@ REVERSE_ENTRY: Final = "accounting.reverse_entry"
 """The guarded action of a reversal over its currency's threshold."""
 GRANT_SUPERUSER: Final = "auth.grant_superuser"
 """The guarded action of making a user a superuser."""
+SET_STAFF: Final = "auth.set_staff"
+"""The guarded action of making a user staff in the admin API."""
+SET_GROUPS: Final = "auth.set_groups"
+"""The guarded action of adding a user to groups in the admin API."""
+SET_PERMISSIONS: Final = "auth.set_permissions"
+"""The guarded action of granting a user permissions in the admin API."""
+SET_PASSWORD: Final = "auth.set_password"  # noqa: S105 - an action, not a secret.
+"""The guarded action of setting a user's password in the admin API."""
+IMPERSONATE: Final = "auth.impersonate"
+"""The guarded action of acting as a user in the admin API."""
 
 
 @requires_approval(POST_ENTRY)
@@ -343,3 +367,185 @@ def refuse_if_guarded(action: str) -> None:
 
     if action in guards():
         raise ApprovalRequired("This command needs approval: submit it for approval.")
+
+
+class SetStaff(Command):
+    """Make a user staff, in the admin API (``PATCH /users/{id}``)."""
+
+    user_id: UUID
+
+
+class SetGroups(Command):
+    """Add a user to groups, and take them out of others, in the admin API.
+
+    ``added`` and ``removed`` are what ``PUT /users/{id}/groups`` changes,
+    by name, sorted: the change itself, not the list sent.
+    """
+
+    user_id: UUID
+    added: tuple[str, ...]
+    removed: tuple[str, ...] = ()
+
+
+class SetPermissions(Command):
+    """Grant a user permissions, and take others away, in the admin API.
+
+    ``added`` and ``removed`` are what ``PUT /users/{id}/permissions``
+    changes, by key, sorted.
+    """
+
+    user_id: UUID
+    added: tuple[str, ...]
+    removed: tuple[str, ...] = ()
+
+
+class SetPassword(Command):
+    """Set a user's password, or make it unusable, in the admin API.
+
+    It names the user alone: the password is never stored, and approvers
+    could not judge it.
+    """
+
+    user_id: UUID
+
+
+class Impersonate(Command):
+    """Act as a user, for ``reason``, in the admin API."""
+
+    user_id: UUID
+    reason: str
+
+
+ADMIN_COMMANDS: Final[Mapping[str, type[Command]]] = {
+    SET_STAFF: SetStaff,
+    SET_GROUPS: SetGroups,
+    SET_PERMISSIONS: SetPermissions,
+    SET_PASSWORD: SetPassword,
+    IMPERSONATE: Impersonate,
+}
+"""The command of each admin action ``ADMIN_APPROVALS`` may name."""
+ADMIN_POLICIES: Final[Mapping[str, str]] = {
+    SET_STAFF: "auth.staff",
+    SET_GROUPS: "auth.groups",
+    SET_PERMISSIONS: "auth.permissions",
+    SET_PASSWORD: "auth.password",
+    IMPERSONATE: "auth.impersonation",
+}
+"""The policy each admin action's requests wait under."""
+
+
+def _admin_service(action: str) -> Service:
+    """What ``action``'s guard runs: nothing, the admin API's call makes the change.
+
+    The guard is ``by_maker``: its maker's call, made again once the request
+    is approved, runs this as the approved request, then makes the change
+    itself.
+    """
+
+    @requires_approval(action)
+    async def approved_change(command: Command, uow: object) -> None:
+        """Let the admin API's call make the approved change."""
+
+    return approved_change
+
+
+ADMIN_SERVICES: Final[Mapping[str, Service]] = {
+    action: _admin_service(action) for action in ADMIN_COMMANDS
+}
+"""Each admin action's decorated service."""
+
+
+def _about_user(command: Any) -> list[str]:  # noqa: ANN401 - an admin command.
+    """The user an admin change is about: they do not decide it."""
+    return [str(command.user_id)]
+
+
+def guard_admin_changes(config: ApprovalsSettings) -> None:
+    """Guard the admin changes ``ADMIN_APPROVALS`` names, each with its approvals.
+
+    The approvers are superusers, or the holders of ``ADMIN_APPROVERS``
+    where it is set; never the maker, nor the user the change is about.
+    Only the admin API submits them (``http=False``), and its maker's call
+    runs them (``by_maker``).
+    """
+    from domainkit.contrib.auth import AuthUnitOfWork, IsSuperuser
+
+    approvers: Mapping[str, Any] = (
+        {"approver_rule": IsSuperuser()}
+        if config.ADMIN_APPROVERS is None
+        else {"permission": config.ADMIN_APPROVERS}
+    )
+    for action, approvals in config.ADMIN_APPROVALS.items():
+        on_guard(
+            Guard(
+                action,
+                ADMIN_COMMANDS[action],
+                ADMIN_SERVICES[action],
+                AuthUnitOfWork,
+                (Policy(ADMIN_POLICIES[action], approvals=approvals, **approvers),),
+                parties=_about_user,
+                http=False,
+                by_maker=True,
+            )
+        )
+
+
+async def check_admin_change(
+    actor: Any,  # noqa: ANN401 - the staff member, a user.
+    target: "AbstractBaseUser | None",
+    change: "AdminChange",
+) -> None:
+    """Hold a change of the admin API for approval, if a guard holds it.
+
+    Auth's ``on_admin_change`` calls it before each change. A change that
+    ``ADMIN_APPROVALS`` names runs the guard's service: the staff member's
+    approved request of exactly this change is spent and the change goes
+    on, or else the change is submitted, or found waiting, and refused.
+
+    Raises:
+        ApprovalRequired: A user is created staff while making staff is
+            guarded: create them, then make them staff.
+        PermissionDenied: Staff act as someone else (an impersonation).
+        ApprovalPending: The change waits for its approvals.
+    """
+    if change.kind == "create":
+        if change.values.get("is_staff") is True and SET_STAFF in guards():
+            raise ApprovalRequired(
+                "Making staff needs approval: create the user, then make them staff."
+            )
+        return
+    held = None if target is None else _admin_command(target, change)
+    if held is None or held[0] not in guards():
+        return
+    action, command = held
+    context = current_request()
+    if context is None or context.actor != str(actor.id):
+        raise PermissionDenied("Requests are made and decided in one's own name only.")
+    await ADMIN_SERVICES[action](command, None)
+
+
+def _admin_command(target: "AbstractBaseUser", change: "AdminChange") -> Any:  # noqa: ANN401 - (action, command) or None.
+    """The guarded action and command of ``change`` to ``target``, if it has one.
+
+    Making staff (not unmaking), adding groups or permissions (a change that
+    only takes away is not held), setting a password, impersonating.
+    """
+    user_id = target.id
+    if change.kind == "update":
+        making = change.values.get("is_staff") is True
+        if making and not getattr(target, "is_staff", False):
+            return SET_STAFF, SetStaff(user_id=user_id)
+        return None
+    if change.kind in ("groups", "permissions") and change.added:
+        added, removed = tuple(sorted(change.added)), tuple(sorted(change.removed))
+        if change.kind == "groups":
+            return SET_GROUPS, SetGroups(user_id=user_id, added=added, removed=removed)
+        return SET_PERMISSIONS, SetPermissions(
+            user_id=user_id, added=added, removed=removed
+        )
+    if change.kind == "password":
+        return SET_PASSWORD, SetPassword(user_id=user_id)
+    if change.kind == "impersonate":
+        reason = str(change.values.get("reason", ""))
+        return IMPERSONATE, Impersonate(user_id=user_id, reason=reason)
+    return None

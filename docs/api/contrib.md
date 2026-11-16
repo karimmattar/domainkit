@@ -139,8 +139,13 @@ Maker-checker: commands that run only once other people approve them.
 
 - `CAPTURE_HOLD`: The guarded action of a hold's capture over its currency's threshold.
 - `GRANT_SUPERUSER`: The guarded action of making a user a superuser.
+- `IMPERSONATE`: The guarded action of acting as a user in the admin API.
 - `POST_ENTRY`: The guarded action of postings over their currency's threshold.
 - `REVERSE_ENTRY`: The guarded action of a reversal over its currency's threshold.
+- `SET_GROUPS`: The guarded action of adding a user to groups in the admin API.
+- `SET_PASSWORD`: The guarded action of setting a user's password in the admin API.
+- `SET_PERMISSIONS`: The guarded action of granting a user permissions in the admin API.
+- `SET_STAFF`: The guarded action of making a user staff in the admin API.
 - `AlreadyDecided`: This person approved or rejected the request already (409).
 - `ApprovalGiven`: One person approved a request; `approvals` of `required` so far.
 - `ApprovalNotNeeded`: No policy asks for approval of this command: call it directly.
@@ -155,6 +160,7 @@ Maker-checker: commands that run only once other people approve them.
 - `FingerprintMismatch`: What was approved is not what the request holds.
 - `GrantSuperuser`: Make a user a superuser: they hold every permission.
 - `Guard`: A guarded use case: its command, its service, and its policies.
+- `Impersonate`: Act as a user, for `reason`, in the admin API.
 - `InterestedParty`: Whoever the command is about may not approve or reject it.
 - `InvalidArguments`: A command's arguments do not make the command, or are too large.
 - `MakerCannotDecide`: Whoever submitted a request may not approve or reject it.
@@ -175,12 +181,17 @@ Maker-checker: commands that run only once other people approve them.
 - `RequestStatus`: Where a request is: waiting, decided, or run.
 - `RequestSubmitted`: A maker submitted a command for approval.
 - `RequestTampered`: The request was changed outside the application: its seal does not hold.
+- `SetGroups`: Add a user to groups, and take them out of others, in the admin API.
+- `SetPassword`: Set a user's password, or make it unusable, in the admin API.
+- `SetPermissions`: Grant a user permissions, and take others away, in the admin API.
+- `SetStaff`: Make a user staff, in the admin API (`PATCH /users/{id}`).
 - `SubmitRequest`: Submit a guarded command for approval: its action, its arguments, its maker.
 - `Threshold`: Amounts, one per currency, over which a policy applies.
 - `UnknownAction`: No guarded command has that name.
 - `Verdict`: What one person decided about a request.
 - `approve_request`: Approve a request; the approval that completes it queues its command.
 - `approved`: Whether `command` is the approved command of `action` being run.
+- `approvers_of`: The active users who may decide `request` now: whom to tell of it.
 - `cancel_request`: Withdraw a pending request, as its maker.
 - `current_run`: The approved command being run here, if any.
 - `execute_request`: Run an approved request's command, once (the task `EXECUTE`).

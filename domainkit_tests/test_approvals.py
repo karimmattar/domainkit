@@ -903,7 +903,7 @@ async def test_seals_stop_rows_written_around_the_application(project: str) -> N
     message = r"^The request holds another command than the one approved\.$"
     for request in (half, whole):
         with refused(FingerprintMismatch, message):
-            _rebuild(guard_for(request.action), await stored(request.id))
+            await _rebuild(guard_for(request.action), await stored(request.id))
         await execute_request(request.id)
         assert await status_of(request) == (
             RequestStatus.FAILED,
@@ -938,12 +938,12 @@ async def test_a_command_rebuilt_otherwise_is_named_as_such(project: str) -> Non
         )
 
     with refused(InvalidArguments, r"^The arguments do not make the command\.$"):
-        _rebuild(as_(Other), request)
+        await _rebuild(as_(Other), request)
     with refused(
         InvalidArguments,
         r"^The command reads otherwise now than when it was approved\.$",
     ):
-        _rebuild(as_(Wider), request)
+        await _rebuild(as_(Wider), request)
 
 
 async def test_the_executed_event_names_the_request(
