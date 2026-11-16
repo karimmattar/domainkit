@@ -9,6 +9,23 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- A process forked while domainkit's logging thread wrote to a buffered
+  stream (standard output on a pipe, a file) no longer hangs. The child
+  inherited the stream's lock held, by a thread it does not have, and
+  waited forever at its first write; its own logging thread's lines were
+  lost with `reentrant call` errors. `gunicorn --preload`,
+  `multiprocessing`'s `fork` start method, and a project's own
+  `os.fork` could all hit it. A fork now waits for the thread to finish
+  the record it is writing, `FLUSH_TIMEOUT` at most for a stream that
+  stays blocked, and the thread starts no other until the fork is done.
+  The hook before a fork also takes `logging`'s lock before domainkit's,
+  as `dictConfig` does: a fork while another thread configured logging
+  could wait for it in a circle
+  ([runtime.md](docs/runtime.md#writing-logs-off-the-loop))
+  (follow-up of 2.5.0).
+
 ## [2.5.0] - 2026-11-16
 
 2.5 answers a third report from the project that runs an identity
