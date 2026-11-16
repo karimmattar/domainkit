@@ -26,7 +26,7 @@ from . import presenting, reach
 from .authorizing import AuthorizationRoute
 from .context import COMMAND, DEFAULT, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
-from .values import changes, check_given, domain_values, summary_of, value_fields
+from .values import builders, changes, check_given, summary_of
 
 if TYPE_CHECKING:
     from domainkit.ddd.uow import Retry, UnitOfWork
@@ -78,8 +78,8 @@ class CommandRoute:
         self.provided = dict(provide or {})
         given = set(body.model_fields) if body is not None else set()
         check_given(command, given, self.provided, self.from_path)
-        self.values = value_fields(command)
-        """The command's fields that hold value objects, built from their parts."""
+        self.values = builders(command, body)
+        """How the command's value objects are made from the body's fields."""
         self.returns, self.status_code, self.action = _answers(
             method, self.detail, returns, status_code, action
         )
@@ -120,19 +120,19 @@ class CommandRoute:
 
         The path wins over ``provide``, and ``provide`` over the body. A
         ``PatchModel`` body gives the fields the request set, and the
-        resource's policy must let the caller change them. Value objects
-        the body gives as their parts are built.
+        resource's policy must let the caller change them. The value objects
+        of a body ``schema_for`` derived are built (``values.builders``).
 
         Raises:
             FieldNotEditable: The policy keeps the caller from changing a field.
         """
         router = self.router
-        given = changes(context.body)
+        given = changes(context.body, self.values)
         if self.partial and router.policy is not None:
             await router.policy.check_changes(context.request, given)
         return self.command(
             **{
-                **domain_values(self.values, given),
+                **given,
                 **context.provided,
                 **{
                     name: context.ids[reach.path_name(router, name)]

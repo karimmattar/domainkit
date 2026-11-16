@@ -41,14 +41,18 @@ never published), with each section below.
 2.5 answers the third report of the project 2.4 answered. Each item of
 this list says what a project that relied on 2.4's behaviour changes.
 
-- **Commands get their value objects built.** A command field, or a
-  `@use_case` parameter, that holds a value object of several fields,
-  alone or in a tuple (`tuple[Address, ...]`), reached the service as a
-  dict, or a tuple of dicts, from a command route or a batch. It arrives
-  as the value object, built from its parts. A dataclass the body
-  validates arrives as itself, in a whole body as in a partial one. A
-  service that rebuilt them (`Address(**item)`) drops that step. A
-  command field typed `dict` still gets a dict.
+- **Commands get their value objects built, from a body `schema_for`
+  derives.** A `@use_case`'s body, or `schema_for(Command, write=True)`,
+  gave a command route, a batch, or a twin the value objects the command
+  declares as dicts (several fields: `{"street", "city"}`, or a tuple of
+  them) or as their value (one field: `"A-1"`). They arrive built:
+  `Address(...)`, `Code("A-1")`. A body field typed as a value object or a
+  dataclass itself, or a tuple of it, gives it as validated, where it gave
+  a dict. A service that rebuilt them (`Address(**item)`, `Code(value)`)
+  drops that step. A body written by hand in a shape of its own, a nested
+  model or a `dict`, still gives what `model_dump()` gives.
+- **Write schemas refuse NaN and infinity for a `float`**, which a
+  request could send as `NaN` or `Infinity`: `422`.
 
 ## 2.3 to 2.4
 

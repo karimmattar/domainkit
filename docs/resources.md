@@ -440,11 +440,15 @@ products.command_route(DeleteProduct, service=delete_product, method="DELETE")
 - Declaring the route checks the command. A body field the command
   lacks, or a required field that nothing gives, is a `TypeError` at
   import.
-- The command gets the types it declares. A value object of several
-  fields, alone or in a tuple (`tuple[Address, ...]`), comes in the body
-  as its fields and is built, so its own checks run. A dataclass the
-  body's schema validates stays one. A nested pydantic model becomes a
-  dict.
+- A body `schema_for` derives (a `@use_case`'s, or `schema_for(Command,
+  write=True)`) gives the command the value objects it declares. One of
+  several fields, alone or in a tuple (`tuple[Address, ...]`), is built
+  from its parts, so its own checks run; one of a single field is built
+  around its value. A body field typed as a value object or a dataclass
+  itself, or a tuple of it, gives it as validated, a value object built
+  again. Any other body field comes as `model_dump()` gives it: a nested
+  model as a dict. A `ValueError` or `TypeError` from a value object is
+  `422` under its field. *Changed in 2.5.*
 - The answer is the aggregate the service returns, in the resource's
   schema, with its `ETag`. A `POST` on the collection answers `201` with
   `Location`. OpenAPI documents the `ETag` and `Location`.
@@ -770,6 +774,7 @@ ProductOut.from_domain(product)
 | An `Enum` | Its values. |
 | A value object of several fields, a child entity, `list[Line]` | Nested schemas (`MoneyOut`, `LineOut`). |
 | `tuple[Address, ...]`, of a value object of several fields | In a write schema, a list of its write schema (`AddressIn`), with its limits. A read schema shows each as pydantic shows the class. |
+| `float` | A number. A write schema refuses NaN and infinity. |
 | `set[str]` | A sorted list, so the representation is stable. |
 | `X \| None` | The same, or null. |
 

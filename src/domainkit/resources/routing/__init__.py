@@ -321,8 +321,9 @@ class ResourceRouter(APIRouter):
         the id comes from the path. Others act on the collection (``path``
         after the prefix). The body's fields, the path's ids (and the
         parent's, by ``parent_field``) build the command; a ``PatchModel``
-        body gives only the fields the request set, and a value object the
-        body gives as its parts is built. ``provide`` maps other
+        body gives only the fields the request set, and one ``schema_for``
+        derived gives the value objects the command declares built
+        (``values.builders``). ``provide`` maps other
         fields to FastAPI dependencies that give them, such as the caller's
         id for an ``owner_id``: the path wins over them, and they over the
         body.

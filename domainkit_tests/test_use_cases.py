@@ -3,11 +3,12 @@
 import dataclasses
 import logging
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_serializer
 
 from domainkit.ddd import (
     Command,
@@ -25,6 +26,7 @@ from domainkit.ddd import (
 from domainkit.ddd.fields import fields_of
 from domainkit.http.access import IsAuthenticated
 from domainkit.log import JsonFormatter
+from domainkit.money import Money
 from domainkit.resources import ResourceRouter, schema_for, to_domain
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
@@ -493,13 +495,33 @@ class Point:
     y: int
 
 
+class Spot(ValueObject):
+    """A value object that holds a plain dataclass, and a float."""
+
+    at: Point
+    weight: float
+
+
+class Span(ValueObject):
+    """A value object whose own check raises ``ValueError``."""
+
+    low: int
+    high: int
+
+    def __post_init__(self) -> None:
+        """Refuse a span that ends before it starts."""
+        if self.high < self.low:
+            raise ValueError("A span ends after it starts.")
+
+
 def test_value_objects_reach_the_function_built(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:
-    """A tuple of value objects, or one, is built from its parts (user report U5).
+    """A derived body's value objects reach the function built (user report U5).
 
-    The body gives each as its fields, checked as a value object field's
-    are; the function gets the value objects, as the command declares.
+    Several fields, alone or in a tuple, from their parts, checked as a
+    value object field's are; one field, around its value; a dataclass the
+    body validates, as validated. A value object's own refusal is 422.
     """
     use_auth()
     seen: list[dict[str, object]] = []
@@ -510,12 +532,22 @@ def test_value_objects_reach_the_function_built(
         gadget_id: UUID,
         places: tuple[Place, ...],
         home: Place | None = None,
+        label: Shelf | None = None,
         shelves: tuple[Shelf, ...] = (),
         points: tuple[Point, ...] = (),
+        spot: Spot | None = None,
+        span: Span | None = None,
     ) -> None:
         """Say where a gadget is kept."""
         seen.append(
-            {"places": places, "home": home, "shelves": shelves, "points": points}
+            {
+                "places": places,
+                "home": home,
+                "label": label,
+                "shelves": shelves,
+                "points": points,
+                "spot": spot,
+            }
         )
 
     resource = gadgets(store)
@@ -525,7 +557,7 @@ def test_value_objects_reach_the_function_built(
         path="/keep",
         method="PATCH",
         name="keep_some",
-        body=schema_for(keep.command, partial=True, include=["places"]),
+        body=schema_for(keep.command, partial=True, include=["places", "label"]),
     )
     resource.batch_route(
         keep.command,
@@ -537,17 +569,18 @@ def test_value_objects_reach_the_function_built(
     (gadget_id,) = store.items
     item = f"{LOCATION}{gadget_id}"
 
-    kept = client.post(
-        f"{item}/keep",
-        json={
-            "places": [{"shelf": "A1", "row": 2}, {"shelf": "B", "row": 0}],
-            "home": {"shelf": "H", "row": 1},
-            "shelves": [{"value": "s"}],
-            "points": [{"x": 1, "y": 2}],
-        },
-        headers=as_("changer"),
+    def post(**body: object) -> Any:  # noqa: ANN401 - a response.
+        return client.post(f"{item}/keep", json=body, headers=as_("changer"))
+
+    kept = post(
+        places=[{"shelf": "A1", "row": 2}, {"shelf": "B", "row": 0}],
+        home={"shelf": "H", "row": 1},
+        label="l",
+        shelves=[{"value": "s"}],
+        points=[{"x": 1, "y": 2}],
+        spot={"at": {"x": 3, "y": 4}, "weight": 0.5},
     )
-    none = client.post(f"{item}/keep", json={"places": []}, headers=as_("changer"))
+    none = post(places=[])
     patched = client.patch(
         f"{item}/keep",
         json={"places": [{"shelf": "P", "row": 3}]},
@@ -562,30 +595,49 @@ def test_value_objects_reach_the_function_built(
         },
         headers=as_("changer"),
     )
-    too_long = client.post(
+    too_long = post(places=[{"shelf": "LONGER", "row": 1}])
+    endless = client.post(
         f"{item}/keep",
-        json={"places": [{"shelf": "LONGER", "row": 1}]},
-        headers=as_("changer"),
+        content='{"places": [], "spot": {"at": {"x": 1, "y": 1}, "weight": NaN}}',
+        headers={**as_("changer"), "Content-Type": "application/json"},
     )
+    backwards = post(places=[], span={"low": 2, "high": 1})
     schemas = client.get("/openapi.json").json()["components"]["schemas"]
 
     assert [each.status_code for each in (kept, none, patched)] == [204, 204, 204]
     assert batched.json()["results"][0]["status"] == 204
+    empty = {"home": None, "label": None, "shelves": (), "points": (), "spot": None}
     assert seen == [
         {
             "places": (Place("A1", 2), Place("B", 0)),
             "home": Place("H", 1),
+            "label": Shelf("l"),
             "shelves": (Shelf("s"),),
             "points": (Point(1, 2),),
+            "spot": Spot(Point(3, 4), 0.5),
         },
-        {"places": (), "home": None, "shelves": (), "points": ()},
-        {"places": (Place("P", 3),), "home": None, "shelves": (), "points": ()},
-        {"places": (Place("Q", 4),), "home": None, "shelves": (), "points": ()},
+        {"places": (), **empty},
+        {"places": (Place("P", 3),), **empty},
+        {"places": (Place("Q", 4),), **empty},
     ]
     assert all(type(each) is Place for each in seen[0]["places"])  # type: ignore[attr-defined]
     assert (too_long.status_code, too_long.json()["errors"][0]["loc"]) == (
         422,
         ["body", "places", 0, "shelf"],
+    )
+    assert (endless.status_code, endless.json()["errors"][0]["loc"]) == (
+        422,
+        ["body", "spot", "weight"],
+    )
+    assert (backwards.status_code, backwards.json()["errors"]) == (
+        422,
+        [
+            {
+                "loc": ["body", "span"],
+                "msg": "Value error, A span ends after it starts.",
+                "type": "value_error",
+            }
+        ],
     )
     assert schemas["KeepIn"]["properties"]["places"]["items"] == {
         "$ref": "#/components/schemas/PlaceIn"
@@ -603,71 +655,134 @@ class Parts(BaseModel):
     sku: str
 
 
+class Line(ValueObject):
+    """A value object a hand-written body gives in a shape of its own."""
+
+    account: str
+    amount: Money
+
+
 class Assembled(Command):
-    """Fields a hand-written body gives, as models and as dataclasses."""
+    """Fields a hand-written body gives."""
 
     gadget_id: UUID
     main: dict[str, str]
     parts: tuple[dict[str, str], ...]
     named: dict[str, dict[str, str]]
+    lines: tuple[Line, ...]
+    place: Place
     places: tuple[Place, ...]
-    points: list[Point]
-    later: "Undefined"  # type: ignore[name-defined]  # noqa: F821 - never resolves.
+    note: str
+
+
+class AmountIn(BaseModel):
+    """An amount, as a hand-written body gives it."""
+
+    amount: Decimal
+    currency: str
+
+
+class LineIn(BaseModel):
+    """A line, in a shape of the body's own."""
+
+    account: str
+    amount: AmountIn
 
 
 class AssemblyIn(BaseModel):
-    """A hand-written body: nested models, and dataclasses pydantic validates."""
+    """A hand-written body: nested models, and value objects as their class."""
 
     main: Parts
     parts: tuple[Parts, ...]
     named: dict[str, Parts]
+    lines: list[LineIn]
+    place: dict[str, Any]
     places: tuple[Place, ...]
-    points: list[Point]
+    note: str
+
+    @field_serializer("note")
+    def lower(self, value: str) -> str:
+        """A serializer ``model_dump`` runs."""
+        return value.lower()
+
+
+class Later(Command):
+    """A command whose hints do not resolve when its route is declared."""
+
+    gadget_id: UUID
+    places: tuple[Place, ...]
+    later: "Undefined"  # type: ignore[name-defined]  # noqa: F821 - never resolves.
+
+
+class LaterIn(BaseModel):
+    """A body for ``Later``."""
+
+    places: tuple[Place, ...]
     later: int
 
 
-def test_whole_bodies_give_models_as_dicts_and_keep_dataclasses(
+def test_hand_written_bodies_give_the_command_what_model_dump_gives(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:
-    """Nested models become dicts, as ``model_dump`` gives them; dataclasses stay (U5).
+    """Shapes of the body's own come as in 2.4: ``model_dump()`` (U5).
 
-    A command whose hints do not resolve takes its fields as given.
+    Only a field of the value object's own class (or a tuple of it) gives
+    it as validated, built again. A command whose hints do not resolve
+    takes every field as ``model_dump()`` gives it.
     """
     use_auth()
-    seen: list[Assembled] = []
+    seen: list[object] = []
 
-    async def assemble(command: Assembled, uow: FakeGadgetsUnitOfWork) -> None:
+    async def assemble(command: object, uow: FakeGadgetsUnitOfWork) -> None:
         seen.append(command)
 
     resource = gadgets(store)
     resource.command_route(
         Assembled, service=assemble, body=AssemblyIn, path="/assemble", returns=None
     )
+    resource.command_route(
+        Later, service=assemble, body=LaterIn, path="/later", returns=None
+    )
     client = client_of(resource)
     (gadget_id,) = store.items
+    item = f"{LOCATION}{gadget_id}"
+    place = {"shelf": "A", "row": 1}
 
-    answer = client.post(
-        f"{LOCATION}{gadget_id}/assemble",
+    assembled = client.post(
+        f"{item}/assemble",
         json={
             "main": {"sku": "m"},
             "parts": [{"sku": "p"}],
             "named": {"n": {"sku": "q"}},
-            "places": [{"shelf": "A", "row": 1}],
-            "points": [{"x": 1, "y": 2}],
-            "later": 7,
+            "lines": [
+                {"account": "a", "amount": {"amount": "1.00", "currency": "EUR"}}
+            ],
+            "place": {**place, "note": "kept"},
+            "places": [place],
+            "note": "LOUD",
         },
         headers=as_("changer"),
     )
+    later = client.post(
+        f"{item}/later", json={"places": [place], "later": 7}, headers=as_("changer")
+    )
 
-    assert answer.status_code == 204
+    assert (assembled.status_code, later.status_code) == (204, 204)
     assert seen == [
         Assembled(
             gadget_id=gadget_id,
             main={"sku": "m"},
             parts=({"sku": "p"},),
             named={"n": {"sku": "q"}},
+            lines=[  # type: ignore[arg-type]
+                {
+                    "account": "a",
+                    "amount": {"amount": Decimal("1.00"), "currency": "EUR"},
+                }
+            ],
+            place={**place, "note": "kept"},  # type: ignore[arg-type]
             places=(Place("A", 1),),
-            points=[Point(1, 2)],
-            later=7,
-        )
+            note="loud",
+        ),
+        Later(gadget_id=gadget_id, places=(place,), later=7),  # type: ignore[arg-type]
     ]

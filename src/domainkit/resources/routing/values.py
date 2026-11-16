@@ -8,15 +8,18 @@ from the messages' docstrings.
 
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, TypeGuard, get_origin, get_type_hints
+from functools import cache, partial
+from types import NoneType, UnionType
+from typing import Any, TypeGuard, Union, get_args, get_origin, get_type_hints
 
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 
 from domainkit.db.models import model_key
 from domainkit.ddd.fields import FieldInfo, fields_of, wrapped_field
-from domainkit.ddd.model import ValueObject
+from domainkit.ddd.model import Entity, ValueObject
 
-from ..schemas import PatchModel
+from ..schemas import PatchModel, derived_from
 
 
 def to_domain(field: FieldInfo, value: object) -> object:
@@ -42,48 +45,130 @@ def to_domain(field: FieldInfo, value: object) -> object:
     return field.coerce(value)
 
 
-def value_fields(message: type) -> dict[str, FieldInfo]:
-    """The fields of ``message`` that hold value objects of several fields.
+type Build = Callable[[Any], object]
+"""Makes a body's validated value into what the message's field holds."""
 
-    Alone or in a tuple (``tuple[Address, ...]``). A body gives each as its
-    parts, which ``domain_values`` makes into the value object. A message whose
-    hints do not resolve has none.
+
+@cache
+def builders(message: type, body: type[BaseModel] | None) -> dict[str, Build]:
+    """How ``message``'s value objects are made from ``body``'s fields, by field.
+
+    Only where the body's field is what ``schema_for`` derives for the
+    value object ``message`` declares, decided here, once:
+
+    - a value object of several fields, as its write schema (``PlaceIn``),
+      alone or in a tuple: built from the parts, so its checks run;
+    - one of a single field, in a schema ``schema_for`` derived from a
+      field of the same type: built around the value;
+    - a value object or another dataclass, or a tuple of them, as that
+      class: the value pydantic validated; a value object built again, so
+      its checks run.
+
+    Other fields, and every field of a message whose hints do not resolve,
+    are given as ``model_dump()`` gives them.
     """
+    if body is None:
+        return {}
     try:
         fields = fields_of(message)
     except NameError:
         return {}
+    derived = derived_from(body)
+    sources = derived[1] if derived is not None else {}
     return {
-        name: field
-        for name, field in fields.items()
-        if _composite(field.kind) or _composite(field.item)
+        name: build
+        for name, info in body.model_fields.items()
+        if name in fields
+        and (build := _builder(fields[name], _bare(info.annotation), sources.get(name)))
+        is not None
     }
 
 
-def domain_values(
-    fields: Mapping[str, FieldInfo], given: dict[str, Any]
-) -> dict[str, Any]:
-    """``given``, with the value objects ``fields`` hold built from their parts.
-
-    Only parts are built (a dict, or a tuple of dicts); a value given
-    otherwise is left as it is.
-    """
-    if not fields:
-        return given
-    return {
-        name: _domain_value(fields[name], value) if name in fields else value
-        for name, value in given.items()
-    }
-
-
-def _domain_value(field: FieldInfo, value: object) -> object:
-    """``value`` as ``field`` holds it, if it is its value objects' parts."""
-    if isinstance(value, Mapping) or (
-        isinstance(value, list | tuple)
-        and all(isinstance(item, Mapping) for item in value)
+def _builder(
+    field: FieldInfo, annotation: object, source: FieldInfo | None
+) -> Build | None:
+    """How ``field``'s value is made from a body's of ``annotation``, if it is."""
+    kind, item = field.kind, field.item
+    if _composite(kind) and _parts_of(annotation, kind):
+        return partial(_from_parts, kind, annotation)
+    items = _items_of(annotation)
+    if _composite(item) and _parts_of(items, item):
+        return partial(_each, partial(_from_parts, item, items))
+    if _plain_class(kind) and annotation is kind:
+        return _validated
+    if _plain_class(item) and items is item:
+        return partial(_each, _validated)
+    if (
+        isinstance(kind, type)
+        and wrapped_field(kind) is not None
+        and source is not None
+        and source.kind is kind
     ):
-        return to_domain(field, value)
+        return field.coerce  # What it wraps, built around.
+    return None
+
+
+def _parts_of(annotation: object, kind: type) -> TypeGuard[type[BaseModel]]:
+    """Whether ``annotation`` is a write schema of ``kind``, with all it needs."""
+    if not isinstance(annotation, type) or issubclass(annotation, PatchModel):
+        return False
+    derived = derived_from(annotation)
+    return (
+        derived is not None and derived[0] is kind and required(kind) <= set(derived[1])
+    )
+
+
+def _items_of(annotation: object) -> object:
+    """``X`` of ``tuple[X, ...]``; None for another annotation."""
+    args = get_args(annotation)
+    return args[0] if get_origin(annotation) is tuple and args[1:] == (...,) else None
+
+
+def _from_parts(kind: type, schema: type[BaseModel], parts: BaseModel | None) -> object:
+    """The value object ``kind`` of the write schema's ``parts``.
+
+    Its own value objects are made as a body's are; other values stay as
+    validated, a nested model as a dict.
+    """
+    if parts is None:
+        return None
+    inner = builders(kind, schema)
+    values = {name: getattr(parts, name) for name in schema.model_fields}
+    return kind(
+        **{
+            name: inner[name](value) if name in inner else plain(value)
+            for name, value in values.items()
+        }
+    )
+
+
+def _each(build: Build, values: tuple[object, ...] | None) -> object:
+    """Each of ``values`` made by ``build``, as a tuple."""
+    return None if values is None else tuple(build(value) for value in values)
+
+
+def _validated(value: object) -> object:
+    """A dataclass as validated; a value object built again, so its checks run."""
+    if isinstance(value, ValueObject):
+        return dataclasses.replace(value)
     return value
+
+
+def _bare(annotation: object) -> object:
+    """``annotation`` without ``| None``."""
+    members = [each for each in get_args(annotation) if each is not NoneType]
+    if get_origin(annotation) in {Union, UnionType} and len(members) == 1:
+        return members[0]
+    return annotation
+
+
+def _plain_class(kind: object) -> TypeGuard[type]:
+    """Whether ``kind`` is a dataclass a field holds by value: not an entity."""
+    return (
+        isinstance(kind, type)
+        and dataclasses.is_dataclass(kind)
+        and not issubclass(kind, Entity)
+    )
 
 
 def _composite(kind: object) -> TypeGuard[type]:
@@ -95,32 +180,57 @@ def _composite(kind: object) -> TypeGuard[type]:
     )
 
 
-def changes(payload: BaseModel | None) -> dict[str, Any]:
+def changes(
+    payload: BaseModel | None, build: Mapping[str, Build] | None = None
+) -> dict[str, Any]:
     """A body's fields as a command's keywords; a ``PatchModel``'s set ones only.
 
-    Nested models become dicts, as ``model_dump`` gives them; dataclasses
-    the body validated (value objects among them) stay as they are.
+    Nested models become dicts, as ``model_dump`` gives them, but the
+    fields ``build`` makes (``builders``), from the values validated.
+
+    Raises:
+        RequestValidationError: A value object refused its parts with a
+            ``ValueError`` or a ``TypeError``: 422, under its field.
     """
     if payload is None:
         return {}
-    given = (
-        payload.changes()
-        if isinstance(payload, PatchModel)
-        else {name: getattr(payload, name) for name in type(payload).model_fields}
-    )
-    return {name: plain(value) for name, value in given.items()}
+    if isinstance(payload, PatchModel):
+        given = {name: plain(value) for name, value in payload.changes().items()}
+    else:
+        given = payload.model_dump()
+    for name, each in (build or {}).items():
+        if name in given:
+            given[name] = _made(name, each, getattr(payload, name))
+    return given
+
+
+def _made(name: str, build: Build, value: object) -> object:
+    """``build(value)``; a ``ValueError`` or ``TypeError`` is a 422 under ``name``.
+
+    Raises:
+        RequestValidationError: ``build`` refused the value.
+    """
+    try:
+        return build(value)
+    except (TypeError, ValueError) as exc:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("body", name),
+                    "msg": f"Value error, {exc}",
+                    "ctx": {"error": str(exc)},
+                }
+            ]
+        ) from None
 
 
 def plain(value: object) -> object:
-    """Nested models (in lists, tuples, and dicts too) as dicts; others as they are."""
+    """A nested model (or a list of them) as dicts; other values as they are."""
     if isinstance(value, BaseModel):
         return value.model_dump()
     if isinstance(value, list):
         return [plain(item) for item in value]
-    if type(value) is tuple:
-        return tuple(plain(item) for item in value)
-    if isinstance(value, dict):
-        return {key: plain(item) for key, item in value.items()}
     return value
 
 

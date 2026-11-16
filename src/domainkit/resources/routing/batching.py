@@ -47,7 +47,7 @@ from ..schemas import PatchModel
 from . import presenting, reach
 from .context import BATCH, DEFAULT, MODELS, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
-from .values import changes, check_given, domain_values, summary_of, value_fields
+from .values import builders, changes, check_given, summary_of
 
 if TYPE_CHECKING:
     from domainkit.ddd.uow import Retry
@@ -122,8 +122,8 @@ class BatchRoute:
             )
         self.provided = dict(provide or {})
         check_given(command, given, self.provided, self.from_path | ({lookup} & names))
-        self.values = value_fields(command)
-        """The command's fields that hold value objects, built from their parts."""
+        self.values = builders(command, body)
+        """How the command's value objects are made from the body's fields."""
         verb = action or (CHANGE if self.detail else ADD)
         if returns is DEFAULT and verb == DELETE:
             returns = None
@@ -306,7 +306,7 @@ class BatchRoute:
         takes it out (``reach.pinned``).
         """
         router = self.router
-        arguments = domain_values(self.values, changes(each))
+        arguments = changes(each, self.values)
         id_ = arguments.pop(router.lookup, None)
         own = dataclasses.replace(
             context,

@@ -28,6 +28,7 @@ sent, so ``{"note": null}`` clears a note and ``{}`` changes nothing.
 """
 
 import dataclasses
+import weakref
 from collections.abc import Callable, Collection, Mapping
 from datetime import datetime
 from decimal import Decimal
@@ -80,6 +81,10 @@ from domainkit.utils.decimals import decimal_text
 
 GENERATED: Final = frozenset({"id", "version", DELETED_AT})
 """Fields a write schema leaves out: the domain and the database set them."""
+_SOURCES: Final = weakref.WeakKeyDictionary[
+    type, tuple[type, Mapping[str, FieldInfo]]
+]()
+"""Each write schema ``schema_for`` made: its class, and the fields it holds."""
 
 
 def generated_fields(model: type) -> frozenset[str]:
@@ -238,16 +243,31 @@ def schema_for(
             options.update(_default(defaults[each]))
         definitions[each] = (annotation, Field(**options))
         presenters.append((each, present))
-    if partial:
-        return create_model(title, __base__=PatchModel, **definitions)
-    if write:
+    if writing:
         hidden = any(not fields[each].shown for each in chosen)
-        config = ConfigDict(extra="forbid", hide_input_in_errors=hidden)
-        return create_model(title, __config__=config, **definitions)
+        written = (
+            create_model(title, __base__=PatchModel, **definitions)
+            if partial
+            else create_model(
+                title,
+                __config__=ConfigDict(extra="forbid", hide_input_in_errors=hidden),
+                **definitions,
+            )
+        )
+        _SOURCES[written] = (model, {each: fields[each] for each in chosen})
+        return written
     schema = create_model(title, __base__=DomainSchema, **definitions)
     schema.domain_class = model
     schema.domain_fields = tuple(presenters)
     return schema
+
+
+def derived_from(schema: type) -> tuple[type, Mapping[str, FieldInfo]] | None:
+    """The class a write schema of ``schema_for`` was derived from, and its fields.
+
+    None for a schema written by hand.
+    """
+    return _SOURCES.get(schema)
 
 
 def _hints(model: type) -> dict[str, object]:
@@ -326,6 +346,8 @@ def _scalar(field: FieldInfo, kind: type, hint: object, *, write: bool) -> Any: 
             int,
             Field(ge=max(-INT64, bounds.get("ge", -INT64)), lt=INT64, **_upper(bounds)),
         ]
+    if write and kind is float:
+        return Annotated[float, Field(allow_inf_nan=False, **bounds)]
     if kind in {int, float} and bounds:
         return Annotated[kind, Field(**bounds)]
     if write and kind is datetime:

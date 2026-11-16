@@ -668,10 +668,11 @@ def test_write_schemas_nest_write_schemas_of_children() -> None:
 
 
 class Parcel(AggregateRoot[UUID]):
-    """Tuples of value objects: of several fields, and of one."""
+    """Tuples of value objects: of several fields, and of one; and a float."""
 
     sums: tuple[Money, ...] = ()
     codes: tuple[Code, ...] = ()
+    weight: float = 0.0
 
 
 def test_write_schemas_take_tuples_of_value_objects_as_their_parts() -> None:
@@ -691,6 +692,26 @@ def test_write_schemas_take_tuples_of_value_objects_as_their_parts() -> None:
         schema_for(Parcel, write=True).model_validate(
             {"sums": [{"amount": "1.234", "currency": "EUR"}]}
         )
+
+
+def test_write_schemas_take_finite_floats_only() -> None:
+    """NaN and infinity are refused where a request writes a float (U5).
+
+    A read schema still shows what is stored.
+    """
+    written = schema_for(Parcel, write=True)
+    partial = schema_for(Parcel, partial=True)
+
+    for value in ("NaN", "Infinity", "-Infinity"):
+        for schema in (written, partial):
+            with pytest.raises(ValidationError, match="finite"):
+                schema.model_validate_json(f'{{"weight": {value}}}')
+    assert written.model_validate({"weight": 1.5}).weight == 1.5  # type: ignore[attr-defined]
+    shown = schema_for(Parcel).model_validate_json(
+        f'{{"id": "{UUID(int=1)}", "version": 0, "deleted_at": null, "sums": [], '
+        '"codes": [], "weight": NaN}'
+    )
+    assert shown.weight != shown.weight  # type: ignore[attr-defined]
 
 
 def test_an_expectation_refuses_what_has_no_id_or_no_version() -> None:
