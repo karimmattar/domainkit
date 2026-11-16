@@ -57,7 +57,6 @@ from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
 from domainkit.ddd import UseCase
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import access
 from domainkit.http.errors import APIError
@@ -406,6 +405,9 @@ class ActionStepUp(StepUp):
         named = getattr(service, "__qualname__", service)
         if spent is not None:
             return f"runs {named}, which spends the authorization of {spent!r}"
+        # Imported here: the module is not otherwise loaded at startup.
+        from domainkit.deprecation import DomainkitDeprecationWarning
+
         warnings.warn(
             f"A route that asks StepUp(for_={self.purpose!r}) runs {named}, which "
             "is not decorated with requires_authorization: decorate the route's "
