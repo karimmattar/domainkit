@@ -845,7 +845,9 @@ async def test_waiting_messages_can_be_cancelled_running_ones_not() -> None:
     for label in ("run", "wait", "publish"):
         await enqueue(high if label == "run" else low, label=label)
     await enqueue(chain(charge, receipt), order=1, delay=timedelta(hours=1))
-    worker = Worker()
+    # A lease no stall outlasts: with FAST's second, a slow runner saw the
+    # claim lapse before the cancel, which then took a running message.
+    worker = Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 60}))
     (claimed,) = await worker._claim(1)
     broker = MemoryBroker()
     await worker._relay(broker, 1)
