@@ -80,15 +80,11 @@ class MessagingConfig(DomainConfig):
         commit joins the run of the message a worker is processing, if any,
         writes its outbox rows (``on_stage``), and hands them to the
         publisher once it lands (``on_committed``). ``check`` warns about
-        tasks written as ``def`` (``blocking.W002``). It registers the task
-        that removes the stored files a commit dropped
-        (``domainkit.storage.cleanup``).
+        tasks written as ``def`` (``blocking.W002``). The framework's own
+        tasks elsewhere, such as the one that removes the stored files a
+        commit dropped (``domainkit.storage.cleanup``), are registered when
+        first deferred or run (``registry.FRAMEWORK_TASKS``).
         """
-        from domainkit.storage.cleanup import REMOVE_TASK, remove_unreferenced
-
-        from .registry import task
-
-        task(name=REMOVE_TASK)(remove_unreferenced)
         config = self.get_settings()
         router.require_standalone(config.DATABASE, "MESSAGING.DATABASE")
         if config.BROKER is not None:

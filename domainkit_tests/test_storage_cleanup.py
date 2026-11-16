@@ -286,3 +286,72 @@ async def test_a_replaced_file_is_removed_once_the_change_commits(
     spec = get_task(REMOVE_TASK)
     assert spec is not None
     assert spec.function is remove_unreferenced
+
+
+SCRIPT = """
+import sys
+from domainkit.contrib.messaging import registry
+from domainkit.exceptions import ImproperlyConfigured
+
+assert "domainkit.storage" not in sys.modules, "loaded at import"
+{body}
+"""
+
+
+def _fresh(body: str) -> None:
+    """Run ``body`` in a new interpreter, where no test registered the task."""
+    import os
+    import subprocess
+    import sys
+
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("DOMAINKIT_")
+    }
+    done = subprocess.run(  # noqa: S603 - the test interpreter and a fixed script.
+        [sys.executable, "-c", SCRIPT.format(body=body)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+def test_the_task_is_registered_when_a_worker_first_asks_for_it() -> None:
+    """Nothing of storage loads until the task's key is asked for (PERF-15)."""
+    _fresh(
+        "spec = registry.get_task('domainkit.storage.remove_unreferenced')\n"
+        "from domainkit.storage.cleanup import remove_unreferenced\n"
+        "assert spec is not None and spec.function is remove_unreferenced\n"
+        "assert registry.get_task('domainkit.storage.remove_unreferenced') is spec\n"
+        "assert registry.get_task('nobody.knows') is None\n"
+    )
+
+
+def test_the_task_is_registered_when_first_deferred() -> None:
+    """``uow.defer`` finds the task by its function, registering it then."""
+    _fresh(
+        "from domainkit.storage.cleanup import remove_unreferenced\n"
+        "spec = registry.spec_for(remove_unreferenced)\n"
+        "assert registry.get_task('domainkit.storage.remove_unreferenced') is spec\n"
+        "assert registry.spec_for(remove_unreferenced) is spec\n"
+    )
+
+
+def test_another_function_under_the_tasks_key_is_not_taken_for_it() -> None:
+    """A function of the same name that is not the task stays refused."""
+    _fresh(
+        "async def remove_unreferenced(names: list[str]) -> None: ...\n"
+        "remove_unreferenced.__module__ = 'domainkit.storage.cleanup'\n"
+        "from domainkit.storage.cleanup import remove_unreferenced as real\n"
+        "registry.spec_for(real)\n"
+        "try:\n"
+        "    registry.spec_for(remove_unreferenced)\n"
+        "except ImproperlyConfigured:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise AssertionError('a stranger was taken for the task')\n"
+    )

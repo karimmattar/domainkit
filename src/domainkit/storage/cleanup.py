@@ -45,7 +45,8 @@ if TYPE_CHECKING:
 __all__ = ["REMOVE_TASK", "forget_files", "keeps_files", "remove_unreferenced"]
 
 REMOVE_TASK: Final = "domainkit.storage.remove_unreferenced"
-"""The name ``domainkit.contrib.messaging`` registers ``remove_unreferenced`` under."""
+"""The name ``domainkit.contrib.messaging`` registers ``remove_unreferenced`` under,
+when it is first deferred or run."""
 DEFAULT_STORAGE: Final = "default"
 
 type _Kept = tuple["Column[Any]", str | None]
