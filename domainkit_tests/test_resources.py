@@ -13,7 +13,7 @@ from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI, Header, Query, Request
+from fastapi import APIRouter, FastAPI, Header, Query, Request
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
@@ -1020,6 +1020,56 @@ def test_a_prefix_s_own_path_parameters_fill_locations_and_links(
     assert review.status_code == 201
     assert review.headers["location"].startswith(f"{shop}/{gadget.id}/reviews/")
     assert review.json()["links"]["parent"] == f"{shop}/{gadget.id}"
+
+
+def test_link_parameters_are_encoded_and_read_where_the_route_is_served(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Each parameter percent-encoded; an outer router's prefix included (U5)."""
+    use_auth()
+
+    def shop(prefix: str, name: str) -> ResourceRouter:
+        resource = ResourceRouter(
+            prefix,
+            model=Gadget,
+            unit_of_work=lambda: FakeGadgetsUnitOfWork(store),
+            repository=lambda uow: uow.gadgets,
+            rule=ModelActions(GADGETS),
+            links=True,
+            name_prefix=name,
+        )
+        resource.command_route(MakeGadget, service=make, body=MakeIn)
+        return resource
+
+    outer = APIRouter(prefix="/orgs/{org}")
+    outer.include_router(shop("/gadgets", "org_"))
+    client = client_of(
+        shop("/shops/{shop}/gadgets", "shop_"),
+        shop("/files/{folder:path}/gadgets", "file_"),
+    )
+    client.app.include_router(outer)  # type: ignore[attr-defined]
+
+    def location(path: str) -> str:
+        made = client.post(
+            path, json={"name": "n", "price": "1.00"}, headers=as_("adder")
+        )
+        assert made.status_code == 201, made.text
+        assert made.json()["links"]["self"] == made.headers["location"]
+        return made.headers["location"].rsplit("/", 1)[0]
+
+    assert [
+        location(f"/shops/{raw}/gadgets")
+        for raw in ("a%20b", "%5Cevil.com", "a%0D%0AX:%201", "%D8%B4%D8%B1%D9%83%D8%A9")
+    ] == [
+        "/shops/a%20b/gadgets",
+        "/shops/%5Cevil.com/gadgets",
+        "/shops/a%0D%0AX%3A%201/gadgets",
+        "/shops/%D8%B4%D8%B1%D9%83%D8%A9/gadgets",
+    ]
+    assert location("/orgs/o%201/gadgets") == "/orgs/o%201/gadgets"
+    assert location("/files/a/b%20c/gadgets") == "/files/a/b%20c/gadgets"
+    listed = client.get("/orgs/o1/gadgets", headers=as_("viewer"))
+    assert listed.json()["items"][0]["links"]["self"].startswith("/orgs/o1/gadgets/")
 
 
 def test_crud_creates_changes_and_deletes_reference_data(

@@ -1091,9 +1091,10 @@ router.include_router(reviews)
 
 A prefix may hold path parameters of its own, not a parent's:
 `ResourceRouter("/companies/{company_id}/templates", ...)`. A create's
-`Location` and the links take them from the request:
-`/companies/7/templates/<id>`. Read them in `scope`, a rule, or `provide`
-(`request.path_params["company_id"]`).
+`Location` and the links take them from the request, percent-encoded:
+`/companies/7/templates/<id>`. So they take those of a router the
+resource is included in, `APIRouter(prefix="/orgs/{org}")`. Read them in
+`scope`, a rule, or `provide` (`request.path_params["company_id"]`).
 
 ## Routes of your own on a resource
 

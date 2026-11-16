@@ -51,7 +51,9 @@ and a status.
   `/companies/{company_id}/templates`, answered a create with `500`, and
   a listing with links too: `Location` and `links` were built from the
   resource's and its parent's ids only. They take the prefix's parameters
-  from the request (user report U5).
+  from the request, and those of a router the resource is included in
+  (`APIRouter(prefix="/orgs/{org}")`), which failed in 2.4 too. Each
+  value is percent-encoded, ids included (user report U5).
 
 ## [2.4.0] - 2026-11-16
 

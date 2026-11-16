@@ -10,12 +10,16 @@ for one created), another schema, or nothing.
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import format_datetime, parsedate_to_datetime
-from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
+from urllib.parse import quote
+from weakref import WeakKeyDictionary
 
 from fastapi import Response, status
+from fastapi.routing import iter_route_contexts
 from pydantic import AliasChoices, BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
+from starlette.applications import Starlette
+from starlette.convertors import PathConvertor
 from starlette.requests import HTTPConnection
 from starlette.routing import compile_path
 
@@ -30,6 +34,11 @@ from .context import DEFAULT, MODELS, Aggregate, Returns, RouteContext
 
 if TYPE_CHECKING:
     from . import ResourceRouter
+
+_PARAMETERS: Final = WeakKeyDictionary[
+    Starlette, dict[str, tuple[tuple[str, str], ...]]
+]()
+"""The path parameters of each read route, by application and route name."""
 
 
 async def answer(
@@ -233,11 +242,12 @@ def url(
     *,
     parent: bool = False,
 ) -> str:
-    """The path of the read route ``name`` for ``id_``.
+    """The path of the read route ``name`` for ``id_``, percent-encoded.
 
     The other parameters of its path are the request's: the parent's id,
-    and those of the resource's prefix (``/companies/{company_id}/...``).
-    The ids the route read are written as their type writes them.
+    and those of the resource's prefix (``/companies/{company_id}/...``)
+    and of the routers it is included in (``/orgs/{org}``). The ids the
+    route read are written as their type writes them.
     """
     owner = router.parent if parent else router
     assert owner is not None  # noqa: S101 - a parent was asked for only with one.
@@ -245,19 +255,45 @@ def url(
     given = {
         **request.path_params,
         **{key: str(value) for key, value in context.ids.items()},
+        owner.lookup: str(id_),
     }
-    params = {each: given[each] for each in parameters(owner.prefix)}
-    params[owner.lookup] = str(id_)
+    params = {
+        each: quote(str(given[each]), safe=kept)
+        for each, kept in parameters(request.app, name, owner)
+        if each in given
+    }
     path = request.app.url_path_for(name, **params)
     # A path for a response's links, not a response (a Flask rule).
     # nosemgrep: directly-returned-format-string  # noqa: ERA001
     return f"{request.scope.get('root_path', '')}{path}"
 
 
-@cache
-def parameters(prefix: str) -> tuple[str, ...]:
-    """The names of the path parameters in a resource's ``prefix``."""
-    return tuple(compile_path(prefix)[2])
+def parameters(
+    app: Starlette, name: str, owner: "ResourceRouter"
+) -> tuple[tuple[str, str], ...]:
+    """The path parameters of ``app``'s route ``name``, and what each keeps as is.
+
+    A ``path`` parameter keeps its slashes. Read once per application: the
+    route as the application serves it, under the prefixes of the routers
+    it is included in; one in a mount, from ``owner``'s prefix.
+    """
+    known = _PARAMETERS.setdefault(app, {})
+    found = known.get(name)
+    if found is None:
+        path = next(
+            (
+                each.path
+                for each in iter_route_contexts(app.routes)
+                if each.name == name and each.path
+            ),
+            f"{owner.prefix}/{{{owner.lookup}}}",
+        )
+        convertors = compile_path(path)[2]
+        found = known[name] = tuple(
+            (each, "/" if isinstance(convertor, PathConvertor) else "")
+            for each, convertor in convertors.items()
+        )
+    return found
 
 
 async def hidden_fields(
