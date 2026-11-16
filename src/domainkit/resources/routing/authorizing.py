@@ -6,21 +6,27 @@ client sends one. The twin lets the client ask for it: it takes the
 route's path and body, builds the command as the route does, checks what
 the act would check with the asking rule passing (the route's other rules,
 the aggregate within the caller's reach, the rules on the aggregate), and
-answers ``201`` with what the rule's ``ask_authorization`` returns. It
-never runs the service. So a caller may only ask for an authorization of
-an act they could otherwise make.
+answers ``201`` with what the rule's ``ask_authorization`` returns (given
+the route's unit of work, when it takes one: ADR 0161). It never runs the
+service. So a caller may only ask for an authorization of an act they
+could otherwise make.
 
 The asking rule is found among the route's rules, at the top or inside
 ``AllOf`` (``&``), at any depth. Inside ``AnyOf`` (``|``) or ``Not``
 (``~``) it cannot be decided, and two on one route ask for two
 authorizations of one act: both are refused when the route is declared.
+So is a service the rule says would not spend what it asks for (its
+``service_problem``): ``StepUp(for_=...)`` on a use case left unguarded.
 """
 
 import copy
+import inspect
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Final
 
 from fastapi import Response, status
 from fastapi.routing import APIRoute
+from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
 from domainkit.exceptions import ImproperlyConfigured
@@ -65,6 +71,8 @@ class AuthorizationRoute:
         self.rules = rules
         """The route's rules, the asking one replaced by one that lets it pass."""
         self.model = rule.authorization_model()
+        self.lends = _takes_unit_of_work(rule)
+        """Whether the rule reads in the route's unit of work (ADR 0161)."""
         spec = route.spec
         self.spec = RouteSpec(
             f"{spec.path}{PATH}",
@@ -87,8 +95,9 @@ class AuthorizationRoute:
 
         Raises:
             ImproperlyConfigured: The asking rule is inside ``AnyOf`` or
-                ``Not``; two rules ask; or another route already answers
-                ``POST`` on the twin's path.
+                ``Not``; two rules ask; the rule says the route's service
+                would not spend what it asks for; or another route already
+                answers ``POST`` on the twin's path.
         """
         spec = route.spec
         router = route.router
@@ -107,6 +116,11 @@ class AuthorizationRoute:
             raise ImproperlyConfigured(
                 f"{label} has {len(found)} rules that ask for an authorization "
                 f"({names}): an act is authorized once, so keep one."
+            )
+        check = getattr(found[0], "service_problem", None)
+        if check is not None and (problem := check(route.service)) is not None:
+            raise ImproperlyConfigured(
+                f"{label} asks for an authorization of its act, but {problem}."
             )
         path = f"{router.prefix}{spec.path}{PATH}"
         taken = next(
@@ -151,7 +165,9 @@ class AuthorizationRoute:
                     route.router, uow, context.request, context.ids
                 )
             await reach.check_object(context.request, aggregate, self.rules)
-        answer = await self.rule.ask_authorization(context.request, command)
+        lent = {"uow": context.uow} if self.lends else {}
+        ask: Callable[..., Awaitable[BaseModel]] = self.rule.ask_authorization
+        answer = await ask(context.request, command, **lent)
         if not isinstance(answer, self.model):
             raise RuntimeError(
                 f"{type(self.rule).__name__}.ask_authorization answered "
@@ -219,6 +235,22 @@ def _standing_in(
     elif isinstance(rule, Not):
         _standing_in(rule.rule, found, label, inside or "Not (~)")
     return rule
+
+
+def _takes_unit_of_work(rule: AsksAuthorization) -> bool:
+    """Whether ``rule.ask_authorization`` takes ``uow`` by name: one of 2.4 does not."""
+    try:
+        parameters = inspect.signature(rule.ask_authorization).parameters
+    except (TypeError, ValueError):  # No signature to read: called as in 2.4.
+        return False
+    found = parameters.get("uow")
+    return found is not None and found.kind in BY_NAME
+
+
+BY_NAME: Final = frozenset(
+    {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+)
+"""The kinds of parameter ``uow=`` can be given to."""
 
 
 def _instance(rule: Rule) -> BasePermission:

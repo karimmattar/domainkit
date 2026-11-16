@@ -171,6 +171,7 @@ statuses, and the amendments they name.
 | [0158](0158-count-outgoing-calls-circuits-fallbacks-and-statements-and-give-requests-a-span.md) | Count outgoing calls, circuits, fallbacks, and statements, and give requests a span | Accepted |
 | [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 | [0160](0160-serve-in-production-from-the-settings.md) | Serve in production from the settings | Accepted |
+| [0161](0161-authorize-a-use-case-as-a-copy-and-read-what-is-shown-in-its-unit-of-work.md) | Authorize a use case as a copy, and read what is shown in its unit of work | Accepted |
 | [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) | Let the asker withdraw a phone request, count sessions per user, and word each kind | Accepted |
 | [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) | Let a domain layer mark its texts, extract the project's own, and add a translation alone | Accepted |
 

@@ -1,8 +1,9 @@
 """The business of the {{ domain }} domain: the ``{{ Aggregate }}`` aggregate and its rules.
 
 Plain Python: only ``domainkit.ddd``, ``domainkit.money``, ``domainkit.clock``,
-and the standard library. Change {{ a_aggregate }} only through its methods, so
-every way in (the API, a script, a test) meets the same rules.
+``domainkit.i18n.lazy`` (to mark texts for translation), and the standard
+library. Change {{ a_aggregate }} only through its methods, so every way in
+(the API, a script, a test) meets the same rules.
 """
 
 from abc import ABC

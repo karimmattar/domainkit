@@ -3,6 +3,7 @@
 import io
 import re
 from collections.abc import Iterator
+from gettext import GNUTranslations
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.i18n import gettext, override
 from domainkit.i18n.catalogs import Message, compile_po, parse_po
-from domainkit.i18n.extraction import Found, extract, merge, render
+from domainkit.i18n.extraction import Found, added, extract, merge, render
 from domainkit.i18n.translation import reset_catalogs
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
@@ -247,6 +248,38 @@ def test_the_projects_own_texts_go_to_the_first_locale_path(
     assert "Approve?" not in sales.read_text("utf-8")
 
 
+def test_an_obsolete_translation_comes_back(tmp_path: Path) -> None:
+    """A ``#~`` entry of a message marked again comes back, as ``updated`` does.
+
+    The other obsolete entries follow the new ones; one whose message
+    changed to plural stays obsolete.
+    """
+    catalog = tmp_path / "messages.po"
+    gone = '#~ msgid "Revived"\n#~ msgstr "عاد"\n\n#~ msgid "Gone"\n#~ msgstr "ذهب"\n'
+    catalog.write_text(f'{HELD}\n{gone}\n#~ msgid "Line"\n#~ msgstr "سطر"\n', "utf-8")
+    found = [
+        Found("Revived", references=["config/urls.py:3"]),
+        Found("Line", "Lines", references=["config/urls.py:4"]),
+    ]
+
+    text, untranslated = added(catalog, found, project="Shop", language="ar")
+
+    assert untranslated == 1
+    assert text.startswith(HELD)
+    assert text.endswith(
+        '#: config/urls.py:3\nmsgid "Revived"\nmsgstr "عاد"\n\n'
+        '#: config/urls.py:4\nmsgid "Line"\nmsgid_plural "Lines"\n'
+        'msgstr[0] ""\nmsgstr[1] ""\n\n'
+        '#~ msgid "Gone"\n#~ msgstr "ذهب"\n\n#~ msgid "Line"\n#~ msgstr "سطر"\n'
+    )
+    compiled = GNUTranslations(io.BytesIO(compile_po(text)))
+    assert compiled.gettext("Revived") == "عاد"
+    assert added(catalog, found[:1], project="Shop", language="ar")[0] == (
+        f'{HELD}\n#: config/urls.py:3\nmsgid "Revived"\nmsgstr "عاد"\n\n'
+        '#~ msgid "Gone"\n#~ msgstr "ذهب"\n\n#~ msgid "Line"\n#~ msgstr "سطر"\n'
+    )
+
+
 def test_a_locale_path_catalog_keeps_what_it_holds_and_is_read(
     domain: Path, tmp_path: Path
 ) -> None:
@@ -307,6 +340,47 @@ def test_texts_outside_every_domain_need_a_locale_path(domain: Path) -> None:
     with pytest.raises(CommandError, match=r"^3 messages are marked outside"):
         run("--check")
     assert run("--check", "sales") == "Every catalog is up to date with its code.\n"
+
+
+def test_texts_a_catalog_translates_need_no_locale_path(domain: Path) -> None:
+    """The framework's catalog translates them: nothing is named, ``--check`` passes.
+
+    With their context and plural forms, in any language of ``LANGUAGES``;
+    ``{n} order`` no compiled catalog has.
+    """
+    (domain.parent / "urls.py").write_text(
+        'from x import _, ngettext, pgettext\n_("Not Found")\n'
+        'pgettext("code", "enroll your phone")\n'
+        'ngettext("{count} day", "{count} days", 2)\n'
+        'ngettext("{n} order", "{n} orders", 2)\n',
+        "utf-8",
+    )
+    run("-l", "ar")
+    noted = io.StringIO()
+
+    run("-l", "ar", stderr=noted)
+
+    assert noted.getvalue() == (
+        "1 message is marked outside every domain (shop/urls.py), and "
+        "LOCALE_PATHS names no directory to keep them: set it, then run "
+        "makemessages.\n"
+    )
+    (domain.parent / "urls.py").write_text('_("Not Found")\n', "utf-8")
+    assert run("--check") == "Every catalog is up to date with its code.\n"
+
+
+def test_a_root_router_named_with_a_colon_is_read(domain: Path, tmp_path: Path) -> None:
+    """``ROOT_ROUTER = "urls_alone:router"``: a module outside any package."""
+    (tmp_path / "urls_alone.py").write_text('_("Routed")\n', "utf-8")
+    locale = tmp_path / "locale"
+
+    with override_settings(
+        SETTINGS_MODULE="", ROOT_ROUTER="urls_alone:router", LOCALE_PATHS=[locale]
+    ):
+        run("-l", "ar")
+
+    text = (locale / "ar" / "LC_MESSAGES" / "messages.po").read_text("utf-8")
+    assert '#: urls_alone.py:1\nmsgid "Routed"' in text
 
 
 @pytest.mark.parametrize(

@@ -453,7 +453,7 @@ waits, `POST /auth/app-sign-in/authorizations/wait {"request"}`):
 
 ```http
 DELETE /organizations/7/memberships/42                     401 authorization_required
-POST   /organizations/7/memberships/42/authorization       201 {"id": "9f0c...", "shown": {...}}
+POST   /organizations/7/memberships/42/authorization       201 {"id": "9f0c...", "shown": {...}, "methods": ["phone"]}
 POST   /auth/app-sign-in/authorizations/9f0c...            200 {"request": "kq3D1...", "expires_in": 120,
                                                                 "interval": 5, "match_code": "47"}
 POST   /auth/app-sign-in/authorizations/token {"request"}  200 {"authorization": "9f0c....mYd3...", "expires_at": "..."}
@@ -472,7 +472,7 @@ built when the page asked, never words the page sent.
                    "shown": {"title": "End a membership",
                              "details": [{"label": "Member", "value": "Alice Smith"},
                                          {"label": "Organization", "value": "Acme"}]},
-                   "expires_at": "...", "digest": "5d41..."},
+                   "expires_at": "...", "methods": ["phone"], "digest": "5d41..."},
  "address": "203.0.113.7", "browser": "Mozilla/5.0 ...", "...": "..."}
 ```
 
