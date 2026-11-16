@@ -77,9 +77,11 @@ async def test_ready_checks_brokers_only_when_told(
 
     monkeypatch.setattr(brokers["work"], "check", down)
 
-    assert await readiness_failures(1.0) == []
+    # Which checks run is asked, not how fast: a loaded runner took over a
+    # second to open SQLite, and the database then counted as away.
+    assert await readiness_failures(30.0) == []
     with override_settings(READINESS_BROKERS=True):
-        assert await readiness_failures(1.0) == ["broker:work"]
+        assert await readiness_failures(30.0) == ["broker:work"]
         assert await heartbeats.failures("work") == ["broker:work"]  # Not twice.
 
 
