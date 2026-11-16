@@ -40,6 +40,12 @@ A broker that is asked for messages subclasses
 - `puller(queues)` makes a `Puller`, which fetches messages (`fetch`) and
   answers each one: `ack` forgets it, `requeue` hands it out again.
 
+A broker that hands out a queue's waiting messages by priority says so
+with `priorities = True`, and its `publish` takes `priority` too: the
+task's, from -100 to 100, higher first. The worker gives it to such a
+broker only; this one keeps the order the messages came in, as
+`publish` here takes no priority.
+
 The base class runs the pump that hands the fetched messages to
 handlers, at most `prefetch` at once. A message taken and never answered
 (its worker died) comes back after `REDELIVER_AFTER` seconds. The broker

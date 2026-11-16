@@ -4,8 +4,11 @@ It covers what ``RabbitMQBroker`` uses: robust connections, channels with
 publisher confirms, durable direct exchanges, queues bound by routing key,
 mandatory publishing (unroutable messages raise ``PublishError`` once
 ``on_return_raises`` is on), prefetch per consumer, consumers,
-acknowledgements, and requeues (which fail once their channel closed, with the
-connection). Tests break it on purpose with ``down`` (connections are
+acknowledgements, requeues (which fail once their channel closed, with the
+connection), and priorities, as quorum queues have them from RabbitMQ 4.3: a
+queue hands out its waiting messages highest priority first (4 for a
+message without one), the oldest first among equals, and those requeued
+before any, having lost theirs. Tests break it on purpose with ``down`` (connections are
 refused, and an open one has lost its transport, as a robust connection
 has while it reconnects), ``refuse``, and ``timeout``, and stall the
 calls named in ``stalled`` (a server that accepts connections but stops
@@ -64,8 +67,11 @@ class FakeIncomingMessage:
     message_id: str | None
     delivery_mode: DeliveryMode
     _queue: "FakeQueue"
+    priority: int | None = None
     _consumer: FakeConsumer | None = None
     settled: bool = False
+    returned: bool = False
+    """Requeued: it goes out before the others, its priority lost."""
 
     async def ack(self) -> None:
         """Forget the message."""
@@ -75,6 +81,7 @@ class FakeIncomingMessage:
         """Put the message back at the head of its queue, or drop it."""
         self._settle()
         if requeue:
+            self.returned = True
             self._queue.messages.appendleft(self)
             self._queue.wake()
 
@@ -147,12 +154,25 @@ class FakeQueue:
         """Let consumers look again."""
         self._ready.set()
 
+    def _next(self) -> FakeIncomingMessage:
+        """Take the message to hand out next: requeued, then by priority, by age."""
+
+        def rank(index: int) -> tuple[bool, int, int]:
+            message = self.messages[index]
+            priority = 4 if message.priority is None else min(message.priority, 31)
+            return message.returned, priority, -index
+
+        index = max(range(len(self.messages)), key=rank)
+        message = self.messages[index]
+        del self.messages[index]
+        return message
+
     async def _pump(self, consumer: FakeConsumer) -> None:
         while True:
             while not self.messages or not consumer.has_room():
                 self._ready.clear()
                 await self._ready.wait()
-            message = self.messages.popleft()
+            message = self._next()
             message.settled = False
             message._consumer = consumer
             consumer.unacked += 1
@@ -192,7 +212,11 @@ class FakeExchange:
             queue = server.queues[name]
             queue.messages.append(
                 FakeIncomingMessage(
-                    message.body, message.message_id, message.delivery_mode, queue
+                    message.body,
+                    message.message_id,
+                    message.delivery_mode,
+                    queue,
+                    priority=message.priority,
                 )
             )
             queue.wake()

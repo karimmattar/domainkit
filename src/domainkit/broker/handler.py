@@ -21,6 +21,12 @@ type BrokerFactory = Callable[[BrokerConfig], Broker]
 
 def rabbitmq_broker(config: BrokerConfig) -> Broker:
     """Connect to RabbitMQ; needs ``domainkit[rabbitmq]``."""
+    made: Broker = _rabbitmq()(config)  # type: ignore[call-arg]
+    return made
+
+
+def _rabbitmq() -> type[Broker]:
+    """RabbitMQ's adapter, imported on first use."""
     try:
         from domainkit.broker.rabbitmq import RabbitMQBroker
     except ImportError as exc:  # pragma: no cover - only without the [rabbitmq] extra.
@@ -28,7 +34,7 @@ def rabbitmq_broker(config: BrokerConfig) -> Broker:
             "RabbitMQ brokers need the rabbitmq extra: "
             "pip install 'domainkit[rabbitmq]'."
         ) from exc
-    return RabbitMQBroker(config)
+    return RabbitMQBroker
 
 
 ADAPTERS: Final = {
@@ -49,6 +55,23 @@ def connect_broker(config: BrokerConfig) -> Broker:
     Raises:
         ImproperlyConfigured: Its extra is not installed.
     """
+    if config.BACKEND is None and config.scheme not in ADAPTERS:
+        return rabbitmq_broker(config)
+    made: Broker = broker_class(config)(config)  # type: ignore[call-arg]
+    return made
+
+
+def broker_class(config: BrokerConfig) -> type[Broker]:
+    """The class of the broker ``config`` makes, without making it.
+
+    Its ``BACKEND``, else the adapter of its URL's scheme: ``MemoryBroker``
+    for ``memory://``, RabbitMQ's for ``amqp(s)://`` and any other. ``check``
+    reads what the broker can do from it (``Broker.priorities``).
+
+    Raises:
+        ImproperlyConfigured: ``BACKEND`` names no ``Broker``, or the
+            adapter's extra is not installed.
+    """
     from domainkit.utils.module_loading import import_backend, import_string
 
     if config.BACKEND is not None:
@@ -60,21 +83,20 @@ def connect_broker(config: BrokerConfig) -> Broker:
             raise ImproperlyConfigured(
                 f"BROKERS BACKEND: {config.BACKEND!r} is not a domainkit.broker.Broker."
             )
-        made: Broker = custom(config)  # type: ignore[call-arg]
-        return made
+        return custom
+    if config.scheme == "memory":
+        return MemoryBroker
     if config.scheme not in ADAPTERS:
-        return rabbitmq_broker(config)
-
+        return _rabbitmq()
     path, extra = ADAPTERS[config.scheme]
     try:
-        adapter = import_string(path)
+        adapter: type[Broker] = import_string(path)
     except ImportError as exc:  # pragma: no cover - only without the extra.
         raise ImproperlyConfigured(
             f"{config.scheme}:// brokers need the {extra} extra: "
             f"pip install 'domainkit[{extra}]'."
         ) from exc
-    broker: Broker = adapter(config)
-    return broker
+    return adapter
 
 
 class BrokerHandler:

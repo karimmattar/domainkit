@@ -492,9 +492,11 @@ async def push_invoice(invoice_id: UUID) -> None:
   a request.
 - **Priorities** order the due messages of a queue: higher first, then
   the oldest. They do not reorder queues; give urgent work a queue of its
-  own. On a broker, the relay publishes each round in priority order, but
-  RabbitMQ delivers in queue order, so priorities count only while
-  messages wait in the outbox.
+  own. On RabbitMQ, each message also carries its priority, and the
+  queue hands out the messages waiting in it by it
+  ([Priorities on RabbitMQ](#priorities-on-rabbitmq)). The other brokers
+  hand out messages in the order they came, so there a priority counts
+  only while its message waits in the outbox (`messaging.W004`).
 - **Rates** are counted by `RATE_LIMIT_BACKEND`: the memory backend
   counts in each worker process, `RedisBackend` across all of them. A
   message over the rate goes back to the outbox, without spending an
@@ -838,6 +840,35 @@ policy raises the limit, or lifts it (`-1`, from RabbitMQ 4.0):
 `rabbitmqctl set_policy work '^shop\.' '{"delivery-limit": -1}'
 --apply-to quorum_queues`.
 
+### Priorities on RabbitMQ
+
+Each message carries its task's priority as its AMQP priority, and a
+quorum queue hands out the messages that wait in it by it, with no queue
+argument to declare
+([ADR 0157](../adr/0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md)):
+
+| Task `priority` | AMQP priority | RabbitMQ 4.0 to 4.2 |
+| --- | --- | --- |
+| 1 to 100 | 5 to 31, in order | high |
+| 0 | 4, as a message without one | normal |
+| -100 to -1 | 0 to 3, in order | normal |
+
+- **RabbitMQ 4.3 and later** hand out the highest first, by those 32
+  levels. 4.0 to 4.2 have two levels, and hand out two high messages for
+  each normal one. Older versions ignore priorities on quorum queues.
+- **Only what waits.** A consumer holds up to `CONCURRENCY` messages of
+  each queue, its prefetch; a priority orders the messages behind those,
+  not the ones it holds already. It never reorders queues.
+- **A requeued delivery loses its priority** (the worker requeues one
+  while its outbox is unreachable), and goes out before the others.
+- **Starvation.** On 4.3, as in the outbox, a steady stream of higher
+  priorities holds lower ones back. Give work that must not wait a queue
+  of its own.
+
+`x-max-priority`, which classic queues read, is not declared: quorum
+queues ignore it, and RabbitMQ refuses a queue declared again with other
+arguments.
+
 ### Other brokers
 
 The same worker takes its work from Redis Streams, NATS JetStream, Kafka,
@@ -855,6 +886,12 @@ record, so an outage delays work and loses none.
 | NATS JetStream (`nats://`, `nats+tls://`) | one stream `<PREFIX>` with work-queue retention, a durable pull consumer per queue; a message id published twice is stored once | handed out again after `REDELIVER_AFTER` (its `ack_wait`) |
 | Kafka (`kafka://`, `kafka+ssl://`) | a topic `<PREFIX>.<queue>` of `PARTITIONS` partitions and `REPLICAS` copies, one consumer group; positions are committed as far as every earlier message is answered | read again by the worker that takes its partition |
 | Amazon SQS (`sqs://<region>`) | a queue `<PREFIX>-<queue>`, made with `REDELIVER_AFTER` as its visibility timeout | visible again after `REDELIVER_AFTER` |
+
+None of them has priorities: each hands out a queue's messages in the
+order they came. Where deployed, `check` warns about tasks that name a
+priority under them (`messaging.W004`); give urgent work a queue, and
+workers, of its own instead (`@task(queue="urgent")`, `runworker --queue
+urgent`).
 
 A requeued message comes back at once: added again (Redis, Kafka),
 negatively acknowledged (NATS), or made visible (SQS). Keep
@@ -1000,6 +1037,7 @@ other settings.
 | `messaging.W001` | Staging or production: a task registered without `name=`. | Give every task a stable `name=`. |
 | `messaging.W002` | Staging or production: a durable handler subscribed without `name=`. | Give it one, with `formerly=` its old key for the messages queued under it. |
 | `messaging.W003` | Staging or production: a database pool smaller than `CONCURRENCY` + 1. | Lower `CONCURRENCY`, or raise the workers' pool. |
+| `messaging.W004` | Staging or production: tasks name a priority, and `BROKER` hands out messages in the order they came (Redis Streams, NATS JetStream, Kafka, SQS, or a `BACKEND` without `priorities`). | Give urgent work a queue and workers of its own, or use RabbitMQ 4.0 or later. |
 | `ImproperlyConfigured` at startup | A task's `timeout` (or `TASK_TIMEOUT`) is not under `VISIBILITY_TIMEOUT`; a cron expression never runs; `@ordered` names an argument the task does not have. | Fix the task or the setting. |
 | Refused in staging and production | A broker without TLS or credentials, `guest`, or `memory://`. | Use `amqps://` (or the TLS scheme of your broker) and a user of its own. |
 | A commit that fails | A unit of work defers tasks or publishes events with durable handlers, and messaging is not installed. | Install messaging. |

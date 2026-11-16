@@ -324,6 +324,19 @@ and a status.
 - `READINESS_BROKERS = True` makes `/ready` check each broker of
   `BROKERS` too, as `broker:<alias>`; it is off by default, since a
   process serves while its broker is away (user report W9).
+- Task priorities count on RabbitMQ: each message carries its task's
+  priority as its AMQP priority (0 as 4, 1 to 100 over 5 to 31, -100 to
+  -1 over 0 to 3), and quorum queues hand out the messages waiting in
+  them by it, strictly from RabbitMQ 4.3, two high for each normal one
+  from 4.0. No queue argument changes. A broker adapter gains priorities
+  with `Broker.priorities = True` and a `priority` argument to
+  `publish`; one without is never given one
+  ([Priorities on RabbitMQ](docs/contrib/messaging.md#priorities-on-rabbitmq),
+  ADR 0157) (user report W9).
+- `check` warns, where deployed, about tasks that name a priority under a
+  broker that hands out messages in the order they came: Redis Streams,
+  NATS JetStream, Kafka, SQS (`messaging.W004`). There a priority orders
+  only what waits in the outbox (user report W9).
 - `select_routes` and `route_names` (`domainkit.http.routers`): mount a
   copy of a router with only some of its routes (`only`), without some
   (`without`), and with dependencies of your own on the routes you name
