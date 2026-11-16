@@ -147,6 +147,20 @@ and a status.
   phone's approval before it is recorded. `count_start` is public. A
   project re-implemented the start and the approval to name its
   dashboard and check who may use it (user report A8).
+- A page's sign-ins can ask more, or less, of the phone than the
+  settings do: an `on_start` hook returns a `SignInPolicy`
+  (`domainkit.contrib.ciba.hooks`) with a `binding_message`,
+  `number_matching`, and `same_network` (`"warn"` or `"require"`), and
+  what it leaves None keeps `NUMBER_MATCHING`, `QR_NUMBER_MATCHING` or
+  `QR_SAME_NETWORK`; of several hooks, the strictest wins. A QR sign-in
+  can ask the page's number too: `QR_NUMBER_MATCHING` (off by default),
+  or a page's policy, adds a `match_code` to `POST /app-sign-in/qr`'s
+  answer, which the phone types once it scanned the code. A project
+  could not ask the number and the same network of its dashboard and
+  not of its shop. ciba's requests table gains `same_network`: run
+  `makemigrations`, then `migrate`
+  ([A policy per page](docs/auth/ciba.md#a-policy-per-page),
+  [upgrading.md](docs/upgrading.md#23-to-24), ADR 0155) (user report A8).
 
 - `@requires_approval(action)` guards a `@use_case`: its call and its
   `run`, which routes wire, are both refused until approved, and

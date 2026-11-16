@@ -140,6 +140,19 @@ login route of your own may pass `amr=` to `pass_login_gates` and
 `issue_login`, beside `method=`
 ([How a login was made](auth/logging-in.md#how-a-login-was-made)).
 
+### Make and apply ciba's migration
+
+With `domainkit.contrib.ciba` installed, its sign-in requests table
+gains a nullable column, `same_network`, where a QR code keeps what its
+page asked of a phone on another network
+([A policy per page](auth/ciba.md#a-policy-per-page),
+[ADR 0155](adr/0155-choose-number-matching-and-the-same-network-per-page.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate`, before the new code serves requests: starting or reading a
+sign-in fails until the column exists. Requests started before have
+none, and follow `QR_SAME_NETWORK` as they did. A QR sign-in asks no
+number unless `QR_NUMBER_MATCHING`, or a page's policy, asks it.
+
 ### uvicorn becomes an extra in 3.0
 
 Every install of 2.x brings uvicorn (`uvicorn[standard]`), even where
