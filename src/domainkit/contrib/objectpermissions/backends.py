@@ -1,7 +1,7 @@
 """``ObjectPermissionBackend``: what grants allow on one object."""
 
 from domainkit.clock import now
-from domainkit.contrib.auth.backends import BaseBackend, ObjectGrant
+from domainkit.contrib.auth.backends import BaseBackend, ObjectGrant, memoised
 from domainkit.contrib.auth.models import AbstractBaseUser, AnyUser, Group
 from domainkit.db.routing import router
 from domainkit.ddd.query import Criteria, F
@@ -19,6 +19,10 @@ class ObjectPermissionBackend(BaseBackend):
     no grants. It also lists a user's or a group's grants
     (``object_grants``), for the admin API's bounds on staff. Expired
     grants count for neither.
+
+    Within a request, one query answers every permission of a user on one
+    object (``memoised``), as django-guardian's ``ObjectPermissionChecker``
+    does for its lifetime.
     """
 
     async def get_all_permissions(
@@ -31,13 +35,18 @@ class ObjectPermissionBackend(BaseBackend):
             content_type, object_id = describe(obj)
         except (LookupError, TypeError):
             return frozenset()
-        groups = [group.id for group in getattr(user, "groups", ())]
-        async with unit_of_work_for(content_type) as uow:
-            found = await uow.grants.filter(
-                about(content_type, object_id, user_id=user.id, group_ids=groups)
-                & in_force(now())
-            )
-        return frozenset(grant.permission for grant in found)
+        groups = frozenset(group.id for group in getattr(user, "groups", ()))
+
+        async def granted() -> frozenset[str]:
+            async with unit_of_work_for(content_type) as uow:
+                found = await uow.grants.filter(
+                    about(content_type, object_id, user_id=user.id, group_ids=groups)
+                    & in_force(now())
+                )
+            return frozenset(grant.permission for grant in found)
+
+        key = (ObjectPermissionBackend, user.id, groups, content_type, object_id)
+        return await memoised(key, granted)
 
     async def object_grants(
         self, holder: AbstractBaseUser | Group

@@ -147,10 +147,13 @@ Who a user is, and what they may do (Django's authentication backends).
 - `ObjectGrant`: `permission` granted on one object: its content type and its id.
 - `authenticate`: The user the credentials prove, by the first backend that accepts them.
 - `backends_without_object_grants`: The configured backends that do not say what they grant on objects.
+- `forget_permissions`: Drop what the current request or block kept; it keeps answers again.
 - `get_all_permissions`: Keys of every permission any backend grants `user` (on `obj`).
 - `get_user`: The user with `user_id`, from the first backend that has it.
 - `has_perm`: Whether `user` has `perm` (on `obj`).
 - `has_perms`: Whether `user` has every one of `perms` (on `obj`).
+- `memoised`: `compute()`'s answer for `key`, once per request or block.
+- `memoised_permissions`: Answer each question about a user and an object once, inside the block.
 - `object_grants`: What every backend grants `holder` (a user or a group) on single objects.
 
 ## `domainkit.contrib.auth.captcha`

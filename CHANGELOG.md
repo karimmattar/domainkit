@@ -405,6 +405,16 @@ and a status.
 
 ### Changed
 
+- A request reads a user's grants on one object once: within an HTTP
+  request with credentials, `ObjectPermissionBackend` answers every
+  permission of a user on an object with one query, however many rules
+  and use cases ask, where each `has_perm` ran it again. A commit in the
+  request drops what it kept, so a grant or a revocation is seen at once;
+  WebSockets, event streams once they stream, and work outside a request
+  keep nothing. `memoised(key, compute)` lets a project's backend do the
+  same, and `memoised_permissions()` gives a task one for a block
+  ([Checking permissions](docs/auth/users.md#checking-permissions)) (user
+  report A11).
 - `POLL_INTERVAL_IDLE` applies to the relay too while commits publish
   themselves to the broker (`PUBLISH_ON_COMMIT`): it polled the outbox
   every `POLL_INTERVAL` for what commits had already published (user

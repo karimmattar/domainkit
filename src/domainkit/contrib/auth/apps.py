@@ -42,7 +42,11 @@ from domainkit.utils.rates import PERIODS, parse_rate
 
 from .access import StepUp
 from .authentication import get_authenticators
-from .backends import backends_without_object_grants, get_backends
+from .backends import (
+    backends_without_object_grants,
+    forget_permissions,
+    get_backends,
+)
 from .hashers import insecure_hashers
 from .models import PROTECTED_FLOOR, AbstractBaseUser, AbstractUser, User
 from .permissions import declared_permissions, sync_permissions
@@ -114,7 +118,7 @@ class AuthConfig(DomainConfig):
         start_mappers(self.user_model, self.user_table)
         watch(self.user_model)
         on_stage(self.stamp_changes)
-        on_committed(self.wait_for_stamps)
+        on_committed(self.after_commit)
         on_migrated(self.create_permissions)
         invalidate_all()  # Settings, models, or databases may have changed.
         declared_permissions()
@@ -165,8 +169,14 @@ class AuthConfig(DomainConfig):
         """Stamp what the commit will change in principals, before it too."""
         await stamp_pending(uow.session, auth_settings().PRINCIPAL_CACHE)
 
-    async def wait_for_stamps(self, uow: SqlAlchemyUnitOfWork) -> None:
-        """Wait for the stamps of what the commit changed, for other processes."""
+    async def after_commit(self, uow: SqlAlchemyUnitOfWork) -> None:
+        """Forget memoised permissions; wait for the stamps of what changed.
+
+        What backends answered within the request may no longer hold: the
+        commit may have granted, revoked, or deleted what they read
+        (``backends.memoised``). The stamps tell other processes.
+        """
+        forget_permissions()
         await stamp_committed(uow.session)
 
     async def issue_test_token(
