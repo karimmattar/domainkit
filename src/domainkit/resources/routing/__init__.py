@@ -89,6 +89,7 @@ from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
 from domainkit.http.middleware import body_limit
 from domainkit.http.pagination import Pagination
+from domainkit.http.routing import plain_routes
 from domainkit.tenancy import PathTenant, serve_no_tenant
 from domainkit.utils.text import pluralize, snake_case
 
@@ -380,7 +381,10 @@ class ResourceRouter(APIRouter):
                 "parameter, or keep a resource whose items are tenants at the top."
             )
         kind = typed.get(name, tenant.id_type)
-        return tenant if tenant.id_type is kind else PathTenant(name, id_type=kind)
+        strict = tenant.strict or name == self.lookup
+        if tenant.id_type is kind and tenant.strict is strict:
+            return tenant
+        return PathTenant(name, id_type=kind, strict=strict)
 
     def serves_tenant(self, path: str) -> bool:
         """Whether the route at ``path`` (after the prefix) is served as a tenant."""
@@ -440,12 +444,17 @@ class ResourceRouter(APIRouter):
         """Include ``router``; on a resource with a ``tenant``, under its parameter.
 
         Its routes are then served as the tenant the prefix names, before
-        their own dependencies.
+        their own dependencies. A route of ``router``, or of a router it
+        includes, that takes no dependency (a Starlette route or WebSocket
+        route, a mount, a host, frontend routes) would not be: FastAPI
+        serves it without the include's. ``check`` finds one added later
+        (``tenancy.E003``).
 
         Raises:
             TypeError: The resource has a ``tenant`` whose parameter the
                 prefix does not hold: the included routes would be served as
-                no tenant, or name one unchecked.
+                no tenant, or name one unchecked; or ``router`` holds a route
+                that takes no dependency.
         """
         tenant: PathTenant | None = getattr(self, "tenant", None)
         if tenant is not None:
@@ -455,6 +464,14 @@ class ResourceRouter(APIRouter):
                     f"prefix='/{{{tenant.parameter}}}/...', or declare their "
                     "routes on the resource: each route of it is served as the "
                     "tenant its path names, or as none."
+                )
+            for route in plain_routes(router):
+                raise TypeError(
+                    f"The router included into {self.prefix} holds "
+                    f"{type(route).__name__} {getattr(route, 'path', '')!r}, "
+                    "which takes no dependency, so would not be served as the "
+                    "tenant its path names. Declare it with @router.get, .post, "
+                    ".websocket, ..., or serve it outside the resource."
                 )
             dependencies = [Depends(tenant), *(dependencies or ())]
         super().include_router(

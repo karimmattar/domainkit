@@ -425,8 +425,16 @@ class PathTenant:
     serves its routes with one of its id's type (ADR 0170).
     """
 
-    def __init__(self, parameter: str, *, id_type: type = str) -> None:
+    def __init__(
+        self, parameter: str, *, id_type: type = str, strict: bool = False
+    ) -> None:
         """Take the tenant from the path parameter ``parameter``, of ``id_type``.
+
+        ``strict``: every route of the application whose path holds the
+        parameter where this one's does (``/companies/{company_id}/...``)
+        must take its tenant from it; ``check`` reports one that does not
+        (``tenancy.E003``). A ``ResourceRouter`` whose items are tenants
+        makes its own so.
 
         Raises:
             ImproperlyConfigured: ``parameter`` cannot name a path parameter,
@@ -449,6 +457,7 @@ class PathTenant:
             )
         self.parameter = parameter
         self.id_type = id_type
+        self.strict = strict
         # FastAPI reads the parameters from this: the path parameter is
         # declared, documented, and passed by its own name.
         self.__signature__ = inspect.Signature(
@@ -614,10 +623,14 @@ def path_tenant_problems(app: FastAPI) -> list[str]:
     dependency that checks callers, such as ``Require``) comes before it
     among the route's own dependencies, so the rule sees no tenant. A
     ``PathTenant`` inside another dependency is checked against the path
-    only.
+    only. ``tenancy.E003``: a route's path holds the parameter of a strict
+    ``PathTenant`` where routes it serves hold it, and the route does not
+    take its tenant from it: a Starlette route, a mount, or a route added
+    to a router after it was included into a tenants' resource.
     """
     problems: list[str] = []
-    for route, dependant in served_routes(app.routes):
+    served = list(served_routes(app.routes))
+    for route, dependant in served:
         if dependant is None:
             continue
         named = {each.parameter for each in _path_tenants(dependant)}
@@ -646,6 +659,46 @@ def path_tenant_problems(app: FastAPI) -> list[str]:
                     "Depends(PathTenant(...)) first.",
                 )
             )
+    problems.extend(_unserved(served))
+    return problems
+
+
+def _unserved(served: list[tuple[str, Dependant | None]]) -> list[str]:
+    """``tenancy.E003``: routes under a strict ``PathTenant``'s path it does not serve.
+
+    The path, up to its parameter, of each route a strict ``PathTenant``
+    serves (``/companies/{company_id}``) belongs to it: a route at or
+    under it that does not take its tenant from that ``PathTenant``'s
+    parameter is reported.
+    """
+    owned: dict[str, str] = {}
+    for route, dependant in served:
+        for each in _path_tenants(dependant) if dependant is not None else ():
+            path = route.rsplit(" ", 1)[-1]
+            held = re.match(rf"(.*?\{{{each.parameter}(:[^}}]*)?\}})", path)
+            if each.strict and held is not None:
+                owned[held.group(1)] = each.parameter
+    problems: list[str] = []
+    for route, dependant in served:
+        path = route.rsplit(" ", 1)[-1]
+        taken = (
+            set()
+            if dependant is None
+            else {each.parameter for each in _path_tenants(dependant)}
+        )
+        problems.extend(
+            CheckMessage(
+                "tenancy.E003",
+                f"{route} lies under {prefix}, whose routes take their tenant "
+                f"from {{{parameter}}}, but takes none from it: callers who do "
+                "not belong reach it, as whichever tenant a middleware names. "
+                "Declare it with FastAPI's routes on the resource, or in a "
+                "router included into it, before the include.",
+            )
+            for prefix, parameter in owned.items()
+            if (path == prefix or path.startswith(f"{prefix}/"))
+            and parameter not in taken
+        )
     return problems
 
 

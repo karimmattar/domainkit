@@ -14,7 +14,7 @@ from typing import Annotated, Any, Final
 from uuid import UUID
 
 import pytest
-from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket
+from fastapi import APIRouter, Depends, FastAPI, Request, Response, WebSocket
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.datastructures import Headers
@@ -79,6 +79,8 @@ from domainkit_tests.test_resources import (
 pytestmark = pytest.mark.anyio
 
 HERE: Final = "domainkit_tests.test_tenant_resources"
+BY_ORG: Final = PathTenant("org_id")
+"""A tenant from the path, as 2.4 offered it on a router: not strict."""
 BACKENDS: Final = [
     "domainkit.contrib.auth.backends.ModelBackend",
     "domainkit.contrib.auth.backends.MembershipBackend",
@@ -849,6 +851,86 @@ def test_a_router_included_into_a_tenants_resource_is_served_as_its_tenant(
         resource.mount("/plain", plain)
     with pytest.raises(TypeError, match="a host's application"):
         resource.host("plain.example", plain)
+
+
+async def plain_app(scope: Scope, receive: Receive, send: Send) -> None:
+    """An application that takes no dependency."""
+
+
+async def plain_route(request: Request) -> Response:
+    """A Starlette route's endpoint: it takes no dependency."""
+    return Response()
+
+
+async def plain_socket(socket: WebSocket) -> None:
+    """A Starlette WebSocket route's endpoint: it takes no dependency."""
+
+
+def test_a_router_holding_starlette_routes_is_refused_into_a_tenants_resource(
+    store: InMemoryGadgets,
+) -> None:
+    """FastAPI serves a mount or a Starlette route without the include's tenant.
+
+    So a stranger, or a member of another tenant through a header, reached
+    a's mounted files as whatever the middleware named. At any depth.
+    """
+    mounted = APIRouter()
+    mounted.mount("/app", plain_app)
+    raw = APIRouter()
+    raw.add_route("/raw", plain_route)
+    deep = APIRouter()
+    inner = APIRouter()
+    inner.add_websocket_route("/live", plain_socket)
+    deep.include_router(inner, prefix="/inner")
+    for router, held in ((mounted, "Mount '/app'"), (raw, "Route '/raw'")):
+        with pytest.raises(TypeError, match=f"holds {held}, which takes no"):
+            companies(store).include_router(router, prefix="/{gadget_id}/files")
+    with pytest.raises(TypeError, match="holds WebSocketRoute '/live'"):
+        companies(store).include_router(deep, prefix="/{gadget_id}/files")
+
+
+def tenancy_problems(app: FastAPI) -> list[tuple[str, str]]:
+    """The ``tenancy.`` problems ``check`` finds in ``app``: their id and route."""
+    return sorted(
+        (getattr(problem, "id", ""), problem.split(" lies under")[0].split(" ")[-1])
+        for problem in application_problems(app)
+        if getattr(problem, "id", "").startswith("tenancy.")
+    )
+
+
+def test_check_finds_routes_under_a_tenants_path_it_does_not_serve(
+    store: InMemoryGadgets,
+) -> None:
+    """``tenancy.E003``: added to an included router after the include, too late.
+
+    FastAPI includes a router as it is, so what is added to it later is
+    served; ``check``, and the application as it starts, refuse it. The
+    resource's own routes, those it includes, and a 2.4 router whose
+    ``PathTenant`` is not strict, pass.
+    """
+    resource = companies(store)
+    files = APIRouter()
+    resource.include_router(files, prefix="/{gadget_id}/files")
+
+    @files.get("/{file_id}", dependencies=[Depends(Require())])
+    async def read_file(file_id: str) -> None: ...
+
+    files.add_route("/raw", plain_route)
+    files.mount("/app", plain_app)
+    orgs = APIRouter(prefix="/orgs/{org_id}", dependencies=[Depends(BY_ORG)])
+
+    @orgs.get("/members", dependencies=[Depends(Require())])
+    async def org_members() -> None: ...
+
+    app = FastAPI()
+    app.include_router(resource, prefix="/v1")
+    app.include_router(orgs)
+    app.add_route("/orgs/{org_id}/public", plain_route)
+
+    assert tenancy_problems(app) == [
+        ("tenancy.E003", "/v1/gadgets/{gadget_id}/files/app"),
+        ("tenancy.E003", "/v1/gadgets/{gadget_id}/files/raw"),
+    ]
 
 
 def test_a_resource_without_a_tenant_takes_routers_and_starlette_routes(
