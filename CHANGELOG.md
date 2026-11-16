@@ -17,13 +17,18 @@ and a status.
   waited forever at its first write; its own logging thread's lines were
   lost with `reentrant call` errors. `gunicorn --preload`,
   `multiprocessing`'s `fork` start method, and a project's own
-  `os.fork` could all hit it. A fork now waits for the thread to finish
-  the record it is writing, `FLUSH_TIMEOUT` at most for a stream that
-  stays blocked, and the thread starts no other until the fork is done.
-  The hook before a fork also takes `logging`'s lock before domainkit's,
-  as `dictConfig` does: a fork while another thread configured logging
-  could wait for it in a circle
-  ([runtime.md](docs/runtime.md#writing-logs-off-the-loop))
+  `os.fork` could all hit it. A fork now waits for the writes in
+  progress through the handlers behind a `BackgroundHandler`: it takes
+  each handler's lock, which `logging` holds while the handler writes,
+  and the logging thread starts no other record until the fork is done.
+  These waits end `FLUSH_TIMEOUT` after the fork began; a write still
+  going on then, on a stream that stays blocked, is left to it. The fork
+  takes `logging`'s lock before domainkit's, as `dictConfig` does: a
+  fork while another thread configured logging could wait for it in a
+  circle. While another thread holds `logging`'s lock, the fork waits
+  for it as Python's own hook does, and lets the logging thread write
+  meanwhile, so a `dictConfig` that replaces a running handler is not
+  held up ([runtime.md](docs/runtime.md#writing-logs-off-the-loop))
   (follow-up of 2.5.0).
 
 ## [2.5.0] - 2026-11-16

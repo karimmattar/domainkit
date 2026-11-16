@@ -108,7 +108,7 @@ record. A handler behind the queue that needs the exception object, not
 its text, no longer gets it; error trackers take exceptions from
 `ERROR_REPORTERS`, which this does not change.
 
-## Amendment (2026-11-17, 2.6): a fork waits for the record being written
+## Amendment (2026-11-17, 2.6): a fork waits for the writes in progress
 
 A process forked while the logging thread wrote to a buffered stream
 (standard output on a pipe, a file) inherited the stream's lock held, by
@@ -116,25 +116,37 @@ a thread the child does not have. The child's first write from its main
 thread waited forever, and its own logging thread's lines were lost with
 `reentrant call` errors. 2.5.0 spared `manage.py serve` by spawning
 Granian's workers; `gunicorn --preload`, `multiprocessing`'s fork, and a
-project's own `os.fork` still hit it: in the test, 18 of 20 children
-forked while the thread wrote hung.
+project's own `os.fork` still hit it: in the test, children forked while
+the thread wrote hung (up to 19 of 20) or lost their lines.
 
-So a fork now waits for each running thread's current record too, not
-only for a thread changing the list of handlers. Each listener writes a
-record holding a lock of its own, after a turnstile. The hook before a
-fork takes every running listener's turnstile, so no thread starts
-another record, then each listener's lock, as its thread finishes the
-record it is writing. They share one `FLUSH_TIMEOUT`: a thread still
-writing then is on a stuck stream, which the child could not write to
-either, and the fork goes on without it. Without the turnstile, the
-thread took its lock again for its next record before the fork woke.
+So a fork now waits for the writes in progress too, not only for a
+thread changing the list of handlers. `logging` has each handler write
+under its own lock. The hook before a fork asks every running logging
+thread to wait at its turnstile before its next record, takes the
+turnstiles, then each handler's lock as its write ends. The thread
+itself takes no lock per record, and passes the turnstile only while a
+fork asks: no call more per record than before. Without the turnstile,
+a thread took its handler's lock again for its next record before the
+fork woke. The waits end `FLUSH_TIMEOUT` after the fork began: a write
+still going on then is on a stuck stream, which the child could not
+write to either, and the fork goes on without it.
 
 The hook then takes `logging`'s lock, then the lock of the handler list,
 in the order `dictConfig` takes them: it makes handlers under `logging`'s
 lock, and each takes ours. Before, the fork held ours while `logging`'s
 own hook, which runs after domainkit's, waited for `logging`'s, and a
 `dictConfig` on another thread waited for ours: a loop of forks against a
-loop of `dictConfig` calls deadlocked within seconds. The listeners'
-locks come before both, as their handlers may take `logging`'s lock while
-they write (making a logger, reading a level not cached yet), and the
-fork waits for them holding no other lock.
+loop of `dictConfig` calls deadlocked within seconds. The threads come
+before both, as their handlers may take `logging`'s lock while they
+write (making a logger, reading a level not cached yet). `logging`'s
+lock is only tried: while another thread holds it, the fork lets the
+threads write, waits for the lock as `logging`'s own hook would, and
+holds them again within what is left of `FLUSH_TIMEOUT`. The holder may
+be `dictConfig` flushing the handlers it replaces, which takes their
+locks and waits for their threads under it: a fork that kept the
+threads while it waited made both wait `FLUSH_TIMEOUT`.
+
+Each thread keeps what its forks hold apart, noted as each lock is
+taken. A signal handler may fork while its thread's fork runs its
+hooks, and each fork lets go of what it took; one that raises while the
+hook waits (Ctrl-C) leaves nothing held, and Python forks all the same.
