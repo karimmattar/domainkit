@@ -525,6 +525,47 @@ def test_infrastructure_may_call_other_services_through_the_http_client(
     }
 
 
+def test_a_file_gateway_may_check_and_store_uploads(
+    make_package: MakePackage,
+) -> None:
+    """``domainkit.http.uploads`` is an adapter's; the web's errors and types are not.
+
+    A gateway takes the bytes its route hands it (``save_upload`` takes
+    bytes or a stream since 2.5), so it needs neither Starlette's
+    ``UploadFile`` nor ``domainkit.http.errors``: it raises domain errors,
+    which the HTTP layer maps. The application layer may name the stored
+    upload its commands carry (user report D2).
+    """
+    make_package(
+        "arch.contracts",
+        {
+            "infrastructure/files.py": """
+                from domainkit.http.uploads import CHECKED_PDF, save_upload
+                from domainkit.storage import StoredUpload
+                from domainkit.http.errors import APIError
+                from starlette.datastructures import UploadFile
+            """,
+            "application/commands.py": """
+                from domainkit.storage import StoredUpload
+                from domainkit.http.uploads import save_upload
+            """,
+        },
+    )
+    found = {
+        (v.module.removeprefix("arch.contracts."), v.imported)
+        for v in check_domains(["arch.contracts"], LayerRules())
+    }
+
+    assert found == {
+        ("infrastructure.files", "domainkit.http.errors"),
+        ("infrastructure.files", "domainkit.http.errors.APIError"),
+        ("infrastructure.files", "starlette.datastructures"),
+        ("infrastructure.files", "starlette.datastructures.UploadFile"),
+        ("application.commands", "domainkit.http.uploads"),
+        ("application.commands", "domainkit.http.uploads.save_upload"),
+    }
+
+
 def test_a_project_that_forbids_the_client_by_name_forbids_it(gateway: str) -> None:
     """``FORBIDDEN_LIBRARIES`` naming the client wins: settings add rules (D2).
 

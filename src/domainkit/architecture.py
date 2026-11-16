@@ -16,7 +16,9 @@ domain layer), ``controllers.py`` (application), ``models.py``
   database libraries; it reaches storage through repository ports.
 - ``infrastructure``: no ``api`` code and no web libraries, but the
   outgoing HTTP client (``domainkit.http.client``): calling another
-  service is what an adapter does.
+  service is what an adapter does; and the checks and storing of uploads
+  (``domainkit.http.uploads``), which a file gateway runs on the bytes
+  its route hands it.
 - Another domain may be used only through its ``application`` layer or its
   ``domain.events`` (bounded contexts stay decoupled).
 
@@ -81,7 +83,9 @@ FORBIDDEN_LIBRARIES: Final = {
 }
 """Libraries each layer must not import."""
 
-ALLOWED_MODULES: Final = {"infrastructure": ("domainkit.http.client",)}
+ALLOWED_MODULES: Final = {
+    "infrastructure": ("domainkit.http.client", "domainkit.http.uploads")
+}
 """Modules a layer may import although a library it must not use holds them.
 
 An entry lifts only a library entry less specific than itself: a project
