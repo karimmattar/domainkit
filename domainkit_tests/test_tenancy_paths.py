@@ -11,7 +11,14 @@ from typing import Annotated, Any, Final, NewType
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Request, WebSocket
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Request,
+    WebSocket,
+)
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import insert
@@ -37,12 +44,19 @@ from domainkit.tenancy import (
     tenant,
 )
 from domainkit_tests import sample_tenant_orgs
-from domainkit_tests.conftest import API, Api
-from domainkit_tests.support.auth import create_user
+from domainkit_tests.conftest import API, MIDDLEWARE, Api
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, grant, login
 from domainkit_tests.test_auth_access import user
 from domainkit_tests.test_auth_admin import token_for
 
 pytestmark = pytest.mark.anyio
+
+TENANT_MIDDLEWARE: Final = [
+    *MIDDLEWARE[:3],
+    "domainkit.tenancy.TenantMiddleware",
+    *MIDDLEWARE[3:],
+]
+"""Authentication first, then the tenant, as docs/tenancy.md orders them."""
 
 HERE: Final = "domainkit_tests.test_tenancy_paths"
 PEOPLE: Final = {
@@ -416,6 +430,27 @@ def test_the_membership_backend_needs_member_permissions() -> None:
             MembershipBackend()
 
 
+ORGS: Final = "domainkit_tests.sample_tenant_orgs"
+MEMBERSHIP_BACKENDS: Final = [
+    "domainkit.contrib.auth.backends.ModelBackend",
+    "domainkit.contrib.auth.backends.MembershipBackend",
+]
+
+
+def seed(*rows: tuple[UUID, str, str]) -> None:
+    """Store the project's memberships: ``(user id, organisation, role)``."""
+
+    async def store() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(sample_tenant_orgs.MEMBERS.metadata.create_all)
+            await connection.execute(
+                insert(sample_tenant_orgs.MEMBERS),
+                [{"user_id": who, "org": org, "role": role} for who, org, role in rows],
+            )
+
+    run_async(store())
+
+
 def test_roles_the_project_stores_answer_has_perm(api: Api) -> None:
     """Memberships in the project's table, a role each, decide its routes.
 
@@ -426,35 +461,12 @@ def test_roles_the_project_stores_answer_has_perm(api: Api) -> None:
     """
     ann, bob, cy = (create_user(name) for name in ("ann", "bob", "cy"))
     with override_settings(
-        ROOT_ROUTER="domainkit_tests.sample_tenant_orgs.router",
-        TENANCY={
-            "MEMBER_PERMISSIONS": "domainkit_tests.sample_tenant_orgs.role_permissions"
-        },
-        AUTH={
-            **API.settings["AUTH"],
-            "BACKENDS": [
-                "domainkit.contrib.auth.backends.ModelBackend",
-                "domainkit.contrib.auth.backends.MembershipBackend",
-            ],
-        },
+        ROOT_ROUTER=f"{ORGS}.router",
+        TENANCY={"MEMBER_PERMISSIONS": f"{ORGS}.role_permissions"},
+        AUTH={**API.settings["AUTH"], "BACKENDS": MEMBERSHIP_BACKENDS},
     ):
         client = api()
-
-        async def seed() -> None:
-            async with connections.engine().begin() as connection:
-                await connection.run_sync(
-                    sample_tenant_orgs.MEMBERS.metadata.create_all
-                )
-                await connection.execute(
-                    insert(sample_tenant_orgs.MEMBERS),
-                    [
-                        {"user_id": ann, "org": "acme", "role": "owner"},
-                        {"user_id": bob, "org": "acme", "role": "viewer"},
-                        {"user_id": cy, "org": "globex", "role": "owner"},
-                    ],
-                )
-
-        run_async(seed())
+        seed((ann, "acme", "owner"), (bob, "acme", "viewer"), (cy, "globex", "owner"))
         owner, viewer, outsider = (token_for(name) for name in ("ann", "bob", "cy"))
         answers = {
             "owner reads": client.get("/orgs/acme/products", headers=owner),
@@ -479,3 +491,66 @@ def test_roles_the_project_stores_answer_has_perm(api: Api) -> None:
     }
     assert answers["owner changes"].json() == {"tenant": "acme", "changed": True}
     assert body(answers["outsider reads"]) == body(answers["no such org"])
+
+
+def test_a_members_role_raises_no_ceiling(api: Api) -> None:
+    """A role's keys count inside the tenant, and toward no ceiling.
+
+    Staff who are owners in acme, while acme is served, use its role's
+    keys there, but grant them to no one through the admin API, and scope
+    no personal token with them: either would carry them beyond acme.
+    What they hold everywhere still bounds both, and ``/auth/me`` lists
+    the role's keys with the rest.
+    """
+    boss = create_user("boss", is_staff=True)
+    bob = create_user("bob")
+    grant("boss", "auth.change_user", "auth.view_user")
+    with override_settings(
+        ROOT_ROUTER=f"{ORGS}.everything",
+        MIDDLEWARE=TENANT_MIDDLEWARE,
+        TENANCY={
+            "HEADER": "X-Tenant",
+            "REQUIRED": False,
+            "MEMBER_PERMISSIONS": f"{ORGS}.role_permissions",
+        },
+        AUTH={**API.settings["AUTH"], "BACKENDS": MEMBERSHIP_BACKENDS},
+    ):
+        client = api()
+        seed((boss, "acme", "owner"))
+        acme = {**bearer(login(client, "boss")["access_token"]), "X-Tenant": "acme"}
+
+        def token(*scopes: str) -> Any:  # noqa: ANN401 - a response.
+            body = {"name": "ci", "password": PASSWORD, "scopes": list(scopes)}
+            return client.post("/auth/tokens", json=body, headers=acme)
+
+        uses = client.patch("/orgs/acme/products", headers=acme)
+        grants = client.put(
+            f"/admin/auth/users/{bob}/permissions",
+            json={"permissions": ["shop.change_product"]},
+            headers=acme,
+        )
+        scopes = token("shop.view_product")
+        own = token("auth.view_user")
+        listed = client.get("/auth/me", headers=acme).json()["permissions"]
+
+    assert {
+        "uses the role": uses.status_code,
+        "grants the role's key": grants.status_code,
+        "scopes a token with it": scopes.status_code,
+        "scopes a token with its own": own.status_code,
+    } == {
+        "uses the role": 200,
+        "grants the role's key": 403,
+        "scopes a token with it": 403,
+        "scopes a token with its own": 201,
+    }
+    assert grants.json()["detail"] == (
+        "You can only grant permissions you have; you lack shop.change_product."
+    )
+    assert scopes.json()["code"] == "scope_not_held"
+    assert sorted(listed) == [
+        "auth.change_user",
+        "auth.view_user",
+        "shop.change_product",
+        "shop.view_product",
+    ]

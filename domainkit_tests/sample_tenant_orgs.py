@@ -2,6 +2,7 @@
 
 The project keeps memberships in a table of its own, a role on each;
 ``role_permissions`` is its ``TENANCY.MEMBER_PERMISSIONS`` (tenancy tests).
+``everything`` mounts them with auth's API, personal tokens, and admin API.
 """
 
 from typing import Any, Final
@@ -9,6 +10,9 @@ from typing import Any, Final
 from fastapi import APIRouter, Depends
 from sqlalchemy import Column, MetaData, String, Table, Uuid, select
 
+from domainkit.contrib.auth.admin import router as admin_router
+from domainkit.contrib.auth.api import router as auth_router
+from domainkit.contrib.auth.personal_tokens import router as tokens_router
 from domainkit.db import connections
 from domainkit.http.access import HasPermissions, Require
 from domainkit.tenancy import PathTenant, current_tenant
@@ -59,3 +63,10 @@ async def products() -> dict[str, Any]:
 async def change() -> dict[str, Any]:
     """Change the organisation's products."""
     return {"tenant": current_tenant(), "changed": True}
+
+
+everything = APIRouter()
+everything.include_router(router)
+everything.include_router(auth_router, prefix="/auth")
+everything.include_router(tokens_router, prefix="/auth")
+everything.include_router(admin_router, prefix="/admin/auth")
