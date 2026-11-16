@@ -723,7 +723,8 @@ def test_init_writes_an_image_that_serves_with_granian(tmp_path: Path) -> None:
     [
         ("2.4.0", "https://github.com/karimmattar/domainkit/blob/v2.4.0/docs"),
         ("0.0.0+unknown", "https://github.com/karimmattar/domainkit/blob/main/docs"),
-        ("2.4.0rc1", "https://github.com/karimmattar/domainkit/blob/main/docs"),
+        ("2.4.0rc1", "https://github.com/karimmattar/domainkit/blob/v2.4.0rc1/docs"),
+        ("2.4.0.dev3", "https://github.com/karimmattar/domainkit/blob/main/docs"),
     ],
 )
 def test_the_templates_link_to_their_releases_documentation(
@@ -732,7 +733,8 @@ def test_the_templates_link_to_their_releases_documentation(
     """A release's tag, as the package's own links; ``main`` from a checkout.
 
     The notes once named a path of the repository, which a project does
-    not have (user report S1).
+    not have (user report S1). A pre-release is tagged too, and its
+    README's links name its tag (user report D2).
     """
     assert docs_url(version) == expected
 

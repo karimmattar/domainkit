@@ -9,6 +9,11 @@ Layers, lowest first; a module may import only from its own layer or below:
    observability.
 4. ``db``, ``http``: SQLAlchemy and FastAPI integration.
 5. ``management``: the ``manage.py`` commands.
+
+Docstrings, messages, and ``check``'s hints name pages of the
+documentation as ``docs/<page>.md`` and decisions as ``ADR NNNN``, which
+the package does not hold: ``domainkit docs docs/live.md`` prints the
+page's link for the release installed (ADR 0152).
 """
 
 from typing import TYPE_CHECKING

@@ -27,8 +27,9 @@ limits, with a sample transfer that goes through all of them and its tests.
 ``--server granian`` writes an image that serves with Granian, not
 uvicorn, with the options of "Server limits" (``docs/reference/servers.md``)
 and ``LOGGING`` for Granian's own process, and depends on the ``granian``
-and ``uvloop`` extras. The notes the templates write link to the
-documentation of the release that wrote them (``docs_url``).
+and ``uvloop`` extras. The Dockerfile's notes link to the documentation
+of the release that wrote them (``docs_url``); the other notes name pages
+as ``docs/<page>.md``, which ``manage.py docs`` links (ADR 0152).
 """
 
 import re
@@ -66,6 +67,9 @@ DOTFILE: Final = "dot-"
 (``.env``, ``.gitignore``, ``.github``)."""
 _PROJECT_NAME: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 _RELEASE: Final = re.compile(r"(\d+)\.(\d+)\.\d+")
+_TAGGED: Final = re.compile(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?")
+"""The versions a release may have, each tagged ``v<version>``: final, or a
+numbered pre-release (``.github/scripts/release_check.py``)."""
 
 
 def requirement(version: str, extras: tuple[str, ...] = EXTRAS[None]) -> str:
@@ -88,9 +92,10 @@ def requirement(version: str, extras: tuple[str, ...] = EXTRAS[None]) -> str:
 def docs_url(version: str) -> str:
     """The documentation of ``version``: its tag's, or ``main``'s from a checkout.
 
-    The package's own links name its release's tag, as these do.
+    The package's own links name its release's tag, as these do, a
+    pre-release's included (``v2.4.0rc1``).
     """
-    ref = f"v{version}" if _RELEASE.fullmatch(version) else "main"
+    ref = f"v{version}" if _TAGGED.fullmatch(version) else "main"
     return DOCS.format(ref=ref)
 
 
@@ -264,7 +269,10 @@ def _next_steps(
         "  python manage.py createsuperuser",
     ]
     if profile == "fintech":
-        steps.append("  # Deploying: the controls and their settings, docs/fintech.md")
+        steps.append(
+            "  # Deploying: the controls and their settings, "
+            f"{docs_url(__version__)}/fintech.md"
+        )
     else:
         steps.append("  python manage.py startdomain <name>")
     steps.append("  pytest")

@@ -58,6 +58,7 @@ BUILTINS = {
     "compilemessages",
     "dbshell",
     "diffsettings",
+    "docs",
     "dumpdata",
     "flush",
     "init",

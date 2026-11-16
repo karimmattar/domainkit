@@ -3,7 +3,9 @@
 ``domainkit init --profile fintech`` wrote them; domainkit's docs/fintech.md
 maps each control to the page that explains it, its setting, and the test
 that proves it. Production adds the key service, the ledger, and the
-secrets (production.py).
+secrets (production.py). The pages these files name, docs/<page>.md, are
+domainkit's: ``python manage.py docs docs/fintech.md`` prints a page's
+link for the release installed.
 """
 
 from datetime import timedelta
