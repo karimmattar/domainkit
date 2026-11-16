@@ -9,6 +9,43 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `requires_authorization(ACTION)` takes a `@use_case`: it returns a
+  copy whose `run`, and so its call, spends the act's authorization,
+  and leaves the use case as it was, so a route that runs it without an
+  act (the phone's) asks nothing. Give the copy to the route that asks
+  (`ResourceRouter.use_case(..., rule=StepUp(for_=...))`), which gets
+  its twin as a command route does. `Action(command=...)` takes the use
+  case, for its command. A use case of another command than the
+  action's is refused when guarded. It returned a plain function, which
+  no route of a use case could take
+  ([A use case as the act](docs/auth/actions.md#a-use-case-as-the-act),
+  ADR 0161) (user report A13).
+- An action's `show` may take the unit of work the act runs in,
+  `show(command, uow)`, and read through its port: it is given it open,
+  and left without a commit. A `ResourceRouter`'s twin lends its
+  route's, and `request_action_authorization(..., uow=...)` takes one.
+  So an action can live beside its use case in `controllers.py`, which
+  may not import the unit of work on the database. A rule whose
+  `ask_authorization` also takes `uow` is given the route's unit of
+  work; a rule written for 2.4 is called as before (ADR 0161) (user
+  report A13).
+- The twin's `201` (`ActionAuthorizationOut`) carries `methods`, what
+  confirming the authorization must prove, as `GET
+  /auth/authorizations/{id}` answers it, so a page knows at once which
+  ways to offer. Approvals' approve twin and the act the phone lists
+  carry it too (user report A17).
+- `domainkit.testing.authorize_act(client, url, app=None, *, json=None,
+  password=None, prefix="/auth")` asks an act's twin for an
+  authorization and confirms it; `confirm_authorization(client,
+  authorization_id, app=None, ...)` confirms one asked elsewhere. Each
+  returns `<id>.<code>`. With an `Authenticator`, a code confirms it
+  through the routes, as `confirm_sca` does; without, auth confirms it
+  in the test as proving what the act asks, so an act that asks the
+  phone needs none, refused unless `ENVIRONMENT = "test"`
+  ([Testing](docs/auth/actions.md#testing)) (user report A17).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on

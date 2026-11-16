@@ -511,7 +511,9 @@ DELETE /products/42 (with it)              204
 - It then awaits the rule's `ask_authorization(request, command)`, and
   answers `201` with what it returns, marked `Cache-Control: no-store`.
   It never runs the service, and writes nothing through its unit of
-  work.
+  work. A rule whose method also takes `uow` is given the route's unit
+  of work, not yet open, to read what the caller is shown in (*new in
+  2.5*): `StepUp(for_=...)` does, for an action's `show(command, uow)`.
 - OpenAPI shows it as an operation of its own: the route's name and
   `_authorization` (`delete_product_authorization`), a summary, and the
   rule's `authorization_model()` as the `201` body. A twin of a route on
@@ -522,6 +524,10 @@ DELETE /products/42 (with it)              204
   `ImproperlyConfigured` when the route is declared. So do two routes
   whose twins would share a path (a `PATCH` and a `DELETE` of one item
   that both ask): give one a `path`.
+- A `@use_case` route gets its twin as a command route does. For an
+  act, give `use_case` the copy `requires_authorization` makes, and
+  leave the use case itself to the routes that ask nothing
+  ([A use case as the act](auth/actions.md#a-use-case-as-the-act)).
 - A route whose rules ask for nothing gets no twin, and nor do batches
   and generic writes. A resource's rule holds every route of the
   resource, reads included, so put an asking rule on the route
@@ -530,7 +536,9 @@ DELETE /products/42 (with it)              204
 A rule of your own asks for one by implementing `AsksAuthorization`
 (`domainkit.http.access`): `authorization_model()` returns the model of
 the `201` body, and `ask_authorization(request, command)` stores the
-authorization for the request's caller and returns it.
+authorization for the request's caller and returns it. Declared
+`ask_authorization(request, command, uow=None)`, it is given the
+route's unit of work too.
 
 ### Generic writes for reference data
 
