@@ -29,7 +29,8 @@ its tenant. While a tenant is current:
 - **logs**: every record names it (``tenant``);
 - **permissions**: with ``MEMBER_PERMISSIONS``, the keys a member holds
   in it (``member_permissions``), which ``domainkit.contrib.auth``'s
-  ``MembershipBackend`` grants.
+  ``MembershipBackend`` grants, and which ``HasMemberPermissions`` counts
+  alone, without the grants a user holds everywhere (ADR 0170).
 """
 
 import functools
@@ -40,7 +41,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterat
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, ClassVar, Final
+from uuid import UUID
 
 from fastapi import FastAPI, Path
 from fastapi.dependencies.models import Dependant
@@ -58,6 +60,7 @@ from domainkit.ddd.tenancy import (
     all_tenants,
     check_tenant_id,
     current_tenant,
+    no_tenant,
     row_tenant,
     scoped_key,
     tenant,
@@ -65,8 +68,11 @@ from domainkit.ddd.tenancy import (
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import (
     DEFAULT_CHALLENGE,
+    BasePermission,
     NotAuthenticated,
+    Principal,
     checks_callers,
+    scopes_of,
     served_routes,
 )
 from domainkit.http.errors import error_response
@@ -74,6 +80,8 @@ from domainkit.http.live import record_check
 from domainkit.utils.module_loading import import_string
 
 __all__ = [
+    "HasMemberPermissions",
+    "InTenant",
     "PathTenant",
     "TenantMiddleware",
     "TenantMismatch",
@@ -82,8 +90,10 @@ __all__ = [
     "all_tenants",
     "current_tenant",
     "member_permissions",
+    "path_tenant",
     "row_tenant",
     "scoped_key",
+    "serve_no_tenant",
     "tenant",
     "tenant_schema",
     "tenants_beyond",
@@ -91,6 +101,8 @@ __all__ = [
 
 CONNECTION: Final = "domainkit_connection"
 """The name ``PathTenant`` takes the connection by, kept apart from path parameters."""
+ID_TYPES: Final = (str, int, UUID)
+"""The types a ``PathTenant`` reads its parameter as."""
 
 
 def tenant_schema(tenant_id: str) -> str:
@@ -117,6 +129,8 @@ class _Member:
     user: object
     tenant_id: str
     permissions: frozenset[str]
+    by_path: bool = False
+    """Whether a ``PathTenant`` chose the tenant, from the route's path."""
 
 
 _member: ContextVar[_Member | None] = ContextVar("tenant_member", default=None)
@@ -232,6 +246,20 @@ def _serving(member: _Member) -> Iterator[None]:
             yield
     finally:
         _member.reset(token)
+
+
+def path_tenant() -> str | None:
+    """The tenant a route's path named (``PathTenant``), if it is the one served.
+
+    None outside a request served by a ``PathTenant``, and where only
+    ``TenantMiddleware`` (or ``tenant(...)``) chose the tenant. A tenants'
+    resource asks it to tell its items' routes from its collection's,
+    whatever tenant a middleware serves (ADR 0170).
+    """
+    member = _member.get()
+    if member is None or not member.by_path or member.tenant_id != current_tenant():
+        return None
+    return member.tenant_id
 
 
 async def member_permissions(user: object) -> frozenset[str]:
@@ -388,13 +416,29 @@ class PathTenant:
     refused gets ``401``, as ``Require`` answers, whatever the id. While a
     WebSocket or an event stream stays open, membership is checked again
     with the route's rules (``LIVE_REAUTH_INTERVAL``).
+
+    ``id_type`` is the parameter's type, as the route reads it: with
+    ``UUID`` or ``int``, the tenant id is the value's own text
+    (``str(UUID(...))``, lowercase), so one tenant has one id however the
+    path writes it, and a value that is not one is refused with ``422``,
+    as the route would refuse it. A ``ResourceRouter`` given ``tenant=``
+    serves its routes with one of its id's type (ADR 0170).
     """
 
-    def __init__(self, parameter: str) -> None:
-        """Take the tenant from the path parameter ``parameter``.
+    def __init__(
+        self, parameter: str, *, id_type: type = str, strict: bool = False
+    ) -> None:
+        """Take the tenant from the path parameter ``parameter``, of ``id_type``.
+
+        ``strict``: every route of the application whose path holds the
+        parameter where this one's does (``/companies/{company_id}/...``)
+        must take its tenant from it; ``check`` reports one that does not
+        (``tenancy.E003``). A ``ResourceRouter`` whose items are tenants
+        makes its own so.
 
         Raises:
-            ImproperlyConfigured: ``parameter`` cannot name a path parameter.
+            ImproperlyConfigured: ``parameter`` cannot name a path parameter,
+                or ``id_type`` is not ``str``, ``int``, or ``UUID``.
         """
         if (
             not parameter.isidentifier()
@@ -406,7 +450,14 @@ class PathTenant:
                 "the name the path has between braces, as in "
                 "PathTenant('org_id') for '/orgs/{org_id}'."
             )
+        if id_type not in ID_TYPES:
+            raise ImproperlyConfigured(
+                f"PathTenant: a tenant's id in the path is text, an int, or a "
+                f"UUID, not {getattr(id_type, '__name__', id_type)}."
+            )
         self.parameter = parameter
+        self.id_type = id_type
+        self.strict = strict
         # FastAPI reads the parameters from this: the path parameter is
         # declared, documented, and passed by its own name.
         self.__signature__ = inspect.Signature(
@@ -419,13 +470,13 @@ class PathTenant:
                 inspect.Parameter(
                     parameter,
                     inspect.Parameter.KEYWORD_ONLY,
-                    annotation=Annotated[str, Path(description="The tenant.")],
+                    annotation=Annotated[id_type, Path(description="The tenant.")],
                 ),
             ]
         )
 
     async def __call__(
-        self, domainkit_connection: HTTPConnection, **path: str
+        self, domainkit_connection: HTTPConnection, **path: object
     ) -> AsyncIterator[str]:
         """Serve the request as the path's tenant until it is answered.
 
@@ -436,11 +487,11 @@ class PathTenant:
                 belongs to a tenant.
         """
         connection = domainkit_connection
-        found = path[self.parameter]
+        found = str(path[self.parameter])
         user = connection.scope.get("user")
         held = await self._admit(user, found)
         record_check(connection, functools.partial(self._still_member, found))
-        with _serving(_Member(user, found, held)):
+        with _serving(_Member(user, found, held, by_path=True)):
             yield found
 
     async def _admit(self, user: object, found: str) -> frozenset[str]:
@@ -465,6 +516,23 @@ class PathTenant:
         return await _path_members().admit(user, tenant_id, fresh=True) is not None
 
 
+async def serve_no_tenant() -> AsyncIterator[None]:
+    """A FastAPI dependency: serve the route as no tenant, whatever was chosen.
+
+    ``PathTenant``'s counterpart. A ``ResourceRouter`` whose items are
+    tenants puts it first on its routes that do not take the tenant from
+    the path (its collection's): there, a tenant ``TenantMiddleware``
+    names, by a header or a subdomain, decides nothing, so no member's
+    keys count, and ``current_tenant()`` is None (ADR 0170).
+    """
+    token = _member.set(None)
+    try:
+        with no_tenant():
+            yield
+    finally:
+        _member.reset(token)
+
+
 def _path_members() -> _Members:
     """``TENANCY``'s hooks, which must check who belongs, for ``PathTenant``.
 
@@ -484,6 +552,69 @@ def _path_members() -> _Members:
     return admitting
 
 
+class InTenant(BasePermission):
+    """Requests served as a tenant: ``TenantMiddleware``'s, or a ``PathTenant``'s.
+
+    ``~InTenant()`` allows those served as none, such as a tenants'
+    resource's collection, and the objects reached there.
+    """
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """A tenant is being served."""
+        return current_tenant() is not None
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: Principal, obj: object
+    ) -> bool:
+        """As for the request: so ``~InTenant()`` allows objects served as none."""
+        return current_tenant() is not None
+
+
+class HasMemberPermissions(BasePermission):
+    """Members holding every permission named, in the tenant being served.
+
+    It counts the keys ``TENANCY.MEMBER_PERMISSIONS`` gives the caller as a
+    member of the tenant (``member_permissions``), and nothing else: not
+    what a user holds everywhere (``ModelBackend``'s grants, a superuser's
+    status), which ``HasPermissions`` counts too. So a member who is also
+    staff acts in the tenant with their role alone (ADR 0170). With no
+    tenant served it refuses. Credentials limited to scopes must name the
+    keys too, as for ``HasPermissions``.
+    """
+
+    bounds_scopes: ClassVar[bool] = True
+
+    def __init__(self, *perms: str) -> None:
+        """Require ``perms`` among the member's keys."""
+        if not perms:
+            raise ImproperlyConfigured(
+                "HasMemberPermissions needs at least one permission."
+            )
+        self.perms = frozenset(perms)
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """An active member holds every key in the tenant, within the scopes.
+
+        Raises:
+            ImproperlyConfigured: ``TENANCY.MEMBER_PERMISSIONS`` is not set,
+                so no member holds any key.
+        """
+        from domainkit.conf import settings
+
+        config = settings.TENANCY
+        if config is None or config.MEMBER_PERMISSIONS is None:
+            raise ImproperlyConfigured(
+                "HasMemberPermissions counts the keys TENANCY.MEMBER_PERMISSIONS "
+                "names: set it to the function that says what a member holds."
+            )
+        if not (user.is_authenticated and user.is_active):
+            return False
+        scopes = scopes_of(request)
+        if scopes is not None and not self.perms <= scopes:
+            return False
+        return self.perms <= await member_permissions(user)
+
+
 def path_tenant_problems(app: FastAPI) -> list[str]:
     """Routes whose ``PathTenant`` cannot serve them as it should.
 
@@ -492,10 +623,14 @@ def path_tenant_problems(app: FastAPI) -> list[str]:
     dependency that checks callers, such as ``Require``) comes before it
     among the route's own dependencies, so the rule sees no tenant. A
     ``PathTenant`` inside another dependency is checked against the path
-    only.
+    only. ``tenancy.E003``: a route's path holds the parameter of a strict
+    ``PathTenant`` where routes it serves hold it, and the route does not
+    take its tenant from it: a Starlette route, a mount, or a route added
+    to a router after it was included into a tenants' resource.
     """
     problems: list[str] = []
-    for route, dependant in served_routes(app.routes):
+    served = list(served_routes(app.routes))
+    for route, dependant in served:
         if dependant is None:
             continue
         named = {each.parameter for each in _path_tenants(dependant)}
@@ -524,6 +659,46 @@ def path_tenant_problems(app: FastAPI) -> list[str]:
                     "Depends(PathTenant(...)) first.",
                 )
             )
+    problems.extend(_unserved(served))
+    return problems
+
+
+def _unserved(served: list[tuple[str, Dependant | None]]) -> list[str]:
+    """``tenancy.E003``: routes under a strict ``PathTenant``'s path it does not serve.
+
+    The path, up to its parameter, of each route a strict ``PathTenant``
+    serves (``/companies/{company_id}``) belongs to it: a route at or
+    under it that does not take its tenant from that ``PathTenant``'s
+    parameter is reported.
+    """
+    owned: dict[str, str] = {}
+    for route, dependant in served:
+        for each in _path_tenants(dependant) if dependant is not None else ():
+            path = route.rsplit(" ", 1)[-1]
+            held = re.match(rf"(.*?\{{{each.parameter}(:[^}}]*)?\}})", path)
+            if each.strict and held is not None:
+                owned[held.group(1)] = each.parameter
+    problems: list[str] = []
+    for route, dependant in served:
+        path = route.rsplit(" ", 1)[-1]
+        taken = (
+            set()
+            if dependant is None
+            else {each.parameter for each in _path_tenants(dependant)}
+        )
+        problems.extend(
+            CheckMessage(
+                "tenancy.E003",
+                f"{route} lies under {prefix}, whose routes take their tenant "
+                f"from {{{parameter}}}, but takes none from it: callers who do "
+                "not belong reach it, as whichever tenant a middleware names. "
+                "Declare it with FastAPI's routes on the resource, or in a "
+                "router included into it, before the include.",
+            )
+            for prefix, parameter in owned.items()
+            if (path == prefix or path.startswith(f"{prefix}/"))
+            and parameter not in taken
+        )
     return problems
 
 

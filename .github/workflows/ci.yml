@@ -94,7 +94,7 @@ jobs:
           domainkit_tests/test_recipes.py
           domainkit_tests/test_sec13c_1_upgrade_guide_skips_removals.py
           domainkit_tests/test_sec14b_5_erase_leaves_documented_code.py
-          domainkit_tests/test_walkthroughs.py
+          domainkit_tests/test_testing_acts.py domainkit_tests/test_walkthroughs.py
 
   lint:
     if: github.event_name != 'schedule'
@@ -1191,7 +1191,7 @@ jobs:
               domainkit.contrib.auth.authentication.* domainkit.contrib.auth.cookies.*
               domainkit.contrib.auth.metrics.* domainkit.contrib.auth.permissions.*
               domainkit.contrib.auth.signup.* domainkit.contrib.auth.tokens.*
-              domainkit.contrib.auth.captcha.*
+              domainkit.contrib.auth.captcha.* domainkit.contrib.auth.admin_actions.*
           - name: auth-2
             mutants: >-
               domainkit.contrib.auth.devices.*
@@ -1252,7 +1252,7 @@ jobs:
               domainkit.db.routing.* domainkit.db.snapshots.*
               domainkit.db.squashing.* domainkit.db.types.*
               domainkit.storage.* domainkit.cloud.* domainkit.money.*
-              domainkit.search.*
+              domainkit.search.* domainkit.documents.*
           - name: messaging
             mutants: >-
               domainkit.contrib.messaging.* domainkit.broker.*

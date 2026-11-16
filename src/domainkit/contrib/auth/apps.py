@@ -5,7 +5,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from http.cookies import SimpleCookie
 from importlib import import_module
 from typing import Any, Final
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Response
 from fastapi.dependencies.models import Dependant
@@ -106,7 +106,11 @@ class AuthConfig(DomainConfig):
         return self.user_table is not users
 
     def ready(self) -> None:
-        """Load the user model, check the configuration, and map the tables."""
+        """Load the user model, check the configuration, and map the tables.
+
+        With ``ADMIN_ACTION`` on, the action ``auth.admin_change`` is
+        registered: each change of the admin API asks for an authorization.
+        """
         config = auth_settings()
         self.user_model = _user_model(config.USER_MODEL)
         self.user_table = _user_table(config, self.user_model)
@@ -134,9 +138,13 @@ class AuthConfig(DomainConfig):
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
         on_export_subject(_export_logins, domain=self.label)
-        from .actions import CODE_CONFIRMATION, on_action_confirmation
+        from .actions import CODE_CONFIRMATION, on_action_confirmation, register_action
 
         on_action_confirmation(CODE_CONFIRMATION, domain=self.label)
+        if config.ADMIN_ACTION:  # Each change of the admin API is an act (ADR 0163).
+            from .admin_actions import ADMIN_CHANGE
+
+            register_action(ADMIN_CHANGE, domain=self.label)
         on_check_application(self.application_problems)
         on_deployment_warnings(self.weak_settings)
         on_account_routes(self.account_routes, domain=self.label)
@@ -258,6 +266,37 @@ class AuthConfig(DomainConfig):
             cookies.load(header)
         sent = "; ".join(f"{name}={cookies[name].value}" for name in cookie_names())
         return {"Cookie": sent, config.COOKIE.CSRF_HEADER: started.csrf_token}
+
+    async def confirm_test_authorization(
+        self,
+        authorization_id: Any,  # noqa: ANN401 - a UUID, or its text.
+        methods: Sequence[str],
+    ) -> str:
+        """Confirm an action authorization as proved by ``methods`` (``testing``).
+
+        What the user's phone, a passkey, or a code would prove, without
+        them: ``methods`` are what the act asks (its twin's ``methods``).
+        Returns ``<id>.<code>``, for the act's ``Action-Authorization``.
+
+        Raises:
+            ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
+            AuthorizationNotFound: No authorization has the id.
+            AuthorizationNeedsOtherFactors: ``methods`` do not prove what
+                the act asks.
+            APIError: 409 ``authorization_confirmed`` or
+                ``authorization_expired``.
+        """
+        from .actions import AuthorizationNotFound, confirm_action_with
+        from .uow import AuthUnitOfWork
+
+        _only_in_tests(
+            "confirm_test_authorization", "confirms acts without a second factor"
+        )
+        async with AuthUnitOfWork() as uow:
+            found = await uow.authorizations.get(UUID(str(authorization_id)))
+        if found is None:
+            raise AuthorizationNotFound("No such authorization.")
+        return await confirm_action_with(found.id, methods, user_id=found.user_id)
 
     def application_problems(self, app: FastAPI) -> list[str]:
         """Rules no middleware can answer, and what auth's own routes lack.
@@ -722,8 +761,9 @@ def action_problems(app: FastAPI) -> list[CheckMessage]:
 
     An action no installed way to confirm proves (``E108``); a route that
     asks for a purpose no registered action has (``E109``), or whose action
-    no decorated service spends (``E110``); and ``StepUp(for_=...)`` on a
-    WebSocket or an event stream (``E111``).
+    nothing spends (``E110``: no decorated service, and no code that said
+    so with ``spent_in_code``); and ``StepUp(for_=...)`` on a WebSocket or
+    an event stream (``E111``).
     """
     from .actions import provable, registered_actions
 
@@ -775,9 +815,10 @@ def _asking_problems(
         problems.append(
             CheckMessage(
                 "auth.E110",
-                f"{route} asks for an authorization of {purpose!r}, which no "
-                "service spends: decorate the act's service with "
-                "@requires_authorization(...).",
+                f"{route} asks for an authorization of {purpose!r}, which "
+                "nothing spends: decorate the act's service with "
+                "@requires_authorization(...), or, where code of yours calls "
+                "spend_authorization, say so with spent_in_code(...).",
             )
         )
     return problems
@@ -929,20 +970,21 @@ def _user_table(config: AuthSettings, model: type[AbstractBaseUser]) -> Table:
     return table
 
 
-def _only_in_tests(what: str) -> None:
+def _only_in_tests(what: str, does: str = "signs users in without credentials") -> None:
     """Refuse to sign anyone in without credentials outside the test settings.
 
     The test tokens skip the password, the second factor, and the login's
     audit record: in any other process they would be a bearer token for
-    anyone, a superuser included (SEC-12a-2). The database fixtures refuse
-    such settings for the same reason.
+    anyone, a superuser included (SEC-12a-2). So would an act confirmed
+    without its second factor. The database fixtures refuse such settings
+    for the same reason.
 
     Raises:
         ImproperlyConfigured: ``ENVIRONMENT`` is not ``"test"``.
     """
     if settings.ENVIRONMENT != "test":
         raise ImproperlyConfigured(
-            f"{what} signs users in without credentials, so it needs "
+            f"{what} {does}, so it needs "
             f'ENVIRONMENT = "test", not {settings.ENVIRONMENT!r}.'
         )
 

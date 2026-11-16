@@ -4,10 +4,13 @@ Each aggregate is shown through the resource's schema (``present``), without
 the fields its ``FieldPolicy`` hides from the caller, with its links if the
 resource has them, and with an ``ETag`` of what was sent, so a later
 ``If-None-Match`` answers ``304``. Writes answer the aggregate (``Location``
-for one created), another schema, or nothing.
+for one created), another schema, or nothing. A resource with
+``present_many`` shows the aggregates of one answer (a page, an export's
+chunk, a query's items, or one aggregate) in one call, which may load
+what other domains hold for all of them at once (ADR 0170).
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Final
@@ -147,7 +150,7 @@ async def tagged(
 ) -> tuple[dict[str, Any], bytes, str]:
     """An aggregate's JSON for this caller, its bytes, and its ``ETag``."""
     hidden = await hidden_fields(router, context.request)
-    document = dump(router, context, aggregate, hidden)
+    [document] = await documents(router, context, [aggregate], hidden)
     body = bytes(BuiltJSONResponse(document).body)
     return document, body, entity_tag(aggregate.version, body)
 
@@ -202,17 +205,61 @@ def unmodified(modified: datetime | None, since: str | None) -> bool:
     return modified.replace(microsecond=0) <= held
 
 
+type ManyPresenter = Callable[
+    [Sequence[Any], HTTPConnection], Awaitable[Sequence[BaseModel]]
+]
+"""``present_many``: the aggregates of one answer, and the request; their schemas."""
+
+
+async def documents(
+    router: "ResourceRouter",
+    context: RouteContext,
+    aggregates: Sequence[Aggregate],
+    hidden: frozenset[str],
+    include: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """The JSON of each aggregate (``include``'s fields), without the hidden ones.
+
+    ``present_many`` shows them all in one call; else ``present`` shows
+    each.
+
+    Raises:
+        RuntimeError: ``present_many`` answered other than one schema for
+            each aggregate, in their order: a schema with an ``id`` must
+            show the aggregate's.
+    """
+    many = router.present_many
+    if many is None:
+        shown = [router.present(each) for each in aggregates]
+    elif not aggregates:
+        shown = []
+    else:
+        shown = list(await many(aggregates, context.request))
+        if len(shown) != len(aggregates) or any(
+            str(getattr(each, "id", aggregate.id)) != str(aggregate.id)
+            for aggregate, each in zip(aggregates, shown, strict=False)
+        ):
+            raise RuntimeError(
+                f"present_many answered {len(shown)} for {len(aggregates)} "
+                "aggregates, or not in their order: it answers one for each, "
+                "in their order."
+            )
+    return [
+        dump(router, context, aggregate, each, hidden, include)
+        for aggregate, each in zip(aggregates, shown, strict=True)
+    ]
+
+
 def dump(
     router: "ResourceRouter",
     context: RouteContext,
     aggregate: Aggregate,
+    shown: BaseModel,
     hidden: frozenset[str],
     include: set[str] | None = None,
 ) -> dict[str, Any]:
-    """The JSON of one aggregate (``include``'s fields), without the hidden ones."""
-    document = router.present(aggregate).model_dump(
-        mode="json", include=include, exclude=set(hidden)
-    )
+    """One aggregate's JSON, as ``shown`` (``include``'s fields), less the hidden."""
+    document = shown.model_dump(mode="json", include=include, exclude=set(hidden))
     if router.links:
         document["links"] = links(router, context, aggregate)
     return document

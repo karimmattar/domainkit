@@ -93,8 +93,11 @@ class BatchRoute:
         """Check the command against what gives its fields.
 
         Raises:
-            TypeError: The path, the bound, or the body does not fit the command.
+            TypeError: The path, the bound, or the body does not fit the
+                command; or the batch acts on a tenants' collection without
+                naming its action (``reach.named_action``).
         """
+        reach.named_action(router, path, action)
         if not path.startswith("/") or max_items < 1:
             raise TypeError(
                 "A batch's path starts with /, and it takes 1 item or more."

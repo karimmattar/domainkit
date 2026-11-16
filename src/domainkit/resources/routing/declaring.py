@@ -75,6 +75,7 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> "API
     endpoint = _endpoint(router, spec, handle, name)
     if spec.body_limit is not None:
         body_limit(spec.body_limit)(endpoint)
+    served = router.serves_tenant(spec.path)  # The router puts it first.
     router.add_api_route(
         spec.path,
         endpoint,
@@ -85,7 +86,7 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> "API
         response_model=(
             None if spec.returns is None or spec.returns is DEFAULT else spec.returns
         ),
-        responses=_responses(router, spec, rules),
+        responses=_responses(router, spec, rules, served=served),
         dependencies=[
             *([Depends(Require(*rules))] if rules else []),
             *spec.dependencies,
@@ -254,11 +255,21 @@ def _read_headers(
 
 
 def _responses(
-    router: "ResourceRouter", spec: RouteSpec, rules: tuple[Rule, ...]
+    router: "ResourceRouter",
+    spec: RouteSpec,
+    rules: tuple[Rule, ...],
+    *,
+    served: bool = False,
 ) -> dict[int | str, dict[str, Any]]:
-    """The answers OpenAPI documents for the route, errors first."""
+    """The answers OpenAPI documents for the route, errors first.
+
+    A route ``served`` as a tenant answers ``401`` and ``404`` to callers
+    who do not belong to it.
+    """
     codes = [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN] if rules else []
-    if spec.detail:
+    if served and not rules:
+        codes.append(status.HTTP_401_UNAUTHORIZED)
+    if spec.detail or served:
         codes.append(status.HTTP_404_NOT_FOUND)
     if spec.writes:
         codes += [status.HTTP_409_CONFLICT, status.HTTP_422_UNPROCESSABLE_CONTENT]

@@ -25,6 +25,7 @@ from domainkit.conf import override_settings
 from domainkit.contrib.notifications import (
     MemoryPushBackend,
     NotificationFailed,
+    NotificationRefused,
     PushBackend,
     PushMessage,
     check_push_token,
@@ -109,6 +110,74 @@ async def test_fcm_checks_a_token_with_a_dry_run(provider: Any) -> None:  # noqa
         "message": {"token": "a-real-token"},
     }
     assert calls.requests[1].url.path == "/v1/projects/acme/messages:send"
+
+
+TOO_BIG = {
+    "error": {
+        "code": 400,
+        "message": "Android message is too big",
+        "status": "INVALID_ARGUMENT",
+        "details": [
+            {
+                "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+                "errorCode": "INVALID_ARGUMENT",
+            }
+        ],
+    }
+}
+"""FCM's answer to a message over its size: the same shape as a token it never made."""
+PUSHED = PushMessage(token="a-real-token", title="Contract", body="x" * 4000)
+
+
+@pytest.mark.anyio
+async def test_fcm_keeps_a_token_whose_message_was_too_big(provider: Any) -> None:  # noqa: ANN401, F811
+    """A message too big is refused for good; the token, which a dry run takes, kept.
+
+    FCM answers it as it answers a token it never made: ``INVALID_ARGUMENT``,
+    its own error, no field. 2.4 forgot the token, so one large message
+    lost a working phone (user report N1).
+    """
+    calls: Recorder = provider(
+        metadata_token(),
+        httpx2.Response(400, json=TOO_BIG),
+        httpx2.Response(200, json={"name": "projects/acme/messages/fake"}),
+    )
+    fcm = FcmPushBackend({"PROJECT_ID": "acme"})
+
+    with pytest.raises(NotificationFailed) as refused:
+        await fcm.send_messages([PUSHED])
+
+    assert type(refused.value) is NotificationRefused
+    assert str(refused.value) == "FCM refused the notification: INVALID_ARGUMENT."
+    assert calls.json(2) == {
+        "validate_only": True,
+        "message": {"token": "a-real-token"},
+    }
+
+
+@pytest.mark.anyio
+async def test_fcm_forgets_a_token_the_dry_run_refuses_too(provider: Any) -> None:  # noqa: ANN401, F811
+    """The same answer, and the token alone refused too: the token is gone.
+
+    A dry run that cannot tell (FCM unavailable) forgets nothing: the
+    worker tries the message again.
+    """
+    provider(
+        metadata_token(),
+        httpx2.Response(400, json=NOT_FCMS),
+        httpx2.Response(400, json=NOT_FCMS),
+        httpx2.Response(400, json=TOO_BIG),
+        httpx2.Response(503, json={"error": {"status": "UNAVAILABLE"}}),
+    )
+    fcm = FcmPushBackend({"PROJECT_ID": "acme"})
+
+    with pytest.raises(PushTokenGone):
+        await fcm.send_messages([PUSHED])
+    with pytest.raises(NotificationFailed) as failed:
+        await fcm.send_messages([PUSHED])
+
+    assert type(failed.value) is NotificationFailed
+    assert str(failed.value) == "FCM could not check the token: UNAVAILABLE."
 
 
 @pytest.mark.anyio

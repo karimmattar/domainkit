@@ -73,5 +73,8 @@ on_approve: HookPoint[ApproveHook] = HookPoint(
 """A sign-in the user's phone approves: ``(request, user, sign_in)``.
 
 Called before the approval is recorded, for a request of the user's own;
-raise to refuse it (as ``PermissionDenied``): nothing is approved.
+raise to refuse it (``PermissionDenied``, or an HTTP error of 403):
+nothing is approved, and since 2.5 the request is denied, unreported, so
+its page hears it at once. Any other error, such as a conflict to retry,
+leaves it waiting.
 """

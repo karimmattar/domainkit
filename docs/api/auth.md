@@ -108,6 +108,7 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `requires_authorization`: Spend the request's authorization of `action` on the service's command.
 - `router`: The routes: authorize one act, with its arguments, once (ADR 0144).
 - `spend_authorization`: Spend the request's authorization of `action` on `command`, in code.
+- `spent_in_code`: Say that code spends `action`'s authorizations, with `spend_authorization`.
 
 ## `domainkit.contrib.auth.admin`
 
@@ -195,6 +196,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `PasswordGate`: A check of a password login before the password is looked at: raise to refuse.
 - `SessionLimiter`: Shorter limits for a login being made, from its user and how it is made.
 - `SessionLimits`: Shorter limits for one login than the settings give every login.
+- `StaffCheck`: A check before the admin API creates a user who is staff: raise to refuse.
 - `SuperuserCheck`: A check before the admin API makes a user a superuser: raise to refuse.
 - `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
@@ -202,6 +204,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `login_origin`: How the login `request` makes is made, for its gates; None: it makes none.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_admin_change`: Register a check of every change the admin API makes to a user.
+- `on_create_staff`: Register a check of creating a user who is staff in the admin API.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_make_superuser`: Register a check of making a superuser in the admin API.
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
@@ -601,6 +604,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `mail_user`: Mail `user` at their address from `template`; False where none can go.
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
 - `note_login_device`: Say that the user's bound device `device_id` signed this request.
+- `note_login_sign_in`: Say that the login this request makes redeems sign-in request `request_id`.
 - `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
@@ -734,6 +738,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
 - `approve`: Approve the user's request from their device `device_id`.
 - `ask_signed_in`: Ask the phone of `user`, who is signed in, to approve `kind`.
+- `cancel`: Withdraw the request `handle` polls for, if unanswered (user report A16).
 - `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
 - `deny`: Deny the user's request; with `report`, every other one waiting too.
 - `poll`: The approved request `handle` polls for, redeemed now; it works once.
@@ -745,7 +750,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 
 The routes of sign-ins approved from the phone: the web's, and the phone's.
 
-- `count_start`: Count a start against `START_RATE` for the client's address.
+- `count_start`: Count a start against `START_RATE`: per client address, or per `user`.
 - `router`: The routes: the web's sign-ins, and the phone's answers.
 
 ## `domainkit.contrib.ciba.clients`
@@ -825,6 +830,7 @@ Start a sign-in request, let the phone answer it, and poll it (ADR 0128).
 - `Started`: A request started: what its initiator keeps, and shows on its page.
 - `approve`: Approve the user's request from their device `device_id`.
 - `ask_signed_in`: Ask the phone of `user`, who is signed in, to approve `kind`.
+- `cancel`: Withdraw the request `handle` polls for, if unanswered (user report A16).
 - `ciba_settings`: `CIBA`, validated (the defaults when it is unset).
 - `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
 - `deny`: Deny the user's request; with `report`, every other one waiting too.
@@ -838,6 +844,7 @@ Start a sign-in request, let the phone answer it, and poll it (ADR 0128).
 Settings of `domainkit.contrib.ciba`: `CIBA = {...}`.
 
 - `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
+- `PushText`: The notification of one kind of request: `CIBA["PUSH_TEXTS"][kind]`.
 
 ## `domainkit.contrib.ciba.stores`
 

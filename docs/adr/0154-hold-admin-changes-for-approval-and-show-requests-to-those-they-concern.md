@@ -1,6 +1,6 @@
 # 0154. Hold admin changes for approval, and show requests to those they concern
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md)
 - Date: 2026-11-16
 - Amends: [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md)
 
@@ -202,3 +202,14 @@ project's (staff, a step-up, an IP range): a tested recipe with
    <https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-approval-workflow>
 8. Okta, access request notifications:
    <https://help.okta.com/oie/en-us/content/topics/identity-governance/notifications.htm>
+
+## Amendment (2026-11-16): submit, reject, and cancel as acts
+
+[ADR 0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md)
+gives submitting, rejecting, and cancelling built-in actions of their
+own, each opt-in by a setting (`SUBMIT_ACTION`, `REJECT_ACTION`,
+`CANCEL_ACTION`), as approving has. The rules of the project's own stay
+a `select_routes` recipe; rejecting asks for an authorization only where
+`REJECT_ACTION` is on. With `AUTH.ADMIN_ACTION` on, a held change is
+checked against its authorization before it is submitted for approval,
+and spends it only once the change is made.
