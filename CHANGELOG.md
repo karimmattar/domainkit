@@ -281,6 +281,14 @@ and a status.
   authorization by the phone's request, and hand over a confirmed one
   ([Confirming one act](docs/auth/ciba.md#confirming-one-act), ADR 0144)
   (user report A6).
+- `POST /auth/app-sign-in/authorizations/wait` `{"request"}` holds until
+  the phone answers the session's act, at most `CIBA.WAIT_SECONDS`, as
+  `/app-sign-in/wait` does. A page that asked the phone to confirm a
+  back-office change could only poll `/app-sign-in/authorizations/token`,
+  and heard of the approval up to `interval` seconds late:
+  `/app-sign-in/step-up/wait` is deprecated with the step-up. The wait
+  never hands the authorization over, nor counts as a poll, and answers
+  the session that asked only (user report L2).
 - Devices confirm an act's authorization two ways, registered with auth
   when installed. The mobile app's own act: `POST
   /devices/authorizations/{id}` with the act's digest, signed by one of

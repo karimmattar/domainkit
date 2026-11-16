@@ -536,11 +536,12 @@ async def poll(
 
     ``client_id`` is the initiator: a CIBA client's id, or None for the
     project's own pages; a handle polls only for its initiator, as its
-    ``kind``, and for a step-up or a transaction only from the credentials
-    that asked (``credential_digest``). Commits what the poll changed (its
-    time, the interval, the redemption) before it answers. A request the
-    phone decided answers at once, however soon after the last poll: the
-    interval holds back polls of a request still waiting, not its answer.
+    ``kind``, and for a step-up, a transaction or an act only from the
+    credentials that asked (``credential_digest``). Commits what the poll
+    changed (its time, the interval, the redemption) before it answers. A
+    request the phone decided answers at once, however soon after the last
+    poll: the interval holds back polls of a request still waiting, not its
+    answer.
 
     Raises:
         SignInUnknown: No request of the initiator, of ``kind``, and of

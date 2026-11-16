@@ -23,8 +23,9 @@ per address):
 - ``POST /app-sign-in/wait`` ``{"request"}``: holds until the phone
   answers, at most ``WAIT_SECONDS``; ``{"status": "approved"}`` (redeem it
   now) or ``"pending"`` (wait again). It never redeems, nor counts as a
-  poll. ``/app-sign-in/step-up/wait`` and
-  ``/app-sign-in/transactions/wait`` do the same for a session's asks.
+  poll. ``/app-sign-in/authorizations/wait``,
+  ``/app-sign-in/transactions/wait`` and ``/app-sign-in/step-up/wait`` do
+  the same for a session's asks.
 
 A signed-in web session (credentials without scopes) asks the user's
 phone for more (ADR 0129); only that session redeems the answer:
@@ -33,7 +34,9 @@ phone for more (ADR 0129); only that session redeems the answer:
   the session's action authorizations (ADR 0144); the phone is shown the
   act as auth keeps it, and signs its digest.
   ``POST /app-sign-in/authorizations/token`` ``{"request"}`` answers the
-  authorization ``<id>.<code>``, for the act's ``Action-Authorization``.
+  authorization ``<id>.<code>``, for the act's ``Action-Authorization``;
+  ``POST /app-sign-in/authorizations/wait`` ``{"request"}`` holds until
+  the phone answers, as ``/app-sign-in/wait`` does.
 - ``POST /app-sign-in/transactions/{challenge_id}``: confirm one of the
   user's ``auth.sca`` transactions; the phone is shown its amount and
   payee. ``POST /app-sign-in/transactions/token`` ``{"request"}``
@@ -1133,6 +1136,33 @@ def _asks(authorization: ActionAuthorization) -> frozenset[str]:
     if action is not None:
         return action.required()
     return frozenset(auth_settings().AUTHORIZATIONS.METHODS)
+
+
+@router.post(
+    "/app-sign-in/authorizations/wait",
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
+)
+async def wait_for_phone_authorization(  # Before /{authorization_id}: "wait" matches.
+    body: PollIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> WaitOut:
+    """Hold until the phone answers this session's act (``/wait``'s rules).
+
+    It never hands over the authorization: ``…/authorizations/token`` does.
+    """
+    _no_store(response)
+    _, digest = _session_of(request)
+    approved = await wait(
+        body.request,
+        seconds=_wait_seconds(),
+        kind=AUTHORIZATION,
+        credential_digest=digest,
+    )
+    return _waited(approved)
 
 
 @router.post(

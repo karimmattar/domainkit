@@ -64,6 +64,7 @@ NO_WAY_IN: Final = {
     "POST /app-sign-in/transactions/wait": "reads whether the phone answered",
     "POST /app-sign-in/authorizations/{authorization_id}": "asks the phone",
     "POST /app-sign-in/authorizations/token": "redeems what the phone confirmed",
+    "POST /app-sign-in/authorizations/wait": "reads whether the phone answered",
     "POST /devices/authorizations/{authorization_id}": (
         "a bound device confirms one act of its own login"
     ),
