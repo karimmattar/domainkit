@@ -221,8 +221,15 @@ Each `STORAGES` entry:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `UPLOAD_SCANNER` | `None` | The virus scanner that `save_upload` streams every upload through ([uploads.md](../uploads.md#virus-scanning)). `None`: uploads are not scanned. |
+| `UPLOAD_CHECKS` | see below | How the checks of uploaded files run: each in a process of its own, under the system's limits ([uploads.md](../uploads.md#checking-documents)). *New in 2.5.* |
 | `SEARCH` | `None` | The search engine that `domainkit.search.search_backend()` returns ([search.md](../search.md#search-engines)). `None`: no search engine. |
 | `TENANCY` | `None` | Multi-tenancy ([tenancy.md](../tenancy.md)): how a request names its tenant, who may act in it, and which databases keep a schema per tenant. `None`: one tenant, nothing scoped. |
+
+| `UPLOAD_CHECKS` key | Default | Meaning |
+| --- | --- | --- |
+| `PROCESSES` | `4` | Checks that run at once in this process, each in a child process (1 to 64). One more upload is refused at once, 503 `service_busy`. |
+| `MEMORY` | `536870912` | Bytes of address space a check's process may take, 512 MiB (128 MiB to 16 GiB), as `RLIMIT_AS`. Past it the file is refused, 422 `unreadable_file`. Not on Windows or macOS. More than the largest upload checked, which the process holds whole; workers times `PROCESSES` times `MEMORY` must fit the host. |
+| `SECONDS` | `15.0` | Seconds a check's process may run (more than 0, at most 300): its CPU time (`RLIMIT_CPU`, not on Windows), and the wall clock, past which it is killed and the file refused, 422 `unreadable_file`. |
 
 | `UPLOAD_SCANNER` key | Default | Meaning |
 | --- | --- | --- |

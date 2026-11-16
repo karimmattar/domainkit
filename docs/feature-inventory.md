@@ -134,6 +134,8 @@ framework, for the reason given.
 | Object storage: S3 and S3-compatible (AWS S3, Huawei OBS, MinIO, Cloudflare R2, Alibaba OSS), Google Cloud Storage, Azure Blob | `S3Storage`, `GCSStorage`, `AzureBlobStorage`: multipart writes, ranged reads, no SDK ([uploads.md](uploads.md#object-storage)) | Yes | A1 |
 | Presigned upload and download URLs | `presigned_url`, `presigned_upload` (size and type signed on S3 and GCS; uploads create, never replace) | Yes | A1 |
 | Image thumbnails, virus scanning of uploads | `thumbnail` (Pillow, bombs refused); `UPLOAD_SCANNER` with ClamAV, failing closed | Yes | A1 |
+| Uploaded documents checked before they are kept: PDFs without scripts or actions, Office documents without macros, objects, or outside links | `CHECKED_PDF`, `DOCX`, `XLSX`, `PPTX` (pypdf, lxml; ZIPs bounded before they inflate) ([uploads.md](uploads.md#checking-documents)) | Yes | |
+| A resource's route that takes a file a phone can sign | `ResourceRouter.upload_route`: the body is the file, the reach checked, an act's twin ([resources.md](resources.md#files)) | Yes | |
 | Login with an identity provider: OpenID Connect and OAuth 2 (Google, Microsoft, Apple, GitHub, Keycloak, Okta, Auth0, AWS Cognito, Huawei IAM) | `domainkit.contrib.identity`: PKCE, state, nonce, ID tokens verified against the provider's keys ([identity.md](auth/identity.md)) | Yes | A2 |
 | Enterprise single sign-on: SAML 2.0, LDAP and Active Directory | SAML 2.0 service provider (signed responses only, one-time tickets); `LDAPBackend` with group mapping | Yes | A2 |
 | Linking several providers to one user, signing up through one | `/identity/{name}/link`, `/identity/linked`; `IDENTITY.SIGNUP` for verified emails no account has | Yes | A2 |

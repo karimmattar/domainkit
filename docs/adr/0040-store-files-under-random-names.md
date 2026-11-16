@@ -1,6 +1,6 @@
 # 0040. Store files under random names; trust only their content
 
-- Status: Accepted
+- Status: Accepted; amended by [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md) on 2026-11-16 (at the end)
 - Date: 2026-10-19
 
 ## Context
@@ -64,3 +64,12 @@ from text or a `.docx` from a zip, and covers only the types listed;
 projects describe others with `FileType`. Uploads are still bounded by
 `MAX_REQUEST_BODY_SIZE` for the whole request, which projects accepting
 large files must raise, globally.
+
+## Amendment (2026-11-16, 2.5)
+
+The first bytes decide the type, and a type may now also check the whole
+file before it is stored (`FileType.inspect`, [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md)): `CHECKED_PDF`,
+`DOCX`, `XLSX` and `PPTX` refuse scripts, actions, macros, embedded
+objects and outside links. A refused file is never stored. `save_upload`
+takes bytes or a stream as well as an `UploadFile`, and a
+`ResourceRouter` takes a file with `upload_route`.

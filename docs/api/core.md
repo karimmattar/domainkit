@@ -176,6 +176,16 @@ Errors raised by the framework itself (`django.core.exceptions`).
 - `ServiceBusy`: Something the operation needs is busy now; trying again later may work.
 - `UpstreamError`: A service this one called failed it: unavailable, too slow, or too large.
 
+## `domainkit.inspection`
+
+What an uploaded document holds, checked before it is kept (`documents` extra).
+
+- `FileRefused`: The file is of its type, but holds what is not accepted.
+- `NotOfType`: The file is not of the type its first bytes suggested.
+- `OfficeCheck`: Refuse an Office document with macros, objects, or outside links.
+- `PdfCheck`: Refuse a PDF that runs, sends, or hides something; or is too long.
+- `run_checks`: Run `checks` on `file` in a process of their own; the first that took it.
+
 ## `domainkit.i18n`
 
 Responses in the caller's language, and dates in the business's time zone.

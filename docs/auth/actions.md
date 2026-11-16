@@ -357,6 +357,11 @@ Around it:
 - **Other arguments, or another subject**, void the authorization, in a
   transaction of its own, and the act is refused (`403
   action_not_authorized`). Fields of `ignore` may differ.
+- **An uploaded file** (a `StoredUpload`, as `upload_route` gives one)
+  counts by its content: its type, size, file name and SHA-256, never
+  the name the storage gave it, which is new on every request (*New in
+  2.5*; [resources.md](../resources.md#files)). Another file is other
+  arguments.
 - **A decorated service called with no authorization for its purpose**
   (from another route, a batch, a task) raises `AuthorizationRequired`
   (401): the act is the user's own. Code that acts for the system calls a
@@ -575,7 +580,7 @@ as_alice.delete(act, headers={"Action-Authorization": authorization})
 - **A `show` that puts more on the phone than the user needs to decide.**
   It may be personal data, and the user reads less of it.
 - **An `ignore` list that unbinds what matters.** Leave out only what
-  changes on every call.
+  changes on every call. Never an uploaded file: it would authorize any.
 - **A service that commits twice.** It spends with the first commit.
 - **Spending in a route rather than in the service.** A rule that spent
   would burn the authorization when a later rule refuses, or the act fails.

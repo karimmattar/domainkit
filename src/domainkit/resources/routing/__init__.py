@@ -68,9 +68,9 @@ A new kind of route is a module of that shape and a method here (ADR 0025).
 
 import dataclasses
 import re
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, params
@@ -124,6 +124,10 @@ from .listing import ListRoute
 from .queries import QueryRoute
 from .reading import ReadRoute
 from .values import to_domain as to_domain
+
+if TYPE_CHECKING:
+    from domainkit.http.uploads import FileType
+    from domainkit.storage.base import Storage
 
 
 class ResourceRouter(APIRouter):
@@ -769,6 +773,79 @@ class ResourceRouter(APIRouter):
             rule=rule,
             name=name,
             summary=summary,
+        ).declare()
+
+    def upload_route(
+        self,
+        command: type[Command],
+        *,
+        service: Service,
+        field: str,
+        types: "Iterable[FileType]",
+        max_size: int,
+        storage: "Storage | str" = "default",
+        directory: str = "",
+        digest: str | None = None,
+        returns: Returns = DEFAULT,
+        method: Literal["POST", "PUT", "PATCH"] = "POST",
+        path: str = "",
+        action: str | None = None,
+        rule: Rule | None = None,
+        status_code: int | None = None,
+        name: str | None = None,
+        summary: str | None = None,
+        provide: Mapping[str, Callable[..., object]] | None = None,
+        body_limit: int | None = None,
+        retry: Retry | None = None,
+    ) -> None:
+        """Add a route that stores the file sent and runs ``command`` with it.
+
+        The body is the file, its name in ``X-Filename`` (percent-encoded
+        UTF-8), or a ``multipart/form-data`` form whose part ``field``
+        holds it. It is received as ``save_upload`` receives a file: one of
+        ``types`` by its content, checked by its type's ``inspect``, at most
+        ``max_size`` bytes. It is stored in ``storage`` (an alias or a
+        ``Storage``), under ``directory``, and the command's ``field`` gets
+        the ``StoredUpload``; ``digest`` names a field that gets its
+        SHA-256, in hex. A request that fails before the service returns
+        deletes the file (New in 2.5).
+
+        The rest is ``command_route``'s: the path's ids, ``provide``, the
+        aggregate within the caller's reach, ``If-Match``, ``returns``,
+        ``retry``, and a twin that asks for an authorization of the act
+        when a rule asks for one; the twin takes the same body, stores
+        nothing, and gives ``field`` an upload whose name is empty.
+        ``body_limit`` defaults to ``max_size`` and 64 KiB for a form.
+
+        Raises:
+            TypeError: The command lacks ``field`` or ``digest``, ``provide``
+                gives one of them, or the command needs fields nothing gives.
+            ValueError: No type is taken, ``max_size`` is not positive, or
+                the body limit is out of bounds.
+        """
+        from .uploading import UploadRoute  # Loaded by the routes that take files.
+
+        UploadRoute(
+            self,
+            command,
+            service=service,
+            field=field,
+            types=types,
+            max_size=max_size,
+            storage=storage,
+            directory=directory,
+            digest=digest,
+            returns=returns,
+            method=method,
+            path=path,
+            action=action,
+            rule=rule,
+            status_code=status_code,
+            name=name,
+            summary=summary,
+            provide=provide,
+            body_limit=body_limit,
+            retry=retry,
         ).declare()
 
     def before_items(self, route: BaseRoute) -> None:

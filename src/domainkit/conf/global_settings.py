@@ -844,6 +844,28 @@ class DocumentsConfig(BaseModel):
     """The Gotenberg server ``renderer()`` calls; None: no renderer."""
 
 
+MIB: Final = 1024 * 1024
+"""A mebibyte, in bytes."""
+
+
+class UploadChecksConfig(BaseModel):
+    """``UPLOAD_CHECKS``: how the checks of uploaded files run, each in a process."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    PROCESSES: int = Field(default=4, ge=1, le=64)
+    """Checks that run at once in this process, each in a child process."""
+    MEMORY: int = Field(default=512 * MIB, ge=128 * MIB, le=16 * 1024 * MIB)
+    """Bytes of address space a check's process may take (``RLIMIT_AS``).
+
+    More than the largest upload checked, which the process holds whole;
+    Python and pypdf or lxml take the first hundred MiB. Each worker runs
+    ``PROCESSES`` of them at once: workers times ``PROCESSES`` times
+    ``MEMORY`` must fit the host or the container."""
+    SECONDS: float = Field(default=15.0, gt=0, le=300)
+    """Seconds a check's process may run: its CPU, and the parent's clock."""
+
+
 GRANIAN_MAX_KEEP_ALIVE: Final = 60
 """The most seconds Granian keeps an idle connection open (60,000 ms)."""
 MAX_SERVE_WORKERS: Final = 1024
@@ -1158,6 +1180,8 @@ class Settings(BaseModel):
     """File storages by alias (``domainkit.storage``); none unless set."""
     UPLOAD_SCANNER: ScannerConfig | None = None
     """The virus scanner ``save_upload`` streams uploads through; none unless set."""
+    UPLOAD_CHECKS: UploadChecksConfig = Field(default_factory=UploadChecksConfig)
+    """How the checks of uploaded files run: each in a process, under limits."""
     SEARCH: SearchConfig | None = None
     """The search engine ``search_backend()`` makes; none unless set."""
     TENANCY: TenancyConfig | None = None
